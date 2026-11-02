@@ -20,7 +20,17 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
-import { chmod, copyFile, lstat, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import {
+  appendFile,
+  chmod,
+  copyFile,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -94,15 +104,17 @@ export async function packNativeCli({
       );
       await chmod(join(directory, 'bin', 'maka-service.exe'), 0o755);
     }
-    for (const name of ['LICENSE', 'NOTICE']) {
+    for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE']) {
       await copyRegular(join(repositoryRoot, name), join(directory, name), 16 * 1024 * 1024);
     }
+    const disclaimer = await readFile(join(directory, 'DISCLAIMER'), 'utf8');
     for (const name of ['README.md', 'README.zh-CN.md']) {
       await copyRegular(
         join(repositoryRoot, 'packages/cli', name),
         join(directory, name),
         1024 * 1024,
       );
+      await appendFile(join(directory, name), '\n\n' + disclaimer);
     }
     // Release owners supply the reviewed Rust/V8/embedded-JS notice closure.
     // The old Node CLI notice file alone is not sufficient for this binary.
@@ -111,6 +123,15 @@ export async function packNativeCli({
       join(directory, 'THIRD_PARTY_NOTICES.txt'),
       16 * 1024 * 1024,
     );
+    if (platform.os === 'darwin') {
+      for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt']) {
+        await copyRegular(
+          join(directory, name),
+          join(directory, 'bin', 'Maka.app', 'Contents', 'Resources', name),
+          16 * 1024 * 1024,
+        );
+      }
+    }
     const name = `@maka-agent/cli-${target}`;
     await writeFile(
       join(directory, 'package.json'),
@@ -128,6 +149,7 @@ export async function packNativeCli({
           bin: { maka: `bin/${executable}` },
           files: [
             'bin',
+            'DISCLAIMER',
             'LICENSE',
             'NOTICE',
             'THIRD_PARTY_NOTICES.txt',

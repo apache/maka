@@ -59,6 +59,7 @@ import {
   controlFocusStyle,
   controlDisabledStyle,
   shortcut,
+  toolbarControlStyle,
 } from './ui';
 
 type Pane = 'root' | 'models' | 'connections' | 'effort';
@@ -77,6 +78,10 @@ type ModelsPage = {
 
 type ModelMenuHandle = { instance: number; back(): void; dismiss(): void };
 type ModelTarget = { sessionId: string; instance: number | null };
+type ModelOwner = Pick<
+  ConversationHandle,
+  'sessionId' | 'backend' | 'modelDetails' | 'refreshModel'
+>;
 const modelRowHeight = platform.isTerminal ? 48 : 40;
 // Notes under the model list start where the rows' text does.
 const listFill = () => (platform.isTerminal ? C.surface : C.background);
@@ -85,7 +90,7 @@ const listTextInset = {
 };
 
 export function ModelSelect(props: {
-  owner: ConversationHandle;
+  owner: ModelOwner;
   instance(): number | null;
   current(): boolean;
   toggle(target: ModelTarget): void;
@@ -143,13 +148,13 @@ export function ModelSelect(props: {
             instance: props.instance(),
           })}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             maxWidth: '100%',
             minWidth: 0,
             flexDirection: 'row',
             justifyContent: 'flex-end',
             alignItems: 'center',
-            gap: 8,
+            gap: platform.isTerminal ? 8 : 4,
           }}
           hoverStyle={{ backgroundColor: C.line }}
           focusStyle={{ backgroundColor: C.line }}
@@ -184,7 +189,7 @@ export function ModelSelect(props: {
               </Text>
             </If>
           </View>
-          <Icon name="down" color={C.secondary} />
+          <Icon name="down" color={C.muted} />
         </Button>
       }
     >
@@ -224,7 +229,7 @@ export function ModelSelect(props: {
 }
 
 function ModelMenu(props: {
-  owner: ConversationHandle;
+  owner: ModelOwner;
   instance: number;
   current(): boolean;
   close(instance: number): boolean;

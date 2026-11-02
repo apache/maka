@@ -62,23 +62,23 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             }
             wire.clone()
         } else if request.prompt.memory_messages().is_some() {
-            super::anthropic::direct_wire(
-                request.prompt.clone(),
-                request.language,
-                stream_options.clone(),
-            )
+            super::anthropic::direct_wire(request.prompt.clone(), request.language, stream_options)
         } else {
             return Err(ModelError::Adapter(
                 "captured prompt is missing its prepared Anthropic wire projection".into(),
             ));
         };
-        let metadata = super::anthropic::metadata(&wire, stream_options).await?;
+        let documents = super::anthropic_documents::Documents::new(wire.source.as_ref());
+        let document_count = documents
+            .as_ref()
+            .map_or(0, super::anthropic_documents::Documents::len);
+        let metadata = super::anthropic::metadata(&wire).await?;
         let context = metadata.context.clone();
         let tools = request
             .tools
             .into_iter()
             .map(|tool| {
-                let definition = if let Some(provider) = tool.provider {
+                let definition = if let Some(provider) = &tool.provider {
                     let hosted =
                         anthropic::HostedTool::from_definition(&provider.id, &provider.args)
                             .map_err(failure)?;
@@ -100,8 +100,8 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 } else {
                     anthropic::Tool::Function(anthropic::FunctionTool {
                         name: tool.name.clone(),
-                        description: Some(tool.description),
-                        input_schema: tool.input_schema,
+                        description: Some(tool.description.clone()),
+                        input_schema: tool.input_schema.clone(),
                         cache_control: None,
                         strict: None,
                         defer_loading: None,
@@ -111,7 +111,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                     })
                 };
                 Ok(anthropic::request::ToolBinding {
-                    name: tool.name,
+                    name: tool.name.clone(),
                     definition,
                 })
             })
@@ -122,7 +122,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             None,
         )
         .map_err(failure)?;
-        let prepared = anthropic::request::prepare_streaming(
+        let mut prepared = anthropic::request::prepare_streaming(
             anthropic::request::Request {
                 model: request.provider.model,
                 messages: &[],
@@ -146,6 +146,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             metadata,
         )
         .map_err(failure)?;
+        if document_count > 0 {
+            prepared.response.documents =
+                anthropic::citations::DocumentReferences::deferred(document_count);
+        }
         anthropic_source = Some((wire, context));
         headers.insert("anthropic-version".into(), "2023-06-01".into());
         if !prepared.betas.is_empty() {
@@ -159,7 +163,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             .remove("messages");
         (
             fields,
-            Decoder::Anthropic(Box::new(anthropic::stream::Stream::new(prepared.response))),
+            Decoder::Anthropic {
+                stream: Box::new(anthropic::stream::Stream::new(prepared.response)),
+                documents,
+            },
             "messages",
         )
     } else {
@@ -178,9 +185,9 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                     ));
                 }
                 Ok(chat_completions::request::Tool::Function {
-                    name: tool.name,
-                    description: Some(tool.description),
-                    schema: tool.input_schema,
+                    name: tool.name.clone(),
+                    description: Some(tool.description.clone()),
+                    schema: tool.input_schema.clone(),
                     strict: None,
                 })
             })

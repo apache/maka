@@ -26,20 +26,34 @@ mod executor;
 pub use executor::ExecutorInput;
 mod handoff;
 pub use handoff::{HandoffGate, HandoffReservation, HeldHandoff, PendingSeal};
+mod frozen_request;
 mod history;
 mod interactions;
 mod model_attempt;
 mod model_source;
 mod prepared_prompt;
+mod preview;
 pub use model_source::{ModelSource, PreparedModel};
 pub mod pricing;
 mod request_composition;
 pub use history::project as project_model_history;
 mod prune;
+#[cfg(any(test, feature = "test-support"))]
+pub mod retry_fixture;
+mod retry_resume;
+pub use retry_resume::RetryResumeInput;
+mod resume;
+pub use resume::{NativeApprovalExecutor, ResumeContinuation, ResumeInput};
 mod runner;
 mod running;
 mod steps;
 pub use running::{RunningCompletion, RunningInvocation};
+
+#[derive(Clone, Debug)]
+pub enum ActivationExit {
+    Terminal(Invocation),
+    Parked(maka_event_log::native_approvals::ParkedActivationReceipt),
+}
 
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("invocation cleanup is unconfirmed")]
@@ -93,15 +107,42 @@ pub enum RunError {
     CleanupUnconfirmed,
     #[error("execution worker failed: {0}")]
     Internal(String),
+    #[error("activation checkpoint serialization failed: {0}")]
+    Checkpoint(#[source] serde_json::Error),
+    #[error("model input preparation failed: {0}")]
+    Preparation(#[from] std::io::Error),
+    #[error("model input cleanup was not confirmed: {0}")]
+    PreparationCleanup(#[source] std::io::Error),
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{0}")]
+struct PreparationCancelled(&'static str);
+
+fn preparation_cancelled(message: &'static str) -> std::io::Error {
+    std::io::Error::other(PreparationCancelled(message))
 }
 
 impl RunError {
+    // Only our cancellation signal is terminal cancellation; I/O and cleanup keep their cause.
+    fn preparation(error: std::io::Error) -> Self {
+        if error
+            .get_ref()
+            .is_some_and(|cause| cause.is::<PreparationCancelled>())
+        {
+            Self::Cancelled
+        } else {
+            Self::Preparation(error)
+        }
+    }
+
     /// Explicit unconfirmed cleanup in this error. Absence is not proof of
     /// cleanup; only the original RunningCompletion carries that observation.
     pub fn is_cleanup_unconfirmed(&self) -> bool {
         matches!(
             self,
             Self::CleanupUnconfirmed
+                | Self::PreparationCleanup(_)
                 | Self::Model(ModelError::CleanupUnconfirmed)
                 | Self::Tool(
                     ToolError::CleanupUnconfirmed(_)
@@ -132,6 +173,16 @@ impl From<ToolError> for RunError {
     }
 }
 
+/// Immutable native activation evidence, materialized only when execution parks.
+/// This evidence carries no execution authority.
+pub trait NativeActivationBasis: Send + Sync {
+    /// Serialize the accepted basis for a persistent activation checkpoint.
+    ///
+    /// # Errors
+    /// Returns the original serialization error if the accepted basis cannot be encoded.
+    fn checkpoint_value(&self) -> serde_json::Result<Value>;
+}
+
 #[derive(Clone)]
 pub struct RunInput<W = RunWork> {
     /// Optional for standalone adapters; Host executions supply a public provider source.
@@ -146,6 +197,8 @@ pub struct RunInput<W = RunWork> {
     pub request_fingerprint: Option<String>,
     pub provider: ProviderConfig,
     pub provider_options: Value,
+    /// Accepted native activation evidence; it carries no execution authority.
+    pub native_activation_basis: Option<Arc<dyn NativeActivationBasis>>,
     /// Resolved SDK reply budget; summaries additionally cap their text at 8K.
     pub main_output_limit: Option<u64>,
     /// Current selected-model capability; image bytes are projected per request.
@@ -155,7 +208,7 @@ pub struct RunInput<W = RunWork> {
 
 // Admission owns the submitted body. Running execution owns only settings and
 // identity; canonical opening facts supply the body to bounded history reads.
-type RunSettings = RunInput<()>;
+pub type RunSettings = RunInput<()>;
 
 impl RunInput {
     fn into_context(self) -> (RunSettings, RunWork) {
@@ -169,6 +222,7 @@ impl RunInput {
             request_fingerprint,
             provider,
             provider_options,
+            native_activation_basis,
             main_output_limit,
             supports_vision,
             configuration,
@@ -184,6 +238,7 @@ impl RunInput {
                 request_fingerprint,
                 provider,
                 provider_options,
+                native_activation_basis,
                 main_output_limit,
                 supports_vision,
                 configuration,
@@ -208,14 +263,13 @@ pub enum RunWork {
         message: MessageInput,
         source_messages: Vec<maka_agent_facts::message::RootSourceMessage>,
         tools: ToolCatalog,
-        /// Only a newly submitted client Turn may observe a sealed, unknown prior tool effect.
-        allow_prior_unknown: bool,
     },
     ContextCompact,
 }
 
 struct Inner {
     pricing: Option<Arc<dyn pricing::Pricing>>,
+    preparation_resources: maka_model::ModelPreparationResources,
     model: ModelExecutor,
     cells: CodeExecutor,
     session_backend: maka_session_state::Backend,
@@ -227,7 +281,7 @@ struct Inner {
 struct RunContext {
     shared: Arc<Inner>,
     log: Arc<SessionStore>,
-    prepared_history: Mutex<Option<Arc<history::PreparedHistory>>>,
+    attempts: preview::Attempts,
 }
 
 impl RunContext {
@@ -240,8 +294,126 @@ impl RunContext {
         Ok(Arc::new(Self {
             shared,
             log: Arc::new(store),
-            prepared_history: Mutex::new(None),
+            attempts: preview::Attempts::default(),
         }))
+    }
+
+    async fn start_owned<F, Fut>(
+        self: Arc<Self>,
+        execution: SessionExecutionScope,
+        invocation: Invocation,
+        tool_names: Arc<HashSet<String>>,
+        handoff: Option<HandoffGate>,
+        cancellation: CancellationToken,
+        run: F,
+    ) -> Result<RunningInvocation, RunError>
+    where
+        F: FnOnce(
+                CancellationToken,
+                tokio::sync::oneshot::Sender<()>,
+                Arc<InvocationEffects>,
+            ) -> Fut
+            + Send
+            + 'static,
+        Fut: std::future::Future<Output = Result<ActivationExit, RunError>> + Send + 'static,
+    {
+        let session_id = invocation.session_id.clone();
+        if !self
+            .shared
+            .active
+            .lock()
+            .map_err(|_| RunError::Internal("admission poisoned".into()))?
+            .insert(session_id.clone())
+        {
+            return Err(RunError::Busy);
+        }
+        let admission = Admission {
+            inner: self.shared.clone(),
+            session_id,
+            handoff: handoff.clone(),
+        };
+        let cancellation = cancellation.child_token();
+        let cancel_on_drop = cancellation.clone().drop_guard();
+        let worker_cancellation = cancellation.clone();
+        let worker_invocation = invocation.clone();
+        let (admitted, ready) = tokio::sync::oneshot::channel();
+        let cleanup = cleanup::Evidence::default();
+        let preview = self.attempts.subscribe();
+        let context = self.clone();
+        let worker = self.shared.workers.spawn(async move {
+            use futures_util::FutureExt;
+
+            // Only the original worker accepts physical custody. Its lease Drop
+            // fences uncertain cleanup, including panic and runtime teardown.
+            let _admission = admission;
+            let (execution, effects) =
+                match execution.accept_invocation(worker_invocation, worker_cancellation.clone()) {
+                    Ok(accepted) => accepted,
+                    Err(error) => {
+                        return RunningCompletion {
+                            result: Err(error.into()),
+                            cleanup: Ok(()),
+                        };
+                    }
+                };
+            let effects = Arc::new(effects);
+            let result = cleanup
+                .scope(async {
+                    // Keep the worker future out of the tracking and cleanup wrapper frames.
+                    let result = std::panic::AssertUnwindSafe(Box::pin(async {
+                        run(worker_cancellation.clone(), admitted, effects.clone()).await
+                    }))
+                    .catch_unwind()
+                    .await
+                    .unwrap_or_else(|_| {
+                        worker_cancellation.cancel();
+                        Err(cleanup::unconfirmed())
+                    });
+                    let result = match effects.settle().await {
+                        Ok(()) => result,
+                        Err(error) => model_attempt::additional_failure(result, error.into()),
+                    };
+                    model_attempt::seal_unfinished_attempts(&context, result).await
+                })
+                .await;
+            let physical = if cleanup.confirmed()
+                && !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
+            {
+                Ok(())
+            } else {
+                Err(CleanupUnconfirmed)
+            };
+            if physical.is_ok() {
+                execution.finish();
+            } else {
+                execution.retain_unconfirmed();
+            }
+            RunningCompletion {
+                result,
+                cleanup: physical,
+            }
+        });
+        if ready.await.is_err() {
+            return match worker.await {
+                Ok(completion) if completion.cleanup.is_err() => Err(RunError::CleanupUnconfirmed),
+                Ok(completion) => match completion.result {
+                    Err(error) => Err(error),
+                    Ok(_) => Err(RunError::Internal(
+                        "worker omitted durable admission".into(),
+                    )),
+                },
+                Err(_) => Err(RunError::CleanupUnconfirmed),
+            };
+        }
+        cancel_on_drop.disarm();
+        Ok(RunningInvocation::new(
+            invocation,
+            tool_names,
+            cancellation,
+            handoff,
+            preview,
+            worker,
+        ))
     }
 }
 
@@ -263,8 +435,8 @@ impl Inner {
     }
 }
 
-/// Owns session admission and the entire invocation lifetime, including effects
-/// still draining after the caller stops waiting.
+/// Owns physical session admission and activations, including effects still
+/// draining after the caller stops waiting.
 #[derive(Clone)]
 pub struct Engine(Arc<Inner>);
 
@@ -301,8 +473,24 @@ impl Engine {
         cells: CodeExecutor,
         pricing: Option<Arc<dyn pricing::Pricing>>,
     ) -> Result<Self, RunError> {
+        let resources =
+            maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy::default())
+                .map_err(|error| {
+                    RunError::Internal(format!("create preparation resources: {error}"))
+                })?;
+        Self::with_resources(model, cells, pricing, resources)
+    }
+
+    /// Host engines share one explicit preparation allocation capability.
+    pub fn with_resources(
+        model: ModelExecutor,
+        cells: CodeExecutor,
+        pricing: Option<Arc<dyn pricing::Pricing>>,
+        preparation_resources: maka_model::ModelPreparationResources,
+    ) -> Result<Self, RunError> {
         Ok(Self(Arc::new(Inner {
             pricing,
+            preparation_resources,
             model,
             cells,
             session_backend: maka_session_state::Backend::temporary()?,
@@ -316,7 +504,7 @@ impl Engine {
         store: SessionStore,
         input: RunInput,
         cancellation: CancellationToken,
-    ) -> Result<Invocation, RunError> {
+    ) -> Result<ActivationExit, RunError> {
         self.start(store, input, cancellation).await?.wait().await
     }
 
@@ -326,33 +514,55 @@ impl Engine {
     }
 
     /// Observe replay safety without reserving a source or creating a claim.
-    /// Admission validates the claim against current canonical facts.
+    /// Model continuation observation does not require a live tool catalog.
+    /// Admission validates the claim against current canonical facts and prepares current tools.
     pub async fn check_continuation(
         &self,
         store: &SessionStore,
         input: &RunInput,
         cancellation: &CancellationToken,
     ) -> Result<(), RunError> {
-        let (RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. }) =
-            &input.work
-        else {
+        if !matches!(
+            input.work,
+            RunWork::Continuation { .. } | RunWork::Handoff { .. }
+        ) {
             return Err(RunError::InvalidInput("not a continuation request".into()));
-        };
-        let context = RunContext::new(self.0.clone(), store.clone(), &input.invocation)?;
-        context
-            .log
-            .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+        }
+        let execution = store
+            .execution_scope(permission_basis(&input.configuration))
             .await?;
-        continuation::inspect(
-            &context,
-            input,
-            source,
-            tools,
-            cancellation,
-            &self.0.loaded_snapshot(&input.invocation.session_id)?,
-        )
-        .await
-        .map(|_| ())
+        let shared = self.0.clone();
+        let input = input.clone();
+        let cancellation = cancellation.child_token();
+        let observer = cancellation.clone().drop_guard();
+        let evidence = cleanup::current();
+        let worker = self.0.workers.spawn(evidence.scope(async move {
+            let (RunWork::Continuation { source, tools, .. }
+            | RunWork::Handoff { source, tools, .. }) = &input.work
+            else {
+                unreachable!()
+            };
+            let context = RunContext::new(shared.clone(), execution.store(), &input.invocation)?;
+            context
+                .log
+                .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+                .await?;
+            continuation::inspect(
+                &context,
+                &input,
+                source,
+                matches!(input.work, RunWork::Handoff { .. }).then_some(tools),
+                &cancellation,
+                &shared.loaded_snapshot(&input.invocation.session_id)?,
+            )
+            .await
+            .map(|_| ())
+        }));
+        let result = worker
+            .await
+            .map_err(|error| cleanup::preparation_failed(std::io::Error::other(error)))?;
+        observer.disarm();
+        result
     }
 
     pub async fn prepare_continuation(
@@ -361,23 +571,45 @@ impl Engine {
         input: RunInput,
         cancellation: &CancellationToken,
     ) -> Result<PreparedContinuation, RunError> {
-        let (RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. }) =
-            &input.work
-        else {
+        if !matches!(
+            input.work,
+            RunWork::Continuation { .. } | RunWork::Handoff { .. }
+        ) {
             return Err(RunError::InvalidInput("not a continuation request".into()));
-        };
-        let context = RunContext::new(self.0.clone(), store.clone(), &input.invocation)?;
-        context
-            .log
-            .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+        }
+        let execution = store
+            .execution_scope(permission_basis(&input.configuration))
             .await?;
-        let claim = continuation::prepare(&context, &input, source, tools, cancellation).await?;
-        Ok(PreparedContinuation {
-            engine: Arc::downgrade(&self.0),
-            store,
-            input,
-            claim,
-        })
+        let shared = self.0.clone();
+        let engine = Arc::downgrade(&self.0);
+        let cancellation = cancellation.child_token();
+        let observer = cancellation.clone().drop_guard();
+        let evidence = cleanup::current();
+        let worker = self.0.workers.spawn(evidence.scope(async move {
+            let (RunWork::Continuation { source, tools, .. }
+            | RunWork::Handoff { source, tools, .. }) = &input.work
+            else {
+                unreachable!()
+            };
+            let context = RunContext::new(shared, execution.store(), &input.invocation)?;
+            context
+                .log
+                .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
+                .await?;
+            let claim =
+                continuation::prepare(&context, &input, source, tools, &cancellation).await?;
+            Ok(PreparedContinuation {
+                engine,
+                store,
+                input,
+                claim,
+            })
+        }));
+        let result = worker
+            .await
+            .map_err(|error| cleanup::preparation_failed(std::io::Error::other(error)))?;
+        observer.disarm();
+        result
     }
 
     pub async fn start_continuation(
@@ -519,138 +751,27 @@ impl Engine {
             RunWork::ContextCompact => Default::default(),
         });
         let worker_handoff = handoff.clone();
-        self.start_owned(
-            execution,
-            invocation,
-            tool_names,
-            handoff,
-            cancellation,
-            move |cancellation, admitted, effects| {
-                runner::run(
-                    inner,
-                    input,
-                    cancellation,
-                    admitted,
-                    worker_handoff,
-                    claim,
-                    effects,
-                )
-            },
-        )
-        .await
-    }
-
-    async fn start_owned<F, Fut>(
-        &self,
-        execution: SessionExecutionScope,
-        invocation: Invocation,
-        tool_names: Arc<HashSet<String>>,
-        handoff: Option<HandoffGate>,
-        cancellation: CancellationToken,
-        run: F,
-    ) -> Result<RunningInvocation, RunError>
-    where
-        F: FnOnce(
-                CancellationToken,
-                tokio::sync::oneshot::Sender<()>,
-                Arc<InvocationEffects>,
-            ) -> Fut
-            + Send
-            + 'static,
-        Fut: std::future::Future<Output = Result<Invocation, RunError>> + Send + 'static,
-    {
-        let session_id = invocation.session_id.clone();
-        if !self
-            .0
-            .active
-            .lock()
-            .map_err(|_| RunError::Internal("admission poisoned".into()))?
-            .insert(session_id.clone())
-        {
-            return Err(RunError::Busy);
-        }
-        let admission = Admission {
-            inner: self.0.clone(),
-            session_id,
-            handoff: handoff.clone(),
-        };
-        let cancellation = cancellation.child_token();
-        let cancel_on_drop = cancellation.clone().drop_guard();
-        let worker_cancellation = cancellation.clone();
-        let worker_invocation = invocation.clone();
-        let (admitted, ready) = tokio::sync::oneshot::channel();
-        let cleanup = cleanup::Evidence::default();
-        let worker = self.0.workers.spawn(async move {
-            use futures_util::FutureExt;
-
-            // Only the original worker accepts physical custody. Its lease Drop
-            // fences uncertain cleanup, including panic and runtime teardown.
-            let _admission = admission;
-            let (execution, effects) =
-                match execution.accept_invocation(worker_invocation, worker_cancellation.clone()) {
-                    Ok(accepted) => accepted,
-                    Err(error) => {
-                        return RunningCompletion {
-                            result: Err(error.into()),
-                            cleanup: Ok(()),
-                        };
-                    }
-                };
-            let effects = Arc::new(effects);
-            let result = cleanup
-                .scope(async {
-                    let result = std::panic::AssertUnwindSafe(async {
-                        run(worker_cancellation.clone(), admitted, effects.clone()).await
-                    })
-                    .catch_unwind()
-                    .await
-                    .unwrap_or_else(|_| {
-                        worker_cancellation.cancel();
-                        Err(cleanup::unconfirmed())
-                    });
-                    match effects.settle().await {
-                        Ok(()) => result,
-                        Err(error) => Err(error.into()),
-                    }
-                })
-                .await;
-            let physical = if cleanup.confirmed()
-                && !result.as_ref().is_err_and(RunError::is_cleanup_unconfirmed)
-            {
-                Ok(())
-            } else {
-                Err(CleanupUnconfirmed)
-            };
-            if physical.is_ok() {
-                execution.finish();
-            } else {
-                execution.retain_unconfirmed();
-            }
-            RunningCompletion {
-                result,
-                cleanup: physical,
-            }
-        });
-        if ready.await.is_err() {
-            return match worker.await {
-                Ok(completion) if completion.cleanup.is_err() => Err(RunError::CleanupUnconfirmed),
-                Ok(completion) => match completion.result {
-                    Err(error) => Err(error),
-                    Ok(_) => Err(RunError::Internal(
-                        "worker omitted durable admission".into(),
-                    )),
+        inner
+            .clone()
+            .start_owned(
+                execution,
+                invocation,
+                tool_names,
+                handoff,
+                cancellation,
+                move |cancellation, admitted, effects| {
+                    runner::run(
+                        inner,
+                        input,
+                        cancellation,
+                        admitted,
+                        worker_handoff,
+                        claim,
+                        effects,
+                    )
                 },
-                Err(_) => Err(RunError::CleanupUnconfirmed),
-            };
-        }
-        cancel_on_drop.disarm();
-        Ok(RunningInvocation::new(
-            invocation,
-            tool_names,
-            cancellation,
-            handoff,
-            worker,
-        ))
+            )
+            .await
     }
 }
 

@@ -47,7 +47,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, through).await?;
+                    super::directory::ensure(tx, &session, through).await?;
                     let row: Option<(i64,i64)> = sqlx::query_as(QUERY)
                         .bind(&session).bind(source_sequence).bind(item_index)
                         .fetch_optional(&mut *tx).await?;

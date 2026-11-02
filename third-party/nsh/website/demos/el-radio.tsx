@@ -48,7 +48,7 @@ function App() {
           </Each>
         </RadioGroup>
 
-        {/* A list of options: a ring with a dot, which `group-checked:` shows. */}
+        {/* A list of options: a ring with a dot, which `group-checked:` grows in (in place with reduced motion). */}
         <RadioGroup style={{ ...ui().card, borderRadius: 14, overflow: "hidden" }}>
           <Each of={plans}>
             {(item, i) => (
@@ -66,6 +66,7 @@ function App() {
                   focusStyle={focusRing()}
                 >
                   <View
+                    class="transition-colors motion-reduce:transition-none"
                     style={{
                       width: desktop ? 16 : 20,
                       height: desktop ? 16 : 20,
@@ -77,7 +78,7 @@ function App() {
                     }}
                   >
                     <View
-                      class="opacity-0 group-checked:opacity-100"
+                      class="opacity-0 scale-50 transition duration-150 ease-out motion-reduce:transition-none group-checked:opacity-100 group-checked:scale-100"
                       style={{ width: desktop ? 8 : 10, height: desktop ? 8 : 10, borderRadius: desktop ? 4 : 5, backgroundColor: ui().accent }}
                     />
                   </View>

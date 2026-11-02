@@ -1,7 +1,8 @@
 //! `fs/promises` through an engine: the module is the runtime's Rust
 //! registry (its JS face and declarations come from its spec); its grant
-//! checks and limits throw in the call, its disk work settles as core
-//! tasks. The probes are gpui-shell's, so its contract holds here too.
+//! checks and limits run in the call, which rejects at once, its disk work
+//! settles as core tasks. The probes are gpui-shell's, so its contract
+//! holds here too.
 
 use std::{os::unix::fs::symlink, path::PathBuf, sync::atomic::AtomicUsize};
 
@@ -70,6 +71,7 @@ mount(() => <Text>{{shown()}}</Text>);
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -284,7 +286,9 @@ const absoluteLink = ABSOLUTE;
   const expected = ["default", "exists", "lstat", "mkdir", "readFile", "readdir", "readlink", "rename", "rmdir", "stat", "unlink", "writeFile"];
   if (JSON.stringify(Object.keys(namespace).sort()) !== JSON.stringify(expected.sort())) throw Error("exports differ: " + Object.keys(namespace));
   if (fs.readFile !== namespace.readFile) throw Error("default and named exports differ");
-  let sync = 0;
+  // A function returning a promise never throws: wrong arguments reject
+  // with a TypeError, a path no grant covers with ERR_ACCESS_DENIED.
+  let usage = 0;
   for (const op of [
     () => fs.readFile("invalid", "base64"),
     () => fs.readFile("invalid", {}),
@@ -293,14 +297,17 @@ const absoluteLink = ABSOLUTE;
     () => fs.mkdir("never", { typo: true }),
     () => fs.readdir(".", { withFileTypes: 1 }),
     () => fs.readdir(".", { recursive: true }),
-    () => fs.exists("/outside-native-root"),
     () => fs.writeFile("never", new ArrayBuffer(4)),
     () => fs.writeFile("never", new Uint16Array(2)),
     () => fs.readFile(1),
   ]) {
-    try { op(); } catch (e) { if (e instanceof TypeError) sync++; }
+    let promise;
+    try { promise = op(); } catch { throw Error("a promise function threw"); }
+    await promise.then(() => {}, (e) => { if (e instanceof TypeError) usage++; });
   }
-  if (sync !== 11) throw Error("sync checks " + sync);
+  if (usage !== 10) throw Error("usage rejections " + usage);
+  const outside = await fs.exists("/outside-native-root").then(() => "none", (e) => `${e.code}:${e.permission}:${e.resource}`);
+  if (outside !== "ERR_ACCESS_DENIED:fs:/outside-native-root") throw Error("denial " + outside);
   let getterCalls = 0;
   await fs.readdir(".", { get withFileTypes() { getterCalls++; return true; } });
   if (getterCalls !== 1) throw Error("option getter called " + getterCalls + " times");
@@ -312,7 +319,7 @@ const absoluteLink = ABSOLUTE;
   const target = await fs.readlink("link");
   if (!link.isSymbolicLink() || !target.endsWith("/secret")) throw Error("link was followed");
   let denied = false;
-  try { await fs.readFile("link"); } catch (e) { denied = e.constructor === Error && !e.message.includes("capabilities.fs"); }
+  try { await fs.readFile("link"); } catch (e) { denied = e.constructor === Error && e.code !== "ERR_ACCESS_DENIED"; }
   if (!denied) throw Error("outside read allowed");
   if (!(await fs.exists("link"))) throw Error("link missed");
   if (!(await fs.exists("dangling")) || !(await fs.lstat("dangling")).isSymbolicLink()) throw Error("dangling link missed");
@@ -390,10 +397,10 @@ import fs from "fs/promises";
 (async () => {
   let read = false;
   try { await fs.readFile("over-read-limit"); } catch (e) { read = e.constructor === Error && e.message.includes("67108864"); }
-  let write = false;
-  try { fs.writeFile("not-created", "x".repeat(8 * 1024 * 1024 + 1)); } catch (e) { write = e instanceof RangeError && e.message.includes("8388608-byte"); }
+  const refused = (p) => p.then(() => "written", (e) => `${e.constructor.name}:${e.code}`);
+  let write = await refused(fs.writeFile("not-created", "x".repeat(8 * 1024 * 1024 + 1))) === "RangeError:ERR_OUT_OF_RANGE";
   // A buffer past the limit is refused by its length, before it is copied.
-  try { fs.writeFile("not-created", new Uint8Array(64 * 1024 * 1024)); write = false; } catch (e) { write = write && e instanceof RangeError && e.message.includes("67108864 bytes"); }
+  write = write && await refused(fs.writeFile("not-created", new Uint8Array(64 * 1024 * 1024))) === "RangeError:ERR_OUT_OF_RANGE";
   const bytes = await fs.readFile("above-native-text-limit");
   report(read && write && Object.getPrototypeOf(bytes) === Uint8Array.prototype && bytes.length === 16 * 1024 * 1024 + 1 ? "ok" : "bad");
 })().catch((e) => report(String(e)));
@@ -421,17 +428,18 @@ import fs from "fs/promises";
   // Writes hold their data from the call; nothing settles within one turn.
   const data = "x".repeat(8 * 1024 * 1024);
   const writes = [];
-  let refused = false;
-  try { for (let i = 0; i < 9; i++) writes.push(fs.writeFile("w" + i, data)); }
-  catch (e) { refused = e instanceof RangeError && e.message.includes("in flight"); }
-  await Promise.all(writes);
+  for (let i = 0; i < 9; i++) writes.push(fs.writeFile("w" + i, data));
+  const settled = await Promise.allSettled(writes);
+  const written = settled.filter((r) => r.status === "fulfilled").length;
+  const refused = settled.length === 9 && settled[8].status === "rejected"
+    && settled[8].reason.code === "ERR_NSH_QUOTA_EXCEEDED";
   // Both reads are under way at once: the second does not fit.
   const reads = (await Promise.allSettled([fs.readFile("first"), fs.readFile("second")]))
-    .map((r) => r.status === "fulfilled" ? r.value.length : r.reason.message);
-  const one = reads.includes(40 * 1024 * 1024) && reads.some((r) => String(r).includes("in flight"));
+    .map((r) => r.status === "fulfilled" ? r.value.length : r.reason.code);
+  const one = reads.includes(40 * 1024 * 1024) && reads.includes("ERR_NSH_QUOTA_EXCEEDED");
   // Settled data returns to the budget.
   const again = (await fs.readFile("second")).length === 40 * 1024 * 1024;
-  report(`${writes.length} ${refused} ${one} ${again}`);
+  report(`${written} ${refused} ${one} ${again}`);
 })().catch((e) => report(String(e)));
 "#,
         DATA_GRANT,
@@ -447,17 +455,13 @@ fn explicit_absolute_roots_work_without_an_app_data_directory() {
     let (_engine, rx) = start(
         r#"
 import fs from "fs/promises";
-try { fs.readdir("/home"); report("listed"); }
-catch (e) { report(`${e instanceof TypeError} ${e.message}`); }
+fs.readdir("/home").then(() => report("listed"), (e) => report(`${e.code} ${e.permission} ${e.resource}`));
 "#,
         "{}",
         None,
         Default::default(),
     );
-    assert_eq!(
-        shown(&rx, "done"),
-        "done true filesystem read is not granted by capabilities.fs.read"
-    );
+    assert_eq!(shown(&rx, "done"), "done ERR_ACCESS_DENIED fs /home");
     let dir = scratch("absolute").canonicalize().unwrap();
     let file = serde_json::to_string(&dir.join("plain")).unwrap();
     let grant = serde_json::json!({"fs": {"read": [dir], "write": [dir]}}).to_string();
@@ -534,7 +538,7 @@ import fs, {{ writeFile, readFile, exists }} from "fs/promises";
 (async () => {{
   let rejected = 0;
   for (const operation of [() => fs.writeFile({p}, "x"), () => writeFile({p}, "x"), () => fs.readFile({p}), () => readFile({p}), () => exists({p})]) {{
-    try {{ await operation(); }} catch (e) {{ if (e instanceof TypeError && e.message.includes("capabilities.fs")) rejected++; }}
+    try {{ await operation(); }} catch (e) {{ if (e.code === "ERR_ACCESS_DENIED" && e.permission === "fs" && e.resource === {p}) rejected++; }}
   }}
   report(rejected === 5 ? "ok" : `bad ${{rejected}}`);
 }})().catch((e) => report(String(e)));
@@ -611,11 +615,13 @@ fn files_are_unavailable_on_a_mobile_surface() {
     let entry = dir.join("App.tsx");
     std::fs::write(
         &entry,
-        r#"import { mount, Text } from "nsh";
+        r#"import { mount, signal, Text } from "nsh";
 import fs from "fs/promises";
-let shown = "";
-try { fs.readFile("x"); } catch (e) { shown = `done ${e instanceof TypeError} ${e.message}`; }
-mount(() => <Text>{shown}</Text>);
+const shown = signal("");
+let promise;
+try { promise = fs.readFile("x"); } catch { shown.set("done threw"); }
+promise?.then(() => "read", (e) => `done ${e.constructor.name} ${e.code}`).then((text) => shown.set(text));
+mount(() => <Text>{shown()}</Text>);
 "#,
     )
     .unwrap();
@@ -637,6 +643,7 @@ mount(() => <Text>{shown}</Text>);
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -661,7 +668,7 @@ mount(() => <Text>{shown}</Text>);
     let _engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     assert_eq!(
         shown(&rx, "done"),
-        "done true native filesystem unavailable on this platform"
+        "done Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"
     );
     let _ = std::fs::remove_dir_all(root);
     let _ = std::fs::remove_dir_all(dir);
@@ -678,8 +685,8 @@ fn failures_carry_node_s_codes() {
 import fs from "fs/promises";
 const failure = (p) => p.then(() => "none", (e) => `${e.constructor.name}:${e.code}:${e.syscall}:${e.path}`);
 (async () => {
-  let denied = "";
-  try { fs.readFile("/outside-every-root"); } catch (e) { denied = `${e.constructor.name}:${e.code}:${e.path}`; }
+  const denied = await fs.readFile("/outside-every-root")
+    .then(() => "none", (e) => `${e.constructor.name}:${e.code}:${e.permission}:${e.resource}`);
   const codes = [
     denied,
     await failure(fs.stat("nowhere")),
@@ -700,7 +707,7 @@ const failure = (p) => p.then(() => "none", (e) => `${e.constructor.name}:${e.co
     );
     assert_eq!(
         shown(&rx, "done"),
-        "done TypeError:EACCES:/outside-every-root\
+        "done Error:ERR_ACCESS_DENIED:fs:/outside-every-root\
          |Error:ENOENT:stat:nowhere\
          |Error:ENOENT:open:nowhere\
          |Error:EEXIST:mkdir:full\

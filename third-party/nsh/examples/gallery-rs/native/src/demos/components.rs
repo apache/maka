@@ -629,8 +629,8 @@ fn PlatformInfo() -> impl IntoElement {
         ("platform.os", os.name().into_reactive()),
         ("platform.version", version.into_reactive()),
         (
-            "platform.idiom / catalyst",
-            format!("{idiom_name} / {}", idiom == Idiom::Mac).into_reactive(),
+            "platform.idiom / desktop / catalyst",
+            format!("{idiom_name} / {} / {}", is_desktop(), is_catalyst()).into_reactive(),
         ),
         ("platform.select", branch.into_reactive()),
         (

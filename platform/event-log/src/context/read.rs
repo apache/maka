@@ -27,7 +27,7 @@ use maka_agent_facts::event::{Fact, RuntimeEvent, StoredEvent};
 use sqlx::{Connection, SqliteConnection};
 
 impl EventLog {
-    pub async fn check_manual_message_history(&self, session: &str) -> Result<bool, StoreError> {
+    pub async fn check_history(&self, session: &str) -> Result<bool, StoreError> {
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         let session = session.to_owned();
@@ -35,8 +35,7 @@ impl EventLog {
             .read_interruptible(move |connection| {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
-                    let pending =
-                        safety::require_manual_message_safe(&mut tx, &session, None).await?;
+                    let pending = safety::require_safe(&mut tx, &session, None).await?;
                     tx.commit().await?;
                     Ok(pending)
                 })
@@ -49,14 +48,7 @@ impl EventLog {
         session: &str,
         current: Option<&str>,
     ) -> Result<ContextView, StoreError> {
-        self.context_view(session, current, None, false).await
-    }
-    pub async fn read_manual_message_view(
-        &self,
-        session: &str,
-        current: &str,
-    ) -> Result<ContextView, StoreError> {
-        self.context_view(session, Some(current), None, true).await
+        self.context_view(session, current, None).await
     }
     pub async fn prepare_compaction_view(
         &self,
@@ -64,7 +56,7 @@ impl EventLog {
         current: Option<&str>,
         mode: &CheckpointMode,
     ) -> Result<ContextView, StoreError> {
-        self.context_view(session, current, Some(mode.clone()), false)
+        self.context_view(session, current, Some(mode.clone()))
             .await
     }
     async fn context_view(
@@ -72,7 +64,6 @@ impl EventLog {
         session: &str,
         current: Option<&str>,
         mode: Option<CheckpointMode>,
-        manual: bool,
     ) -> Result<ContextView, StoreError> {
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
@@ -83,27 +74,8 @@ impl EventLog {
                     let mut tx = connection.begin().await?;
                     let opening =
                         safety::current_opening(&mut tx, &session, current.as_deref()).await?;
-                    let prior_unknown = if manual {
-                        let Some((_, event)) = &opening else {
-                            return Err(invalid("manual message has no active opening"));
-                        };
-                        if !matches!(
-                            &event.fact,
-                            Fact::InvocationOpened {
-                                input: maka_agent_facts::input::InvocationInput::Message { .. },
-                                ..
-                            }
-                        ) {
-                            return Err(invalid(
-                                "manual message context requires a message opening",
-                            ));
-                        }
-                        safety::require_manual_message_safe(&mut tx, &session, current.as_deref())
-                            .await?
-                    } else {
+                    let prior_unknown =
                         safety::require_safe(&mut tx, &session, current.as_deref()).await?;
-                        false
-                    };
                     let selection = match &opening {
                         Some((_, event)) => Selection::for_opening(&mut tx, event).await?,
                         None => Selection::session(&session),
@@ -160,16 +132,6 @@ impl EventLog {
         max_bytes: usize,
     ) -> Result<ModelContextSource, StoreError> {
         let view = self.read_model_view(session, current).await?;
-        self.materialize_view(view, max_events, max_bytes).await
-    }
-    pub async fn capture_manual_message_context(
-        &self,
-        session: &str,
-        current: &str,
-        max_events: usize,
-        max_bytes: usize,
-    ) -> Result<ModelContextSource, StoreError> {
-        let view = self.read_manual_message_view(session, current).await?;
         self.materialize_view(view, max_events, max_bytes).await
     }
     pub async fn capture_compaction_context(
@@ -237,15 +199,34 @@ pub(super) async fn selected_view(
     before: u64,
     prior_unknown: bool,
 ) -> Result<ContextView, StoreError> {
-    let session = selection
-        .session
-        .as_deref()
-        .ok_or_else(|| invalid("context requires a Session"))?;
-    super::semantic::available(connection, session).await?;
     let captured: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
         .fetch_one(&mut *connection)
         .await?;
     let captured = crate::sequence_number(captured)?;
+    selected_view_at(
+        connection,
+        selection,
+        high_water,
+        before,
+        prior_unknown,
+        captured,
+    )
+    .await
+}
+
+pub(super) async fn selected_view_at(
+    connection: &mut SqliteConnection,
+    selection: &Selection,
+    high_water: u64,
+    before: u64,
+    prior_unknown: bool,
+    captured: u64,
+) -> Result<ContextView, StoreError> {
+    let session = selection
+        .session
+        .as_deref()
+        .ok_or_else(|| invalid("context requires a Session"))?;
+    super::semantic::available_at(connection, session, captured).await?;
     let before = before.min(captured.saturating_add(1));
     let (baseline, source_evidence) =
         latest_with_evidence(connection, selection, high_water).await?;
@@ -265,11 +246,6 @@ pub(super) async fn selected_view(
     let latest_main = latest_main::read_selected(connection, selection, high_water).await?;
     let effective_source_digest =
         crate::archive::digest_selected(connection, selection, &source_evidence, before).await?;
-    let (unknown_tools, unknown_tool_count) = if prior_unknown {
-        unknown_tools(connection, selection).await?
-    } else {
-        (Vec::new(), 0)
-    };
     Ok(ContextView {
         source_evidence,
         effective_source_digest,
@@ -278,26 +254,7 @@ pub(super) async fn selected_view(
         selection: semantic,
         has_new_history,
         prior_unknown,
-        unknown_tools,
-        unknown_tool_count,
     })
-}
-
-async fn unknown_tools(
-    connection: &mut SqliteConnection,
-    selection: &Selection,
-) -> Result<(Vec<(String, String)>, u64), StoreError> {
-    let predicate = Selection::predicate("d", "?2");
-    let from=format!("FROM context_obligations o JOIN runtime_events d ON d.sequence=o.opened_at AND d.kind='tool_dispatched'
-        WHERE o.session_id=?1 AND o.kind='tool' AND o.sealed_unknown=1 AND {predicate}");
-    let count: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) {from}")))
-        .bind(&selection.session)
-        .bind(&selection.lineage)
-        .fetch_one(&mut *connection)
-        .await?;
-    let rows=sqlx::query_as(sqlx::AssertSqlSafe(format!("SELECT json_extract(d.event_json,'$.fact.name'),o.operation_id {from} ORDER BY o.opened_at LIMIT 64")))
-        .bind(&selection.session).bind(&selection.lineage).fetch_all(connection).await?;
-    Ok((rows, crate::sequence_number(count)?))
 }
 
 pub(super) async fn materialize_selected(
@@ -373,19 +330,19 @@ pub(crate) async fn latest_record(
     let eligible = format!(
         "c.kind='context_checkpoint_recorded' AND c.sequence <= ?1 AND {filter}
          AND NOT EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=c.invocation_id
-           AND r.kind='model_requested' AND r.operation_id=json_extract(c.event_json,'$.fact.checkpoint.summary_step_id')
-           AND json_extract(r.event_json,'$.fact.source_scope.kind')='lineage'
+           AND r.kind='model_requested' AND r.operation_id=json_extract(c.event_header,'$.fact.checkpoint.summary_step_id')
+           AND json_extract(r.event_header,'$.fact.source_scope.kind')='lineage'
            AND (?3 IS NULL OR NOT {contains}))"
     );
     // Limit each indexed branch before combining: a wide UNION view would sort
     // every old body even when the newest native checkpoint is already known.
     let row: Option<(i64, String)> = sqlx::query_as(sqlx::AssertSqlSafe(format!(
         "SELECT * FROM (
-           SELECT c.sequence,c.event_json FROM runtime_events c
-           WHERE json_extract(c.event_json,'$.invocation.session_id')=?2 AND {eligible}
+           SELECT c.sequence,c.event_header FROM runtime_events c
+           WHERE json_extract(c.event_header,'$.invocation.session_id')=?2 AND {eligible}
            ORDER BY c.sequence DESC LIMIT 1)
          UNION ALL SELECT * FROM (
-           SELECT c.sequence,c.event_json FROM session_history_members h
+           SELECT c.sequence,c.event_header FROM session_history_members h
            JOIN runtime_events c ON c.sequence=h.sequence
            WHERE h.session_id=?2 AND {eligible} ORDER BY h.sequence DESC LIMIT 1)
          ORDER BY sequence DESC LIMIT 1"

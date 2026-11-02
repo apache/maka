@@ -1,7 +1,7 @@
 //! Owned browser value handles. A slot ID includes its generation; it is
 //! meaningful only to this Wasm instance's browser host.
 use nsh_core::{
-    element::PropError,
+    element::{JsPrimitive, PropError},
     js::host::{HostInput, HostList},
 };
 
@@ -110,11 +110,50 @@ impl Value {
         Self::checked(invoke(8, self.0, i as u32, 0, 0.0))
     }
     pub(super) fn keys(&self) -> Result<Vec<String>, PropError> {
+        let joined = Self::checked(invoke(50, self.0, 0, 0, 0.0))?;
+        if let Some(joined) = joined.as_string() {
+            if joined.is_empty() {
+                return Ok(Vec::new());
+            }
+            return Ok(joined.split('\0').map(str::to_owned).collect());
+        }
         let keys = Self::checked(invoke(10, self.0, 0, 0, 0.0))?;
         let n = keys.length()?.unwrap_or(0);
         (0..n)
             .map(|i| keys.index(i).map(|v| v.as_string().unwrap_or_default()))
             .collect()
+    }
+    /// The items of the array this is (`entries`: the fields of the object
+    /// this is, with their keys) as primitives, read in one call: the host
+    /// packs them (see `values.js` op 49), retried once with the room it
+    /// asks for. `None`: not an array.
+    pub(super) fn primitives(
+        &self,
+        entries: bool,
+    ) -> Result<Option<Vec<(String, JsPrimitive)>>, PropError> {
+        let mut packed: Vec<u8> = Vec::with_capacity(512);
+        let n = loop {
+            let n = invoke(
+                49,
+                self.0,
+                packed.as_mut_ptr() as u32,
+                packed.capacity() as u32,
+                f64::from(u8::from(entries)),
+            );
+            if n.is_nan() {
+                return Ok(None);
+            }
+            if n == EXCEPTION as f64 {
+                return Self::checked(n).map(|_| None);
+            }
+            if n >= 0.0 {
+                break n as usize;
+            }
+            packed.reserve_exact(-n as usize);
+        };
+        // SAFETY: the host wrote `n` bytes, at most the capacity it was given.
+        unsafe { packed.set_len(n) };
+        Ok(Some(unpack(&packed, entries)))
     }
     pub(super) fn call(&self, this: &Self, args: &Self) -> Result<Self, PropError> {
         Self::checked(invoke(26, self.0, this.0, args.0, 0.0))
@@ -152,20 +191,33 @@ impl HostInput for Value {
         if self.kind() != 4 {
             return None;
         }
-        let length = invoke(3, self.0, 0, 0, 0.0);
-        if length.is_nan() || length == EXCEPTION as f64 {
+        let units = invoke(3, self.0, 0, 0, 0.0);
+        if units.is_nan() || units == EXCEPTION as f64 {
             return None;
         }
-        let n = length as usize;
-        let mut bytes = vec![0; n];
-        invoke(
-            4,
-            self.0,
-            bytes.as_mut_ptr() as u32,
-            bytes.len() as u32,
-            0.0,
-        );
-        String::from_utf8(bytes).ok()
+        // One call encodes the string into the buffer: most text takes a
+        // byte per UTF-16 unit, and none takes more than three.
+        let units = units as usize;
+        let mut bytes: Vec<u8> = Vec::with_capacity(units);
+        loop {
+            let written = invoke(
+                4,
+                self.0,
+                bytes.as_mut_ptr() as u32,
+                bytes.capacity() as u32,
+                0.0,
+            );
+            if written >= 0.0 && written != EXCEPTION as f64 {
+                // SAFETY: the host wrote `written` bytes (at most the
+                // capacity it was given) into the buffer.
+                unsafe { bytes.set_len(written as usize) };
+                return String::from_utf8(bytes).ok();
+            }
+            if written != -1.0 || bytes.capacity() >= units * 3 {
+                return None;
+            }
+            bytes.reserve_exact(units * 3);
+        }
     }
     fn field(&self, key: &str) -> Option<Self> {
         self.get(key).ok()
@@ -206,4 +258,51 @@ impl HostList for Value {
     fn item(&self, index: usize) -> Option<Self> {
         self.index(index).ok()
     }
+}
+
+/// What op 49 packed: a little-endian u32 count, then per value (after its
+/// key, for entries) a tag (0 other, 1 false, 2 true, 3 number, 4 string,
+/// 5 date) and its payload (f64; a u32 length and UTF-8).
+fn unpack(packed: &[u8], entries: bool) -> Vec<(String, JsPrimitive)> {
+    let mut at = 0;
+    let u32_at = |at: &mut usize| {
+        let n = u32::from_le_bytes(packed[*at..*at + 4].try_into().unwrap_or_default());
+        *at += 4;
+        n as usize
+    };
+    let count = u32_at(&mut at);
+    let text = |at: &mut usize, len: usize| {
+        let s = String::from_utf8_lossy(&packed[*at..*at + len]).into_owned();
+        *at += len;
+        s
+    };
+    let float = |at: &mut usize| {
+        let n = f64::from_le_bytes(packed[*at..*at + 8].try_into().unwrap_or_default());
+        *at += 8;
+        n
+    };
+    let mut out = Vec::with_capacity(count);
+    for _ in 0..count {
+        let key = if entries {
+            let len = u32_at(&mut at);
+            text(&mut at, len)
+        } else {
+            String::new()
+        };
+        let tag = packed[at];
+        at += 1;
+        let value = match tag {
+            1 => JsPrimitive::Bool(false),
+            2 => JsPrimitive::Bool(true),
+            3 => JsPrimitive::Number(float(&mut at)),
+            4 => {
+                let len = u32_at(&mut at);
+                JsPrimitive::String(text(&mut at, len))
+            }
+            5 => JsPrimitive::Date(float(&mut at)),
+            _ => JsPrimitive::Other,
+        };
+        out.push((key, value));
+    }
+    out
 }

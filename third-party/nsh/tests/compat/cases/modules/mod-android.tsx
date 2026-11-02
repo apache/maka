@@ -15,7 +15,7 @@ function App() {
       <View
         testID="call"
         onPress={() => {
-          const remove = BackHandler.onBackPress(() => true);
+          const remove = BackHandler.on("press", () => true);
           remove();
           calls.set(`done, remove ${typeof remove}`);
         }}

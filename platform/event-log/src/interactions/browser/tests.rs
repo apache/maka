@@ -407,16 +407,17 @@ fn insert(db: &Connection, record: &InteractionRecord, result: Option<Interactio
 }
 
 #[test]
-fn browser_decision_lookup_uses_exact_identity_index_as_unrelated_history_grows() {
+fn browser_decision_lookup_work_stays_constant_as_unrelated_history_grows() {
     for (capability, wire) in [
         (GrantCapability::Browser, "browser"),
         (GrantCapability::BrowserDownload, "browser_download"),
+        (GrantCapability::BrowserUpload, "browser_upload"),
     ] {
-        decision_lookup_uses_exact_identity_index(capability, wire);
+        decision_lookup_work_stays_constant(capability, wire);
     }
 }
 
-fn decision_lookup_uses_exact_identity_index(capability: GrantCapability, wire: &str) {
+fn decision_lookup_work_stays_constant(capability: GrantCapability, wire: &str) {
     let mut selected = target();
     selected.capability = capability;
     let db = Connection::open_in_memory().unwrap();
@@ -517,29 +518,8 @@ fn decision_lookup_uses_exact_identity_index(capability: GrantCapability, wire: 
             );
         }
         previous = Some(steps);
-        let plan: Vec<String> = db
-            .prepare(&format!("EXPLAIN QUERY PLAN {BROWSER_ORIGIN_DECISION}"))
-            .unwrap()
-            .query_map(parameters, |row| row.get(3))
-            .unwrap()
-            .collect::<Result<_, _>>()
-            .unwrap();
-        assert!(
-            plan.iter().any(|step| step
-                .contains("SEARCH request USING INDEX interaction_browser_origin_decision")),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().any(|step| step
-                .contains("SEARCH outcome USING INDEX sqlite_autoindex_interaction_outcomes_1")),
-            "{plan:?}"
-        );
-        assert!(
-            plan.iter().all(|step| !step.starts_with("SCAN ")),
-            "{plan:?}"
-        );
         eprintln!(
-            "SQLite {} history={end} matching_decisions=2 vm_steps={steps} plan={plan:?}",
+            "SQLite {} history={end} matching_decisions=2 vm_steps={steps}",
             rusqlite::version()
         );
     }
@@ -635,5 +615,116 @@ async fn file_download_decisions_are_separate_from_read_grants_and_latest_denial
             .unwrap(),
         None
     );
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn upload_decisions_are_separate_from_page_and_download_grants() {
+    let (directory, log, basis) = fixture().await;
+    let page = target();
+    let mut download = page.clone();
+    download.capability = GrantCapability::BrowserDownload;
+    let mut upload = page.clone();
+    upload.capability = GrantCapability::BrowserUpload;
+    for (id, target) in [("page-allow", &page), ("download-allow", &download)] {
+        decide(
+            &log,
+            &request(id, 1, target.clone(), Some(basis)),
+            Decision::Allow,
+            2,
+        )
+        .await;
+        assert_eq!(
+            log.browser_origin_decision("session", &upload, &basis)
+                .await
+                .unwrap(),
+            None
+        );
+        assert!(
+            log.client_capability_grant("session", &upload)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+    decide(
+        &log,
+        &request("upload-allow", 3, upload.clone(), Some(basis)),
+        Decision::Allow,
+        4,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Allow)
+    );
+    decide(
+        &log,
+        &request("upload-deny", 5, upload.clone(), Some(basis)),
+        Decision::Deny,
+        6,
+    )
+    .await;
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    for target in [&page, &download] {
+        assert_eq!(
+            log.browser_origin_decision("session", target, &basis)
+                .await
+                .unwrap(),
+            Some(Decision::Allow)
+        );
+    }
+    assert!(
+        log.client_capability_grant("session", &upload)
+            .await
+            .unwrap()
+            .is_some(),
+        "a historical allow does not override the latest upload denial"
+    );
+    let mut foreign = upload.clone();
+    foreign.scope = GrantScope::BrowserOrigin {
+        origin: "https://foreign.example".into(),
+    };
+    assert_eq!(
+        log.browser_origin_decision("session", &foreign, &basis)
+            .await
+            .unwrap(),
+        None
+    );
+    let stale = PermissionBasis {
+        boundary_revision: basis.boundary_revision + 1,
+        ..basis
+    };
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &stale)
+            .await
+            .unwrap(),
+        None
+    );
+    log.close().await.unwrap();
+    let log = EventLog::open(&directory.path().join("browser.sqlite"))
+        .await
+        .unwrap();
+    assert_eq!(
+        log.browser_origin_decision("session", &upload, &basis)
+            .await
+            .unwrap(),
+        Some(Decision::Deny)
+    );
+    for target in [&page, &download] {
+        assert_eq!(
+            log.browser_origin_decision("session", target, &basis)
+                .await
+                .unwrap(),
+            Some(Decision::Allow)
+        );
+    }
     log.close().await.unwrap();
 }

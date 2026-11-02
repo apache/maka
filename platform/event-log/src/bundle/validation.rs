@@ -106,7 +106,7 @@ async fn replay(
             .install(staged, original, sequence - 1, positions)
             .await?;
         let json = match positions {
-            Some(positions) => positions.json(original, sequence, json).await?,
+            Some(positions) => positions.json(original, json).await?,
             None => json,
         };
         let event: RuntimeEvent = serde_json::from_str(&json)?;
@@ -171,7 +171,7 @@ async fn replay(
     let mixed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events GROUP BY invocation_id
            HAVING SUM(kind='message_imported')>0 AND COUNT(*)>1)
-         OR EXISTS(SELECT 1 FROM runtime_events GROUP BY event_session,json_extract(event_json,'$.invocation.run_id')
+         OR EXISTS(SELECT 1 FROM runtime_events GROUP BY event_session,json_extract(event_header,'$.invocation.run_id')
            HAVING COUNT(DISTINCT invocation_id)>1)",
     )
     .fetch_one(&mut *original)
@@ -182,7 +182,7 @@ async fn replay(
     let mut after = 0i64;
     loop {
         let row: Option<(i64,String)> = sqlx::query_as(
-            "SELECT sequence,event_json FROM runtime_events WHERE kind='context_checkpoint_recorded' AND sequence>? ORDER BY sequence LIMIT 1"
+            "SELECT sequence,event_header FROM runtime_events WHERE kind='context_checkpoint_recorded' AND sequence>? ORDER BY sequence LIMIT 1"
         ).bind(after).fetch_optional(&mut *original).await?;
         let Some((sequence, json)) = row else {
             break;
@@ -208,6 +208,7 @@ async fn request(
     let Fact::ModelRequested {
         source_scope,
         source_high_water,
+        source_capture,
         source_digest,
         checkpoint_event_id,
         effective_source_digest,
@@ -221,7 +222,10 @@ async fn request(
     if *purpose == ModelPurpose::Main {
         context::safety::model_source_unchanged(db, &selection, event).await?;
     }
-    if *source_high_water >= sequence || *source_scope != selection.scope {
+    if source_capture.publication_watermark >= sequence
+        || *source_high_water > source_capture.publication_watermark
+        || *source_scope != selection.scope
+    {
         return Err(invalid(
             "request source is not its preceding selected history",
         ));
@@ -237,7 +241,13 @@ async fn request(
     let effective = effective_source_digest
         .as_deref()
         .ok_or_else(|| invalid("request lacks effective source evidence"))?;
-    crate::archive::validate_summary(db, &source, effective, sequence).await
+    crate::archive::validate_summary(
+        db,
+        &source,
+        effective,
+        source_capture.publication_watermark + 1,
+    )
+    .await
 }
 
 fn invalid(message: &str) -> StoreError {

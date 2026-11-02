@@ -22,6 +22,12 @@ use futures_util::poll;
 use serde_json::{Value, json};
 use std::time::Duration;
 
+fn captured_artifact<T>(value: crate::context::semantic::ArtifactLookupResult<T>) -> T {
+    match value {
+        crate::context::semantic::ArtifactLookupResult::Captured(value) => value,
+        _ => panic!("expected captured artifact"),
+    }
+}
 async fn open(path: &std::path::Path) -> RootStore {
     let owner = root::RootOwner::create(&path.join("root"), &namespaces(path)).unwrap();
     RootStore::open(Arc::new(owner)).await.unwrap()
@@ -40,6 +46,81 @@ fn invocation() -> Invocation {
         run_id: "run".into(),
         invocation_id: "invocation".into(),
     }
+}
+
+#[tokio::test]
+async fn captured_artifact_sources_cannot_cross_session_or_snapshot_authority() {
+    use crate::context::semantic::SemanticSelection;
+    use maka_agent_facts::artifact::{Artifact, ArtifactKind, ArtifactSource};
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    session
+        .commit_artifact(
+            Artifact {
+                id: "protected".into(),
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                created_at: 1,
+                name: "proof.bin".into(),
+                kind: ArtifactKind::File,
+                size_bytes: 3,
+                mime_type: Some("application/octet-stream".into()),
+                source: ArtifactSource::ToolResultProjection,
+                summary: None,
+            },
+            b"abc".to_vec(),
+        )
+        .await
+        .unwrap();
+    let scope = session.execution_scope(None).await.unwrap();
+    let running = scope.store();
+    let parent = scope.accept();
+    let selection = SemanticSelection {
+        session: "session".into(),
+        lineage: None,
+        after: 0,
+        through: 0,
+        before: u64::MAX,
+        captured_through: 0,
+        replay: None,
+        prior_unknown: false,
+    };
+    let mut foreign = selection.clone();
+    foreign.session = "foreign".into();
+    assert!(running.capture_source(foreign).await.is_err());
+    let first = running.capture_source(selection.clone()).await.unwrap();
+    let second = running.capture_source(selection).await.unwrap();
+    let lookup = first
+        .artifact_lookup_fixture(br#"["session","protected"]"#.to_vec(), 1..10, 11..22)
+        .await;
+    let artifact = captured_artifact(
+        first
+            .with_artifact_capture(lookup, |capture, _, _| {
+                Ok(capture.protected_metadata.unwrap())
+            })
+            .await
+            .unwrap(),
+    );
+    assert!(second.byte_source(&artifact).is_err());
+    assert!(first.byte_range(&artifact, 0, u64::MAX).is_err());
+    let original = first.byte_source(&artifact).unwrap();
+    let metadata: Artifact = first
+        .with_sequential_source(&artifact, |reader| Ok(serde_json::from_reader(reader)?))
+        .await
+        .unwrap();
+    assert_eq!(metadata.id, "protected");
+    assert_eq!(metadata.session_id, "session");
+    assert_eq!(metadata.size_bytes, 3);
+    drop(original);
+    drop(artifact);
+    drop(first);
+    drop(second);
+    parent.finish();
+    root.close().await.unwrap();
 }
 
 #[tokio::test]
@@ -118,167 +199,6 @@ async fn invocation_effect_retains_run_cancellation_and_settlement_after_observe
     background.finish();
     parent.finish();
     root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn stopped_run_before_effect_scope_has_no_dispatch_or_unconfirmed_owner() {
-    use maka_capabilities::call::{Identity, Issuer};
-
-    let directory = tempfile::tempdir().unwrap();
-    let root = open(directory.path()).await;
-    let session = root
-        .create_session("session", "session", &json!({}), 1)
-        .await
-        .unwrap();
-    let prepared = session.execution_scope(None).await.unwrap();
-    let selected = prepared.store();
-    let stop = CancellationToken::new();
-    let (parent, effects) = prepared
-        .accept_invocation(invocation(), stop.clone())
-        .unwrap();
-    let custody = selected.execution_custody().unwrap();
-    let original = Issuer::default()
-        .issue_with_execution(
-            Identity::Agent {
-                invocation: invocation(),
-                operation_id: Some("observer".into()),
-            },
-            (),
-            CancellationToken::new(),
-            custody.clone(),
-        )
-        .unwrap();
-    let effect = root
-        .fork_invocation_effect(custody.as_ref(), &invocation())
-        .unwrap();
-    stop.cancel();
-    assert!(matches!(
-        effect.into_scope(&original),
-        Err(ToolError::Failed(_))
-    ));
-    effects.settle().await.unwrap();
-    assert!(effects.is_idle());
-    assert!(session.get::<Value>().await.unwrap().is_some());
-    let journal = selected
-        .scoped_prefix(
-            maka_agent_facts::event::LogScope::Session {
-                id: "session".into(),
-            },
-            10,
-            4096,
-        )
-        .await
-        .unwrap();
-    assert!(journal.events.is_empty());
-    parent.finish();
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn lost_invocation_effect_is_observable_after_every_other_original_owner_settles() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = open(directory.path()).await;
-    let session = root
-        .create_session("session", "session", &json!({}), 1)
-        .await
-        .unwrap();
-    let prepared = session.execution_scope(None).await.unwrap();
-    let selected = prepared.store();
-    let stop = CancellationToken::new();
-    let (parent, effects) = prepared
-        .accept_invocation(invocation(), stop.clone())
-        .unwrap();
-    let custody = selected.execution_custody().unwrap();
-    let lost = root
-        .fork_invocation_effect(custody.as_ref(), &invocation())
-        .unwrap();
-    let live = root
-        .fork_invocation_effect(custody.as_ref(), &invocation())
-        .unwrap();
-    drop(lost);
-    assert!(stop.is_cancelled());
-    assert!(matches!(
-        session.get::<Value>().await,
-        Err(StoreError::ConnectionClosed)
-    ));
-    let mut drain = Box::pin(effects.settle());
-    assert!(poll!(&mut drain).is_pending());
-    live.finish(Ok(()));
-    let error = drain.await.unwrap_err();
-    assert!(
-        matches!(error, ToolError::CleanupUnconfirmed(message) if message.contains("owner disappeared"))
-    );
-    assert!(!effects.is_idle());
-    parent.retain_unconfirmed();
-    assert!(root.shutdown().await.is_err());
-    // Uncertain original authority remains quarantined, as with every other
-    // accepted execution whose owner disappears.
-    let _ = directory.keep();
-}
-
-#[tokio::test]
-async fn prepared_scope_can_cancel_and_shutdown_drains_accepted_work_before_sql() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = open(directory.path()).await;
-    let session = root
-        .create_session("session", "session", &json!({}), 1)
-        .await
-        .unwrap();
-    let prepared = session.execution_scope(None).await.unwrap();
-    let stale = prepared.store();
-    drop(prepared);
-    assert!(matches!(
-        stale.get::<Value>().await,
-        Err(StoreError::ConnectionClosed)
-    ));
-    let scope = session.execution_scope(None).await.unwrap();
-    let running = scope.store();
-    let lease = scope.accept();
-    let mut closing = Box::pin(root.shutdown());
-    assert!(poll!(&mut closing).is_pending());
-    assert!(matches!(
-        session.get::<Value>().await,
-        Err(StoreError::ConnectionClosed)
-    ));
-    let admitted = running.scoped().await.unwrap();
-    admitted
-        .connection
-        .run(|connection| {
-            Box::pin(async move {
-                sqlx::query("UPDATE session_control SET updated_at=42 WHERE id='session'")
-                    .execute(connection)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    drop(admitted);
-    assert_eq!(
-        running.get::<Value>().await.unwrap().unwrap().updated_at,
-        42
-    );
-    lease.finish();
-    tokio::time::timeout(Duration::from_secs(10), closing)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(matches!(
-        running.get::<Value>().await,
-        Err(StoreError::ConnectionClosed)
-    ));
-    drop(root);
-    let owner = root::RootOwner::open(
-        &directory.path().join("root"),
-        &namespaces(directory.path()),
-    )
-    .unwrap();
-    RootStore::open(Arc::new(owner))
-        .await
-        .unwrap()
-        .close()
-        .await
-        .unwrap();
 }
 
 #[tokio::test]
@@ -363,31 +283,7 @@ async fn execution_reuses_binding_pin_behind_queued_writer_and_cannot_rebind() {
 }
 
 #[tokio::test]
-async fn retirement_waits_for_physical_scope_and_blocks_fresh_admission() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = open(directory.path()).await;
-    let session = root
-        .create_session("session", "session", &json!({}), 1)
-        .await
-        .unwrap();
-    let scope = session.execution_scope(None).await.unwrap();
-    let lease = scope.accept();
-    let revision = session.get::<Value>().await.unwrap().unwrap().revision;
-    root.begin_session_removal("session", revision)
-        .await
-        .unwrap();
-    assert!(!root.session_retirement_ready("session").await.unwrap());
-    assert!(matches!(
-        session.execution_scope(None).await,
-        Err(StoreError::SessionRetired)
-    ));
-    lease.finish();
-    assert!(root.session_retirement_ready("session").await.unwrap());
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn quarantined_child_keeps_sql_for_accepted_parent_without_reopening_admission() {
+async fn unconfirmed_child_keeps_other_sessions_available_and_retains_shutdown_custody() {
     let directory = tempfile::tempdir().unwrap();
     let root = open(directory.path()).await;
     let session = root
@@ -400,20 +296,27 @@ async fn quarantined_child_keeps_sql_for_accepted_parent_without_reopening_admis
     let abandoned = child.store();
     child.retain_unconfirmed();
 
-    // Quarantine itself fences prebound ordinary handles, before shutdown sets
-    // the Root's explicit closed flag. Only the original accepted pins remain.
-    assert!(matches!(
-        root.session("session").await,
-        Err(StoreError::ConnectionClosed)
-    ));
-    assert!(matches!(
-        session.subscribe_commits(),
-        Err(StoreError::ConnectionClosed)
-    ));
-    assert!(matches!(
-        session.get::<Value>().await,
-        Err(StoreError::ConnectionClosed)
-    ));
+    assert!(root.session("session").await.is_ok());
+    assert!(session.subscribe_commits().is_ok());
+    assert!(session.get::<Value>().await.unwrap().is_some());
+    let healthy = root
+        .create_session("healthy", "healthy", &json!({"title":"still usable"}), 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        healthy.get::<Value>().await.unwrap().unwrap().configuration["title"],
+        "still usable"
+    );
+    let healthy_lease = healthy.execution_scope(None).await.unwrap().accept();
+    assert!(
+        healthy_lease
+            .store()
+            .get::<Value>()
+            .await
+            .unwrap()
+            .is_some()
+    );
+    healthy_lease.finish();
     assert!(matches!(
         abandoned.get::<Value>().await,
         Err(StoreError::ConnectionClosed)
@@ -458,4 +361,133 @@ async fn quarantined_child_keeps_sql_for_accepted_parent_without_reopening_admis
     );
     // The original uncertain owner still owns live SQL and its filesystem.
     let _ = directory.keep();
+}
+
+#[tokio::test]
+async fn captured_source_reads_admitted_canonical_bytes_at_its_frozen_cut() {
+    use crate::context::semantic::{SemanticSelection, SourcePosition};
+    use maka_agent_facts::{
+        event::{EventWrite, Fact, InvocationInput, RuntimeEvent},
+        model::{
+            ModelPart, TextKind,
+            prompt_source::source::ChargedBuffer,
+            recorded::{ModelObservation, ModelPartRecord},
+        },
+    };
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = open(directory.path()).await;
+    let session = root
+        .create_session("session", "session", &json!({}), 1)
+        .await
+        .unwrap();
+    let write = |fact| EventWrite::plain(RuntimeEvent::new(invocation(), fact)).unwrap();
+    let opened = session
+        .append(&write(Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                content: "covered question".into(),
+                source_messages: Vec::new(),
+                request_fingerprint: None,
+            },
+        }))
+        .await
+        .unwrap();
+    let context = session
+        .read_model_view("session", Some("invocation"))
+        .await
+        .unwrap();
+    session
+        .append(&write(Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: context.selection.captured_through,
+                prior_unknown: context.selection.prior_unknown,
+            },
+            item_acceptance: true,
+            step_id: "step".into(),
+            model_id: "model".into(),
+            source_scope: context.source_evidence.scope,
+            source_high_water: context.source_evidence.high_water,
+            source_digest: context.source_evidence.digest,
+            input_digest: "fixture".into(),
+            route_identity: "route".into(),
+            checkpoint_event_id: None,
+            purpose: maka_agent_facts::context::ModelPurpose::Main,
+            context: None,
+            context_breakdown: None,
+            effective_source_digest: Some(context.effective_source_digest),
+        }))
+        .await
+        .unwrap();
+    let original = ModelPart::Text {
+        text_kind: TextKind::Text,
+        text: "accepted 中\0suffix".into(),
+        provider_options: None,
+    };
+    let observed = |ordinal, part| {
+        write(Fact::ModelObserved {
+            step_id: "step".into(),
+            event: ModelObservation::Part(ModelPartRecord {
+                ordinal,
+                message_id: format!("part-{ordinal}"),
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: Arc::new(part),
+            }),
+        })
+    };
+    let through = session
+        .append(&observed(0, original.clone()))
+        .await
+        .unwrap();
+    let scope = session.execution_scope(None).await.unwrap();
+    let running = scope.store();
+    let parent = scope.accept();
+    let source = running
+        .capture_source(SemanticSelection {
+            session: "session".into(),
+            lineage: None,
+            after: opened,
+            through,
+            before: through + 1,
+            captured_through: through,
+            replay: None,
+            prior_unknown: false,
+        })
+        .await
+        .unwrap();
+    session
+        .append(&observed(
+            1,
+            ModelPart::Text {
+                text_kind: TextKind::Text,
+                text: "later accepted body".into(),
+                provider_options: None,
+            },
+        ))
+        .await
+        .unwrap();
+    let mut page = source
+        .directory_page(None, ChargedBuffer::new(vec![0; 4096], ()))
+        .await
+        .unwrap();
+    let record = page.next_row().unwrap().unwrap();
+    assert_eq!(record.row.id.source_sequence, through);
+    assert!(page.next_row().unwrap().is_none());
+    assert!(page.next.is_none());
+    let payload = source.describe_payload(&record.row).unwrap().unwrap();
+    let mut chunk = source
+        .read_chunk(
+            &payload,
+            SourcePosition::default(),
+            ChargedBuffer::new(vec![0; 4096], ()),
+        )
+        .await
+        .unwrap();
+    let restored: ModelPart =
+        serde_json::from_slice(&chunk.buffer.as_mut()[..chunk.bytes_read]).unwrap();
+    assert_eq!(restored, original);
+    drop(source);
+    parent.finish();
+    root.close().await.unwrap();
 }

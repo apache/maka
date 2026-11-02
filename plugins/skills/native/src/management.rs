@@ -18,509 +18,525 @@
  */
 
 use super::*;
-use cap_fs_ext::DirExt;
-use maka_event_log::root::RootOwner;
-use maka_skills::publication::{
-    self, Publisher, Tree,
-    receipt::{Destination, Operation, Outcome},
-};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::Dir;
+use maka_capabilities::filesystem::entries::{self, Operation};
+use maka_event_log::root::{FileLease, RootOwner};
+use maka_skills::LocationId;
+use std::{io, path::Path};
 use tokio_util::sync::CancellationToken;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) enum Collection {
-    Installed,
-    Imported,
-}
-impl Collection {
-    fn prefix(self) -> &'static str {
-        match self {
-            Self::Installed => "installed:",
-            Self::Imported => "imported:",
-        }
-    }
-    fn destination(self, id: &str) -> Destination {
-        match self {
-            Self::Installed => Destination::Skill {
-                reference: format!("installed:{id}"),
-            },
-            Self::Imported => Destination::Source { id: id.into() },
-        }
-    }
-}
 pub(super) struct Managed {
     root: Arc<RootOwner>,
-    data: cap_std::fs::Dir,
-    pub read: ReadRoot,
-    imported: cap_std::fs::Dir,
-    pub imported_read: ReadRoot,
-    pub serial: tokio::sync::Mutex<()>,
+    pub registrations: registrations::Registrations,
 }
 impl Managed {
-    pub fn execution_basis(&self) -> Option<Value> {
-        // These read roots are clones of the actual publication handles.
-        serde_json::to_value((
-            self.root.root_id(),
-            self.read.execution_basis().ok()?,
-            self.imported_read.execution_basis().ok()?,
-        ))
-        .ok()
-    }
-    pub async fn open(root: Arc<RootOwner>, namespace: String) -> Result<Arc<Self>, String> {
-        let (managed, publisher, imported_publisher) = tokio::task::spawn_blocking(move || {
-            root.validate_current().map_err(store_error)?;
-            let directory = cap_std::fs::Dir::open_ambient_dir(
-                root.canonical_path(),
-                cap_std::ambient_authority(),
-            )
-            .map_err(store_error)?;
-            root.validate_directory_handle(
-                &directory.try_clone().map_err(store_error)?.into_std_file(),
-            )
-            .map_err(store_error)?;
-            let parent = child(&directory, "skill-libraries").map_err(store_error)?;
-            let data = child(&parent, &namespace).map_err(store_error)?;
-            let publisher =
-                Publisher::open(&data, &CancellationToken::new()).map_err(store_error)?;
-            let read = ReadRoot::from_handle(
-                data.try_clone().map_err(store_error)?,
-                root.canonical_path()
-                    .join("skill-libraries")
-                    .join(&namespace),
-            )
-            .select(BTreeSet::from(["skills/".into()]))
-            .map_err(store_error)?;
-            let imported = child(&data, "imported").map_err(store_error)?;
-            let imported_publisher =
-                Publisher::open(&imported, &CancellationToken::new()).map_err(store_error)?;
-            let imported_read = ReadRoot::from_handle(
-                imported.try_clone().map_err(store_error)?,
-                root.canonical_path()
-                    .join("skill-libraries")
-                    .join(&namespace)
-                    .join("imported"),
-            )
-            .select(BTreeSet::from(["skills/".into()]))
-            .map_err(store_error)?;
-            Ok::<_, String>((
-                Arc::new(Self {
-                    root,
-                    data,
-                    read,
-                    imported,
-                    imported_read,
-                    serial: Default::default(),
-                }),
-                publisher,
-                imported_publisher,
-            ))
+    pub fn open(root: Arc<RootOwner>, log: Arc<maka_event_log::RootStore>) -> Arc<Self> {
+        Arc::new(Self {
+            root,
+            registrations: registrations::Registrations::new(log),
         })
-        .await
-        .map_err(store_error)??;
-        publisher.recover().await.map_err(store_error)?;
-        imported_publisher.recover().await.map_err(store_error)?;
-        Ok(managed)
     }
-    pub async fn publisher(
-        self: &Arc<Self>,
+    pub fn execution_basis(&self) -> Option<Value> {
+        serde_json::to_value(self.root.root_id()).ok()
+    }
+    async fn route(&self) -> Result<maka_network::Policy, String> {
+        let store = maka_config::ConfigurationStore::for_root(self.root.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        let configuration = store.network_configuration().await;
+        let closed = store.close().await;
+        let configuration = configuration.map_err(|error| error.to_string())?;
+        closed.map_err(|error| error.to_string())?;
+        maka_network::Policy::from_host_settings(
+            &configuration.proxy,
+            configuration.password.as_deref(),
+        )
+        .map_err(|error| error.to_string())
+    }
+    fn lock(&self) -> Result<FileLease, String> {
+        self.root
+            .validate_current()
+            .map_err(|error| error.to_string())?;
+        FileLease::acquire(&self.root.canonical_path().join("skills-management.lock"))
+            .map_err(|error| format!("Cannot acquire skill management lock: {error}"))
+    }
+}
+
+fn child(parent: &Dir, name: &str) -> Result<Dir, String> {
+    match parent.create_dir(name) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error.to_string()),
+    }
+    parent
+        .open_dir_nofollow(name)
+        .map_err(|error| error.to_string())
+}
+fn rename(root: &Dir, from: String, to: String) -> Result<(), String> {
+    entries::execute(
+        root,
+        Operation::Rename { from, to },
+        &CancellationToken::new(),
+        None,
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+struct Stage {
+    parent: Dir,
+    name: String,
+    directory: Dir,
+    preserve: std::cell::Cell<bool>,
+}
+impl Stage {
+    fn new(source: &CapturedSource) -> Result<Self, String> {
+        let location = source
+            .location
+            .ok_or("This skill collection is read only")?;
+        let parent = child(
+            source.handle.as_ref().ok_or("Skill target unavailable")?,
+            location.configuration_directory(),
+        )?;
+        let name = format!(".skills-{}", uuid::Uuid::new_v4());
+        parent
+            .create_dir(&name)
+            .map_err(|error| error.to_string())?;
+        let directory = parent
+            .open_dir_nofollow(&name)
+            .map_err(|error| error.to_string())?;
+        child(&parent, "skills")?;
+        Ok(Self {
+            parent,
+            name,
+            directory,
+            preserve: std::cell::Cell::new(false),
+        })
+    }
+    fn publish(&self, id: &str, replace: bool) -> Result<(), String> {
+        let target = format!("skills/{id}");
+        let old = format!("{}/old", self.name);
+        let next = format!("{}/next", self.name);
+        let previous = match self.parent.symlink_metadata(&target) {
+            Ok(metadata) => {
+                if !replace {
+                    return Err("A skill already exists at this location".into());
+                }
+                if !metadata.is_dir() || metadata.is_symlink() {
+                    return Err("Skill target must be an ordinary directory".into());
+                }
+                self.preserve.set(true);
+                rename(&self.parent, target.clone(), old.clone()).map_err(|error| {
+                    format!("{error}; prepared directories retained under {}", self.name)
+                })?;
+                true
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Err(error) = rename(&self.parent, next, target.clone()) {
+            if previous && let Err(rollback) = rename(&self.parent, old.clone(), target) {
+                self.preserve.set(true);
+                return Err(format!(
+                    "{error}; restoring previous skill failed: {rollback}; previous directory retained at {old}"
+                ));
+            }
+            self.preserve.set(false);
+            return Err(error);
+        }
+        Ok(())
+    }
+    fn cleanup(&self) -> Result<(), String> {
+        self.parent.remove_dir_all(&self.name).map_err(|error| {
+            format!(
+                "Skill files changed, but temporary directory {} could not be removed: {error}",
+                self.name
+            )
+        })?;
+        self.preserve.set(false);
+        Ok(())
+    }
+}
+impl Drop for Stage {
+    fn drop(&mut self) {
+        if !self.preserve.get() {
+            let _ = self.parent.remove_dir_all(&self.name);
+        }
+    }
+}
+
+fn open_source(
+    root: &Dir,
+    base: &Path,
+    directory: &str,
+    private: &Path,
+    target: &CapturedSource,
+) -> Result<Dir, String> {
+    let relative = remote::relative(directory)?;
+    let relative = if relative.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        &relative
+    };
+    let resolved = base.join(
+        root.canonicalize(relative)
+            .map_err(|error| error.to_string())?,
+    );
+    if resolved.starts_with(private) || private.starts_with(&resolved) {
+        return Err("Skill source overlaps private Host data".into());
+    }
+    if Path::new(&target.metadata.path).starts_with(&resolved) {
+        return Err("A skill cannot be installed inside its source directory".into());
+    }
+    root.open_dir(relative).map_err(|error| error.to_string())
+}
+fn nested(root: &Dir, path: &Path) -> Result<Dir, String> {
+    let mut directory = root.try_clone().map_err(|error| error.to_string())?;
+    for name in path.iter() {
+        directory = directory
+            .open_dir_nofollow(name)
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(directory)
+}
+
+fn copy_tree(source: &Dir, target: &Dir, cancellation: &CancellationToken) -> Result<(), String> {
+    let mut pending = vec![PathBuf::new()];
+    while let Some(path) = pending.pop() {
+        let source = nested(source, &path)?;
+        let target = nested(target, &path)?;
+        for entry in source.entries().map_err(|error| error.to_string())? {
+            if cancellation.is_cancelled() {
+                return Err("Skill installation cancelled".into());
+            }
+            let entry = entry.map_err(|error| error.to_string())?;
+            let name = entry.file_name();
+            if name == ".git" {
+                continue;
+            }
+            let kind = entry.file_type().map_err(|error| error.to_string())?;
+            if kind.is_dir() {
+                target
+                    .create_dir(&name)
+                    .map_err(|error| error.to_string())?;
+                pending.push(path.join(name));
+            } else if kind.is_file() {
+                let mut options = cap_std::fs::OpenOptions::new();
+                options.read(true).follow(FollowSymlinks::No);
+                #[cfg(unix)]
+                {
+                    use cap_std::fs::OpenOptionsExt;
+                    options.custom_flags(libc::O_NONBLOCK);
+                }
+                let mut input = source
+                    .open_with(&name, &options)
+                    .map_err(|error| error.to_string())?;
+                let metadata = input.metadata().map_err(|error| error.to_string())?;
+                if !metadata.is_file() {
+                    return Err("Skill resources must be ordinary files or directories".into());
+                }
+                let mut output = target
+                    .open_with(
+                        &name,
+                        cap_std::fs::OpenOptions::new().write(true).create_new(true),
+                    )
+                    .map_err(|error| error.to_string())?;
+                io::copy(&mut input, &mut output).map_err(|error| error.to_string())?;
+                #[cfg(unix)]
+                {
+                    use cap_std::fs::PermissionsExt;
+                    output
+                        .set_permissions(cap_std::fs::Permissions::from_mode(
+                            metadata.permissions().mode() & 0o777,
+                        ))
+                        .map_err(|error| error.to_string())?;
+                }
+            } else {
+                return Err(format!(
+                    "Skill resources cannot contain links or special files: {}",
+                    name.to_string_lossy()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+impl Library {
+    /// The blocking worker owns all filesystem work and cleanup, even if its caller leaves.
+    async fn management_work<T: Send + 'static>(
+        &self,
         scope: &Scope,
-        collection: Collection,
-    ) -> Result<Publisher, String> {
-        let managed = self.clone();
+        work: impl FnOnce(Self, Arc<Managed>, Scope, tokio::runtime::Handle) -> Result<T, String>
+        + Send
+        + 'static,
+    ) -> Result<T, String> {
+        let managed = self.managed.clone().ok_or("Skill management is disabled")?;
+        let library = self.clone();
         let scope = scope.clone();
-        let mut ticket = scope.resources.reserve().map_err(store_error)?;
+        let runtime = tokio::runtime::Handle::current();
+        let mut ticket = scope
+            .resources
+            .reserve()
+            .map_err(|error| error.to_string())?;
         tokio::task::spawn_blocking(move || {
             ticket.start();
-            let result = managed
-                .root
-                .validate_current()
-                .map_err(store_error)
-                .and_then(|()| {
-                    Publisher::open_scoped(
-                        match collection {
-                            Collection::Installed => &managed.data,
-                            Collection::Imported => &managed.imported,
-                        },
-                        &scope,
-                    )
-                    .map_err(store_error)
-                });
-            drop(managed);
+            let result = if scope.cancellation.is_cancelled() {
+                Err("Skill management cancelled".into())
+            } else {
+                work(library, managed, scope, runtime)
+            };
             ticket.complete(Ok(()));
             result
         })
         .await
-        .map_err(store_error)?
+        .map_err(|error| error.to_string())?
     }
-}
-fn child(parent: &cap_std::fs::Dir, name: &str) -> std::io::Result<cap_std::fs::Dir> {
-    match parent.create_dir(name) {
-        Ok(()) => {
-            #[cfg(unix)]
-            parent.open(".")?.sync_all()?;
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => return Err(error),
-    }
-    parent.open_dir_nofollow(name)
-}
-pub(super) fn store_error(_: impl std::fmt::Display) -> String {
-    "skills_store_unavailable".into()
-}
-
-struct Plan {
-    review: Review,
-    id: String,
-    expected: Option<Tree>,
-    next: Option<Tree>,
-    locally_modified: bool,
-    collection: Collection,
-}
-impl Plan {
-    fn preview(self) -> Preview {
-        let complete = self
-            .next
-            .as_ref()
-            .or(self.expected.as_ref())
-            .map_or_else(Vec::new, Tree::paths);
-        let entries = complete.len();
-        let mut paths = Vec::new();
-        for path in complete {
-            paths.push(path);
-            if serde_json::to_vec(&paths)
-                .expect("path strings serialize")
-                .len()
-                > 24 * 1024
+    pub(super) async fn discover_source(
+        &self,
+        input: DiscoverSource,
+        scope: &Scope,
+    ) -> Result<DiscoveredSource, String> {
+        self.management_work(scope, move |library, managed, scope, runtime| {
+            let base = input
+                .workspace
+                .map(|workspace| PathBuf::from(workspace.path))
+                .or_else(|| {
+                    library
+                        .sources
+                        .iter()
+                        .find(|source| source.location == Some(LocationId::UserMaka))
+                        .and_then(|source| {
+                            Path::new(&source.metadata.path)
+                                .parent()?
+                                .parent()
+                                .map(Path::to_owned)
+                        })
+                })
+                .ok_or("No Host source directory is configured")?;
+            let mut source = input.source.trim().to_owned();
+            if source == "~" || source.starts_with("~/") {
+                let home = library
+                    .sources
+                    .iter()
+                    .find(|source| source.location == Some(LocationId::UserMaka))
+                    .and_then(|source| Path::new(&source.metadata.path).parent()?.parent())
+                    .ok_or("No Host home directory is configured")?;
+                source = home
+                    .join(source.strip_prefix("~/").unwrap_or(""))
+                    .to_string_lossy()
+                    .into_owned();
+            }
+            let local = base.join(&source);
+            if local
+                .canonicalize()
+                .is_ok_and(|path| path.starts_with(&library.private))
             {
-                paths.pop();
-                break;
+                return Err("The private Host directory cannot be a skill source".into());
             }
-        }
-        Preview::Ready {
-            target: format!("{}{}", self.collection.prefix(), self.id),
-            entries,
-            paths_truncated: paths.len() != entries,
-            paths,
-            locally_modified: self.locally_modified,
-            review: Box::new(self.review),
-        }
-    }
-}
-enum Prepared {
-    Ready(Box<Plan>),
-    Changed,
-    Rejected(&'static str),
-}
-impl Library {
-    async fn prepare(
-        &self,
-        change: Change,
-        publisher: &Publisher,
-        collection: Collection,
-        scope: &Scope,
-    ) -> Result<Prepared, String> {
-        let rejected = |reason| Ok(Prepared::Rejected(reason));
-        if collection == Collection::Imported && !matches!(change.kind, ChangeKind::Delete) {
-            return rejected("read_only_source");
-        }
-        let snapshot = self.snapshot(scope).await?;
-        if snapshot.revision != change.revision {
-            return Ok(Prepared::Changed);
-        }
-        let Some((entry, digest, _)) = snapshot
-            .entries
-            .iter()
-            .find(|(entry, _, _)| entry.reference == change.reference)
-        else {
-            return rejected("not_found");
-        };
-        let (id, source) = match change.kind {
-            ChangeKind::Delete => {
-                let Some(id) = change
-                    .reference
-                    .strip_prefix(collection.prefix())
-                    .filter(|id| maka_skills::safe_source_id(id))
-                else {
-                    return rejected("read_only_source");
-                };
-                (id.to_owned(), None)
-            }
-            ChangeKind::Install | ChangeKind::Update => {
-                if !entry.valid {
-                    return rejected("invalid_skill");
-                }
-                let (id, tree) = if let Some(id) = change
-                    .reference
-                    .strip_prefix("imported:")
-                    .filter(|id| maka_skills::safe_source_id(id))
-                {
-                    let managed = self.managed.as_ref().ok_or("skills_store_unavailable")?;
-                    (
-                        id.to_owned(),
-                        Tree::read_view(
-                            &managed.imported_read.bind_scope(scope),
-                            &format!("skills/{id}"),
-                        )
-                        .await
-                        .map_err(store_error)?,
-                    )
-                } else {
-                    let Some((id, root)) = self.sources.iter().find_map(|source| {
-                        change
-                            .reference
-                            .strip_prefix(&format!("{}:", source.prefix))
-                            .filter(|id| maka_skills::safe_source_id(id))
-                            .map(|id| (id, source))
-                    }) else {
-                        return rejected("read_only_source");
-                    };
-                    let path = root
-                        .directory
-                        .join(id)
-                        .to_string_lossy()
-                        .replace(std::path::MAIN_SEPARATOR, "/");
-                    (
-                        id.to_owned(),
-                        Tree::read_view(&root.root.bind_scope(scope), &path)
-                            .await
-                            .map_err(store_error)?,
-                    )
-                };
-                if tree
-                    .get("SKILL.md")
-                    .map(maka_agent_facts::artifact::content_digest)
-                    .as_ref()
-                    != Some(digest)
-                {
-                    return Ok(Prepared::Changed);
-                }
-                (id.to_owned(), Some(tree))
-            }
-        };
-        // Match the original installation catalog's case-insensitive occupancy
-        // rule on both case-sensitive and case-insensitive filesystems.
-        if matches!(change.kind, ChangeKind::Install)
-            && snapshot.entries.iter().any(|(entry, _, _)| {
-                entry
-                    .reference
-                    .strip_prefix("installed:")
-                    .is_some_and(|installed| installed.eq_ignore_ascii_case(&id))
-            })
-        {
-            return rejected("already_installed");
-        }
-        let expected = publisher
-            .capture(&id, &scope.cancellation)
-            .await
-            .map_err(store_error)?;
-        if let Some(tree) = &expected {
-            let current = snapshot
-                .entries
-                .iter()
-                .find(|(entry, _, _)| entry.reference == format!("{}{id}", collection.prefix()));
-            if current.is_none_or(|(_, digest, _)| {
-                tree.get("SKILL.md")
-                    .map(maka_agent_facts::artifact::content_digest)
-                    .as_ref()
-                    != Some(digest)
-            }) {
-                return Ok(Prepared::Changed);
-            }
-        }
-        match change.kind {
-            ChangeKind::Install if expected.is_some() => return rejected("already_installed"),
-            ChangeKind::Update | ChangeKind::Delete if expected.is_none() => {
-                return rejected("not_installed");
-            }
-            _ => {}
-        }
-        let locally_modified = collection == Collection::Installed
-            && expected
-                .as_ref()
-                .is_some_and(|tree| tree.get("SKILL.md") != tree.get(".maka/baseline/SKILL.md"));
-        let digest = maka_agent_facts::artifact::content_digest(
-            &serde_json::to_vec(&(
-                &change,
-                expected
-                    .as_ref()
-                    .map(Tree::digest)
-                    .transpose()
-                    .map_err(store_error)?,
-                source
-                    .as_ref()
-                    .map(Tree::digest)
-                    .transpose()
-                    .map_err(store_error)?,
+            let route = runtime.block_on(managed.route())?;
+            runtime.block_on(remote::Checkout::discover(
+                &source,
+                &base,
+                &library.private,
+                &route,
+                &scope,
             ))
-            .map_err(store_error)?,
-        );
-        let next = match (&change.kind, source) {
-            (ChangeKind::Delete, _) => None,
-            (_, Some(source)) => {
-                let content = source
-                    .get("SKILL.md")
-                    .ok_or("skills_source_unavailable")?
-                    .to_vec();
-                let mut tree = if matches!(change.kind, ChangeKind::Update) {
-                    expected.as_ref().unwrap().clone()
-                } else {
-                    source
-                };
-                tree.insert("SKILL.md", content.clone())
-                    .map_err(store_error)?;
-                tree.insert(".maka/baseline/SKILL.md", content)
-                    .map_err(store_error)?;
-                Some(tree)
+        })
+        .await
+    }
+    fn target(&self, location: LocationId) -> Result<&CapturedSource, String> {
+        self.sources
+            .iter()
+            .find(|source| source.location == Some(location))
+            .ok_or_else(|| "The selected skill location is unavailable".into())
+    }
+    pub(super) async fn install(
+        &self,
+        input: Install,
+        scope: &Scope,
+    ) -> Result<InstallResult, String> {
+        self.management_work(scope, move |library, managed, scope, runtime| {
+            let target = library.target(input.location)?;
+            let route = runtime.block_on(managed.route())?;
+            let checkout =
+                runtime.block_on(remote::Checkout::open(input.source, false, &route, &scope))?;
+            if checkout.root.starts_with(&library.private) {
+                return Err("The private Host directory cannot be a skill source".into());
             }
-            _ => unreachable!("installation source was captured"),
-        };
-        Ok(Prepared::Ready(Box::new(Plan {
-            review: Review { change, digest },
-            id,
-            expected,
-            next,
-            locally_modified,
-            collection,
-        })))
-    }
-    pub(super) async fn preview(&self, input: Change, scope: &Scope) -> Result<Preview, String> {
-        let Some(managed) = &self.managed else {
-            return Ok(Preview::Rejected {
-                reason: "management_disabled".into(),
-            });
-        };
-        let _serial = tokio::select! {
-            biased;
-            _ = scope.cancellation.cancelled() => return Err("skills_cancelled".into()),
-            guard = managed.serial.lock() => guard,
-        };
-        let collection = if matches!(input.kind, ChangeKind::Delete)
-            && input.reference.starts_with("imported:")
-        {
-            Collection::Imported
-        } else {
-            Collection::Installed
-        };
-        let publisher = managed.publisher(scope, collection).await?;
-        Ok(
-            match self.prepare(input, &publisher, collection, scope).await? {
-                Prepared::Ready(plan) => plan.preview(),
-                Prepared::Changed => Preview::Changed,
-                Prepared::Rejected(reason) => Preview::Rejected {
-                    reason: reason.into(),
-                },
-            },
-        )
-    }
-    pub(super) async fn apply(
-        &self,
-        input: Review,
-        reference: &maka_plugin_core::operation::RecoveryRef,
-        scope: &Scope,
-    ) -> Result<ChangeResult, String> {
-        let operation = operation(reference)?;
-        self.apply_operation(input, &operation, scope).await
-    }
-    async fn apply_operation(
-        &self,
-        input: Review,
-        operation: &Operation,
-        scope: &Scope,
-    ) -> Result<ChangeResult, String> {
-        self.apply_in(input, operation, scope, Collection::Installed)
-            .await
-    }
-    pub(super) async fn delete_source(
-        &self,
-        input: Review,
-        operation: &Operation,
-        scope: &Scope,
-    ) -> Result<ChangeResult, String> {
-        self.apply_in(input, operation, scope, Collection::Imported)
-            .await
-    }
-    async fn apply_in(
-        &self,
-        input: Review,
-        operation: &Operation,
-        scope: &Scope,
-        collection: Collection,
-    ) -> Result<ChangeResult, String> {
-        let Some(managed) = &self.managed else {
-            return Ok(ChangeResult::Rejected {
-                reason: "management_disabled".into(),
-            });
-        };
-        let _serial = tokio::select! {
-            biased;
-            _ = scope.cancellation.cancelled() => return Err("skills_cancelled".into()),
-            guard = managed.serial.lock() => guard,
-        };
-        let publisher = managed.publisher(scope, collection).await?;
-        if let Some(outcome) = publisher.reserve(operation).await.map_err(store_error)? {
-            return recorded(outcome);
-        }
-        publisher.recover().await.map_err(store_error)?;
-        if let Some(outcome) = publisher.reserve(operation).await.map_err(store_error)? {
-            return recorded(outcome);
-        }
-        let prepared = self
-            .prepare(input.change, &publisher, collection, scope)
-            .await?;
-        let outcome = match prepared {
-            Prepared::Ready(plan) if plan.review.digest == input.digest => {
-                let destination = collection.destination(&plan.id);
-                match publisher
-                    .publish_operation(
-                        &plan.id,
-                        plan.expected.as_ref(),
-                        plan.next.as_ref(),
-                        Some((operation, destination.clone())),
-                        &scope.cancellation,
+            let root = Dir::open_ambient_dir(&checkout.root, cap_std::ambient_authority())
+                .map_err(|error| error.to_string())?;
+            let mut results = Vec::new();
+            for directory in input.skills {
+                let result = (|| {
+                    let source =
+                        open_source(&root, &checkout.root, &directory, &library.private, target)?;
+                    let document = maka_skills::parse(
+                        &remote::read_manifest(&source).map_err(|error| error.to_string())?,
                     )
-                    .await
-                {
-                    Ok(()) => Outcome::Applied { destination },
-                    Err(publication::Error::Conflict) => Outcome::Conflict,
-                    Err(error) => return Err(store_error(error)),
-                }
+                    .map_err(|_| "Invalid SKILL.md")?;
+                    let id = document.manifest.name;
+                    if id.is_empty()
+                        || Path::new(&id).components().count() != 1
+                        || !matches!(
+                            Path::new(&id).components().next(),
+                            Some(std::path::Component::Normal(_))
+                        )
+                    {
+                        return Err("Skill name must be a directory name".into());
+                    }
+                    let stage = Stage::new(target)?;
+                    let next = child(&stage.directory, "next")?;
+                    copy_tree(&source, &next, &scope.cancellation)?;
+                    let _lock = managed.lock()?;
+                    if scope.cancellation.is_cancelled() {
+                        return Err("Skill installation cancelled".into());
+                    }
+                    let path = Path::new(&target.metadata.path)
+                        .join(&id)
+                        .to_string_lossy()
+                        .into_owned();
+                    let current = runtime.block_on(managed.registrations.read(&path))?;
+                    stage.publish(&id, false)?;
+                    let recorded = runtime.block_on(managed.registrations.write(
+                        &path,
+                        current.revision,
+                        Some(Installation {
+                            source: checkout.source.clone(),
+                            directory: directory.clone(),
+                        }),
+                    ));
+                    stage.cleanup()?;
+                    recorded.map_err(|error| {
+                        format!("Skill installed, but recording its source failed: {error}")
+                    })?;
+                    Ok(format!("{}:{id}", target.prefix))
+                })();
+                results.push(match result {
+                    Ok(reference) => InstallOutcome::Installed { reference },
+                    Err(reason) => InstallOutcome::Rejected { directory, reason },
+                });
             }
-            Prepared::Changed | Prepared::Ready(_) => Outcome::Conflict,
-            Prepared::Rejected(reason) => Outcome::Rejected {
-                reason: reason.into(),
-            },
-        };
-        publisher
-            .complete(operation, outcome.clone())
-            .await
-            .map_err(store_error)?;
-        recorded(outcome)
+            Ok(InstallResult { results })
+        })
+        .await
     }
-}
-pub(super) fn operation(
-    reference: &maka_plugin_core::operation::RecoveryRef,
-) -> Result<Operation, String> {
-    Ok(Operation {
-        id: reference.operation,
-        // Preserve the exact Host fingerprint in the publication domain’s digest format.
-        fingerprint: maka_agent_facts::artifact::content_digest(reference.fingerprint.as_bytes()),
-        binding: maka_agent_facts::artifact::content_digest(
-            &serde_json::to_vec(reference).map_err(store_error)?,
-        ),
-    })
-}
-pub(super) fn recorded(outcome: Outcome) -> Result<ChangeResult, String> {
-    match outcome {
-        Outcome::Applied {
-            destination: Destination::Skill { reference },
-        } => Ok(ChangeResult::Applied { reference }),
-        Outcome::Applied {
-            destination: Destination::Source { id },
-        } => Ok(ChangeResult::Applied {
-            reference: format!("imported:{id}"),
-        }),
-        Outcome::Conflict => Ok(ChangeResult::Changed),
-        Outcome::Rejected { reason } => Ok(ChangeResult::Rejected { reason }),
-        _ => Err("skills_receipt_invalid".into()),
+    pub(super) async fn manage_skill(
+        &self,
+        input: ManageSkill,
+        update: bool,
+        scope: &Scope,
+    ) -> Result<ChangeResult, String> {
+        self.management_work(scope, move |library, managed, scope, runtime| {
+            let result = (|| {
+                let target = library
+                    .sources
+                    .iter()
+                    .find(|source| source.location.is_some() && source.contains(&input.reference))
+                    .ok_or("This skill collection is read only")?;
+                let id = input
+                    .reference
+                    .strip_prefix(&format!("{}:", target.prefix))
+                    .ok_or("Invalid skill reference")?;
+                if id.is_empty()
+                    || Path::new(id).components().count() != 1
+                    || !matches!(
+                        Path::new(id).components().next(),
+                        Some(std::path::Component::Normal(_))
+                    )
+                {
+                    return Err("Invalid skill reference".into());
+                }
+                let path = Path::new(&target.metadata.path)
+                    .join(id)
+                    .to_string_lossy()
+                    .into_owned();
+                let current = runtime.block_on(managed.registrations.read(&path))?;
+                let prepared = if update {
+                    let installation = current
+                        .installation
+                        .ok_or("Only skills installed by Maka can be updated")?;
+                    let route = runtime.block_on(managed.route())?;
+                    let checkout = runtime.block_on(remote::Checkout::open(
+                        installation.source,
+                        true,
+                        &route,
+                        &scope,
+                    ))?;
+                    if checkout.root.starts_with(&library.private) {
+                        return Err("The private Host directory cannot be a skill source".into());
+                    }
+                    let root = Dir::open_ambient_dir(&checkout.root, cap_std::ambient_authority())
+                        .map_err(|error| error.to_string())?;
+                    let source = open_source(
+                        &root,
+                        &checkout.root,
+                        &installation.directory,
+                        &library.private,
+                        target,
+                    )?;
+                    maka_skills::parse(
+                        &remote::read_manifest(&source).map_err(|error| error.to_string())?,
+                    )
+                    .map_err(|_| "Invalid SKILL.md")?;
+                    let stage = Stage::new(target)?;
+                    copy_tree(
+                        &source,
+                        &child(&stage.directory, "next")?,
+                        &scope.cancellation,
+                    )?;
+                    (
+                        stage,
+                        Some(Installation {
+                            source: checkout.source.clone(),
+                            directory: installation.directory,
+                        }),
+                    )
+                } else {
+                    (Stage::new(target)?, None)
+                };
+                let (stage, installation) = prepared;
+                let _lock = managed.lock()?;
+                if scope.cancellation.is_cancelled() {
+                    return Err("Skill management cancelled".into());
+                }
+                let observed = runtime.block_on(managed.registrations.read(&path))?;
+                if observed.revision != current.revision {
+                    return Err(
+                        "Skill changed while preparing this operation; refresh and try again"
+                            .into(),
+                    );
+                }
+                if update {
+                    stage.publish(id, true)?;
+                } else {
+                    stage.preserve.set(true);
+                    rename(
+                        &stage.parent,
+                        format!("skills/{id}"),
+                        format!("{}/old", stage.name),
+                    )?;
+                }
+                let recorded = runtime.block_on(managed.registrations.write(
+                    &path,
+                    current.revision,
+                    installation,
+                ));
+                stage.cleanup()?;
+                recorded.map_err(|error| {
+                    format!("Skill files changed, but recording the change failed: {error}")
+                })?;
+                Ok(())
+            })();
+            Ok(match result {
+                Ok(()) => ChangeResult::Applied {
+                    reference: input.reference,
+                },
+                Err(reason) => ChangeResult::Rejected { reason },
+            })
+        })
+        .await
     }
 }
 

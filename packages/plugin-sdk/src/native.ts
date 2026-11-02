@@ -182,11 +182,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     configuration: typeof configurations.skillLibrary;
     exports: { skills: typeof contracts.skillLibrary };
   };
-  skillOutcomes: {
-    implementation: string;
-    configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
-    exports: { Outcomes: typeof contracts.skillOutcomes };
-  };
   questions: {
     implementation: string;
     configuration: { type: 'object'; properties: {}; required: []; additionalProperties: false };
@@ -450,11 +445,6 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     implementation: 'maka.skills.library',
     configuration: configurations.skillLibrary,
     exports: { skills: contracts.skillLibrary },
-  },
-  skillOutcomes: {
-    implementation: 'maka.skills.outcomes',
-    configuration: { type: 'object', properties: {}, required: [], additionalProperties: false },
-    exports: { Outcomes: contracts.skillOutcomes },
   },
   questions: {
     implementation: 'maka.interactions.questions',

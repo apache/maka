@@ -21,11 +21,11 @@ use std::process::Command;
 
 #[test]
 fn terminal_shell_help_runs_from_the_cli_without_a_sibling_shell() {
-    let directory = tempfile::tempdir().unwrap();
+    let directory = tempfile::tempdir_in(env!("CARGO_TARGET_TMPDIR")).unwrap();
     let executable = directory
         .path()
         .join(if cfg!(windows) { "maka.exe" } else { "maka" });
-    std::fs::copy(env!("CARGO_BIN_EXE_maka"), &executable).unwrap();
+    std::fs::hard_link(env!("CARGO_BIN_EXE_maka"), &executable).unwrap();
     for arguments in [vec!["--help"], vec!["terminal-shell", "--help"]] {
         let output = Command::new(&executable)
             .args(arguments)

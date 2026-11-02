@@ -22,7 +22,7 @@ use super::{
     ToolInput,
 };
 use crate::output::{Stop, TextKind, Usage as OutputUsage};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
 
@@ -41,7 +41,12 @@ enum Event {
     )]
     Text { item_id: String, delta: String },
     #[serde(rename = "response.reasoning_summary_text.delta")]
-    Summary { item_id: String, delta: String },
+    Summary {
+        item_id: String,
+        #[serde(default)]
+        summary_index: usize,
+        delta: String,
+    },
     #[serde(rename = "response.reasoning_text.delta")]
     Reasoning { item_id: String, delta: String },
     #[serde(rename = "response.function_call_arguments.delta")]
@@ -199,14 +204,18 @@ struct InputTokens {
 struct OutputTokens {
     reasoning_tokens: Option<u64>,
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 pub(crate) struct ProviderError {
-    pub code: Option<String>,
+    pub code: Option<Value>,
     pub message: String,
+    #[serde(flatten)]
+    pub fields: BTreeMap<String, Value>,
 }
 struct Part {
     kind: TextKind,
     text: String,
+    summary_index: Option<usize>,
+    summary_breaks: Vec<usize>,
 }
 pub struct Decoder {
     reasoning: ReasoningMode,
@@ -364,6 +373,8 @@ impl Decoder {
             Part {
                 kind,
                 text: String::new(),
+                summary_index: None,
+                summary_breaks: Vec::new(),
             },
         );
         out.push(OutputEvent::PartStarted {
@@ -377,6 +388,7 @@ impl Decoder {
         id: String,
         text: String,
         kind: TextKind,
+        summary_index: Option<usize>,
         out: &mut Vec<OutputEvent>,
     ) -> Result<()> {
         let part = self
@@ -386,8 +398,22 @@ impl Decoder {
         if part.kind != kind {
             return Err(Self::invalid("Responses delta has invalid kind"));
         }
+        let summary_breaks = summary_index.and_then(|index| {
+            let changed = part.summary_index.is_some_and(|previous| previous != index);
+            part.summary_index = Some(index);
+            if changed {
+                part.summary_breaks.push(part.text.len());
+                Some(part.summary_breaks.clone())
+            } else {
+                None
+            }
+        });
         part.text.push_str(&text);
-        out.push(OutputEvent::PartDelta { id, text });
+        out.push(OutputEvent::PartDelta {
+            id,
+            text,
+            summary_breaks,
+        });
         Ok(())
     }
     fn finish_part(
@@ -411,7 +437,7 @@ impl Decoder {
             ));
         }
         if text.len() > part.text.len() {
-            self.delta(id.clone(), text[part.text.len()..].into(), kind, out)?;
+            self.delta(id.clone(), text[part.text.len()..].into(), kind, None, out)?;
         }
         if metadata.is_some() {
             self.replay_safe = false;
@@ -679,16 +705,26 @@ impl Decoder {
                 self.final_item(item, template, &mut out)?;
             }
             Event::Text { item_id, delta } => {
-                self.delta(item_id, delta, TextKind::Text, &mut out)?
+                self.delta(item_id, delta, TextKind::Text, None, &mut out)?
             }
-            Event::Summary { item_id, delta } => {
+            Event::Summary {
+                item_id,
+                summary_index,
+                delta,
+            } => {
                 if self.reasoning != ReasoningMode::PlaintextContent {
-                    self.delta(item_id, delta, TextKind::Reasoning, &mut out)?;
+                    self.delta(
+                        item_id,
+                        delta,
+                        TextKind::Reasoning,
+                        Some(summary_index),
+                        &mut out,
+                    )?;
                 }
             }
             Event::Reasoning { item_id, delta } => {
                 if self.reasoning == ReasoningMode::PlaintextContent {
-                    self.delta(item_id, delta, TextKind::Reasoning, &mut out)?;
+                    self.delta(item_id, delta, TextKind::Reasoning, None, &mut out)?;
                 }
             }
             Event::FunctionInput { item_id, delta } => {
@@ -710,6 +746,7 @@ impl Decoder {
             Event::Failed { response } => {
                 return Err(self.provider(response.error.unwrap_or(ProviderError {
                     code: None,
+                    fields: BTreeMap::new(),
                     message: "Responses request failed".into(),
                 })));
             }
@@ -782,9 +819,16 @@ impl Decoder {
         Ok(out)
     }
     fn provider(&self, error: ProviderError) -> Error {
+        let data = serde_json::to_value(&error).expect("provider error contains only JSON fields");
         Error::Provider {
-            code: error.code,
-            message: error.message,
+            error: Box::new(crate::output::ProviderError {
+                kind: data.get("type").and_then(Value::as_str).map(str::to_owned),
+                code: error.code,
+                message: Some(error.message),
+                status: None,
+                retryable: None,
+                data,
+            }),
             observed_output: self.observed_output,
             replay_safe: self.replay_safe,
             retained_output_safe: self.retained_output_safe(),
@@ -795,6 +839,72 @@ impl Decoder {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn summary_deltas_retain_item_boundaries_without_rewriting_replay_text() {
+        let mut decoder = Decoder::new(ReasoningMode::Encrypted, None);
+        decoder
+            .push(json!({"type":"response.output_item.added","item":{
+                "type":"reasoning","id":"r","summary":[]
+            }}))
+            .unwrap();
+        let mut deltas = Vec::new();
+        for (index, delta) in [(0, "**检查"), (0, "🙂**"), (1, "**Build**")] {
+            for event in decoder
+                .push(json!({"type":"response.reasoning_summary_text.delta",
+                "item_id":"r","summary_index":index,"delta":delta}))
+                .unwrap()
+            {
+                if let OutputEvent::PartDelta {
+                    text,
+                    summary_breaks,
+                    ..
+                } = event
+                {
+                    deltas.push((text, summary_breaks));
+                }
+            }
+        }
+        assert_eq!(
+            deltas,
+            [
+                ("**检查".into(), None),
+                ("🙂**".into(), None),
+                ("**Build**".into(), Some(vec![14]))
+            ]
+        );
+        let original = json!({"type":"reasoning","id":"r","summary":[
+            {"type":"summary_text","text":"**检查🙂**"},
+            {"type":"summary_text","text":"**Build**"}
+        ],"encrypted_content":"opaque"});
+        let events = decoder
+            .push(json!({"type":"response.output_item.done","item":original}))
+            .unwrap();
+        let replayed = events
+            .into_iter()
+            .find_map(|event| {
+                let OutputEvent::PartFinished {
+                    metadata: Some(PartMetadata::Item(metadata)),
+                    ..
+                } = event
+                else {
+                    return None;
+                };
+                Some(
+                    metadata
+                        .replay
+                        .unwrap()
+                        .text(
+                            "**检查🙂****Build**",
+                            "reasoning",
+                            metadata.encrypted_content.as_deref(),
+                        )
+                        .unwrap(),
+                )
+            })
+            .unwrap();
+        assert_eq!(replayed, original);
+    }
 
     fn function(id: &str, call_id: &str) -> Value {
         json!({"type":"function_call","id":id,"call_id":call_id,"name":"Read","arguments":"{}"})

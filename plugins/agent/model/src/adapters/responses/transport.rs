@@ -19,8 +19,8 @@
 
 use super::body::RequestBody;
 use futures_util::FutureExt;
-use maka_agent_ports::model::Socket;
 use maka_agent_ports::model::Transport;
+use maka_agent_ports::model::{RetryTransportPhase, Socket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{
     collections::BTreeMap,
@@ -60,6 +60,32 @@ struct Idle {
 }
 
 impl ResponsesLane {
+    pub fn retry_transport_phase(&self) -> RetryTransportPhase {
+        if self.0.lock().unwrap().fallback {
+            RetryTransportPhase::Fallback
+        } else {
+            RetryTransportPhase::Primary
+        }
+    }
+
+    pub fn restore_retry_transport_phase(&self, phase: RetryTransportPhase) -> Result<()> {
+        let mut lane = self.0.lock().unwrap();
+        if lane.busy {
+            return Err(error("cannot restore an active Responses transport"));
+        }
+        match phase {
+            RetryTransportPhase::Primary if lane.fallback => {
+                Err(error("cannot reset consumed Responses fallback transport"))
+            }
+            RetryTransportPhase::Primary => Ok(()),
+            RetryTransportPhase::Fallback => {
+                lane.fallback = true;
+                lane.idle.take();
+                Ok(())
+            }
+        }
+    }
+
     pub fn try_switch_fallback_transport(&self, transport: &Shared) -> bool {
         let mut lane = self.0.lock().unwrap();
         if lane.busy || lane.fallback {
@@ -263,7 +289,7 @@ impl Exchange {
                 lane.busy = false;
                 // A retry gets a fresh socket and full request. Only the caller
                 // can select fallback after exhausting its stream retry budget.
-                lane.fallback = !reconnect;
+                lane.fallback |= !reconnect;
                 self.owns_lane.store(false, Ordering::Release);
                 Err(error.into_error())
             }

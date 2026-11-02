@@ -5,7 +5,7 @@
 const KEY = 'codeTab';
 
 function tabsOf(group: HTMLElement): HTMLButtonElement[] {
-  return [...group.querySelectorAll<HTMLButtonElement>(':scope > [role="tablist"] > [role="tab"]')];
+  return [...group.querySelectorAll<HTMLButtonElement>(':scope > .code-tabs__head > [role="tablist"] > [role="tab"]')];
 }
 
 function select(group: HTMLElement, key: string): boolean {

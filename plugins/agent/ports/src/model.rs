@@ -26,6 +26,7 @@ pub use maka_agent_facts::model::request::Credentials;
 pub use maka_agent_facts::model::request::Provider;
 pub use maka_agent_facts::model::request::ProviderKind;
 pub use maka_agent_facts::model::request::Request;
+pub use maka_agent_facts::model::retry_transport::RetryTransportPhase;
 use maka_capabilities::http;
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
@@ -98,16 +99,51 @@ pub trait Events: Send + Sync {
     /// Backpressure is observed before the next event is produced.
     fn emit(&self, event: Emission) -> BoxFuture<'_, Result<(), Error>>;
 }
+/// A fresh materialization of the already committed request input.
+pub struct MaterializedPrompt {
+    pub prompt: maka_agent_facts::model::prompt_source::Prompt,
+    pub cleanup: Arc<dyn http::UploadCleanup>,
+}
+
+/// Rebuilds only frozen request bytes using the original scoped authority.
+/// Implementations must not retain the preceding materialization.
+pub trait FrozenPrompt: Send + Sync {
+    fn open(
+        &self,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<'_, Result<MaterializedPrompt, Error>>;
+}
+
+#[derive(Clone)]
+pub struct RequestSource {
+    pub cleanup: Arc<dyn http::UploadCleanup>,
+    pub frozen: Arc<dyn FrozenPrompt>,
+}
+
 #[derive(Clone)]
 pub struct Context {
     pub transport: Arc<dyn Transport>,
     pub events: Arc<dyn Events>,
     pub cancellation: CancellationToken,
     pub idle_timeout: Duration,
+    pub source: Option<RequestSource>,
 }
 /// Disposable per-conversation optimization state, never a history authority.
 pub trait Session: Send + Sync {
     fn stream(&self, request: Request, context: Context) -> BoxFuture<'static, Result<(), Error>>;
+    /// Observe semantic transport consumption, including automatic fallback.
+    fn retry_transport_phase(&self) -> RetryTransportPhase {
+        RetryTransportPhase::Primary
+    }
+    /// Restore a fresh session before streaming; unsupported fallback fails closed.
+    fn restore_retry_transport_phase(&self, phase: RetryTransportPhase) -> Result<(), Error> {
+        match phase {
+            RetryTransportPhase::Primary => Ok(()),
+            RetryTransportPhase::Fallback => Err(Error::Adapter(
+                "model session does not support restoring fallback transport".into(),
+            )),
+        }
+    }
     /// Select an unused fallback after the caller exhausts replay-safe retries
     /// and drains the failed stream. Returns true only when transport changes;
     /// this never sends a request or authorizes replay itself.

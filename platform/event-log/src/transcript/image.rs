@@ -77,7 +77,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, through).await?;
+                    super::directory::ensure(tx, &session, through).await?;
                     super::bodycache::ensure(tx, &session, position).await?;
                     let raw: String = sqlx::query_scalar(
                         "SELECT a.value FROM temp.transcript_rows r, json_each(r.payload, '$.attachments') a
@@ -139,7 +139,7 @@ impl EventLog {
         self.connection
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
-                    super::directory::check_read(tx, &session, through).await?;
+                    super::directory::ensure(tx, &session, through).await?;
                     super::bodycache::ensure(tx, &session, position).await?;
                     let raw: String = sqlx::query_scalar(
                         "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')

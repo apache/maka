@@ -1,7 +1,7 @@
 //! `nsh/storage`: the app's key-value storage, strings by string key kept
 //! on the device (`crate::storage`).
 
-use crate::element::{module, with_storage};
+use crate::element::{JsError, codes, module, with_storage};
 
 /// The app's key-value storage: strings by string key, kept on the device
 /// across launches (up to 5 MB). Calls run in order, so a read after a
@@ -21,9 +21,11 @@ impl Storage {
         with_storage(|s| s.get(&key))
     }
 
-    /// Sets `key` to `value`; rejects when the storage would be full.
-    pub(crate) async fn set_item(key: String, value: String) -> Result<(), String> {
-        with_storage(|s| s.set(key, value)).map_err(|e| e.to_string())
+    /// Sets `key` to `value`; rejects with `ERR_NSH_QUOTA_EXCEEDED` when
+    /// the storage would be full (the value is not set).
+    pub(crate) async fn set_item(key: String, value: String) -> Result<(), JsError> {
+        with_storage(|s| s.set(key, value))
+            .map_err(|full| JsError::Error(full.to_string()).with_code(codes::QUOTA_EXCEEDED))
     }
 
     /// Removes `key`.

@@ -9,9 +9,10 @@
 //!
 //! What a view looks like is mostly Core Animation: its layer's background,
 //! corners, border and shadow, and sublayers for the rest
-//! ([`crate::decor`]). Text and canvas drawings are drawn into the layer by
-//! `drawRect:` (CoreText / Core Graphics); other views use `updateLayer`
-//! and get no backing store.
+//! ([`crate::decor`]). Every view uses `updateLayer` and gets no backing
+//! store; text and canvas drawings (CoreText / Core Graphics) go into a
+//! content sublayer whose delegate draws them (`drawLayer:inContext:`,
+//! [`NshView::redraw`]).
 //!
 //! Children are subviews of the view, or of its container when it has one:
 //! scroll views always do, and a view that clips its children and casts a
@@ -214,7 +215,7 @@ impl ViewState {
             )
     }
 
-    /// True if it draws content with `drawRect:` (text, canvas).
+    /// True if it draws content into its content layer (text, canvas).
     pub(crate) fn draws(&self) -> bool {
         self.text.is_some() || self.canvas.is_some()
     }
@@ -676,7 +677,8 @@ define_class!(
         fn key_down(&self, event: &NSEvent) {
             let handled = self.keyboard_surface().is_some_and(|surface| {
                 surface.measure(false, || {
-                    let handled = crate::input::key(&surface, event, true);
+                    let handled = crate::input::key(&surface, event, true)
+                        || crate::keymap::unhandled(&surface, event);
                     // Keys scroll too.
                     quiet(|| surface.revisit());
                     handled
@@ -723,6 +725,17 @@ define_class!(
                 // SAFETY: NSView's own children.
                 unsafe { msg_send![super(self), accessibilityChildren] }
             }
+        }
+
+        /// VoiceOver's press, as Return presses a focused control.
+        #[unsafe(method(accessibilityPerformPress))]
+        fn accessibility_perform_press(&self) -> bool {
+            let view = NshView(self.retain());
+            let pressable = crate::input::takes_accessibility_press(&view);
+            if let (true, Some(surface)) = (pressable, self.keyboard_surface()) {
+                crate::input::activate(&surface, &view);
+            }
+            pressable
         }
 
         #[unsafe(method(viewDidMoveToSuperview))]

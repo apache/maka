@@ -312,6 +312,22 @@ pub(crate) fn step_text(
     }
 }
 
+/// Whether [`step_text`] of the same arguments moves the value (is
+/// `Some`), from the numbers alone: no text is made.
+pub(crate) fn can_step_text(
+    text: &str,
+    up: bool,
+    step: f64,
+    min: Option<f64>,
+    max: Option<f64>,
+) -> bool {
+    let Some(current) = parse_number(text) else {
+        return true;
+    };
+    let next = clamp_to(if up { current + step } else { current - step }, min, max);
+    if up { next > current } else { next < current }
+}
+
 /// How many decimals `x` has (at most 10): 0 for `5`, 1 for `0.5`, 2 for
 /// `0.25`.
 fn decimals(x: f64) -> i32 {
@@ -429,6 +445,27 @@ mod tests {
         assert_eq!(linear(0.0, 100.0, 1.0).format(40.0), "40");
         assert_eq!(linear(0.0, 1.0, 0.01).format(0.3), "0.3");
         assert_eq!(linear(-1.0, 1.0, 1.0).format(-0.0), "0");
+    }
+
+    #[test]
+    fn whether_a_step_moves_is_known_without_its_text() {
+        let texts = ["", "-", "0", "0.5", "-3", "9.99", "10", "100", "1e"];
+        let bounds = [None, Some(0.0), Some(10.0), Some(-5.0)];
+        for text in texts {
+            for up in [true, false] {
+                for step in [1.0, 0.25, 20.0] {
+                    for min in bounds {
+                        for max in bounds {
+                            assert_eq!(
+                                can_step_text(text, up, step, min, max),
+                                step_text(text, up, step, min, max).is_some(),
+                                "{text:?} up {up} by {step} in {min:?}..{max:?}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

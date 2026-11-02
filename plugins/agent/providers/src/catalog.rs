@@ -22,11 +22,12 @@
 //! policy remain separate.
 
 use maka_agent_facts::{
-    configuration::{ModelInfo, validation},
+    configuration::{CatalogModelReference, ModelInfo, validation},
     public_catalog::PublicCatalogBody,
 };
 use serde_json::Value;
 use std::{
+    borrow::Cow,
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
@@ -88,7 +89,14 @@ impl Catalog {
 }
 
 #[derive(Debug)]
+enum SnapshotKind {
+    Live,
+    Captured,
+}
+
+#[derive(Debug)]
 pub struct Snapshot {
+    kind: SnapshotKind,
     models: Models,
     shared: BTreeMap<String, ModelInfo>,
 }
@@ -128,6 +136,7 @@ impl Snapshot {
             }
         }
         Ok(Self {
+            kind: SnapshotKind::Live,
             models,
             shared: BTreeMap::new(),
         })
@@ -236,7 +245,32 @@ impl Snapshot {
                 .or_default()
                 .insert(entry.model.id.clone(), entry.model);
         }
-        for model in router {
+        for mut model in router {
+            if let Some(declared) = snapshot
+                .models
+                .get("openrouter")
+                .and_then(|models| models.get(&model.id))
+                .and_then(|model| model.image_input.as_ref())
+            {
+                let image = model.image_input.get_or_insert_default();
+                image.mime_types = image
+                    .mime_types
+                    .take()
+                    .or_else(|| declared.mime_types.clone());
+                macro_rules! fill_limit {
+                    ($($field:ident),* $(,)?) => { $(image.$field = image.$field.or(declared.$field);)* };
+                }
+                fill_limit!(
+                    max_per_message,
+                    max_per_request,
+                    max_bytes,
+                    min_width,
+                    min_height,
+                    max_width,
+                    max_height,
+                    request_bytes
+                );
+            }
             snapshot
                 .models
                 .entry("openrouter".into())
@@ -274,16 +308,69 @@ impl Snapshot {
                 .insert(record.id.clone(), record);
         }
         Ok(Self {
+            kind: SnapshotKind::Captured,
             models,
             shared: BTreeMap::new(),
         })
     }
 
-    /// Only missing account facts are filled. An account's own effort list also
-    /// owns its unknown default; catalog defaults must not reinterpret that list.
-    pub fn resolve(&self, provider: &str, reported: ModelInfo) -> ModelInfo {
-        match self.get(provider, &reported.id) {
-            Some(public) => merge::reported(reported, public),
+    /// Select defaults while keeping the connection's exact wire identity.
+    /// Captured requests always retain their original catalog observation.
+    pub fn model_base<'a>(
+        &'a self,
+        provider: &str,
+        model_id: &str,
+        reference: Option<&CatalogModelReference>,
+    ) -> Option<Cow<'a, ModelInfo>> {
+        if matches!(self.kind, SnapshotKind::Live)
+            && let Some(reference) = reference
+        {
+            let mut model = self
+                .models
+                .get(&reference.provider)?
+                .get(&reference.model_id)?
+                .clone();
+            model.id = model_id.to_owned();
+            // These controls belong to the connection's protocol and account.
+            model.api_protocol = None;
+            model.thinking_levels = None;
+            model.default_thinking_level = None;
+            model.supports_reasoning_summary = None;
+            if reference.provider != provider {
+                model.image_input = None;
+            }
+            return Some(Cow::Owned(model));
+        }
+        self.get(provider, model_id).map(Cow::Borrowed)
+    }
+
+    pub fn models<'a>(
+        &'a self,
+        after: Option<&'a CatalogModelReference>,
+    ) -> impl Iterator<Item = (&'a str, &'a ModelInfo)> {
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let start = after.map_or(Unbounded, |reference| Included(reference.provider.as_str()));
+        self.models
+            .range::<str, _>((start, Unbounded))
+            .flat_map(move |(provider, models)| {
+                let start = after
+                    .filter(|reference| reference.provider == *provider)
+                    .map_or(Unbounded, |reference| Excluded(reference.model_id.as_str()));
+                models
+                    .range::<str, _>((start, Unbounded))
+                    .map(move |(_, model)| (provider.as_str(), model))
+            })
+    }
+
+    /// Account facts, including explicit false and empty values, take precedence.
+    pub fn resolve(
+        &self,
+        provider: &str,
+        reported: ModelInfo,
+        reference: Option<&CatalogModelReference>,
+    ) -> ModelInfo {
+        match self.model_base(provider, &reported.id, reference) {
+            Some(public) => merge::reported(reported, &public),
             None => reported,
         }
     }
@@ -318,10 +405,16 @@ pub(super) fn modalities(
         for value in values {
             let modality = match value.as_str() {
                 Some("text") => ModelModality::Text,
-                Some("image") => ModelModality::Image,
-                Some("audio") => ModelModality::Audio,
-                Some("pdf") => ModelModality::Pdf,
-                Some("video") => ModelModality::Video,
+                Some(value) if value == "image" || value.starts_with("image/") => {
+                    ModelModality::Image
+                }
+                Some(value) if value == "audio" || value.starts_with("audio/") => {
+                    ModelModality::Audio
+                }
+                Some("pdf" | "application/pdf") => ModelModality::Pdf,
+                Some(value) if value == "video" || value.starts_with("video/") => {
+                    ModelModality::Video
+                }
                 _ => continue,
             };
             if !result.contains(&modality) {

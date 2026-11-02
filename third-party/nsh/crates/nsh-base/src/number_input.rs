@@ -120,6 +120,18 @@ enum Nudge {
     PageDown,
 }
 
+impl Nudge {
+    /// Whether it goes up, and by how many steps.
+    fn direction(self) -> (bool, f64) {
+        match self {
+            Nudge::Up => (true, 1.0),
+            Nudge::Down => (false, 1.0),
+            Nudge::PageUp => (true, PAGE_STEPS),
+            Nudge::PageDown => (false, PAGE_STEPS),
+        }
+    }
+}
+
 /// The keys of a focused number input: WAI-ARIA's spin button keys,
 /// repeating while held. They fire while its field edits ([`When::Always`]),
 /// where Up and Down would move the caret. Home and End stay the field's:
@@ -183,21 +195,24 @@ impl Ctl {
     /// The text a step makes of the field's (tracked); none when it does
     /// nothing (at a bound).
     fn stepped(self, nudge: Nudge) -> Option<String> {
-        let (up, n) = match nudge {
-            Nudge::Up => (true, 1.0),
-            Nudge::Down => (false, 1.0),
-            Nudge::PageUp => (true, PAGE_STEPS),
-            Nudge::PageDown => (false, PAGE_STEPS),
-        };
+        let (up, n) = nudge.direction();
         let (min, max) = self.bounds();
         let step = numeric::steps(self.step_size(), n);
         self.text
             .with(|text| numeric::step_text(text, up, step, min, max))
     }
 
-    /// Whether a step can change the value (tracked).
+    /// Whether a step can change the value (tracked): from the numbers,
+    /// as [`Self::stepped`] decides, without making its text.
     fn can_step(self, nudge: Nudge) -> bool {
-        !self.disabled.get() && !self.readonly.get() && self.stepped(nudge).is_some()
+        if self.disabled.get() || self.readonly.get() {
+            return false;
+        }
+        let (up, n) = nudge.direction();
+        let (min, max) = self.bounds();
+        let step = numeric::steps(self.step_size(), n);
+        self.text
+            .with(|text| numeric::can_step_text(text, up, step, min, max))
     }
 
     /// Reports `n` when it is not the number the field holds.

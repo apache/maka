@@ -185,53 +185,13 @@ export function DraftAttachments(props: {
                 : row().kind === 'uploading'
                   ? tr('Confirming upload…')
                   : row().kind === 'unknown'
-                    ? tr('Original upload needs confirmation')
+                    ? tr('Checking upload status…')
                     : tr('Upload failed')}
             </Text>
             <If when={row().error}>
               <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{row().error!}</Text>
             </If>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              <If when={row().kind === 'unknown'}>
-                <Button
-                  disabled={owner.recovering() !== null}
-                  accessibilityLabel={
-                    row().recovery === 'inspect'
-                      ? tr('Check original upload')
-                      : tr('Recover original upload')
-                  }
-                  onPress={inputAction(
-                    row().recovery === 'inspect' ? owner.inspect : owner.recover,
-                    {
-                      owner: owner.sessionId,
-                      id: row().id,
-                    },
-                  )}
-                  style={controlStyle}
-                  hoverStyle={{ backgroundColor: C.line }}
-                  focusStyle={{ backgroundColor: C.line }}
-                >
-                  <Text style={{ color: C.accent }}>
-                    {row().recovery === 'inspect'
-                      ? tr('Check original upload')
-                      : tr('Recover original upload')}
-                  </Text>
-                </Button>
-                <If when={row().recovery === 'recover_or_abandon'}>
-                  <Button
-                    disabled={owner.recovering() !== null}
-                    onPress={inputAction(owner.abandon, {
-                      owner: owner.sessionId,
-                      id: row().id,
-                    })}
-                    style={controlStyle}
-                    hoverStyle={{ backgroundColor: C.line }}
-                    focusStyle={{ backgroundColor: C.line }}
-                  >
-                    <Text style={{ color: C.warning }}>{tr('Abandon unconfirmed upload')}</Text>
-                  </Button>
-                </If>
-              </If>
               <If when={row().kind === 'failed'}>
                 <Button
                   accessibilityLabel={tr('Remove failed attachment {name}', { name: row().name })}
@@ -255,14 +215,6 @@ export function DraftAttachments(props: {
       </If>
       <If when={owner.error()}>
         <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>{owner.error()}</Text>
-        <Button
-          onPress={inputAction(owner.retry, owner.sessionId)}
-          style={controlStyle}
-          hoverStyle={{ backgroundColor: C.line }}
-          focusStyle={{ backgroundColor: C.line }}
-        >
-          <Text style={{ color: C.accent }}>{tr('Retry attachment updates')}</Text>
-        </Button>
       </If>
     </View>
   );

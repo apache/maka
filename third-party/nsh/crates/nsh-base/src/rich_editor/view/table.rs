@@ -595,7 +595,7 @@ impl Rv {
                 last_column_resizable,
             });
         }
-        out.sort_by_key(|t| t.pos);
+        crate::sort::sort_by_key(&mut out, |t| t.pos);
         out
     }
 

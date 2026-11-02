@@ -73,7 +73,6 @@ pub struct Fixture {
     pub workspace: PathBuf,
     pub database: PathBuf,
     pub session: String,
-    pub endpoint: PathBuf,
     pub epoch: uuid::Uuid,
     pub provider: Provider,
     pub model_requests: mpsc::Receiver<ModelRequest>,
@@ -132,22 +131,6 @@ impl Fixture {
         matches.pop().unwrap()
     }
 
-    pub async fn intent_count(&self) -> i64 {
-        use sqlx::Connection;
-        let mut connection = sqlx::SqliteConnection::connect_with(
-            &sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(&self.database)
-                .read_only(true),
-        )
-        .await
-        .unwrap();
-        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM application_intents")
-            .fetch_one(&mut connection)
-            .await
-            .unwrap();
-        connection.close().await.unwrap();
-        count
-    }
     pub async fn open() -> Self {
         let directory = tempfile::tempdir().unwrap();
         maka_event_log::root::private_directory(directory.path()).unwrap();
@@ -213,7 +196,6 @@ impl Fixture {
             workspace,
             database: root.join(maka_event_log::root::ROOT_DATABASE),
             session,
-            endpoint,
             epoch,
             provider,
             model_requests,

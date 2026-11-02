@@ -71,7 +71,7 @@ function App() {
         {button("to-note", () => table.scrollToColumn("note"))}
         {button("to-row-50", () => table.scrollToRow(50))}
         {button("set-width", () => table.setColumnWidth("name", 200))}
-        {button("fit", async () => put("fit", `${Math.round((await table.fitColumn("city"))!)}`))}
+        {button("fit", async () => put("fit", `${Math.round(await table.fitColumn("city"))}`))}
         {button("widths", async () => put("widths", (await table.columnWidths()).map(Math.round).join(",")))}
         {button("dump", async () => {
           const d = await table.dump(0, 2);

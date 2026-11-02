@@ -148,6 +148,10 @@ pub(crate) fn test(
         .filter(|_| !files.is_empty())
         .map(|target| crate::test_host::starter(target, browser, &work_dir, fps, display))
         .transpose()?;
+    // What `open` checks its options against on that host.
+    let host_target = target
+        .filter(|_| host.is_some())
+        .map(crate::test_host::host_target);
     // On a real platform the apps run in hosts built with the app's crates:
     // the test files run here, whatever the app is.
     match crate::rust_app::current().filter(|_| host.is_none()) {
@@ -173,6 +177,7 @@ pub(crate) fn test(
                 filter,
                 trace: trace.then(|| Arc::new(Mutex::new(Box::new(std::io::stdout()) as _))),
                 host,
+                target: host_target,
                 page_host,
             };
             for file in &files {

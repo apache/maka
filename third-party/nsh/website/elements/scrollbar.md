@@ -1,7 +1,6 @@
 ---
 title: Scrollbar
 description: "The Scrollbar component: a scroll bar of the app's own look for every scroll view and list (a theme set once) or for one, placed where the app wants it, whose thumb follows the content and whose drags and presses scroll it, shown while scrolling, on hover or always, fading in and out by the app's timing."
-order: 20.86
 group: base
 demo: el-scrollbar
 ---

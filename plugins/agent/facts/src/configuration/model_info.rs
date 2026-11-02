@@ -115,6 +115,113 @@ pub struct ModelInfo {
         deserialize_with = "present"
     )]
     pub modalities: Option<ModelModalities>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub image_input: Option<ImageInput>,
+}
+
+/// Route declarations for image input; absent fields remain unknown.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ImageInput {
+    /// Exact MIME declarations. A generic image modality leaves this unknown.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub mime_types: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub max_per_message: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub max_per_request: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub max_bytes: Option<u64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub min_width: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub min_height: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub max_width: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub max_height: Option<u32>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub request_bytes: Option<u64>,
+}
+
+impl ImageInput {
+    pub fn validate(&self) -> Result<(), String> {
+        for value in [
+            self.max_per_message,
+            self.max_per_request,
+            self.max_bytes,
+            self.request_bytes,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            validation::revision(value, false)?;
+        }
+        for (min, max) in [
+            (self.min_width, self.max_width),
+            (self.min_height, self.max_height),
+        ] {
+            if matches!((min, max), (Some(min), Some(max)) if min > max) {
+                return Err("image minimum dimension exceeds maximum".into());
+            }
+        }
+        if let Some(types) = &self.mime_types {
+            for (index, mime) in types.iter().enumerate() {
+                let Some(subtype) = mime.strip_prefix("image/") else {
+                    return Err("invalid image MIME type".into());
+                };
+                if subtype.is_empty()
+                    || !subtype
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b".+-".contains(&byte))
+                    || types[..index].contains(mime)
+                {
+                    return Err("invalid or duplicate image MIME type".into());
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
@@ -174,6 +281,9 @@ impl ModelInfo {
 
     pub fn validate(&self) -> Result<(), String> {
         validation::text(&self.id)?;
+        if let Some(image) = &self.image_input {
+            image.validate()?;
+        }
         if let Some(levels) = &self.thinking_levels {
             for (index, level) in levels.iter().enumerate() {
                 if levels[..index].contains(level) {

@@ -72,6 +72,12 @@ final class ModalHost {
         return dialog != null && !closing;
     }
 
+    /** The shown dialog's window (its decor view), or null. */
+    View window() {
+        Window window = shown() && dialog.isShowing() ? dialog.getWindow() : null;
+        return window == null ? null : window.getDecorView();
+    }
+
     void show() {
         if (dialog != null && !closing) {
             dialog.show();

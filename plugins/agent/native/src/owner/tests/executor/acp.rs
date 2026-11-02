@@ -18,9 +18,7 @@
  */
 
 use super::*;
-#[path = "acp/post_cleanup.rs"]
 mod post_cleanup;
-#[path = "acp/setup_tests.rs"]
 mod setup_tests;
 
 async fn setup(

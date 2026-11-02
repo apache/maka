@@ -46,6 +46,8 @@ npm --workspace @maka-agent/plugin-sdk run typecheck
 
 生成过程使用 [maka-schema](../../tools/schema/README.zh-CN.md)，无需构建产品或 V8。运行时也可通过 `maka application schema` 导出目录。
 
+Agent 工具直接投影已有服务方法。`target` 为 `{ kind: 'import', name: 'files' }` 时选择绑定的服务，为 `{ kind: 'export', name: 'agent' }` 时选择 Agent 自身的 Session API，再配置 `method`、`name`、`description`、`result` 和 `confirmation`。自身 export 无需自导入，两条路径都保留正常的 Host 授权和原始 mutation 回执。其他插件可以导入 `contracts.agent` 直接使用同一套 Session 操作；模型可用工具由 Agent 配置单独选择。
+
 UI 模块导出同步的 `activate(context)`，返回 `UiActivation`：`{ exports, prepareReload? }`。其中 `exports` 以包声明中的局部 ID 为键，各项 `kind` 必须匹配，支持根界面、嵌入视图、命令、面板、设置页和工具渲染器。`root` 渲染完整应用，由部署来源的 `ui: { path, id }` 选择；`UiRootProps` 包含 `{ context, runtime }`。这些贡献通过普通 NSH 组件运行在桌面和终端中。安装的插件可使用客户端现有的可信能力；`nsh.cleanup` 释放激活实例拥有的资源。Host 服务接收请求作用域内的导入与附件，不提供环境级 Node API。
 
 使用 `context.application`，让应用调用经过 UI 实例声明的服务绑定。它是原生应用客户端，保留 Client、journal 和原始 receipt。`context.services[importName][index]` 选择具体的绑定提供者，也支持有多个提供者的导入；`context.operations` 恢复该实例的原始 mutation receipt。可信 UI 代码仍可使用完整的 `context.host` 和 `maka/host` 客户端，包括根界面与目录集成。控制器应持有所属激活实例的应用客户端。

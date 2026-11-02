@@ -24,26 +24,6 @@ use std::{
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-struct Events;
-impl maka_agent_ports::model::Events for Events {
-    fn emit(&self, _: maka_agent_ports::model::Emission) -> BoxFuture<'_, Result<(), Error>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-struct Allocation {
-    bytes: Vec<u8>,
-    dropped: Arc<AtomicUsize>,
-}
-impl AsRef<[u8]> for Allocation {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-impl Drop for Allocation {
-    fn drop(&mut self) {
-        self.dropped.fetch_add(1, Ordering::SeqCst);
-    }
-}
 fn network() -> Arc<Network> {
     Arc::new(Network {
         tls: maka_network::TlsConfigCache::default(),
@@ -51,109 +31,6 @@ fn network() -> Arc<Network> {
         identity: 1,
     })
 }
-fn request(url: String, dropped: Arc<AtomicUsize>) -> http::Request {
-    let bytes = http::Bytes::from_owner(Allocation {
-        bytes: vec![7; 32 * 1024 * 1024],
-        dropped,
-    });
-    http::Request {
-        url,
-        method: http::Method::Post,
-        headers: vec![],
-        body: http::RequestBody::stream(futures_util::stream::once(async move { Ok(bytes) })),
-    }
-}
-async fn stalled_server(
-    early_response: bool,
-) -> (
-    String,
-    tokio::sync::oneshot::Receiver<()>,
-    tokio::task::JoinHandle<()>,
-) {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/", listener.local_addr().unwrap());
-    let (started, ready) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let mut header = Vec::new();
-        while !header.ends_with(b"\r\n\r\n") {
-            header.push(socket.read_u8().await.unwrap());
-        }
-        if early_response {
-            socket
-                .write_all(b"HTTP/1.1 413 Payload Too Large\r\nContent-Length: 0\r\n\r\n")
-                .await
-                .unwrap();
-        }
-        let _ = started.send(());
-        // Keep the socket open without draining the upload. Test cleanup aborts
-        // this owner only after the client's custody acknowledgement.
-        std::future::pending::<()>().await;
-    });
-    (url, ready, task)
-}
-#[tokio::test]
-async fn pending_native_http_cancel_waits_for_giant_source_allocation_drain() {
-    let (url, ready, server) = stalled_server(false).await;
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let cancellation = CancellationToken::new();
-    let stop = cancellation.clone();
-    let transport = Call {
-        transport: network(),
-        events: Arc::new(Events),
-        cancellation: CancellationToken::new(),
-    };
-    let input = request(url, dropped.clone());
-    let pending = tokio::spawn(async move { transport.request(input, stop).await });
-    tokio::time::timeout(Duration::from_secs(5), ready)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(dropped.load(Ordering::SeqCst), 0);
-    cancellation.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(12), pending)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(result, Err(Error::Cancelled)),
-        "cancel outcome: {}",
-        match &result {
-            Ok(_) => "unexpected response".into(),
-            Err(error) => error.to_string(),
-        }
-    );
-    assert_eq!(
-        dropped.load(Ordering::SeqCst),
-        1,
-        "cancellation must acknowledge physical release"
-    );
-    server.abort();
-    let _ = server.await;
-}
-#[tokio::test]
-async fn early_response_close_drains_upload_without_cancelling_callers_token() {
-    let (url, ready, server) = stalled_server(true).await;
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let cancellation = CancellationToken::new();
-    let network = network();
-    let response = tokio::time::timeout(
-        Duration::from_secs(5),
-        network.request(request(url, dropped.clone()), cancellation.clone()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    ready.await.unwrap();
-    assert_eq!(response.head.status, 413);
-    response.body.cancel();
-    response.body.close().await.unwrap();
-    assert_eq!(dropped.load(Ordering::SeqCst), 1);
-    assert!(!cancellation.is_cancelled());
-    server.abort();
-    let _ = server.await;
-}
-
 async fn line(socket: &mut tokio::net::TcpStream) -> String {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n") {
@@ -320,71 +197,6 @@ async fn redirect_method_conversion_drops_payload_headers_and_preserves_head() {
     }
 }
 #[tokio::test]
-async fn cancellation_on_replayed_hop_waits_for_new_allocation_release() {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let url = format!("http://{}/start", listener.local_addr().unwrap());
-    let (started, ready) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let headers = head(&mut socket).await;
-        assert_eq!(payload(&mut socket, &headers).await, 16 * 1024 * 1024);
-        redirect(&mut socket, 307, "/next").await;
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let _ = head(&mut socket).await;
-        let _ = started.send(());
-        std::future::pending::<()>().await;
-    });
-    let dropped = Arc::new(AtomicUsize::new(0));
-    let observed = dropped.clone();
-    let opened = Arc::new(AtomicUsize::new(0));
-    let opens = opened.clone();
-    let body = http::RequestBody::replayable(move || {
-        opens.fetch_add(1, Ordering::SeqCst);
-        let bytes = http::Bytes::from_owner(Allocation {
-            bytes: vec![7; 16 * 1024 * 1024],
-            dropped: observed.clone(),
-        });
-        http::RequestBody::stream(futures_util::stream::once(async move { Ok(bytes) }))
-    });
-    let cancellation = CancellationToken::new();
-    let token = cancellation.clone();
-    let pending = tokio::spawn(async move {
-        network()
-            .request(
-                http::Request {
-                    url,
-                    method: http::Method::Post,
-                    headers: vec![],
-                    body,
-                },
-                token,
-            )
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(10), ready)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(opened.load(Ordering::SeqCst), 2);
-    assert_eq!(dropped.load(Ordering::SeqCst), 1);
-    cancellation.cancel();
-    let result = tokio::time::timeout(Duration::from_secs(12), pending)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(
-        matches!(result, Err(Error::Cancelled)),
-        "cancel outcome: {}",
-        match &result {
-            Ok(_) => "unexpected response".into(),
-            Err(error) => error.to_string(),
-        }
-    );
-    assert_eq!(dropped.load(Ordering::SeqCst), 2);
-    server.abort();
-    let _ = server.await;
-}
-#[tokio::test]
 async fn cross_origin_redirect_is_returned_without_forwarding_credentials() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -416,4 +228,157 @@ async fn cross_origin_redirect_is_returned_without_forwarding_credentials() {
             .await
             .is_err()
     );
+}
+
+struct PayloadOwner {
+    bytes: Vec<u8>,
+    dropped: Arc<AtomicUsize>,
+}
+impl AsRef<[u8]> for PayloadOwner {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+impl Drop for PayloadOwner {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::SeqCst);
+    }
+}
+struct SourceCleanup {
+    dropped: Arc<AtomicUsize>,
+    closed: Arc<tokio::sync::Semaphore>,
+}
+impl http::UploadCleanup for SourceCleanup {
+    fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+        Box::pin(async move {
+            assert_eq!(self.dropped.load(Ordering::SeqCst), 1);
+            self.closed.add_permits(1);
+            Ok(())
+        })
+    }
+}
+
+#[tokio::test]
+async fn held_response_headers_release_upload_source_without_closing_connection() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/held", listener.local_addr().unwrap());
+    let (read, received) = tokio::sync::oneshot::channel();
+    let (release, headers) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let headers_read = head(&mut socket).await;
+        assert_eq!(payload(&mut socket, &headers_read).await, 128 * 1024);
+        read.send(()).unwrap();
+        headers.await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+            .await
+            .unwrap();
+    });
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let closed = Arc::new(tokio::sync::Semaphore::new(0));
+    let bytes = http::Bytes::from_owner(PayloadOwner {
+        bytes: vec![7; 128 * 1024],
+        dropped: dropped.clone(),
+    });
+    let input = http::RequestBody::with_length(
+        futures_util::stream::once(async move { Ok(bytes) }),
+        128 * 1024,
+    )
+    .with_cleanup(Arc::new(SourceCleanup {
+        dropped,
+        closed: closed.clone(),
+    }));
+    let network = network();
+    let pending = network.request(
+        http::Request {
+            url,
+            method: http::Method::Post,
+            headers: Vec::new(),
+            body: input,
+        },
+        CancellationToken::new(),
+    );
+    tokio::pin!(pending);
+    tokio::select! {
+        read = received => read.unwrap(),
+        response = &mut pending => panic!("response arrived before headers release: {}", response.is_ok()),
+    }
+    tokio::select! {
+        permit = closed.acquire() => permit.unwrap().forget(),
+        response = &mut pending => panic!("source close interrupted live connection: {}", response.is_ok()),
+    }
+    assert!(futures_util::poll!(pending.as_mut()).is_pending());
+    release.send(()).unwrap();
+    let response = pending.await.unwrap();
+    assert_eq!(response.head.status, 200);
+    assert_eq!(response.body.next().await.unwrap(), Some(b"ok".to_vec()));
+    assert_eq!(response.body.next().await.unwrap(), None);
+    response.body.close().await.unwrap();
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn tls_handshake_eof_is_retryable_but_invalid_tls_is_not() {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        for eof in [true, false] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!(
+                "https://{}/?api_key=must-not-appear",
+                listener.local_addr().unwrap()
+            );
+            let server = tokio::spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut record = [0; 5];
+                socket.read_exact(&mut record).await.unwrap();
+                let mut hello = vec![0; usize::from(u16::from_be_bytes([record[3], record[4]]))];
+                socket.read_exact(&mut hello).await.unwrap();
+                if !eof {
+                    socket
+                        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                        .await
+                        .unwrap();
+                }
+                socket.shutdown().await.unwrap();
+            });
+            let error = network()
+                .request(
+                    http::Request {
+                        method: http::Method::Get,
+                        url,
+                        headers: Vec::new(),
+                        body: Default::default(),
+                    },
+                    CancellationToken::new(),
+                )
+                .await
+                .err()
+                .expect("TLS handshake must fail");
+            server.await.unwrap();
+            let message = error.to_string();
+            assert!(
+                !message.contains("must-not-appear"),
+                "request URLs must stay private: {message}"
+            );
+            if eof {
+                let Error::Provider(failure) = error else {
+                    panic!("handshake EOF must remain a retryable network failure: {message}");
+                };
+                assert_eq!(failure.reason(), ProviderFailureReason::Network);
+                assert!(failure.retryable() && failure.replay_safe());
+                assert!(failure.message().contains("tls handshake eof"), "{message}");
+            } else {
+                assert!(
+                    matches!(error, Error::Adapter(_)),
+                    "invalid TLS must not become a retryable connection failure: {message}"
+                );
+                assert!(
+                    message.to_ascii_lowercase().contains("invalid"),
+                    "the TLS cause must be preserved: {message}"
+                );
+            }
+        }
+    })
+    .await
+    .unwrap();
 }

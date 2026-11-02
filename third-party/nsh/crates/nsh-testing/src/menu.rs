@@ -65,19 +65,22 @@ pub(crate) fn find<'a>(items: &'a [MenuItem], label: &str) -> Result<&'a MenuAct
         });
         let Some(item) = found else {
             let shown: Vec<String> = entries(items).into_iter().map(|e| e.label).collect();
-            return Err(format!("the menu has no item {label:?}; it has {shown:?}"));
+            return Err(format!(
+                "{}; it has {shown:?}",
+                crate::failure::no_menu_item(label)
+            ));
         };
         match item {
             MenuItem::Action(action) if !action.enabled => {
-                return Err(format!("the menu item {label:?} is disabled"));
+                return Err(crate::failure::menu_disabled(label, false));
             }
             MenuItem::Action(action) => return Ok(action),
             MenuItem::Submenu { enabled: false, .. } => {
-                return Err(format!("the submenu {part:?} is disabled"));
+                return Err(crate::failure::menu_disabled(part, true));
             }
             MenuItem::Submenu { items, .. } => level = items,
             MenuItem::Separator => unreachable!("not found"),
         }
     }
-    Err(format!("the menu has no item {label:?}"))
+    Err(crate::failure::no_menu_item(label))
 }

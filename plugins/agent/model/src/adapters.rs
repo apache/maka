@@ -18,16 +18,21 @@
  */
 
 mod anthropic;
+mod anthropic_documents;
 mod body;
 mod chat_completions;
 mod codex;
 mod error;
 mod events;
 mod http;
+mod http_header;
 mod media;
 mod prompt;
 mod request;
+mod request_bytes;
+pub(crate) use request_bytes::encoded_request_bytes;
 mod responses;
+mod retry;
 pub(crate) mod wire;
 
 use crate::ProviderKind;

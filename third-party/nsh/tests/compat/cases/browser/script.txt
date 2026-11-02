@@ -83,6 +83,97 @@ expect ElementTip
 event text:ElementTrigger onMouseLeave
 absent ElementTip
 covers [props] tooltip
+# base-popup-looks
+tap id:case-base-popup-looks
+# A popover is made with its starting looks and takes its own from its
+# first frame on; it says the side it went on.
+tap text:PopTrigger
+expect PopBody
+style parent:text:PopBody opacity 0
+style parent:text:PopBody backgroundColor #ff0000ff
+expect Side: popover bottom 40
+wait 100
+nostyle parent:text:PopBody opacity
+nostyle parent:text:PopBody backgroundColor
+# Closed, it stays with its ending looks through its 300 ms; then it is
+# gone and closed.
+tap text:PopTrigger
+style parent:text:PopBody opacity 0.5
+style parent:text:PopBody backgroundColor #0000ffff
+expect PopBody
+expect Life: popover open
+wait 500
+absent PopBody
+expect Life: popover closed
+covers [props] Popover.popupStartingClass
+covers [props] Popover.popupStartingStyle
+covers [props] Popover.popupEndingClass
+covers [props] Popover.popupEndingStyle
+covers [events] Popover.onPosition
+# A menu and its submenu, the same.
+tap text:MenuTrigger
+expect MenuNew
+style parent:parent:text:MenuNew opacity 0
+style parent:parent:text:MenuNew backgroundColor #ff0000ff
+expect Side: menu bottom
+wait 100
+nostyle parent:parent:text:MenuNew opacity
+tap text:MenuShare
+expect MenuMail
+style parent:parent:text:MenuMail opacity 0
+wait 100
+nostyle parent:parent:text:MenuMail opacity
+# Choosing an item closes both, each with its ending looks.
+tap text:MenuMail
+style parent:parent:text:MenuNew opacity 0.5
+style parent:parent:text:MenuNew backgroundColor #0000ffff
+style parent:parent:text:MenuMail opacity 0.5
+expect MenuNew
+wait 500
+absent MenuNew
+absent MenuMail
+expect Life: menu closed
+covers [props] Menu.popupStartingClass
+covers [props] Menu.popupStartingStyle
+covers [props] Menu.popupEndingClass
+covers [props] Menu.popupEndingStyle
+covers [events] Menu.onPosition
+# A context menu, the same.
+event text:LooksArea onContextMenu pageX=200 pageY=400
+expect CtxCopy
+style parent:parent:text:CtxCopy opacity 0
+style parent:parent:text:CtxCopy backgroundColor #ff0000ff
+expect Side: context bottom
+wait 100
+nostyle parent:parent:text:CtxCopy opacity
+tap text:CtxCopy
+style parent:parent:text:CtxCopy opacity 0.5
+style parent:parent:text:CtxCopy backgroundColor #0000ffff
+wait 500
+absent CtxCopy
+expect Life: context closed
+covers [props] ContextMenu.popupStartingClass
+covers [props] ContextMenu.popupStartingStyle
+covers [props] ContextMenu.popupEndingClass
+covers [props] ContextMenu.popupEndingStyle
+covers [events] ContextMenu.onPosition
+# A tooltip the app shows and hides, the same.
+tap text:TipToggle
+expect TipBody
+style parent:text:TipBody opacity 0
+style parent:text:TipBody backgroundColor #ff0000ff
+wait 100
+nostyle parent:text:TipBody opacity
+tap text:TipToggle
+style parent:text:TipBody opacity 0.5
+style parent:text:TipBody backgroundColor #0000ffff
+wait 500
+absent TipBody
+expect Life: tooltip closed
+covers [props] Tooltip.startingClass
+covers [props] Tooltip.startingStyle
+covers [props] Tooltip.endingClass
+covers [props] Tooltip.endingStyle
 # base-select-desktop
 tap id:case-base-select-desktop
 # A list at the right of its trigger, 7 points away, lined up by its end

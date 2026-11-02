@@ -21,7 +21,7 @@ mod controls;
 
 use super::*;
 use futures_util::FutureExt;
-use maka_agent_engine::{ModelSource, RunningInvocation};
+use maka_agent_engine::{ActivationExit, ModelSource, RunningInvocation};
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationInput;
@@ -37,44 +37,179 @@ pub(super) enum PreparedRun {
     Model(Box<RunInput>),
     Executor(Box<maka_agent_engine::ExecutorInput<crate::executor::Backend>>),
 }
+struct QueuePreparation {
+    admission: runs::Ordered,
+    cancellation: CancellationToken,
+}
+impl maka_agent_engine::NativeApprovalExecutor for Owner {
+    fn prepare(
+        &self,
+        pending: maka_agent_facts::native_approval::NativeApprovalPending,
+        context: maka_agent_facts::tools::ToolCallContext,
+        cancellation: CancellationToken,
+    ) -> BoxFuture<
+        '_,
+        Result<maka_agent_facts::tools::PreparedEffect, maka_agent_facts::tools::ToolError>,
+    > {
+        Box::pin(async move {
+            let session = self
+                .session(&pending.invocation.session_id)
+                .await
+                .map_err(maka_agent_facts::tools::ToolError::Failed)?;
+            workspace::validate(
+                &self.workspace_roots,
+                &session.configuration.workspace,
+                &self.managed_worktrees,
+            )
+            .await
+            .map_err(maka_agent_facts::tools::ToolError::Failed)?;
+            self.native_approval_executor
+                .prepare(pending, context, cancellation)
+                .await
+        })
+    }
+}
+
 impl Owner {
     pub fn activated(self: &Arc<Self>) {
         self.recover_removed_sessions();
         self.scheduler.bind(self);
         self.todo.bind(self);
+        self.bot.bind(self);
         self.goals.bind(self);
         self.plans.bind(self);
         self.start_plans();
         self.start_goals();
         self.start_schedules();
+        self.start_bot_wake();
+        self.start_activation_wake();
         let owner = self.clone();
         self.workers.spawn(async move { owner.schedule().await });
     }
 
+    fn start_activation_wake(self: &Arc<Self>) {
+        let owner = self.clone();
+        self.producers.spawn(async move {
+            let mut changes = owner.store.subscribe_activation_changes();
+            let mut controls = owner.store.subscribe_activation_control_changes();
+            let mut reconcile = true;
+            loop {
+                changes.borrow_and_update();
+                if reconcile {
+                    controls.borrow_and_update();
+                }
+                if owner.stop.is_cancelled() {
+                    return;
+                }
+                let scan = async {
+                    if reconcile {
+                        owner.store.reconcile_activation_controls().await?;
+                    }
+                    // Both queries share a cut so a deadline crossed during the scan stays visible.
+                    let cutoff = now();
+                    owner.schedule_activations(cutoff).await?;
+                    owner
+                        .store
+                        .next_model_retry_deadline(cutoff)
+                        .await
+                        .map_err(RunError::from)
+                }
+                .await;
+                let deadline = match scan {
+                    Ok(deadline) => deadline,
+                    Err(error) => {
+                        owner.queue_failed("", None, &error);
+                        // Retry the read-only scan after a store outage without
+                        // shutting down unrelated sessions or replaying effects.
+                        Some(now().saturating_add(1000))
+                    }
+                };
+                let due = async {
+                    match deadline {
+                        Some(deadline) => {
+                            let deadline = tokio::time::Instant::now().checked_add(
+                                std::time::Duration::from_millis(deadline.saturating_sub(now())),
+                            );
+                            match deadline {
+                                Some(deadline) => tokio::time::sleep_until(deadline).await,
+                                None => std::future::pending::<()>().await,
+                            }
+                        }
+                        None => std::future::pending::<()>().await,
+                    }
+                };
+                reconcile = tokio::select! {
+                    _ = owner.stop.cancelled() => return,
+                    changed = controls.changed() => { if changed.is_err() { return; } true },
+                    changed = changes.changed() => { if changed.is_err() { return; } false },
+                    _ = due => false,
+                };
+            }
+        });
+    }
+
+    pub(super) async fn schedule_activations(
+        self: &Arc<Self>,
+        cutoff: u64,
+    ) -> Result<(), RunError> {
+        let mut sessions = self.store.ready_native_approval_sessions().await?;
+        sessions.extend(self.store.due_model_retry_sessions(cutoff).await?);
+        let mut seen = std::collections::HashSet::new();
+        sessions.retain(|session| seen.insert(session.clone()));
+        for session in sessions {
+            if !self.owns(&session) {
+                continue;
+            }
+            let mut runs = self.runs.state().await;
+            if runs.closing || self.stop.is_cancelled() {
+                return Ok(());
+            }
+            if runs.busy(&session) {
+                continue;
+            }
+            let cancellation = self.stop.child_token();
+            runs.preparing.insert(session.clone(), cancellation.clone());
+            let owner = self.clone();
+            self.workers.spawn(async move {
+                let admission = tokio::select! {
+                    biased;
+                    _ = cancellation.cancelled() => {
+                        owner.runs.state().await.preparing.remove(&session);
+                        return;
+                    }
+                    admission = owner.runs.ordered(&session) => admission,
+                };
+                let preparation = QueuePreparation {
+                    admission,
+                    cancellation,
+                };
+                match owner.advance(&session, None, Some(preparation)).await {
+                    Ok(Some(running)) => owner.drive(running).await,
+                    Ok(None) => {}
+                    Err(error) => owner.queue_failed(&session, None, &error),
+                }
+            });
+        }
+        Ok(())
+    }
+
     // Recover the owner-scoped durable backlog without limiting active Sessions.
     async fn schedule(self: &Arc<Self>) {
-        let mut runs = self.runs.lock().await;
-        if runs.closing {
-            return;
-        }
-        if let Err(error) = self.schedule_locked(&mut runs).await {
-            if !(self.stop.is_cancelled()
+        if let Err(error) = self.schedule_pending().await
+            && !(self.stop.is_cancelled()
                 && matches!(
                     &error,
                     RunError::Cancelled
                         | RunError::Commit(maka_agent_facts::event::CommitError::Retired)
                         | RunError::Store(StoreError::SessionRetired)
                 ))
-            {
-                tracing::error!(stage = "queue_schedule_failed", cause = crate::diagnostics::run_cause(&error),
-                    consequence = "owner_closing", activation = %self.revision.activation, instance = ?self.data_source.namespace,
+        {
+            tracing::error!(stage = "queue_schedule_failed", cause = crate::diagnostics::run_cause(&error),
+                    consequence = "operation_failed", activation = %self.revision.activation, instance = ?self.data_source.namespace,
                     "Agent queue scheduling failed");
-            }
-            runs.closing = true;
-            self.stop.cancel();
         }
     }
-    pub(super) async fn schedule_locked(self: &Arc<Self>, runs: &mut Runs) -> Result<(), RunError> {
+    pub(super) async fn schedule_pending(self: &Arc<Self>) -> Result<(), RunError> {
         let mut after = None;
         loop {
             if self.stop.is_cancelled() {
@@ -91,31 +226,154 @@ impl Owner {
                 if !self.owns(session) {
                     return Err(RunError::InvalidInput("agent_queue_owner_invalid".into()));
                 }
-                if runs.controls.contains_key(session) || runs.quarantined.contains(session) {
+                // The activation wake driver owns parked invocations, including
+                // sessions whose next user message survived a restart.
+                if self
+                    .store
+                    .session(session)
+                    .await?
+                    .activation_checkpoint(session)
+                    .await?
+                    .is_some()
+                {
                     continue;
                 }
-                match self.next(session).await {
-                    Ok(Some((running, basis))) => {
-                        self.publish(runs, &running, basis);
-                        self.workers.spawn(self.clone().drive(running));
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        if error.is_cleanup_unconfirmed() {
-                            runs.quarantined.insert(session.clone());
-                        }
-                        return Err(error);
-                    }
+                let mut runs = self.runs.state().await;
+                if runs.closing || self.stop.is_cancelled() {
+                    return Ok(());
                 }
+                if runs.busy(session) {
+                    continue;
+                }
+                let Ok(admission) = self.runs.try_ordered(session) else {
+                    continue;
+                };
+                let cancellation = self.stop.child_token();
+                runs.preparing.insert(session.clone(), cancellation.clone());
+                let preparation = QueuePreparation {
+                    admission,
+                    cancellation,
+                };
+                let owner = self.clone();
+                let session = session.clone();
+                self.workers.spawn(async move {
+                    match owner.advance(&session, None, Some(preparation)).await {
+                        Ok(Some(running)) => owner.drive(running).await,
+                        Ok(None) => {}
+                        Err(error) => owner.queue_failed(&session, None, &error),
+                    }
+                });
             }
             after = sessions.last().cloned();
+        }
+    }
+    pub(super) async fn start_pending(
+        self: &Arc<Self>,
+        session: &str,
+        admission: runs::Ordered,
+        cancellation: CancellationToken,
+    ) -> Result<(), RunError> {
+        let preparation = QueuePreparation {
+            admission,
+            cancellation,
+        };
+        match self.advance(session, None, Some(preparation)).await {
+            Ok(Some(running)) => {
+                self.workers.spawn(self.clone().drive(running));
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.queue_failed(session, None, &error);
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    async fn advance(
+        self: &Arc<Self>,
+        session: &str,
+        previous: Option<&Invocation>,
+        reserved: Option<QueuePreparation>,
+    ) -> Result<Option<RunningInvocation>, RunError> {
+        let QueuePreparation {
+            admission,
+            cancellation,
+        } = match reserved {
+            Some(preparation) => preparation,
+            None => QueuePreparation {
+                admission: self.runs.ordered(session).await,
+                cancellation: self.stop.child_token(),
+            },
+        };
+        {
+            let mut runs = admission.state().await;
+            if runs.closing {
+                runs.preparing.remove(session);
+                if previous.is_some() {
+                    runs.controls.remove(session);
+                }
+                return Ok(None);
+            }
+            match (previous, runs.controls.get(session)) {
+                (None, None) => {}
+                (Some(previous), Some(control)) if previous == &control.invocation => {}
+                _ => {
+                    runs.preparing.remove(session);
+                    return Ok(None);
+                }
+            }
+            runs.preparing.insert(session.into(), cancellation.clone());
+        }
+        let next = self.next(session, &cancellation).await;
+        let mut runs = admission.state().await;
+        runs.preparing.remove(session);
+        match next {
+            Ok(Some((running, basis))) => {
+                // A durable start retains its original worker even if close won
+                // during admission. Its inherited cancellation drives settlement.
+                self.publish(&mut runs, &running, basis);
+                Ok(Some(running))
+            }
+            Ok(None) => {
+                if previous.is_some() {
+                    runs.controls.remove(session);
+                }
+                self.goals.execution_changed();
+                self.plans.execution_changed();
+                Ok(None)
+            }
+            Err(error) => {
+                if error.is_cleanup_unconfirmed() {
+                    runs.retained_cleanup.insert(session.into());
+                }
+                runs.controls.remove(session);
+                Err(error)
+            }
+        }
+    }
+    fn queue_failed(&self, session: &str, previous: Option<&Invocation>, error: &RunError) {
+        if !(self.stop.is_cancelled()
+            && matches!(
+                error,
+                RunError::Cancelled
+                    | RunError::Commit(maka_agent_facts::event::CommitError::Retired)
+                    | RunError::Store(StoreError::SessionRetired)
+            ))
+        {
+            tracing::error!(stage = "queue_advance_failed", cause = crate::diagnostics::run_cause(error),
+                consequence = "operation_failed", session_id = %session,
+                turn_id = previous.map(|invocation| invocation.turn_id.as_str()),
+                run_id = previous.map(|invocation| invocation.run_id.as_str()),
+                invocation_id = previous.map(|invocation| invocation.invocation_id.as_str()),
+                activation = %self.revision.activation, "Agent queue advancement failed");
         }
     }
     pub(super) fn publish(
         self: &Arc<Self>,
         runs: &mut Runs,
         running: &RunningInvocation,
-        basis: MessageBasis,
+        basis: Arc<MessageBasis>,
     ) {
         if let Some(model) = &basis.model {
             self.title_after_message(running.invocation().clone(), model.clone());
@@ -125,11 +383,13 @@ impl Owner {
         runs.controls.insert(
             running.invocation().session_id.clone(),
             Control {
+                #[cfg(test)]
+                handoff: running.handoff().cloned(),
+                preview: running.preview(),
                 compacting: false,
                 invocation: running.invocation().clone(),
                 basis,
                 cancellation: running.cancellation(),
-                failure: None,
             },
         );
     }
@@ -141,68 +401,54 @@ impl Owner {
                 let completion = std::panic::AssertUnwindSafe(running.completion())
                     .catch_unwind()
                     .await;
-                let mut runs = self.runs.lock().await;
                 if !matches!(completion, Ok(ref value) if value.cleanup.is_ok()) {
+                    let mut runs = self.runs.state().await;
                     let stage = if completion.is_err() {
                         "queue_completion_panicked"
                     } else {
                         "queue_cleanup_unconfirmed"
                     };
-                    tracing::error!(stage, cause = "cleanup_unconfirmed", consequence = "session_quarantined",
+                    tracing::error!(stage, cause = "cleanup_unconfirmed", consequence = "resources_retained",
                         session_id = %invocation.session_id, turn_id = %invocation.turn_id,
                         run_id = %invocation.run_id, invocation_id = %invocation.invocation_id,
                         activation = %self.revision.activation, "Agent invocation cleanup is unconfirmed");
-                    runs.controls
-                        .get_mut(&session)
-                        .expect("original worker control")
-                        .failure = Some("agent_cleanup_unconfirmed");
-                    runs.quarantined.insert(session.clone());
+                    runs.controls.remove(&session);
+                    runs.retained_cleanup.insert(session.clone());
+                    drop(runs);
+                    match self.advance(&session, None, None).await {
+                        Ok(Some(next)) => {
+                            running = next;
+                            continue;
+                        }
+                        Ok(None) => {}
+                        Err(error) => self.queue_failed(&session, Some(&invocation), &error),
+                    }
                     return;
                 }
-                let next = if runs.closing {
-                    Ok(None)
-                } else {
-                    // Preparation is temporary; completion waits must not
-                    // retain space for the next invocation's input state.
-                    Box::pin(self.next(&session)).await
-                };
+                let completion = completion.expect("original worker completion");
+                if let Ok(ActivationExit::Parked(_)) = completion.result {
+                    let mut runs = self.runs.state().await;
+                    runs.controls.remove(&session);
+                    drop(runs);
+                    if let Err(error) = self.mcp_projects.prune().await {
+                        tracing::warn!(cause = %error, "MCP snapshot cleanup failed");
+                    }
+                    // Readiness can commit while the old activation still owns admission.
+                    // Recheck only after that worker confirms cleanup.
+                    if let Err(error) = self.schedule_activations(now()).await {
+                        self.queue_failed(&session, Some(&invocation), &error);
+                    }
+                    return;
+                }
+                let next = self.advance(&session, Some(&invocation), None).await;
+                if let Err(error) = self.mcp_projects.prune().await {
+                    tracing::warn!(cause = %error, "MCP snapshot cleanup failed");
+                }
                 match next {
-                    Ok(Some((next, basis))) => {
-                        self.publish(&mut runs, &next, basis);
-                        running = next;
-                    }
-                    Ok(None) => {
-                        runs.controls.remove(&session);
-                        self.goals.execution_changed();
-                        self.plans.execution_changed();
-                        return;
-                    }
+                    Ok(Some(next)) => running = next,
+                    Ok(None) => return,
                     Err(error) => {
-                        if !((self.stop.is_cancelled() || runs.closing)
-                            && matches!(
-                                &error,
-                                RunError::Cancelled
-                                    | RunError::Commit(
-                                        maka_agent_facts::event::CommitError::Retired
-                                    )
-                                    | RunError::Store(StoreError::SessionRetired)
-                            ))
-                        {
-                            tracing::error!(stage = "queue_advance_failed", cause = crate::diagnostics::run_cause(&error),
-                                consequence = "owner_closing", session_id = %invocation.session_id,
-                                turn_id = %invocation.turn_id, run_id = %invocation.run_id,
-                                invocation_id = %invocation.invocation_id, activation = %self.revision.activation,
-                                "Agent queue advancement failed after invocation completion");
-                        }
-                        runs.controls
-                            .get_mut(&session)
-                            .expect("original worker control")
-                            .failure = Some("agent_execution_unavailable");
-                        if error.is_cleanup_unconfirmed() {
-                            runs.quarantined.insert(session.clone());
-                        }
-                        runs.closing = true;
-                        self.stop.cancel();
+                        self.queue_failed(&session, Some(&invocation), &error);
                         return;
                     }
                 }
@@ -210,79 +456,355 @@ impl Owner {
         })
     }
     async fn next(
-        &self,
+        self: &Arc<Self>,
         session: &str,
-    ) -> Result<Option<(RunningInvocation, MessageBasis)>, RunError> {
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
         loop {
-            if self.stop.is_cancelled() {
+            if cancellation.is_cancelled() {
                 return Ok(None);
             }
-            let queue = self
-                .store
-                .session(session)
-                .await?
-                .message_queue(session)
-                .await?;
-            let Some(entry) = queue
+            let store = self.store.session(session).await?;
+            if let Some(checkpoint) = store.activation_checkpoint(session).await? {
+                return match &checkpoint.checkpoint.suspension {
+                    maka_agent_facts::native_approval::ActivationSuspension::NativeApprovals => {
+                        self.prepare_native_approval_resume(checkpoint, cancellation)
+                            .await
+                    }
+                    maka_agent_facts::native_approval::ActivationSuspension::ModelRetry {
+                        plan,
+                    } => {
+                        if self
+                            .settle_model_retry_controls(&store, &checkpoint.receipt)
+                            .await?
+                        {
+                            continue;
+                        }
+                        // The append transaction checks the deadline again under fresh custody.
+                        if plan.not_before_unix_ms > now() {
+                            return Ok(None);
+                        }
+                        let receipt = checkpoint.receipt.clone();
+                        match self
+                            .prepare_model_retry_resume(checkpoint, cancellation)
+                            .await
+                        {
+                            Err(
+                                error @ (RunError::Commit(
+                                    maka_agent_facts::event::CommitError::PermissionRevoked
+                                    | maka_agent_facts::event::CommitError::Retired,
+                                )
+                                | RunError::Store(
+                                    StoreError::PermissionRevoked | StoreError::SessionRetired,
+                                )
+                                | RunError::Cancelled),
+                            ) => {
+                                if self.settle_model_retry_controls(&store, &receipt).await? {
+                                    continue;
+                                }
+                                Err(error)
+                            }
+                            result => result,
+                        }
+                    }
+                };
+            }
+            let mut queue = store.message_queue(session).await?;
+            if queue.entries.is_empty() {
+                return Ok(None);
+            }
+            let selected = queue
                 .entries
                 .iter()
-                .find(|entry| entry.source.disposition == MessageDisposition::Steering)
-                .or_else(|| queue.entries.first())
-            else {
-                return Ok(None);
-            };
-            if entry.execution.owner != self.prefix || !self.owns(session) {
-                return Err(RunError::InvalidInput("agent_queue_owner_invalid".into()));
+                .position(|entry| entry.source.disposition == MessageDisposition::Steering)
+                .unwrap_or(0);
+            let entry = queue.entries.swap_remove(selected);
+            drop(queue);
+            if let Some(running) = self.prepare_selected(session, &entry, cancellation).await? {
+                return Ok(Some(running));
             }
-            let invocation = if entry.source.disposition == MessageDisposition::TurnStarted {
-                entry.invocation.clone()
-            } else {
-                let identity =
-                    hex::encode(Sha256::digest(entry.source.message.message_id.as_bytes()));
-                Invocation {
-                    session_id: session.into(),
-                    turn_id: format!("t_{identity}"),
-                    run_id: format!("r_{identity}"),
-                    invocation_id: format!("i_{identity}"),
+        }
+    }
+    async fn settle_model_retry_controls(
+        &self,
+        store: &maka_event_log::root_store::SessionStore,
+        receipt: &maka_event_log::native_approvals::ParkedActivationReceipt,
+    ) -> Result<bool, RunError> {
+        let mut changes = store.subscribe_commits()?;
+        let mut uncertain = false;
+        loop {
+            match store.settle_controlled_model_retry(receipt).await {
+                Ok(settled) => return Ok(settled),
+                Err(StoreError::CommitUnknown(_) | StoreError::OperationUnknown) if !uncertain => {
+                    uncertain = true;
                 }
+                Err(error) if !uncertain => return Err(error.into()),
+                Err(_) => {
+                    if changes.changed().await.is_err() {
+                        std::future::pending::<()>().await;
+                    }
+                }
+            }
+        }
+    }
+
+    async fn prepare_model_retry_resume(
+        self: &Arc<Self>,
+        checkpoint: maka_event_log::native_approvals::ActivationCheckpointRecord,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
+        let invocation = checkpoint.checkpoint.invocation.clone();
+        let mut basis: MessageBasis = serde_json::from_value(
+            checkpoint.checkpoint.native_basis.clone(),
+        )
+        .map_err(|error| {
+            RunError::InvalidInput(format!("invalid frozen retry native basis: {error}"))
+        })?;
+        basis.mcp_catalog = Some(
+            self.mcp_projects
+                .catalog(basis.mcp_revision.as_deref())
+                .map_err(RunError::InvalidInput)?,
+        );
+        let basis = Arc::new(basis);
+        let store = self.store.session(&invocation.session_id).await?;
+        let current = self
+            .session(&invocation.session_id)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        let permission_basis = Some(maka_agent_facts::workspace::PermissionBasis {
+            boundary_revision: current.configuration.boundary_revision,
+            binding: current.configuration.binding,
+        });
+        let owner = self.clone();
+        let preparing = cancellation.clone();
+        let continuation_basis = basis.clone();
+        let continuation = Box::pin(async move {
+            owner
+                .prepare_frozen_retry(&invocation, continuation_basis, &preparing)
+                .await
+        });
+        let input = maka_agent_engine::RetryResumeInput {
+            checkpoint,
+            permission_basis,
+            continuation,
+            owner_shutdown: self.stop.clone(),
+            host_epoch: self.revision.activation.clone(),
+        };
+        match self
+            .engine
+            .start_retry_resume(store, input, cancellation.clone())
+            .await
+        {
+            Ok(running) => Ok(Some((running, basis))),
+            Err(RunError::Busy) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn prepare_native_approval_resume(
+        self: &Arc<Self>,
+        checkpoint: maka_event_log::native_approvals::NativeApprovalCheckpoint,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
+        let invocation = checkpoint.checkpoint.invocation.clone();
+        let mut basis: MessageBasis =
+            serde_json::from_value(checkpoint.checkpoint.native_basis.clone()).map_err(
+                |error| RunError::InvalidInput(format!("invalid native approval basis: {error}")),
+            )?;
+        basis.mcp_catalog = Some(
+            self.mcp_projects
+                .catalog(basis.mcp_revision.as_deref())
+                .map_err(RunError::InvalidInput)?,
+        );
+        let basis = Arc::new(basis);
+        let store = self.store.session(&invocation.session_id).await?;
+        let mut configuration = store
+            .invocation_configuration(&invocation)
+            .await?
+            .ok_or_else(|| {
+                RunError::ReconciliationRequired("parked invocation has no configuration".into())
+            })?;
+        let session = self
+            .session(&invocation.session_id)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        // Execution custody is always issued against the current permission ceiling.
+        configuration.boundary_revision = session.configuration.boundary_revision;
+        configuration.workspace_binding = Some(session.configuration.binding);
+        configuration.sandbox_mode = match session.configuration.permissions.access {
+            WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
+            WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+            WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
+        };
+        configuration.approval_policy = if session.configuration.permissions.request_permissions {
+            ApprovalPolicy::OnRequest
+        } else {
+            ApprovalPolicy::Never
+        };
+        let tool_names = self
+            .mcp_projects
+            .catalog(basis.mcp_revision.as_deref())
+            .map_err(RunError::InvalidInput)?
+            .tools
+            .names()
+            .into_iter()
+            .filter(|name| {
+                basis
+                    .allowed_tools
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.contains(name))
+            })
+            .collect();
+        let owner = self.clone();
+        let continuation_basis = basis.clone();
+        let continuation_configuration = configuration.clone();
+        let continuation = Box::pin(async move {
+            let basis = continuation_basis;
+            let configuration = continuation_configuration;
+            workspace::validate(
+                &owner.workspace_roots,
+                &basis.workspace,
+                &owner.managed_worktrees,
+            )
+            .await
+            .map_err(RunError::InvalidInput)?;
+            if owner.stop.is_cancelled() {
+                return Err(RunError::Cancelled);
+            }
+            let model = basis.model.clone().ok_or_else(|| {
+                RunError::InvalidInput("native approval requires model basis".into())
+            })?;
+            let source = crate::model::Source::restore(
+                owner.configuration.clone(),
+                owner.credentials.clone(),
+                model,
+                invocation.session_id.clone(),
+                owner.revision.clone(),
+            )?;
+            let prepared = source.capture().await?;
+            if owner.stop.is_cancelled() {
+                return Err(RunError::Cancelled);
+            }
+            let tools = owner
+                .selected_tools(
+                    &invocation.session_id,
+                    &basis,
+                    configuration.tool_discovery,
+                    configuration.editing_tools,
+                )
+                .map_err(RunError::InvalidInput)?;
+            let settings = maka_agent_engine::RunInput {
+                invocation: invocation.clone(),
+                model_source: Some(Arc::new(source)),
+                model_revision: Some(prepared.revision),
+                provider_id: prepared.provider_id,
+                context: prepared.context,
+                provider: prepared.provider,
+                provider_options: prepared.options,
+                main_output_limit: prepared.main_output_limit,
+                supports_vision: prepared.supports_vision,
+                request_fingerprint: Some(basis.fingerprint.clone()),
+                configuration: configuration.clone(),
+                native_activation_basis: Some(basis.clone()),
+                work: (),
             };
+            Ok(maka_agent_engine::ResumeContinuation { settings, tools })
+        });
+        let input = maka_agent_engine::ResumeInput {
+            configuration,
+            continuation,
+            tool_names,
+            checkpoint,
+            executor: self.clone(),
+            owner_shutdown: self.stop.clone(),
+            host_epoch: self.revision.activation.clone(),
+        };
+        match self
+            .engine
+            .start_resume(store, input, cancellation.clone())
+            .await
+        {
+            Ok(running) => Ok(Some((running, basis))),
+            Err(RunError::Busy) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+
+    pub(super) async fn prepare_selected(
+        &self,
+        session: &str,
+        entry: &PendingMessageAdmission,
+        cancellation: &CancellationToken,
+    ) -> Result<Option<(RunningInvocation, Arc<MessageBasis>)>, RunError> {
+        if entry.execution.owner != self.prefix || !self.owns(session) {
+            return Err(RunError::InvalidInput("agent_queue_owner_invalid".into()));
+        }
+        let invocation = if entry.source.disposition == MessageDisposition::TurnStarted {
+            entry.invocation.clone()
+        } else {
+            let identity = hex::encode(Sha256::digest(entry.source.message.message_id.as_bytes()));
+            Invocation {
+                session_id: session.into(),
+                turn_id: format!("t_{identity}"),
+                run_id: format!("r_{identity}"),
+                invocation_id: format!("i_{identity}"),
+            }
+        };
+        let attempt = async {
             let prepared = self.prepare_pending(entry, invocation.clone()).await;
-            if self.stop.is_cancelled() {
+            if cancellation.is_cancelled() {
                 return Ok(None);
             }
             let result = match prepared {
                 Ok((input, basis)) => self
-                    .start(input, self.stop.child_token())
+                    .start(input, cancellation.clone())
                     .await
                     .map(|running| (running, basis)),
                 Err(reason) => {
                     self.fail_pending(invocation, entry, reason).await?;
-                    continue;
+                    return Ok(None);
                 }
             };
             match result {
-                Ok(running) => return Ok(Some(running)),
+                Ok(running) => Ok(Some(running)),
+                Err(RunError::Cancelled) if cancellation.is_cancelled() => Ok(None),
                 Err(error @ (RunError::InvalidInput(_) | RunError::ReconciliationRequired(_))) => {
-                    self.fail_pending(invocation, entry, public_error(error))
-                        .await?;
+                    if !cancellation.is_cancelled() {
+                        self.fail_pending(invocation, entry, error).await?;
+                    }
+                    Ok(None)
                 }
-                // SQL/commit uncertainty and physical cleanup failures do not
-                // establish a deterministic rejection of the accepted message.
-                Err(error) => return Err(error),
+                Err(error) => Err(error),
             }
         }
+        .await;
+        match attempt {
+            Ok(value) => Ok(value),
+            Err(error @ RunError::Commit(maka_agent_facts::event::CommitError::Rejected(_))) => {
+                // Stop can commit its exact source retraction before its
+                // observer gets to cancel the preparing worker's token.
+                let cancelled = async {
+                    let store = self.store.session(session).await?;
+                    store.message_cancelled(session, &entry.source.message.message_id).await
+                }.await.map_err(|lookup| RunError::Internal(format!(
+                    "pending admission rejected ({error}); cancellation lookup failed ({lookup})"
+                )))?;
+                if cancelled {
+                    return Ok(None);
+                }
+                Err(error)
+            }
+            // SQL/commit uncertainty and physical cleanup failures do not
+            // establish a deterministic rejection of the accepted message.
+            Err(error) => Err(error),
+        }
     }
-    async fn prepare_pending(
+
+    fn validate_accepted_tools(
         &self,
-        entry: &PendingMessageAdmission,
-        invocation: Invocation,
-    ) -> Result<(PreparedRun, MessageBasis), String> {
-        let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
-            .map_err(|_| "agent_message_basis_invalid")?;
-        self.validate_background(&basis).await?;
-        self.validate_graph_basis(&invocation.session_id, &basis)
-            .await?;
-        let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
+        basis: &MessageBasis,
+        selected_catalog: &crate::mcp::Catalog,
+    ) -> Result<(), String> {
         let tools_changed = if basis.executor.is_some() {
             !basis.tools.is_empty()
                 || !basis.internal_tools.is_empty()
@@ -295,32 +817,177 @@ impl Owner {
         if tools_changed {
             return Err("agent_tools_changed".into());
         }
-        // Deserialization allocates independent descriptors. Only after the original
-        // content checks succeed may this admitted basis share the captured catalog.
-        if basis.executor.is_none() {
-            basis.tools = self.tool_basis.clone();
-            basis.internal_tools = selected_catalog.definitions.clone();
-            basis.internal_bindings = selected_catalog.bindings.clone();
+        Ok(())
+    }
+
+    /// Reacquire the accepted model and capabilities under the current permission ceiling.
+    pub(super) async fn prepare_frozen_retry(
+        &self,
+        invocation: &Invocation,
+        basis: Arc<MessageBasis>,
+        cancellation: &CancellationToken,
+    ) -> Result<maka_agent_engine::ResumeContinuation, RunError> {
+        if cancellation.is_cancelled() || self.stop.is_cancelled() {
+            return Err(RunError::Cancelled);
         }
-        let session = self.session(&invocation.session_id).await?;
-        basis.validate_background_target(&session)?;
-        if (!matches!(basis.background_kind, BackgroundKind::Plan(_))
-            && session.configuration.collaboration_mode != basis.collaboration_mode)
+        self.validate_background(&basis)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        self.validate_graph_basis(&invocation.session_id, &basis)
+            .await
+            .map_err(RunError::InvalidInput)?;
+        let catalog = self
+            .mcp_projects
+            .catalog(basis.mcp_revision.as_deref())
+            .map_err(RunError::InvalidInput)?;
+        self.validate_accepted_tools(&basis, &catalog)
+            .map_err(RunError::InvalidInput)?;
+        if basis.executor.is_some() {
+            return Err(RunError::InvalidInput(
+                "frozen model retry requires model basis".into(),
+            ));
+        }
+        let session = self
+            .session(&invocation.session_id)
+            .await
+            .map_err(RunError::Internal)?;
+        basis
+            .validate_background_target(&session)
+            .map_err(RunError::InvalidInput)?;
+        if (!matches!(
+            basis.background_kind,
+            BackgroundKind::Plan(_) | BackgroundKind::Goal(_)
+        ) && session.configuration.collaboration_mode != basis.collaboration_mode)
             || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
             || session.archived
             || session.configuration.workspace != basis.workspace
             || session.configuration.binding != basis.binding
             || session.configuration.tools != basis.allowed_tools
-            || (basis.executor.is_some() && basis.allowed_tools.is_some())
         {
-            return Err("agent_session_configuration_changed".into());
+            return Err(RunError::InvalidInput(
+                "agent_session_configuration_changed".into(),
+            ));
         }
         workspace::validate(
             &self.workspace_roots,
             &basis.workspace,
             &self.managed_worktrees,
         )
-        .await?;
+        .await
+        .map_err(RunError::InvalidInput)?;
+        let store = self.store.session(&invocation.session_id).await?;
+        let mut configuration = store
+            .invocation_configuration(invocation)
+            .await?
+            .ok_or_else(|| {
+                RunError::ReconciliationRequired("frozen invocation has no configuration".into())
+            })?;
+        configuration.boundary_revision = session.configuration.boundary_revision;
+        configuration.workspace_binding = Some(session.configuration.binding);
+        configuration.sandbox_mode = match session.configuration.permissions.access {
+            WorkspaceAccess::ReadOnly => SandboxMode::ReadOnly,
+            WorkspaceAccess::WorkspaceWrite => SandboxMode::WorkspaceWrite,
+            WorkspaceAccess::DangerFullAccess => SandboxMode::DangerFullAccess,
+        };
+        configuration.approval_policy = if session.configuration.permissions.request_permissions {
+            ApprovalPolicy::OnRequest
+        } else {
+            ApprovalPolicy::Never
+        };
+        let model = basis.model.clone().ok_or_else(|| {
+            RunError::InvalidInput("frozen model retry requires model basis".into())
+        })?;
+        let source = crate::model::Source::restore(
+            self.configuration.clone(),
+            self.credentials.clone(),
+            model,
+            invocation.session_id.clone(),
+            self.revision.clone(),
+        )?;
+        let prepared = source.capture().await?;
+        if cancellation.is_cancelled() || self.stop.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        let tools = self
+            .selected_tools(
+                &invocation.session_id,
+                &basis,
+                configuration.tool_discovery,
+                configuration.editing_tools,
+            )
+            .map_err(RunError::InvalidInput)?;
+        let settings = maka_agent_engine::RunInput {
+            invocation: invocation.clone(),
+            model_source: Some(Arc::new(source)),
+            model_revision: Some(prepared.revision),
+            provider_id: prepared.provider_id,
+            context: prepared.context,
+            provider: prepared.provider,
+            provider_options: prepared.options,
+            main_output_limit: prepared.main_output_limit,
+            supports_vision: prepared.supports_vision,
+            request_fingerprint: Some(basis.fingerprint.clone()),
+            configuration,
+            native_activation_basis: Some(basis),
+            work: (),
+        };
+        Ok(maka_agent_engine::ResumeContinuation { settings, tools })
+    }
+
+    async fn prepare_pending(
+        &self,
+        entry: &PendingMessageAdmission,
+        invocation: Invocation,
+    ) -> Result<(PreparedRun, Arc<MessageBasis>), RunError> {
+        let basis = async {
+            let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
+                .map_err(|_| "agent_message_basis_invalid")?;
+            self.validate_background(&basis).await?;
+            self.validate_graph_basis(&invocation.session_id, &basis)
+                .await?;
+            let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
+            self.validate_accepted_tools(&basis, &selected_catalog)?;
+            // Deserialization allocates independent descriptors. Only after the original
+            // content checks succeed may this admitted basis share the captured catalog.
+            if basis.executor.is_none() {
+                basis.tools = self.tool_basis.clone();
+                basis.internal_tools = selected_catalog.definitions.clone();
+                basis.internal_bindings = selected_catalog.bindings.clone();
+                basis.mcp_catalog = Some(selected_catalog);
+            }
+            let session = self.session(&invocation.session_id).await?;
+            basis.validate_background_target(&session)?;
+            if (!matches!(
+                basis.background_kind,
+                BackgroundKind::Plan(_) | BackgroundKind::Goal(_)
+            ) && session.configuration.collaboration_mode != basis.collaboration_mode)
+                || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
+                || session.archived
+                || session.configuration.workspace != basis.workspace
+                || session.configuration.binding != basis.binding
+                || session.configuration.tools != basis.allowed_tools
+                || (basis.executor.is_some() && basis.allowed_tools.is_some())
+            {
+                return Err("agent_session_configuration_changed".into());
+            }
+            workspace::validate(
+                &self.workspace_roots,
+                &basis.workspace,
+                &self.managed_worktrees,
+            )
+            .await?;
+            Ok::<_, String>(basis)
+        }
+        .await
+        .map_err(|message| match message.as_str() {
+            "agent_tools_changed"
+            | "agent_session_configuration_changed"
+            | "agent_message_basis_invalid"
+            | "scheduler_authorization_changed"
+            | "goal_continuation_stopped"
+            | "goal_incognito" => RunError::InvalidInput(message),
+            _ => RunError::Internal(message),
+        })?;
         let backend = match (&basis.model, &basis.executor) {
             (Some(model), None) => {
                 let source = crate::model::Source::restore(
@@ -329,19 +996,22 @@ impl Owner {
                     model.clone(),
                     invocation.session_id.clone(),
                     self.revision.clone(),
-                )
-                .map_err(public_error)?;
-                let prepared = source.capture().await.map_err(public_error)?;
+                )?;
+                let prepared = source.capture().await?;
                 PreparedBackend::Model(Box::new((source, prepared)))
             }
-            (None, Some(executor)) => {
-                PreparedBackend::Executor(Box::new(self.executors.restore(executor)?))
-            }
-            _ => return Err("agent_message_basis_invalid".into()),
+            (None, Some(executor)) => PreparedBackend::Executor(Box::new(
+                self.executors
+                    .restore(executor)
+                    .map_err(RunError::InvalidInput)?,
+            )),
+            _ => return Err(RunError::InvalidInput("agent_message_basis_invalid".into())),
         };
+        let basis = Arc::new(basis);
         Ok((
             self.input(invocation, backend, basis.clone(), entry.source.clone())
-                .await?,
+                .await
+                .map_err(RunError::InvalidInput)?,
             basis,
         ))
     }
@@ -349,7 +1019,7 @@ impl Owner {
         &self,
         invocation: Invocation,
         backend: PreparedBackend,
-        basis: MessageBasis,
+        basis: Arc<MessageBasis>,
         delivered: RootSourceMessage,
     ) -> Result<PreparedRun, String> {
         let system_prompt = match (
@@ -421,10 +1091,12 @@ impl Owner {
                 configuration.tool_mode = source.accepted.tool_mode;
                 configuration.code_language = source.accepted.code_language;
                 configuration.editing_tools = source.accepted.editing_tools;
-                let tools =
-                    self.selected_tools(&basis, basis.tool_discovery, configuration.editing_tools)?;
-                let allow_prior_unknown =
-                    basis.background.is_none() && delivered.message.origin.is_none();
+                let tools = self.selected_tools(
+                    &invocation.session_id,
+                    &basis,
+                    basis.tool_discovery,
+                    configuration.editing_tools,
+                )?;
                 PreparedRun::Model(Box::new(RunInput {
                     model_source: Some(Arc::new(source)),
                     model_revision: Some(prepared.revision),
@@ -435,13 +1107,13 @@ impl Owner {
                     provider_options: prepared.options,
                     main_output_limit: prepared.main_output_limit,
                     supports_vision: prepared.supports_vision,
-                    request_fingerprint: Some(basis.fingerprint),
+                    native_activation_basis: Some(basis.clone()),
+                    request_fingerprint: Some(basis.fingerprint.clone()),
                     configuration,
                     work: RunWork::Message {
                         message: delivered.message.content.clone(),
                         source_messages: vec![delivered],
                         tools,
-                        allow_prior_unknown,
                     },
                 }))
             }
@@ -463,7 +1135,7 @@ impl Owner {
                     },
                     binding: backend,
                     configuration,
-                    request_fingerprint: Some(basis.fingerprint),
+                    request_fingerprint: Some(basis.fingerprint.clone()),
                     source_messages: vec![delivered],
                 }))
             }
@@ -501,8 +1173,16 @@ impl Owner {
         &self,
         invocation: Invocation,
         entry: &PendingMessageAdmission,
-        reason: String,
+        reason: RunError,
     ) -> Result<(), RunError> {
+        let prerequisite = matches!(
+            reason,
+            RunError::InvalidInput(_) | RunError::ReconciliationRequired(_)
+        );
+        let model_failure = match &reason {
+            RunError::Model(error) => error.failure_cause(),
+            _ => None,
+        };
         let events = [
             Fact::InvocationOpened {
                 configuration: None,
@@ -514,9 +1194,14 @@ impl Owner {
             },
             Fact::InvocationEnded {
                 outcome: InvocationOutcome::Failed {
-                    class: "message_preparation_failed".into(),
-                    message: Some(reason),
-                    model_failure: None,
+                    class: if prerequisite {
+                        "message_prerequisite_changed"
+                    } else {
+                        "message_preparation_failed"
+                    }
+                    .into(),
+                    message: Some(reason.to_string()),
+                    model_failure,
                 },
             },
         ]
@@ -538,20 +1223,66 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<bool, String> {
         self.session(session).await?;
-        let runs = self.runs.lock().await;
-        let Some(control) = runs
-            .controls
-            .get(session)
-            .filter(|control| control.invocation.invocation_id == invocation)
-        else {
-            return Ok(false);
+        let physical = {
+            let runs = self.runs.state().await;
+            runs.controls
+                .get(session)
+                .filter(|control| control.invocation.invocation_id == invocation)
+                .map(|control| {
+                    (
+                        control.invocation.clone(),
+                        control.cancellation.clone(),
+                        runs.preparing.get(session).cloned(),
+                    )
+                })
         };
+        let (original, cancellation, preparing) = match physical {
+            Some((original, cancellation, preparing)) => (original, Some(cancellation), preparing),
+            None => {
+                let store = self
+                    .store
+                    .session(session)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                let Some(parked) = store
+                    .activation_checkpoint(session)
+                    .await
+                    .map_err(|_| "agent_execution_unavailable")?
+                    .filter(|parked| parked.checkpoint.invocation.invocation_id == invocation)
+                else {
+                    return Ok(false);
+                };
+                (parked.checkpoint.invocation, None, None)
+            }
+        };
+        {
+            let _gate = self.goals.gate.lock().await;
+            if let Some(mut saved) = self
+                .goals
+                .repository
+                .read(session)
+                .await
+                .map_err(|error| error.to_string())?
+                && saved.goal.status == maka_goal::goal::Status::Active
+                && saved
+                    .goal
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.invocation().turn_id == original.turn_id)
+            {
+                saved
+                    .goal
+                    .control(maka_goal::goal::Control::Pause)
+                    .map_err(|error| error.to_string())?;
+                self.goals.save(saved).await?;
+            }
+        }
         let command = InterruptCommand {
             host_epoch: self.revision.activation.clone(),
             session_id: session.into(),
             interrupt_id: self.operation_id(operation),
-            turn_id: control.invocation.turn_id.clone(),
-            run_id: control.invocation.run_id.clone(),
+            turn_id: original.turn_id.clone(),
+            run_id: original.run_id.clone(),
         };
         loop {
             let revision = self
@@ -567,11 +1298,23 @@ impl Owner {
                 .session(&command.session_id)
                 .await
                 .map_err(|error| error.to_string())?
-                .interrupt_message_queue(&command, revision, Some(&control.invocation))
+                .interrupt_message_queue(&command, revision, Some(&original))
                 .await
             {
                 Ok(InterruptReceipt::Fenced(_)) => {
-                    control.cancellation.cancel();
+                    if let Some(cancellation) = &cancellation {
+                        cancellation.cancel();
+                    }
+                    self.store
+                        .session(session)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .stop_native_approvals(&original, now())
+                        .await
+                        .map_err(|_| "agent_queue_unavailable")?;
+                    if let Some(preparing) = preparing {
+                        preparing.cancel();
+                    }
                     return Ok(true);
                 }
                 Ok(InterruptReceipt::Conflict) => return Ok(false),

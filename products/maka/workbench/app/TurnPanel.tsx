@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { LoadingIndicator } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
 import { cleanup, computed, effect, inputAction, signal, Text, View, List } from 'nsh';
@@ -153,6 +154,7 @@ function stableActivityTitle(desiredTitle: () => string, active: () => boolean) 
 
 function ActivityLog(props: {
   group: () => ProcessGroup;
+  toolProgress(id: string): ToolActivity['phase'] | null;
   row(id: string): Row | undefined;
   rowState(id: string): MessageViewState;
   state: GroupViewState;
@@ -163,6 +165,8 @@ function ActivityLog(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   reading(away: boolean): void;
+  /** Whether the activity list is scrolled to its end, following or not. */
+  settled?(atEnd: boolean): void;
   reveal(): void;
 }) {
   const state = props.state;
@@ -259,6 +263,7 @@ function ActivityLog(props: {
             if (!alive || lease !== state.lease) return;
             const away =
               event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 1;
+            props.settled?.(!away);
             // A capped tool reader can be at the turn's bottom while the user
             // is reading its original. Only an explicit return resumes follow.
             if (
@@ -276,7 +281,7 @@ function ActivityLog(props: {
             state.following.set(!away);
             props.reading(away);
           }}
-          contentStyle={{ paddingRight: 8 }}
+          contentStyle={{ paddingLeft: platform.isTerminal ? 0 : 8, paddingRight: 8 }}
           ref={(node) => {
             ownList = node;
             state.list = node;
@@ -291,7 +296,7 @@ function ActivityLog(props: {
               node.focus();
             }
           }}
-          style={{ height: bodyHeight() }}
+          style={{ height: bodyHeight(), marginLeft: platform.isTerminal ? 0 : -8 }}
         >
           {(id) => (
             <Each of={[id()]} key={(key: string) => key}>
@@ -344,6 +349,7 @@ function ActivityLog(props: {
                       ownerKey={ownedId}
                       viewState={props.rowState(ownedId())}
                       toolMaxHeight={bodyMaxHeight}
+                      toolProgress={props.toolProgress}
                       onToolReading={(key) => {
                         if (
                           !alive ||
@@ -391,6 +397,7 @@ function ActivityLog(props: {
 
 export function TurnPanel(props: {
   group: () => ProcessGroup;
+  toolProgress(id: string): ToolActivity['phase'] | null;
   turn: () => TurnPresentation;
   toolActivity: () => ToolActivity | undefined;
   state: GroupViewState;
@@ -405,6 +412,7 @@ export function TurnPanel(props: {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
   reading(away: boolean): void;
+  settled?(atEnd: boolean): void;
 }) {
   const active = () =>
     props.turn().active &&
@@ -480,6 +488,9 @@ export function TurnPanel(props: {
           open: !props.state.open(),
         })}
       >
+        <If when={active()}>
+          <LoadingIndicator label={stableTitle()} />
+        </If>
         <Text
           style={[
             { ...disclosureTitleStyle, color: active() ? C.secondary : C.muted },

@@ -38,6 +38,7 @@ export const uiHost = nativeHost as UiHost;
 
 type Services = {
   agent: ServiceMethods['agent'];
+  skills: ServiceMethods['skillLibrary'];
   settings: ServiceMethods['settings'];
   authentication: ServiceMethods['settingsAuthentication'];
   setup: ServiceMethods['settingsSetup'];
@@ -45,16 +46,16 @@ type Services = {
   terminal: ServiceMethods['terminal'];
 };
 type Endpoint = keyof Services;
-type Method<E extends Endpoint, Mode extends string> = {
+export type Method<E extends Endpoint, Mode extends string> = {
   [M in keyof Services[E]]: Services[E][M] extends { mode: Mode } ? M : never;
 }[keyof Services[E]] &
   string;
-type Input<E extends Endpoint, M extends string> = M extends keyof Services[E]
+export type Input<E extends Endpoint, M extends string> = M extends keyof Services[E]
   ? Services[E][M] extends { input: infer I }
     ? I
     : never
   : never;
-type Output<E extends Endpoint, M extends string> = M extends keyof Services[E]
+export type Output<E extends Endpoint, M extends string> = M extends keyof Services[E]
   ? Services[E][M] extends { output: infer O }
     ? O
     : never
@@ -180,6 +181,8 @@ export function createHost(application: UiHost) {
           };
     },
     query,
+    stageFiles: (files: string[]) => nativeHost.stageFiles(files),
+    stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),
     subscribe,
@@ -196,6 +199,8 @@ export function createHost(application: UiHost) {
     async control(method: string, input: unknown) {
       return attempt(await nativeHost.control(method, input));
     },
+    beginControl: (method: string, input: unknown) =>
+      nativeHost.beginControl(method, input) as Promise<OriginalMutation>,
     async settingsMutation(
       endpoint: string,
       method: string,
@@ -220,6 +225,7 @@ export function createHost(application: UiHost) {
     abandonSetting: (id: string) => nativeHost.abandonSetting(id) as Promise<ClientOperation>,
     pendingControls: () => nativeHost.pendingControls() as Promise<ClientOperation[]>,
     recoverControl: (id: string) => nativeHost.recoverControl(id) as Promise<OperationReply>,
+    dismissControl: (id: string) => nativeHost.dismissControl(id) as Promise<void>,
     abandonControl: (id: string) => nativeHost.abandonControl(id) as Promise<ClientOperation>,
   };
 }
@@ -268,17 +274,10 @@ export async function terminalMutation<M extends Method<'terminal', 'mutation'>>
   input: Input<'terminal', M>,
 ): Promise<Output<'terminal', M>> {
   const observed = await scope.terminal(method, input);
-  if (!object(observed) || !object(observed.reply)) throw new UiError('Invalid terminal receipt.');
+  if (!object(observed) || !object(observed.reply)) throw new Error('Invalid terminal receipt.');
   const reply = observed.reply as unknown as OperationReply;
   if (reply.receipt.kind !== 'recorded' || reply.receipt.outcome.kind !== 'returned')
-    throw new UiError(
-      'Terminal result is unknown. Recover the original action before trying again.',
-    );
-  if (observed.cleanupError)
-    throw new UiError(
-      'Terminal result was recorded, but its original call did not finish cleanup: {reason}. Do not repeat this action.',
-      { reason: String(observed.cleanupError) },
-    );
+    throw new UiError('This action could not be completed.');
   return reply.receipt.outcome.value as Output<'terminal', M>;
 }
 export const pendingTerminals = (scope: ScopedHost) =>

@@ -50,7 +50,7 @@ export function createComponents(invoke, values, reactive, dom) {
     });
     if (typeof props.ref === "function") {
       const api = spec.methods.length ? { node } : node;
-      for (const method of spec.methods) api[method.name] = (...args) => call(207, [spec.id, node, method.id], api, args, method.promise, false);
+      for (const method of spec.methods) api[method.name] = (...args) => call(207, [spec.id, node, method.id], api, args, method.promise);
       reactive.untracked(() => props.ref(api));
     }
     if (spec.props.some(prop => prop.kind === "children") && "children" in props) {

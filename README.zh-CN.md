@@ -61,4 +61,4 @@ just run
 
 npm 启动器选择匹配的原生平台包，自身不包含 Agent 运行时。原生预览包从同一份源码归档构建并验证，流程见 [packages/cli](packages/cli/README.zh-CN.md)。
 
-Apache Maka 正在 Apache 软件基金会孵化。参见 [DISCLAIMER-WIP](DISCLAIMER-WIP)、[LICENSE](LICENSE) 和 [NOTICE](NOTICE)。
+Apache Maka 正在 Apache 软件基金会孵化。参见 [DISCLAIMER](DISCLAIMER)、[LICENSE](LICENSE) 和 [NOTICE](NOTICE)。

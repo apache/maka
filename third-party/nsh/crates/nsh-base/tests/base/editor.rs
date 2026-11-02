@@ -4,13 +4,17 @@
 //! the text; the ref searches, replaces and folds; a read-only editor
 //! moves but never edits; and a long text makes only the rows in view.
 
-use std::time::Duration;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use nsh_base::editor::{
     Editor, EditorApi, EditorCommand, EditorSearch, EditorSearchResult, EditorSelection, editor,
 };
 use nsh_core::{
-    Size,
+    MountItem, NodeId, PointerEvents, Size,
     element::Root,
     platform::{Idiom, Os},
     prelude::*,
@@ -470,4 +474,62 @@ fn a_long_text_makes_only_the_rows_in_view() {
         (20..150).contains(&rows),
         "{rows} rows made after scrolling"
     );
+}
+
+#[test]
+fn the_rows_text_lets_the_pointer_through_to_the_scroll_views() {
+    // The rows are drawn over the scroll views: a finger or a wheel on a
+    // row's glyphs reaches the scroll views below, as on blank space, so a
+    // view from the row's text up takes no pointer.
+    #[derive(Default)]
+    struct Seen {
+        texts: HashMap<NodeId, String>,
+        pointer: HashMap<NodeId, PointerEvents>,
+        parents: HashMap<NodeId, NodeId>,
+    }
+    let text = props("alpha\nbeta\ngamma");
+    let mut config = EngineConfig {
+        viewport: Size::new(px(800.0), px(900.0)),
+        ..EngineConfig::new(Root::new::<Harness>(move || text.clone()))
+    };
+    config.environment.os = Os::Ios;
+    config.environment.idiom = Idiom::Phone;
+    let mut app = Headless::start(config).expect("the engine starts");
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let into = seen.clone();
+    app.observe(move |_, batch| {
+        let mut seen = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::Text { id, text, .. } => {
+                    seen.texts.insert(*id, text.text.clone());
+                }
+                MountItem::ViewProps { id, props } => {
+                    seen.pointer.insert(*id, props.pointer_events);
+                }
+                MountItem::Insert { parent, child, .. } => {
+                    seen.parents.insert(*child, *parent);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    see(&mut app, "beta");
+    let seen = seen.lock().unwrap();
+    let (&row, _) = seen
+        .texts
+        .iter()
+        .find(|(_, t)| t.as_str() == "beta")
+        .expect("the row's text was made");
+    let mut at = Some(row);
+    let mut blocked = false;
+    while let Some(id) = at {
+        if seen.pointer.get(&id) == Some(&PointerEvents::None) {
+            blocked = true;
+            break;
+        }
+        at = seen.parents.get(&id).copied();
+    }
+    assert!(blocked, "the row's text takes the pointer");
 }

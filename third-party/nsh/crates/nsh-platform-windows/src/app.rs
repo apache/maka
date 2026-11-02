@@ -265,6 +265,7 @@ impl AppView {
             trace: options.trace,
             network: Some(nsh_engine::net::network()),
             websocket: None,
+            refuse_connections: None,
             filesystem: None,
             chunk_loader: None,
             assets: Some(Arc::new(AssetReader(options.asset_base.clone()))),
@@ -371,6 +372,7 @@ fn initial_environment() -> Environment {
         idiom: Idiom::Desktop,
         native_focus_scopes: true,
         fallback_key_bindings: true,
+        file_requests: true,
         ..Environment::default()
     }
 }

@@ -110,6 +110,10 @@ impl Target {
             Self::DarwinArm64 | Self::DarwinX64 => &[
                 "bin/Maka.app/Contents/Info.plist",
                 "bin/Maka.app/Contents/Resources/Maka.icns",
+                "bin/Maka.app/Contents/Resources/DISCLAIMER",
+                "bin/Maka.app/Contents/Resources/LICENSE",
+                "bin/Maka.app/Contents/Resources/NOTICE",
+                "bin/Maka.app/Contents/Resources/THIRD_PARTY_NOTICES.txt",
             ],
             _ => &[],
         }

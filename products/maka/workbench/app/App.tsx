@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { batch, cleanup, effect, signal, Text, View, type JSX } from 'nsh';
+import { batch, cleanup, effect, platform, signal, Text, View, type JSX, type Signal } from 'nsh';
 import { host as nativeHost } from 'maka/host';
 import { Button } from 'nsh/base';
 import type { UiModule, UiRootProps } from '../../../../packages/plugin-sdk/src/workbench.js';
@@ -34,12 +34,12 @@ import {
   type ConversationSessionHandle,
   type ConversationPreviewHandle,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { Workbench, canDockBrowser, canDockPreview } from './Workbench';
+import { Workbench, canDockBrowser, canDockPreview, sidePaneRoom } from './Workbench';
 import { createWorkbenchPlugins, type PanelRoute } from './plugins/context';
 import { PluginPanel } from './plugins/PluginPanel';
 import { currentLocale, tr } from './locale';
 import { errorText, renderText } from './text';
-import { bodyTextStyle, C, controlStyle } from './ui';
+import { bodyTextStyle, C, controlStyle, controlHoverStyle, controlFocusStyle } from './ui';
 
 type Configuration = {
   navigation: UiTarget;
@@ -49,9 +49,16 @@ type Configuration = {
 };
 type SavedRoot = {
   sessionId: string | null;
+  sideSessionIds?: string[];
   sidebarExpanded: boolean;
   settings: { model?: ModelSelection } | null;
   panel: PanelRoute | null;
+};
+
+type SidePane = {
+  id: Signal<string>;
+  handle: Signal<ConversationSessionHandle | null>;
+  render(): JSX.Element;
 };
 
 function App(
@@ -67,6 +74,24 @@ function App(
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
   const session = signal<ConversationSessionHandle | null>(null);
+  const restoredSides = platform.isTerminal ? [] : (saved?.sideSessionIds ?? []);
+  const sides = signal<SidePane[]>(restoredSides.map(createSide));
+  const besides = () => sides().map((pane) => pane.id());
+  const sideFor = (id: string) => sides().find((pane) => pane.id() === id);
+  function createSide(id: string): SidePane {
+    const pane: SidePane = {
+      id: signal(id),
+      handle: signal<ConversationSessionHandle | null>(null),
+      render: () =>
+        runtime.renderView(configuration.session, conversationSessionView, {
+          shell: sideShell(pane),
+          attach(handle) {
+            if (pane.handle() !== handle) pane.handle.set(handle);
+          },
+        }),
+    };
+    return pane;
+  }
   const preview = signal<ConversationPreviewHandle | null>(null);
   const notice = signal<unknown | null>(null);
   let alive = true;
@@ -95,14 +120,55 @@ function App(
     if (panel) plugins.closePanel(panel.instance);
   });
   const previewShown = () => plugins.panel() !== null || (preview()?.shown() ?? false);
+  const sideRoom = () =>
+    sidePaneRoom(
+      sidebarExpanded() && canDockBrowser(previewShown()),
+      previewShown() && canDockPreview(),
+    );
+  const openSide = async (pane: SidePane, id: string | null): Promise<boolean> => {
+    if (!alive || blocked()) return false;
+    const original = pane.id();
+    const owner = pane.handle();
+    try {
+      if (id !== original && owner && !(await owner.leave())) return false;
+      const index = sides().indexOf(pane);
+      if (
+        !alive ||
+        blocked() ||
+        index < 0 ||
+        pane.id() !== original ||
+        (id !== null &&
+          id !== original &&
+          (index >= sideRoom() || id === selected() || sideFor(id) !== undefined))
+      )
+        return false;
+      batch(() => {
+        if (id === null) sides.set(sides().filter((side) => side !== pane));
+        else pane.id.set(id);
+      });
+      return true;
+    } catch (reason) {
+      report(reason);
+      return false;
+    }
+  };
   const openSession = async (id: string | null): Promise<boolean> => {
     if (!alive || blocked()) return false;
+    // A conversation is open in one pane at a time; selecting a side one moves it here.
+    const from = id === null ? undefined : sideFor(id);
+    if (from && !(await openSide(from, null))) return false;
     const generation = ++navigationGeneration;
     const original = selected();
     const owner = session();
     try {
       if (id !== original && owner && !(await owner.leave())) return false;
-      if (!alive || blocked() || generation !== navigationGeneration || selected() !== original)
+      if (
+        !alive ||
+        blocked() ||
+        generation !== navigationGeneration ||
+        selected() !== original ||
+        (id !== null && sideFor(id) !== undefined)
+      )
         return false;
       batch(() => {
         notice.set(null);
@@ -115,10 +181,16 @@ function App(
       return false;
     }
   };
+  const connectionDetails = signal(false);
+  const connectionDiagnostic = () => {
+    const reason = runtime.updateError();
+    return reason instanceof Error ? reason.message : String(reason);
+  };
   const shell: ConversationShell = {
     sessionId: selected,
     visible: () => !settingsOpened() && !(plugins.panel() && !canDockPreview()),
     blocked,
+    connectionLost: () => runtime.updateError() !== null,
     openSession,
     openSettings(model) {
       if (!alive || blocked()) return;
@@ -143,10 +215,42 @@ function App(
       settingsOpened.set(false);
       return true;
     },
+    get openBeside() {
+      return !platform.isTerminal && sideRoom() > 0 ? openBeside : undefined;
+    },
+    ...(platform.isTerminal ? {} : { besideSessionIds: besides }),
   };
+  function openBeside(id: string) {
+    if (!alive || blocked() || id === selected() || sideFor(id)) return;
+    const room = sideRoom();
+    if (room === 0) return;
+    const open = sides();
+    if (open.length < room) sides.set([...open, createSide(id)]);
+    else void openSide(open[room - 1]!, id);
+  }
+  function sideShell(pane: SidePane): ConversationShell {
+    return {
+      sessionId: pane.id,
+      visible: shell.visible,
+      blocked,
+      connectionLost: () => runtime.updateError() !== null,
+      openSession: (id) => openSide(pane, id),
+      openSettings: shell.openSettings,
+      sidebarShown: () => true,
+      sidebarDocked: () => true,
+      previewDocked: () => false,
+      showSidebar() {},
+      hideSidebar() {},
+      dismissRoute: shell.dismissRoute,
+      closePane() {
+        void openSide(pane, null);
+      },
+    };
+  }
   cleanup(
     props.saveWith(async () => ({
       sessionId: selected(),
+      sideSessionIds: besides(),
       sidebarExpanded: sidebarExpanded(),
       settings: settingsOpened() ? { model: settingsModel() } : null,
       panel: plugins.panelRoute(),
@@ -154,18 +258,6 @@ function App(
   );
   return (
     <View style={{ flex: 1, minHeight: 0, backgroundColor: C.background }}>
-      <If when={runtime.updateError() !== null || notice() !== null}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, padding: 8 }}>
-          <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>
-            {renderText(errorText(notice() ?? runtime.updateError()))}
-          </Text>
-          <If when={runtime.updateError() !== null}>
-            <Button onPress={runtime.retryUpdates} style={controlStyle}>
-              <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
-            </Button>
-          </If>
-        </View>
-      </If>
       <Workbench
         expanded={sidebarExpanded}
         previewShown={previewShown}
@@ -178,6 +270,7 @@ function App(
           if (panel) plugins.closePanel(panel.instance);
           else preview()?.close();
         }}
+        sides={sides}
         navigation={() =>
           runtime.renderView(configuration.navigation, conversationNavigationView, { shell })
         }
@@ -203,6 +296,50 @@ function App(
           },
         })}
       </Workbench>
+      <If when={runtime.updateError() !== null || notice() !== null}>
+        <View
+          style={{
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 4,
+            backgroundColor: C.surface,
+          }}
+        >
+          <Text style={[{ ...bodyTextStyle, flex: 1, color: C.warning }, { userSelect: 'text' }]}>
+            {runtime.updateError() !== null
+              ? tr('Connection interrupted. Reconnect to continue; your draft is kept.')
+              : renderText(errorText(notice()))}
+            {connectionDetails() && runtime.updateError() !== null
+              ? `\n${connectionDiagnostic()}`
+              : ''}
+          </Text>
+          <If when={runtime.updateError() !== null}>
+            <Button
+              accessibilityLabel={tr('Details')}
+              onPress={() => connectionDetails.set(!connectionDetails())}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              activeStyle={{ backgroundColor: C.line }}
+            >
+              <Text style={{ ...bodyTextStyle, color: C.secondary }}>{tr('Details')}</Text>
+            </Button>
+            <Button
+              accessibilityLabel={tr('Retry')}
+              onPress={runtime.retryUpdates}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              activeStyle={{ backgroundColor: C.line }}
+            >
+              <Text style={{ ...bodyTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+            </Button>
+          </If>
+        </View>
+      </If>
+
       {runtime.renderView(configuration.preview, conversationPreviewView, {
         shell,
         surface: 'overlays' as const,

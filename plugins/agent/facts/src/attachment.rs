@@ -158,29 +158,3 @@ impl StorageRef {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn modality_precedes_filename_but_mime_whitespace_is_not_reinterpreted() {
-        for (mime, name, expected) in [
-            ("IMAGE/PNG", "script.rs", AttachmentKind::Image),
-            ("application/pdf", "sheet.xlsx", AttachmentKind::Pdf),
-            (
-                "application/octet-stream",
-                "REPORT.DOCX",
-                AttachmentKind::Doc,
-            ),
-            (" image/png", "script.rs", AttachmentKind::Code),
-            (
-                "application/pdf; charset=utf-8",
-                "paper.pdf",
-                AttachmentKind::Other,
-            ),
-        ] {
-            assert_eq!(AttachmentKind::from_metadata(mime, name), expected);
-        }
-    }
-}

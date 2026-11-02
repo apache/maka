@@ -1,0 +1,66 @@
+---
+// One App Stories card: the cover, the app's name, author and description,
+// its platforms, publication date, stars and links.
+import type { ShowcaseApp } from '../lib/showcases';
+import { url, type Lang } from '../lib/site';
+import Badge from './ui/Badge.astro';
+import Button from './ui/Button.astro';
+
+export interface Props {
+  app: ShowcaseApp;
+  lang: Lang;
+}
+
+const { app, lang } = Astro.props;
+const zh = lang === 'zh-CN';
+const t = zh
+  ? { building: '开发中', commercial: '商业产品', visit: '官网', source: '源码', published: '发布于', starsUpdated: 'Stars 更新于' }
+  : { building: 'In development', commercial: 'Commercial', visit: 'Website', source: 'Source', published: 'Published', starsUpdated: 'Stars updated' };
+const href = app.hasReadme ? url(`${zh ? 'zh-CN/' : ''}apps/${app.id}`) : (app.website ?? app.source)!;
+const external = !app.hasReadme;
+const date = app.publishedAt?.slice(0, 10).replaceAll('-', '/');
+const stars = app.stars === null ? null : new Intl.NumberFormat('en', { notation: 'compact', maximumFractionDigits: 1 }).format(app.stars);
+---
+
+<article class="app-card" data-app={app.id}>
+  <a class="app-card__shot" href={href} target={external ? '_blank' : undefined} rel={external ? 'noopener noreferrer' : undefined} aria-label={app.name}>
+    <img src={url(`apps/${app.id}/${app.previews[0]}`)} alt={app.name} loading="lazy" decoding="async" />
+  </a>
+  <div class="app-card__body">
+    <div class="app-card__header">
+      <div class="app-card__identity">
+        <h3 class="app-card__name">{app.name}</h3>
+        <p class="app-card__author">{app.author}</p>
+      </div>
+      {app.building && <Badge variant="outline">{t.building}</Badge>}
+    </div>
+    <p class="app-card__blurb">{app.description}</p>
+    <div class="app-card__platform-row">
+      <span>{app.platforms.join(' / ')}</span>
+      {date && <time datetime={app.publishedAt} title={`${t.published} ${date}`}>{date}</time>}
+    </div>
+    <div class="app-card__footer">
+      <div class="app-card__footer-start">
+        {!app.source && <span class="app-card__commercial">{t.commercial}</span>}
+        {stars !== null && (
+          <span class="app-card__stats" role="img" aria-label={`${app.stars!.toLocaleString('en')} GitHub Stars`} title={app.starsUpdatedAt ? `${t.starsUpdated} ${app.starsUpdatedAt.slice(0, 10)}` : undefined}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11.525 2.295a.53.53 0 0 1 .95 0l2.31 4.679a2.123 2.123 0 0 0 1.595 1.16l5.166.756a.53.53 0 0 1 .294.904l-3.736 3.638a2.123 2.123 0 0 0-.611 1.878l.882 5.14a.53.53 0 0 1-.771.56l-4.618-2.428a2.122 2.122 0 0 0-1.973 0L6.396 21.01a.53.53 0 0 1-.77-.56l.881-5.139a2.122 2.122 0 0 0-.611-1.879L2.16 9.795a.53.53 0 0 1 .294-.906l5.165-.755a2.122 2.122 0 0 0 1.597-1.16z"/></svg>
+            <span>{stars}</span>
+          </span>
+        )}
+      </div>
+      <div class="app-card__links">
+        {app.website && (
+          <Button variant="ghost" size="icon-sm" href={app.website} aria-label={`${app.name} — ${t.visit}`} title={t.visit} target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg>
+          </Button>
+        )}
+        {app.source && (
+          <Button variant="ghost" size="icon-sm" href={app.source} aria-label={`${app.name} — ${t.source}`} title={t.source} target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.64 22.41c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.29 1.19-3.09-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.17 1.18a11 11 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.8 1.19 1.83 1.19 3.09 0 4.42-2.7 5.39-5.26 5.68.41.36.78 1.06.78 2.14v3.17c0 .31.21.67.8.56A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          </Button>
+        )}
+      </div>
+    </div>
+  </div>
+</article>

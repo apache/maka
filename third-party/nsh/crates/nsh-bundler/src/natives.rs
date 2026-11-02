@@ -71,6 +71,10 @@ pub struct NativeUse {
     /// It loads a module whose specifier is computed (`import(name)`),
     /// which may be any native module, whole.
     pub computed_import: bool,
+    /// It may make a shader view: it spells `shader` in a string or a
+    /// template, as the compiled `<Shader>` tags do (they pass it to
+    /// `nsh:rt`'s `element`, and the import of `Shader` is gone).
+    pub shader: bool,
 }
 
 impl NativeUse {
@@ -103,6 +107,13 @@ struct Finder<'u, F> {
 }
 
 impl<F> Finder<'_, F> {
+    /// A string in the code: the tag of a shader view, if it is `shader`.
+    fn quoted(&mut self, value: &str) {
+        if value == "shader" {
+            self.uses.shader = true;
+        }
+    }
+
     /// A name spelled in the code: one of `crypto`'s globals may be reached
     /// through it.
     fn spelled(&mut self, name: &str) {
@@ -189,11 +200,13 @@ impl<'a, F: Fn(&str) -> bool> Visit<'a> for Finder<'_, F> {
 
     fn visit_string_literal(&mut self, it: &StringLiteral<'a>) {
         self.spelled(it.value.as_str());
+        self.quoted(it.value.as_str());
     }
 
     fn visit_template_element(&mut self, it: &TemplateElement<'a>) {
         if let Some(cooked) = &it.value.cooked {
             self.spelled(cooked.as_str());
+            self.quoted(cooked.as_str());
         }
     }
 
@@ -295,6 +308,13 @@ mod tests {
             uses(r#"import "nsh/base";"#).imports.get("nsh/base"),
             Some(&names(&[]))
         );
+    }
+
+    #[test]
+    fn a_shader_tag_counts_as_a_shader() {
+        assert!(uses("_$element(\"shader\");").shader);
+        assert!(uses("u(`shader`);").shader);
+        assert!(!uses("const shader = view;").shader);
     }
 
     #[test]

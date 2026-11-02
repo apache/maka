@@ -784,7 +784,9 @@ fn locate(source: &str, base: Option<&AssetBase>) -> Option<Location> {
     if let Some(path) = source.strip_prefix("asset:/") {
         let path = path.trim_start_matches('/');
         return match base {
-            Some(AssetBase::Directory(dir)) => Some(Location::Path(dir.join(path))),
+            Some(dirs @ (AssetBase::Directory(_) | AssetBase::Directories(_))) => {
+                dirs.file(path).map(Location::Path)
+            }
             Some(AssetBase::Http(url)) => Some(Location::Uri(format!(
                 "{}/{path}",
                 url.trim_end_matches('/')
@@ -1260,6 +1262,7 @@ define_class!(
                 self.emit(EventKind::Error, || {
                     EventPayload::Map(vec![
                         ("message", PayloadValue::Str(message)),
+                        ("code", PayloadValue::Str(nsh_core::element::codes::ACCESS_DENIED.into())),
                         ("url", PayloadValue::Str(url)),
                     ])
                 });

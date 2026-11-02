@@ -20,15 +20,23 @@
 import type {
   AgentAttachmentImageRead,
   AgentChecklist,
+  AgentComputerApps,
   AgentFileCandidates,
   AgentQueue,
+  AgentExecution,
+  AgentPlanView,
+  AgentGoalView,
+  GoalControl,
+  AgentResumable,
   AgentQueueAction,
   AgentQueueMessageResult,
   AgentQueueMutationResult,
   AgentSession,
   AgentToolImageRead,
   AgentWorkspacePermissions,
+  AgentWorkspaceAccess,
   ClientDraftAttachment,
+  CollaborationMode,
   ModelSelection,
   ThinkingLevel,
   WorkspacePath,
@@ -101,7 +109,6 @@ export interface ComposerUploadRow {
   name: string;
   kind: 'reading' | 'uploading' | 'failed' | 'unknown';
   error?: string;
-  recovery: 'inspect' | 'recover' | 'recover_or_abandon';
 }
 
 export interface ComposerAttachmentTarget {
@@ -127,10 +134,6 @@ export interface ComposerAttachments<Element = unknown> {
   dropFiles(uris: string[], onText: (text: string) => void): void;
   open(target: { owner: string; value: boolean }): void;
   remove(target: ComposerAttachmentTarget): void;
-  recover(target: ComposerAttachmentTarget): Promise<void>;
-  abandon(target: ComposerAttachmentTarget): Promise<void>;
-  inspect(target: ComposerAttachmentTarget): Promise<void>;
-  retry(): Promise<void>;
   reportError(reason: unknown): void;
   notify(reason: unknown): void;
   clearNotice(): void;
@@ -152,6 +155,47 @@ export interface ComposerPermissions {
   select(input: { session: AgentSession; settings: AgentWorkspacePermissions }): Promise<void>;
 }
 
+export interface PendingComposerPermissions {
+  readonly id: string;
+  access(): AgentWorkspaceAccess | null;
+  requestPermissions(): boolean | null;
+  pending(): boolean;
+  selectAccess(access: AgentWorkspaceAccess): void;
+  selectRequests(request: boolean): void;
+  /**
+   * Applied with the sandbox settings once the conversation exists; null when
+   * this Agent does not plan.
+   */
+  mode(): CollaborationMode | null;
+  selectMode(mode: CollaborationMode): void;
+}
+
+export type ComposerPlanAction =
+  | { kind: 'approve'; proposalId: string; proposalRevision: number }
+  | { kind: 'revise'; proposalId: string }
+  | { kind: 'abandon'; proposalId: string }
+  | { kind: 'resume'; executionId: string }
+  | { kind: 'cancel'; executionId: string };
+
+export interface ComposerGoal {
+  view(): AgentGoalView | null;
+  pending(): boolean;
+  error(): string;
+  create(objective: string, tokenBudget: number | null): Promise<boolean>;
+  change(action: GoalControl, budget?: { tokenBudget: number | null }): Promise<boolean>;
+}
+
+export interface ComposerPlan {
+  /** Null until the first read; `enabled` says whether this Agent plans at all. */
+  view(): AgentPlanView | null;
+  mode(): CollaborationMode | null;
+  pending(): boolean;
+  error(): string;
+  selectMode(mode: CollaborationMode): Promise<void>;
+  /** Approving or resuming runs the Plan with the conversation's current model. */
+  change(action: ComposerPlanAction): Promise<void>;
+}
+
 type McpConfiguration = Extract<
   ServiceMethods['agent']['projectMcp']['output'],
   { kind: 'configuration' }
@@ -164,6 +208,11 @@ export interface ComposerProjectMcp {
   notice(): string;
   trust(revision: string): Promise<void>;
   dismiss(): void;
+}
+
+export interface ComposerComputerAccess {
+  snapshot(): AgentComputerApps;
+  stop(operationId: string): Promise<void>;
 }
 
 export interface ComposerChecklistSource {
@@ -192,10 +241,14 @@ export interface ComposerSession<Element = unknown> {
   readonly permissions: ComposerPermissions;
   readonly projectMcp: ComposerProjectMcp;
   readonly checklist: ComposerChecklistSource;
+  readonly plan: ComposerPlan;
+  readonly goal?: ComposerGoal;
+  readonly computerAccess: ComposerComputerAccess;
   readonly completion: ComposerCompletionSource;
   draft(): string;
   previewImage(image: ComposerImagePreview): void;
   editable(): boolean;
+  loading(): boolean;
   blockedReason(): string;
   backend(): ComposerBackend;
   modelDetails(): ComposerModelDetails;
@@ -204,22 +257,42 @@ export interface ComposerSession<Element = unknown> {
   empty(): boolean;
   error(): string;
   notice(): string;
-  recoverable(): boolean;
   recovering(): boolean;
-  unconfirmed(): string[];
+  connected(): boolean;
   invocation(): string | null;
   stopping(): boolean;
+  resumable(): AgentResumable | null;
+  resuming(): boolean;
+  resume(source: AgentExecution, backend: ComposerBackend): Promise<void>;
   metrics(): string;
+  /** How much of its model's context the conversation uses, when the model reports a window. */
+  contextUsage?(): ComposerContextUsage | null;
   changeDraft(text: string): void;
   submit(event: { text: string }): void;
   sendRendered(action: ComposerSendAction): void;
-  recover(): Promise<void>;
-  abandon(id: string): Promise<void>;
   stop(invocationId: string | null): Promise<void>;
 }
 
 export interface ComposerViewInput<Element = unknown> {
   session(): ComposerSession<Element> | null;
+  pending?(): {
+    readonly id: string;
+    draft(): string;
+    workspace(): string;
+    permissions: PendingComposerPermissions;
+    changeDraft(text: string): void;
+    confirmation(): string;
+    submit(text: string, expected?: string): void;
+    sending(): boolean;
+    ready(): boolean;
+    files(): { id: string; name: string; bytes: number }[];
+    picking(): boolean;
+    selectFiles(files: string[]): void;
+    pasteClipboard(onText: (text: string) => void): void;
+    reportError(reason: unknown): void;
+    removeFile(id: string): void;
+    openPicker(open: boolean): void;
+  } | null;
   attach(node: ComposerFocusHandle): void;
   commands(): ComposerCommand[];
   active(): boolean;
@@ -235,3 +308,11 @@ export interface ComposerViewInput<Element = unknown> {
   /** Files dragged from another application are over the conversation. */
   fileDragging?(): boolean;
 }
+
+export type ComposerContextUsage = {
+  outputTokensPerSecond: number | null;
+  tokens: number;
+  window: number;
+  /** The count is an estimate or predates the latest additions. */
+  approximate: boolean;
+};

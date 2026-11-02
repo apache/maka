@@ -89,6 +89,11 @@ demo: guide-getting-started     # optional; a demo from demos/<name>.tsx
   (`group:`, a key of `GROUPS` in `src/lib/sections.ts`; the Guide uses
   them). A group is a run of consecutive pages, so keep a group's `order`
   values together.
+- **Elements** list the primitives (`group: primitives`), then the base
+  components (`group: base`), as the gallery's Elements does. A primitive
+  takes an `order` (steps of 10, from the simplest); a base component takes
+  none and lists by name. `tests/elements.test.ts` holds the gallery's
+  Elements (`examples/gallery/App.tsx`) to the same order.
 - **The heading comes from `title`.** A leading `# Title` in the body is
   removed, so pages may keep one for GitHub. The first paragraph is shown as
   the page's standfirst.
@@ -132,6 +137,33 @@ CI sets `NSH_REQUIRE_PLAY=1`, so a failed player build fails the deployment
 instead of publishing pages without their live demos. Pull requests build and
 test without deploying.
 
+## App Stories
+
+`/apps` (`src/components/Apps.astro`, `src/pages/apps/`) presents apps built
+with Native Shell from the reviewed catalog in
+[`longbridge/nsh-showcases`](https://github.com/longbridge/nsh-showcases):
+one folder per app with its manifest, screenshots and an optional README,
+which becomes the app's page at `/apps/<id>`. `src/lib/showcases.ts` reads the
+catalog and runs the catalog's own `validate.ts` and `readme.ts`; the site
+serves each app's screenshots and media from its own build
+(`src/pages/apps/[id]/[file].ts`). Search, sorting and pages are
+`src/lib/showcase-browser.ts`.
+
+For a local preview, clone the catalog next to this repository and install
+its locked dependencies:
+
+```sh
+git clone https://github.com/longbridge/nsh-showcases ../nsh-showcases
+bun install --frozen-lockfile --cwd ../nsh-showcases
+```
+
+`SHOWCASES_DIR` points at a checkout elsewhere. Without one the site builds
+with an empty App Stories page; `NSH_REQUIRE_SHOWCASES=1` (the deployment's)
+requires the catalog. CI checks it out into `.showcases` and requires it,
+and the catalog's workflow dispatches
+`website.yml` after each merge and its weekly star refresh, with its
+`DOCS_DISPATCH_TOKEN` secret.
+
 ## Playground
 
 `/playground` (`src/components/Playground.astro`, `src/lib/playground-client.ts`)
@@ -159,8 +191,14 @@ every demo and is remembered:
 
 | Layout | Frame | Idiom | What the app has |
 | --- | --- | --- | --- |
-| Mobile | 390×844 points, the default | `phone` | touches; menus as sheets, held fingers |
-| Desktop | 1024×640 points, scaled to the column, the source below | `desktop` | a pointer; hover, right clicks, popups, keyboard |
+| Mobile | up to 390×844 points, the default | `phone` | touches; menus as sheets, held fingers |
+| Desktop | the column's width (up to 1024) × up to 900 points | `desktop` | a pointer; hover, right clicks, popups, keyboard |
+
+Panels show the app at its real size, never scaled, with Preview and Source as
+tabs: the frame is as wide as the column allows up to the layout's width, and
+once the app settles its height ends just below what it draws (a scroll
+view that fills the frame grows it by what is out of view)
+(`contentHeight` in `demo-client.ts`), so short demos leave no empty screen.
 
 The rules every demo follows, now and for the ones to come:
 
@@ -176,7 +214,7 @@ The rules every demo follows, now and for the ones to come:
   `Panel`, `Log` and `Segmented`; buttons and text fields are never styled by hand: spread `button(kind)` and
   `field()` and give the label `buttonText(kind)`, so every demo shares one size, radius, hover, pressed, focus and
   disabled treatment). With a pointer (`desktop`, from
-  `platform.idiom === "desktop"`) it has desktop density (`size`: controls
+  `platform.desktop`) it has desktop density (`size`: controls
   of 28 and 32 points, rows of 32 and 40): buttons as wide as their labels,
   never as wide as the stage, comparable numbers in tabular figures at the
   end, one content inset for the whole demo. Where the element behaves
@@ -193,10 +231,11 @@ The rules every demo follows, now and for the ones to come:
 
 The player in `public/play/` is the WebAssembly build of the nsh runtime
 (`crates/nsh-platform-web`, rendering to the DOM) with every demo bundled by
-`nsh build`; it is generated, not checked in:
+`nsh build` as an ES module, which the browser's JavaScript engine runs; it is
+generated, not checked in:
 
 ```sh
-bun run play       # = cargo xtask web: nsh.wasm, nsh.js, index.html, demos/*.nshc (dev and build run it)
+bun run play       # = cargo xtask web: nsh.wasm, nsh.js, browser/, index.html, demos/*.js (dev and build run it)
 ```
 
 Run it again after changing the runtime. Gallery and website demos share the internal
@@ -224,6 +263,7 @@ player, or editing a demo, invalidates Astro's content cache automatically
 | `src/lib/remark-*.js`, `rehype-heading-anchors.js` | Title removal, callouts, code tabs, `.md` links, demo insertion, heading anchors |
 | `src/lib/code-tabs-client.ts` | Switches code tabs, page-wide, and remembers the choice |
 | `src/lib/demo.js` | Demo sources, the demo frame and the demo panel markup |
+| `src/lib/showcases.ts`, `showcase-browser.ts` | App Stories: the catalog, its READMEs and media; search, sorting and pages |
 | `src/lib/markdown-endpoint.ts`, `llms.ts` | `<page>.md`, `llms.txt`, `llms-full.txt` |
 | `src/pages/[section]/[...slug].astro` | Content pages (and `zh-CN/`); `[section].md.ts` / `[...slug].md.ts` the Markdown |
 | `src/components/Home.astro` | The home page in both languages |

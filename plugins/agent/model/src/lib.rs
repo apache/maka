@@ -17,6 +17,11 @@
  * under the License.
  */
 
+pub use maka_capabilities::model_preparation::{
+    ActivePreparation, DirectoryLease, ModelPreparationResources, PreparationPolicy,
+    StagedPreparation, WorkLease,
+};
+
 mod delta;
 pub use maka_agent_facts::model::error::ModelError;
 pub use maka_agent_facts::model::error::ProviderFailure;
@@ -27,12 +32,11 @@ pub mod adapters;
 mod conversation;
 mod network;
 pub mod reasoning;
-mod step;
 pub use conversation::Conversation;
 pub use maka_agent_facts::model::ModelEvent;
+pub use maka_agent_facts::model::assembly::StepBuilder;
 pub use maka_agent_facts::tools::ToolDefinition;
 pub use maka_agent_ports::model::Emission;
-pub use step::StepBuilder;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -53,6 +57,8 @@ pub struct ProviderConfig {
     pub adapter: Option<String>,
     #[serde(skip)]
     pub capabilities: maka_agent_facts::configuration::ModelCapabilities,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_input: Option<maka_agent_facts::configuration::ImageInput>,
     #[serde(skip)]
     pub network: maka_network::Policy,
     pub kind: ProviderKind,
@@ -71,7 +77,7 @@ pub struct ModelRequest {
     pub language: maka_agent_facts::language::Language,
     pub provider: ProviderConfig,
     pub prompt: prompt::Prompt,
-    pub tools: Vec<ToolDefinition>,
+    pub tools: Vec<Arc<ToolDefinition>>,
     pub provider_options: Value,
     pub max_output_tokens: Option<u64>,
 }
@@ -96,7 +102,31 @@ impl ProviderConfig {
     }
 }
 
+/// Complete JSON encodings before transport-level prefix reuse.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EncodedRequestBytes {
+    pub http: u64,
+    pub websocket: Option<u64>,
+}
+impl EncodedRequestBytes {
+    /// Both transports must fit because Responses may fall back to HTTP.
+    pub fn largest(self) -> u64 {
+        self.http.max(self.websocket.unwrap_or(0))
+    }
+}
+
 impl ModelRequest {
+    /// Counts the complete HTTP JSON body using the selected built-in codec.
+    /// Reopens immutable prompt sources without uploading or retaining body bytes.
+    pub async fn encoded_request_bytes(&self) -> Result<u64, ModelError> {
+        Ok(self.encoded_request_sizes().await?.http)
+    }
+
+    /// Counts complete HTTP and, where available, Responses WebSocket JSON bodies.
+    pub async fn encoded_request_sizes(&self) -> Result<EncodedRequestBytes, ModelError> {
+        adapters::encoded_request_bytes(self).await
+    }
+
     fn into_adapter(self) -> Result<maka_agent_facts::model::request::Request, ModelError> {
         use maka_agent_facts::model::request::Credentials;
         use maka_agent_facts::model::request::Provider;
@@ -357,10 +387,22 @@ impl ModelExecutor {
 
     pub async fn stream_with_adapter(
         &self,
+        request: ModelRequest,
+        cancellation: CancellationToken,
+        conversation: Option<Conversation>,
+        binding: maka_agent_ports::model::Binding,
+    ) -> Result<ModelStream, ModelError> {
+        self.stream_with_source(request, cancellation, conversation, binding, None)
+            .await
+    }
+
+    pub async fn stream_with_source(
+        &self,
         mut request: ModelRequest,
         cancellation: CancellationToken,
         conversation: Option<Conversation>,
         binding: maka_agent_ports::model::Binding,
+        source: Option<maka_agent_ports::model::RequestSource>,
     ) -> Result<ModelStream, ModelError> {
         for tool in &request.tools {
             if let Some(provider) = &tool.provider {
@@ -400,6 +442,21 @@ impl ModelExecutor {
             biased;
             _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
             result = auth::resolve(&mut request.provider.auth) => result?,
+        }
+        if let Some(limit) = request
+            .provider
+            .image_input
+            .as_ref()
+            .and_then(|image| image.request_bytes)
+        {
+            let bytes = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(ModelError::Cancelled),
+                result = request.encoded_request_sizes() => result?.largest(),
+            };
+            if bytes > limit {
+                return Err(ModelError::ImageInputPayloadTooLarge { bytes, limit });
+            }
         }
         let (sender, receiver) = mpsc::channel(4);
         let worker_cancel = cancellation.clone();
@@ -443,11 +500,13 @@ impl ModelExecutor {
                             cancellation: adapter_cancel.clone(),
                             idle_timeout,
                             transport: network,
+                            source: source.clone(),
                         },
                     )
                     .await
             };
-            tokio::pin!(operation);
+            let mut operation = Box::pin(operation);
+            let operation_started = tokio::time::Instant::now();
             let mut cleanup = Ok(());
             let result = loop {
                 let deadline = *progress.borrow_and_update() + idle_timeout;
@@ -461,17 +520,53 @@ impl ModelExecutor {
                 adapter_cancel.cancel();
                 // Give the original adapter a bounded cleanup window. Expiry
                 // reports unknown physical cleanup; its owner must keep its fence.
-                match tokio::time::timeout(Duration::from_secs(6), &mut operation).await {
-                    Err(_) => cleanup = Err(StreamCleanupError),
-                    Ok(Err(error)) if error.cleanup_unconfirmed() => {
-                        cleanup = Err(StreamCleanupError)
-                    }
-                    _ => {}
+                let cleanup_started = tokio::time::Instant::now();
+                let outcome =
+                    match tokio::time::timeout(Duration::from_secs(6), &mut operation).await {
+                        Err(_) => Some("timeout"),
+                        Ok(Err(error)) if error.cleanup_unconfirmed() => {
+                            Some("adapter_cleanup_unconfirmed")
+                        }
+                        _ => None,
+                    };
+                if let Some(outcome) = outcome {
+                    tracing::error!(
+                        stage = "model_adapter_cancel",
+                        outcome,
+                        timeout_ms = 6000_u64,
+                        elapsed_ms = cleanup_started.elapsed().as_millis(),
+                        "cleanup unconfirmed"
+                    );
+                    cleanup = Err(StreamCleanupError);
                 }
                 break Err(cause);
             };
+            drop(operation);
+            let result = if cleanup.is_ok()
+                && !result.as_ref().is_err_and(ModelError::cleanup_unconfirmed)
+            {
+                if let Some(source) = &source {
+                    match source.cleanup.close().await {
+                        Ok(()) => result,
+                        Err(error) => {
+                            tracing::error!(stage = "model_materialization_close", %error, "cleanup unconfirmed");
+                            Err(ModelError::CleanupUnconfirmed)
+                        }
+                    }
+                } else {
+                    result
+                }
+            } else {
+                result
+            };
             if let Err(error) = result {
                 if error.cleanup_unconfirmed() {
+                    tracing::error!(
+                        stage = "model_adapter_stream",
+                        outcome = "adapter_cleanup_unconfirmed",
+                        elapsed_ms = operation_started.elapsed().as_millis(),
+                        "cleanup unconfirmed"
+                    );
                     cleanup = Err(StreamCleanupError);
                 }
                 let _ = failure_sender.send(Err(error)).await;
@@ -509,9 +604,6 @@ impl maka_agent_ports::model::Events for ChannelEvents {
     }
 }
 
-#[cfg(test)]
-mod stream_tests;
-
 pub use adapters::wire::{
-    PreparationContext, WireEncoding, wire_message_metadata, wire_preparation_dependencies,
+    EncodedWire, FrozenWire, SummaryWireBound, WireEncoding, WirePlan, WireSink, WireWrite,
 };

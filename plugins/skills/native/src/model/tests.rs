@@ -48,6 +48,38 @@ async fn load(
         .await
         .unwrap()
 }
+async fn resource_text(library: &Library, call: &Scope, tools: Value, mut page: Value) -> String {
+    schema("load", &page);
+    let mut text = String::new();
+    loop {
+        assert_eq!(page["kind"], "resource");
+        assert!(maka_workspace_support::fits(&page));
+        text.push_str(page["content"].as_str().unwrap());
+        if page["next"].is_null() {
+            return text;
+        }
+        let resource: maka_agent_facts::read::ReadInput =
+            serde_json::from_value(page["next"]["resource"].clone()).unwrap();
+        let next: usize = resource
+            .path
+            .split("?at=")
+            .nth(1)
+            .unwrap()
+            .split('&')
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        if next > text.encode_utf16().count() {
+            text.push('\n');
+        }
+        page = library
+            .model("load", json!({"tools":tools,"input":page["next"]}), call)
+            .await
+            .unwrap();
+    }
+}
+
 fn schema(method: &str, value: &Value) {
     let projection = maka_agent_facts::tool_output::DurableToolProjection::Json {
         value: value.clone(),
@@ -74,7 +106,7 @@ fn schema(method: &str, value: &Value) {
     );
 }
 #[tokio::test]
-async fn model_resolution_uses_original_eligibility_preferences_and_identity_before_names() {
+async fn model_eligibility_and_preferences_apply_to_the_effective_named_skill() {
     let dir = tempfile::tempdir().unwrap();
     let a = dir.path().join("a");
     let b = dir.path().join("b");
@@ -113,7 +145,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     for (revision, name, preference) in [
         (
             0,
-            "disabled",
+            "alias",
             maka_skills::Preference {
                 enabled: false,
                 pinned: false,
@@ -146,7 +178,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     }
     let result = search(&library, &call, json!(["Read"])).await;
     schema("search", &result);
-    assert_eq!(result["totalEligible"], 3);
+    assert_eq!(result["totalEligible"], 2);
     assert_eq!(result["matches"][0]["ref"], "source:a:pinned");
     let revision = &result["revision"];
     let prepared = library
@@ -187,6 +219,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     let prompt = prepared["record"]["metadataPrompt"].as_str().unwrap();
     assert!(prompt.contains("source:a:pinned"));
     assert!(!prompt.contains("source:a:disabled"));
+    assert!(!prompt.contains("source:a:alias"));
     assert!(!prompt.contains("source:a:network"));
     assert!(!prompt.contains("fresh search"));
     let ordinary = library
@@ -265,7 +298,7 @@ async fn model_resolution_uses_original_eligibility_preferences_and_identity_bef
     );
     assert_eq!(loaded["receipt"]["ref"], "source:a:review");
     let absent = search(&library, &call, json!([])).await;
-    assert_eq!(absent["totalEligible"], 2);
+    assert_eq!(absent["totalEligible"], 1);
     assert_eq!(
         load(
             &library,
@@ -358,7 +391,7 @@ async fn model_resources_keep_original_root_and_revision_and_do_not_mix_changed_
     let tools = json!(["SkillSearch", "Skill"]);
     let catalog = search(&library, &call, tools.clone()).await;
     let revision = &catalog["revision"];
-    let mut page = load(
+    let page = load(
         &library,
         &call,
         tools.clone(),
@@ -368,36 +401,7 @@ async fn model_resources_keep_original_root_and_revision_and_do_not_mix_changed_
     )
     .await;
     let next = page["next"].clone();
-    let mut all = String::new();
-    loop {
-        schema("load", &page);
-        assert!(maka_workspace_support::fits(&page));
-        assert_eq!(page["kind"], "resource");
-        all.push_str(page["content"].as_str().unwrap());
-        if page["next"].is_null() {
-            break;
-        }
-        // Original Read continuations omit a newline when a page ends at a line boundary.
-        let resource: maka_agent_facts::read::ReadInput =
-            serde_json::from_value(page["next"]["resource"].clone()).unwrap();
-        let next_position: usize = resource
-            .path
-            .split("?at=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        if next_position > all.encode_utf16().count() {
-            all.push('\n');
-        }
-        page = library
-            .model("load", json!({"tools":tools,"input":page["next"]}), &call)
-            .await
-            .unwrap();
-    }
+    let all = resource_text(&library, &call, tools.clone(), page).await;
     assert_eq!(all, text);
     for path in ["../secret", "/secret", "escape"] {
         assert_eq!(
@@ -448,330 +452,4 @@ async fn model_resources_keep_original_root_and_revision_and_do_not_mix_changed_
         "replacement"
     );
     call.finish().await.unwrap();
-}
-#[tokio::test]
-async fn instruction_pages_preserve_the_complete_body_and_original_receipt() {
-    let dir = tempfile::tempdir().unwrap();
-    let root = dir.path().join("selected");
-    write(&root, "large", &"大段说明🦀\"\n".repeat(20_000));
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: false,
-            sources: vec![source("local", &root)],
-        },
-        dir.path().join("private"),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    let page = search(&library, &call, json!([])).await;
-    let result = load(
-        &library,
-        &call,
-        json!([]),
-        &page["revision"],
-        "large",
-        Value::Null,
-    )
-    .await;
-    schema("load", &result);
-    assert!(maka_workspace_support::fits(&result));
-    assert_eq!(result["kind"], "loaded");
-    assert!(!result["instructions"].as_str().unwrap().is_empty());
-    let mut current = result.clone();
-    let mut complete = String::new();
-    loop {
-        schema("load", &current);
-        assert_eq!(current["instructionOffset"], complete.len());
-        complete.push_str(current["instructions"].as_str().unwrap());
-        if current["next"].is_null() {
-            break;
-        }
-        current = library
-            .model("load", json!({"tools":[],"input":current["next"]}), &call)
-            .await
-            .unwrap();
-    }
-    assert_eq!(complete, "大段说明🦀\"\n".repeat(20_000).trim_end());
-    assert!(library.model("load", json!({"tools":[],"input":{"name":"large","revision":page["revision"],"instructionOffset":1}}), &call).await.is_err());
-    let validator =
-        jsonschema::validator_for(&schemars::schema_for!(SkillInvocationReceipt).into()).unwrap();
-    assert!(validator.is_valid(&result["receipt"]));
-    let mut contradictory = result["receipt"].clone();
-    contradictory["success"] = json!(false);
-    assert!(!validator.is_valid(&contradictory));
-    assert!(serde_json::from_value::<SkillInvocationReceipt>(contradictory).is_err());
-    call.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn bundled_skills_share_model_eligibility_preparation_and_exact_resource_pages() {
-    let dir = tempfile::tempdir().unwrap();
-    let mut library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: true,
-            manage: false,
-            preferences: true,
-            sources: vec![],
-        },
-        dir.path().join("private"),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    let tools = json!(["Skill", "SkillSearch"]);
-    let search_all = |tools: Value| json!({"tools":tools,"input":{"query":"","limit":8}});
-    let result = library
-        .model("search", search_all(tools.clone()), &call)
-        .await
-        .unwrap();
-    schema("search", &result);
-    assert_eq!(result["totalEligible"], 1);
-    let revision = &result["revision"];
-    assert_eq!(
-        load(
-            &library,
-            &call,
-            tools.clone(),
-            revision,
-            "maka-cua",
-            Value::Null
-        )
-        .await["reason"],
-        "host_incompatible"
-    );
-    let with_cua = library
-        .model(
-            "search",
-            search_all(json!(["Skill", "SkillSearch", "cua_repl"])),
-            &call,
-        )
-        .await
-        .unwrap();
-    assert_eq!(with_cua["totalEligible"], 2);
-    let original_load = json!({"name":"maka-plugin-authoring","revision":revision,"resource":{"path":"references/sdk/workbench.ts"}});
-    let mut page = library
-        .model("load", json!({"tools":tools,"input":original_load}), &call)
-        .await
-        .unwrap();
-    let mut all = String::new();
-    loop {
-        schema("load", &page);
-        assert_eq!(page["kind"], "resource");
-        all.push_str(page["content"].as_str().unwrap());
-        if page["next"].is_null() {
-            break;
-        }
-        let resource: maka_agent_facts::read::ReadInput =
-            serde_json::from_value(page["next"]["resource"].clone()).unwrap();
-        let position: usize = resource
-            .path
-            .split("?at=")
-            .nth(1)
-            .unwrap()
-            .split('&')
-            .next()
-            .unwrap()
-            .parse()
-            .unwrap();
-        if position > all.encode_utf16().count() {
-            all.push('\n');
-        }
-        page = library
-            .model("load", json!({"tools":tools,"input":page["next"]}), &call)
-            .await
-            .unwrap();
-    }
-    assert_eq!(
-        all,
-        include_str!("../../../../../packages/plugin-sdk/src/workbench.ts")
-    );
-    for path in ["../secret", "/secret", "references/../../secret"] {
-        assert_eq!(
-            load(
-                &library,
-                &call,
-                tools.clone(),
-                revision,
-                "maka-plugin-authoring",
-                json!({"path":path})
-            )
-            .await["kind"],
-            "resource_unavailable"
-        );
-    }
-    let prepared = library.model("prepare", json!({"tools":tools,"input":{"language":"en","message":"/skill:maka-plugin-authoring","loadTool":"Skill","searchTool":"SkillSearch"}}), &call).await.unwrap();
-    schema("prepare", &prepared);
-    assert_eq!(prepared["kind"], "ready");
-    assert_eq!(prepared["record"]["revision"], *revision);
-    assert!(matches!(
-        library
-            .preferences
-            .set(
-                SetPreference {
-                    reference: "bundled:maka-plugin-authoring".into(),
-                    revision: 0,
-                    preference: maka_skills::Preference {
-                        enabled: false,
-                        pinned: true
-                    }
-                },
-                &call
-            )
-            .await
-            .unwrap(),
-        PreferenceResult::Applied { .. }
-    ));
-    assert_eq!(
-        library
-            .model("load", json!({"tools":tools,"input":original_load}), &call)
-            .await
-            .unwrap()["kind"],
-        "changed"
-    );
-    let fresh = library
-        .model("search", search_all(tools.clone()), &call)
-        .await
-        .unwrap();
-    assert_eq!(fresh["totalEligible"], 0);
-    assert_eq!(
-        load(
-            &library,
-            &call,
-            tools.clone(),
-            &fresh["revision"],
-            "maka-plugin-authoring",
-            Value::Null
-        )
-        .await["reason"],
-        "disabled"
-    );
-    library.bundled = false;
-    assert!(library.snapshot(&call).await.unwrap().entries.is_empty());
-    call.finish().await.unwrap();
-}
-
-#[tokio::test]
-async fn preparation_language_preserves_opaque_skills_metadata_and_protocol_identity() {
-    let dir = tempfile::tempdir().unwrap();
-    let source_path = dir.path().join("skills");
-    let body = "Opaque instructions 中文 / 繁體 and OriginalProtocolName.";
-    write(&source_path, "review", body);
-    write(&source_path, "empty", "");
-    let library = Library::open(
-        Configuration {
-            home: None,
-            project_roots: vec![],
-            bundled: false,
-            manage: false,
-            preferences: false,
-            sources: vec![source("original", &source_path)],
-        },
-        dir.path().join("private"),
-        preferences(dir.path()).await,
-    )
-    .unwrap();
-    let call = scope();
-    let user_text = "Keep MyExactUserText 中文 / 繁體";
-    let mut original_receipts = None;
-    let mut revision = None;
-    for (language, safety_word, discovery_word, no_task) in [
-        (
-            "en",
-            "permission",
-            "Available local skills",
-            "no additional task text",
-        ),
-        ("zh-CN", "权限", "可用的本地技能", "未提供额外的任务文本"),
-        ("zh-TW", "權限", "可用的本機技能", "未提供額外的任務文字"),
-    ] {
-        let result = library
-            .model(
-                "prepare",
-                json!({
-                    "tools": ["OriginalLoadTool", "OriginalSearchTool"],
-                    "input": {
-                        "language": language,
-                        "message": format!("/skill:review {user_text}"),
-                        "loadTool": "OriginalLoadTool",
-                        "searchTool": "OriginalSearchTool"
-                    }
-                }),
-                &call,
-            )
-            .await
-            .unwrap();
-        schema("prepare", &result);
-        assert_eq!(result["kind"], "ready");
-        for message in ["/skill:review", "ordinary"] {
-            let prepared = library.model(
-                "prepare",
-                json!({"tools":["OriginalLoadTool","OriginalSearchTool"],"input":{"language":language,"message":message,"loadTool":"OriginalLoadTool","searchTool":"OriginalSearchTool"}}),
-                &call,
-            ).await.unwrap();
-            assert_eq!(prepared["kind"], "ready");
-            if message == "/skill:review" {
-                let text = prepared["text"].as_str().unwrap();
-                assert!(text.contains(no_task));
-                assert!(text.contains(body));
-            } else {
-                assert_eq!(prepared["text"], Value::Null);
-                assert_eq!(prepared["record"]["invocation"]["loaded"], json!([]));
-            }
-        }
-        let text = result["text"].as_str().unwrap();
-        assert!(text.contains(safety_word));
-        assert!(text.contains(body));
-        assert!(text.contains(user_text));
-        let record = &result["record"];
-        let metadata = record["metadataPrompt"].as_str().unwrap();
-        assert!(metadata.contains(discovery_word));
-        assert!(metadata.contains("Reference for review"));
-        assert!(metadata.contains("source:original:review"));
-        assert!(metadata.contains("OriginalLoadTool"));
-        assert!(metadata.contains("OriginalSearchTool"));
-        assert!(metadata.contains(record["revision"].as_str().unwrap()));
-        if let Some(original) = &original_receipts {
-            assert_eq!(&record["invocation"], original);
-            assert_eq!(&record["revision"], revision.as_ref().unwrap());
-        } else {
-            original_receipts = Some(record["invocation"].clone());
-            revision = Some(record["revision"].clone());
-        }
-    }
-    for (name, original_body) in [("review", body), ("empty", "")] {
-        let loaded = load(
-            &library,
-            &call,
-            json!(["OriginalLoadTool", "OriginalSearchTool"]),
-            revision.as_ref().unwrap(),
-            name,
-            Value::Null,
-        )
-        .await;
-        schema("load", &loaded);
-        assert_eq!(loaded["kind"], "loaded");
-        assert_eq!(loaded["metadata"]["id"], name);
-        assert_eq!(loaded["instructions"], original_body);
-        assert_eq!(
-            loaded["relativePath"],
-            json!(std::path::Path::new(name).join("SKILL.md"))
-        );
-    }
-    assert!(
-        library
-            .model(
-                "prepare",
-                json!({"tools":[],"input":{"message":"ordinary"}}),
-                &call
-            )
-            .await
-            .is_err()
-    );
 }

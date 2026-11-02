@@ -47,7 +47,6 @@ log = "0.4"
 rustc-hash = "2.1"
 serde_json = "1"
 ttf-parser = "0.25"
-ureq = "3.1"
 
 futures-channel = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["std"] }

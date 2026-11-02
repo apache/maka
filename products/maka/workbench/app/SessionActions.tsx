@@ -43,9 +43,10 @@ import {
 } from './ui';
 import { Icon } from './Icon';
 import { dialogTop } from './chrome';
+import { SessionTree } from './SessionTree';
 import { SessionCompactionPrompt } from './SessionCompactionPrompt';
 
-type Page = 'actions' | 'rename' | 'fork' | 'remove' | 'compaction_prompt';
+type Page = 'children' | 'actions' | 'rename' | 'fork' | 'remove' | 'compaction_prompt';
 export function SessionActions(props: {
   session: SessionActionTarget;
   anchor(): ViewRef | null;
@@ -53,6 +54,9 @@ export function SessionActions(props: {
   close(): void;
   notice(message: UiText): void;
   change(action: SessionAction): Promise<void>;
+  /** Opens the conversation in a pane beside the current one, where there can be one. */
+  openBeside?(): void;
+  openSession?(id: string): void;
 }) {
   const host = useHost();
   const session = signal(props.session);
@@ -94,11 +98,21 @@ export function SessionActions(props: {
     title.set(to === 'fork' ? forkTitle(original.title) : original.title);
     page.set(to);
   };
+  const openBeside = () => {
+    if (!active() || pending() || page() !== 'actions') return;
+    props.close();
+    props.openBeside?.();
+  };
   const submit = async (action: SessionAction) => {
     if (!active() || pending() || !sameSession(action.session)) return;
     if (action.kind === 'rename' || action.kind === 'fork' || action.kind === 'remove') {
       if (page() !== action.kind) return;
-    } else if (page() !== 'actions' || action.kind !== (session().archived ? 'restore' : 'archive'))
+    } else if (
+      page() !== 'actions' ||
+      (action.kind !== 'pin' &&
+        action.kind !== 'unpin' &&
+        action.kind !== (session().archived ? 'restore' : 'archive'))
+    )
       return;
     if (
       (action.kind === 'rename' || action.kind === 'fork') &&
@@ -173,6 +187,66 @@ export function SessionActions(props: {
               >
                 {tr('Conversation actions')}
               </Text>
+              <If when={props.openSession}>
+                <Button
+                  disabled={pending()}
+                  accessibilityLabel={tr('Child conversations')}
+                  role="menuitem"
+                  style={menuRowStyle()}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                  disabledStyle={controlDisabledStyle}
+                  onPress={inputAction(edit, { to: 'children', original: session() })}
+                >
+                  <Icon name="fork" color={C.secondary} />
+                  <Text
+                    accessibilityElementsHidden
+                    style={{ ...secondaryTextStyle, color: C.text }}
+                  >
+                    {tr('Child conversations')}
+                  </Text>
+                </Button>
+              </If>
+              <If when={props.openBeside}>
+                <Button
+                  disabled={pending()}
+                  accessibilityLabel={tr('Open to the side')}
+                  role="menuitem"
+                  style={menuRowStyle()}
+                  hoverStyle={controlHoverStyle()}
+                  focusStyle={controlFocusStyle()}
+                  disabledStyle={controlDisabledStyle}
+                  onPress={inputAction(openBeside, null)}
+                >
+                  <Icon name="split" color={C.secondary} />
+                  <Text
+                    accessibilityElementsHidden
+                    style={{ ...secondaryTextStyle, color: C.text }}
+                  >
+                    {tr('Open to the side')}
+                  </Text>
+                </Button>
+              </If>
+              <Button
+                disabled={pending() || session().archived}
+                accessibilityLabel={
+                  session().pinned ? tr('Unpin conversation') : tr('Pin conversation')
+                }
+                role="menuitem"
+                style={menuRowStyle()}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+                disabledStyle={controlDisabledStyle}
+                onPress={inputAction(submit, {
+                  kind: session().pinned ? 'unpin' : 'pin',
+                  session: session(),
+                })}
+              >
+                <Icon name="pin" color={C.secondary} />
+                <Text accessibilityElementsHidden style={{ ...secondaryTextStyle, color: C.text }}>
+                  {session().pinned ? tr('Unpin conversation') : tr('Pin conversation')}
+                </Text>
+              </Button>
               <Button
                 disabled={pending() || session().archived}
                 accessibilityLabel={tr('Rename conversation')}
@@ -281,6 +355,17 @@ export function SessionActions(props: {
           </Scroll>
         </Popover>
       </If>
+      <If when={page() === 'children'}>
+        <SessionTree
+          session={session()}
+          current={() => active() && page() === 'children'}
+          close={props.close}
+          openSession={(id) => {
+            props.close();
+            props.openSession?.(id);
+          }}
+        />
+      </If>
       <If when={page() === 'compaction_prompt'}>
         <SessionCompactionPrompt
           session={session()}
@@ -289,7 +374,7 @@ export function SessionActions(props: {
           change={props.change}
         />
       </If>
-      <If when={page() !== 'actions' && page() !== 'compaction_prompt'}>
+      <If when={page() !== 'actions' && page() !== 'compaction_prompt' && page() !== 'children'}>
         <Dialog
           animation="none"
           closeOnEscape={false}

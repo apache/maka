@@ -1,7 +1,6 @@
 ---
 title: DataTable
 description: "The DataTable component: a table of rows and columns that scrolls both ways over any number of either, with fixed, resizable, movable and sortable columns, row, column and cell selection, rows the app serves a page at a time, group labels, keyboard navigation and cells the app draws."
-order: 26.4
 group: base
 demo: el-data-table
 ---
@@ -258,7 +257,8 @@ columns.
 
 ## The ref
 
-`ref` gives a `DataTableRef`:
+`ref` gives a `DataTableRef`. A method given a row, a column or a column key the table does not have changes nothing
+and logs a warning naming the method and the value; `fitColumn` rejects with a `TypeError` for an unknown key.
 
 | Method | Description |
 |---|---|
@@ -269,7 +269,7 @@ columns.
 | `visibleRows()`, `visibleColumns()` | The rows and the scrolling columns in view, as `{ start, end }` (`end` excluded). |
 | `columnWidths()` | The widths now, in the order of `columns`. |
 | `setColumnWidth(key, width)` | Sets a column's width, within its limits. |
-| `fitColumn(key)` | Sets a column as wide as its widest text and its title need, among the rows in view and up to a thousand more around them. It returns the width, `null` for no such column. |
+| `fitColumn(key)` | Sets a column as wide as its widest text and its title need, among the rows in view and up to a thousand more around them. It returns the width. |
 | `dump(start?, end?)` | The texts of the rows given (default all those held) and of the titles, as shown: `{ headers, rows }`, for export. |
 | `copy()` | Puts the selection's text on the clipboard: a row's cells with tabs between, a column's with line breaks, a cell's text. |
 | `focus()`, `blur()` | Gives the keyboard to the table or takes it. |

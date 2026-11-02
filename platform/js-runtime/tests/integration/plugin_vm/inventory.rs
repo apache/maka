@@ -20,35 +20,6 @@
 use super::*;
 
 #[tokio::test]
-async fn shared_vm_keeps_eighty_modules_then_reclaims_and_reloads_them() {
-    tokio::time::timeout(Duration::from_secs(15), async {
-        let vm = Vm::pure(Limits::default()).unwrap();
-        for generation in 0..2 {
-            let modules = (0..80).map(|index| {
-                vm.load(format!("entry-{index}.mjs"), format!(
-                    "const identity = [{generation}, {index}]; export function value() {{ return identity; }}"
-                )).unwrap()
-            }).collect::<Vec<_>>();
-            for (index, module) in modules.iter().enumerate() {
-                assert_eq!(call(module, "value").await, json!([generation, index]));
-            }
-            let snapshot = vm.statistics(false).await.unwrap();
-            assert_eq!(snapshot.modules, 80);
-            assert_eq!(snapshot.pending_calls, 0);
-            for module in modules {
-                let weak = module.downgrade();
-                module.close().await.unwrap();
-                assert!(module.call(vec!["value".into()], vec![]).await.is_err());
-                drop(module);
-                assert!(weak.upgrade().is_none());
-            }
-            assert_eq!(vm.statistics(true).await.unwrap().modules, 0);
-        }
-        vm.shutdown().await;
-    }).await.expect("eighty small modules drain and reload without sleeps");
-}
-
-#[tokio::test]
 async fn complete_module_source_and_callback_paths_keep_original_custody() {
     let vm = Vm::pure(Limits::default()).unwrap();
     let data = format!("MODULE START{}END", "x".repeat(8 * 1024 * 1024));

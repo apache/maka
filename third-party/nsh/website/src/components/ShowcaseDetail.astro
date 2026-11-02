@@ -1,0 +1,75 @@
+---
+// An App Stories detail page: the app's README from the catalog, rendered
+// by the catalog's own `renderReadme`, below its links and the screenshots
+// the README does not show itself.
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from './Nav.astro';
+import SiteFooter from './SiteFooter.astro';
+import Badge from './ui/Badge.astro';
+import Button from './ui/Button.astro';
+import { getShowcaseReadme, type ShowcaseApp } from '../lib/showcases';
+import { url, type Lang } from '../lib/site';
+
+export interface Props {
+  app: ShowcaseApp;
+  lang: Lang;
+}
+
+const { app, lang } = Astro.props;
+const zh = lang === 'zh-CN';
+const media = url(`apps/${app.id}`);
+const html = await getShowcaseReadme(app, media);
+// Screenshots the README places in its text appear there, not twice.
+const external = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 7h10v10"/><path d="M7 17 17 7"/></svg>';
+const previews = app.previews.filter((name) => !html.includes(`${media}/${name}`));
+---
+
+<BaseLayout
+  lang={lang}
+  title={zh ? `${app.name} · 应用案例` : `${app.name} · App Stories`}
+  description={app.description}
+  alternates={{ en: `/apps/${app.id}`, 'zh-CN': `/zh-CN/apps/${app.id}` }}
+>
+  <Nav lang={lang} currentPath={Astro.url.pathname} langHref={url(zh ? `apps/${app.id}` : `zh-CN/apps/${app.id}`)} />
+  <main id="main" class="showcase-detail">
+    <Button variant="ghost" size="sm" class="showcase-detail__back" href={url(zh ? 'zh-CN/apps' : 'apps')}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+      {zh ? '全部应用' : 'All apps'}
+    </Button>
+    <header>
+      {app.featured && <Badge variant="secondary">Featured</Badge>}
+      <h1>{app.name}</h1>
+      <p class="showcase-detail__author">{app.author}</p>
+      <p class="showcase-detail__description">{app.description}</p>
+      <p class="showcase-detail__meta">{app.platforms.join(' / ')}{app.stars !== null && ` · ★ ${app.stars.toLocaleString('en')} GitHub Stars`}</p>
+      <nav aria-label={zh ? '应用链接' : 'App links'}>
+        {app.website && <Button variant="secondary" size="sm" href={app.website} target="_blank" rel="noopener noreferrer">{zh ? '官网' : 'Website'}<Fragment set:html={external} /></Button>}
+        {app.source && <Button variant="secondary" size="sm" href={app.source} target="_blank" rel="noopener noreferrer">{zh ? '源码' : 'Source'}<Fragment set:html={external} /></Button>}
+      </nav>
+    </header>
+    <div class="showcase-detail__previews">
+      {previews.map((name, index) => <img src={`${media}/${name}`} alt={`${app.name} — ${index + 1}`} loading={index ? 'lazy' : 'eager'} decoding="async" />)}
+    </div>
+    <div class="showcase-detail__readme" lang="en" set:html={html} />
+  </main>
+  <SiteFooter lang={lang} />
+</BaseLayout>
+
+<style>
+  .showcase-detail { max-width: 62rem; margin: 0 auto; padding: 2.5rem clamp(1rem, 3vw, 2.5rem) 4rem; }
+  .showcase-detail :global(.showcase-detail__back) { margin: 0 0 1.25rem -0.75rem; }
+  .showcase-detail h1 { margin: 0.6rem 0; font-size: clamp(2rem, 4vw, 3rem); font-weight: 660; letter-spacing: -0.035em; line-height: 1.15; }
+  .showcase-detail__author, .showcase-detail__meta { margin: 0.25rem 0; color: var(--muted-foreground); font-size: 0.9rem; }
+  .showcase-detail__description { max-width: 46rem; margin: 1rem 0; font-size: 1.1rem; line-height: 1.7; }
+  .showcase-detail header nav { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 1.25rem 0 2rem; }
+  .showcase-detail__previews { display: grid; gap: 1.5rem; justify-items: center; }
+  .showcase-detail__previews img, .showcase-detail__readme :global(img), .showcase-detail__readme :global(video) { display: block; max-width: 100%; max-height: 80vh; width: auto; height: auto; border: 1px solid var(--border); border-radius: var(--radius-card); }
+  .showcase-detail__readme { margin-top: 2.5rem; overflow-wrap: anywhere; }
+  .showcase-detail__readme :global(h2) { margin: 2rem 0 0.8rem; font-size: 1.5rem; font-weight: 620; line-height: 1.3; }
+  .showcase-detail__readme :global(h3), .showcase-detail__readme :global(h4) { margin: 1.5rem 0 0.6rem; font-size: 1.15rem; font-weight: 600; }
+  .showcase-detail__readme :global(p), .showcase-detail__readme :global(ul), .showcase-detail__readme :global(ol) { margin: 1rem 0; line-height: 1.75; }
+  .showcase-detail__readme :global(ul) { list-style: disc; padding-left: 1.5rem; }
+  .showcase-detail__readme :global(ol) { list-style: decimal; padding-left: 1.5rem; }
+  .showcase-detail__readme :global(a) { color: var(--doc-link); }
+  .showcase-detail__readme :global(img), .showcase-detail__readme :global(video) { margin: 1.5rem auto; }
+</style>

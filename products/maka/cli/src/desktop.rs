@@ -89,7 +89,7 @@ impl Args {
         if stop.is_cancelled() {
             return Ok(0);
         }
-        let launcher = std::env::current_exe()?;
+        let launcher = std::env::current_exe()?.canonicalize()?;
         let executable = launcher.with_file_name(SHELL);
         let mut child = Command::new(&executable)
             .env("MAKA_HOST_ROOT", std::path::absolute(root)?)

@@ -21,10 +21,7 @@
 
 use clipboard_rs::{Clipboard, ClipboardContext, ContentFormat, common::RustImage};
 use image::{ImageEncoder, codecs::png::PngEncoder};
-use maka_ui_support::{
-    budget::NativeBudget,
-    file::{FileSnapshot, FileSnapshotWriter},
-};
+use maka_ui_support::file::{FileSnapshot, FileSnapshotWriter};
 use std::{
     io::{BufRead, BufReader, Read, Write},
     process::{Child, Command, Stdio},
@@ -39,9 +36,9 @@ pub(crate) enum Selection {
 }
 
 /// Called only by an admitted native worker for an explicit paste gesture.
-pub(crate) fn read(budget: &NativeBudget) -> Result<Selection, String> {
+pub(crate) fn read() -> Result<Selection, String> {
     if crate::attachment_paths::is_wsl() {
-        return windows_bridge(budget);
+        return windows_bridge();
     }
     let clipboard =
         ClipboardContext::new().map_err(|error| format!("Open system clipboard: {error}"))?;
@@ -71,7 +68,7 @@ pub(crate) fn read(budget: &NativeBudget) -> Result<Selection, String> {
         let bytes = clipboard
             .get_buffer(format)
             .map_err(|error| format!("Read clipboard image: {error}"))?;
-        let mut snapshot = image_writer(name, budget)?;
+        let mut snapshot = image_writer(name)?;
         snapshot
             .write_all(&bytes)
             .map_err(|error| format!("Capture clipboard image: {error}"))?;
@@ -89,7 +86,7 @@ pub(crate) fn read(budget: &NativeBudget) -> Result<Selection, String> {
             .get_image()
             .and_then(|image| image.get_dynamic_image())
             .map_err(|error| format!("Read clipboard image: {error}"))?;
-        let mut snapshot = image_writer("clipboard.png", budget)?;
+        let mut snapshot = image_writer("clipboard.png")?;
         PngEncoder::new(&mut snapshot)
             .write_image(
                 captured.as_bytes(),
@@ -112,9 +109,8 @@ pub(crate) fn read(budget: &NativeBudget) -> Result<Selection, String> {
     Ok(Selection::Empty)
 }
 
-fn image_writer(name: &str, budget: &NativeBudget) -> Result<FileSnapshotWriter, String> {
-    FileSnapshotWriter::new(name, budget.clone())
-        .map_err(|error| format!("Capture clipboard image: {error}"))
+fn image_writer(name: &str) -> Result<FileSnapshotWriter, String> {
+    FileSnapshotWriter::new(name).map_err(|error| format!("Capture clipboard image: {error}"))
 }
 
 // A fixed script, never shell-interpolated paths or image data. A single type
@@ -160,7 +156,7 @@ if ($null -eq $clipboard) {
 $output.Flush()
 "#;
 
-fn windows_bridge(budget: &NativeBudget) -> Result<Selection, String> {
+fn windows_bridge() -> Result<Selection, String> {
     let mut process = ClipboardProcess(
         Command::new("powershell.exe")
             .args([
@@ -188,7 +184,7 @@ fn windows_bridge(budget: &NativeBudget) -> Result<Selection, String> {
             let mut text = String::new();
             errors.read_to_string(&mut text).map(|_| text)
         });
-        let selected = read_windows_stream(BufReader::new(output), budget);
+        let selected = read_windows_stream(BufReader::new(output));
         if selected.is_err() {
             let _ = process.0.kill();
         }
@@ -213,10 +209,7 @@ fn windows_bridge(budget: &NativeBudget) -> Result<Selection, String> {
     })
 }
 
-fn read_windows_stream(
-    mut output: impl BufRead,
-    budget: &NativeBudget,
-) -> Result<Selection, String> {
+fn read_windows_stream(mut output: impl BufRead) -> Result<Selection, String> {
     let mut kind = [0];
     output
         .read_exact(&mut kind)
@@ -226,7 +219,7 @@ fn read_windows_stream(
             .map(Selection::Files)
             .map_err(|error| format!("Read Windows clipboard file list: {error}")),
         b'I' => {
-            let mut snapshot = image_writer("clipboard.png", budget)?;
+            let mut snapshot = image_writer("clipboard.png")?;
             std::io::copy(&mut output, &mut snapshot)
                 .map_err(|error| format!("Capture Windows clipboard image: {error}"))?;
             snapshot

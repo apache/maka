@@ -1,7 +1,8 @@
 // A case of the API's test suite (docs/dev/compatibility.md): an
 // `ErrorBoundary` shows its fallback in place of what threw (a binding, a
 // listener), keeps what is around it, and `reset` renders the children
-// again; a fallback that throws goes to the boundary above. Its script
+// again; a fallback that throws goes to the boundary above, and a function
+// fallback gets the error whatever parameters it declares. Its script
 // checks each.
 import { ErrorBoundary, Text, View, signal } from "nsh";
 
@@ -36,6 +37,9 @@ function App() {
         <ErrorBoundary fallback={(error) => { throw new Error(`fallback of ${message(error)}`); }}>
           <Risky broken={() => true} />
         </ErrorBoundary>
+      </ErrorBoundary>
+      <ErrorBoundary fallback={(...args: unknown[]) => <Text>Rest caught {message(args[0])}</Text>}>
+        <Risky broken={() => true} />
       </ErrorBoundary>
     </View>
   );

@@ -5,7 +5,7 @@
 // The host provides the rest by name, at run time, so this app builds with
 // the stock `nsh build`: its desk (`nativeModule("host/trading")`, Rust
 // functions the host registers) and two GPUI Kit widgets (`nativeComponent`).
-// The desk is the host's: every ticket subscribes to it, so a symbol picked
+// The desk is the host's: every ticket listens to it, so a symbol picked
 // or an order placed here shows in the host and in the other tickets.
 
 import { effect, mount, Scroll, signal, Text, View } from "nsh";
@@ -28,8 +28,8 @@ interface TradingApi {
   placeOrder(symbol: string, quantity: number, side: Side, extended: boolean): Order;
   /** Asks the host's user `message` in the host's dialog; resolves with the answer. */
   confirm(message: string): Promise<boolean>;
-  /** Calls `onChange` with the desk now and after every change. */
-  subscribe(onChange: (desk: Desk) => void): Promise<void>;
+  /** Calls `listener` with the desk now and after every change; returns a function that stops it. */
+  on(event: "change", listener: (desk: Desk) => void): () => void;
 }
 
 const { Trading } = nativeModule<{ Trading: TradingApi }>("host/trading");
@@ -47,7 +47,7 @@ const HostWatchlist = nativeComponent<{ symbol: string }, { select: { symbol: st
 });
 
 const desk = signal<Desk>({ symbol: "AAPL", price: Trading.quote("AAPL"), orders: [], positions: [] });
-Trading.subscribe((d) => desk.set(d));
+Trading.on("change", (d) => desk.set(d));
 
 const known = (symbol: string) => {
   try {

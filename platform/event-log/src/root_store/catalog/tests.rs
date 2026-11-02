@@ -83,7 +83,7 @@ fn page_ids<T>(page: &SessionPage<T>) -> Vec<String> {
 }
 
 #[tokio::test]
-async fn eight_partition_keyset_merge_preserves_forward_reverse_and_tail_anchor() {
+async fn eight_partition_keyset_merge_preserves_forward_reverse_and_resets_missing_anchor() {
     let (_dir, root) = fixture().await;
     let mut ids = ids_for_partitions();
     ids.extend((0..31).map(|n| format!("owner-extra-{n:03}")));
@@ -148,19 +148,19 @@ async fn eight_partition_keyset_merge_preserves_forward_reverse_and_tail_anchor(
         .await
         .unwrap();
     assert_eq!(page_ids(&anchor), ids[13..18]);
-    let tail = root
+    let missing = root
         .root_session_page::<Value>(
             CatalogScope::Profile,
             None,
-            SessionPosition::At("zz-tail"),
+            SessionPosition::At("missing"),
             5,
             filter(),
         )
         .await
         .unwrap();
-    assert_eq!(page_ids(&tail), ids[ids.len() - 5..]);
-    assert!(tail.next_cursor.is_none());
-    assert_eq!(tail.pending_session_count, 2);
+    assert_eq!(page_ids(&missing), ids[..5]);
+    assert!(missing.previous_cursor.is_none());
+    assert_eq!(missing.pending_session_count, 2);
     root.close().await.unwrap();
 }
 
@@ -318,180 +318,176 @@ async fn revision_binds_all_data_counters_control_visibility_and_query_without_t
 }
 
 #[tokio::test]
-async fn imports_pending_messages_and_workspace_fence_merge_only_published_routes() {
+async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursors() {
     let (_dir, root) = fixture().await;
-    let binding = root
-        .attach_workspace("owner", &json!({"path":"/workspace","identity":"identity"}))
-        .await
-        .unwrap();
-    let ids = ids_for_partitions();
-    for (index, id) in ids.iter().enumerate() {
-        root.create_session(
-            id,
-            id,
-            &json!({"title":id,"workspace":binding,"boundary_revision":0}),
-            1,
-        )
-        .await
-        .unwrap();
-        let id = id.clone();
-        root.partitions[index]
-            .connection
-            .run(move |db| {
-                Box::pin(async move {
-                    sqlx::query(
-                        "INSERT INTO session_imports VALUES(?,'{}','{}',?,'published',1,1,1)",
-                    )
-                    .bind(&id)
-                    .bind(index as i64)
-                    .execute(&mut *db)
-                    .await?;
-                    sqlx::query("INSERT INTO message_admissions VALUES(?,'message',0,?)")
-                        .bind(id)
-                        .bind(json!({"execution":{"owner":"owner"}}).to_string())
-                        .execute(db)
-                        .await?;
-                    Ok(())
-                })
-            })
+    let mut ids = ids_for_partitions();
+    ids.extend((0..65).map(|n| format!("owner-extra-{n:03}")));
+    ids.sort();
+    for (n, id) in ids.iter().enumerate() {
+        root.create_session(id, id, &json!({"title":id}), (n / 2 + 1) as u64)
             .await
             .unwrap();
     }
-    hidden(&root, &ids[7]).await;
-    let (imports, next) = root
-        .imported_sessions::<Value>("owner-", None, 3)
+    let mut recent = ids.chunks(2).rev().flatten().cloned().collect::<Vec<_>>();
+    let pinned = ids.first().unwrap();
+    let old = root.list_sessions::<Value>(None, None, 5).await.unwrap();
+    let record = root.get_session::<Value>(pinned).await.unwrap().unwrap();
+    root.update_session_metadata(pinned, record.revision, |value: &mut Value| {
+        value["pinned"] = json!(true);
+        Ok(())
+    })
+    .await
+    .unwrap();
+    let stale = root
+        .list_sessions::<Value>(Some(&old.revision), old.next_cursor.as_deref(), 5)
+        .await;
+    assert!(matches!(stale, Err(StoreError::RevisionConflict { .. })));
+    let mut expected = vec![pinned.clone()];
+    expected.extend(recent.iter().filter(|id| *id != pinned).cloned());
+    let first = root.list_sessions::<Value>(None, None, 5).await.unwrap();
+    assert_eq!(page_ids(&first), expected[..5]);
+    let second = root
+        .list_sessions::<Value>(Some(&first.revision), first.next_cursor.as_deref(), 5)
         .await
         .unwrap();
-    assert_eq!(
-        imports.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
-        vec![ids[6].clone(), ids[5].clone(), ids[4].clone()]
-    );
-    assert_eq!(next.as_deref(), Some(ids[4].as_str()));
-    let (imports, next) = root
-        .imported_sessions::<Value>("owner-", next.as_deref(), 3)
+    let previous = root
+        .root_session_page::<Value>(
+            CatalogScope::Profile,
+            Some(&second.revision),
+            SessionPosition::Before(second.previous_cursor.as_deref().unwrap()),
+            5,
+            filter(),
+        )
         .await
         .unwrap();
-    assert_eq!(
-        imports.iter().map(|r| r.id.clone()).collect::<Vec<_>>(),
-        vec![ids[3].clone(), ids[2].clone(), ids[1].clone()]
-    );
-    assert_eq!(next.as_deref(), Some(ids[1].as_str()));
-    let mut expected = ids[..7].to_vec();
-    expected.sort();
-    assert_eq!(
-        root.pending_message_sessions("owner", None).await.unwrap(),
-        expected
-    );
-    assert!(
-        root.pending_message_sessions("different", None)
+    assert_eq!(page_ids(&previous), expected[..5]);
+    let mut all = page_ids(&first);
+    let mut cursor = first.next_cursor;
+    while let Some(after) = cursor {
+        let page = root
+            .list_sessions::<Value>(Some(&first.revision), Some(&after), 5)
             .await
-            .unwrap()
-            .is_empty()
-    );
-    let fence = root.workspace_fence("/workspace").await.unwrap();
+            .unwrap();
+        all.extend(page_ids(&page));
+        cursor = page.next_cursor;
+    }
+    assert_eq!(all, expected);
+    let anchor = root
+        .root_session_page::<Value>(
+            CatalogScope::Profile,
+            None,
+            SessionPosition::At(pinned),
+            5,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&anchor), expected[..5]);
+    let record = root.get_session::<Value>(pinned).await.unwrap().unwrap();
+    root.update_session_metadata(pinned, record.revision, |value: &mut Value| {
+        value["pinned"] = json!(false);
+        Ok(())
+    })
+    .await
+    .unwrap();
     assert_eq!(
-        fence
-            .0
-            .iter()
-            .map(|r| r.session_id.clone())
-            .collect::<Vec<_>>(),
-        expected
+        page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
+        recent[..5]
     );
-    assert!(
-        root.workspace_has_other_session("/workspace", &ids[0])
-            .await
-            .unwrap()
+    let active = ids[1].clone();
+    let session = root.session(&active).await.unwrap();
+    let mut event = maka_agent_facts::event::RuntimeEvent::new(
+        maka_agent_facts::event::Invocation {
+            session_id: active.clone(),
+            turn_id: "activity-turn".into(),
+            run_id: "activity-run".into(),
+            invocation_id: "activity-invocation".into(),
+        },
+        maka_agent_facts::event::Fact::InvocationOpened {
+            configuration: None,
+            input: maka_agent_facts::input::InvocationInput::Message {
+                content: "new activity".into(),
+                request_fingerprint: None,
+                source_messages: Vec::new(),
+            },
+        },
     );
-    assert!(
-        !root
-            .workspace_has_other_session("/missing", &ids[0])
-            .await
-            .unwrap()
+    event.recorded_at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(1000);
+    session
+        .append(&maka_agent_facts::event::EventWrite::plain(event).unwrap())
+        .await
+        .unwrap();
+    recent.retain(|id| id != &active);
+    recent.insert(0, active);
+    assert_eq!(
+        page_ids(&root.list_sessions::<Value>(None, None, 5).await.unwrap()),
+        recent[..5]
     );
     root.close().await.unwrap();
 }
 
 #[tokio::test]
-async fn shared_binding_relocation_invalidates_vector_without_touching_partition_counters() {
-    use crate::projects::ProjectRegistration;
+async fn child_pages_cross_partitions_and_keep_archived_parents_traversable() {
+    use crate::sessions::CatalogSelection;
     let (_dir, root) = fixture().await;
-    let registration = |identity: &str, path: &str| ProjectRegistration {
-        identity: identity.into(),
-        path: path.into(),
-        name: "Repository".into(),
-        is_worktree: false,
+    for (id, parent, archived) in [
+        ("owned_root", None, false),
+        ("owned_child_a", Some("owned_root"), false),
+        ("owned_child_b", Some("owned_root"), true),
+        ("owned_child_c", Some("owned_root"), false),
+        ("owned_grandchild", Some("owned_child_b"), false),
+        ("owned_unrelated", None, false),
+        ("foreign_child", Some("owned_root"), false),
+    ] {
+        root.create_session(id, id, &json!({"title":id,"parentSessionId":parent}), 1)
+            .await
+            .unwrap();
+        if archived {
+            root.session(id)
+                .await
+                .unwrap()
+                .change_session_archived::<Value>(id, None, true, 2)
+                .await
+                .unwrap();
+        }
+    }
+    let scope = |parent: &str| CatalogScope::Owned {
+        id_prefix: "owned_".into(),
+        selection: CatalogSelection::Children(parent.into()),
+        title_query: String::new(),
     };
-    let project = root
-        .register_project(registration("old-identity", "/old"), true, 1)
-        .await
-        .unwrap();
-    let binding = root
-        .attach_workspace(
-            "owner",
-            &json!({"path":"/old","projectId":project.id,"identity":"identity"}),
-        )
-        .await
-        .unwrap();
-    let ids = ids_for_partitions();
-    for id in &ids {
-        root.create_session(
-            id,
-            id,
-            &json!({"title":id,"workspace":binding,"boundary_revision":0}),
-            1,
-        )
-        .await
-        .unwrap();
-    }
-    let first = root.list_sessions::<Value>(None, None, 2).await.unwrap();
-    let before = root.catalog_vector().await.unwrap();
-    let relocation = root
-        .relink_project(
-            &project.id,
-            "owner",
-            registration("new-identity", "/new"),
+    let first = root
+        .root_session_page::<Value>(
+            scope("owned_root"),
+            None,
+            SessionPosition::Start,
             2,
-            json!({"path":"/new","identity":"new-identity"}),
-        )
-        .await
-        .unwrap();
-    assert_eq!(relocation.updated_bindings, 1);
-    let after = root.catalog_vector().await.unwrap();
-    assert_eq!(before.partitions, after.partitions);
-    assert_ne!(before.control, after.control);
-    assert!(matches!(
-        root.list_sessions::<Value>(Some(&first.revision), first.next_cursor.as_deref(), 2)
-            .await,
-        Err(StoreError::RevisionConflict { .. })
-    ));
-    let old = root
-        .scoped_sessions::<Value>(
-            CatalogScope::Workspace("/old".into()),
-            None,
-            SessionPosition::Start,
             filter(),
         )
         .await
         .unwrap();
-    assert!(old.sessions.is_empty());
-    let relocated = root
-        .scoped_sessions::<Value>(
-            CatalogScope::Workspace("/new".into()),
-            None,
-            SessionPosition::Start,
+    assert_eq!(page_ids(&first), ["owned_child_a", "owned_child_b"]);
+    let next = root
+        .root_session_page::<Value>(
+            scope("owned_root"),
+            Some(&first.revision),
+            SessionPosition::After(first.next_cursor.as_deref().unwrap()),
+            2,
             filter(),
         )
         .await
         .unwrap();
-    assert_eq!(relocated.sessions.len(), 8);
-    for record in relocated.sessions {
-        assert_eq!(
-            record.configuration["workspace"],
-            serde_json::to_value(binding).unwrap()
-        );
-        assert_eq!(record.revision, 2);
-        assert_eq!(record.workspace_binding.unwrap().workspace["path"], "/new");
-    }
-    assert_eq!(root.workspace_fence("/new").await.unwrap().0.len(), 8);
-    root.close().await.unwrap();
+    assert_eq!(page_ids(&next), ["owned_child_c"]);
+    let grandchild = root
+        .root_session_page::<Value>(
+            scope("owned_child_b"),
+            None,
+            SessionPosition::Start,
+            2,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&grandchild), ["owned_grandchild"]);
+    root.drain().await;
 }

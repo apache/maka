@@ -30,7 +30,7 @@ use std::rc::Rc;
 
 pub(crate) use nsh_core::transition::Live;
 use nsh_core::{
-    Bounds, LayoutAnimation, Points, ViewKind, ViewStyle,
+    AttributedText, Bounds, LayoutAnimation, Points, ViewKind, ViewStyle,
     transition::{self, Extra},
 };
 
@@ -89,12 +89,37 @@ fn animate(surface: &Rc<Surface>, view: &NshView, f: impl FnOnce(&mut Live)) {
     }
 }
 
+/// A new cell assignment discards its old transitions, but keeps keyframes.
+pub(crate) fn retired(view: &NshView) {
+    let mut state = view.state_mut();
+    if let Some(live) = state.live.as_deref_mut() {
+        live.stop_frame();
+        live.stop_style();
+        live.recolor(Default::default());
+        live.revive();
+        if live.idle() {
+            state.live = None;
+        }
+    }
+}
+
+/// Resume a retained subtree without restarting its configured animations.
+pub(crate) fn resume(surface: &Rc<Surface>, view: &NshView) {
+    if view.parent_view().is_some() {
+        // A retained list cell brings its descendants back without restyling.
+        let mut pending = vec![view.clone()];
+        while let Some(node) = pending.pop() {
+            pending.extend(node.child_views());
+            if node.state().live.is_some() {
+                animate(surface, &node, |_| {});
+            }
+        }
+    }
+}
+
 /// `view` was inserted into its parent.
 pub(crate) fn inserted(surface: &Rc<Surface>, view: &NshView, animation: Option<&LayoutAnimation>) {
-    if view.state().live.is_some() {
-        // Ticks stop while a view is out of the tree; going on resumes them.
-        animate(surface, view, |_| {});
-    }
+    resume(surface, view);
     if view.state().live.as_ref().is_some_and(|l| l.dying()) {
         // Back (or moved) before its removal finished animating (which
         // also makes it take the pointer again).
@@ -185,6 +210,23 @@ pub(crate) fn style_changed(surface: &Rc<Surface>, view: &NshView, old: &ViewSty
     animate(surface, view, |live| live.restyle(restyle));
 }
 
+/// `view`'s text changed from `old` (the new one is in its state): its
+/// color transitions as its style's `transition` says, drawn over the new
+/// runs ([`Live::text_color`]) rather than typeset on every frame.
+pub(crate) fn text_changed(
+    surface: &Rc<Surface>,
+    view: &NshView,
+    old: &AttributedText,
+    text: &AttributedText,
+) {
+    let recolor = transition::recolor(old, text, &view.state().style, reduce_motion(surface));
+    if recolor.starts() {
+        animate(surface, view, |live| live.recolor(recolor));
+    } else if let Some(live) = view.state_mut().live.as_deref_mut() {
+        live.recolor(recolor);
+    }
+}
+
 /// True if an ancestor of `view` is animating out (and takes `view` with
 /// it).
 fn ancestor_dying(view: &NshView) -> bool {
@@ -202,17 +244,18 @@ fn ancestor_dying(view: &NshView) -> bool {
 /// left to animate (the frame client is dropped).
 fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
     if !view.attached() {
-        // Out of the tree: a deleted subtree stops for good (dropping the
-        // client releases it); a view only moved out resumes when it is
-        // inserted again. Views of a subtree being built (registered, with
-        // a parent, not attached yet) go on.
+        // Parked cells suspend their descendants; newly built subtrees
+        // can tick before their root is attached.
         let id = view.id();
         let registered = surface
             .mounter
             .try_borrow()
             .ok()
             .is_none_or(|m| m.views.get(id).as_ref() == Some(view));
-        if !registered || view.parent_view().is_none() {
+        if !registered
+            || view.parent_view().is_none()
+            || crate::navigation::is_parked(surface, view)
+        {
             if let Some(live) = view.state_mut().live.as_deref_mut() {
                 live.set_ticking(false);
             }

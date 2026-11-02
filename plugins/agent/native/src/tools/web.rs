@@ -20,6 +20,51 @@
 use super::*;
 use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
 use std::collections::BTreeMap;
+pub(super) async fn capture(
+    service: &Service,
+    context: &ToolCallContext,
+    cancellation: &CancellationToken,
+) -> Result<maka_web_api::contract::Capture, ToolError> {
+    let request = service
+        .services
+        .request_with_execution(
+            Identity::Agent {
+                invocation: context.invocation.clone(),
+                operation_id: None,
+            },
+            cancellation.clone(),
+            context
+                .execution
+                .clone()
+                .ok_or_else(|| ToolError::Persistence("Execution custody unavailable".into()))?,
+        )
+        .map_err(ToolError::Failed)?;
+    let result = AssertUnwindSafe(async {
+        request
+            .call_target(
+                &service.selection.target,
+                "capture".into(),
+                serde_json::json!({}),
+                Attachments::default(),
+            )
+            .map_err(ToolError::Failed)?
+            .await
+            .map_err(ToolError::Failed)
+    })
+    .catch_unwind()
+    .await;
+    request
+        .finish()
+        .await
+        .map_err(ToolError::CleanupUnconfirmed)?;
+    let value = result.map_err(|_| ToolError::Failed("Web capture panicked".into()))??;
+    if cancellation.is_cancelled() {
+        return Err(ToolError::Failed("Web capture cancelled".into()));
+    }
+    serde_json::from_value(value)
+        .map_err(|error| ToolError::Failed(format!("Web capture invalid: {error}")))
+}
+
 pub(super) struct Binding {
     pub services: Vec<Service>,
     pub workers: tokio_util::task::TaskTracker,
@@ -55,14 +100,13 @@ impl RequestBinding for Binding {
                     })?,
                 )
                 .map_err(ToolError::Failed)?;
-            let import = service.selection.import.clone();
+            let target = service.selection.target.clone();
             let capture = workers
                 .spawn(async move {
                     let result = AssertUnwindSafe(async {
                         request
-                            .call(
-                                &import,
-                                0,
+                            .call_target(
+                                &target,
                                 "capture".into(),
                                 serde_json::json!({}),
                                 Attachments::default(),

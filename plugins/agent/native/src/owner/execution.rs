@@ -51,6 +51,21 @@ fn parked(reason: ResumeParkReason) -> ResumeResult {
     ResumeResult::Parked { reason }
 }
 
+enum ResumePurpose {
+    Observe,
+    Admit,
+}
+
+struct PreparedResume {
+    run: RunInput,
+    basis: Arc<MessageBasis>,
+    runs: runs::Exclusive,
+}
+enum ResumePreparation {
+    Ready(Box<PreparedResume>),
+    Unavailable(ResumeParkReason),
+}
+
 impl Owner {
     pub async fn work(&self, input: WorkRead) -> Result<Work, String> {
         use maka_event_log::message_resolution::MessageExecution as Stored;
@@ -130,14 +145,98 @@ impl Owner {
         })
     }
 
+    pub async fn resumable(
+        self: &Arc<Self>,
+        input: ResumableRead,
+        cancellation: &CancellationToken,
+    ) -> Result<Resumable, String> {
+        let runs = self.runs.lock().await;
+        self.session(&input.session_id).await?;
+        let store = self
+            .store
+            .session(&input.session_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let Some(boundary) = store
+            .latest_turn_boundary(&input.session_id)
+            .await
+            .map_err(|_| "agent_execution_unavailable")?
+        else {
+            return Ok(Resumable::Unavailable {
+                reason: ResumeParkReason::SourceMissing,
+            });
+        };
+        let source = store
+            .invocation_boundary(&input.session_id, &boundary.invocation.invocation_id)
+            .await
+            .map_err(|_| "agent_execution_unavailable")?
+            .ok_or("agent_execution_unavailable")?;
+        let execution = project(source);
+        let identity = Uuid::new_v4();
+        let invocation = Invocation {
+            session_id: input.session_id.clone(),
+            turn_id: format!("t_{identity}"),
+            run_id: format!("r_{identity}"),
+            invocation_id: format!("i_{identity}"),
+        };
+        let prepared = match self
+            .prepare_resume(
+                Resume {
+                    session_id: input.session_id,
+                    source_invocation_id: execution.invocation_id.clone(),
+                    source_high_water: execution.high_water,
+                    model: input.model,
+                    thinking_level: input.thinking_level,
+                },
+                invocation,
+                format!(
+                    "sha256:{}",
+                    hex::encode(Sha256::digest(identity.as_bytes()))
+                ),
+                runs,
+                ResumePurpose::Observe,
+            )
+            .await?
+        {
+            ResumePreparation::Ready(prepared) => prepared,
+            ResumePreparation::Unavailable(reason) => return Ok(Resumable::Unavailable { reason }),
+        };
+        drop(prepared.runs);
+        match self
+            .engine
+            .check_continuation(&store, &prepared.run, cancellation)
+            .await
+        {
+            Ok(()) => Ok(Resumable::Ready { source: execution }),
+            Err(
+                RunError::InvalidInput(_)
+                | RunError::ReconciliationRequired(_)
+                | RunError::Store(
+                    maka_event_log::StoreError::InvalidTransition(_)
+                    | maka_event_log::StoreError::HistoryUnsettled
+                    | maka_event_log::StoreError::HistoryProviderEffectUnresolved,
+                ),
+            ) => Ok(Resumable::Unavailable {
+                reason: ResumeParkReason::SafetyCheckFailed,
+            }),
+            Err(error) => {
+                if error.is_cleanup_unconfirmed() {
+                    let mut runs = self.runs.lock().await;
+                    runs.retained_cleanup.insert(execution.session_id);
+                }
+                Err(public_error(error))
+            }
+        }
+    }
+
     pub async fn resume(
         self: &Arc<Self>,
         input: Resume,
         operation: &maka_plugin_core::operation::RecoveryRef,
     ) -> Result<ResumeResult, String> {
         use ResumeParkReason as Reason;
-        let mut runs = self.runs.lock().await;
-        let session = self.session(&input.session_id).await?;
+        let runs = self.runs.lock().await;
+        self.session(&input.session_id).await?;
         let identity = self.operation_id(operation);
         // Engine receipts and application operations use different digest encodings.
         let fingerprint = format!(
@@ -182,13 +281,250 @@ impl Owner {
                 execution: project(boundary),
             });
         }
+        let PreparedResume {
+            run,
+            basis,
+            mut runs,
+        } = match self
+            .prepare_resume(
+                input,
+                invocation.clone(),
+                fingerprint,
+                runs,
+                ResumePurpose::Admit,
+            )
+            .await?
+        {
+            ResumePreparation::Ready(prepared) => *prepared,
+            ResumePreparation::Unavailable(reason) => return Ok(parked(reason)),
+        };
+        let prepared = match self
+            .engine
+            .prepare_continuation(
+                self.store
+                    .session(&run.invocation.session_id)
+                    .await
+                    .map_err(|error| error.to_string())?,
+                run,
+                &self.stop,
+            )
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(
+                RunError::InvalidInput(_)
+                | RunError::ReconciliationRequired(_)
+                | RunError::Store(
+                    maka_event_log::StoreError::InvalidTransition(_)
+                    | maka_event_log::StoreError::HistoryUnsettled
+                    | maka_event_log::StoreError::HistoryProviderEffectUnresolved,
+                ),
+            ) => {
+                return Ok(parked(Reason::SafetyCheckFailed));
+            }
+            Err(error) => {
+                if error.is_cleanup_unconfirmed() {
+                    runs.retained_cleanup.insert(invocation.session_id.clone());
+                }
+                return Err(public_error(error));
+            }
+        };
+        let running = match self
+            .engine
+            .start_continuation(prepared, self.stop.child_token())
+            .await
+        {
+            Ok(running) => running,
+            Err(RunError::Busy) => return Ok(parked(Reason::Busy)),
+            Err(
+                RunError::ContinuationChanged
+                | RunError::InvalidInput(_)
+                | RunError::ReconciliationRequired(_),
+            ) => {
+                return Ok(parked(Reason::SafetyCheckFailed));
+            }
+            Err(error) => {
+                if error.is_cleanup_unconfirmed() {
+                    runs.retained_cleanup.insert(invocation.session_id.clone());
+                }
+                return Err(public_error(error));
+            }
+        };
+        runs.controls.insert(
+            invocation.session_id.clone(),
+            Control {
+                #[cfg(test)]
+                handoff: running.handoff().cloned(),
+                preview: running.preview(),
+                compacting: false,
+                invocation: invocation.clone(),
+                basis,
+                cancellation: running.cancellation(),
+            },
+        );
+        self.workers.spawn(self.clone().drive(running));
+        let boundary = self
+            .store
+            .session(&invocation.session_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .invocation_boundary(&invocation.session_id, &invocation.invocation_id)
+            .await
+            .map_err(|_| "agent_execution_unavailable")?
+            .ok_or("agent_execution_unavailable")?;
+        Ok(ResumeResult::Started {
+            execution: project(boundary),
+        })
+    }
+    pub(super) async fn resume_goal_handoff(
+        self: &Arc<Self>,
+        source: &Invocation,
+        basis: Arc<MessageBasis>,
+    ) -> Result<(), RunError> {
+        let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
-            return Ok(parked(Reason::Closed));
+            return Err(RunError::Cancelled);
+        }
+        if runs.busy(&source.session_id)
+            || self
+                .has_parked_invocation(&source.session_id)
+                .await
+                .map_err(RunError::Internal)?
+        {
+            return Ok(());
+        }
+        let session = self
+            .session(&source.session_id)
+            .await
+            .map_err(RunError::Internal)?;
+        drop(runs);
+        let store = self
+            .store
+            .session(&source.session_id)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?;
+        let prefix = store
+            .run_source(&source.session_id, &source.run_id, None)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?
+            .ok_or_else(|| RunError::Internal("agent_execution_unavailable".into()))?;
+        if prefix.boundary.invocation != *source {
+            return Err(RunError::ReconciliationRequired(
+                "agent_execution_changed".into(),
+            ));
+        }
+        let Fact::InvocationEnded {
+            outcome: InvocationOutcome::HandoffPaused { pause },
+        } = prefix.last.event.fact
+        else {
+            return Err(RunError::ReconciliationRequired(
+                "agent_execution_not_paused".into(),
+            ));
+        };
+        if store
+            .continuation_for_source(&prefix.boundary)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let continuation = self
+            .prepare_frozen_retry(source, basis.clone(), &self.stop)
+            .await?;
+        let mut runs = self.runs.lock().await;
+        let current = self
+            .session(&source.session_id)
+            .await
+            .map_err(RunError::Internal)?;
+        if current.configuration != session.configuration || current.archived {
+            return Err(RunError::InvalidInput(
+                "agent_session_configuration_changed".into(),
+            ));
+        }
+        if runs.closing || self.stop.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if runs.busy(&source.session_id)
+            || self
+                .has_parked_invocation(&source.session_id)
+                .await
+                .map_err(RunError::Internal)?
+        {
+            return Ok(());
+        }
+        if store
+            .continuation_for_source(&prefix.boundary)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        // The seal owns successor identity and settings. Engine verifies the
+        // original configuration, route, tool catalog and replay before admission.
+        let settings = continuation.settings;
+        let run = RunInput {
+            invocation: pause.intent.successor(source),
+            request_fingerprint: None,
+            model_source: settings.model_source,
+            model_revision: settings.model_revision,
+            provider_id: settings.provider_id,
+            context: settings.context,
+            provider: settings.provider,
+            provider_options: settings.provider_options,
+            main_output_limit: settings.main_output_limit,
+            supports_vision: settings.supports_vision,
+            native_activation_basis: settings.native_activation_basis,
+            configuration: settings.configuration,
+            work: RunWork::Handoff {
+                source: prefix.boundary,
+                pause: Box::new(pause),
+                tools: continuation.tools,
+            },
+        };
+        let running = match async {
+            let prepared = self
+                .engine
+                .prepare_continuation(store, run, &self.stop)
+                .await?;
+            self.engine
+                .start_continuation(prepared, self.stop.child_token())
+                .await
+        }
+        .await
+        {
+            Ok(running) => running,
+            Err(error) => {
+                if error.is_cleanup_unconfirmed() {
+                    runs.retained_cleanup.insert(source.session_id.clone());
+                }
+                return Err(error);
+            }
+        };
+        self.publish(&mut runs, &running, basis);
+        self.workers.spawn(self.clone().drive(running));
+        Ok(())
+    }
+
+    async fn prepare_resume(
+        self: &Arc<Self>,
+        input: Resume,
+        invocation: Invocation,
+        fingerprint: String,
+        mut runs: runs::Exclusive,
+        purpose: ResumePurpose,
+    ) -> Result<ResumePreparation, String> {
+        use ResumeParkReason as Reason;
+        let session = self.session(&input.session_id).await?;
+        if runs.closing || self.stop.is_cancelled() {
+            return Ok(ResumePreparation::Unavailable(Reason::Closed));
         }
         if session.archived {
-            return Ok(parked(Reason::Archived));
+            return Ok(ResumePreparation::Unavailable(Reason::Archived));
         }
-        if runs.controls.contains_key(&input.session_id)
+        if runs.busy(&input.session_id)
+            || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store
                 .session(&input.session_id)
@@ -200,7 +536,7 @@ impl Owner {
                 .entries
                 .is_empty()
         {
-            return Ok(parked(Reason::Busy));
+            return Ok(ResumePreparation::Unavailable(Reason::Busy));
         }
         let Some((boundary, high_water)) = self
             .store
@@ -211,10 +547,10 @@ impl Owner {
             .await
             .map_err(|_| "agent_execution_unavailable")?
         else {
-            return Ok(parked(Reason::SourceMissing));
+            return Ok(ResumePreparation::Unavailable(Reason::SourceMissing));
         };
         if high_water != input.source_high_water {
-            return Ok(parked(Reason::SourceChanged));
+            return Ok(ResumePreparation::Unavailable(Reason::SourceChanged));
         }
         if !matches!(
             boundary.state,
@@ -223,7 +559,7 @@ impl Owner {
                 ..
             }
         ) {
-            return Ok(parked(Reason::SourceNotResumable));
+            return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable));
         }
         let prefix = match self
             .store
@@ -234,14 +570,14 @@ impl Owner {
             .await
         {
             Ok(Some(prefix)) => prefix,
-            Ok(None) => return Ok(parked(Reason::SourceMissing)),
+            Ok(None) => return Ok(ResumePreparation::Unavailable(Reason::SourceMissing)),
             Err(_) => return Err("agent_execution_unavailable".into()),
         };
         if prefix.boundary.invocation != boundary.invocation
             || prefix.boundary.high_water != input.source_high_water
             || !matches!(&prefix.last.event.fact, Fact::InvocationEnded { .. })
         {
-            return Ok(parked(Reason::SourceChanged));
+            return Ok(ResumePreparation::Unavailable(Reason::SourceChanged));
         }
         let source_boundary = prefix.boundary;
         if self
@@ -254,7 +590,7 @@ impl Owner {
             .map_err(|_| "agent_execution_unavailable")?
             .is_some()
         {
-            return Ok(parked(Reason::AlreadyContinued));
+            return Ok(ResumePreparation::Unavailable(Reason::AlreadyContinued));
         }
         let Some(mut configuration) = self
             .store
@@ -265,13 +601,14 @@ impl Owner {
             .await
             .map_err(|_| "agent_execution_unavailable")?
         else {
-            return Ok(parked(Reason::SourceNotResumable));
+            return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable));
         };
         if configuration.model.is_none()
             || configuration.orchestration_mode.as_str() == plan::EXECUTION
         {
-            return Ok(parked(Reason::SourceNotResumable));
+            return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable));
         }
+        drop(runs);
         let workspace = &session.configuration.workspace;
         if configuration.cwd != workspace.path
             || configuration.workspace_identity.as_ref() != Some(&workspace.identity)
@@ -281,7 +618,7 @@ impl Owner {
                 .await
                 .is_err()
         {
-            return Ok(parked(Reason::WorkspaceChanged));
+            return Ok(ResumePreparation::Unavailable(Reason::WorkspaceChanged));
         }
         let (mut source, prepared) = crate::model::Source::select(
             self.configuration.clone(),
@@ -304,20 +641,22 @@ impl Owner {
             .await
         {
             Ok(graph) => graph,
-            Err(_) => return Ok(parked(Reason::SourceNotResumable)),
+            Err(_) => return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable)),
         };
-        drop(runs);
-        let mcp_revision = self.mcp_projects.capture(workspace).await?;
+        let selected_catalog = match purpose {
+            ResumePurpose::Observe => self.mcp_projects.base.clone(),
+            ResumePurpose::Admit => self.mcp_projects.capture(workspace).await?,
+        };
         runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
-            return Ok(parked(Reason::Closed));
+            return Ok(ResumePreparation::Unavailable(Reason::Closed));
         }
         let current = self.session(&input.session_id).await?;
         if current.configuration != session.configuration || current.archived {
-            return Ok(parked(Reason::WorkspaceChanged));
+            return Ok(ResumePreparation::Unavailable(Reason::WorkspaceChanged));
         }
-        if runs.controls.contains_key(&input.session_id) {
-            return Ok(parked(Reason::Busy));
+        if runs.busy(&input.session_id) || self.has_parked_invocation(&input.session_id).await? {
+            return Ok(ResumePreparation::Unavailable(Reason::Busy));
         }
         if self
             .store
@@ -329,12 +668,12 @@ impl Owner {
             .map_err(|_| "agent_execution_unavailable")?
             .is_some()
         {
-            return Ok(parked(Reason::AlreadyContinued));
+            return Ok(ResumePreparation::Unavailable(Reason::AlreadyContinued));
         }
 
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog.clone()),
             language: configuration.language,
             compaction_prompt: configuration.compaction_prompt.clone(),
             graph,
@@ -377,11 +716,14 @@ impl Owner {
         // Replay the original prepared prompt. Native service tools continue to
         // resolve the live Session permission boundary through their actual owner.
         let tools = self.selected_tools(
+            &input.session_id,
             &basis,
             configuration.tool_discovery,
             configuration.editing_tools,
         )?;
+        let basis = Arc::new(basis);
         let run = RunInput {
+            native_activation_basis: Some(basis.clone()),
             invocation: invocation.clone(),
             model_source: Some(Arc::new(source)),
             model_revision: Some(prepared.revision),
@@ -398,84 +740,10 @@ impl Owner {
                 tools,
             },
         };
-        let prepared = match self
-            .engine
-            .prepare_continuation(
-                self.store
-                    .session(&run.invocation.session_id)
-                    .await
-                    .map_err(|error| error.to_string())?,
-                run,
-                &self.stop,
-            )
-            .await
-        {
-            Ok(prepared) => prepared,
-            Err(
-                RunError::InvalidInput(_)
-                | RunError::ReconciliationRequired(_)
-                | RunError::Store(
-                    maka_event_log::StoreError::InvalidTransition(_)
-                    | maka_event_log::StoreError::HistoryUnsettled
-                    | maka_event_log::StoreError::HistoryProviderEffectUnresolved,
-                ),
-            ) => {
-                return Ok(parked(Reason::SafetyCheckFailed));
-            }
-            Err(error) => {
-                if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(input.session_id.clone());
-                    runs.closing = true;
-                    self.stop.cancel();
-                }
-                return Err(public_error(error));
-            }
-        };
-        let running = match self
-            .engine
-            .start_continuation(prepared, self.stop.child_token())
-            .await
-        {
-            Ok(running) => running,
-            Err(RunError::Busy) => return Ok(parked(Reason::Busy)),
-            Err(
-                RunError::ContinuationChanged
-                | RunError::InvalidInput(_)
-                | RunError::ReconciliationRequired(_),
-            ) => {
-                return Ok(parked(Reason::SafetyCheckFailed));
-            }
-            Err(error) => {
-                if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(input.session_id.clone());
-                }
-                runs.closing = true;
-                self.stop.cancel();
-                return Err(public_error(error));
-            }
-        };
-        runs.controls.insert(
-            input.session_id,
-            Control {
-                compacting: false,
-                invocation: invocation.clone(),
-                basis,
-                cancellation: running.cancellation(),
-                failure: None,
-            },
-        );
-        self.workers.spawn(self.clone().drive(running));
-        let boundary = self
-            .store
-            .session(&invocation.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .invocation_boundary(&invocation.session_id, &invocation.invocation_id)
-            .await
-            .map_err(|_| "agent_execution_unavailable")?
-            .ok_or("agent_execution_unavailable")?;
-        Ok(ResumeResult::Started {
-            execution: project(boundary),
-        })
+        Ok(ResumePreparation::Ready(Box::new(PreparedResume {
+            run,
+            basis,
+            runs,
+        })))
     }
 }

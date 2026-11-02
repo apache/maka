@@ -55,7 +55,8 @@ pub(crate) async fn initialize_execution(
     if !complete {
         sqlx::raw_sql(
             "DELETE FROM catalog_messages;
-             DELETE FROM catalog_message_watermark;",
+             DELETE FROM catalog_message_watermark;
+             UPDATE session_control SET catalog_activity_at = 0;",
         )
         .execute(&mut *tx)
         .await?;
@@ -103,7 +104,7 @@ pub(crate) async fn project_execution(
     let sequence = sequence as i64;
     let (session, invocation, step, kind): (String, String, Option<String>, String) =
         sqlx::query_as(
-            "SELECT json_extract(event_json, '$.invocation.session_id'), invocation_id,
+            "SELECT json_extract(event_header, '$.invocation.session_id'), invocation_id,
                 operation_id, kind FROM runtime_events WHERE sequence = ?",
         )
         .bind(sequence)
@@ -114,7 +115,7 @@ pub(crate) async fn project_execution(
     let compact: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?
          AND kind = 'invocation_opened'
-         AND json_extract(event_json, '$.fact.input.kind') = 'context_compact')",
+         AND json_extract(event_header, '$.fact.input.kind') = 'context_compact')",
     )
     .bind(&invocation)
     .fetch_one(&mut *connection)
@@ -126,8 +127,8 @@ pub(crate) async fn project_execution(
              AND opening.kind = 'invocation_opened'
              WHERE request.kind = 'model_requested' AND request.invocation_id = ?1
              AND request.operation_id = ?2
-             AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-             AND json_extract(request.event_json, '$.fact.purpose') = 'main')",
+             AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
+             AND json_extract(request.event_header, '$.fact.purpose') = 'main')",
         )
         .bind(&invocation)
         .bind(&step)
@@ -156,10 +157,10 @@ pub(crate) async fn project_execution(
     if kind == "message_imported" {
         sqlx::query(
             "INSERT OR IGNORE INTO catalog_messages
-             SELECT sequence,0,?2,catalog_time(json_extract(event_json,'$.recorded_at')),
-                catalog_preview(json_extract(event_json,'$.fact.record.content.text')),event_id
+             SELECT sequence,0,?2,catalog_time(json_extract(event_header,'$.recorded_at')),
+                catalog_preview(json_extract(event_header,'$.fact.record.content.text')),event_id
              FROM runtime_events WHERE sequence=?1
-               AND json_extract(event_json,'$.fact.record.content.kind') IN ('user','assistant')",
+               AND json_extract(event_header,'$.fact.record.content.kind') IN ('user','assistant')",
         )
         .bind(sequence)
         .bind(&session)
@@ -168,14 +169,14 @@ pub(crate) async fn project_execution(
     } else if kind == "invocation_opened" {
         sqlx::query(
             "INSERT OR IGNORE INTO catalog_messages
-             SELECT sequence, 0, ?2, catalog_time(json_extract(event_json, '$.recorded_at')),
+             SELECT sequence, 0, ?2, catalog_time(json_extract(event_header, '$.recorded_at')),
                 catalog_preview(COALESCE(
-                    json_extract(event_json, '$.fact.input.content.display_text'),
-                    json_extract(event_json, '$.fact.input.content.text'))),
-                CASE WHEN json_array_length(event_json, '$.fact.input.source_messages') = 1
-                    THEN json_extract(event_json, '$.fact.input.source_messages[0].message_id') ELSE event_id END
+                    json_extract(event_header, '$.fact.input.content.display_text'),
+                    json_extract(event_header, '$.fact.input.content.text'))),
+                CASE WHEN json_array_length(event_header, '$.fact.input.source_messages') = 1
+                    THEN json_extract(event_header, '$.fact.input.source_messages[0].message_id') ELSE event_id END
              FROM runtime_events WHERE sequence = ?1
-             AND json_extract(event_json, '$.fact.input.kind') = 'message'",
+             AND json_extract(event_header, '$.fact.input.kind') = 'message'",
         )
         .bind(sequence)
         .bind(&session)
@@ -184,29 +185,14 @@ pub(crate) async fn project_execution(
     } else if kind == "message_steered" {
         crate::steering::project_catalog(connection, sequence, &session).await?;
     } else if kind == "model_completed" {
-        // Current step only, excluding every delta and every earlier completion.
-        // Accepted text keeps the PartStarted time used by transcript projection.
         sqlx::query(
-            "WITH starts AS (
-                SELECT catalog_time(json_extract(event_json, '$.recorded_at')) AS ts, event_id,
-                    row_number() OVER (ORDER BY sequence) AS ordinal
-                FROM event_log INDEXED BY catalog_part_starts
-                WHERE json_extract(event_json, '$.invocation.session_id') = ?2
-                AND invocation_id = ?3 AND json_extract(event_json, '$.fact.step_id') = ?4
-                AND kind = 'model_observed'
-                AND json_extract(event_json, '$.fact.event.kind') = 'part_started'
-             ), accepted AS (
-                SELECT row_number() OVER (ORDER BY CAST(part.key AS INTEGER)) AS ordinal,
-                    CASE WHEN json_extract(part.value, '$.text_kind') = 'text'
-                        THEN catalog_preview(json_extract(part.value, '$.text')) END AS preview
-                FROM runtime_events AS event, json_each(event.event_json, '$.fact.output.parts') AS part
-                WHERE event.sequence = ?1 AND json_extract(part.value, '$.kind') = 'text'
-             )
-             INSERT OR IGNORE INTO catalog_messages
-             SELECT ?1, ordinal, ?2, starts.ts, accepted.preview, starts.event_id
-             FROM starts JOIN accepted USING (ordinal)",
-        ).bind(sequence).bind(&session).bind(&invocation).bind(&step)
-            .execute(&mut *connection).await?;
+            "INSERT OR IGNORE INTO catalog_messages
+             SELECT ?1,b.ordinal+1,?2,catalog_time(json_extract(b.record,'$.started_at')),
+               CASE WHEN json_extract(b.part,'$.text_kind')='text' THEN catalog_preview(json_extract(b.part,'$.text')) END,
+               b.message_id
+             FROM model_selected_parts s JOIN model_part_bodies b ON b.event_id=s.body_event_id AND b.ordinal=s.ordinal
+             WHERE s.sequence=?1 AND json_extract(b.part,'$.kind')='text'",
+        ).bind(sequence).bind(&session).execute(&mut *connection).await?;
     }
     if kind == "model_interrupted" || kind == "invocation_ended" {
         partial::project(connection, sequence, &session, &invocation, step.as_deref()).await?;
@@ -223,6 +209,15 @@ pub(crate) async fn project_execution(
     )
     .bind(sequence)
     .bind(prior_clock)
+    .execute(&mut *connection)
+    .await?;
+    sqlx::query(
+        "UPDATE session_control SET catalog_activity_at = COALESCE((
+            SELECT message_at FROM catalog_messages INDEXED BY catalog_latest_message
+            WHERE session_id = ?1 ORDER BY message_at DESC, sequence DESC, ordinal DESC LIMIT 1
+         ), 0) WHERE id = ?1",
+    )
+    .bind(&session)
     .execute(&mut *connection)
     .await?;
     sqlx::query(

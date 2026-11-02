@@ -38,7 +38,7 @@ function App() {
     <View style={{ flex: 1, backgroundColor: ui().page, padding: 20, paddingTop: 24, gap: 14 }}>
       <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>canvas</Text>
       <Text style={{ color: ui().muted }}>
-        {platform.idiom === "desktop" ? "Drag across the chart with the mouse" : "Drag your finger across the chart"} · {months[picked()]}{" "}
+        {platform.desktop ? "Drag across the chart with the mouse" : "Drag your finger across the chart"} · {months[picked()]}{" "}
         = {values[picked()]}
       </Text>
 

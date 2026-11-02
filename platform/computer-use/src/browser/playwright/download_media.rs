@@ -33,7 +33,7 @@ impl Tab {
     ) -> Result<Value, ToolError> {
         let cancellation = call.cancellation;
         let resources = Resources::new();
-        let budget = super::super::downloads::locator_timeout(options);
+        let budget = super::super::downloads::timeout(options)?;
         let deadline = (!budget.is_zero()).then(|| tokio::time::Instant::now() + budget);
         let operation = async {
             loop {

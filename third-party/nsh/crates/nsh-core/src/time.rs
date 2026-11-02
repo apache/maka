@@ -47,6 +47,13 @@ pub fn manual() -> bool {
     CURRENT.with(|current| current.borrow().as_ref().is_some_and(Clock::is_manual))
 }
 
+/// The current thread's clock ([`Clock::enter`]), else the system's: for
+/// what keeps reading an engine's time outside its calls (a browser realm's
+/// `Date` between pumps).
+pub fn current() -> Clock {
+    CURRENT.with(|current| current.borrow().clone().unwrap_or_default())
+}
+
 /// A display frame's time at 60 Hz: what a manual clock that moves with
 /// the display's frames moves by each frame ([`Clock::with_frames`]).
 pub const FRAME: Duration = Duration::from_nanos(16_666_667);

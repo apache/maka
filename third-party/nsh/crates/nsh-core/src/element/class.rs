@@ -130,8 +130,9 @@ pub enum MemberCall {
     /// As a task of the core, started in order with the UI's ops; JS gets
     /// a promise.
     Async(AsyncCall),
-    /// In the JS call, returning a task's start ([`super::Later`]): what
-    /// the call throws throws there; JS gets a promise of the task.
+    /// In the JS call, returning a task's start ([`super::Later`]): JS gets
+    /// a promise of the task, rejected with what the call refuses (a
+    /// method returning a promise never throws).
     Start(AsyncCall),
 }
 
@@ -295,9 +296,8 @@ impl<C: Class> Instance<C> {
             .cell
             .value
             .try_borrow()
-            .map_err(|_| Thrown::Type(format!("{} used re-entrantly", C::DEF.name)))?;
-        Ref::filter_map(value, Option::as_ref)
-            .map_err(|_| Thrown::Type(format!("{} is disposed", C::DEF.name)))
+            .map_err(|_| Thrown::Type(reentrant(C::DEF.name)))?;
+        Ref::filter_map(value, Option::as_ref).map_err(|_| disposed(C::DEF.name))
     }
 
     fn borrow_mut(&self) -> Result<RefMut<'_, C>, Thrown> {
@@ -305,9 +305,8 @@ impl<C: Class> Instance<C> {
             .cell
             .value
             .try_borrow_mut()
-            .map_err(|_| Thrown::Type(format!("{} used re-entrantly", C::DEF.name)))?;
-        RefMut::filter_map(value, Option::as_mut)
-            .map_err(|_| Thrown::Type(format!("{} is disposed", C::DEF.name)))
+            .map_err(|_| Thrown::Type(reentrant(C::DEF.name)))?;
+        RefMut::filter_map(value, Option::as_mut).map_err(|_| disposed(C::DEF.name))
     }
 
     /// Whether this is the only handle of the instance (no JS object, task
@@ -335,6 +334,27 @@ impl<C: Class> Instance<C> {
     }
 }
 
+// The errors of the generic call glue, out of line: their formatting would
+// otherwise be repeated in every class's and argument type's code.
+
+#[cold]
+#[inline(never)]
+fn reentrant(class: &str) -> String {
+    format!("{class} used re-entrantly")
+}
+
+#[cold]
+#[inline(never)]
+fn disposed(class: &str) -> Thrown {
+    Thrown::Type(format!("{class} is disposed"))
+}
+
+#[cold]
+#[inline(never)]
+fn not_an_instance(value: JsIn<'_>, class: &str) -> PropError {
+    value.expected(&format!("a {class}"))
+}
+
 /// An instance of some class, as its JS object and the table hold it.
 #[doc(hidden)]
 pub trait ClassInstance: Any {
@@ -358,7 +378,7 @@ impl<C: Class> ClassInstance for InstanceCell<C> {
         let value = self
             .value
             .try_borrow_mut()
-            .map_err(|_| format!("{} used re-entrantly", C::DEF.name))?
+            .map_err(|_| reentrant(C::DEF.name))?
             .take();
         // Dropped after the borrow: its drop may reach JS (callbacks).
         drop(value);
@@ -416,7 +436,7 @@ impl<C: Class> Arg for Instance<C> {
             .host()
             .instance(value.raw())
             .and_then(Instance::of)
-            .ok_or_else(|| value.expected(&format!("a {}", C::DEF.name)))
+            .ok_or_else(|| not_an_instance(value, C::DEF.name))
     }
 
     fn classes(out: &mut Vec<&'static ClassDef>) {
@@ -676,17 +696,14 @@ pub(crate) mod __private {
     /// Argument `i` of the call (`what`: `Tally.add`, `name`: `by`, for
     /// the error).
     pub fn arg<T: Arg>(host: &dyn JsHost, i: usize, what: &str, name: &str) -> Result<T, Thrown> {
-        T::from_js(JsIn::new(host, host.arg(i)))
-            .map_err(|e| Thrown::Type(format!("{what}: `{name}`: {e}")))
+        T::from_js(JsIn::new(host, host.arg(i))).map_err(|e| bad_arg(e, what, name))
     }
 
     /// The instance `this` of the call is.
     pub fn this<C: Class>(host: &dyn JsHost, what: &str) -> Result<Instance<C>, Thrown> {
         host.instance(host.this())
             .and_then(Instance::of)
-            .ok_or_else(|| {
-                Thrown::Type(format!("{what}: Illegal invocation: not a {}", C::DEF.name))
-            })
+            .ok_or_else(|| illegal_invocation(what, C::DEF.name))
     }
 
     /// The value of `instance`, borrowed for a call.
@@ -719,7 +736,23 @@ pub(crate) mod __private {
         instance.borrow_mut().map_err(|e| arg_error(e, what, name))
     }
 
+    /// The error of argument `name` of `what` JS passed a wrong value for.
+    #[cold]
+    #[inline(never)]
+    fn bad_arg(e: PropError, what: &str, name: &str) -> Thrown {
+        Thrown::Type(format!("{what}: `{name}`: {e}"))
+    }
+
+    /// The error of a call whose `this` is no `class`.
+    #[cold]
+    #[inline(never)]
+    fn illegal_invocation(what: &str, class: &str) -> Thrown {
+        Thrown::Type(format!("{what}: Illegal invocation: not a {class}"))
+    }
+
     /// `e`, an argument's error, after `what` and the argument's `name`.
+    #[cold]
+    #[inline(never)]
     fn arg_error(e: Thrown, what: &str, name: &str) -> Thrown {
         match e {
             Thrown::Type(m) => Thrown::Type(format!("{what}: `{name}`: {m}")),
@@ -757,7 +790,7 @@ pub(crate) mod __private {
         Ok(Box::new(move || value.into_future()))
     }
 
-    /// [`start`] of a `Result`: an `Err` throws in the call.
+    /// [`start`] of a `Result`: an `Err` rejects the call's promise.
     pub fn start_result<T: Ret + 'static, E: crate::element::IntoThrown>(
         value: Result<crate::element::Later<T>, E>,
     ) -> Result<TaskStart, Thrown> {

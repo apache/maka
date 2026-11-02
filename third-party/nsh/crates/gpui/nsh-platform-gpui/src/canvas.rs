@@ -140,6 +140,25 @@ impl CanvasState {
         self.damage.set(None);
     }
 
+    /// The version a worker should rasterize now, if none is: one at a
+    /// time, as drawings that change on every frame would queue a job a
+    /// frame, the workers falling behind and showing frames ever older.
+    fn ask(&self) -> Option<u64> {
+        if self.inflight.get().is_some() {
+            return None;
+        }
+        self.inflight.set(Some(self.version));
+        Some(self.version)
+    }
+
+    /// A worker's rasterization of `version` is done: the next can be
+    /// asked for.
+    fn landed(&self, version: u64) {
+        if self.inflight.get() == Some(version) {
+            self.inflight.set(None);
+        }
+    }
+
     /// The value of animated value slot `k`, as damage scans read it.
     fn slot(args: &[Option<AnimationValue>], k: u16) -> f32 {
         args.get(k as usize)
@@ -410,8 +429,8 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
     if fresh && outdated {
         // A new drawing: a worker rasterizes it while the last one shows
         // (a frame or two); damage is worked out again when it is done.
-        if canvas.inflight.get() != Some(canvas.version) {
-            canvas.inflight.set(Some(canvas.version));
+        // The latest is asked for when the one in flight lands.
+        if let Some(version) = canvas.ask() {
             spawn(Job {
                 surface: SURFACE.get(),
                 id: state.id,
@@ -422,7 +441,7 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
                 key,
                 region,
                 frac,
-                version: canvas.version,
+                version,
                 opacity: cx.opacity,
             });
         }
@@ -648,15 +667,16 @@ fn deliver(surface: u64, id: nsh_core::NodeId, recorded: Recorded) {
         let Some(c) = state.canvas.as_mut() else {
             return;
         };
-        if c.inflight.get() == Some(recorded.version) {
-            c.inflight.set(None);
-        }
+        c.landed(recorded.version);
         let newer = c
             .cache
             .get_mut()
             .as_ref()
             .is_none_or(|r| r.version < recorded.version);
         if !newer {
+            // Drawn again to ask for the latest, if it is not this.
+            drop(state);
+            view.changed();
             return;
         }
         // Values that moved while it was made: their areas are made again.
@@ -3786,5 +3806,23 @@ mod tests {
         let p = premultiplied(1, 1, &[0, 0, 255, 128]).unwrap();
         assert_eq!(at(&p, 0, 0)[0], 255);
         assert_eq!(p.pixel(0, 0).unwrap().red(), 128);
+    }
+
+    #[test]
+    fn a_canvas_changing_on_every_frame_keeps_one_job_in_flight() {
+        let mut canvas = CanvasState::default();
+        assert_eq!(canvas.ask(), Some(0));
+        // Changed on every frame while a worker makes it: nothing more is
+        // queued behind it.
+        for _ in 0..10 {
+            canvas.stale();
+            assert_eq!(canvas.ask(), None);
+        }
+        // Once it lands, the latest is asked for.
+        canvas.landed(0);
+        assert_eq!(canvas.ask(), Some(10));
+        // A rasterization that lands late frees nothing.
+        canvas.landed(3);
+        assert_eq!(canvas.ask(), None);
     }
 }

@@ -88,7 +88,7 @@ fn until_command(rx: &Receiver<MountBatch>) -> Vec<MountBatch> {
         let done = batch
             .items
             .iter()
-            .any(|i| matches!(i, MountItem::Command { .. }));
+            .any(|i| matches!(i, MountItem::Command { command, .. } if !matches!(command, Command::Tokens(_))));
         batches.push(batch);
         if done {
             break;
@@ -109,7 +109,9 @@ fn drawing(batches: &[MountBatch]) -> Option<Vec<CanvasOp>> {
 fn command(batches: &[MountBatch]) -> Option<(u32, Command)> {
     batches.iter().find_map(|b| {
         b.items.iter().find_map(|i| match i {
-            MountItem::Command { id, command } => Some((*id, command.clone())),
+            MountItem::Command { id, command } if !matches!(command, Command::Tokens(_)) => {
+                Some((*id, command.clone()))
+            }
             _ => None,
         })
     })
@@ -124,6 +126,7 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,

@@ -1,4 +1,4 @@
-//! `nsh/canvas` end to end: what a `draw` records (the generated methods and
+//! `Canvas` end to end: what a `draw` records (the generated methods and
 //! properties, and the hand-written ones) as the core decodes it.
 
 use std::time::Duration;
@@ -72,6 +72,7 @@ pub(crate) fn start(app: &str) -> (Engine, crossbeam_channel::Receiver<MountBatc
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -344,9 +345,7 @@ fn redrawing_derives_the_same_nodes() {
 
 /// Hit tests answered natively while drawing and, on a kept context,
 /// afterwards; `fontVariantNumeric` records with the font kept apart.
-/// (Imported from `nsh/canvas`, where they were first: they still are.)
-const HIT: &str = r#"import { signal, mount } from "nsh";
-import { Canvas, Path2D, CanvasRenderingContext2D } from "nsh";
+const HIT: &str = r#"import { Canvas, CanvasRenderingContext2D, mount, Path2D, signal } from "nsh";
 
 const later = signal("");
 const p = new Path2D();

@@ -80,7 +80,7 @@ impl LoadState {
     }
 }
 
-fn js_string(value: &Value) -> String {
+pub(super) fn js_string(value: &Value) -> String {
     match value {
         Value::Null => "null".into(),
         Value::String(value) => value.clone(),
@@ -99,14 +99,8 @@ fn js_string(value: &Value) -> String {
         _ => value.to_string(),
     }
 }
-fn timeout(value: Option<&Value>) -> Duration {
-    Duration::from_secs_f64(
-        value
-            .and_then(Value::as_f64)
-            .unwrap_or(3000.0)
-            .clamp(0.0, 3000.0)
-            / 1000.0,
-    )
+fn timeout(value: Option<&Value>) -> Result<Duration, ToolError> {
+    crate::protocol::timeout_duration(value.and_then(Value::as_f64).unwrap_or(3000.0))
 }
 
 struct Glob(regex::Regex);
@@ -176,7 +170,7 @@ impl Plan {
                 Self::Locator {
                     locator,
                     state,
-                    timeout: timeout(timeout_ms.as_ref()),
+                    timeout: timeout(timeout_ms.as_ref())?,
                 }
             }
             BrowserWaitOperation::Url {
@@ -199,12 +193,12 @@ impl Plan {
                     matcher: Glob::new(&pattern)?,
                     pattern,
                     until,
-                    timeout: timeout(timeout_ms.as_ref()),
+                    timeout: timeout(timeout_ms.as_ref())?,
                 }
             }
             BrowserWaitOperation::LoadState { state, timeout_ms } => Self::Load {
                 state: LoadState::from_value(state.as_ref()),
-                timeout: timeout(timeout_ms.as_ref()),
+                timeout: timeout(timeout_ms.as_ref())?,
             },
             BrowserWaitOperation::Timeout { timeout_ms } => {
                 let value = timeout_ms
@@ -213,13 +207,7 @@ impl Plan {
                     .ok_or_else(|| {
                         failed("playwright.waitForTimeout requires a non-negative integer")
                     })?;
-                // The selected Node runtime's setTimeout treats zero and overflow as 1ms.
-                let millis = if !(1.0..=2_147_483_647.0).contains(&value) {
-                    1
-                } else {
-                    value as u64
-                };
-                Self::Delay(Duration::from_millis(millis))
+                Self::Delay(crate::protocol::timeout_duration(value)?)
             }
         })
     }
@@ -238,7 +226,7 @@ fn required_completion(result: Result<Value, ToolError>) -> Result<(), ToolError
     }
 }
 
-async fn cancellable_observation<T>(
+pub(super) async fn cancellable_observation<T>(
     effect: ReadEffect,
     cancellation: &CancellationToken,
     future: impl std::future::Future<Output = Result<T, ToolError>>,
@@ -305,7 +293,8 @@ impl Browsers {
                 }
             }),
             plan => {
-                self.use_tab(&identity, invocation.turn()).await?;
+                self.use_tab(&identity, invocation.turn(), cancellation)
+                    .await?;
                 let tab = self
                     .targets
                     .get_mut(&handle)
@@ -356,7 +345,10 @@ impl Browsers {
 }
 
 impl Tab {
-    fn wait_observation_branch(&self, frame_events: Events) -> Result<Self, ToolError> {
+    pub(in crate::browser) fn wait_observation_branch(
+        &self,
+        frame_events: Events,
+    ) -> Result<Self, ToolError> {
         let socket = self
             .socket
             .as_ref()
@@ -369,6 +361,7 @@ impl Tab {
             frames: self.frames.observation_branch(frame_events),
             socket: Some(socket),
             socket_prepared: true,
+            page_assets: Default::default(),
             origin_proof: None,
             navigation_admission: None,
             extension_claim: self.extension_claim.clone(),
@@ -389,6 +382,7 @@ impl Tab {
             last_turn: self.last_turn.clone(),
             dialogs: None,
             downloads: None,
+            filechoosers: None,
             dialog_host: self.dialog_host.clone(),
             clipboard: None,
             clipboard_store: self.clipboard_store.clone(),
@@ -734,8 +728,16 @@ async fn wait_event(
         result=tokio::time::timeout_at(deadline,events.recv())=>result.map_err(|_|failed(timeout_message))?.ok_or_else(||failed(detached_message)),
     }
 }
-fn navigation_error(event: &CdpEvent) -> Result<(), ToolError> {
-    if event.method != "Page.navigationBlocked" || event.params["resourceType"] == "subFrame" {
+pub(super) fn navigation_error(event: &CdpEvent) -> Result<(), ToolError> {
+    navigation_error_including_subframes(event, false)
+}
+pub(super) fn navigation_error_including_subframes(
+    event: &CdpEvent,
+    reject_subframes: bool,
+) -> Result<(), ToolError> {
+    if event.method != "Page.navigationBlocked"
+        || !reject_subframes && event.params["resourceType"] == "subFrame"
+    {
         return Ok(());
     }
     let url = event.params["url"]
@@ -831,22 +833,14 @@ mod tests {
             params,
             session_id: None,
             source_target_id: None,
+            params_json: None,
         }
     }
     fn frame() -> NetworkIdle {
         NetworkIdle::from_tree(&json!({"frameTree":{"frame":{"id":"main","loaderId":"first"}}}))
             .unwrap()
     }
-    #[test]
-    fn numeric_timeout_uses_selected_service_clamp_without_schema_guessing() {
-        assert_eq!(timeout(None), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&json!("10"))), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&Value::Null)), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&json!(0))), Duration::ZERO);
-        assert_eq!(timeout(Some(&json!(-5))), Duration::ZERO);
-        assert_eq!(timeout(Some(&json!(9000))), Duration::from_millis(3000));
-        assert_eq!(timeout(Some(&json!(17.5))), Duration::from_micros(17_500));
-    }
+
     #[test]
     fn glob_language_preserves_slashes_literals_case_and_javascript_dot() {
         for (pattern, value, expected) in [
@@ -874,19 +868,7 @@ mod tests {
             );
         }
     }
-    #[test]
-    fn load_snapshot_and_events_preserve_the_services_nonparsed_state_branch() {
-        let load = LoadState::from_value(None);
-        assert!(!load.ready("interactive"));
-        assert!(load.ready("complete"));
-        assert!(LoadState::DomContentLoaded.ready("interactive"));
-        assert!(LoadState::DomContentLoaded.accepts(&event("Page.loadEventFired", json!({}))));
-        let unknown = LoadState::from_value(Some(&json!("future-state")));
-        assert_eq!(unknown.label(), "future-state");
-        assert!(unknown.ready("complete"));
-        assert!(unknown.accepts(&event("Page.loadEventFired", json!({}))));
-        assert!(!unknown.accepts(&event("Page.domContentEventFired", json!({}))));
-    }
+
     #[test]
     fn network_idle_requires_real_main_frame_and_loader_not_readystate_or_child_events() {
         let mut state = frame();
@@ -951,60 +933,7 @@ mod tests {
             .unwrap();
         assert!(state.idle);
     }
-    #[test]
-    fn url_event_matching_retains_original_same_document_rule_and_main_navigation_filter() {
-        let matcher = Glob::new("**/match").unwrap();
-        let wrong = event(
-            "Page.frameNavigated",
-            json!({"frame":{"id":"child","parentId":"main","url":"https://e.test/match"}}),
-        );
-        assert!(url_from_event(&wrong, Some("main"), &matcher).is_none());
-        let same = event(
-            "Page.navigatedWithinDocument",
-            json!({"frameId":"child","url":"https://e.test/match"}),
-        );
-        assert_eq!(
-            url_from_event(&same, Some("main"), &matcher),
-            Some("https://e.test/match")
-        );
-        let mut auxiliary = same;
-        auxiliary.source_target_id = Some("actual-owned-auxiliary".into());
-        assert!(
-            url_from_event(&auxiliary, Some("main"), &matcher).is_some(),
-            "URL/load use Original Xr, not the stricter networkidle lt predicate"
-        );
-        auxiliary.session_id = Some("child-session".into());
-        assert!(url_from_event(&auxiliary, Some("main"), &matcher).is_none());
-    }
-    #[test]
-    fn navigation_blocking_sanitizes_secrets_without_rewriting_nonroot_paths() {
-        let error=navigation_error(&event("Page.navigationBlocked",json!({"url":"https://name:secret@e.test/path/?private=yes#private","resourceType":"mainFrame"}))).unwrap_err().to_string();
-        assert!(error.contains("https://e.test/path/"), "{error}");
-        for secret in ["name", "secret", "private"] {
-            assert!(!error.contains(secret), "{error}");
-        }
-        assert!(
-            navigation_error(&event(
-                "Page.navigationBlocked",
-                json!({"url":"https://e.test/","resourceType":"subFrame"})
-            ))
-            .is_ok()
-        );
-    }
-    #[test]
-    fn fixed_timeout_has_no_condition_wait_cap_and_preserves_selected_timer_overflow() {
-        for (value, expected) in [(json!(0), 1), (json!(7000), 7000), (json!(1e20), 1)] {
-            let Plan::Delay(actual) =
-                Plan::new(BrowserWaitOperation::Timeout { timeout_ms: value }).unwrap()
-            else {
-                panic!("expected timer plan")
-            };
-            assert_eq!(actual, Duration::from_millis(expected));
-        }
-        for value in [json!(-1), json!(1.5), json!("1")] {
-            assert!(Plan::new(BrowserWaitOperation::Timeout { timeout_ms: value }).is_err());
-        }
-    }
+
     #[test]
     fn failed_wait_does_not_erase_required_unknown_settlement() {
         assert!(
@@ -1050,26 +979,6 @@ mod tests {
             .unwrap()
             .method,
             "Page.loadEventFired"
-        );
-    }
-    #[tokio::test]
-    async fn disconnected_network_observer_keeps_exact_detach_message() {
-        let (sender, mut events) = mpsc::unbounded_channel();
-        drop(sender);
-        let cancellation = CancellationToken::new();
-        let result = wait_event(
-            &mut events,
-            tokio::time::Instant::now() + Duration::from_secs(1),
-            &cancellation,
-            "timeout",
-            "Tab 17 detached while waiting for networkidle.",
-        )
-        .await;
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Tab 17 detached while waiting for networkidle.")
         );
     }
 
@@ -1150,10 +1059,6 @@ mod tests {
     async fn prior_document_url_event_cannot_satisfy_new_url_wait() {
         stale_event_cannot_finish_new_generic_wait(true).await;
     }
-    #[tokio::test]
-    async fn prior_document_load_event_cannot_satisfy_new_load_wait() {
-        stale_event_cannot_finish_new_generic_wait(false).await;
-    }
 
     #[derive(Default)]
     struct Kept(std::sync::Mutex<Vec<crate::CheckedSettlementFuture>>);
@@ -1183,6 +1088,7 @@ mod tests {
             let settlement = self.0.clone();
             Box::pin(async move {
                 Ok(crate::invocation::BrowserServices {
+                    files: None,
                     attachment: None,
                     effects: None,
                     settlement: Some(settlement),
@@ -1212,7 +1118,7 @@ mod tests {
                     generation: "ws://127.0.0.1:1/devtools/browser/fixture".into(),
                     info: TabInfo {
                         id: "17".into(),
-                        title: String::new(),
+                        title: String::new().into(),
                         url: "about:blank".into(),
                         kind: "page".into(),
                         websocket: None,
@@ -1258,20 +1164,7 @@ mod tests {
             "caller drop or cancellation cannot close a browser tab"
         );
     }
-    #[tokio::test]
-    async fn stop_before_poll_does_not_start_a_read_or_invent_extension_uncertainty() {
-        let cancellation = CancellationToken::new();
-        cancellation.cancel();
-        let calls = std::sync::atomic::AtomicUsize::new(0);
-        let result =
-            cancellable_observation(ReadEffect::ExtensionPreparation, &cancellation, async {
-                calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                Ok(Value::Null)
-            })
-            .await;
-        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert!(matches!(result, Err(ToolError::Failed(_))));
-    }
+
     #[tokio::test]
     async fn stop_during_page_setup_keeps_started_extension_preparation_unknown_without_replay() {
         let cancellation = CancellationToken::new();

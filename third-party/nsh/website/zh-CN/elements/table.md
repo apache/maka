@@ -1,7 +1,6 @@
 ---
 title: Table
 description: "Table 组件及其部件：由应用自己写出行和单元格的表格，屏幕阅读器将它识别为表格，每个部件的外观由应用决定。"
-order: 26.3
 group: base
 demo: el-table
 ---

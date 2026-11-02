@@ -18,4 +18,3 @@
  */
 
 pub mod goal;
-pub mod owner;

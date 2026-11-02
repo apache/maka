@@ -445,12 +445,12 @@ fn check_layout(path: &Path) -> io::Result<()> {
         );
         let kind = entry.file_type()?;
         // Root owns its core files, not the names or layouts of domain data.
-        // A reserved file cannot become a directory; other entries must be
-        // real directories, never aliases or alternate top-level databases.
+        // A reserved file cannot become a directory. Domain files and
+        // directories are opaque here; aliases and special files are refused.
         let supported = if core_file {
             kind.is_file()
         } else {
-            kind.is_dir()
+            kind.is_file() || kind.is_dir()
         };
         if !supported {
             return Err(io::Error::other(format!(

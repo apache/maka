@@ -1200,6 +1200,112 @@ fn expanded_variants() {
     assert_eq!(s.view.background_color, Color(0x0000_00ff));
 }
 
+/// `aria-pressed:`, `aria-busy:`, `aria-checked:` and `aria-selected:`
+/// as Tailwind v4 has them (`&[aria-pressed="true"]`, ...): the core's
+/// states from the accessibility state, ordered by their names after the
+/// pseudo-classes.
+#[test]
+fn aria_state_variants() {
+    let theme = themed();
+    let list = parse(
+        &theme,
+        "aria-pressed:bg-black aria-busy:opacity-50 aria-checked:p-1 aria-selected:p-2 \
+         group-aria-pressed:rotate-180 group-aria-busy:opacity-0 group-aria-checked:p-3 \
+         group-aria-selected:p-4",
+    );
+    assert!(list.unknown().is_empty(), "{:?}", list.unknown());
+    assert!(list.deps() & deps::STATE != 0 && list.deps() & deps::GROUP != 0);
+    // The core sets them: nothing for the platform to report.
+    assert_eq!(list.tracked_states(), 0);
+    // `aria-current:` and the states NSH does not have are unknown, as
+    // Tailwind has no `aria-current` variant (`aria-[current=page]:` is
+    // an arbitrary one).
+    let unknown = parse(&theme, "aria-current:bg-black aria-readonly:bg-black");
+    assert_eq!(unknown.unknown().len(), 2, "{:?}", unknown.unknown());
+    let env = ClassEnvironment::default();
+    let at = (390.0, 844.0);
+    let (s, _) = styled_with(
+        "bg-white aria-pressed:bg-black",
+        env,
+        at,
+        state::ARIA_PRESSED,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    // Not a press in progress: `active:` waits for its own state.
+    let (s, _) = styled_with("bg-white aria-pressed:bg-black", env, at, state::PRESSED);
+    assert_eq!(s.view.background_color, Color(0xffff_ffff));
+    let (s, _) = styled_with(
+        "active:bg-white aria-pressed:bg-black",
+        env,
+        at,
+        state::PRESSED,
+    );
+    assert_eq!(s.view.background_color, Color(0xffff_ffff));
+    // The `aria-*` variants come after the pseudo-classes: a toggle that
+    // is on keeps its look while pressed or hovered.
+    let pressed = state::ARIA_PRESSED | state::HOVERED | state::PRESSED;
+    let (s, _) = styled_with(
+        "hover:bg-white active:bg-white aria-pressed:bg-black",
+        env,
+        at,
+        pressed,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    // Among themselves, by their names: busy, checked, expanded, pressed,
+    // selected.
+    let all =
+        state::BUSY | state::CHECKED | state::EXPANDED | state::ARIA_PRESSED | state::SELECTED;
+    let order = [
+        ("aria-busy", Color(0xfb2c_36ff)),
+        ("aria-checked", Color(0x0000_00ff)),
+        ("aria-expanded", Color(0xffff_ffff)),
+        ("aria-pressed", Color(0x00bc_7dff)),
+        ("aria-selected", Color(0x2b7f_ffff)),
+    ];
+    let classes = |order: &[(&str, Color)]| {
+        let names = ["red-500", "black", "white", "emerald-500", "blue-500"];
+        order
+            .iter()
+            .zip(names)
+            .map(|((v, _), c)| format!("{v}:bg-{c}"))
+            .collect::<Vec<_>>()
+    };
+    let mut reversed = classes(&order);
+    reversed.reverse();
+    let (s, _) = styled_with(&reversed.join(" "), env, at, all);
+    assert_eq!(s.view.background_color, order[4].1);
+    for i in 0..4 {
+        let below = order[..=i].iter().fold(0, |states, (v, _)| {
+            states
+                | match *v {
+                    "aria-busy" => state::BUSY,
+                    "aria-checked" => state::CHECKED,
+                    "aria-expanded" => state::EXPANDED,
+                    "aria-pressed" => state::ARIA_PRESSED,
+                    _ => state::SELECTED,
+                }
+        });
+        let (s, _) = styled_with(&reversed.join(" "), env, at, below);
+        assert_eq!(s.view.background_color, order[i].1, "{}", order[i].0);
+    }
+    // `aria-checked:` is checked, after `checked:`; `aria-selected:` is
+    // selected, after `selected:`.
+    let (s, _) = styled_with(
+        "aria-checked:bg-black checked:bg-white",
+        env,
+        at,
+        state::CHECKED,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+    let (s, _) = styled_with(
+        "aria-selected:bg-black selected:bg-white",
+        env,
+        at,
+        state::SELECTED,
+    );
+    assert_eq!(s.view.background_color, Color(0x0000_00ff));
+}
+
 #[test]
 fn indeterminate_variants() {
     let theme = themed();

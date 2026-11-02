@@ -49,6 +49,7 @@ pub(crate) enum Notification {
     None,
     Metadata,
     Sequence(u64),
+    ActivationSequence(u64),
 }
 pub(crate) struct Prepared<T> {
     pub value: T,
@@ -120,6 +121,10 @@ impl<S: Statement> Pending<S> {
                 match prepared.notification {
                     Notification::None => {}
                     Notification::Metadata => self.commits.metadata(),
+                    Notification::ActivationSequence(sequence) => {
+                        self.commits.publish(sequence);
+                        self.commits.activations();
+                    }
                     Notification::Sequence(sequence) => {
                         self.commits.publish(sequence);
                     }

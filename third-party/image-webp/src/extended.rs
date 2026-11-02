@@ -273,6 +273,7 @@ pub(crate) fn read_alpha_chunk<R: BufRead>(
     reader: &mut R,
     width: u16,
     height: u16,
+    memory_limit: usize,
 ) -> Result<AlphaChunk, DecodingError> {
     let info_byte = reader.read_u8()?;
 
@@ -301,7 +302,7 @@ pub(crate) fn read_alpha_chunk<R: BufRead>(
     };
 
     let data = if lossless_compression {
-        let mut decoder = LosslessDecoder::new(reader);
+        let mut decoder = LosslessDecoder::new(reader).with_huffman_limit(memory_limit);
 
         let mut data = vec![0; usize::from(width) * usize::from(height) * 4];
         decoder.decode_frame(u32::from(width), u32::from(height), true, &mut data)?;

@@ -165,7 +165,7 @@ impl Auxiliary {
             Ok(ModelGeneration {
                 text: step
                     .parts
-                    .into_iter()
+                    .iter()
                     .filter_map(|part| match part {
                         ModelPart::Text {
                             text_kind: TextKind::Text,
@@ -174,6 +174,7 @@ impl Auxiliary {
                         } => Some(text),
                         _ => None,
                     })
+                    .flat_map(|text| text.chunks())
                     .collect(),
                 model_id,
                 finish_reason: step.finish_reason,
@@ -278,7 +279,7 @@ impl Drop for JournalCustody {
                 Journal::Operation(journal) => journal.release_after_cleanup(),
             }
         }
-        // Active provider custody remains quarantined by the journal's Drop.
+        // Active provider custody remains retained_cleanup by the journal's Drop.
     }
 }
 enum Journal {

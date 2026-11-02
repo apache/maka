@@ -20,6 +20,22 @@
 use super::*;
 
 impl Projection {
+    pub fn tool_position(
+        &self,
+        id: &str,
+    ) -> Option<maka_agent_ports::session::history::RowPosition> {
+        self.tools.get(id).and_then(|tool| tool.position)
+    }
+
+    pub fn unsettled_tool_positions(
+        &self,
+    ) -> impl Iterator<Item = maka_agent_ports::session::history::RowPosition> + '_ {
+        self.tools
+            .values()
+            .filter(|tool| !tool.authoritative)
+            .filter_map(|tool| tool.position)
+    }
+
     pub(super) fn tool_chunk(
         &mut self,
         chunk: &HistoryChunk,
@@ -31,6 +47,7 @@ impl Projection {
             .ok_or("Tool history omitted its canonical reference")?;
         let tool = self.ensure_tool(&chunk.turn_id, &source.tool_use_id)?;
         if let Some(call) = &source.call {
+            tool.position = Some(call.position);
             tool.card.name = MaybeUndefined::Value(call.name.clone());
             tool.card.title = MaybeUndefined::Value(
                 call.title
@@ -108,6 +125,7 @@ impl Projection {
                     turn: turn.to_owned(),
                     published: None,
                     authoritative: false,
+                    position: None,
                     card: acp::ToolCallUpdate::new(id.to_owned())
                         .title(id.to_owned())
                         .kind(acp::ToolKind::Other)

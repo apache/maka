@@ -126,6 +126,10 @@ export const controlStyle = {
   borderRadius: 8,
   justifyContent: 'center',
 } as const;
+export const toolbarControlStyle = {
+  ...controlStyle,
+  paddingHorizontal: platform.isTerminal ? 12 : 8,
+} as const;
 /**
  * Horizontal padding of the disclosure rows in a turn (status, process group,
  * thinking, tool). The desktop gives them one value so their chevrons and
@@ -201,7 +205,14 @@ export function Disclosure(props: {
   trailing?: JSX.Element;
 }) {
   return (
-    <View style={{ flexDirection: 'row', alignItems: 'center', minWidth: 0 }}>
+    <View
+      style={{
+        flexDirection: 'row',
+        alignItems: 'center',
+        minWidth: 0,
+        marginHorizontal: platform.isTerminal ? 0 : -8,
+      }}
+    >
       <Button
         accessibilityLabel={props.label}
         tooltip={props.tooltip === undefined ? undefined : textTooltip(() => props.tooltip)}
@@ -214,6 +225,8 @@ export function Disclosure(props: {
           flex: 1,
           minWidth: 0,
           flexDirection: 'row',
+          // The row spans its container; the chevron and label start at its edge.
+          justifyContent: 'flex-start',
           alignItems: 'center',
           gap: 8,
         }}
@@ -236,6 +249,8 @@ export type BrowserHeader = {
   expanded: boolean;
   hidden: boolean;
   toggle(): void;
+  /** A pane beside another closes from its header instead of toggling the browser. */
+  close?(): void;
 };
 export function Header(props: {
   title: string;
@@ -279,38 +294,40 @@ export function Header(props: {
         pointerEvents: props.browser.hidden ? 'none' : 'auto',
       }}
     >
-      <Button
-        class="group/sidebar-toggle"
-        onPress={props.browser.toggle}
-        accessibilityLabel={
-          props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
-        }
-        tooltip={textTooltip(() =>
-          props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser'),
-        )}
-        selected={props.browser.expanded}
-        style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-        hoverStyle={{ backgroundColor: C.surface }}
-        focusStyle={{ backgroundColor: C.raised }}
-      >
-        <View
-          accessibilityElementsHidden
-          style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
+      <If when={!props.browser.close}>
+        <Button
+          class="group/sidebar-toggle"
+          onPress={props.browser.toggle}
+          accessibilityLabel={
+            props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser')
+          }
+          tooltip={textTooltip(() =>
+            props.browser.expanded ? tr('Collapse session browser') : tr('Expand session browser'),
+          )}
+          selected={props.browser.expanded}
+          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          hoverStyle={{ backgroundColor: C.surface }}
+          focusStyle={{ backgroundColor: C.raised }}
         >
-          <View class="group-hover/sidebar-toggle:opacity-0">
-            <Icon name="sidebar" color={C.secondary} />
-          </View>
           <View
-            class="opacity-0 group-hover/sidebar-toggle:opacity-100"
-            style={{ position: 'absolute', left: 0, top: 0 }}
+            accessibilityElementsHidden
+            style={[{ width: 16, height: 16 }, { pointerEvents: 'none' }]}
           >
-            <Icon
-              name={props.browser.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
-              color={C.secondary}
-            />
+            <View class="group-hover/sidebar-toggle:opacity-0">
+              <Icon name="sidebar" color={C.secondary} />
+            </View>
+            <View
+              class="opacity-0 group-hover/sidebar-toggle:opacity-100"
+              style={{ position: 'absolute', left: 0, top: 0 }}
+            >
+              <Icon
+                name={props.browser.expanded ? 'sidebarCollapse' : 'sidebarExpand'}
+                color={C.secondary}
+              />
+            </View>
           </View>
-        </View>
-      </Button>
+        </Button>
+      </If>
       <Button
         onPress={props.commands}
         accessibilityLabel={tr('Open commands')}
@@ -334,7 +351,7 @@ export function Header(props: {
           ref={props.filesOpener}
           onPress={props.files}
           style={{
-            ...controlStyle,
+            ...toolbarControlStyle,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
@@ -370,6 +387,18 @@ export function Header(props: {
         >
           {props.status ? sessionStatusCaption[props.status] : ''}
         </Text>
+      </If>
+      <If when={props.browser.close}>
+        <Button
+          onPress={props.browser.close}
+          accessibilityLabel={tr('Close side pane')}
+          tooltip={textTooltip(() => tr('Close side pane'))}
+          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+          hoverStyle={{ backgroundColor: C.surface }}
+          focusStyle={{ backgroundColor: C.raised }}
+        >
+          <Icon name="close" color={C.secondary} />
+        </Button>
       </If>
     </View>
   );

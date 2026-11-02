@@ -33,6 +33,8 @@ Windows 优先使用 [Microsoft MXC](https://github.com/microsoft/mxc)，为每�
 
 限制目标的网络流量经过执行所有者持有的网关。路由和凭据留在 Host，重定向目标需要独立权限。Linux 与 Windows 在启动前展开拒绝 glob；之后新增的匹配路径由下次启动覆盖，不属于已有快照。
 
+macOS 的 `allowed` 包含系统解析器使用的 `mDNSResponder` Unix socket，其他 Host Unix socket 仍被禁止。限制目标的进程使用网关解析域名，不会获得该 socket 的直接访问权限。
+
 文件系统权限按路径应用。MXC 会收紧策略中明确列出的对象别名冲突，不会扫描可写目录树中预先存在、未列入策略的硬链接。
 
 MXC 网络语义与 Codex 对齐：`denied` 禁止网络访问，包括 IPv4/IPv6 回环；`restricted` 允许 Windows 的宿主回环访问，包括 `127.0.0.0/8`、`::1` 及宿主的其他本地接口地址。远程目标必须经过执行所有者持有的代理，由代理检查已授权的目标主机与端口。因此，受限策略允许访问代理以外的本地服务。`allowed` 允许正常联网。
@@ -57,7 +59,7 @@ Windows 的 `--root` 选择 Host 状态目录；MXC 支持的策略不要求在�
 cargo build -p maka-host-runtime --example windows_mxc --target x86_64-pc-windows-msvc
 ```
 
-将生成的 `windows_mxc.exe` 放在 Windows 本地路径，以普通用户身份运行。它在 `LOCALAPPDATA` 创建并清理自己的临时目录，验证文件系统限制、参数与环境、管道及 ConPTY I/O、后代进程生命周期、取消和网络。网络检查要求无沙箱的宿主能够通过 TCP 连接 `example.com:443`，作为正向对照，不发送 HTTP 请求。MXC 不可用会使验证失败，不会跳过检查。
+将生成的 `windows_mxc.exe` 放在 Windows 本地路径，以普通用户身份运行。它在 `LOCALAPPDATA` 创建并清理自己的临时目录，验证文件系统限制、参数与环境、管道及 ConPTY I/O、后代进程生命周期、取消和网络。网络检查要求无沙箱的宿主能够通过 TCP 连接 `example.com:443`，作为正向对照，并在 `allowed` 沙箱内部验证域名解析与域名连接，不发送 HTTP 请求。MXC 不可用会使验证失败，不会跳过检查。
 
 Seatbelt 策略的上游版本、版权和许可证记录见[英文版来源说明](README.md#source-provenance)。
 

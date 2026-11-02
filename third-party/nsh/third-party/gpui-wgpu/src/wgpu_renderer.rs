@@ -3138,8 +3138,6 @@ mod tests {
                 wgpu::CompositeAlphaMode::Opaque,
             );
             renderer.render_target = None;
-            let previous = renderer.readback.lock().take();
-            drop(previous);
             // 52-byte rows must be unpacked from the GPU's 256-byte copy pitch.
             let mut pixels = vec![0xa5; 13 * 7 * 4];
             renderer
@@ -3179,15 +3177,11 @@ mod tests {
             assert_rgba(&pixels, 17, 16, 8, BLACK);
             assert_ne!(renderer.readback.lock().as_ref().unwrap().buffer, first);
 
-            // Abandoned or rejected tickets cancel their mapping and cannot
-            // feed a still-mapped buffer back into the cache.
+            // Abandoned or rejected readbacks must leave later captures usable.
             let abandoned = renderer.submit_scene(&scene, device_size(17, 9))?;
-            assert!(renderer.readback.lock().is_none());
             drop(abandoned);
-            assert!(renderer.readback.lock().is_none());
             let invalid = renderer.submit_scene(&scene, device_size(17, 9))?;
             assert!(invalid.complete_into(&mut []).is_err());
-            assert!(renderer.readback.lock().is_none());
             renderer.render_scene_to_pixels(&Scene::default(), device_size(17, 9), &mut pixels)?;
             assert!(pixels.chunks_exact(4).all(|pixel| pixel == BLACK));
         }

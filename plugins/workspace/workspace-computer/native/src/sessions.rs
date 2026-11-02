@@ -50,18 +50,38 @@ pub(super) type Retirement =
     futures_util::future::Shared<BoxFuture<'static, Result<(), ToolError>>>;
 
 #[derive(Default)]
-struct TurnCleanup {
+pub(super) struct TurnCleanup {
     pending: Mutex<Option<Retirement>>,
+    // Actual observation-write custody, not a second permission flag. Native
+    // admission always checks the canonical logical-Turn fact in its T1.
+    native_interruption: Mutex<Option<Retirement>>,
+    // Actual input-release/child-wait proof, not success of the interrupted action.
+    native_drained: Mutex<Option<maka_computer_use::NativeInterruptionDrain>>,
 }
 
 impl TurnCleanup {
+    pub(super) fn check_native_monitor_admission(&self) -> Result<(), ToolError> {
+        if self
+            .pending
+            .lock()
+            .expect("Computer turn cleanup lock poisoned")
+            .is_some()
+        {
+            return Err(failed("Native monitor turn is closing"));
+        }
+        Ok(())
+    }
+
     fn start(
         &self,
         tasks: &tokio_util::task::TaskTracker,
         work: impl std::future::Future<Output = Result<(), ToolError>> + Send + 'static,
     ) -> Retirement {
         let mut pending = self.pending.lock().unwrap();
-        if let Some(pending) = pending.as_ref() {
+        if let Some(pending) = pending
+            .as_ref()
+            .filter(|pending| !matches!(pending.peek(), Some(Err(_))))
+        {
             return pending.clone();
         }
         let (completed, result) = tokio::sync::oneshot::channel();
@@ -90,16 +110,210 @@ impl TurnCleanup {
     }
 }
 
+/// The observer may outlive its initiating evaluation/JS epoch. It owns no
+/// Agent Run, grant or model-supplied identifier, only the original source identity.
+pub(super) struct NativeInterruptionObserver {
+    owner: std::sync::Weak<Computer>,
+    cleanup: Arc<TurnCleanup>,
+    invocation: Invocation,
+    epoch: String,
+    operation: String,
+}
+
+pub(super) fn native_interruption_observer(
+    owner: &Arc<Computer>,
+    entry: &Interaction,
+    invocation: &Invocation,
+    epoch: &Epoch,
+    operation: &str,
+) -> Result<Arc<NativeInterruptionObserver>, ToolError> {
+    let cleanup = entry
+        .turns
+        .lock()
+        .unwrap()
+        .get(&invocation.turn_id)
+        .cloned()
+        .ok_or_else(|| failed("Native interruption source Turn is unavailable"))?;
+    Ok(Arc::new(NativeInterruptionObserver {
+        owner: Arc::downgrade(owner),
+        cleanup,
+        invocation: invocation.clone(),
+        epoch: epoch.id.clone(),
+        operation: operation.to_owned(),
+    }))
+}
+impl maka_computer_use::NativeInterruptionObserver for NativeInterruptionObserver {
+    fn interrupted(
+        &self,
+        observed: maka_computer_use::NativeInterruption,
+    ) -> maka_computer_use::InterruptionFuture {
+        // Only the lower bound native-event producer can construct this sealed
+        // value. An exit code, transport diagnostic or arbitrary JSON cannot.
+        if observed.session() != self.invocation.session_id
+            || observed.turn() != self.invocation.turn_id
+            || observed.native_epoch() != self.epoch
+            || observed.operation_id() != self.operation
+        {
+            return Box::pin(async {
+                Err(failed("Native interruption producer binding mismatch"))
+            });
+        }
+        let Some(owner) = self.owner.upgrade() else {
+            return Box::pin(async { Err(failed("Native interruption Host is closed")) });
+        };
+        let mut pending = self.cleanup.native_interruption.lock().unwrap();
+        if let Some(original) = pending.as_ref() {
+            let original = original.clone();
+            return Box::pin(original);
+        }
+        let mut ticket = match owner.resources.reserve() {
+            Ok(ticket) => ticket,
+            Err(error) => return Box::pin(async move { Err(error) }),
+        };
+        let record = maka_event_log::native_computer::NativeInterruption {
+            opening: self.invocation.clone(),
+            operation_id: self.operation.clone(),
+            native_epoch: self.epoch.clone(),
+            native_generation: observed.generation().to_owned(),
+        };
+        let (completed, result) = tokio::sync::oneshot::channel::<Result<(), ToolError>>();
+        let original = async move {
+            result.await.map_err(|error| {
+                ToolError::CleanupUnconfirmed(format!(
+                    "Native interruption writer disappeared: {error}"
+                ))
+            })?
+        }
+        .boxed()
+        .shared();
+        *pending = Some(original.clone());
+        ticket.start();
+        let tasks = owner.tasks.clone();
+        tasks.spawn(async move {
+            let result = AssertUnwindSafe(async {
+                let store = match owner.store.session(&record.opening.session_id).await {
+                    Ok(store) => store,
+                    // The sealed event still belongs to its removed original
+                    // Session. It cannot fence a newer Session/Turn or revive A.
+                    Err(
+                        maka_event_log::StoreError::SessionNotFound
+                        | maka_event_log::StoreError::SessionRetired,
+                    ) => return Ok(()),
+                    Err(error) => return Err(ToolError::Persistence(message(error))),
+                };
+                match store.record_native_turn_interruption(record).await {
+                    Ok(_) | Err(maka_event_log::StoreError::SessionRetired) => Ok(()),
+                    Err(error) => Err(ToolError::Persistence(message(error))),
+                }
+            })
+            .catch_unwind()
+            .await
+            .unwrap_or_else(|_| {
+                Err(ToolError::CleanupUnconfirmed(
+                    "Native interruption writer panicked".into(),
+                ))
+            });
+            // The same accepted SQL future has settled. A failing observation
+            // remains visible to native admission/final close; it never requests
+            // cancellation of the Agent, browser or JS producer.
+            ticket.complete(result.as_ref().map(|_| ()).map_err(message));
+            let _ = completed.send(result);
+        });
+        Box::pin(original)
+    }
+
+    fn drained(
+        &self,
+        observed: maka_computer_use::NativeInterruptionDrain,
+    ) -> maka_computer_use::InterruptionFuture {
+        // Source operation may be an earlier completed call that installed this
+        // monitor. The affected operation is this actual interrupted request.
+        if observed.session() != self.invocation.session_id
+            || observed.turn() != self.invocation.turn_id
+            || observed.native_epoch() != self.epoch
+            || observed.affected_operation_id() != self.operation
+        {
+            return Box::pin(async { Err(failed("Native interruption drain binding mismatch")) });
+        }
+        let mut retained = self.cleanup.native_drained.lock().unwrap();
+        if let Some(original) = retained.as_ref() {
+            if original.generation() != observed.generation()
+                || original.affected_operation_id() != observed.affected_operation_id()
+            {
+                return Box::pin(async {
+                    Err(ToolError::CleanupUnconfirmed(
+                        "Native Turn drain differs from its retained physical owner".into(),
+                    ))
+                });
+            }
+        } else {
+            *retained = Some(observed);
+        }
+        Box::pin(async { Ok(()) })
+    }
+}
+
+/// A canonical action may remain Unknown after its exact native owner is fully
+/// drained. This proof does not change T2 or authorize another native call.
+impl NativeInterruptionObserver {
+    /// Read the same captured logical-Turn record, even if its completed
+    /// watcher has since removed it from Interaction.turns. This is physical
+    /// cleanup proof for one original operation, never new native authority.
+    pub(super) async fn native_drain(
+        &self,
+    ) -> Result<Option<maka_computer_use::NativeInterruptionDrain>, ToolError> {
+        let proof = self
+            .cleanup
+            .native_drained
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|observed| {
+                observed.session() == self.invocation.session_id
+                    && observed.turn() == self.invocation.turn_id
+                    && observed.native_epoch() == self.epoch
+                    && observed.affected_operation_id() == self.operation
+            })
+            .cloned();
+        if proof.is_some() {
+            // Clone the original writer receipt and release every Turn lock
+            // before awaiting it. Physical input cleanup cannot substitute for
+            // the canonical fence, and this SQL future never needs native/T2.
+            let write = self.cleanup.native_interruption.lock().unwrap().clone();
+            confirm_native_interruption(write).await?;
+        }
+        Ok(proof)
+    }
+}
+
+/// Both prerequisites are required for the native-only Unknown exception:
+/// real physical drain and successful custody of the original canonical write.
+/// This observes the same accepted future, never starts a replacement write.
+pub(super) async fn confirm_native_interruption(
+    write: Option<Retirement>,
+) -> Result<(), ToolError> {
+    write
+        .ok_or_else(|| {
+            ToolError::CleanupUnconfirmed(
+                "Native input drained without its canonical interruption writer".into(),
+            )
+        })?
+        .await
+}
+
 /// Actual physical resources of one VM binding. The list of these owners
 /// preserves custody and revocation coverage; it is not a permission cache.
 pub(super) struct Epoch {
+    pub files: Arc<super::browser_files::SessionFiles>,
     pub id: String,
     pub native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
     audio: Mutex<Option<Arc<AudioReceipt>>>,
     browser_preparations: Mutex<Vec<Arc<BrowserPreparationReceipt>>>,
+    pub(super) native_monitors: Mutex<Vec<Arc<super::native_monitor::Receipt>>>,
     turns: Arc<Mutex<BTreeMap<String, Arc<TurnCleanup>>>>,
-    effects_changed: Arc<tokio::sync::Notify>,
+    pub(super) effects_changed: Arc<tokio::sync::Notify>,
     retirement: Mutex<Option<Retirement>>,
+    vm_joined: std::sync::atomic::AtomicBool,
 }
 struct BrowserPreparationReceipt {
     basis: PermissionBasis,
@@ -159,11 +373,6 @@ impl Sessions {
             } else {
                 Ok(existing.clone())
             };
-        }
-        if entries.len() >= 16 {
-            return Err(failed(
-                "Computer Use session capacity reached; retire an unused Session",
-            ));
         }
         let interaction = Arc::new(Interaction {
             kernel: Default::default(),
@@ -243,7 +452,6 @@ pub(super) async fn watch_turn(
     let session = invocation.session_id.clone();
     let turn = invocation.turn_id.clone();
     let stopping = owner.stopping.clone();
-    let weak = Arc::downgrade(owner);
     owner.tasks.spawn(async move {
         let observed = async {
             loop {
@@ -270,12 +478,6 @@ pub(super) async fn watch_turn(
             .finish_turn(&turn_cleanup, &session, &turn, language)
             .await;
         let result = observed.and(cleanup);
-        if result.is_err() {
-            entry.retiring.cancel();
-            if let Some(owner) = weak.upgrade() {
-                owner.stopping.cancel();
-            }
-        }
         entry.release_turn(&turn, &turn_cleanup, &result);
         ticket.complete(result.map_err(message));
     });
@@ -307,11 +509,18 @@ pub(super) async fn drain_ended_turns(
         if turn_ended(&store, session, &turn).await? {
             let result = entry.finish_turn(&cleanup, session, &turn, language).await;
             entry.release_turn(&turn, &cleanup, &result);
-            if result.is_err() {
-                entry.retiring.cancel();
-                owner.stopping.cancel();
+            match result {
+                Ok(()) => {}
+                Err(ToolError::CleanupUnconfirmed(error)) => {
+                    tracing::warn!(
+                        session,
+                        turn,
+                        error,
+                        "Retained cleanup from an ended Computer turn"
+                    );
+                }
+                Err(error) => return Err(error),
             }
-            result?;
         }
     }
     Ok(())
@@ -333,6 +542,18 @@ async fn turn_ended(
     Ok(boundary.state.terminal_outcome().is_some())
 }
 impl Epoch {
+    pub(super) fn native_monitor_turn(&self, turn: &str) -> Result<Arc<TurnCleanup>, ToolError> {
+        let cleanup = self
+            .turns
+            .lock()
+            .expect("Computer turn registry lock poisoned")
+            .get(turn)
+            .cloned()
+            .ok_or_else(|| failed("Native monitor turn retired"))?;
+        cleanup.check_native_monitor_admission()?;
+        Ok(cleanup)
+    }
+
     /// Retain cleanup responsibility before the fixed native preparation can start.
     pub fn record_browser_preparation(
         &self,
@@ -388,8 +609,17 @@ impl Epoch {
     }
 
     async fn close_native(&self) -> Result<(), ToolError> {
-        let result = self.native.lock().await.close_native().await;
+        self.seal_native_monitors(None);
+        let monitors = self.retire_native_monitors(None).await;
+        let native = self.native.lock().await.close_native().await;
+        let result = match (monitors, native) {
+            (Ok(()), result) | (result, Ok(())) => result,
+            (Err(monitors), Err(native)) => Err(ToolError::CleanupUnconfirmed(format!(
+                "{monitors}; {native}"
+            ))),
+        };
         if result.is_ok() {
+            self.files.close().await?;
             self.clear_audio();
             self.browser_preparations
                 .lock()
@@ -472,12 +702,16 @@ impl Kernel {
         // Retained transport for an admitted RPC does not keep this VM's
         // automatic attached-service producer alive after reset/retirement.
         self.admission.close_admission();
+        self.epoch.seal_native_monitors(None);
         let mut failures = Vec::new();
         if let Some(runtime) = self.repl
             && let Err(error) = runtime.close().await
         {
             failures.push(format!("JavaScript runtime cleanup failed: {error}"));
         }
+        self.epoch
+            .vm_joined
+            .store(true, std::sync::atomic::Ordering::Release);
         if let Err(error) = self.epoch.settle_audio(&closing).await {
             failures.push(format!("Computer audio cleanup failed: {error}"));
         }
@@ -504,13 +738,16 @@ impl Interaction {
         }
         let native = self.native_owner.new_epoch()?;
         let epoch = Arc::new(Epoch {
+            files: Arc::default(),
             id: native.native_epoch().to_string(),
             native: Arc::new(tokio::sync::Mutex::new(native)),
             audio: Default::default(),
             browser_preparations: Default::default(),
+            native_monitors: Default::default(),
             turns: self.turns.clone(),
             effects_changed: self.effects_changed.clone(),
             retirement: Default::default(),
+            vm_joined: std::sync::atomic::AtomicBool::new(false),
         });
         epochs.push(epoch.clone());
         Ok(Kernel {
@@ -550,7 +787,6 @@ impl Interaction {
         kernel.admission.close_admission();
         ticket.start();
         let entry = Arc::downgrade(self);
-        let weak = Arc::downgrade(owner);
         let retired = epoch.clone();
         let task = owner.tasks.spawn(async move {
             let result = AssertUnwindSafe(kernel.close(closing))
@@ -561,21 +797,14 @@ impl Interaction {
                         "Computer epoch retirement worker panicked".into(),
                     ))
                 });
-            if result.is_ok() {
-                if let Some(entry) = entry.upgrade() {
-                    entry
-                        .epochs
-                        .lock()
-                        .unwrap()
-                        .retain(|current| !Arc::ptr_eq(current, &retired));
-                }
-            } else {
-                if let Some(entry) = entry.upgrade() {
-                    entry.retiring.cancel();
-                }
-                if let Some(owner) = weak.upgrade() {
-                    owner.stopping.cancel();
-                }
+            if result.is_ok()
+                && let Some(entry) = entry.upgrade()
+            {
+                entry
+                    .epochs
+                    .lock()
+                    .unwrap()
+                    .retain(|current| !Arc::ptr_eq(current, &retired));
             }
             ticket.complete(result.clone().map_err(message));
             result
@@ -595,7 +824,10 @@ impl Interaction {
         self.retiring.cancel();
         let closing = {
             let mut closed = self.closed.lock().unwrap();
-            if let Some(closing) = closed.as_ref() {
+            if let Some(closing) = closed
+                .as_ref()
+                .filter(|closing| !matches!(closing.peek(), Some(Err(_))))
+            {
                 closing.clone()
             } else {
                 let entry = self.clone();
@@ -646,13 +878,26 @@ impl Interaction {
         language: Language,
     ) -> Retirement {
         let epochs = self.epochs.lock().unwrap().clone();
+        // Fence fixed producers synchronously, before any sibling cleanup wait.
+        for epoch in &epochs {
+            epoch.seal_native_monitors(Some(turn));
+        }
         let native_owner = self.native_owner.clone();
         let session = session.to_owned();
         let turn = turn.to_owned();
         let cleanup_owner = cleanup.clone();
         cleanup.start(&self.tasks, async move {
             let mut failures = Vec::new();
+            let interruption = cleanup_owner.native_interruption.lock().unwrap().clone();
+            if let Some(original) = interruption
+                && let Err(error) = original.await
+            {
+                failures.push(message(error));
+            }
             for epoch in &epochs {
+                if let Err(error) = epoch.retire_native_monitors(Some(&turn)).await {
+                    failures.push(message(error));
+                }
                 let mut native = epoch.native.lock().await;
                 let windows = native.platform() == "windows";
                 match native.finish_turn(&session, &turn, language).await {
@@ -690,7 +935,10 @@ impl Interaction {
             .observation
             .lock()
             .expect("Browser cleanup observation lock poisoned");
-        if observation.is_some() {
+        if observation
+            .as_ref()
+            .is_some_and(|original| !matches!(original.peek(), Some(Err(_))))
+        {
             return Ok(());
         }
         let mut ticket = owner.resources.reserve().map_err(failed)?;
@@ -721,25 +969,70 @@ impl Interaction {
                     "Browser preparation cleanup observer panicked".into(),
                 ))
             });
-            if result.is_err() {
-                entry.retiring.cancel();
-                owner.stopping.cancel();
-            }
             ticket.complete(result.clone().map_err(message));
             result
         });
-        *observation = Some(
-            async move {
-                task.await.map_err(|error| {
-                    ToolError::CleanupUnconfirmed(format!(
-                        "Browser cleanup observer disappeared: {error}",
-                    ))
-                })?
-            }
-            .boxed()
-            .shared(),
-        );
+        let result = async move {
+            task.await.map_err(|error| {
+                ToolError::CleanupUnconfirmed(format!(
+                    "Browser cleanup observer disappeared: {error}"
+                ))
+            })?
+        }
+        .boxed()
+        .shared();
+        tasks.spawn(result.clone());
+        *observation = Some(result);
         Ok(())
+    }
+
+    async fn settle_epoch(self: &Arc<Self>, epoch: &Arc<Epoch>) -> Result<(), ToolError> {
+        let retirement = {
+            let mut pending = epoch
+                .retirement
+                .lock()
+                .expect("Computer epoch retirement lock poisoned");
+            if let Some(original) = pending
+                .as_ref()
+                .filter(|original| !matches!(original.peek(), Some(Err(_))))
+            {
+                original.clone()
+            } else {
+                if !epoch.vm_joined.load(std::sync::atomic::Ordering::Acquire) {
+                    return Err(ToolError::CleanupUnconfirmed(
+                        "Computer VM termination remains unconfirmed".into(),
+                    ));
+                }
+                let epoch = epoch.clone();
+                let entry = Arc::downgrade(self);
+                let task = self.tasks.spawn(async move {
+                    let result = epoch.close_native().await;
+                    if result.is_ok() {
+                        epoch.clear_audio();
+                        if let Some(entry) = entry.upgrade() {
+                            entry
+                                .epochs
+                                .lock()
+                                .unwrap()
+                                .retain(|current| !Arc::ptr_eq(current, &epoch));
+                        }
+                    }
+                    result
+                });
+                let result = async move {
+                    task.await.map_err(|error| {
+                        ToolError::CleanupUnconfirmed(format!(
+                            "Computer epoch cleanup worker disappeared: {error}"
+                        ))
+                    })?
+                }
+                .boxed()
+                .shared();
+                *pending = Some(result.clone());
+                result
+            }
+        };
+        retirement.await
     }
 
     async fn retire_prepared_epoch(
@@ -752,8 +1045,8 @@ impl Interaction {
             .lock()
             .expect("Computer epoch retirement lock poisoned")
             .clone();
-        if let Some(retirement) = retirement {
-            return retirement.await;
+        if retirement.is_some() {
+            return self.settle_epoch(epoch).await;
         }
         if self.retiring.is_cancelled() {
             return self.close().await;
@@ -764,9 +1057,9 @@ impl Interaction {
             .lock()
             .expect("Computer epoch retirement lock poisoned")
             .clone();
-        if let Some(retirement) = retirement {
+        if retirement.is_some() {
             drop(current);
-            return retirement.await;
+            return self.settle_epoch(epoch).await;
         }
         if self.retiring.is_cancelled() {
             drop(current);
@@ -792,7 +1085,7 @@ impl Interaction {
         retirement.await
     }
 
-    async fn close_owned(&self) -> Result<(), ToolError> {
+    async fn close_owned(self: &Arc<Self>) -> Result<(), ToolError> {
         self.retiring.cancel();
         let current = self.kernel.lock().await.take();
         let mut failures = Vec::new();
@@ -811,22 +1104,8 @@ impl Interaction {
         // the caller. Only these exact epoch workers belong to this close.
         let epochs = self.epochs.lock().unwrap().clone();
         for epoch in epochs {
-            let retirement = epoch.retirement.lock().unwrap().clone();
-            if let Some(retirement) = retirement {
-                if let Err(error) = retirement.await {
-                    failures.push(message(error));
-                }
-            } else {
-                match epoch.close_native().await {
-                    Ok(()) => {
-                        epoch.clear_audio();
-                        self.epochs
-                            .lock()
-                            .unwrap()
-                            .retain(|current| !Arc::ptr_eq(current, &epoch));
-                    }
-                    Err(error) => failures.push(message(error)),
-                }
+            if let Err(error) = self.settle_epoch(&epoch).await {
+                failures.push(message(error));
             }
         }
         if let Err(error) = self.native_owner.close().await {
@@ -937,25 +1216,24 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                     )
                 }
                 .await;
-                if !matches!(valid, Ok(true)) {
+                if let Err(error) = &valid {
+                    eprintln!("Computer catalog observation failed for {id}: {error}");
+                }
+                if matches!(valid, Ok(false)) {
                     let Ok(mut ticket) = owner.resources.reserve() else {
                         return;
                     };
                     ticket.start();
                     let result = owner.sessions.retire(&id, &entry).await.map_err(message);
-                    let failed = result.is_err();
-                    if failed {
-                        entry.retiring.cancel();
-                        owner.stopping.cancel();
+                    if let Err(error) = &result {
+                        eprintln!("Computer Session cleanup failed for {id}: {error}");
                     }
                     ticket.complete(result);
-                    if failed {
-                        return;
-                    }
                     continue;
                 }
                 let epochs = entry.epochs.lock().unwrap().clone();
                 for epoch in epochs {
+                    epoch.observe_native_monitor_authority().await;
                     let preparations = epoch
                         .browser_preparations
                         .lock()
@@ -966,13 +1244,12 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                         if matches!(observed, Ok(PreparationAuthority::Current)) {
                             continue;
                         }
-                        if entry
-                            .observe_browser_cleanup(&owner, &id, &epoch, &receipt, observed)
-                            .is_err()
+                        if let Err(error) =
+                            entry.observe_browser_cleanup(&owner, &id, &epoch, &receipt, observed)
                         {
-                            entry.retiring.cancel();
-                            owner.stopping.cancel();
-                            return;
+                            eprintln!(
+                                "Computer browser cleanup observation failed for {id}: {error}"
+                            );
                         }
                     }
                     let receipt = epoch.audio.lock().unwrap().clone();
@@ -992,15 +1269,10 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
                         Ok(true) => observed.map(|_| ()).map_err(message),
                         Err(error) => Err(message(error)),
                     };
-                    let failed = result.is_err();
-                    if failed {
-                        entry.retiring.cancel();
-                        owner.stopping.cancel();
+                    if let Err(error) = &result {
+                        eprintln!("Computer audio cleanup failed for {id}: {error}");
                     }
                     ticket.complete(result);
-                    if failed {
-                        return;
-                    }
                 }
             }
             drop(owner);
@@ -1017,246 +1289,7 @@ fn watch_scanned(owner: &Arc<Computer>, scanned: impl Fn() + Send + 'static) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::event::{
-        EventWrite, Fact, InvocationInput, InvocationOutcome, RuntimeEvent,
-    };
-    use serde_json::json;
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn late_turn_watcher_observes_the_original_cleanup_without_stopping_a_new_capture() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let sessions = Sessions::default();
-            let entry = sessions.get("turn-custody").unwrap();
-            let cleanup = Arc::new(TurnCleanup::default());
-            entry
-                .turns
-                .lock()
-                .unwrap()
-                .insert("turn-a".into(), cleanup.clone());
-            let current_capture = Arc::new(AtomicUsize::new(1));
-            let cleanup_count = Arc::new(AtomicUsize::new(0));
-            let watcher_ready = CancellationToken::new();
-            let release_watcher = CancellationToken::new();
-            let late_watcher = {
-                let cleanup = cleanup.clone();
-                let current_capture = current_capture.clone();
-                let cleanup_count = cleanup_count.clone();
-                let watcher_ready = watcher_ready.clone();
-                let release_watcher = release_watcher.clone();
-                let tasks = entry.tasks.clone();
-                tokio::spawn(async move {
-                    watcher_ready.cancel();
-                    release_watcher.cancelled().await;
-                    cleanup
-                        .start(&tasks, async move {
-                            cleanup_count.fetch_add(1, Ordering::SeqCst);
-                            current_capture.store(0, Ordering::SeqCst);
-                            Ok(())
-                        })
-                        .await
-                })
-            };
-            watcher_ready.cancelled().await;
-            let draining = {
-                let current_capture = current_capture.clone();
-                let cleanup_count = cleanup_count.clone();
-                cleanup.start(&entry.tasks, async move {
-                    cleanup_count.fetch_add(1, Ordering::SeqCst);
-                    current_capture.store(0, Ordering::SeqCst);
-                    Ok(())
-                })
-            };
-            let drained = draining.await;
-            entry.release_turn("turn-a", &cleanup, &drained);
-            drained.unwrap();
-            assert!(!entry.turns.lock().unwrap().contains_key("turn-a"));
-            current_capture.store(2, Ordering::SeqCst);
-            let replacement = Arc::new(TurnCleanup::default());
-            entry
-                .turns
-                .lock()
-                .unwrap()
-                .insert("turn-b".into(), replacement.clone());
-            release_watcher.cancel();
-            late_watcher.await.unwrap().unwrap();
-            assert_eq!(cleanup_count.load(Ordering::SeqCst), 1);
-            assert_eq!(current_capture.load(Ordering::SeqCst), 2);
-            assert!(
-                entry
-                    .turns
-                    .lock()
-                    .unwrap()
-                    .get("turn-b")
-                    .is_some_and(|current| Arc::ptr_eq(current, &replacement))
-            );
-            entry.tasks.close();
-            entry.tasks.wait().await;
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn turn_cleanup_observers_retain_the_first_failure_without_retrying() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let sessions = Sessions::default();
-            let entry = sessions.get("failed-turn-custody").unwrap();
-            let cleanup = Arc::new(TurnCleanup::default());
-            entry
-                .turns
-                .lock()
-                .unwrap()
-                .insert("turn-a".into(), cleanup.clone());
-            let tasks = entry.tasks.clone();
-            let started = CancellationToken::new();
-            let release = CancellationToken::new();
-            let attempts = Arc::new(AtomicUsize::new(0));
-            let error =
-                ToolError::CleanupUnconfirmed("fixture original turn cleanup failure".into());
-            let expected = error.to_string();
-            let first = {
-                let attempts = attempts.clone();
-                let started = started.clone();
-                let release = release.clone();
-                cleanup.start(&tasks, async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    started.cancel();
-                    release.cancelled().await;
-                    Err(error)
-                })
-            };
-            started.cancelled().await;
-            let second = {
-                let attempts = attempts.clone();
-                cleanup.start(&tasks, async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            };
-            release.cancel();
-            let (first, second) = tokio::join!(first, second);
-            entry.release_turn("turn-a", &cleanup, &first);
-            assert!(
-                entry
-                    .turns
-                    .lock()
-                    .unwrap()
-                    .get("turn-a")
-                    .is_some_and(|current| Arc::ptr_eq(current, &cleanup))
-            );
-            assert_eq!(first.unwrap_err().to_string(), expected);
-            assert_eq!(second.unwrap_err().to_string(), expected);
-            let late = {
-                let attempts = attempts.clone();
-                cleanup.start(&tasks, async move {
-                    attempts.fetch_add(1, Ordering::SeqCst);
-                    Ok(())
-                })
-            };
-            assert_eq!(late.await.unwrap_err().to_string(), expected);
-            assert_eq!(attempts.load(Ordering::SeqCst), 1);
-            tasks.close();
-            tasks.wait().await;
-        })
-        .await
-        .unwrap();
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn cancelled_turn_cleanup_observation_keeps_the_original_worker_and_result() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            let cleanup = Arc::new(TurnCleanup::default());
-            let tasks = tokio_util::task::TaskTracker::new();
-            let started = CancellationToken::new();
-            let release = CancellationToken::new();
-            let completed = Arc::new(AtomicUsize::new(0));
-            let observer = {
-                let cleanup = cleanup.clone();
-                let tasks = tasks.clone();
-                let started = started.clone();
-                let release = release.clone();
-                let completed = completed.clone();
-                tokio::spawn(async move {
-                    cleanup
-                        .start(&tasks, async move {
-                            started.cancel();
-                            release.cancelled().await;
-                            completed.fetch_add(1, Ordering::SeqCst);
-                            Ok(())
-                        })
-                        .await
-                })
-            };
-            started.cancelled().await;
-            observer.abort();
-            assert!(observer.await.unwrap_err().is_cancelled());
-            assert_eq!(completed.load(Ordering::SeqCst), 0);
-            release.cancel();
-            tasks.close();
-            tasks.wait().await;
-            assert_eq!(completed.load(Ordering::SeqCst), 1);
-            let observed = cleanup
-                .start(&tasks, async {
-                    Err(ToolError::CleanupUnconfirmed(
-                        "replacement cleanup must never run".into(),
-                    ))
-                })
-                .await;
-            assert!(observed.is_ok());
-        })
-        .await
-        .unwrap();
-    }
-
-    async fn approved(
-        store: &maka_event_log::SessionStore,
-        invocation: &Invocation,
-        id: &str,
-        target: maka_agent_facts::interaction::GrantTarget,
-        basis: PermissionBasis,
-    ) {
-        use maka_agent_facts::interaction::{
-            Decision, InteractionOutcome, InteractionRecord, InteractionRequest,
-        };
-        store
-            .establish_run_interaction(
-                invocation,
-                &InteractionRecord {
-                    session_id: invocation.session_id.clone(),
-                    turn_id: invocation.turn_id.clone(),
-                    run_id: invocation.run_id.clone(),
-                    request_id: id.into(),
-                    created_at: 10,
-                    request: InteractionRequest::ClientCapability {
-                        tool_use_id: id.into(),
-                        basis: Some(basis),
-                        target,
-                    },
-                    outcome: None,
-                },
-            )
-            .await
-            .unwrap();
-        assert!(
-            store
-                .commit_interaction_outcome(
-                    id,
-                    InteractionOutcome::ClientCapabilityDecision {
-                        decision: Decision::Allow,
-                        committed_at: 20,
-                    }
-                )
-                .await
-                .unwrap()
-                .matches
-        );
-    }
+    use maka_agent_facts::event::{EventWrite, Fact, InvocationInput, RuntimeEvent};
 
     async fn current_epoch(entry: &Interaction) -> Arc<Epoch> {
         let mut kernel = entry.kernel.lock().await;
@@ -1264,16 +1297,6 @@ mod tests {
             *kernel = Some(entry.fresh_kernel().unwrap());
         }
         kernel.as_ref().unwrap().epoch.clone()
-    }
-
-    async fn audio_cleared(epoch: &Epoch) {
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            while epoch.audio.lock().unwrap().is_some() {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .expect("idle revocation must discard owned audio");
     }
 
     #[tokio::test]
@@ -1318,508 +1341,34 @@ mod tests {
         assert!(current.audio.lock().unwrap().is_none());
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn final_close_joins_the_original_worker_before_discarding_a_late_start_receipt() {
-        use maka_agent_facts::tools::{ToolExecutor, ToolFuture};
-        use maka_code_runtime::{CellContext, CellLimits, CellResult, CellStore};
-        use std::time::Duration;
-
-        struct Start {
-            epoch: Arc<Epoch>,
-            admission: Arc<super::super::admission::Gate>,
-            started: CancellationToken,
-            release: CancellationToken,
-            basis: PermissionBasis,
-            fail: bool,
-        }
-        impl ToolExecutor for Start {
-            fn names(&self) -> Vec<String> {
-                vec!["fixture_start".into()]
-            }
-            fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
-                // This held fixture stands for an already admitted start; the
-                // journal admission contract is tested against SQLite separately.
-                let receipt = self.admission.register().unwrap();
-                receipt.agent_dispatched();
-                self.started.cancel();
-                let epoch = self.epoch.clone();
-                let release = self.release.clone();
-                let basis = self.basis;
-                let fail = self.fail;
-                Box::pin(async move {
-                    release.cancelled().await;
-                    epoch.record_audio(basis, true);
-                    if fail {
-                        Err(ToolError::Persistence("fixture late T2 failure".into()))
-                    } else {
-                        Ok(json!({"recording":true}))
-                    }
-                })
-            }
-        }
-
-        tokio::time::timeout(Duration::from_secs(10), async {
-            for (already_retired, cancel_before_observation, late_failure) in [
-                (false, false, false),
-                (true, false, false),
-                (false, true, false),
-                (false, false, true),
-                (true, false, true),
-                (false, true, true),
-            ] {
-                let directory = tempfile::tempdir().unwrap();
-                let root_owner = maka_event_log::root::RootOwner::create(
-                    &directory.path().join("root"),
-                    &maka_event_log::root::RootNamespaces {
-                        ownership: directory.path().join("ownership"),
-                        control: directory.path().join("control"),
-                    },
-                )
-                .unwrap();
-                let store = Arc::new(
-                    maka_event_log::RootStore::open(Arc::new(root_owner))
-                        .await
-                        .unwrap(),
-                );
-                let tasks = tokio_util::task::TaskTracker::new();
-                let owner = Arc::new(Computer {
-                popup_provenance: None,
-                    store: store.clone(),
-                    configuration: Configuration {
-                        audio: true,
-                        ..Default::default()
-                    },
-                    sessions: Sessions::with_audio(true, tasks.clone()),
-                    resources: Arc::default(),
-                    stopping: CancellationToken::new(),
-                    tasks,
-                    origin: ToolOrigin::HostSdk {
-                        package_id: "fixture".into(),
-                        entry_id: "fixture".into(),
-                        activation: "fixture".into(),
-                        parent: None,
-                    },
-                });
-                let entry = owner.sessions.get("session").unwrap();
-                let mut old = entry.fresh_kernel().unwrap();
-                old.repl = Some(Repl::new_observed(
-                    "Object.defineProperty(globalThis, 'start', { value: async () => {\n\
-                        const result = await call('fixture_start', {});\n\
-                        if (!result.ok) throw Error(result.error.message);\n\
-                        return result.value;\n\
-                    }});",
-                    CellLimits::default(),
-                    old.admission.clone(),
-                ).unwrap());
-                let epoch = old.epoch.clone();
-                let started = CancellationToken::new();
-                let release = CancellationToken::new();
-                let _release_on_panic = release.clone().drop_guard();
-                let result = old
-                    .repl
-                    .as_ref()
-                    .unwrap()
-                    .evaluate(
-                        "await start()".into(),
-                        Arc::new(Start {
-                            epoch: epoch.clone(),
-                            admission: old.admission.clone(),
-                            started: started.clone(),
-                            release: release.clone(),
-                            basis: PermissionBasis {
-                                boundary_revision: 0,
-                                binding: maka_agent_facts::workspace::BindingStamp {
-                                    id: uuid::Uuid::new_v4(),
-                                    permission_epoch: 0,
-                                },
-                            },
-                            fail: late_failure,
-                        }),
-                        CancellationToken::new(),
-                        CellContext::new(CellStore::temporary().unwrap(), vec![]).unwrap(),
-                        Duration::from_millis(100),
-                    )
-                    .await
-                    .unwrap();
-                assert!(started.is_cancelled(),
-                    "accepted start was not entered (retired={already_retired}, cancel_before_observation={cancel_before_observation}, late_failure={late_failure}): {result:?}");
-                assert!(matches!(result, CellResult::Failure { .. }), "{result:?}");
-                assert!(epoch.audio.lock().unwrap().is_none());
-                if already_retired {
-                    entry
-                        .retire_kernel(&owner, old)
-                        .unwrap_or_else(|(error, _)| panic!("{error}"));
-                    let current = entry.fresh_kernel().unwrap();
-                    assert_ne!(epoch.id, current.epoch.id);
-                    *entry.kernel.lock().await = Some(current);
-                } else if cancel_before_observation {
-                    let cancellation = CancellationToken::new();
-                    cancellation.cancel();
-                    let mut closing = entry
-                        .spawn_kernel(&owner, old, cancellation)
-                        .unwrap_or_else(|(error, _)| panic!("{error}"));
-                    assert!(futures_util::poll!(&mut closing).is_pending());
-                    drop(closing);
-                    // The original retirement already transferred the exact worker;
-                    // even an unobserved result remains joinable by final close.
-                    assert!(
-                        entry
-                            .epochs
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .any(|retained| Arc::ptr_eq(retained, &epoch))
-                    );
-                } else {
-                    *entry.kernel.lock().await = Some(old);
-                }
-                let mut closing = Box::pin(entry.close());
-                assert!(futures_util::poll!(&mut closing).is_pending());
-                assert!(entry.retiring.is_cancelled());
-                assert!(epoch.audio.lock().unwrap().is_none());
-                drop(closing);
-                let mut closing = Box::pin(entry.close());
-                assert!(futures_util::poll!(&mut closing).is_pending());
-                release.cancel();
-                let closed = closing.await;
-                if late_failure {
-                    assert!(
-                        closed
-                            .unwrap_err()
-                            .to_string()
-                            .contains("fixture late T2 failure")
-                    );
-                    assert!(
-                        entry
-                            .close()
-                            .await
-                            .unwrap_err()
-                            .to_string()
-                            .contains("fixture late T2 failure")
-                    );
-                } else {
-                    closed.unwrap();
-                }
-                assert!(epoch.audio.lock().unwrap().is_none());
-                if !late_failure {
-                    assert!(entry.epochs.lock().unwrap().is_empty());
-                }
-                owner.tasks.close();
-                let _ = owner.resources.settle().await;
-                owner.tasks.wait().await;
-                assert_eq!(owner.sessions.close().await.is_err(), late_failure);
-                drop(entry);
-                drop(owner);
-                store.shutdown().await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
-    }
-
     #[tokio::test]
-    async fn idle_revocation_discards_audio_without_retiring_the_session() {
-        use maka_agent_api::{
-            contract::{WorkspaceAccess, WorkspacePermissions},
-            session::StoredSessionConfiguration,
-        };
-        use maka_agent_facts::workspace::BindingStamp;
-        let directory = tempfile::tempdir().unwrap();
-        let root_owner = maka_event_log::root::RootOwner::create(
-            &directory.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: directory.path().join("ownership"),
-                control: directory.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = Arc::new(
-            maka_event_log::RootStore::open(Arc::new(root_owner))
-                .await
-                .unwrap(),
-        );
-        let binding = root
-            .attach_workspace("fixture", &json!({"path":directory.path()}))
-            .await
-            .unwrap();
-        let store = root
-            .create_session(
-                "session",
-                "fixture",
-                &StoredSessionConfiguration {
-                    backend: None,
-                    compaction_prompt: None,
-                    collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
-                    tools: None,
-                    title: "fixture".into(),
-                    title_is_manual: false,
-                    labels: vec![],
-                    workspace: binding,
-                    permissions: WorkspacePermissions {
-                        access: WorkspaceAccess::WorkspaceWrite,
-                        request_permissions: false,
-                    },
-                    boundary_revision: 0,
-                },
-                1,
-            )
-            .await
-            .unwrap();
-        let basis = PermissionBasis {
-            boundary_revision: 0,
-            binding: BindingStamp {
-                id: binding.id,
-                permission_epoch: binding.permission_epoch_at_attach,
-            },
-        };
-        let invocation = Invocation {
-            session_id: "session".into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        };
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    invocation.clone(),
-                    Fact::InvocationOpened {
-                        configuration: None,
-                        input: InvocationInput::Message {
-                            content: "fixture".into(),
-                            request_fingerprint: None,
-                            source_messages: vec![],
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        approved(&store, &invocation, "computer", api::target(), basis).await;
-        let ordinary = AudioReceipt {
-            basis,
-            requires_audio_consent: false,
-        };
-        let mac = AudioReceipt {
-            basis,
-            requires_audio_consent: true,
-        };
-        assert!(audio_current(&root, "session", &ordinary).await.unwrap());
-        assert!(
-            !audio_current(&root, "session", &mac).await.unwrap(),
-            "Computer Use alone cannot authorize Mac audio"
-        );
-        approved(&store, &invocation, "audio", api::audio_target(), basis).await;
-        assert!(audio_current(&root, "session", &mac).await.unwrap());
-
+    async fn cleanup_retries_after_failure_and_joins_an_inflight_retry() {
         let tasks = tokio_util::task::TaskTracker::new();
-        let owner = Arc::new(Computer {
-            popup_provenance: None,
-            store: root.clone(),
-            configuration: Configuration {
-                audio: true,
-                ..Default::default()
-            },
-            sessions: Sessions::with_audio(true, tasks.clone()),
-            resources: Arc::new(Resources::default()),
-            stopping: CancellationToken::new(),
-            tasks,
-            origin: ToolOrigin::HostSdk {
-                package_id: "fixture".into(),
-                entry_id: "fixture".into(),
-                activation: "fixture".into(),
-                parent: None,
-            },
-        });
-        let entry = owner.sessions.get("session").unwrap();
-        let epoch = current_epoch(&entry).await;
-        let retired_kernel = entry.fresh_kernel().unwrap();
-        let retired_epoch = retired_kernel.epoch.clone();
-        {
-            let _native = epoch.native.lock().await;
-            epoch.record_audio(basis, true);
-        }
-        {
-            let _native = retired_epoch.native.lock().await;
-            retired_epoch.record_audio(basis, true);
-        }
-        watch(&owner);
-        let mut changes = root.subscribe_catalog_changes();
-        changes.borrow_and_update();
-        let current = store
-            .get_session::<StoredSessionConfiguration>("session")
-            .await
-            .unwrap()
-            .unwrap();
-        store
-            .update_session_permissions(
-                "session",
-                current.revision,
-                30,
-                |configuration: &mut StoredSessionConfiguration| {
-                    configuration.boundary_revision += 1;
-                    Ok(())
-                },
-            )
-            .await
-            .unwrap();
-        changes.changed().await.unwrap();
-        assert!(!audio_current(&root, "session", &ordinary).await.unwrap());
-        assert!(!audio_current(&root, "session", &mac).await.unwrap());
-        audio_cleared(&epoch).await;
-        audio_cleared(&retired_epoch).await;
-        assert!(!entry.retiring.is_cancelled());
-        assert!(Arc::ptr_eq(&owner.sessions.get("session").unwrap(), &entry));
-
-        // Registration can happen after the catalog revoke was consumed by
-        // the watch. No further store event is needed to clear this receipt.
-        {
-            let _native = epoch.native.lock().await;
-            epoch.record_audio(basis, true);
-        }
-        {
-            let _native = retired_epoch.native.lock().await;
-            retired_epoch.record_audio(basis, true);
-        }
-        audio_cleared(&epoch).await;
-        audio_cleared(&retired_epoch).await;
-        assert!(!entry.retiring.is_cancelled());
-        assert!(!owner.stopping.is_cancelled());
-        entry
-            .retire_kernel(&owner, retired_kernel)
-            .unwrap_or_else(|(error, _)| panic!("{error}"));
-        owner.stopping.cancel();
-        owner.tasks.close();
-        owner.sessions.close().await.unwrap();
-        owner.resources.settle().await.unwrap();
-        owner.tasks.wait().await;
-        drop(owner);
-        root.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn queued_cleanup_preserves_a_new_audio_start_with_the_same_basis() {
-        let sessions = Sessions::with_audio(true, Default::default());
-        let entry = sessions.get("session").unwrap();
-        let epoch = current_epoch(&entry).await;
-        let basis = PermissionBasis {
-            boundary_revision: 0,
-            binding: maka_agent_facts::workspace::BindingStamp {
-                id: uuid::Uuid::new_v4(),
-                permission_epoch: 0,
-            },
-        };
-        let native = epoch.native.lock().await;
-        epoch.record_audio(basis, false);
-        let previous = epoch.audio.lock().unwrap().clone().unwrap();
-        let (attempted, waiting) = tokio::sync::oneshot::channel();
-        let queued = tokio::spawn({
-            let epoch = epoch.clone();
-            async move {
-                attempted.send(()).unwrap();
-                epoch.discard_audio_if_current(&previous).await
-            }
-        });
-        waiting.await.unwrap();
-        epoch.record_audio(basis, false);
-        let current = epoch.audio.lock().unwrap().clone().unwrap();
-        drop(native);
-        assert!(!queued.await.unwrap().unwrap());
+        let cleanup = TurnCleanup::default();
         assert!(
-            epoch
-                .audio
-                .lock()
-                .unwrap()
-                .as_ref()
-                .is_some_and(|receipt| Arc::ptr_eq(receipt, &current))
+            cleanup
+                .start(&tasks, async {
+                    Err(ToolError::CleanupUnconfirmed(
+                        "temporary transport loss".into(),
+                    ))
+                })
+                .await
+                .is_err()
         );
-        assert!(!entry.retiring.is_cancelled());
-        assert!(epoch.discard_audio_if_current(&current).await.unwrap());
-        assert!(epoch.audio.lock().unwrap().is_none());
-        sessions.close().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn cleanup_follows_the_exact_canonical_turn_instead_of_the_session_tip() {
-        let directory = tempfile::tempdir().unwrap();
-        let owner = maka_event_log::root::RootOwner::create(
-            &directory.path().join("root"),
-            &maka_event_log::root::RootNamespaces {
-                ownership: directory.path().join("ownership"),
-                control: directory.path().join("control"),
-            },
-        )
-        .unwrap();
-        let root = maka_event_log::RootStore::open(Arc::new(owner))
-            .await
-            .unwrap();
-        let store = root
-            .create_session("session", "fixture", &json!({}), 1)
-            .await
-            .unwrap();
-        let selected = Invocation {
-            session_id: "session".into(),
-            turn_id: "selected".into(),
-            run_id: "selected-run".into(),
-            invocation_id: "selected-invocation".into(),
-        };
-        let unrelated = Invocation {
-            session_id: "session".into(),
-            turn_id: "unrelated".into(),
-            run_id: "unrelated-run".into(),
-            invocation_id: "unrelated-invocation".into(),
-        };
-        let opened = |invocation: &Invocation| {
-            EventWrite::plain(RuntimeEvent::new(
-                invocation.clone(),
-                Fact::InvocationOpened {
-                    configuration: None,
-                    input: InvocationInput::Message {
-                        content: "fixture".into(),
-                        request_fingerprint: None,
-                        source_messages: Vec::new(),
-                    },
-                },
-            ))
-            .unwrap()
-        };
-        store.append(&opened(&selected)).await.unwrap();
-        assert!(!turn_ended(&store, "session", "selected").await.unwrap());
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    selected,
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Completed,
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        store.append(&opened(&unrelated)).await.unwrap();
-        assert!(turn_ended(&store, "session", "selected").await.unwrap());
-        assert!(!turn_ended(&store, "session", "unrelated").await.unwrap());
-        store
-            .append(
-                &EventWrite::plain(RuntimeEvent::new(
-                    unrelated,
-                    Fact::InvocationEnded {
-                        outcome: InvocationOutcome::Cancelled {
-                            source: "fixture".into(),
-                        },
-                    },
-                ))
-                .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert!(turn_ended(&store, "session", "unrelated").await.unwrap());
-        assert!(matches!(
-            turn_ended(&store, "session", "unknown").await,
-            Err(ToolError::CleanupUnconfirmed(message)) if message == "Computer turn lifetime is unavailable"
-        ));
-        root.close().await.unwrap();
+        let (release, released) = tokio::sync::oneshot::channel();
+        let retry = cleanup.start(&tasks, async move {
+            released.await.expect("original cleanup release");
+            Ok(())
+        });
+        let joined = cleanup.start(&tasks, async {
+            panic!("pending cleanup must be joined rather than replaced");
+        });
+        assert!(futures_util::poll!(Box::pin(retry.clone())).is_pending());
+        release.send(()).unwrap();
+        retry.await.unwrap();
+        joined.await.unwrap();
+        tasks.close();
+        tasks.wait().await;
     }
 
     struct PreparedBrowserFixture {
@@ -1891,12 +1440,14 @@ mod tests {
                     "browser-session",
                     "fixture",
                     &StoredSessionConfiguration {
+                        parent_session_id: None,
                         backend: None,
                         collaboration_mode: maka_agent_facts::execution::CollaborationMode::Agent,
                         tools: None,
                         compaction_prompt: None,
                         title: "browser authority fixture".into(),
                         title_is_manual: false,
+                        pinned: false,
                         labels: vec![],
                         workspace: binding,
                         permissions: WorkspacePermissions {
@@ -1939,14 +1490,41 @@ mod tests {
                 )
                 .await
                 .expect("commit actual fixture Turn");
-            approved(
-                &store,
-                &invocation,
-                "browser-computer",
-                api::target(),
-                basis,
-            )
-            .await;
+            use maka_agent_facts::interaction::{
+                Decision, InteractionOutcome, InteractionRecord, InteractionRequest,
+            };
+            store
+                .establish_run_interaction(
+                    &invocation,
+                    &InteractionRecord {
+                        session_id: invocation.session_id.clone(),
+                        turn_id: invocation.turn_id.clone(),
+                        run_id: invocation.run_id.clone(),
+                        request_id: "browser-computer".into(),
+                        created_at: 10,
+                        request: InteractionRequest::ClientCapability {
+                            tool_use_id: "browser-computer".into(),
+                            basis: Some(basis),
+                            target: api::target(),
+                        },
+                        outcome: None,
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(
+                store
+                    .commit_interaction_outcome(
+                        "browser-computer",
+                        InteractionOutcome::ClientCapabilityDecision {
+                            decision: Decision::Allow,
+                            committed_at: 20,
+                        },
+                    )
+                    .await
+                    .unwrap()
+                    .matches
+            );
             let tasks = tokio_util::task::TaskTracker::new();
             let owner = Arc::new(Computer {
                 popup_provenance: None,
@@ -2145,60 +1723,6 @@ mod tests {
                 .expect("fixture receipts")
                 .is_empty()
         );
-        fixture.close().await;
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn late_preparation_registration_rechecks_revocation_without_another_agent_call() {
-        let fixture = PreparedBrowserFixture::open().await;
-        let (scanned, mut scans) = tokio::sync::mpsc::unbounded_channel();
-        watch_scanned(&fixture.owner, move || {
-            let _ = scanned.send(());
-        });
-        tokio::time::timeout(std::time::Duration::from_secs(5), scans.recv())
-            .await
-            .expect("initial watcher scan")
-            .expect("watcher remains live");
-        fixture.revoke_basis().await;
-        tokio::time::timeout(std::time::Duration::from_secs(5), scans.recv())
-            .await
-            .expect("watcher consumes the original revoke commit")
-            .expect("watcher remains live");
-        let native = fixture.epoch.native.lock().await;
-        fixture
-            .epoch
-            .record_browser_preparation(
-                fixture.basis,
-                &fixture.invocation.turn_id,
-                fixture.gate.clone(),
-            )
-            .expect("retain prior admission responsibility");
-        tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            fixture.gate.wait_closed(),
-        )
-        .await
-        .expect("receipt notification must recheck the already changed authority");
-        let receipt = fixture
-            .epoch
-            .browser_preparations
-            .lock()
-            .expect("fixture receipts")[0]
-            .clone();
-        let cleanup = preparation_cleanup_started(&receipt).await;
-        assert!(
-            fixture
-                .epoch
-                .record_browser_preparation(
-                    fixture.basis,
-                    &fixture.invocation.turn_id,
-                    fixture.gate.clone()
-                )
-                .is_err(),
-            "revocation must reject another preparation before native dispatch"
-        );
-        drop(native);
-        cleanup.await.expect("actual retained native cleanup");
         fixture.close().await;
     }
 

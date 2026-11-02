@@ -20,6 +20,7 @@
 use super::*;
 use maka_agent_facts::model::ModelPart;
 use maka_agent_facts::model::TextKind;
+use std::sync::Arc;
 const MALFORMED_ARGUMENTS: &str = " {\"n\":\n";
 const REJECTION: &str = "Invalid JSON arguments: EOF; original arguments: \" {\\\"n\\\":\\n\"";
 const CONFIRMATION_CASES: [&str; 7] = [
@@ -58,8 +59,8 @@ async fn custom_result_and_notifications_all_survive_confirmed_websocket_delta()
         let executor = ModelExecutor::new(Duration::from_secs(5)).unwrap();
         let lane = Conversation::default();
         let mut input = request(&base, "first");
-        input.tools = vec![maka_model::ToolDefinition { name:"exec".into(), description:"JavaScript".into(), input_schema:json!({"type":"object"}), provider:None, output_schema:None,
-            freeform:Some(maka_agent_facts::tools::FreeformGrammar::Lark { definition:"start: /[\\s\\S]+/".into() }) }];
+        input.tools = vec![Arc::new(maka_model::ToolDefinition { name:"exec".into(), description:"JavaScript".into(), input_schema:json!({"type":"object"}), provider:None, output_schema:None,
+            freeform:Some(maka_agent_facts::tools::FreeformGrammar::Lark { definition:"start: /[\\s\\S]+/".into() }) })];
         let mut next = request(&base, "first");
         next.tools = input.tools.clone();
         let step = generate_step(&executor, &lane, input).await;
@@ -124,8 +125,8 @@ async fn idle_close_reconnect_and_upgrade_fallback_preserve_accepted_metadata() 
             let lane = Conversation::default();
             let step = generate_step(&executor, &lane, request(&base, "first")).await;
             assert_eq!(step.parts.len(), 3);
-            assert!(matches!(&step.parts[0], ModelPart::Text { text_kind: TextKind::Thinking, text, .. } if text == "Check the file."));
-            assert!(matches!(&step.parts[1], ModelPart::Text { text_kind: TextKind::Text, text, .. } if text == "Checking 😀"));
+            assert!(matches!(&step.parts[0], ModelPart::Text { text_kind: TextKind::Thinking, text, .. } if text.chunks().collect::<String>() == "Check the file."));
+            assert!(matches!(&step.parts[1], ModelPart::Text { text_kind: TextKind::Text, text, .. } if text.chunks().collect::<String>() == "Checking 😀"));
             // Confirm exactly the adapter-observed history, not a hand-written
             // semantic prefix that could conceal lost reasoning or text.
             let content: Vec<_> = step.parts.iter().map(|part| match part {

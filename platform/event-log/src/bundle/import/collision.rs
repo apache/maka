@@ -133,8 +133,8 @@ async fn identities(
     let occupied: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM event_log WHERE invocation_id=?1)
          OR EXISTS(SELECT 1 FROM event_log WHERE kind='invocation_opened' AND
-           (json_extract(COALESCE(event_json,retained_json),'$.invocation.run_id')=?2
-            OR json_extract(event_json,'$.fact.input.claim.id')=?3))",
+           (json_extract(COALESCE(event_header,retained_json),'$.invocation.run_id')=?2
+            OR json_extract(event_header,'$.fact.input.claim.id')=?3))",
     )
     .bind(invocation)
     .bind(run)

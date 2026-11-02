@@ -327,10 +327,12 @@ fn opt_bool(spec: &Value, key: &str) -> Result<Option<bool>, SchemaError> {
 fn extra(spec: &Value, known: &[&str]) -> Attrs {
     spec.as_object()
         .map(|o| {
-            o.iter()
-                .filter(|(k, _)| !known.contains(&k.as_str()))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
+            super::attrs_from(
+                &mut o
+                    .iter()
+                    .filter(|(k, _)| !known.contains(&k.as_str()))
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            )
         })
         .unwrap_or_default()
 }
@@ -394,9 +396,7 @@ fn parse_dom_from_json(spec: &Value) -> Result<Vec<ParseRule>, SchemaError> {
             };
             let attrs = match r.get("attrs") {
                 None | Some(Value::Null) => None,
-                Some(Value::Object(o)) => {
-                    Some(o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-                }
+                Some(Value::Object(o)) => Some(super::object_attrs(o)),
                 Some(_) => return Err(json_err("attrs must be an object")),
             };
             let attrs_from = match r.get("getAttrs") {
@@ -1149,13 +1149,14 @@ impl NodeType {
     /// gets when it is split (Tiptap's `getSplittedAttributes`): those
     /// with `keep_on_split`, the others back at their defaults.
     pub fn split_attrs(&self, attrs: &Attrs) -> Attrs {
-        let kept: Attrs = self
-            .spec()
-            .attrs
-            .iter()
-            .filter(|(_, spec)| spec.keep_on_split)
-            .filter_map(|(name, _)| Some((name.clone(), attrs.get(name)?.clone())))
-            .collect();
+        let kept = super::attrs_from(
+            &mut self
+                .spec()
+                .attrs
+                .iter()
+                .filter(|(_, spec)| spec.keep_on_split)
+                .filter_map(|(name, _)| Some((name.clone(), attrs.get(name)?.clone()))),
+        );
         self.compute_attrs(Some(&kept))
             .unwrap_or_else(|_| attrs.clone())
     }

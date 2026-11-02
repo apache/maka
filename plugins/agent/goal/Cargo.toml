@@ -27,12 +27,13 @@ hex.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
-futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
-tokio-util.workspace = true
 uuid.workspace = true
 sha2.workspace = true
 schemars.workspace = true
+
+[dev-dependencies]
+futures-util.workspace = true
+tokio.workspace = true

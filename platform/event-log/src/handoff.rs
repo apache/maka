@@ -45,16 +45,16 @@ impl EventLog {
             .run(move |tx| {
                 Box::pin(async move {
                     let rows: Vec<(i64, String, String)> = sqlx::query_as(
-                        "SELECT pause.sequence, json_extract(pause.event_json,'$.invocation'),
-                   json_extract(pause.event_json,'$.fact.outcome.pause.intent.host_epoch')
+                        "SELECT pause.sequence, json_extract(pause.event_header,'$.invocation'),
+                   json_extract(pause.event_header,'$.fact.outcome.pause.intent.host_epoch')
                  FROM local_runtime_events pause
                  WHERE pause.sequence > ? AND pause.kind='invocation_ended'
                    AND NOT EXISTS (SELECT 1 FROM session_retirements r
-                     WHERE r.session_id=json_extract(pause.event_json,'$.invocation.session_id'))
-                   AND json_extract(pause.event_json,'$.fact.outcome.kind')='handoff_paused'
+                     WHERE r.session_id=json_extract(pause.event_header,'$.invocation.session_id'))
+                   AND json_extract(pause.event_header,'$.fact.outcome.kind')='handoff_paused'
                    AND NOT EXISTS (SELECT 1 FROM runtime_events successor
                      WHERE successor.kind='invocation_opened'
-                     AND successor.invocation_id=json_extract(pause.event_json,
+                     AND successor.invocation_id=json_extract(pause.event_header,
                        '$.fact.outcome.pause.intent.successor_invocation_id'))
                  ORDER BY pause.sequence LIMIT 64",
                     )
@@ -182,9 +182,9 @@ async fn reservation(
 ) -> Result<Option<String>, StoreError> {
     Ok(sqlx::query_scalar(
         "SELECT pause.invocation_id FROM local_runtime_events pause
-         WHERE pause.kind='invocation_ended' AND json_extract(pause.event_json,'$.fact.outcome.kind')='handoff_paused'
+         WHERE pause.kind='invocation_ended' AND json_extract(pause.event_header,'$.fact.outcome.kind')='handoff_paused'
          AND pause.invocation_id=(SELECT invocation_id FROM local_runtime_events WHERE kind='invocation_opened'
-           AND json_extract(event_json,'$.invocation.session_id')=? ORDER BY sequence DESC LIMIT 1)"
+           AND json_extract(event_header,'$.invocation.session_id')=? ORDER BY sequence DESC LIMIT 1)"
     ).bind(session).fetch_optional(tx).await?)
 }
 
@@ -196,12 +196,12 @@ pub(crate) async fn reservation_conflict(
     source: Option<&str>,
 ) -> Result<bool, StoreError> {
     Ok(sqlx::query_scalar(
-        "WITH reservations AS NOT MATERIALIZED (SELECT event_json FROM local_runtime_events
-         WHERE kind='invocation_ended' AND json_extract(event_json,'$.fact.outcome.kind')='handoff_paused'
+        "WITH reservations AS NOT MATERIALIZED (SELECT event_header FROM local_runtime_events
+         WHERE kind='invocation_ended' AND json_extract(event_header,'$.fact.outcome.kind')='handoff_paused'
          AND (?4 IS NULL OR invocation_id != ?4))
-         SELECT EXISTS(SELECT 1 FROM reservations WHERE json_extract(event_json,'$.fact.outcome.pause.intent.successor_run_id')=?1
-           UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_json,'$.fact.outcome.pause.intent.successor_invocation_id')=?2
-           UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_json,'$.fact.outcome.pause.intent.claim_id')=?3)",
+         SELECT EXISTS(SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.successor_run_id')=?1
+           UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.successor_invocation_id')=?2
+           UNION ALL SELECT 1 FROM reservations WHERE json_extract(event_header,'$.fact.outcome.pause.intent.claim_id')=?3)",
     ).bind(run).bind(invocation).bind(claim).bind(source).fetch_one(tx).await?)
 }
 

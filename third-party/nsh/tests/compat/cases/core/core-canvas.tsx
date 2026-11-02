@@ -1,4 +1,5 @@
-// A case of the API's test suite (docs/dev/compatibility.md): `nsh`.
+// A case of the API's test suite (docs/dev/compatibility.md): `nsh`'s
+// `Canvas`.
 // A headless run paints nothing, so the script checks what JS sees: the
 // size `draw` gets, the canvas's layout, and what the kept context answers
 // natively from what it recorded (hit tests on `Path2D` paths, its line

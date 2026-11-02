@@ -444,15 +444,20 @@ impl Ed {
         match outcome {
             Outcome::Nothing => {}
             Outcome::Moved => {
-                {
+                let unfolded = {
                     let mut st = self.st.borrow_mut();
                     st.buffer.break_undo_group();
                     let head = st.primary_head();
-                    st.reveal(head);
+                    let unfolded = st.reveal(head);
                     self.sel_history.borrow_mut().record(&st.selections);
-                }
+                    unfolded
+                };
                 self.empty_sink();
-                self.bump_text_if_folds_changed();
+                // Only an unfold changes the rows: a move bumping the text
+                // made every row in view lay its text out again.
+                if unfolded {
+                    self.bump_text();
+                }
                 self.bump_selection();
                 self.report_selections();
                 self.report_search_position();
@@ -481,11 +486,6 @@ impl Ed {
             }
         }
         self.restart_blink();
-    }
-
-    fn bump_text_if_folds_changed(&self) {
-        // Revealing a caret may unfold: the rows changed then.
-        self.bump_text();
     }
 
     /// Runs a public command.
@@ -1110,7 +1110,9 @@ impl Ed {
             let Some(search) = st.search.clone() else {
                 return;
             };
-            let text = search::replacement(&st.buffer, range.clone(), &search, with);
+            let st = &mut *st;
+            let text =
+                search::replacement(&st.buffer, range.clone(), &search, &mut st.compiled, with);
             st.editing(1, |e| e.replace(vec![(range, text)]))
         };
         self.after(outcome);
@@ -1123,16 +1125,9 @@ impl Ed {
             let Some(search) = st.search.clone() else {
                 return 0;
             };
-            let ranges: Vec<_> = st
-                .matches
-                .iter()
-                .map(|r| {
-                    (
-                        r.clone(),
-                        search::replacement(&st.buffer, r.clone(), &search, with),
-                    )
-                })
-                .collect();
+            let st = &mut *st;
+            let ranges =
+                search::replace_all(&st.buffer, &st.matches, &search, &mut st.compiled, with);
             let count = ranges.len() as u32;
             if ranges.is_empty() {
                 return 0;

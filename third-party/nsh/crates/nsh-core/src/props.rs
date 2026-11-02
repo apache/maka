@@ -109,6 +109,29 @@ pub enum AccessibilityRole {
     /// An option of a listbox; `accessibilityState.selected` marks the chosen
     /// one.
     Option,
+    /// A group of related elements that is no landmark: an accordion, the
+    /// controls of a toolbar that belong together.
+    Group,
+    /// A section of the page a user may want to reach (a landmark): an
+    /// accordion's panel, labelled by its header.
+    Region,
+    /// A landmark of links or controls that move around the app: a
+    /// pagination, a breadcrumb.
+    Navigation,
+    /// A tree of items that expand and collapse (`treeitem`s).
+    Tree,
+    /// An item of a tree; `accessibilityState.expanded` tells whether its
+    /// children show, `accessibilityLevel` its depth (1 at the top).
+    #[prop(rename = "treeitem")]
+    TreeItem,
+    /// An item of a menu that is checked or not
+    /// (`accessibilityState.checked`).
+    #[prop(rename = "menuitemcheckbox")]
+    MenuItemCheckbox,
+    /// An item of a menu that is one choice of a group of them
+    /// (`accessibilityState.checked`).
+    #[prop(rename = "menuitemradio")]
+    MenuItemRadio,
 }
 
 /// Whether a checkable element is checked (`accessibilityState.checked`).
@@ -120,6 +143,24 @@ pub enum Checked {
     True,
     /// Partially checked.
     Mixed,
+}
+
+/// Which item of a set an element is the current one of
+/// (`accessibilityState.current`, ARIA's `aria-current`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityCurrent {
+    /// The current item of a set, of no particular kind (`true`).
+    True,
+    /// The current page: a pagination's, a breadcrumb's last link.
+    Page,
+    /// The current step of a process.
+    Step,
+    /// The current location: a place in a map or a flow chart.
+    Location,
+    /// The current date of a calendar.
+    Date,
+    /// The current time of a timetable.
+    Time,
 }
 
 /// Dynamic state of an element (`accessibilityState`).
@@ -135,6 +176,13 @@ pub struct AccessibilityState {
     pub busy: bool,
     /// Expanded or collapsed, for expandable elements.
     pub expanded: Option<bool>,
+    /// Pressed state of a toggle button (ARIA's `aria-pressed`): `Some`
+    /// makes a button one that stays on or off; `Mixed` is partly
+    /// pressed.
+    pub pressed: Option<Checked>,
+    /// The current item of a set (ARIA's `aria-current`): a pagination's
+    /// page, a wizard's step.
+    pub current: Option<AccessibilityCurrent>,
 }
 
 /// The value of a range or textual element (`accessibilityValue`).
@@ -196,6 +244,9 @@ pub struct Accessibility {
     pub live_region: LiveRegion,
     /// `accessibilityActions`.
     pub actions: Vec<AccessibilityActionDef>,
+    /// `accessibilityLevel`: the level of a heading (1 the top), the depth
+    /// of a tree item (1 at the top); `None` has none.
+    pub level: Option<u32>,
 }
 
 impl Accessibility {
@@ -243,6 +294,11 @@ pub enum AccessibilityProp {
     /// (`onAccessibilityAction` reports them).
     #[prop(js = "accessibilityActions")]
     Actions(Vec<AccessibilityActionDef>),
+    /// `accessibilityLevel`: the level of a heading (`role="header"`, 1
+    /// the top) or the depth of a tree item (`role="treeitem"`, 1 at the
+    /// top); others than whole numbers from 1 are none.
+    #[prop(js = "accessibilityLevel", with = crate::js::host_values::accessibility_level, reset = AccessibilityProp::Level(None), ts = "number")]
+    Level(Option<u32>),
 }
 
 /// Android's press ripple (`android={{ ripple }}`).

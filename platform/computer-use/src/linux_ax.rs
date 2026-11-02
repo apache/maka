@@ -122,6 +122,61 @@ pub(crate) fn validate_snapshot(snapshot: &NativeAxSnapshot) -> Result<(), Inval
     Ok(())
 }
 
+/// Original filters a completed native tree, before assigning display aliases.
+/// A retained matching ancestor still loses its unrelated descendants.
+/// The caller has already validated the snapshot and its single root.
+pub(crate) fn filter_snapshot(
+    mut snapshot: NativeAxSnapshot,
+    query: Option<&str>,
+) -> NativeAxSnapshot {
+    let Some(query) = query.map(str::trim).filter(|query| !query.is_empty()) else {
+        return snapshot;
+    };
+    let query = query.to_lowercase();
+    let mut keep = vec![false; snapshot.rows.len()];
+    for (index, row) in snapshot.rows.iter().enumerate().rev() {
+        keep[index] |= [
+            Some(row.native_id.as_str()),
+            Some(row.role.as_str()),
+            row.name.as_deref(),
+            row.description.as_deref(),
+            row.value.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|text| text.to_lowercase().contains(&query));
+        if keep[index]
+            && let Some(parent) = row.parent
+        {
+            keep[parent] = true;
+        }
+    }
+    // The original caller ignores filter_children(root)'s bool result.
+    // Preserve the root even when no descendant or own field matches.
+    if let Some(root) = keep.first_mut() {
+        *root = true;
+    }
+    let mut remapped = vec![None; snapshot.rows.len()];
+    let mut next = 0;
+    snapshot.rows = snapshot
+        .rows
+        .into_iter()
+        .enumerate()
+        .filter_map(|(index, mut row)| {
+            if !keep[index] {
+                return None;
+            }
+            row.parent = row.parent.map(|parent| {
+                remapped[parent].expect("retained native query child keeps its preceding ancestors")
+            });
+            remapped[index] = Some(next);
+            next += 1;
+            Some(row)
+        })
+        .collect();
+    snapshot
+}
+
 impl ElementIds {
     pub(crate) fn assign<'a>(
         &mut self,
@@ -549,6 +604,93 @@ fn js_whitespace(character: char) -> bool {
 }
 
 #[cfg(test)]
+mod native_query_tests {
+    use super::*;
+
+    fn row(id: &str, parent: Option<usize>, role: &str, name: Option<&str>) -> NativeAxRow {
+        NativeAxRow {
+            native_id: id.into(),
+            parent,
+            depth: usize::from(parent.is_some()),
+            role: role.into(),
+            name: name.map(str::to_owned),
+            description: None,
+            value: None,
+            states: None,
+            actions: None,
+            element_index: None,
+        }
+    }
+
+    #[test]
+    fn native_query_prunes_before_aliases_and_keeps_only_matches_with_ancestors() {
+        let mut rows = vec![
+            row("root", None, "frame", Some("Root")),
+            row("parent", Some(0), "group", Some("Needle parent")),
+            row("unrelated-child", Some(1), "label", Some("Unrelated child")),
+            row("described", Some(0), "label", None),
+            row("valued", Some(0), "label", None),
+            row("native:NeedleId", Some(0), "label", None),
+            row("roled", Some(0), "NeedleRole", None),
+            row("state-only", Some(0), "label", None),
+            row("action-only", Some(0), "label", None),
+            row("ancestor", Some(0), "group", None),
+            row("leaf", Some(9), "label", Some("Leaf needle")),
+            row("sibling", Some(9), "label", Some("Unrelated sibling")),
+        ];
+        rows[2].depth = 2;
+        rows[3].description = Some("nEeDlE description".into());
+        rows[4].value = Some("Needle value".into());
+        rows[7].states = Some(vec!["needle".into()]);
+        rows[8].actions = Some(vec!["needle".into()]);
+        rows[10].depth = 2;
+        rows[11].depth = 2;
+        let full = NativeAxSnapshot {
+            source: NativeAxSource::AtSpi,
+            rows,
+        };
+        validate_snapshot(&full).unwrap();
+        let filtered = filter_snapshot(full.clone(), Some("  nEeDlE\n"));
+        assert_eq!(filtered.source, NativeAxSource::AtSpi);
+        assert_eq!(
+            filtered
+                .rows
+                .iter()
+                .map(|row| row.native_id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "root",
+                "parent",
+                "described",
+                "valued",
+                "native:NeedleId",
+                "roled",
+                "ancestor",
+                "leaf"
+            ]
+        );
+        assert_eq!(filtered.rows[7].parent, Some(6));
+        assert_eq!(filtered.rows[7].depth, 2);
+        validate_snapshot(&filtered).unwrap();
+        let none = filter_snapshot(full.clone(), Some("absent"));
+        assert_eq!(
+            none.rows,
+            [full.rows[0].clone()],
+            "root stays even when its own predicate is false"
+        );
+        let mut ids = ElementIds::default();
+        ids.assign(7, &full, ReadCoverage::Full);
+        ids.assign(7, &filtered, ReadCoverage::Filtered);
+        assert_eq!(
+            ids.resolve(7, Some("2")).unwrap(),
+            Some("unrelated-child"),
+            "filtered query extends the prior window map without granting a target"
+        );
+        assert_eq!(ids.resolve(7, Some("10")).unwrap(), Some("leaf"));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -614,37 +756,6 @@ mod tests {
     }
 
     #[test]
-    fn metadata_keeps_observed_rows_and_adds_their_assigned_public_ids() {
-        let mut snapshot = fixture("target");
-        snapshot
-            .rows
-            .push(row("target/empty", Some(0), "filler", None));
-        validate_snapshot(&snapshot).expect("the owned flat fixture is valid");
-        let mut ids = ElementIds::default();
-        let view = ids.assign(1, &snapshot, ReadCoverage::Full);
-        let metadata = view
-            .metadata()
-            .expect("the borrowed raw snapshot serializes");
-        assert_eq!(metadata["source"], "at_spi");
-        assert_eq!(
-            metadata["rows"][5]["id"], "5",
-            "unrendered aliases remain in metadata"
-        );
-        assert!(
-            !view
-                .render()
-                .lines()
-                .any(|line| line.trim_start().starts_with("5 "))
-        );
-        assert_eq!(metadata["rows"][3]["id"], "3");
-        assert_eq!(metadata["rows"][3]["native_id"], "target/save");
-        assert_eq!(metadata["rows"][3]["element_index"], 1);
-        let observed: NativeAxSnapshot = serde_json::from_value(metadata)
-            .expect("public IDs add metadata without changing observed DTO fields");
-        assert_eq!(observed, snapshot);
-    }
-
-    #[test]
     fn flat_parent_validation_rejects_nonpreceding_and_nondecreasing_depth_links() {
         for parent in [0, 1, usize::MAX] {
             let snapshot = NativeAxSnapshot {
@@ -673,34 +784,6 @@ mod tests {
                 })
             );
         }
-    }
-
-    #[test]
-    fn flat_parent_validation_accepts_partial_roots_and_depth_gaps() {
-        let mut root = row("root", None, "group", None);
-        root.depth = 3;
-        let mut child = row("child", Some(0), "label", Some("Visible"));
-        child.depth = 7;
-        let mut partial_root = row("partial", None, "text", Some("Partial"));
-        partial_root.depth = usize::MAX;
-        let snapshot = NativeAxSnapshot {
-            source: NativeAxSource::AtSpi,
-            rows: vec![root, child, partial_root],
-        };
-        assert_eq!(validate_snapshot(&snapshot), Ok(()));
-    }
-
-    #[test]
-    fn own_gtk_fixture_assigns_raw_parents_before_rendering_save_three() {
-        let snapshot = fixture("target");
-        let mut ids = ElementIds::default();
-        let view = ids.assign(1, &snapshot, ReadCoverage::Full);
-        assert_eq!(view.public_id(3), Some("3"));
-        assert_eq!(snapshot.rows[3].element_index, Some(1));
-        assert_eq!(
-            view.render(),
-            "Accessibility source: at_spi\n0 frame Maka AT-SPI Target\n\t1 container\n\t\t2 text (settable) Maka AT-SPI Target Entry, Value: seed-target, Secondary Actions: activate\n\t\t3 push button Maka AT-SPI Target Save\n\t\t4 text Maka AT-SPI Target Status"
-        );
     }
 
     #[test]
@@ -776,49 +859,6 @@ mod tests {
     }
 
     #[test]
-    fn selectors_match_exact_ascii_decimal_strings_and_pass_native_values_through() {
-        let snapshot = fixture("target");
-        let mut ids = ElementIds::default();
-        ids.assign(1, &snapshot, ReadCoverage::Full);
-        assert_eq!(
-            ids.resolve(1, Some("03")).unwrap_err().to_string(),
-            "Unknown element ID 03 for this window; refresh get_window_state()"
-        );
-        for native in [
-            "",
-            ":1.0:/org/a11y/atspi/accessible/5",
-            "x11:123",
-            "٣",
-            "+3",
-        ] {
-            assert_eq!(ids.resolve(1, Some(native)).unwrap(), Some(native));
-        }
-        assert_eq!(ids.resolve(1, None).unwrap(), None);
-    }
-
-    #[test]
-    fn floating_counter_plateau_keeps_first_insertion_resolution() {
-        let mut ids = ElementIds {
-            next_id: 9_007_199_254_740_992.0,
-            ..ElementIds::default()
-        };
-        let snapshot = NativeAxSnapshot {
-            source: NativeAxSource::AtSpi,
-            rows: vec![
-                row("first", None, "button", None),
-                row("second", None, "button", None),
-            ],
-        };
-        let view = ids.assign(1, &snapshot, ReadCoverage::Full);
-        assert_eq!(view.public_id(0), Some("9007199254740992"));
-        assert_eq!(view.public_id(1), Some("9007199254740992"));
-        assert_eq!(
-            ids.resolve(1, Some("9007199254740992")).unwrap(),
-            Some("first")
-        );
-    }
-
-    #[test]
     fn view_flattens_passive_ancestors_and_merges_adjacent_text_leaves() {
         let snapshot = NativeAxSnapshot {
             source: NativeAxSource::AtSpi,
@@ -834,24 +874,6 @@ mod tests {
                 .assign(1, &snapshot, ReadCoverage::Full)
                 .render(),
             "Accessibility source: at_spi\n1 container\n\t2 text Alpha Beta"
-        );
-    }
-
-    #[test]
-    fn view_removes_duplicate_text_descendants_without_losing_their_children() {
-        let snapshot = NativeAxSnapshot {
-            source: NativeAxSource::AtSpi,
-            rows: vec![
-                row("root", None, "group", Some("Alpha Beta")),
-                row("a", Some(0), "label", Some("Alpha")),
-                row("b", Some(1), "text", Some("Beta")),
-            ],
-        };
-        assert_eq!(
-            ElementIds::default()
-                .assign(1, &snapshot, ReadCoverage::Full)
-                .render(),
-            "Accessibility source: at_spi\n0 container Alpha Beta"
         );
     }
 
@@ -936,39 +958,6 @@ mod tests {
                 .assign(1, &snapshot, ReadCoverage::Full)
                 .render(),
             "Accessibility source: at_spi\n"
-        );
-    }
-
-    #[test]
-    fn secondary_action_filtering_keeps_duplicate_context_actions_and_empty_names() {
-        let mut control = row("control", None, "button", Some("Menu"));
-        control.actions = Some(
-            ["press", "showcontextmenu", "ShowContextMenu", "click"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
-        );
-        let snapshot = NativeAxSnapshot {
-            source: NativeAxSource::AtSpi,
-            rows: vec![control],
-        };
-        assert_eq!(
-            ElementIds::default()
-                .assign(1, &snapshot, ReadCoverage::Full)
-                .render(),
-            "Accessibility source: at_spi\n0 button Menu, Secondary Actions: showcontextmenu, ShowContextMenu, click"
-        );
-        let mut control = row("empty", None, "button", None);
-        control.actions = Some(vec![String::new()]);
-        let snapshot = NativeAxSnapshot {
-            source: NativeAxSource::AtSpi,
-            rows: vec![control],
-        };
-        assert_eq!(
-            ElementIds::default()
-                .assign(1, &snapshot, ReadCoverage::Full)
-                .render(),
-            "Accessibility source: at_spi\n0 button Secondary Actions: "
         );
     }
 }

@@ -37,3 +37,6 @@ tokio-util.workspace = true
 uuid.workspace = true
 sha2.workspace = true
 url = "2.5.8"
+
+[dev-dependencies]
+jsonschema.workspace = true

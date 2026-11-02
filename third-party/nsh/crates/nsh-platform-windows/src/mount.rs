@@ -247,6 +247,10 @@ impl Mounter {
                     ViewKind::WebView | ViewKind::Video | ViewKind::Native => {
                         crate::native::resized(view)
                     }
+                    ViewKind::Image => {
+                        crate::shader::resized(surface, view);
+                        crate::image::resized(surface, view);
+                    }
                     _ => crate::shader::resized(surface, view),
                 }
             }
@@ -265,7 +269,11 @@ impl Mounter {
                 content,
             } => {
                 if let Some(view) = &self.get(*id) {
+                    let old = view.state().text.as_ref().map(|t| t.text.clone());
                     crate::text::set(view, text, layout, *content);
+                    if let Some(old) = old {
+                        crate::transition::text_changed(surface, view, &old, text);
+                    }
                     crate::access::text_changed(view);
                 }
             }

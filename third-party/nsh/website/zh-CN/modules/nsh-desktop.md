@@ -6,12 +6,15 @@ order: 12.5
 
 # nsh/desktop
 
-`nsh/desktop` 在 macOS、Windows 和 Linux 上提供图形桌面窗口、标题栏、应用菜单和右键菜单。终端界面通过同一个模块提供标题和菜单。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行。`isAvailable` 标识提供这些标题和菜单 API 的界面。 Rust 代码用 `nsh_core::element::desktop`（`set_title_bar`、`title_bar`、`close_window`）绘制自己的标题栏、关闭窗口，并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`，其中还有窗口的其他函数和菜单。
+`nsh/desktop` 提供图形桌面的窗口、标题栏、应用菜单和右键菜单。终端界面通过同一个模块提供标题和菜单。它在 macOS、Windows 和 Linux 上可用。Rust 代码在 `nsh_core::element::desktop` 中有同样的功能：窗口的函数（`set_title`、`set_title_bar`、`title_bar`、`minimize`……`close_window`）、应用菜单和右键菜单（`set_application_menu`、`popup_menu`，由 `MenuItem` 组成），并用 `.window_drag(true)` 标记可拖动的视图；TSX 导入 `nsh/desktop`。这个模块在所有平台上都可以导入，因此同一个 bundle 可以在所有平台运行：在 iOS 和 Android 上它的函数什么也不做，`isAvailable` 告诉你当前是否有它的窗口和菜单。
 
 ```rust tabs
 use nsh_core::{
-    desktop::TitleBarStyle,
-    element::{desktop::{close_window, set_title_bar, title_bar}}, prelude::*,
+    desktop::{MenuRole, TitleBarStyle},
+    element::desktop::{
+        MenuItem, close_window, popup_menu, set_application_menu, set_title, set_title_bar, title_bar,
+    },
+    prelude::*,
 };
 ```
 
@@ -25,8 +28,9 @@ import { isAvailable, Menu, titleBar, Window } from "nsh/desktop";
 const isAvailable: boolean;
 ```
 
-在 macOS、Windows 和 Linux 图形后端及终端界面上为 `true`。`platform.idiom === "desktop" && !platform.isTerminal` 标识图形桌面，
-`platform.isTerminal` 标识终端渲染器。参见[终端](../docs/tui.md)。
+在 macOS、Windows 和 Linux 图形后端及终端界面上为 `true`。`platform.isTerminal` 标识终端渲染器。参见[终端](../docs/tui.md)。
+
+[`platform.desktop`](./nsh.md#platform) 判断图形桌面行为（`desktop={{…}}` 属性、`platform.select({ desktop })`），包括桌面形态的浏览器，不包括终端。图形桌面布局、密度和输入方式用 `platform.desktop` 判断，调用标题和菜单 API 用 `isAvailable` 判断。
 
 ## Window
 
@@ -42,7 +46,6 @@ const Window: {
     origin?: Partial<Point>;
     size?: Partial<Size>;
     animated?: boolean;
-    anchorTop?: boolean;
   }): void;
   setLevel(level: "normal" | "floating" | "desktopIcon"): void;
   orderFront(): void;
@@ -54,15 +57,15 @@ Rust 列给出 `nsh_core::element::desktop` 中的函数。
 
 | 成员 | Rust | 说明 |
 |---|---|---|
-| `setTitle(title)` | | 窗口的标题：标题栏、任务栏或 Dock、窗口切换器里显示的名字。 |
+| `setTitle(title)` | `set_title(title)` | 窗口的标题：标题栏、任务栏或 Dock、窗口切换器里显示的名字。 |
 | `setTitleBar({ style, height? })` | `set_title_bar(TitleBarStyle::Hidden, Some(px(height)))` | `style: "hidden"` 去掉系统标题栏：应用一直铺到窗口顶边，自己绘制标题栏。系统的窗口按钮保留（macOS 的红绿灯、Windows 的最小化 / 最大化 / 关闭按钮、GTK 的窗口按钮）。`height` 是你的标题栏高度（单位为点）：窗口按钮在其中垂直居中（Windows 的标题栏按钮撑满这个高度；在 macOS 上，`height` 选择紧凑样式（44 点及以下）或标准样式（44 点以上）；应用根据 `titleBar().height` 返回的实际高度布局，实时缩放时由 AppKit 布置红绿灯。嵌入应用已有的工具栏保留自身的样式和高度）；省略时使用平台的高度。`style: "default"` 恢复系统标题栏（Rust：`set_title_bar(TitleBarStyle::Default, None)`）。 |
-| `setMenuBar(mode)` | `set_menu_bar(mode)` | 在 GPUI 应用的 Windows 和 Linux 上，窗口把应用菜单绘制成应用上方的菜单栏：`"shown"`（默认）始终显示；`"autoHide"` 在单独按下并松开 Alt 后显示，再次单独按 Alt 时隐藏，与 Windows 和 GNOME 应用一致。两种模式下 F10 和 Alt 加菜单首字母都会打开菜单，菜单打开期间菜单栏显示。macOS 的菜单栏是系统的。 |
-| `minimize()` | | 最小化窗口。 |
-| `toggleMaximize()` | | 最大化窗口，已最大化时还原。 |
-| `toggleFullScreen()` | | 进入或退出全屏。 |
-| `setFrame(frame)` | | 移动窗口并调整大小，单位为点；省略的字段保持原值。macOS 和 Windows 上的 `size`（`width`、`height`）包含窗口装饰；Linux 上设置 GTK 的默认窗口尺寸。`origin`（`x`、`y`） 在 macOS 屏幕坐标中表示窗口左下角，在 Windows 上表示左上角。`animated: true` 启用 macOS 的窗口调整动画（默认为 false）。`anchorTop: true` 在只改 `height` 而不给 `y` 时保持顶边不动：窗口从底边伸缩。 |
-| `setLevel(level)` | | 在 macOS 和 Windows 上，`"floating"` 让窗口保持在普通窗口之上，`"normal"` 恢复普通层级。`"desktopIcon"` 在 macOS 上选择桌面图标层级（窗口同时存在于所有空间，不进入 Mission Control 和 Cmd+` 循环）；在 Windows 上将窗口移到当前 z 序底部，之后激活窗口仍可将其提升。 |
-| `orderFront()` | | 把窗口提升到其所在层级的最前并聚焦（应用随之激活；macOS 会解除最小化，Windows 会恢复最小化的窗口并置于前台，GTK 会 present）。窗口保持原有层级。macOS 的桌面层级窗口保持在其他窗口之后。GPUI 激活其窗口；Linux 上的前台请求由窗口管理器决定。 |
+| `setMenuBar(mode)` | `set_menu_bar_visibility(mode)` | 在 GPUI 应用的 Windows 和 Linux 上，窗口把应用菜单绘制成应用上方的菜单栏：`"shown"`（默认）始终显示；`"autoHide"` 在单独按下并松开 Alt 后显示，再次单独按 Alt 时隐藏，与 Windows 和 GNOME 应用一致。两种模式下 F10 和 Alt 加菜单首字母都会打开菜单，菜单打开期间菜单栏显示。macOS 的菜单栏是系统的。 |
+| `minimize()` | `minimize()` | 最小化窗口。 |
+| `toggleMaximize()` | `toggle_maximize()` | 最大化窗口，已最大化时还原。 |
+| `toggleFullScreen()` | `toggle_full_screen()` | 进入或退出全屏。 |
+| `setFrame(frame)` | `set_frame(WindowFrame { .. })` | 移动窗口并调整大小，单位为点；省略的字段保持原值。macOS 和 Windows 上的 `size`（`width`、`height`）包含窗口装饰；Linux 上设置 GTK 的默认窗口尺寸。`origin`（`x`、`y`）是窗口的左上角，从主屏幕（macOS 上是带菜单栏的那块屏幕）的左上角量起，`y` 向下增长，各平台相同；只给 `height` 而不给 `y` 时顶边保持不动，窗口从底边伸缩。`animated: true` 启用 macOS 的窗口调整动画（默认为 false）。 |
+| `setLevel(level)` | `set_level(level)` | 在 macOS 和 Windows 上，`"floating"` 让窗口保持在普通窗口之上，`"normal"` 恢复普通层级。`"desktopIcon"` 在 macOS 上选择桌面图标层级（窗口同时存在于所有空间，不进入 Mission Control 和 Cmd+` 循环）；在 Windows 上将窗口移到当前 z 序底部，之后激活窗口仍可将其提升。 |
+| `orderFront()` | `order_front()` | 把窗口提升到其所在层级的最前并聚焦（应用随之激活；macOS 会解除最小化，Windows 会恢复最小化的窗口并置于前台，GTK 会 present）。窗口保持原有层级。macOS 的桌面层级窗口保持在其他窗口之后。GPUI 激活其窗口；Linux 上的前台请求由窗口管理器决定。 |
 | `close()` | `close_window()` | 关闭窗口，应用随之结束。 |
 
 窗口尺寸调整适用于 macOS、Windows 和 Linux；窗口定位和层级控制适用于 macOS 和 Windows。Linux 的窗口位置和层级由窗口管理器决定。GPUI 窗口的尺寸、位置和层级由宿主在创建窗口时配置。
@@ -164,6 +167,8 @@ const Menu: {
 | `setApplicationMenu(items)` | 设置应用菜单：每个顶层项是一个子菜单（`File`、`Edit`……）。在 macOS 上是菜单栏，第一个菜单是应用菜单（AppKit 以应用名作为标题）。在 Windows 和 Linux 上是窗口的菜单栏，隐藏标题栏时不显示；它的快捷键仍然有效，自定义标题栏可以用 `Menu.popup` 打开这些菜单。`null` 恢复平台默认菜单。 |
 | `popup(items, at?)` | 显示右键菜单，左上角在 `at`（窗口坐标，单位为点：`onContextMenu` 的 `e.pagePosition`），省略时在指针处。菜单关闭时（无论是否选中了菜单项）返回的 Promise 会 resolve：打开它的按钮可以在此之前一直保持按下样式。 |
 
+在 Rust 中，`set_application_menu(items)` 接受 `Vec<MenuItem>`（`None` 恢复平台默认菜单），`popup_menu(items)`（在指针处）和 `popup_menu_at(items, at)` 返回一个 `Answer<()>`，菜单关闭时得到结果（可以不 await）。菜单项的处理函数在设置菜单的 owner 下运行，只在该 owner 存活期间有效。
+
 再次调用 `setApplicationMenu` 即可修改菜单。放在 `effect` 里时，它会跟随读取的 signal：依赖应用状态的勾选或可用状态始终保持最新。
 
 ### 菜单项
@@ -196,6 +201,8 @@ type MenuItem =
 
 `null`、`undefined` 和 `false` 项会被忽略，因此可以在列表中写 `cond && { … }`。
 
+在 Rust 中，菜单项是 `MenuItem::new(label)`、`MenuItem::role(role)`、`MenuItem::separator()` 或 `MenuItem::submenu(label, items)`，字段对应同名方法：`.shortcut("mod+n")`（快捷键无效时 panic，并给出正确写法）、`.shortcut_when(When::Auto)`、`.disabled(true)`、`.checked(on)`、`.on_select(f)`，以及给 role 菜单项设置文字的 `.label(..)`。
+
 修饰键：
 
 | 修饰键 | macOS | Windows | Linux |
@@ -223,7 +230,60 @@ Role：
 
 在 GPUI 后端上，拥有键盘焦点的原生组件先看到每个按键。它自己处理的按键不会到达快捷键表或菜单。它放过的按键按输入框获得焦点时的规则进入 `keymap` 的快捷键，然后再到菜单。
 
-```tsx
+```rust tabs
+use nsh_core::{
+    desktop::MenuRole,
+    element::desktop::{MenuItem, set_application_menu},
+    platform::Os,
+    prelude::*,
+};
+
+#[component]
+fn AppMenu() -> impl IntoElement {
+    let mac = os() == Os::MacOs;
+    let wrap = signal(true);
+    effect(move || {
+        let mut menus = Vec::new();
+        if mac {
+            menus.push(MenuItem::submenu("My App", [
+                MenuItem::role(MenuRole::About),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Hide),
+                MenuItem::role(MenuRole::HideOthers),
+                MenuItem::separator(),
+                MenuItem::role(MenuRole::Quit),
+            ]));
+        }
+        let mut file = vec![
+            MenuItem::new("New").shortcut("mod+n").on_select(create_document),
+            MenuItem::new("Open…").shortcut("mod+o").on_select(open_document),
+        ];
+        if !mac {
+            file.push(MenuItem::separator());
+            file.push(MenuItem::role(MenuRole::Quit).label("Exit"));
+        }
+        menus.push(MenuItem::submenu("File", file));
+        menus.push(MenuItem::submenu("Edit", [
+            MenuItem::role(MenuRole::Undo),
+            MenuItem::role(MenuRole::Redo),
+            MenuItem::separator(),
+            MenuItem::role(MenuRole::Cut),
+            MenuItem::role(MenuRole::Copy),
+            MenuItem::role(MenuRole::Paste),
+        ]));
+        menus.push(MenuItem::submenu("View", [
+            MenuItem::new("Word Wrap")
+                .checked(wrap.get())
+                .on_select(move || wrap.update(|w| *w = !*w)),
+            MenuItem::role(MenuRole::ToggleFullScreen),
+        ]));
+        set_application_menu(menus);
+    });
+    view()
+}
+```
+
+```tsx tabs
 import { effect, signal } from "nsh";
 import { platform } from "nsh";
 import { Menu } from "nsh/desktop";
@@ -263,7 +323,18 @@ effect(() => {
 
 在按钮按下时弹出右键菜单：
 
-```tsx
+```rust tabs
+text("更多").on_press(|| {
+    let _ = popup_menu(vec![
+        MenuItem::new("重命名").on_select(rename),
+        MenuItem::new("复制一份").on_select(duplicate),
+        MenuItem::separator(),
+        MenuItem::new("删除").on_select(remove),
+    ]);
+})
+```
+
+```tsx tabs
 <View
   onPress={() =>
     Menu.popup([

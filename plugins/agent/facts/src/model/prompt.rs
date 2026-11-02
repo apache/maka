@@ -244,6 +244,6 @@ pub enum ToolOutput {
 }
 
 pub use super::prompt_source::{
-    PreparedWire, Prompt, PromptCursor, PromptSource, WireChunk, WireCursor, WireFormat, WireGroup,
-    WireMetadata, WireMetadataCursor, WirePosition, WireSource,
+    PreparedWire, Prompt, PromptCursor, PromptInstructions, PromptSource, WireChunk, WireCursor,
+    WireFormat, WireGroup, WireMetadata, WireMetadataCursor, WirePosition, WireSource,
 };

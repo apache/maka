@@ -164,18 +164,18 @@ export async function demoPanelHtml(name, { base = '/', lang = 'en' } = {}) {
 
   return `<figure class="demo" data-demo="${escape(name)}" data-view="preview" data-layout="mobile" data-pagefind-ignore>
     <figcaption class="demo__bar">
-      <div class="segmented demo__views" role="tablist" aria-label="${escape(t.label)}">
-        <button type="button" role="tab" id="${id}-tab-preview" aria-controls="${id}-preview" aria-selected="true" data-demo-view="preview">${escape(t.preview)}</button>
-        <button type="button" role="tab" id="${id}-tab-source" aria-controls="${id}-source" aria-selected="false" tabindex="-1" data-demo-view="source">${escape(t.source)}</button>
+      <div class="demo__views" data-slot="tabs-list" data-size="xs" role="tablist" aria-label="${escape(t.label)}">
+        <button type="button" data-slot="tabs-trigger" role="tab" id="${id}-tab-preview" aria-controls="${id}-preview" aria-selected="true" data-demo-view="preview">${escape(t.preview)}</button>
+        <button type="button" data-slot="tabs-trigger" role="tab" id="${id}-tab-source" aria-controls="${id}-source" aria-selected="false" tabindex="-1" data-demo-view="source">${escape(t.source)}</button>
       </div>
-      <div class="segmented demo__layouts" role="radiogroup" aria-label="${escape(t.layout)}">
-        <button type="button" role="radio" aria-checked="true" data-demo-layout="mobile">${escape(t.mobile)}</button>
-        <button type="button" role="radio" aria-checked="false" tabindex="-1" data-demo-layout="desktop">${escape(t.desktop)}</button>
+      <div class="demo__layouts" data-slot="toggle-group" data-variant="segmented" data-size="xs" role="radiogroup" aria-label="${escape(t.layout)}">
+        <button type="button" data-slot="toggle-group-item" role="radio" aria-checked="true" data-demo-layout="mobile">${escape(t.mobile)}</button>
+        <button type="button" data-slot="toggle-group-item" role="radio" aria-checked="false" tabindex="-1" data-demo-layout="desktop">${escape(t.desktop)}</button>
       </div>
       <span class="demo__file">${escape(file)}</span>
-      <div class="demo__actions" role="group">
-        <a class="demo__action" href="${escape(`${base}${lang === 'zh-CN' ? 'zh-CN/' : ''}playground#demo=${encodeURIComponent(name)}`)}" title="${escape(t.edit)}" aria-label="${escape(t.edit)}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></a>
-        <a class="demo__action" href="${escape(playerHref(name, base))}" target="_blank" rel="noopener" title="${escape(t.open)}" aria-label="${escape(t.open)}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
+      <div class="demo__actions" data-slot="button-group" role="group">
+        <a data-slot="button" data-variant="outline" data-size="icon-xs" href="${escape(`${base}${lang === 'zh-CN' ? 'zh-CN/' : ''}playground#demo=${encodeURIComponent(name)}`)}" title="${escape(t.edit)}" aria-label="${escape(t.edit)}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg></a>
+        <a data-slot="button" data-variant="outline" data-size="icon-xs" href="${escape(playerHref(name, base))}" target="_blank" rel="noopener" title="${escape(t.open)}" aria-label="${escape(t.open)}"><svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></a>
       </div>
     </figcaption>
     <div class="demo__body">

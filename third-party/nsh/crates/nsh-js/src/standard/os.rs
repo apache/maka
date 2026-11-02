@@ -50,7 +50,7 @@ mod tests {
             host.eval_script("metadata", "metadataMatches && homeIsMetadata")
                 .unwrap()
         );
-        host.eval_source("import fs from 'fs/promises'; globalThis.homeReadDenied = false; try { Promise.resolve(fs.readdir(os.homedir())).catch(e => globalThis.homeReadDenied = true); } catch(e) { globalThis.homeReadDenied = true; }").unwrap();
+        host.eval_source("import fs from 'fs/promises'; globalThis.homeReadDenied = false; fs.readdir(os.homedir()).catch(e => globalThis.homeReadDenied = e.code === 'ERR_ACCESS_DENIED' && e.permission === 'fs');").unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while !host
             .eval_script("denied-home-read", "homeReadDenied === true")

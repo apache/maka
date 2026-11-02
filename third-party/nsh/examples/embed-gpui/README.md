@@ -21,10 +21,10 @@ name when it runs the app.
   process), registered as the UI set `host/trading` with `set_ui_sets`, next to NSH's `nsh/base`. The app
   declares its type and reaches it with `nativeModule<{ Trading: TradingApi }>("host/trading")`: `Trading.quote`,
   `Trading.select` and `Trading.placeOrder` run in Rust in the call (a wrong order throws, and the ticket shows the
-  message), `Trading.subscribe` is `async`.
+  message), `Trading.on("change", …)` listens to the desk and returns a function that stops it.
 - **One desk, both ways.** The desk (the selected symbol, the orders, the positions) lives once, in the host, in a
-  `tokio::sync::watch` channel. Each ticket subscribes: the function's task posts the desk to the ticket's callback
-  now and after every change. The host's sidebar (the watchlist, the orders of all tickets) and toolbar (the
+  `tokio::sync::watch` channel. Each ticket listens (`Trading.on("change", …)`): the task `on` starts posts the desk
+  to the ticket's listener now and after every change. The host's sidebar (the watchlist, the orders of all tickets) and toolbar (the
   positions) follow the same channel, and the sidebar's watchlist and the input (Enter) select a symbol on it. So an
   order placed in Ticket A shows in the host and in Ticket B, a symbol picked in the host shows in both tickets, and
   one picked in a ticket shows in the host and the other ticket.

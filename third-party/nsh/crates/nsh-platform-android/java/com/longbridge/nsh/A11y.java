@@ -23,13 +23,19 @@ final class A11y extends View.AccessibilityDelegate {
         "android.view.View", "android.widget.TabWidget", "android.view.View", "android.widget.Toolbar",
         "android.widget.AbsListView", "android.widget.GridView",
         "android.widget.GridView", "android.view.View", "android.view.View", "android.view.View", "android.view.View",
-        "android.widget.ListView", "android.view.View",
+        "android.widget.ListView", "android.view.View", "android.view.View", "android.view.View",
+        "android.view.View", "android.view.View", "android.view.View", "android.view.View", "android.view.View",
     };
     /** Spoken role descriptions for roles without a widget class. */
     private static final String[] ROLE_DESCRIPTIONS = {
         null, null, "link", null, null, null, null, null, null, null, "summary", "alert", null, null, "menu",
         "menu bar", "menu item", null, null, null, "scroll bar", null, null, "tab", "tab list", "timer", null,
-        null, null, null, "row", "cell", "column header", "row group", null, "option",
+        null, null, null, "row", "cell", "column header", "row group", null, "option", null, "region",
+        "navigation", "tree", "tree item", "menu item", "menu item",
+    };
+    /** Spoken states of `accessibilityState.current`, by its kind in the state's bits 11 to 13. */
+    private static final String[] CURRENT_DESCRIPTIONS = {
+        null, "current", "current page", "current step", "current location", "current date", "current time",
     };
     private static final int ROLE_ADJUSTABLE = 8;
     private static final int ROLE_HEADER = 9;
@@ -93,10 +99,25 @@ final class A11y extends View.AccessibilityDelegate {
             info.setChecked((state & 16) != 0);
             if ((state & 32) != 0) stateText.append("mixed");
         }
+        if ((state & 256) != 0) {
+            // A toggle button (`accessibilityState.pressed`), read as on or off.
+            info.setClassName("android.widget.ToggleButton");
+            info.setCheckable(true);
+            info.setChecked((state & 512) != 0);
+            if ((state & 1024) != 0) {
+                if (stateText.length() > 0) stateText.append(", ");
+                stateText.append("mixed");
+            }
+        }
         if ((state & 64) != 0) {
             if (stateText.length() > 0) stateText.append(", ");
             stateText.append((state & 128) != 0 ? "expanded" : "collapsed");
             info.addAction((state & 128) != 0 ? AccessibilityAction.ACTION_COLLAPSE : AccessibilityAction.ACTION_EXPAND);
+        }
+        int current = (state >> 11) & 7;
+        if (current != 0 && current < CURRENT_DESCRIPTIONS.length) {
+            if (stateText.length() > 0) stateText.append(", ");
+            stateText.append(CURRENT_DESCRIPTIONS[current]);
         }
         if (hasValue) {
             if (valueText != null) {

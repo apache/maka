@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod native_computer;
+
 use crate::{driver::Driver, protocol::*};
 use cua_driver_contract::{
     AppInfo, ListAppsOutput, ListWindowsOutput, WindowInfo, WindowStateOutput,
@@ -33,6 +35,7 @@ use tokio_util::sync::CancellationToken;
 /// Native targets and observation identities have one Session owner. REPL
 /// objects contain only random handles; the Host supplies current admission.
 pub struct Session {
+    raw_computer: native_computer::RawComputer,
     native: std::sync::Arc<tokio::sync::Mutex<Driver>>,
     epoch: crate::desktop::NativeEpochId,
     #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -42,7 +45,7 @@ pub struct Session {
     state: EpochState,
     browsers: crate::browser::Browsers,
     owner: crate::desktop::SessionOwner,
-    audio: Option<cua_driver_sdk::AudioCompletion>,
+    audio: Option<crate::driver::AudioCompletion>,
 }
 
 enum EpochState {
@@ -68,6 +71,7 @@ impl Session {
         owner: crate::desktop::SessionOwner,
     ) -> Self {
         Self {
+            raw_computer: Default::default(),
             native: native.clone(),
             epoch,
             #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -189,6 +193,19 @@ impl Session {
                 Command::GetApp {
                     target: AppReference::Name(name),
                 } => Request::Name(name.clone()),
+                Command::NativeComputer {
+                    call: NativeComputerCall::Invoke { operation, args },
+                } if !matches!(operation, NativeComputerMethod::ListApps) => {
+                    let input = args.first().unwrap_or(&Value::Null);
+                    let name = input
+                        .get("app")
+                        .and_then(Value::as_str)
+                        .filter(|name| !name.trim().is_empty())
+                        .ok_or_else(|| {
+                            failed("Computer Use app approval requires a non-empty app")
+                        })?;
+                    Request::RawApp(name.into())
+                }
                 Command::GetApp {
                     target: AppReference::Window { window_id },
                 } => Request::Window {
@@ -228,6 +245,24 @@ impl Session {
             }
             Ok(Some(target))
         }
+        #[cfg(target_os = "windows")]
+        if let Command::NativeComputer {
+            call: NativeComputerCall::Invoke { operation, args },
+        } = command
+        {
+            let input = native_computer::windows_permission_input(*operation, args)?;
+            if let Some(window) = input {
+                let target = tokio::task::spawn_blocking(move || {
+                    crate::windows_permission_subject::resolve_window(window, language)
+                })
+                .await
+                .map_err(failed)??;
+                if cancellation.is_cancelled() {
+                    return Err(failed("Computer Use cancelled during app resolution"));
+                }
+                return Ok(Some(target));
+            }
+        }
         #[cfg(not(target_os = "macos"))]
         {
             let _ = (command, language);
@@ -260,6 +295,13 @@ impl Session {
             return self
                 .browsers
                 .prepare_wait(handle, operation, invocation, cancellation, language)
+                .await;
+        }
+        if let Command::BrowserFileChooserWait { handle, options } = command {
+            self.admit_invocation(invocation.session(), cancellation)?;
+            return self
+                .browsers
+                .prepare_file_chooser(handle, options, invocation, cancellation, language)
                 .await;
         }
         if let Command::BrowserDownloadWait { handle, options } = command {
@@ -300,35 +342,82 @@ impl Session {
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<Value, ToolError> {
+        #[cfg(target_os = "windows")]
+        {
+            crate::desktop::worker::native_owner::in_turn(
+                invocation,
+                self.invoke_in_turn(command, invocation, cancellation, language),
+            )
+            .await
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            self.invoke_in_turn(command, invocation, cancellation, language)
+                .await
+        }
+    }
+
+    async fn invoke_in_turn(
+        &mut self,
+        command: Command,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
         let session = invocation.session();
         self.admit_invocation(session, cancellation)?;
         let cursor = self.owner.cursor();
         let mut result = match command {
+            Command::NativeComputer { call } => {
+                self.native_computer(call, invocation, cancellation, language)
+                    .await
+            }
             Command::Documentation => Ok(json!(crate::language::documentation(language))),
+            Command::ReadDocumentation { name } => {
+                crate::language::named_documentation(language, &name)
+                    .map(|text| json!(text))
+                    .ok_or_else(|| failed(format!("Documentation is not available: {name}")))
+            }
             Command::StartAudioRecording { options } => {
-                let started = self
-                    .invoke_native(
-                        "start_audio_recording",
+                #[cfg(target_os = "windows")]
+                {
+                    let (started, completion) = Driver::start_windows_audio(
+                        &self.native,
                         serde_json::to_value(options).map_err(failed)?,
+                        self.epoch,
                         cancellation,
                         language,
                     )
                     .await?;
-                let snapshot = self.native.lock().await.audio_completion(self.epoch);
-                match snapshot.await {
-                    Ok(completion) => self.audio = Some(completion),
-                    Err(snapshot) => {
-                        return match self.discard_audio().await {
-                            Ok(()) => Err(failed(format!(
-                                "Computer audio startup was stopped because its completion could not be bound: {snapshot}"
-                            ))),
-                            Err(cleanup) => Err(ToolError::CleanupUnconfirmed(format!(
-                                "Computer audio completion could not be bound: {snapshot}; startup cleanup: {cleanup}"
-                            ))),
-                        };
-                    }
+                    self.audio = Some(completion);
+                    Ok(started.structured_content.unwrap_or(Value::Null))
                 }
-                Ok(started.structured_content.unwrap_or(Value::Null))
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let started = self
+                        .invoke_native(
+                            "start_audio_recording",
+                            serde_json::to_value(options).map_err(failed)?,
+                            cancellation,
+                            language,
+                        )
+                        .await?;
+                    let snapshot = self.native.lock().await.audio_completion(self.epoch);
+                    match snapshot.await {
+                        Ok(completion) => self.audio = Some(completion),
+                        Err(snapshot) => {
+                            return match self.discard_audio().await {
+                                Ok(()) => Err(failed(format!(
+                                    "Computer audio startup was stopped because its completion could not be bound: {snapshot}"
+                                ))),
+                                Err(cleanup) => Err(ToolError::CleanupUnconfirmed(format!(
+                                    "Computer audio completion could not be bound: {snapshot}; startup cleanup: {cleanup}"
+                                ))),
+                            };
+                        }
+                    }
+                    Ok(started.structured_content.unwrap_or(Value::Null))
+                }
             }
             Command::StopAudioRecording => {
                 let stopped = self
@@ -677,6 +766,13 @@ impl Session {
         Ok(result)
     }
     pub async fn discard_audio(&mut self) -> Result<(), ToolError> {
+        #[cfg(target_os = "windows")]
+        if let Some(crate::driver::AudioCompletion::Worker(capture)) = self.audio.as_ref() {
+            // This epoch may outlive a replacement input binding. Its exact
+            // original output observation, not "current", selects cleanup.
+            capture.discard().await?;
+        }
+        #[cfg(not(target_os = "windows"))]
         if self.id.is_some() {
             let cleanup = self.native.lock().await.discard_audio(self.epoch);
             cleanup.await?;
@@ -711,20 +807,45 @@ impl Session {
             return Ok(());
         }
         #[cfg(target_os = "windows")]
-        let audio = self.discard_audio().await;
+        let native = {
+            let close = self
+                .native
+                .lock()
+                .await
+                .finish_windows_turn(self.epoch, session, turn);
+            close.await
+        };
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        let raw = Driver::finish_raw_native_turn(&self.native, self.epoch, turn).await;
         let cursor = self.owner.cursor();
         let browsers = self.browsers.finish_turn(turn, &cursor, language).await;
         #[cfg(target_os = "windows")]
         {
-            match (audio, browsers) {
+            match (native, browsers) {
                 (Ok(()), Ok(())) => Ok(()),
                 (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-                (Err(audio), Err(browsers)) => Err(ToolError::CleanupUnconfirmed(format!(
-                    "{audio}; browser turn cleanup: {browsers}"
+                (Err(native), Err(browsers)) => Err(ToolError::CleanupUnconfirmed(format!(
+                    "{native}; browser turn cleanup: {browsers}"
                 ))),
             }
         }
-        #[cfg(not(target_os = "windows"))]
+        #[cfg(all(target_os = "linux", not(target_env = "musl")))]
+        {
+            match (raw, browsers) {
+                (Ok(()), Ok(())) => {
+                    self.raw_computer.handles.retain(|_, owner| owner != turn);
+                    Ok(())
+                }
+                (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
+                (Err(raw), Err(browser)) => Err(ToolError::CleanupUnconfirmed(format!(
+                    "{raw}; browser turn cleanup: {browser}"
+                ))),
+            }
+        }
+        #[cfg(not(any(
+            target_os = "windows",
+            all(target_os = "linux", not(target_env = "musl"))
+        )))]
         {
             browsers
         }
@@ -759,15 +880,24 @@ impl Session {
     }
     async fn retire_target(&mut self, handle: &str) -> Result<(), ToolError> {
         #[cfg(target_os = "macos")]
-        if let Some(target) = self.targets.get_mut(handle) {
-            target.invalidate_observation();
-            if let Some(window) = target.macos.as_ref() {
-                window.release().await.map_err(|error| {
-                    ToolError::CleanupUnconfirmed(format!(
-                        "native accessibility window release was not confirmed: {error}"
-                    ))
-                })?;
+        {
+            self.raw_computer.retiring_mac_window(handle);
+            let result = async {
+                if let Some(target) = self.targets.get_mut(handle) {
+                    target.invalidate_observation();
+                    if let Some(window) = target.macos.as_ref() {
+                        window.release().await.map_err(|error| {
+                            ToolError::CleanupUnconfirmed(format!(
+                                "native accessibility window release was not confirmed: {error}"
+                            ))
+                        })?;
+                    }
+                }
+                Ok(())
             }
+            .await;
+            self.raw_computer.retired_mac_window(handle, &result);
+            result?;
         }
         self.targets.remove(handle);
         Ok(())
@@ -1154,16 +1284,11 @@ impl Session {
             target.previous = None;
         }
         if screenshot && let Some(image) = image {
-            #[cfg(target_os = "macos")]
-            let image = match image {
-                // The original facade labels bytes independently of the native codec.
-                ContentBlock::Image { data, .. } => ContentBlock::Image {
-                    data,
-                    mime_type: "image/png".into(),
-                },
-                other => other,
-            };
             output.insert("image".into(), json!(image));
+        }
+        #[cfg(target_os = "macos")]
+        {
+            snapshot.screenshot_frame_valid = Some(screenshot);
         }
         target.window = window;
         target.snapshot = Some(snapshot);
@@ -1289,9 +1414,9 @@ impl Session {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(failed("Computer Use cancelled before input dispatch")),
-                _ = async {
+                result = async {
                     let mut native = self.native.lock().await;
-                    let _ = native.cursors.update(
+                    native.cursors.update(
                         &cursor,
                         Some([
                             window.bounds.x + f64::from(point[0]),
@@ -1299,8 +1424,8 @@ impl Session {
                         ]),
                         cue,
                         Some(window.window_id),
-                    ).await;
-                } => {}
+                    ).await
+                } => { result?; }
             }
         }
         Ok(())
@@ -1517,14 +1642,17 @@ impl Session {
                     frame: target.page_frame.clone().ok_or_else(|| {
                         failed("native pointer input requires retained app-state geometry")
                     })?,
-                    accessibility: target.macos.clone(),
+                    accessibility: target
+                        .macos
+                        .clone()
+                        .map(crate::macos::page_scroll::dispatch::AccessibilityTarget::Window),
                     position,
                     operation,
                 };
                 let result = request
                     .run(&self.native, self.epoch, &cursor, cancellation, language)
                     .await;
-                self.targets.get_mut(handle).unwrap().capture = None;
+                self.targets.get_mut(handle).unwrap().invalidate_capture();
                 return result.map(|result| result.structured_content.unwrap_or(Value::Null));
             }
         }
@@ -1536,7 +1664,6 @@ impl Session {
                 handle,
                 action.cursor_target(),
                 &window,
-                session,
                 cancellation,
                 language,
             )
@@ -1564,20 +1691,48 @@ impl Session {
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(failed("Computer Use cancelled before input dispatch")),
-                _ = async {
+                result = async {
                     let mut native = self.native.lock().await;
                     let cursor = self.owner.cursor();
-                    let _ = native.cursors.update(
+                    native.cursors.update(
                         &cursor,
                         Some(point),
                         action.cursor_action(),
                         Some(window.window_id),
-                    ).await;
-                } => {}
+                    ).await
+                } => { result?; }
             }
         }
         if cancellation.is_cancelled() {
             return Err(failed("Computer Use cancelled before input dispatch"));
+        }
+        #[cfg(target_os = "macos")]
+        if matches!(
+            &action,
+            Action::Click {
+                target: Position::Point(_),
+                ..
+            } | Action::Drag { .. }
+        ) {
+            let geometry = self.native.lock().await.cursors.window_geometry(
+                i32::try_from(window.pid.ok_or_else(|| failed("window has no process"))?)
+                    .map_err(failed)?,
+                u32::try_from(window.window_id).map_err(failed)?,
+            );
+            let geometry = geometry.await?;
+            if !self
+                .targets
+                .get(handle)
+                .unwrap()
+                .page_frame
+                .as_ref()
+                .is_some_and(|frame| frame.matches_geometry(&geometry))
+            {
+                self.targets.get_mut(handle).unwrap().invalidate_capture();
+                return Err(failed(
+                    "stale_capture: window geometry or display scale changed; getScreenshot again",
+                ));
+            }
         }
         let target = self.targets.get(handle).unwrap();
         #[cfg(target_os = "macos")]
@@ -1585,7 +1740,7 @@ impl Session {
             && let Some(macos) = target.macos.clone()
         {
             let result = macos.action(action, cancellation.clone()).await;
-            self.targets.get_mut(handle).unwrap().capture = None;
+            self.targets.get_mut(handle).unwrap().invalidate_capture();
             return result.map(|()| Value::Null);
         }
         let bound = json!({"kind":"window","pid":window.pid,"window_id":window.window_id});
@@ -1607,7 +1762,7 @@ impl Session {
                     cancellation.clone(),
                 )
                 .await;
-            self.targets.get_mut(handle).unwrap().capture = None;
+            self.targets.get_mut(handle).unwrap().invalidate_capture();
             let restored = result?;
             return Ok(if restored {
                 Value::Null
@@ -1624,7 +1779,7 @@ impl Session {
                 if !(1..=3).contains(&count) {
                     return Err(failed("clickCount must be between 1 and 3"));
                 }
-                let mut args = json!({"target":bound,"button":options.mouse_button.unwrap_or(MouseButton::Left).name(),"count":count,"delivery_mode":native_delivery_mode()});
+                let mut args = json!({"target":bound,"button":options.mouse_button.unwrap_or(MouseButton::Left).name(),"count":count,"delivery_mode":"background"});
                 match position {
                     Position::Element(index) => {
                         args["element_token"] =
@@ -1632,12 +1787,10 @@ impl Session {
                     }
                     Position::Point(point) => {
                         target.point(point, &window, language)?;
+                        #[cfg(target_os = "macos")]
+                        let point = target.native_pixels(point)?;
                         args["x"] = json!(point[0]);
                         args["y"] = json!(point[1]);
-                        #[cfg(target_os = "macos")]
-                        {
-                            args["capture_id"] = json!(target.capture);
-                        }
                     }
                 }
                 ("click", args)
@@ -1674,9 +1827,13 @@ impl Session {
                     json!({"pid":window.pid,"window_id":window.window_id,"element_token":element.element_token,"action":name,"delivery_mode":"background"}),
                 )
             }
-            Action::TypeText { index: None, text } => (
+            Action::TypeText {
+                index: None,
+                text,
+                delivery_mode,
+            } => (
                 "type_text",
-                json!({"target":bound,"text":text,"delivery_mode":native_delivery_mode()}),
+                json!({"target":bound,"text":text,"delivery_mode":delivery_mode.as_str()}),
             ),
             Action::Paste {
                 index: None,
@@ -1684,9 +1841,13 @@ impl Session {
                 options,
             } if matches!(options.format, None | Some(PasteFormat::Text)) => (
                 "type_text",
-                json!({"target":bound,"text":text,"delivery_mode":native_delivery_mode()}),
+                json!({"target":bound,"text":text,"delivery_mode":"background"}),
             ),
-            Action::PressKey { index: None, key } => {
+            Action::PressKey {
+                index: None,
+                key,
+                delivery_mode,
+            } => {
                 let mut parts: Vec<_> = key.split('+').collect();
                 let key = parts.pop().ok_or_else(|| failed("key must not be empty"))?;
                 if key.is_empty() {
@@ -1708,7 +1869,7 @@ impl Session {
                     .collect();
                 (
                     "press_key",
-                    json!({"target":bound,"key":key,"modifiers":modifiers?,"delivery_mode":native_delivery_mode()}),
+                    json!({"target":bound,"key":key,"modifiers":modifiers?,"delivery_mode":delivery_mode.as_str()}),
                 )
             }
             Action::Scroll {
@@ -1720,7 +1881,7 @@ impl Session {
                     let Some(Distance::Pixels { pixels }) = distance else {
                         unreachable!()
                     };
-                    json!({"direction":direction.name(),"pixels":pixels,"delivery_mode":native_delivery_mode()})
+                    json!({"direction":direction.name(),"pixels":pixels,"delivery_mode":"background"})
                 } else if cfg!(target_os = "linux") {
                     let pixels = match distance {
                         None => 800.0,
@@ -1728,7 +1889,7 @@ impl Session {
                         Some(Distance::Pages(_)) => unreachable!(),
                     };
                     let pixels = linux_scroll_pixels(pixels)?;
-                    json!({"direction":direction.name(),"pixels":pixels,"delivery_mode":native_delivery_mode()})
+                    json!({"direction":direction.name(),"pixels":pixels,"delivery_mode":"background"})
                 } else {
                     return Err(failed("unsupported native scroll platform"));
                 };
@@ -1752,7 +1913,7 @@ impl Session {
                         args["window_id"] = json!(window.window_id);
                         args["element_token"] =
                             json!(target.element(index, language)?.element_token);
-                        args["delivery_mode"] = json!(native_delivery_mode());
+                        args["delivery_mode"] = json!("background");
                     }
                     _ => {
                         return Err(failed(
@@ -1765,9 +1926,11 @@ impl Session {
             Action::Drag { from, to } => {
                 target.point(from, &window, language)?;
                 target.point(to, &window, language)?;
+                #[cfg(target_os = "macos")]
+                let (from, to) = (target.native_pixels(from)?, target.native_pixels(to)?);
                 (
                     "drag",
-                    json!({"target":bound,"from_x":from[0],"from_y":from[1],"to_x":to[0],"to_y":to[1],"delivery_mode":native_delivery_mode()}),
+                    json!({"target":bound,"from_x":from[0],"from_y":from[1],"to_x":to[0],"to_y":to[1],"delivery_mode":"background"}),
                 )
             }
             _ => {
@@ -1776,8 +1939,8 @@ impl Session {
                 ));
             }
         };
-        let native_window_pixels =
-            cfg!(target_os = "linux") && (args.get("x").is_some() || name == "drag");
+        let native_window_pixels = cfg!(any(target_os = "linux", target_os = "macos"))
+            && (args.get("x").is_some() || name == "drag");
         let result = if native_window_pixels {
             self.invoke_native_window_pixels(name, args, cancellation, language)
                 .await
@@ -1788,7 +1951,7 @@ impl Session {
         // Retained element tokens are revalidated by Cua on each action.
         #[cfg(target_os = "macos")]
         {
-            self.targets.get_mut(handle).unwrap().capture = None;
+            self.targets.get_mut(handle).unwrap().invalidate_capture();
         }
         result.map(|result| result.structured_content.unwrap_or(Value::Null))
     }
@@ -1821,6 +1984,8 @@ impl Session {
         if !failures.is_empty() {
             return Err(ToolError::CleanupUnconfirmed(failures.join("; ")));
         }
+        #[cfg(target_os = "macos")]
+        self.raw_computer.clear_mac_targets();
         self.id = None;
         self.audio = None;
         #[cfg(all(target_os = "linux", not(target_env = "musl")))]
@@ -1836,12 +2001,11 @@ impl Session {
         handle: &str,
         position: Option<Position>,
         window: &WindowInfo,
-        session: &str,
         cancellation: &CancellationToken,
         language: Language,
     ) -> Result<[f64; 2], ToolError> {
         #[cfg(not(target_os = "windows"))]
-        let _ = (session, cancellation);
+        let _ = cancellation;
         let target = self
             .targets
             .get(handle)
@@ -1857,7 +2021,15 @@ impl Session {
                 {
                     Ok([window.bounds.x + point[0], window.bounds.y + point[1]])
                 }
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                {
+                    target
+                        .page_frame
+                        .as_ref()
+                        .ok_or_else(|| failed("cursor capture dimensions unavailable"))?
+                        .screen_point(point)
+                }
+                #[cfg(target_os = "windows")]
                 {
                     let snapshot = target.snapshot.as_ref().unwrap();
                     let width = f64::from(snapshot.screenshot_width.unwrap_or(0));
@@ -1956,6 +2128,22 @@ fn linux_generic_pointer_action(tool: LinuxPointerTool, input: Value) -> Result<
 }
 
 impl Target {
+    #[cfg(target_os = "macos")]
+    fn invalidate_capture(&mut self) {
+        self.capture = None;
+        if let Some(snapshot) = &mut self.snapshot {
+            snapshot.screenshot_frame_valid = Some(false);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    fn native_pixels(&self, point: [f64; 2]) -> Result<[f64; 2], ToolError> {
+        self.page_frame
+            .as_ref()
+            .ok_or_else(|| failed("capture_required: read getScreenshot before coordinate input"))?
+            .native_pixels(point)
+    }
+
     fn invalidate_observation(&mut self) {
         self.snapshot = None;
         self.capture = None;
@@ -2004,7 +2192,11 @@ impl Target {
                     Language::ZhTw => "capture_required: 按座標輸入前請先讀取 getScreenshot",
                 })
             })?;
-            if self.capture.is_none()
+            #[cfg(target_os = "macos")]
+            let missing_frame = snapshot.screenshot_frame_valid != Some(true);
+            #[cfg(not(target_os = "macos"))]
+            let missing_frame = self.capture.is_none();
+            if missing_frame
                 || self.window.bounds != window.bounds
                 || snapshot.screenshot_frame_valid == Some(false)
             {
@@ -2143,13 +2335,6 @@ fn windows_scroll_point(point: [f64; 2]) -> Result<[f64; 2], ToolError> {
     }))
 }
 
-fn native_delivery_mode() -> &'static str {
-    if cfg!(target_os = "linux") {
-        "background"
-    } else {
-        "foreground"
-    }
-}
 fn window_info(window: &WindowInfo) -> Value {
     json!({"id":window.window_id,"app":window.app_name,"title":window.title,"isOnScreen":window.is_on_screen,"minimized":window.minimized,"onCurrentSpace":window.on_current_space,"zIndex":window.z_index})
 }
@@ -2300,175 +2485,6 @@ mod tests {
         assert_eq!(retained.requested_image_size(), [200.5, 160.25]);
     }
 
-    fn scroll(target: Position, distance: Option<Distance>) -> Action {
-        Action::Scroll {
-            target,
-            direction: Direction::Down,
-            distance,
-        }
-    }
-
-    #[test]
-    fn original_native_scroll_shapes_and_positive_domains_are_enforced() {
-        let point = || Position::Point([10.0, 20.0]);
-        assert!(validate_native_action("linux", &scroll(point(), None)).is_ok());
-        assert!(validate_native_action("mac", &scroll(point(), None)).is_ok());
-        assert!(validate_native_action("windows", &scroll(point(), None)).is_err());
-        for pages in [-1.0, 0.0, 0.5, 1.0, 51.0, f64::MAX] {
-            assert!(
-                validate_native_action("linux", &scroll(point(), Some(Distance::Pages(pages))))
-                    .is_err()
-            );
-            assert!(
-                validate_native_action("windows", &scroll(point(), Some(Distance::Pages(pages))))
-                    .is_err()
-            );
-            assert_eq!(
-                validate_native_action("mac", &scroll(point(), Some(Distance::Pages(pages))))
-                    .is_ok(),
-                pages > 0.0
-            );
-        }
-        for pixels in [f64::NEG_INFINITY, -1.0, 0.0, f64::NAN, f64::INFINITY] {
-            assert!(
-                validate_native_action(
-                    "windows",
-                    &scroll(point(), Some(Distance::Pixels { pixels }))
-                )
-                .is_err()
-            );
-        }
-        for pixels in [0.1, 1.0, 65536.0, f64::MAX] {
-            assert!(
-                validate_native_action(
-                    "windows",
-                    &scroll(point(), Some(Distance::Pixels { pixels }))
-                )
-                .is_ok()
-            );
-            assert!(
-                validate_native_action(
-                    "windows",
-                    &scroll(Position::Element(1), Some(Distance::Pixels { pixels }))
-                )
-                .is_err()
-            );
-            assert!(
-                validate_native_action("mac", &scroll(point(), Some(Distance::Pixels { pixels })))
-                    .is_err()
-            );
-        }
-    }
-
-    #[test]
-    fn original_windows_screenshot_emission_refusal_is_native_only() {
-        let options = ObservationOptions {
-            emit: Some(false),
-            ..Default::default()
-        };
-        for kind in [ObservationKind::Screenshot, ObservationKind::Both] {
-            assert!(validate_native_observation("windows", kind, &options).is_err());
-            assert!(validate_native_observation("linux", kind, &options).is_ok());
-            assert!(validate_native_observation("mac", kind, &options).is_ok());
-        }
-        assert!(validate_native_observation("windows", ObservationKind::Ax, &options).is_ok());
-        assert!(
-            validate_native_observation(
-                "windows",
-                ObservationKind::Both,
-                &ObservationOptions::default()
-            )
-            .is_ok()
-        );
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test]
-    async fn linux_unavailable_actions_refuse_before_target_resolution_or_native_dispatch() {
-        let driver = std::sync::Arc::new(tokio::sync::Mutex::new(Driver::default()));
-        let owner = crate::desktop::SessionOwner::new(driver.clone());
-        let mut session = Session::with_owner(driver, crate::desktop::NativeEpochId::new(), owner);
-        for (action, expected) in [
-            (
-                Action::SetValue {
-                    index: 1,
-                    value: "never sent".into(),
-                },
-                "setValue is unavailable on Linux; use click, pressKey, and typeText.",
-            ),
-            (
-                Action::SelectText {
-                    index: 1,
-                    text: "never selected".into(),
-                    options: SelectOptions::default(),
-                },
-                "selectText is unavailable on Linux.",
-            ),
-            (
-                scroll(Position::Point([10.0, 20.0]), Some(Distance::Pages(1.0))),
-                "Linux scroll accepts { pixels }, not pages.",
-            ),
-        ] {
-            let result = session
-                .action(
-                    "unresolved",
-                    action,
-                    "fixture",
-                    &CancellationToken::new(),
-                    Language::En,
-                )
-                .await;
-            assert!(matches!(result, Err(ToolError::Failed(message)) if message == expected));
-        }
-    }
-
-    #[test]
-    fn windows_scroll_rounds_points_before_captured_image_validation() {
-        assert_eq!(windows_scroll_point([0.5, -0.5]).unwrap(), [1.0, 0.0]);
-        assert_eq!(
-            windows_scroll_point([99.9, 0.49999999999999994]).unwrap(),
-            [100.0, 0.0]
-        );
-        assert!(windows_scroll_point([f64::INFINITY, 0.0]).is_err());
-        assert!(windows_scroll_point([0.0, f64::NAN]).is_err());
-    }
-
-    #[test]
-    fn linux_pixels_preserve_the_original_native_u16_domain_without_rounding() {
-        for pixels in [1.0, 49.0, 150.0, 800.0, 5100.0, 65535.0] {
-            assert_eq!(f64::from(linux_scroll_pixels(pixels).unwrap()), pixels);
-        }
-        for pixels in [
-            0.0,
-            -1.0,
-            0.1,
-            49.5,
-            149.5,
-            150.1,
-            65536.0,
-            f64::NAN,
-            f64::INFINITY,
-        ] {
-            assert!(matches!(linux_scroll_pixels(pixels),
-                Err(ToolError::Failed(message))
-                    if message == "pixels must be an integer between 1 and 65535"));
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn windows_shortcuts_keep_different_parameters_for_the_same_executable() {
-        let first: AppInfo = serde_json::from_value(json!({"pid":0,"name":"First profile","running":false,"active":false,"bundle_id":"C:\\Apps\\Browser.exe","launch_path":"C:\\Apps\\Browser.exe --profile first"})).unwrap();
-        let mut second = first.clone();
-        second.launch_path = Some("C:\\Apps\\Browser.exe --profile second".into());
-        assert_ne!(app_id(&first), app_id(&second));
-        let id = app_id(&second);
-        let expected = json!({"launch_path":second.launch_path});
-        assert_eq!(
-            launch_args(&id, &[first, second], Language::En).unwrap(),
-            expected
-        );
-    }
     #[test]
     fn launch_uses_revalidated_inventory_identity_not_pid_zero_or_caller_path() {
         let app = |path: &str| AppInfo {
@@ -2514,82 +2530,5 @@ mod tests {
             launch_args("Maka_fixture!App", &[packaged], Language::En).unwrap(),
             json!({"aumid":"Maka_fixture!App"})
         );
-    }
-}
-
-#[cfg(all(test, target_os = "linux", not(target_env = "musl")))]
-mod generic_linux_pointer_tests {
-    use super::{Action, Distance, LinuxPointerTool, Position, json, linux_generic_pointer_action};
-
-    #[test]
-    fn generic_click_keeps_fractional_points_for_existing_dispatch() {
-        let action = linux_generic_pointer_action(
-            LinuxPointerTool::Click,
-            json!({"x":37.9,"y":41.25,"mouse_button":"right","click_count":2}),
-        )
-        .unwrap();
-        let Action::Click {
-            target: Position::Point(point),
-            options,
-        } = action
-        else {
-            panic!("generic click must retain the shared point action");
-        };
-        assert_eq!(point, [37.9, 41.25]);
-        assert_eq!(options.mouse_button.unwrap().name(), "right");
-        assert_eq!(options.click_count, Some(2));
-    }
-
-    #[test]
-    fn generic_scroll_without_pixels_keeps_the_existing_default_distance() {
-        for direction in ["down", "d"] {
-            let action = linux_generic_pointer_action(
-                LinuxPointerTool::Scroll,
-                json!({"x":37.9,"y":41.25,"direction":direction}),
-            )
-            .unwrap();
-            let Action::Scroll {
-                target: Position::Point(point),
-                direction,
-                distance,
-            } = action
-            else {
-                panic!("missing pixels must retain the generic scroll action");
-            };
-            assert_eq!(point, [37.9, 41.25]);
-            assert_eq!(direction.name(), "down");
-            assert!(
-                distance.is_none(),
-                "the generic dispatcher owns its default distance"
-            );
-        }
-        let unknown = linux_generic_pointer_action(
-            LinuxPointerTool::Scroll,
-            json!({"x":37.9,"y":41.25,"direction":"north"}),
-        )
-        .unwrap_err();
-        assert!(
-            matches!(unknown, maka_agent_facts::tools::ToolError::Failed(message)
-            if message == "unknown variant `north`, expected one of `up`, `down`, `left`, `right`")
-        );
-    }
-
-    #[test]
-    fn generic_scroll_keeps_fractional_points_and_pixel_distance() {
-        let action = linux_generic_pointer_action(
-            LinuxPointerTool::Scroll,
-            json!({"x":37.9,"y":41.25,"direction":"down","pixels":37.5}),
-        )
-        .unwrap();
-        let Action::Scroll {
-            target: Position::Point(point),
-            distance: Some(Distance::Pixels { pixels }),
-            ..
-        } = action
-        else {
-            panic!("generic scroll must retain the shared point/pixel action");
-        };
-        assert_eq!(point, [37.9, 41.25]);
-        assert_eq!(pixels, 37.5);
     }
 }

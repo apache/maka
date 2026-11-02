@@ -21,10 +21,13 @@ use nsh_platform_windows::windows::{
     Win32::{
         Foundation::ERROR_CANCELLED,
         System::Com::{
-            CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize,
-            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+            CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx,
+            CoTaskMemFree, CoUninitialize,
         },
-        UI::Shell::{FileOpenDialog, IFileOpenDialog, FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, SIGDN_FILESYSPATH},
+        UI::Shell::{
+            FOS_FORCEFILESYSTEM, FOS_PICKFOLDERS, FileOpenDialog, IFileOpenDialog,
+            SIGDN_FILESYSPATH,
+        },
     },
     core::HRESULT,
 };
@@ -37,10 +40,12 @@ pub(crate) fn choose() -> Result<Option<String>, String> {
             .ok()
             .map_err(|error| error.to_string())?;
         let result = (|| -> Result<Option<String>, String> {
-            let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
-                .map_err(|error| error.to_string())?;
+            let dialog: IFileOpenDialog =
+                CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)
+                    .map_err(|error| error.to_string())?;
             let options = dialog.GetOptions().map_err(|error| error.to_string())?;
-            dialog.SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
+            dialog
+                .SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM)
                 .map_err(|error| error.to_string())?;
             if let Err(error) = dialog.Show(None) {
                 return if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) {
@@ -50,7 +55,9 @@ pub(crate) fn choose() -> Result<Option<String>, String> {
                 };
             }
             let item = dialog.GetResult().map_err(|error| error.to_string())?;
-            let path = item.GetDisplayName(SIGDN_FILESYSPATH).map_err(|error| error.to_string())?;
+            let path = item
+                .GetDisplayName(SIGDN_FILESYSPATH)
+                .map_err(|error| error.to_string())?;
             let text = path.to_string().map_err(|error| error.to_string());
             CoTaskMemFree(Some(path.0 as *const _));
             text.map(Some)

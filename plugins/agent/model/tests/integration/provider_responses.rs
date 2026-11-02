@@ -130,7 +130,7 @@ async fn responses_http_preserves_complete_ordered_output_items() {
         .parts
         .iter()
         .map(|part| match part {
-            ModelPart::Text { text, .. } => text.clone(),
+            ModelPart::Text { text, .. } => text.chunks().collect::<String>(),
             other => panic!("unexpected provider part {other:?}"),
         })
         .collect();
@@ -205,9 +205,9 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
         for index in 0..2 {
             let request = ModelRequest {
                 language: maka_agent_facts::language::Language::En,
-                provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
+                provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
                 prompt: serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!(prompt)).unwrap().into(),
-                tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() }],
+                tools: vec![Arc::new(maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Echo text".into(), input_schema: schema.clone() })],
                 provider_options: json!({"openai":{"store":false,"reasoningEffort":"low","reasoningSummary":"auto"}}),
                 max_output_tokens: Some(128),
             };
@@ -246,7 +246,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             assert_eq!(step.usage.reasoning_tokens, Some(4));
             if index == 1 {
                 assert_eq!(step.finish_reason, ModelFinishReason::Stop);
-                assert!(matches!(&step.parts[..], [ModelPart::Text { text, .. }] if text == "Echoed 你好😀"));
+                assert!(matches!(&step.parts[..], [ModelPart::Text { text, .. }] if text.chunks().collect::<String>() == "Echoed 你好😀"));
                 continue;
             }
             assert_eq!(step.finish_reason, ModelFinishReason::ToolCalls);
@@ -259,7 +259,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
             assert_eq!(step.parts.len(), 3);
             let ModelPart::Text { text_kind, text, provider_options } = &step.parts[0] else { panic!("reasoning missing") };
             assert_eq!(*text_kind, TextKind::Thinking);
-            assert_eq!(text, "Check the echo tool.");
+            assert_eq!(text.chunks().collect::<String>(), "Check the echo tool.");
             let metadata = &provider_options.as_ref().unwrap()["openai"];
             assert_eq!(metadata["itemId"], "rs_1");
             assert_eq!(metadata["reasoningEncryptedContent"], "opaque-reasoning");
@@ -349,11 +349,11 @@ async fn responses_http_streams_custom_input_before_its_complete_freeform_call()
         let mut request = super::provider_stream::request(ProviderKind::OpenaiResponses, base_url);
         request.provider.auth = maka_model::ProviderAuth::ApiKey("local-test-key".into());
         request.provider.headers.insert("x-test-provider".into(), "responses".into());
-        request.tools = vec![maka_model::ToolDefinition {
+        request.tools = vec![Arc::new(maka_model::ToolDefinition {
             name: "exec".into(), description: "JavaScript".into(), provider: None,
             input_schema: json!({"type":"object"}), output_schema: None,
             freeform: Some(FreeformGrammar::Lark { definition: "start: /[\\s\\S]+/".into() }),
-        }];
+        })];
         let mut stream = executor.stream(request, CancellationToken::new()).await.unwrap();
         let mut builder = StepBuilder::for_step("custom-step").unwrap();
         let mut input_events = Vec::new();
@@ -459,10 +459,10 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                 let executor = ModelExecutor::new(Duration::from_secs(5)).unwrap();
                 let request = ModelRequest {
                     language: maka_agent_facts::language::Language::En,
-                    provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
+                    provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
                         model: "plain".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                         headers: BTreeMap::from([("x-test-provider".into(),"responses".into())]), body_overlay: None },
-                    prompt: prompt.clone().into(), tools: vec![maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) }],
+                    prompt: prompt.clone().into(), tools: vec![Arc::new(maka_model::ToolDefinition { freeform: None, output_schema: None, provider: None, name: "tool_search".into(), description: "Search tools".into(), input_schema: json!({"type":"object"}) })],
                     provider_options: json!({"openResponses":{"reasoningEffort":"high","reasoningSummary":"auto"}}),
                     max_output_tokens: Some(256),
                 };
@@ -477,9 +477,9 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
                 // Only serializable canonical parts survive to a fresh model request.
                 let parts: Vec<ModelPart> = serde_json::from_slice(&serde_json::to_vec(&output.parts).unwrap()).unwrap();
                 if index == 1 {
-                    assert!(matches!(&parts[..], [ModelPart::Text { text, .. }] if text == "done")); continue;
+                    assert!(matches!(&parts[..], [ModelPart::Text { text, .. }] if text.chunks().collect::<String>() == "done")); continue;
                 }
-                assert!(matches!(&parts[0], ModelPart::Text { text, text_kind: TextKind::Thinking, .. } if text == "想😀好"));
+                assert!(matches!(&parts[0], ModelPart::Text { text, text_kind: TextKind::Thinking, .. } if text.chunks().collect::<String>() == "想😀好"));
                 let content: Vec<Value> = parts.iter().map(|part| match part {
                     ModelPart::Text { text, provider_options, .. } => json!({"type":"reasoning","text":text,"providerOptions":provider_options}),
                     ModelPart::ToolCall { call } => json!({"type":"tool-call","toolCallId":call.id,"toolName":call.name,"input":call.input,"providerOptions":call.provider_options}),
@@ -524,7 +524,7 @@ async fn plaintext_responses_does_not_turn_transport_eof_into_success() {
         let executor = ModelExecutor::new(Duration::from_secs(3)).unwrap();
         let mut stream = executor.stream(ModelRequest {
             language: maka_agent_facts::language::Language::En,
-            provider: ProviderConfig { adapter: None, capabilities: Default::default(), network: Default::default(),
+            provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(),
                 kind: ProviderKind::OpenResponses(PlaintextResponses { reasoning_replay: PlaintextReasoningReplay::PlaintextSummary, compatibility: None }),
                 model: "plain".into(), base_url, auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
                 headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: None },
@@ -572,6 +572,7 @@ async fn idle_http_reads_keep_protocol_safety_and_explicit_rejections() {
             let mut input = super::provider_stream::request(ProviderKind::OpenaiResponses, base_url);
             input.provider.auth = maka_model::ProviderAuth::ApiKey("local-test-key".into());
             input.provider.headers.insert("x-test-provider".into(), "responses".into());
+            let before = maka_model::ProviderFailure::now_unix_ms();
             let mut stream = executor.stream(input, CancellationToken::new()).await.unwrap();
             let error = loop {
                 match stream.next().await.expect("must report the interruption") {
@@ -590,7 +591,10 @@ async fn idle_http_reads_keep_protocol_safety_and_explicit_rejections() {
                 assert_eq!(failure.reason(), match status { 429 => ProviderFailureReason::RateLimit, 503 => ProviderFailureReason::ProviderUnavailable, _ => ProviderFailureReason::TimedOut });
                 assert_eq!(failure.replay_safe(), mode == "empty");
                 assert_eq!(failure.retained_output_safe(), status < 400 && mode != "opaque");
-                assert_eq!(failure.retry_after(), (status >= 400).then_some(Duration::from_secs(2)));
+                match failure.retry_at_unix_ms() {
+                    Some(at) => { assert_ne!(status, 0, "a response actually supplied Retry-After, including successful SSE"); assert!((before + 2000..=maka_model::ProviderFailure::now_unix_ms() + 2000).contains(&at)); },
+                    None => assert_eq!(status, 0, "only the fixture without HTTP headers has no deadline"),
+                }
             }
         }
     }).await.expect("all idle HTTP boundaries must settle");

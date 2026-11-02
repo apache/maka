@@ -55,7 +55,9 @@ use super::{
 };
 
 fn attrs_json(attrs: &super::model::Attrs) -> JsonValue {
-    JsonValue::Object(attrs.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+    JsonValue::Object(super::model::json_object(
+        &mut attrs.iter().map(|(k, v)| (k.clone(), v.clone())),
+    ))
 }
 
 fn rect_json(b: &nsh_core::prelude::Bounds<nsh_core::prelude::Points>) -> JsonValue {
@@ -285,6 +287,19 @@ impl SchemaArg {
 
 // --- Editors ----------------------------------------------------------------
 
+/// The event `on` hears after every change (its overload for it).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PropEnum)]
+pub(crate) enum RichRevisionEvent {
+    Revision,
+}
+
+/// What a `revision` listener gets.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+pub(crate) struct RichRevision {
+    /// The new revision.
+    pub(crate) revision: f64,
+}
+
 /// What `createRichEditor` makes an editor with.
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[prop(exact)]
@@ -341,7 +356,7 @@ pub(crate) struct RichMarkdownOptions {
 
 /// One live rich text editor that a `RichEditor` view and the app's code
 /// share (`createRichEditor` makes one): it owns the state in Rust, runs
-/// commands, takes transactions, and tells subscribers about changes.
+/// commands, takes transactions, and tells listeners about changes.
 #[class]
 pub(crate) struct RichEditorSession {
     session: EditorSession,
@@ -349,16 +364,37 @@ pub(crate) struct RichEditorSession {
     /// The named commands `command(name)` runs: the built-in ones and the
     /// editor's extensions'.
     commands: Arc<CommandRegistry>,
-    /// The app's `dispatchTransaction` and the subscribers' functions.
+    /// The app's `dispatchTransaction`.
     hooks: Arc<HookRef>,
     /// Transactions handed to `dispatchTransaction`, by id, until applied.
     pending: Arc<std::sync::Mutex<Vec<(u64, Transaction)>>>,
-    subscriptions: Vec<(u64, SubscriptionId)>,
+    /// What `on` added; the stop functions it returned hold it weakly.
+    subscriptions: std::rc::Rc<Subscriptions>,
 }
 
-impl Drop for RichEditorSession {
+/// The listeners one `RichEditorSession` added, removed when it goes.
+struct Subscriptions {
+    session: EditorSession,
+    ids: std::cell::RefCell<Vec<SubscriptionId>>,
+}
+
+impl Subscriptions {
+    fn add(self: &std::rc::Rc<Self>, id: SubscriptionId) -> Stop {
+        self.ids.borrow_mut().push(id);
+        let subscriptions = std::rc::Rc::downgrade(self);
+        Stop::new(move || {
+            // Gone with the editor: its drop removed every listener.
+            if let Some(subscriptions) = subscriptions.upgrade() {
+                subscriptions.ids.borrow_mut().retain(|i| *i != id);
+                subscriptions.session.unsubscribe(id);
+            }
+        })
+    }
+}
+
+impl Drop for Subscriptions {
     fn drop(&mut self) {
-        for (_, id) in self.subscriptions.drain(..) {
+        for id in self.ids.get_mut().drain(..) {
             self.session.unsubscribe(id);
         }
     }
@@ -373,17 +409,36 @@ static NEXT_TR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new
 impl RichEditorSession {
     fn over(session: EditorSession, schema: Schema) -> Self {
         Self {
-            session,
+            session: session.clone(),
             schema,
             commands: CommandRegistry::builtin(),
             hooks: HookRef::new(),
             pending: Arc::default(),
-            subscriptions: Vec::new(),
+            subscriptions: std::rc::Rc::new(Subscriptions {
+                session,
+                ids: std::cell::RefCell::default(),
+            }),
         }
     }
 
-    fn command(&self, command: &RichCommand) -> Result<super::commands::BoxCommand, String> {
-        resolve_with(command, &self.schema, &self.commands)
+    /// `command` resolved against the schema and the named commands: a
+    /// `TypeError` for a name, type or attributes the editor does not know
+    /// (a bug of the app's).
+    fn command(&self, command: &RichCommand) -> Result<super::commands::BoxCommand, JsError> {
+        resolve_with(command, &self.schema, &self.commands).map_err(JsError::Type)
+    }
+
+    /// `pos` checked against the document, as ProseMirror's `resolve`:
+    /// a `RangeError` outside `0..=doc.content.size` (a bug of the app's,
+    /// never answered with `null`).
+    fn check_pos(&self, method: &str, pos: usize) -> Result<(), JsError> {
+        let size = self.session.state().doc().content().size();
+        if pos > size {
+            return Err(JsError::Range(format!(
+                "{method}: position {pos} out of range (the document's are 0 to {size})"
+            )));
+        }
+        Ok(())
     }
 
     fn handles(this: &Instance<Self>) -> (EditorSession, Schema) {
@@ -466,7 +521,8 @@ impl RichEditorSession {
     /// Runs `command` (`toggleMark("bold")`, `chain([...])`): whether it
     /// applied. Its transaction goes through `dispatchTransaction` when one
     /// is set.
-    pub(crate) fn run(this: Instance<Self>, command: RichCommand) -> Result<bool, String> {
+    /// Throws a `TypeError` for a command the editor does not know.
+    pub(crate) fn run(this: Instance<Self>, command: RichCommand) -> Result<bool, JsError> {
         let command = this.with(|e| e.command(&command))?;
         let (session, _) = Self::handles(&this);
         let _guard = CallGuard::enter();
@@ -474,8 +530,9 @@ impl RichEditorSession {
     }
 
     /// Whether `command` applies now (it changes nothing): what a toolbar
-    /// enables its buttons by.
-    pub(crate) fn can(&self, command: RichCommand) -> Result<bool, String> {
+    /// enables its buttons by. Throws a `TypeError` for a command the
+    /// editor does not know.
+    pub(crate) fn can(&self, command: RichCommand) -> Result<bool, JsError> {
         let command = self.command(&command)?;
         Ok(self.session.can(&command))
     }
@@ -486,8 +543,8 @@ impl RichEditorSession {
         &self,
         name: Option<String>,
         attrs: Option<AttrsJson>,
-    ) -> Result<bool, String> {
-        let attrs = commands::attrs_of(&attrs)?;
+    ) -> Result<bool, JsError> {
+        let attrs = commands::attrs_of(&attrs).map_err(JsError::Type)?;
         Ok(self.session.is_active(name.as_deref(), attrs))
     }
 
@@ -498,20 +555,26 @@ impl RichEditorSession {
     }
 
     /// The range `{ from, to }` of the text marked `name` around `pos`
-    /// (with `attrs`, else the first such mark's), or `null`.
+    /// (with `attrs`, else the first such mark's), or `null` when no such
+    /// mark is there. Throws a `RangeError` for a position outside the
+    /// document and a `TypeError` for a mark type the schema lacks.
     pub(crate) fn get_mark_range(
         &self,
         pos: usize,
         name: String,
         attrs: Option<AttrsJson>,
-    ) -> Result<Option<JsonValue>, String> {
+    ) -> Result<Option<JsonValue>, JsError> {
+        self.check_pos("getMarkRange", pos)?;
         let state = self.session.state();
         let ty = state
             .schema()
             .mark_type(&name)
-            .ok_or_else(|| format!("the schema has no mark type `{name}`"))?;
-        let at = state.doc().resolve(pos).map_err(|e| e.to_string())?;
-        let attrs = commands::attrs_of(&attrs)?;
+            .ok_or_else(|| JsError::Type(format!("the schema has no mark type `{name}`")))?;
+        let at = state
+            .doc()
+            .resolve(pos)
+            .map_err(|e| JsError::Range(e.to_string()))?;
+        let attrs = commands::attrs_of(&attrs).map_err(JsError::Type)?;
         Ok(
             crate::rich_editor::commands::get_mark_range(&at, &ty, attrs.as_ref())
                 .map(|(from, to)| serde_json::json!({ "from": from, "to": to })),
@@ -519,42 +582,64 @@ impl RichEditorSession {
     }
 
     /// The innermost node of type `name` around the selection's start (or
-    /// around `pos`): `{ pos, start, depth, node }`, or `null`.
-    pub(crate) fn find_parent_node(&self, name: String, pos: Option<usize>) -> Option<JsonValue> {
+    /// around `pos`): `{ pos, start, depth, node }`, or `null` when none
+    /// is. Throws a `RangeError` for a position outside the document.
+    pub(crate) fn find_parent_node(
+        &self,
+        name: String,
+        pos: Option<usize>,
+    ) -> Result<Option<JsonValue>, JsError> {
         let state = self.session.state();
         let at = match pos {
-            Some(pos) => state.doc().resolve(pos).ok()?,
+            Some(pos) => {
+                self.check_pos("findParentNode", pos)?;
+                state
+                    .doc()
+                    .resolve(pos)
+                    .map_err(|e| JsError::Range(e.to_string()))?
+            }
             None => state.selection().resolved_from().clone(),
         };
-        crate::rich_editor::commands::find_parent_node_closest_to_pos(&at, &|n| {
-            n.ty().name() == name
-        })
-        .map(|found| {
-            serde_json::json!({
-                "pos": found.pos,
-                "start": found.start,
-                "depth": found.depth,
-                "node": found.node.to_json(),
+        Ok(
+            crate::rich_editor::commands::find_parent_node_closest_to_pos(&at, &|n| {
+                n.ty().name() == name
             })
-        })
+            .map(|found| {
+                serde_json::json!({
+                    "pos": found.pos,
+                    "start": found.start,
+                    "depth": found.depth,
+                    "node": found.node.to_json(),
+                })
+            }),
+        )
     }
 
-    /// The node right after `pos`, as JSON, or `null`.
-    pub(crate) fn node_at(&self, pos: usize) -> Option<NodeJson> {
-        self.session
+    /// The node right after `pos`, as JSON, or `null` when none is (at
+    /// the end of its parent, as ProseMirror's `nodeAt`). Throws a
+    /// `RangeError` for a position outside the document.
+    pub(crate) fn node_at(&self, pos: usize) -> Result<Option<NodeJson>, JsError> {
+        self.check_pos("nodeAt", pos)?;
+        Ok(self
+            .session
             .state()
             .doc()
             .node_at(pos)
-            .map(|node| NodeJson(node.to_json()))
+            .map(|node| NodeJson(node.to_json())))
     }
 
     /// Position `pos` resolved: `{ pos, depth, parentOffset, parent,
-    /// index, start, end, marks }` (`parent` its parent's type), or `null`
-    /// out of the document.
-    pub(crate) fn resolve(&self, pos: usize) -> Option<JsonValue> {
+    /// index, start, end, marks }` (`parent` its parent's type). Throws a
+    /// `RangeError` for a position outside the document, as ProseMirror's
+    /// `resolve`.
+    pub(crate) fn resolve(&self, pos: usize) -> Result<JsonValue, JsError> {
+        self.check_pos("resolve", pos)?;
         let state = self.session.state();
-        let at = state.doc().resolve(pos).ok()?;
-        Some(serde_json::json!({
+        let at = state
+            .doc()
+            .resolve(pos)
+            .map_err(|e| JsError::Range(e.to_string()))?;
+        Ok(serde_json::json!({
             "pos": at.pos,
             "depth": at.depth,
             "parentOffset": at.parent_offset,
@@ -568,9 +653,11 @@ impl RichEditorSession {
 
     /// The caret's box `{ x, y, width, height }` at `pos`, in points of
     /// the content box of the view showing the editor (its scrolling
-    /// included), or `null` when none does.
-    pub(crate) fn coords_at_pos(&self, pos: usize) -> Option<JsonValue> {
-        self.session.coords_at_pos(pos).map(|b| rect_json(&b))
+    /// included), or `null` when none does. Throws a `RangeError` for a
+    /// position outside the document.
+    pub(crate) fn coords_at_pos(&self, pos: usize) -> Result<Option<JsonValue>, JsError> {
+        self.check_pos("coordsAtPos", pos)?;
+        Ok(self.session.coords_at_pos(pos).map(|b| rect_json(&b)))
     }
 
     /// The document position at `{ x, y }` (points of the content box of
@@ -585,15 +672,19 @@ impl RichEditorSession {
     /// coordinates (the root view's, as `onMouseMove`'s `pagePosition` and
     /// a responder's `pageX` / `pageY`; ProseMirror's `coordsAtPos` in the
     /// window's), or `null` before the pointer has been over the editor.
-    pub(crate) fn page_coords_at_pos(&self, pos: usize) -> Option<JsonValue> {
-        self.session.page_coords_at_pos(pos).map(|b| rect_json(&b))
+    /// Throws a `RangeError` for a position outside the document.
+    pub(crate) fn page_coords_at_pos(&self, pos: usize) -> Result<Option<JsonValue>, JsError> {
+        self.check_pos("pageCoordsAtPos", pos)?;
+        Ok(self.session.page_coords_at_pos(pos).map(|b| rect_json(&b)))
     }
 
     /// The box `{ x, y, width, height }` of the block starting at `pos` in
     /// page coordinates (ProseMirror's `nodeDOM(pos)` measured in the
     /// window's), or `null` before the pointer has been over the editor.
-    pub(crate) fn page_node_rect(&self, pos: usize) -> Option<JsonValue> {
-        self.session.page_node_rect(pos).map(|b| rect_json(&b))
+    /// Throws a `RangeError` for a position outside the document.
+    pub(crate) fn page_node_rect(&self, pos: usize) -> Result<Option<JsonValue>, JsError> {
+        self.check_pos("pageNodeRect", pos)?;
+        Ok(self.session.page_node_rect(pos).map(|b| rect_json(&b)))
     }
 
     /// The document position at the page point `{ x, y }` (ProseMirror's
@@ -614,11 +705,14 @@ impl RichEditorSession {
     /// drag handle's press, as Tiptap's `DragHandle` starts
     /// ProseMirror's drag): the block is selected, `dragTo` moves the drop
     /// cursor (scrolling at the view's edges) and `endDrag` drops it.
-    pub(crate) fn drag_block(&self, pos: usize, page: JsonValue) {
+    /// Throws a `RangeError` for a position outside the document.
+    pub(crate) fn drag_block(&self, pos: usize, page: JsonValue) -> Result<(), JsError> {
+        self.check_pos("dragBlock", pos)?;
         if let Some((x, y)) = point_of(&page) {
             self.session
                 .drag_block(pos, nsh_core::prelude::point(px(x), px(y)));
         }
+        Ok(())
     }
 
     /// A block drag (`dragBlock`) moved to the page point `{ x, y }`.
@@ -651,28 +745,28 @@ impl RichEditorSession {
         self.session.set_editable(editable);
     }
 
-    /// Calls `listener` with the payload of every `event` (`update`,
-    /// `selectionUpdate`, `transaction`, `focus`, `blur`, `delete`) after
-    /// it happens, in JS's next turn; returns what `off` takes.
-    pub(crate) fn on(
-        &mut self,
-        event: String,
-        listener: Callback<JsonValue>,
-    ) -> Result<f64, String> {
-        let kind = SessionEventKind::from_name(&event)
-            .ok_or_else(|| format!("no editor event `{event}`"))?;
+    /// Calls `listener` with the payload of every `event` after it
+    /// happens, in JS's next turn: `revision` (`{ revision }`, after every
+    /// change, from any source), `update`, `selectionUpdate`,
+    /// `transaction`, `focus`, `blur`, `delete`. Returns a function that
+    /// stops it; it also stops when what called `on` goes (a component).
+    #[overload(fn(event: RichRevisionEvent, listener: Callback<RichRevision>) -> Stop)]
+    #[overload(fn(event: String, listener: Callback<JsonValue>) -> Stop)]
+    pub(crate) fn on(&self, event: String, listener: Callback<JsonValue>) -> Result<Stop, String> {
         let handle = EventHook::new(listener);
-        let id = self.session.on(
-            kind,
-            Arc::new(move |event: &SessionEvent| handle.post(event.payload.clone())),
-        );
-        self.subscriptions.push((id, id));
-        Ok(id as f64)
-    }
-
-    /// Stops calling a listener `on` added.
-    pub(crate) fn off(&mut self, id: f64) {
-        self.unsubscribe(id);
+        let id = if event == "revision" {
+            self.session.subscribe(Arc::new(move |state: &EditorState| {
+                handle.post(serde_json::json!({ "revision": state.revision() }));
+            }))
+        } else {
+            let kind = SessionEventKind::from_name(&event)
+                .ok_or_else(|| format!("no editor event `{event}`"))?;
+            self.session.on(
+                kind,
+                Arc::new(move |event: &SessionEvent| handle.post(event.payload.clone())),
+            )
+        };
+        Ok(self.subscriptions.add(id))
     }
 
     /// Dispatches a transaction (steps against the current document, as
@@ -776,10 +870,10 @@ impl RichEditorSession {
         this: Instance<Self>,
         content: Content,
         format: Option<RichFormat>,
-    ) -> Result<bool, String> {
+    ) -> Result<bool, JsError> {
         let (_, schema) = Self::handles(&this);
         // Checked here, so content that does not fit throws.
-        fragment_of(&schema, &content, format)?;
+        fragment_of(&schema, &content, format).map_err(JsError::Error)?;
         Self::run(
             this,
             RichCommand {
@@ -791,8 +885,10 @@ impl RichEditorSession {
         )
     }
 
-    /// The document as JSON (ProseMirror's shape).
-    pub(crate) fn get_json(&self) -> NodeJson {
+    /// The document as JSON (ProseMirror's shape), named as Tiptap's
+    /// `getJSON`: `#[class]` keeps a name's case past its first letter.
+    #[allow(non_snake_case)]
+    pub(crate) fn getJSON(&self) -> NodeJson {
         self.doc()
     }
 
@@ -834,47 +930,23 @@ impl RichEditorSession {
         this: Instance<Self>,
         key: String,
         decorations: Vec<RichDecoration>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         let (session, _) = Self::handles(&this);
-        let meta = decorations_json(&decorations)?;
+        let meta = decorations_json(&decorations).map_err(JsError::Type)?;
         let state = session.state();
         if PluginKey::new(&key).get(&state).is_none() {
-            return Err(format!("the editor has no plugin with the key `{key}`"));
+            return Err(JsError::Type(format!(
+                "setDecorations: the editor has no plugin with the key `{key}`"
+            )));
         }
         let mut tr = state.tr();
         tr.set_plugin_meta(&PluginKey::new(&key), meta);
         tr.set_meta(super::state::ADD_TO_HISTORY, JsonValue::Bool(false));
         tr.set_origin(TransactionOrigin::Plugin(key));
         let _guard = CallGuard::enter();
-        session.dispatch(tr).map_err(|e| e.to_string())
-    }
-
-    /// Calls `listener` with the new revision after every change, from any
-    /// source, in JS's next turn; returns what `unsubscribe` takes.
-    pub(crate) fn subscribe(&mut self, #[args(revision)] listener: Callback<f64>) -> f64 {
-        let hooks = HookRef::new();
-        hooks.update(|h| h.update = Some(listener));
-        let held = hooks.clone();
-        let id = self.session.subscribe(Arc::new(move |state: &EditorState| {
-            if let Some(listener) = held.get().and_then(|h| h.update) {
-                listener.post(state.revision() as f64);
-            }
-        }));
-        // The session's subscriber keeps the functions; this keeps the
-        // pair.
-        let key = id;
-        self.subscriptions.push((key, id));
-        drop(hooks);
-        key as f64
-    }
-
-    /// Stops calling a listener `subscribe` added.
-    pub(crate) fn unsubscribe(&mut self, id: f64) {
-        let id = id as u64;
-        if let Some(i) = self.subscriptions.iter().position(|(k, _)| *k == id) {
-            let (_, subscription) = self.subscriptions.remove(i);
-            self.session.unsubscribe(subscription);
-        }
+        session
+            .dispatch(tr)
+            .map_err(|e| JsError::Error(e.to_string()))
     }
 
     /// Asks the views showing the editor to take the keyboard focus.
@@ -900,8 +972,12 @@ impl RichEditorSession {
     /// The document's characters (Tiptap's `characters()`): in `mode`
     /// (`"textSize"`, `"nodeSize"`), else the `characterCount` plugin's
     /// mode, else `textSize`.
-    pub(crate) fn characters(&self, mode: Option<String>) -> Result<usize, String> {
-        let mode = mode.as_deref().map(extensions::mode_of).transpose()?;
+    pub(crate) fn characters(&self, mode: Option<String>) -> Result<usize, JsError> {
+        let mode = mode
+            .as_deref()
+            .map(extensions::mode_of)
+            .transpose()
+            .map_err(JsError::Type)?;
         Ok(super::extensions::character_count::characters(
             &self.session.state(),
             mode,
@@ -1616,6 +1692,21 @@ mod tests {
         plugins::{KeyBindings, RichPluginKind, RichPluginSpec, plugins_of},
         *,
     };
+
+    /// The document's JSON is `getJSON()`, as Tiptap names it and the docs
+    /// say: `#[class]` writes a method's name as Rust spells it past its
+    /// first letter, so `get_json` would be `getJson`.
+    #[test]
+    fn the_document_is_read_with_get_json() {
+        use nsh_core::element::Class;
+        let names: Vec<_> = RichEditorSession::DEF
+            .members
+            .iter()
+            .map(|m| m.name)
+            .collect();
+        assert!(names.contains(&"getJSON"), "{names:?}");
+        assert!(!names.contains(&"getJson"), "{names:?}");
+    }
 
     fn editor(markdown: &str) -> EditorSession {
         let schema = starter::schema();

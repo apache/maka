@@ -24,19 +24,20 @@ use tokio::task::JoinHandle;
 use crate::RunError;
 
 pub struct RunningCompletion {
-    pub result: Result<Invocation, RunError>,
+    pub result: Result<crate::ActivationExit, RunError>,
     pub cleanup: Result<(), crate::CleanupUnconfirmed>,
 }
 
 use tokio_util::sync::CancellationToken;
 
-/// An admitted invocation's lifetime owner. Cancellation is a request, not a
-/// terminal result; wait observes completion only after durable finalization.
+/// One admitted activation's lifetime owner. Parked work keeps its invocation
+/// open after this physical worker settles. Cancellation requests cleanup.
 pub struct RunningInvocation {
     invocation: Invocation,
     tool_names: Arc<HashSet<String>>,
     cancellation: CancellationToken,
     handoff: Option<crate::HandoffGate>,
+    preview: crate::preview::Reader,
     worker: JoinHandle<RunningCompletion>,
 }
 
@@ -46,6 +47,7 @@ impl RunningInvocation {
         tool_names: Arc<HashSet<String>>,
         cancellation: CancellationToken,
         handoff: Option<crate::HandoffGate>,
+        preview: crate::preview::Reader,
         worker: JoinHandle<RunningCompletion>,
     ) -> Self {
         Self {
@@ -53,6 +55,7 @@ impl RunningInvocation {
             tool_names,
             cancellation,
             handoff,
+            preview,
             worker,
         }
     }
@@ -67,6 +70,14 @@ impl RunningInvocation {
         &self.tool_names
     }
 
+    /// Latest visible Main attempt; snapshots remain stable while execution advances.
+    pub fn preview(
+        &self,
+    ) -> tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>
+    {
+        self.preview.clone()
+    }
+
     pub fn cancel(&self) {
         self.cancellation.cancel();
     }
@@ -79,8 +90,8 @@ impl RunningInvocation {
         self.handoff.as_ref()
     }
 
-    /// Observe business only; this does not acknowledge resource cleanup.
-    pub async fn wait(self) -> Result<Invocation, RunError> {
+    /// Observe this activation's exit; use `completion` for cleanup evidence.
+    pub async fn wait(self) -> Result<crate::ActivationExit, RunError> {
         self.completion().await.result
     }
 

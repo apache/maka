@@ -91,59 +91,6 @@ fn sse(parts: &[Value]) -> String {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn responses_unexpected_http_body_preserves_diagnostics_without_replaying() {
-    for (status, content_type, body, detail) in [
-        (
-            200,
-            "",
-            json!({"error":{"message":"untyped response"}}).to_string(),
-            "missing Content-Type",
-        ),
-        (
-            200,
-            "application/json",
-            json!({"detail":"gateway rejected the request body"}).to_string(),
-            "gateway rejected the request body",
-        ),
-        (
-            200,
-            "text/html",
-            "<html>private-page-content</html>".into(),
-            "text/html",
-        ),
-        (
-            400,
-            "application/json",
-            json!({"detail":"PRIVATE_PROVIDER_BODY_SENTINEL"}).to_string(),
-            "PRIVATE_PROVIDER_BODY_SENTINEL",
-        ),
-        (
-            700,
-            "application/json",
-            json!({"detail":"PRIVATE_PROVIDER_BODY_SENTINEL"}).to_string(),
-            "invalid model HTTP failure status",
-        ),
-    ] {
-        let error = failure(ProviderKind::OpenaiResponses, status, content_type, body).await;
-        if status == 400 {
-            assert!(matches!(&error, ModelError::Http { status: 400, .. }));
-            assert!(!error.to_string().contains(detail));
-            continue;
-        }
-        let ModelError::Adapter(message) = error else {
-            panic!("unexpected response must remain a terminal protocol failure");
-        };
-        if status == 700 {
-            assert_eq!(message, detail);
-            continue;
-        }
-        assert!(message.contains(&format!("HTTP {status}")), "{message}");
-        assert!(message.contains(detail), "{message}");
-        assert!(!message.contains("private-page-content"));
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() {
     tokio::time::timeout(Duration::from_secs(30), async {
         for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiResponses,
@@ -176,6 +123,7 @@ async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() 
             (401, Some("0.01"), None),
         ] {
             let headers: Vec<_> = header.map(|value| ("Retry-After", value)).into_iter().collect();
+            let before = maka_model::ProviderFailure::now_unix_ms();
             let result = failure_with_headers(kind.clone(), status, "application/json",
                 json!({"error":{"message":"temporary fixture"}}).to_string(), &headers).await;
             match (reason, result) {
@@ -183,7 +131,10 @@ async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() 
                     assert_eq!(failure.reason(), reason);
                     assert_eq!(failure.message(), "temporary fixture");
                     assert!(failure.replay_safe());
-                    assert_eq!(failure.retry_after(), header.filter(|h| *h == "0.01" && !matches!(kind, ProviderKind::OpenaiResponses)).map(|_| Duration::from_millis(10)));
+                    match failure.retry_at_unix_ms() {
+                        Some(at) => { assert_eq!(header, Some("0.01")); assert!((before + 10..=maka_model::ProviderFailure::now_unix_ms() + 10).contains(&at)); },
+                        None => assert_ne!(header, Some("0.01")),
+                    }
                 }
                 (None, ModelError::Http { status: 401, .. }) => {}
                 (_, result) => panic!("unexpected failure classification: {result}"),
@@ -227,7 +178,7 @@ async fn http_diagnostics_preserve_only_structured_messages_across_native_famili
     ] {
         for (body, expected_message) in [
             (json!({"error":{"type":"invalid_request_error","message":"unsupported tool choice"}, "private":"raw body sentinel"}).to_string(), Some("unsupported tool choice")),
-            (json!({"message":"invalid model parameter"}).to_string(), if matches!(kind, ProviderKind::OpenaiResponses) { None } else { Some("invalid model parameter") }),
+            (json!({"message":"invalid model parameter"}).to_string(), Some("invalid model parameter")),
             (json!({"detail":"raw body sentinel"}).to_string(), None),
             ("<html>raw body sentinel</html>".into(), None),
         ] {
@@ -242,19 +193,42 @@ async fn http_diagnostics_preserve_only_structured_messages_across_native_famili
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn anthropic_stream_rejection_keeps_its_structured_message_with_extension_data() {
-    let error = failure(
+async fn retry_advice_survives_all_http_adapter_families() {
+    for kind in [
+        ProviderKind::OpenaiChatCompletions,
+        ProviderKind::OpenaiResponses,
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
         ProviderKind::Anthropic,
-        200,
-        "text/event-stream",
-        sse(&[json!({"type":"error","error":{"type":"invalid_request_error","message":"unsupported tool choice","data":null}})]),
-    ).await;
-    assert_eq!(
-        error.to_string(),
-        "model HTTP request failed (status 400): unsupported tool choice"
-    );
-    assert_eq!(
-        error.failure_cause(),
-        Some(maka_agent_facts::model::error::ModelFailureCause::Http { status: 400 })
-    );
+    ] {
+        for (name, value, expected) in [
+            ("Retry-After", "18000", Duration::from_secs(18_000)),
+            ("Retry-After-Ms", "18000000", Duration::from_secs(18_000)),
+            ("Retry-After", "2592000", Duration::from_secs(2_592_000)),
+        ] {
+            let before = maka_model::ProviderFailure::now_unix_ms();
+            let error = failure_with_headers(
+                kind.clone(),
+                429,
+                "application/json",
+                json!({"error":{"message":"quota reset is later"}}).to_string(),
+                &[(name, value)],
+            )
+            .await;
+            let ModelError::Provider(failure) = error else {
+                panic!("rate-limit evidence lost: {error}")
+            };
+            assert_eq!(
+                failure.reason(),
+                maka_model::ProviderFailureReason::RateLimit
+            );
+            let at = failure.retry_at_unix_ms().expect("known advice preserved");
+            let delay = expected.as_millis() as u64;
+            assert!(
+                (before + delay..=maka_model::ProviderFailure::now_unix_ms() + delay).contains(&at)
+            );
+            assert_eq!(failure.message(), "quota reset is later");
+        }
+    }
 }

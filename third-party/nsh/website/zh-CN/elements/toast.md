@@ -1,7 +1,6 @@
 ---
 title: Toast
 description: Toast、ToastStack 和 ToastManager：与 gpui-base 一致的无样式 toast，带过渡状态的语义根、把 toast 排成层叠的栈，以及无界面的生命周期。
-order: 29.5
 group: base
 demo: el-toast
 ---

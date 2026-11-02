@@ -23,18 +23,22 @@
 //! pinned native implementation. Perception and driver administration are absent.
 
 mod activity;
+mod browser_upload;
+pub use browser_upload::{BrowserUploadFile, BrowserUploadFuture, BrowserUploadRequest};
+#[cfg(not(feature = "native-desktop"))]
+mod bridge_driver;
 #[cfg(feature = "native-desktop")]
 mod browser;
-#[path = "browser/clipboard.rs"]
 mod browser_clipboard;
+mod browser_files;
+pub use browser_files::{BrowserAssetDirectory, BrowserAssetFiles, FilesFuture};
 pub mod cursor;
 pub mod desktop;
 #[cfg(feature = "native-desktop")]
 mod driver;
-#[cfg(not(feature = "native-desktop"))]
-#[path = "bridge_driver.rs"]
-mod driver;
 pub mod extension_browser_host;
+#[cfg(feature = "native-desktop")]
+mod host_handoff;
 #[cfg(feature = "native-desktop")]
 mod identity;
 mod invocation;
@@ -51,14 +55,21 @@ mod linux_image;
 mod linux_input;
 #[cfg(all(feature = "native-desktop", target_os = "macos"))]
 mod macos;
+mod native_interruption;
+mod native_monitor;
 #[cfg(feature = "native-desktop")]
 mod observation;
 mod permission_subject;
 pub mod protocol;
 #[cfg(feature = "native-desktop")]
 mod session;
+#[cfg(all(feature = "native-desktop", target_os = "windows"))]
+mod windows_permission_subject;
 
+#[cfg(not(feature = "native-desktop"))]
+pub use bridge_driver::Driver;
 pub use desktop::{NativeEpochId, Session, SessionOwner};
+#[cfg(feature = "native-desktop")]
 pub use driver::Driver;
 pub use invocation::{
     AuthorizationFuture, BrowserAccess, BrowserAttachmentAuthorization, BrowserAttachmentOrigin,
@@ -69,6 +80,13 @@ pub use invocation::{
     InvocationCompletion, InvocationContext, OperationSettlement, SettlementFuture,
 };
 pub use maka_capabilities::computer::BrowserLeaseSubject;
+pub use native_interruption::{
+    InterruptionFuture, NativeBindingSource, NativeInterruption, NativeInterruptionDrain,
+    NativeInterruptionObserver,
+};
+pub use native_monitor::{
+    NativeMonitorAuthority, NativeMonitorFuture, NativeMonitorPermit, NativeMonitorResource,
+};
 pub use permission_subject::{ComputerAppBinding, ComputerAppTarget};
 pub fn facade() -> String {
     facade_for(desktop::local_platform(), false)

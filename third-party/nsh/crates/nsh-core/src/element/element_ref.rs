@@ -27,7 +27,7 @@ use super::{
     task::{Action, Executor},
 };
 use crate::{
-    Command, JsonValue, Measurement, NodeId,
+    Command, JsonValue, LayoutAnimation, LayoutTransition, Measurement, NodeId,
     geometry::{Percentage, Point, Points},
 };
 
@@ -76,6 +76,29 @@ impl fmt::Debug for RefTarget {
 impl PartialEq for RefTarget {
     fn eq(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+/// The element a view's frame follows ([`super::View::follow`]): whatever
+/// element carries the ref, looked up as the core lays out, so the
+/// element may be rendered after the view that follows it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FollowTarget(pub(crate) RefTarget);
+
+impl FollowTarget {
+    /// The node carrying the ref now.
+    pub(crate) fn node(&self) -> Option<NodeId> {
+        Some(self.0.0.node.get()).filter(|&n| n != 0)
+    }
+
+    /// A target carried by `node`, with no ref behind it (the core's
+    /// tests).
+    #[cfg(test)]
+    pub(crate) fn of_node(node: NodeId) -> Self {
+        Self(RefTarget(Rc::new(Target {
+            node: Cell::new(node),
+            executor: Weak::new(),
+        })))
     }
 }
 
@@ -134,6 +157,21 @@ impl ElementRef {
     /// `setAccessibilityFocus(ref)`).
     pub fn set_accessibility_focus(&self) {
         self.send(Command::AccessibilityFocus);
+    }
+
+    /// Animates with `transition` the frames that the element's change
+    /// moves in the next commit: its own and its subtree's, its siblings'
+    /// and those of its ancestors' siblings, which its size pushes along
+    /// (and the content of those that change size). The commit's other
+    /// frames change at once, as do its insertions and removals: a region
+    /// that grows (a reveal) springs, while a list updating in the same
+    /// commit elsewhere does not. [`super::animate_layout`] animates the
+    /// whole commit instead, and wins when both are asked for.
+    pub fn animate_layout(&self, transition: LayoutTransition) {
+        self.send(Command::LayoutAnimation(LayoutAnimation {
+            update: Some(transition),
+            ..LayoutAnimation::default()
+        }));
     }
 
     /// Selects `start..end` of an input (UTF-16 units; a caret when equal).
@@ -267,6 +305,27 @@ impl ElementRef {
             .is_none()
         {
             slot.borrow_mut().deliver(None);
+        }
+        answer
+    }
+}
+
+impl ElementRef {
+    /// How long the element's transitions run (`transition*`: the
+    /// longest duration plus its delay), with the styles of the commit
+    /// this call goes out with, so a class or style set before it counts;
+    /// zero when it has none or no rendered element carries the ref. The
+    /// platforms run transitions without reporting their end: a component
+    /// that keeps an element through its exit (a popup's ending style)
+    /// waits this long. Await it in a task.
+    pub fn transition_time(&self) -> Answer<std::time::Duration> {
+        let (answer, slot) = Answer::new();
+        let pending = slot.clone();
+        if self
+            .reach(|node, executor| executor.act(Action::TransitionTime(node, pending)))
+            .is_none()
+        {
+            slot.borrow_mut().deliver(std::time::Duration::ZERO);
         }
         answer
     }

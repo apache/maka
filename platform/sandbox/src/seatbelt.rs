@@ -89,7 +89,9 @@ pub(crate) fn prepare(
     profile.push_str("\n(deny mach-lookup (xpc-service-name-prefix \"\"))");
     if network == &Network::Allowed {
         profile.push_str(include_str!("seatbelt/network.sbpl"));
-        // IP access is not permission to contact privileged Host Unix sockets.
+        // The system resolver uses this Unix socket even for ordinary DNS.
+        profile.push_str("\n(allow network-outbound (remote unix-socket (path-literal \"/private/var/run/mDNSResponder\")))");
+        // Other Host Unix sockets remain outside the IP network grant.
         profile.push_str("\n(allow network-outbound (remote ip \"*:*\"))\n(allow network-inbound (local ip \"*:*\"))\n(allow network-bind (local ip \"*:*\"))");
     } else if matches!(network, Network::Restricted { .. }) {
         let proxy = proxy

@@ -126,6 +126,16 @@ impl ScrollHost for Host<'_> {
         });
     }
 
+    fn wake_after(&self, ms: u64) {
+        let weak = Rc::downgrade(self.surface);
+        let view = self.view.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+            if let Some(surface) = weak.upgrade() {
+                shared::hold_ended(&Host::new(&surface, &view));
+            }
+        });
+    }
+
     fn settled(&self) {
         let id = self.view.id();
         if self.surface.anim.borrow_mut().scroll_ended(id) {

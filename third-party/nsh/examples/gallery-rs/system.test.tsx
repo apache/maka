@@ -27,7 +27,7 @@ test("shows the environment and previews the status bar", async () => {
     expect(app.texts()).toContain(text);
   }
   await app.press("Light");
-  await app.waitFor('foreground: "light"');
+  await app.waitFor('text:foreground: "light"');
   await app.press("label:Hide the status bar");
   // The preview's dialog shows the setting while it is open.
   await app.press("Preview");
@@ -77,7 +77,7 @@ test("a timer counts seconds", async () => {
   const app = await open(".", { clock: {} });
   await app.press("label:System");
   expect(app.texts()).toContain("0 every 1 s");
-  await app.clock.runFor(1100);
+  await app.clock!.runFor(1100);
   await app.waitFor("text:/^[1-9]\\d* every 1 s$/");
 });
 
@@ -87,7 +87,7 @@ test("counts display frames while asked", async () => {
   expect(app.texts()).toContain("– fps stopped");
   await app.press("Count frames");
   expect(app.texts()).toContain("Stop counting frames");
-  await app.clock.runFor(1200);
+  await app.clock!.runFor(1200);
   await app.waitFor("text:/^[1-9]\\d* fps live$/");
   await app.press("Stop counting frames");
   await app.waitFor("– fps stopped");

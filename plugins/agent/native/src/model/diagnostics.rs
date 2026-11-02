@@ -142,6 +142,21 @@ pub(super) fn model(stage: &'static str, error: &ModelError, connection_id: &str
             connection_id,
             "Model preparation failed"
         ),
+        ModelError::ImageInputPayloadTooLarge { bytes, limit } => tracing::warn!(
+            stage,
+            cause = "image_input_payload_too_large",
+            connection_id,
+            bytes,
+            limit,
+            "Model preparation failed"
+        ),
+        ModelError::ImageInputRejected { index, .. } => tracing::warn!(
+            stage,
+            cause = "image_input_rejected",
+            connection_id,
+            index,
+            "Model preparation failed"
+        ),
         ModelError::Adapter(_) => tracing::warn!(
             stage,
             cause = "model_adapter",

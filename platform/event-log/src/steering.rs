@@ -35,7 +35,7 @@ pub(crate) async fn validate_append(
         .map_err(|error| StoreError::InvalidTransition(error.into()))?;
     let eligible: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?
-         AND kind = 'invocation_opened' AND json_extract(event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))"
+         AND kind = 'invocation_opened' AND json_extract(event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))"
     ).bind(&event.invocation.invocation_id).fetch_one(&mut *tx).await?;
     if !eligible {
         return Err(StoreError::InvalidTransition(
@@ -77,7 +77,7 @@ impl EventLog {
             .run(move |tx| {
                 Box::pin(async move {
                     let row: Option<(i64, String)> = sqlx::query_as(
-                        "SELECT e.sequence, e.event_json FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
+                        "SELECT e.sequence, e.event_header FROM message_sources s JOIN runtime_events e ON e.event_id = s.event_id
                  WHERE e.kind = 'message_steered' AND s.session_id = ? AND s.message_id = ?",
                     )
                     .bind(&session_id)
@@ -121,11 +121,11 @@ pub(crate) async fn project_catalog(
 ) -> Result<(), StoreError> {
     sqlx::query(
         "INSERT OR IGNORE INTO catalog_messages
-         SELECT sequence, 0, ?2, catalog_time(json_extract(event_json, '$.recorded_at')),
+         SELECT sequence, 0, ?2, catalog_time(json_extract(event_header, '$.recorded_at')),
              catalog_preview(COALESCE(
-                 json_extract(event_json, '$.fact.message.content.display_text'),
-                 json_extract(event_json, '$.fact.message.content.text'))),
-             json_extract(event_json, '$.fact.message.message_id')
+                 json_extract(event_header, '$.fact.message.content.display_text'),
+                 json_extract(event_header, '$.fact.message.content.text'))),
+             json_extract(event_header, '$.fact.message.message_id')
          FROM runtime_events WHERE sequence = ?1 AND kind = 'message_steered'",
     )
     .bind(sequence)

@@ -153,6 +153,8 @@ struct System {
     /// The D-Bus proxies, kept for their signals.
     proxies: Vec<gio::DBusProxy>,
     overlays: Vec<Overlay>,
+    /// The menus' style sheet, in the app's colors ([`crate::menu_style`]).
+    menu_style: Option<gtk::CssProvider>,
 }
 
 thread_local! {
@@ -219,6 +221,14 @@ fn install() {
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    let menus = gtk::CssProvider::new();
+    menus.load_from_string(&crate::menu_style::css(&Default::default()));
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &menus,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+    SYSTEM.with(|s| s.borrow_mut().menu_style = Some(menus));
     let settings = gtk::Settings::for_display(&display);
     let initial_dark = interface_scheme(&settings)
         .map_or(settings.is_gtk_application_prefer_dark_theme(), |s| {
@@ -304,6 +314,11 @@ pub(crate) fn environment_applied(surface: &Surface) {
     };
     root.remove_css_class(remove);
     root.add_css_class(add);
+    // The menu bar's menus are outside the root.
+    if let Some(slot) = crate::chrome::menu_bar_slot(surface) {
+        slot.remove_css_class(remove);
+        slot.add_css_class(add);
+    }
     let Some(settings) = gtk::Settings::default() else {
         return;
     };
@@ -492,7 +507,11 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::ReadClipboardFiles { id } => read_clipboard_files(surface, *id),
         Command::PickImages { id, request } => pick_images(surface, *id, *request),
         Command::OpenUrl { id, url } => open_url(surface, *id, url),
+        Command::FileRequest { id, request } => {
+            crate::file_requests::request(surface, *id, request)
+        }
         Command::Back => crate::navigation::default_back(surface),
+        Command::Tokens(tokens) => set_menu_tokens(tokens),
         Command::ExitApp => {
             // Closing destroys the window, whose handler stops the surface:
             // not while the surface is applying this batch.
@@ -505,6 +524,18 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::StatusBar(_) | Command::SetStatusBar(_) | Command::LayoutAnimation(_) => {}
         other => log::debug!("linux: command {other:?} is not supported"),
     }
+}
+
+/// The app's design tokens changed: the menus take their colors. One
+/// style sheet serves every surface of the process, in the colors of the
+/// last app to set them (an app's surfaces share its tokens).
+fn set_menu_tokens(tokens: &nsh_core::element::Tokens) {
+    let css = crate::menu_style::css(tokens);
+    SYSTEM.with(|s| {
+        if let Some(provider) = &s.borrow().menu_style {
+            provider.load_from_string(&css);
+        }
+    });
 }
 
 /// The batch is applied: overlays stay over views mounted on the root.

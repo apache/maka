@@ -25,6 +25,12 @@ ICONS = [
     # The Rich Editor demo's zoom, links and tables.
     "maximize-2", "minimize-2", "unlink", "external-link", "table", "table-cells-merge", "table-cells-split", "trash",
     "grip-vertical", "grip-horizontal", "panel-top", "list-todo", "ellipsis",
+    "between-horizontal-end", "between-horizontal-start", "between-vertical-end", "between-vertical-start",
+    # The overlay demos' menus, popovers, sheets and toasts.
+    "alarm-clock", "archive", "bell-ring", "calendar-days", "circle-check", "circle-x", "clipboard-paste",
+    "clock", "coffee", "copy", "download", "file-plus", "folder-input", "globe", "inbox", "info",
+    "list-filter", "loader-circle", "lock", "mail", "map-pin", "refresh-cw", "rotate-ccw", "scissors",
+    "send", "share-2", "sunrise", "upload", "user-plus",
 ]
 
 # Icons Lucide lacks, drawn here on its grid and stroke: a table's row or

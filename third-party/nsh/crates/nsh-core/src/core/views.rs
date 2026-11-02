@@ -556,17 +556,21 @@ impl<M: TextEngine> Core<M> {
                     Some(cx) => {
                         let mut old = old;
                         (old.inset_padding, old.inset_margin) = inst.root_insets_applied;
+                        let old = super::components::with_test_id(old, &inst.root_test_id_applied);
                         let attrs = cx.over(attrs);
                         inst.root_insets_applied = (attrs.inset_padding, attrs.inset_margin);
+                        inst.root_test_id_applied = super::components::test_id_of(&attrs);
                         (attrs, old)
                     }
                     None => (attrs, old),
                 };
-                if self.components.slot_hosts.get(&id) == Some(&host) {
-                    // An app's slot: what is not a style goes to its
-                    // target (`super::slots`).
+                if self.components.slot_hosts.get(&id) == Some(&host)
+                    || self.components.fill_holders.contains(&id)
+                {
+                    // An app's slot, or a node around a fill: what is not a
+                    // style goes to its target (`super::slots`).
                     self.apply_slot_attrs(id, host, &attrs, &old, None);
-                } else {
+                } else if !self.apply_target_attrs(id, &attrs, &old) {
                     self.apply_attrs_over(id, &attrs, &old, app.as_ref());
                 }
                 if let Some((style, classes, class)) = restyle {

@@ -114,19 +114,13 @@ pub(crate) async fn read(
         ));
     }
     let (opened,json):(i64,String)=sqlx::query_as(
-        "SELECT sequence,event_json FROM runtime_events WHERE invocation_id=? ORDER BY sequence LIMIT 1")
+        "SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? ORDER BY sequence LIMIT 1")
         .bind(invocation_id).fetch_one(&mut *connection).await?;
     let opening = StoredEvent {
         sequence: sequence_number(opened)?,
         event: serde_json::from_str::<RuntimeEvent>(&json)?,
     };
-    let json: String = sqlx::query_scalar(
-        "SELECT event_json FROM runtime_events WHERE invocation_id=? AND sequence=?",
-    )
-    .bind(invocation_id)
-    .bind(through)
-    .fetch_one(connection)
-    .await?;
+    let json = crate::canonical::one(connection, sequence_number(through)?).await?;
     let last = StoredEvent {
         sequence: sequence_number(through)?,
         event: serde_json::from_str::<RuntimeEvent>(&json)?,

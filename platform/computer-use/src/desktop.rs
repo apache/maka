@@ -274,12 +274,16 @@ impl SessionOwner {
     }
 
     /// Finalize shared resources after joining every original epoch close.
-    /// All observers retain the same original cleanup result.
+    /// Concurrent observers join the original cleanup; terminal failures may reconcile again.
     pub async fn close(&self) -> Result<(), ToolError> {
         let pending = {
             let mut state = self.state.lock().unwrap();
             state.closed = true;
-            if let Some(pending) = &state.cleanup {
+            if let Some(pending) = state
+                .cleanup
+                .as_ref()
+                .filter(|pending| !matches!(*pending.borrow(), Some(Err(_))))
+            {
                 pending.clone()
             } else {
                 let remote_live = !state.remote_epochs.is_empty();
@@ -397,12 +401,20 @@ impl Session {
                 Command::Observe { handle, .. }
                 | Command::Action { handle, .. }
                 | Command::BrowserRead { handle, .. }
+                | Command::BrowserEvaluate { handle, .. }
+                | Command::TabPageAssetsList { handle }
+                | Command::TabPageAssetsBundle { handle, .. }
+                | Command::BrowserCua { handle, .. }
                 | Command::BrowserWait { handle, .. }
+                | Command::BrowserFileChooserWait { handle, .. }
+                | Command::BrowserFileChooserSetFiles { handle, .. }
                 | Command::BrowserMutation { handle, .. }
                 | Command::ClipboardRead { handle }
                 | Command::ClipboardReadText { handle }
                 | Command::ClipboardWrite { handle, .. }
                 | Command::ClipboardWriteText { handle, .. }
+                | Command::BrowserMarkTab { handle, .. }
+                | Command::BrowserScreenshot { handle, .. }
                 | Command::GetJsDialog { handle, .. }
                 | Command::HandleJsDialog { handle, .. },
             ) => local.target_label(handle),
@@ -605,7 +617,9 @@ impl Session {
     ) -> Result<crate::InvocationCompletion, ToolError> {
         if !matches!(
             &command,
-            Command::BrowserDownloadWait { .. } | Command::BrowserWait { .. }
+            Command::BrowserDownloadWait { .. }
+                | Command::BrowserWait { .. }
+                | Command::BrowserFileChooserWait { .. }
         ) {
             return self
                 .invoke_immediate(command, invocation, cancellation, language)
@@ -627,9 +641,10 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: invocation.session().into(),
                     turn: invocation.turn().into(),
+                    native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
-                    command,
+                    command: Box::new(command),
                     language,
                 };
                 let connection = prepare_windows(&self.driver, cancellation).await?;
@@ -690,9 +705,10 @@ impl Session {
                     epoch: self.native_epoch.to_string(),
                     session: session.into(),
                     turn: turn.into(),
+                    native_observer_available: false,
                     operation_id: invocation.operation_id().map(str::to_owned),
                     browsers: browsers.clone(),
-                    command,
+                    command: Box::new(command),
                     language,
                 };
                 let connection = prepare_windows(&self.driver, cancellation).await?;
@@ -838,6 +854,13 @@ impl Session {
             #[cfg(feature = "native-desktop")]
             Some(Backend::Local(local)) => local.close_native().await,
             Some(Backend::Windows { .. }) => {
+                if self
+                    .remote_cleanup
+                    .as_ref()
+                    .is_some_and(|pending| matches!(*pending.borrow(), Some(Err(_))))
+                {
+                    self.remote_cleanup = None;
+                }
                 let pending = self.remote_cleanup.get_or_insert_with(|| {
                     let (reply, pending) = tokio::sync::watch::channel(None);
                     let driver = self.driver.clone();

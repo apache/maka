@@ -24,7 +24,7 @@ test("the host answers the app's call", async () => {
 test("a host that does not answer is reported", async () => {
   const app = await open("./App.tsx");
   await app.press("Ask the host for the time");
-  expect(app.shows("The host did not answer: nsh/host: this platform has no host")).toBe(true);
+  expect(app.shows("No host app here")).toBe(true);
 });
 
 test("the documentation link opens outside the app", async () => {

@@ -45,3 +45,5 @@ gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-fe
 
 [target.'cfg(windows)'.dependencies]
 nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-windows", optional = true }
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos.workspace = true

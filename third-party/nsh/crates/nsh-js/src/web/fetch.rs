@@ -1644,19 +1644,45 @@ pub(crate) fn event(cx: Ctx, id: RequestId, event: FetchEvent) -> R<()> {
             Ok(())
         }
         FetchEvent::Failed(message) => {
-            let Some(entry) = finish(cx, id)? else {
-                return Ok(());
-            };
             let e = network_error(cx, &message);
-            if let Some(d) = &entry.deferred {
-                d.reject(cx, e.raw());
-            }
-            if let Some(c) = controller(cx, &entry)? {
-                readable::error_controller(cx, c.raw(), e.raw())?;
-            }
-            Ok(())
+            fail(cx, id, e)
         }
     }
+}
+
+/// Fails request `id`, which the app's capabilities do not grant
+/// (`message` says why; `url` is the request's or the redirect's): a
+/// `TypeError`, as every failed fetch, with `code` `ERR_ACCESS_DENIED`,
+/// `permission` `"network"` and `resource` the URL.
+pub(crate) fn refused(cx: Ctx, id: RequestId, message: &str, url: &str) -> R<()> {
+    forget_dropped(cx);
+    if !web(cx).fetches.contains_key(&id) {
+        return Ok(());
+    }
+    let e = network_error(cx, message);
+    for (key, value) in [
+        ("code", nsh_core::element::codes::ACCESS_DENIED),
+        ("permission", "network"),
+        ("resource", url),
+    ] {
+        let value = js::string(cx, value)?;
+        js::define(cx, e.raw(), key, value, true)?;
+    }
+    fail(cx, id, e)
+}
+
+/// Ends request `id` with error `e`: its promise rejects, its body errors.
+fn fail(cx: Ctx, id: RequestId, e: V) -> R<()> {
+    let Some(entry) = finish(cx, id)? else {
+        return Ok(());
+    };
+    if let Some(d) = &entry.deferred {
+        d.reject(cx, e.raw());
+    }
+    if let Some(c) = controller(cx, &entry)? {
+        readable::error_controller(cx, c.raw(), e.raw())?;
+    }
+    Ok(())
 }
 
 /// Removes request `id` (completed): its entry.

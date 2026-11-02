@@ -21,6 +21,8 @@ pub(crate) struct RowWindow {
     margin: usize,
     /// Rows made ahead of the viewport when the window moves, at least.
     ahead: usize,
+    /// The window follows the viewport row by row instead of jumping ahead.
+    follow: bool,
 }
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -46,6 +48,22 @@ impl RowWindow {
             window: Rc::default(),
             margin,
             ahead,
+            follow: false,
+        }
+    }
+
+    /// A window of the rows in view and `margin` past each edge, moved with
+    /// every row the viewport crosses: a scroll makes as many rows as it
+    /// brings into reach, each frame alike, never a viewport and a half at
+    /// once (rows whose cells are many views, each a text a platform lays
+    /// out: one jump of a table's window took ~20 ms on Android, a stall of
+    /// several frames while the scroll view moved on).
+    pub(crate) fn following(margin: usize) -> Self {
+        RowWindow {
+            window: Rc::default(),
+            margin,
+            ahead: 0,
+            follow: true,
         }
     }
 
@@ -54,6 +72,10 @@ impl RowWindow {
     /// else the visible rows and a viewport and a half more ahead (the way
     /// they scrolled), half a viewport behind.
     pub(crate) fn rows(&self, visible: Range<usize>, count: usize) -> Range<usize> {
+        if self.follow {
+            return visible.start.saturating_sub(self.margin).min(count)
+                ..(visible.end + self.margin).min(count);
+        }
         let w = self.window.get();
         let page = visible.len();
         let margin = (page / 2).max(self.margin);
@@ -98,6 +120,15 @@ mod tests {
         // Scrolling up: the reach goes up.
         assert_eq!(w.rows(100..140, 1000), 40..160);
         assert_eq!(w.rows(0..40, 1000), 0..60);
+    }
+
+    #[test]
+    fn a_following_window_moves_with_each_row() {
+        let w = RowWindow::following(4);
+        assert_eq!(w.rows(100..140, 1000), 96..144);
+        assert_eq!(w.rows(101..141, 1000), 97..145);
+        assert_eq!(w.rows(0..40, 1000), 0..44);
+        assert_eq!(w.rows(980..1000, 1000), 976..1000);
     }
 
     #[test]

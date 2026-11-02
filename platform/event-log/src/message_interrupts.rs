@@ -99,9 +99,9 @@ impl EventLog {
             let active = if let Some(owner) = owner.as_ref().filter(|_| matches_owner) {
                 sqlx::query_scalar::<_, bool>(
                     "SELECT EXISTS(SELECT 1 FROM local_runtime_events o WHERE o.kind = 'invocation_opened'
-                     AND o.invocation_id = ? AND json_extract(o.event_json, '$.invocation') = json(?)
+                     AND o.invocation_id = ? AND json_extract(o.event_header, '$.invocation') = json(?)
                      AND o.sequence = (SELECT MAX(n.sequence) FROM local_runtime_events n
-                         WHERE n.kind = 'invocation_opened' AND json_extract(n.event_json, '$.invocation.session_id') = ?))"
+                         WHERE n.kind = 'invocation_opened' AND json_extract(n.event_header, '$.invocation.session_id') = ?))"
                 ).bind(&owner.invocation_id).bind(serde_json::to_string(owner)?)
                     .bind(&owner.session_id).fetch_one(&mut *tx).await?
             } else { false };
@@ -134,7 +134,13 @@ impl EventLog {
             sqlx::query("INSERT INTO message_interrupt_receipts(host_epoch, session_id, interrupt_id, turn_id, run_id, fence_json) VALUES (?, ?, ?, ?, ?, ?)")
                 .bind(&command.host_epoch).bind(&command.session_id).bind(&command.interrupt_id)
                 .bind(&command.turn_id).bind(&command.run_id).bind(encoded).execute(&mut *tx).await?;
+            let mut approval_revoked = false;
+            if fence.is_some() {
+                approval_revoked =crate::native_approvals::revoke_for_session(&mut tx,&command.session_id,crate::native_approvals::now_millis()?).await?;
+            }
+            changed |= approval_revoked;
             tx.commit().await.map_err(StoreError::CommitUnknown)?;
+            if approval_revoked { commits.activations(); }
             if changed { commits.metadata(); }
             Ok(fence.map_or(InterruptReceipt::Conflict, InterruptReceipt::Fenced))
         })).await

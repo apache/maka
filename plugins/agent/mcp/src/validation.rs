@@ -22,21 +22,26 @@ use std::collections::{BTreeMap, HashSet};
 
 pub fn validate(configuration: &ServerConfiguration) -> Result<(), String> {
     if configuration.name.is_empty()
-        || configuration.name.len() > 32
         || !configuration
             .name
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
     {
         return Err(
-            "MCP server name must contain 1–32 ASCII letters, digits, underscores or hyphens"
-                .into(),
+            "MCP server name must contain ASCII letters, digits, underscores or hyphens".into(),
         );
     }
-    if !(1..=300_000).contains(&configuration.startup_timeout_ms)
-        || !(1..=3_600_000).contains(&configuration.call_timeout_ms)
-    {
-        return Err("MCP timeout is outside the supported range".into());
+    for timeout in [
+        configuration.startup_timeout_ms,
+        configuration.call_timeout_ms,
+    ] {
+        if timeout == 0
+            || std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(timeout))
+                .is_none()
+        {
+            return Err("MCP timeout must be positive and representable by the Host clock".into());
+        }
     }
     match &configuration.transport {
         TransportConfiguration::Stdio {

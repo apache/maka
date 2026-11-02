@@ -8,8 +8,8 @@ use std::{
 use nsh_core::{
     Op,
     element::{
-        CallbackHandle, ClassDef, ClassInstance, Exception, JsCall, JsHost, JsIn, JsKind, JsRaw,
-        Posts, PropError, RustCall, RustOp, System, TaskStart,
+        CallbackHandle, ClassDef, ClassInstance, Exception, JsCall, JsHost, JsIn, JsKind,
+        JsPrimitive, JsRaw, Posts, PropError, RustCall, RustOp, System, TaskStart,
     },
     js::host::HostInput,
 };
@@ -43,6 +43,10 @@ pub(super) struct Bindings {
     callbacks: RefCell<HashMap<u32, Weak<BrowserCallback>>>,
     pending: RefCell<HashMap<u32, JsCall>>,
     primitive_callbacks: RefCell<Vec<Weak<BrowserCallback>>>,
+    /// The Rust behind the functions `new_function` made, until their
+    /// JS function is collected.
+    functions: RefCell<HashMap<u32, Rc<dyn Fn()>>>,
+    next_function: Cell<u32>,
     next_call: Cell<u32>,
     pub(super) stopped: Cell<bool>,
     pub(super) reactive: RefCell<Weak<super::reactive::Runtime>>,
@@ -60,6 +64,8 @@ impl Bindings {
             callbacks: RefCell::default(),
             pending: RefCell::default(),
             primitive_callbacks: RefCell::default(),
+            functions: RefCell::default(),
+            next_function: Cell::new(1),
             next_call: Cell::new(1),
             stopped: Cell::new(false),
             reactive: RefCell::default(),
@@ -151,6 +157,7 @@ impl Bindings {
         locals.close_all();
         let pending = self.pending.take();
         let instances = self.instances.take();
+        let functions = self.functions.take();
         let ops = self.ops.take();
         // Externally retained callbacks may outlive this app. Release their
         // arena handles now, before a later run installs a different arena.
@@ -164,7 +171,7 @@ impl Bindings {
             let value = callback.value.borrow_mut().take();
             drop(value);
         }
-        drop((pending, instances, ops));
+        drop((pending, instances, functions, ops));
     }
     fn keep_callback(&self, raw: JsRaw) -> Rc<BrowserCallback> {
         if !matches!(
@@ -212,12 +219,15 @@ impl Bindings {
                 return;
             }
         };
-        let result = callback.call(&Value(0), &args);
+        let result = if call.settles() && self.kind(raw(callback.0)) != JsKind::Function {
+            // A value in place of a function (`Callback::settling`) answers
+            // itself, a promise what it settles to.
+            Ok(callback)
+        } else {
+            callback.call(&Value(0), &args)
+        };
         match result {
-            Err(error) => call.reply(Err(Exception {
-                message: error.0,
-                stack: None,
-            })),
+            Err(error) => call.reply(Err(Exception::from(error.0))),
             Ok(result) if call.settles() => {
                 let id = self.call_id();
                 self.pending.borrow_mut().insert(id, call);
@@ -226,23 +236,59 @@ impl Bindings {
             Ok(result) => call.reply(Ok(JsIn::new(self, raw(result.0)))),
         }
     }
+    /// Runs function `id` (`new_function`'s), released or not.
+    pub(super) fn call_function(&self, id: u32) {
+        // Cloned out: what it runs may make or release functions.
+        let f = self.functions.borrow().get(&id).cloned();
+        if let Some(f) = f {
+            f();
+        }
+    }
+    /// Drops function `id` once its JS function is collected.
+    pub(super) fn release_function(&self, id: u32) {
+        let f = self.functions.borrow_mut().remove(&id);
+        drop(f);
+    }
     pub(super) fn settle(&self, id: u32, ok: bool, value: Value) {
         let call = self.pending.borrow_mut().remove(&id);
         if let Some(call) = call {
             if ok {
                 call.reply(Ok(JsIn::new(self, raw(value.0))));
             } else {
-                call.reply(Err(Exception {
-                    message: value
+                let mut exception = Exception::from(
+                    value
                         .get("message")
                         .ok()
                         .and_then(|v| v.as_string())
                         .unwrap_or_else(|| self.describe(raw(value.0))),
-                    stack: value.get("stack").ok().and_then(|v| v.as_string()),
-                }));
+                );
+                exception.stack = value.get("stack").ok().and_then(|v| v.as_string());
+                // Only a traced call's reply checks it (`nsh/test`).
+                if call.traced() {
+                    exception.thrown = thrown_json(&value);
+                }
+                call.reply(Err(exception));
             }
         }
     }
+}
+/// A rejection's reason as JSON, as `nsh-js` makes it
+/// ([`Exception::thrown`]): an object's own enumerable properties with its
+/// `name` and `message` when they are strings, any other value as itself;
+/// `None` when converting it fails.
+fn thrown_json(value: &Value) -> Option<nsh_core::JsonValue> {
+    let mut json = protocol::to_json(&compat::Value::new(Value::borrowed(value.0))).ok()?;
+    if let nsh_core::JsonValue::Object(fields) = &mut json {
+        for key in ["name", "message"] {
+            if fields.contains_key(key) {
+                continue;
+            }
+            if let Some(text) = value.get(key).ok().and_then(|v| v.as_string()) {
+                fields.insert(key.to_owned(), nsh_core::JsonValue::String(text));
+            }
+        }
+    }
+    Some(json)
 }
 fn id(raw: JsRaw) -> u32 {
     raw.0[0] as u32
@@ -333,6 +379,15 @@ impl JsHost for Bindings {
     }
     fn keys(&self, value: JsRaw) -> Result<Vec<String>, PropError> {
         Value::borrowed(id(value)).keys()
+    }
+    fn primitives(&self, value: JsRaw) -> Result<Option<Vec<JsPrimitive>>, PropError> {
+        let items = Value::borrowed(id(value)).primitives(false)?;
+        Ok(items.map(|items| items.into_iter().map(|(_, v)| v).collect()))
+    }
+    fn primitive_entries(&self, value: JsRaw) -> Result<Vec<(String, JsPrimitive)>, PropError> {
+        Ok(Value::borrowed(id(value))
+            .primitives(true)?
+            .unwrap_or_default())
     }
     fn date(&self, value: JsRaw) -> Option<f64> {
         let n = invoke(11, id(value), 0, 0, 0.0);
@@ -443,6 +498,20 @@ impl JsHost for Bindings {
                 owned(out)
             }
         })
+    }
+    fn new_function(&self, f: Box<dyn Fn()>) -> Result<JsRaw, PropError> {
+        let mut id = self.next_function.get();
+        // Past `u32::MAX` the ids wrap: skip the ones still in use.
+        while self.functions.borrow().contains_key(&id) {
+            id = id.wrapping_add(1).max(1);
+        }
+        self.next_function.set(id.wrapping_add(1).max(1));
+        self.functions.borrow_mut().insert(id, f.into());
+        let made = Value::checked(invoke(48, id, 0, 0, 0.0)).map(owned);
+        if made.is_err() {
+            self.release_function(id);
+        }
+        made
     }
     fn wrap(&self, instance: Rc<dyn ClassInstance>) -> Result<JsRaw, PropError> {
         let class = self.class_id(instance.def());

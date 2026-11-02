@@ -894,7 +894,10 @@ fn drag_area(surface: &Rc<Surface>) -> impl IntoElement {
             let surface = s.clone();
             let h = hitbox.clone();
             window.on_mouse_event(move |e: &MouseDownEvent, phase, window, cx| {
-                if phase != DispatchPhase::Bubble || !h.is_hovered(window) {
+                if PLATFORM == Platform::Windows
+                    || phase != DispatchPhase::Bubble
+                    || !h.is_hovered(window)
+                {
                     return;
                 }
                 let (ox, oy) = surface.origin.get();
@@ -982,6 +985,9 @@ fn title_row(surface: &Rc<Surface>, theme: &Theme) -> AnyElement {
         .border_b_1()
         .border_color(theme.bar_border)
         .on_mouse_down(MouseButton::Left, move |e, window, cx| {
+            if PLATFORM == Platform::Windows {
+                return;
+            }
             title_press(&s, e, window);
             cx.stop_propagation();
         });

@@ -34,16 +34,64 @@ use maka_js_runtime::repl::Repl;
 use std::time::Duration;
 use uuid::Uuid;
 
+#[derive(Debug)]
+enum OperationFailure {
+    Ordinary(ToolError),
+    // A browser result has a durable Unknown receipt. Native input additionally
+    // requires its exact physical drain proof before this observer may continue.
+    ReportedUnknown(ToolError),
+}
+impl OperationFailure {
+    fn reported(error: ToolError, browser: bool, native_drained: bool) -> Self {
+        if (browser || native_drained)
+            && matches!(
+                error,
+                ToolError::OutcomeUnknown(_) | ToolError::OperationUnknown { .. }
+            )
+        {
+            Self::ReportedUnknown(error)
+        } else {
+            Self::Ordinary(error)
+        }
+    }
+}
+impl From<ToolError> for OperationFailure {
+    fn from(error: ToolError) -> Self {
+        Self::Ordinary(error)
+    }
+}
+
+#[cfg(test)]
+type OperationFixture = Arc<dyn Fn(Value) -> Result<Value, OperationFailure> + Send + Sync>;
+
+/// Carries the original Host call and resource budget.
+pub(super) struct EvaluationScope {
+    call: Scope,
+    input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
+}
+impl From<maka_host_runtime::application::ResourceCapturer> for EvaluationScope {
+    fn from(resources: maka_host_runtime::application::ResourceCapturer) -> Self {
+        Self {
+            call: resources.scope().clone(),
+            input_resources: Some(resources),
+        }
+    }
+}
+
 impl Computer {
     pub(super) async fn evaluate(
         self: &Arc<Self>,
         name: &str,
         input: Value,
-        call: Scope,
+        evaluation: EvaluationScope,
         basis: PermissionBasis,
         interaction: Arc<sessions::Interaction>,
         cancellation: CancellationToken,
     ) -> Result<ResultValue, ToolError> {
+        let EvaluationScope {
+            call,
+            input_resources,
+        } = evaluation;
         let invocation = call.identity.agent().expect("checked invocation").clone();
         let mut kernels = tokio::select! {
             biased;
@@ -127,11 +175,15 @@ impl Computer {
         let bridge = Arc::new(Bridge {
             owner: self.clone(),
             call: call.clone(),
+            interaction: interaction.clone(),
             epoch,
             admission,
             basis,
             language,
             cell: context.clone(),
+            #[cfg(test)]
+            operation_fixture: None,
+            input_resources,
         });
         let store = maka_agent_authority::permissions::execution(
             &self.store,
@@ -269,7 +321,7 @@ impl Computer {
         input: Value,
         cancellation: CancellationToken,
         receipt: admission::Receipt,
-    ) -> Result<Value, ToolError> {
+    ) -> Result<Value, OperationFailure> {
         let call = bridge.call.clone();
         let basis = bridge.basis;
         let language = bridge.language;
@@ -295,9 +347,9 @@ impl Computer {
             maka_computer_use::protocol::Command::StopAudioRecording
         );
         if audio_operation && !self.configuration.audio {
-            return Err(failed(
-                "Computer audio recording is disabled in Host configuration",
-            ));
+            return Err(
+                failed("Computer audio recording is disabled in Host configuration").into(),
+            );
         }
         let audio_consent = if audio_operation {
             audio_consent(&native, &cancellation).await?
@@ -312,7 +364,7 @@ impl Computer {
             ) {
                 let (configuration, _) = access::current(self, &call, "cua_repl").await?;
                 if configuration.permission_basis() != basis {
-                    return Err(failed("Computer Use permission boundary changed"));
+                    return Err(failed("Computer Use permission boundary changed").into());
                 }
                 access::approve_audio(self, &call, &configuration, &cancellation, &cell).await?;
             } else {
@@ -322,7 +374,7 @@ impl Computer {
         }
         let subject = {
             let mut desktop = tokio::select! { biased;
-                () = cancellation.cancelled() => return Err(failed("Computer Use cancelled before app resolution")),
+                () = cancellation.cancelled() => return Err(failed("Computer Use cancelled before app resolution").into()),
                 desktop = native.lock() => desktop,
             };
             desktop
@@ -353,7 +405,8 @@ impl Computer {
         } else {
             None
         };
-        let device = if browser_command(&command)
+        let browser_operation = browser_command(&command);
+        let device = if browser_operation
             || matches!(
                 command,
                 maka_computer_use::protocol::Command::ListWindows { .. }
@@ -362,12 +415,12 @@ impl Computer {
             None
         } else {
             Some(tokio::select! { biased;
-                () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
+                () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued").into()),
                 device = self.sessions.input.clone().lock_owned() => device,
             })
         };
         let mut native = tokio::select! { biased;
-            () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued")),
+            () = cancellation.cancelled() => return Err(failed("Computer Use cancelled while queued").into()),
             native = native.lock_owned() => native,
         };
         access::granted(self, &call, basis).await?;
@@ -380,21 +433,28 @@ impl Computer {
             _ => false,
         };
         if !same_subject {
-            return Err(failed(
-                "Computer Use app changed while access was being approved",
-            ));
+            return Err(failed("Computer Use app changed while access was being approved").into());
         }
         if cancellation.is_cancelled() {
-            return Err(failed("Computer Use cancelled before admission"));
+            return Err(failed("Computer Use cancelled before admission").into());
         }
         // Keep mutation ordering through the canonical outcome. On a journal
         // failure, close Host admission before another input waiter proceeds.
         let _device = device;
+        let lane = if native.platform() == "windows" && native_helper_command(&command) {
+            access::ComputerLane::Native
+        } else {
+            access::ComputerLane::Other
+        };
         let title = native.activity(&command);
         let pause_native =
             matches!(native.platform(), "mac" | "windows") && !browser_command(&command);
         let session = invocation.session_id.clone();
         let turn = invocation.turn_id.clone();
+        let monitor_enabled = native.platform() == "mac";
+        let monitor_owner = self.clone();
+        let monitor_gate = bridge.admission.clone();
+        let monitor_operation = operation_id.clone();
         let preparation_active = CancellationToken::new();
         let browser_access = browser_access::Access::new(
             self.clone(),
@@ -407,8 +467,16 @@ impl Computer {
                 epoch: bridge.epoch.clone(),
                 operation: operation_id.clone(),
                 active: preparation_active.clone(),
+                input_resources: bridge.input_resources.clone(),
             },
         );
+        let native_interruption = sessions::native_interruption_observer(
+            self,
+            &bridge.interaction,
+            &invocation,
+            &bridge.epoch,
+            &operation_id,
+        )?;
         let lease = self
             .store
             .fork_invocation_effect(
@@ -422,7 +490,8 @@ impl Computer {
         let effect_owner = self.clone();
         let effect_store = lease.store();
         let journal_store = effect_store.clone();
-        let settlement = admission::Operation::new(self, lease, &bridge.epoch.native)?;
+        let settlement =
+            admission::Operation::new(self, lease, &bridge.epoch.native, &bridge.admission)?;
         let operation_settlement = settlement.handoff();
         let host_effects = admission::host_effects_with_lease_children(
             self,
@@ -446,7 +515,9 @@ impl Computer {
                 })
                 .collect(),
         };
+        let browser_files = epoch.files.clone();
         let effect_app = app.clone();
+        let native_receipt = native_interruption.clone();
         let admitted = receipt.clone();
         let effect = PreparedEffect::new(move |_producer_cancellation| {
             Box::pin(async move {
@@ -459,6 +530,7 @@ impl Computer {
                     basis,
                     &effect_targets,
                     move |operation_cancel| async move {
+                        let monitor_invocation = effect_invocation.clone();
                         app_access::settle(
                             &effect_store,
                             &effect_invocation,
@@ -469,10 +541,24 @@ impl Computer {
                                     maka_computer_use::InvocationContext::new(&session, &turn)
                                         .with_operation_id(browser_operation_id)
                                         .with_browser_authorization(browser_access)
+                                        .with_native_interruption_observer(native_interruption)
+                                        .with_browser_asset_files(browser_files)
                                         .with_browser_preparation_policy(preparation_policy)
                                         .with_operation_settlement(operation_settlement)
                                         .with_browser_host_effects(host_effects);
                                 if let Some(subject) = subject {
+                                    if monitor_enabled {
+                                        context = context.with_native_monitor_authority(
+                                            epoch.native_monitor_authority(
+                                                &monitor_owner,
+                                                monitor_gate,
+                                                monitor_invocation,
+                                                monitor_operation,
+                                                basis,
+                                                subject.clone(),
+                                            )?,
+                                        );
+                                    }
                                     context = context.with_app_target(subject);
                                 }
                                 let _timeout = pause_native.then(|| cell.suspend_timeout());
@@ -533,35 +619,60 @@ impl Computer {
         }
         let result = ToolJournal::new(
             Arc::new(access::Journal {
+                lane,
                 store: journal_store,
                 basis,
                 targets,
                 app,
             }),
-            invocation,
+            invocation.clone(),
         )
         .invoke_prepared_output(
-            operation_id,
+            operation_id.clone(),
             ToolCallIdentity {
                 tool_call_id: Uuid::new_v4().to_string(),
                 origin,
             },
             "cua_operation".into(),
             input,
+            None,
             cancellation,
             effect,
         )
         .await;
-        let journal_failure = if let Err(
+        let native_drain = if matches!(lane, access::ComputerLane::Native)
+            && matches!(
+                &result,
+                Err(ToolError::OutcomeUnknown(_) | ToolError::OperationUnknown { .. })
+            ) {
+            match native_receipt.native_drain().await {
+                Ok(proof) => proof,
+                Err(error) => {
+                    // The original action T2 is already Unknown. Failure of
+                    // its canonical fence remains a Host persistence/cleanup
+                    // failure; a physical drain must not wash that failure.
+                    receipt.fail(error.clone());
+                    bridge.admission.close_admission();
+                    settlement.complete(Some(error.clone()));
+                    return Err(error.into());
+                }
+            }
+        } else {
+            None
+        };
+        let result = result.map_err(|error| {
+            OperationFailure::reported(error, browser_operation, native_drain.is_some())
+        });
+        let journal_failure = if let Err(OperationFailure::Ordinary(
             error @ (ToolError::Persistence(_)
             | ToolError::CleanupUnconfirmed(_)
             | ToolError::OutcomeUnknown(_)
             | ToolError::OperationUnknown { .. }
             | ToolError::OperationCleanupUnconfirmed { .. }),
-        ) = &result
+        )) = &result
         {
             receipt.fail(error.clone());
-            self.stopping.cancel();
+            bridge.admission.close_admission();
             Some(error.clone())
         } else {
             None
@@ -579,21 +690,23 @@ impl Computer {
                 }
                 Ok(value)
             }
-            _ => Err(ToolError::CleanupUnconfirmed(
-                "Computer output format changed".into(),
-            )),
+            _ => Err(ToolError::CleanupUnconfirmed("Computer output format changed".into()).into()),
         }
     }
 }
 #[derive(Clone)]
 struct Bridge {
+    #[cfg(test)]
+    operation_fixture: Option<OperationFixture>,
     owner: Arc<Computer>,
     call: Scope,
+    interaction: Arc<sessions::Interaction>,
     epoch: Arc<sessions::Epoch>,
     admission: Arc<admission::Gate>,
     basis: PermissionBasis,
     language: Language,
     cell: CellContext,
+    input_resources: Option<maka_host_runtime::application::ResourceCapturer>,
 }
 
 async fn audio_consent(
@@ -608,6 +721,31 @@ async fn audio_consent(
     Ok(native.platform() == "mac")
 }
 
+// Actual helper callers, rather than every desktop-looking command. Cursor
+// presentation/documentation do not call the Windows native SDK child.
+fn native_helper_command(command: &maka_computer_use::protocol::Command) -> bool {
+    use maka_computer_use::protocol::{Command, Handle};
+    matches!(
+        command,
+        Command::NativeComputer { .. }
+            | Command::StartAudioRecording { .. }
+            | Command::StopAudioRecording
+            | Command::GetState { .. }
+            | Command::ListApps { .. }
+            | Command::ListWindows { .. }
+            | Command::GetApp { .. }
+            | Command::LaunchApp { .. }
+            | Command::Observe {
+                handle: Handle::App(_),
+                ..
+            }
+            | Command::Action {
+                handle: Handle::App(_),
+                ..
+            }
+    )
+}
+
 fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
     use maka_computer_use::protocol::{Command, Handle};
     matches!(
@@ -617,12 +755,31 @@ fn browser_command(command: &maka_computer_use::protocol::Command) -> bool {
             | Command::HandleJsDialog { .. }
             | Command::ListTabs { .. }
             | Command::GetBrowser { .. }
+            | Command::BrowserRelease { .. }
             | Command::BrowserTab { .. }
             | Command::BrowserManagedTabs { .. }
+            | Command::BrowserSelect { .. }
+            | Command::BrowserSelectedTab { .. }
+            | Command::BrowserNameSession { .. }
+            | Command::BrowserHistory { .. }
+            | Command::BrowserViewportSet { .. }
+            | Command::BrowserViewportReset { .. }
+            | Command::TabPageAssetsList { .. }
+            | Command::TabPageAssetsBundle { .. }
             | Command::BrowserUserOpenTabs { .. }
+            | Command::BrowserUserGetTabContext { .. }
             | Command::BrowserUserClaimTab { .. }
+            | Command::BrowserMarkTab { .. }
+            | Command::BrowserScreenshot { .. }
+            | Command::BrowserEvaluate { .. }
             | Command::BrowserRead { .. }
+            | Command::BrowserCua {
+                handle: Handle::Tab(_),
+                ..
+            }
             | Command::BrowserWait { .. }
+            | Command::BrowserFileChooserWait { .. }
+            | Command::BrowserFileChooserSetFiles { .. }
             | Command::BrowserDownloadWait { .. }
             | Command::BrowserDownloadPath { .. }
             | Command::BrowserDownloadMedia { .. }
@@ -672,24 +829,47 @@ impl ToolExecutor for Bridge {
                 receipt.complete_call();
                 return Err(failed("Computer operation unavailable"));
             }
+            #[cfg(test)]
+            let result = match &bridge.operation_fixture {
+                Some(operation) => operation(input),
+                None => {
+                    bridge
+                        .owner
+                        .operation(&bridge, input, cancellation, receipt.clone())
+                        .await
+                }
+            };
+            #[cfg(not(test))]
             let result = bridge
                 .owner
                 .operation(&bridge, input, cancellation, receipt.clone())
                 .await;
-            match &result {
-                Err(
-                    error @ (ToolError::Persistence(_)
-                    | ToolError::CleanupUnconfirmed(_)
-                    | ToolError::OutcomeUnknown(_)
-                    | ToolError::OperationUnknown { .. }
-                    | ToolError::OperationCleanupUnconfirmed { .. }),
-                ) => {
-                    receipt.fail(error.clone());
-                    bridge.owner.stopping.cancel();
+            match result {
+                Err(OperationFailure::ReportedUnknown(error)) => {
+                    receipt.complete_call();
+                    Err(error)
                 }
-                _ => receipt.complete_call(),
+                Err(OperationFailure::Ordinary(error)) => {
+                    if matches!(
+                        &error,
+                        ToolError::Persistence(_)
+                            | ToolError::CleanupUnconfirmed(_)
+                            | ToolError::OutcomeUnknown(_)
+                            | ToolError::OperationUnknown { .. }
+                            | ToolError::OperationCleanupUnconfirmed { .. }
+                    ) {
+                        receipt.fail(error.clone());
+                        bridge.admission.close_admission();
+                    } else {
+                        receipt.complete_call();
+                    }
+                    Err(error)
+                }
+                Ok(value) => {
+                    receipt.complete_call();
+                    Ok(value)
+                }
             }
-            result
         })
     }
 }
@@ -728,89 +908,186 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    #[test]
-    fn clipboard_and_locator_commands_retain_the_exact_browser_owner() {
-        for handle in [
-            json!({"kind":"tab","id":"owned"}),
-            json!({"kind":"app","id":"owned"}),
-        ] {
-            for payload in [
-                json!({"method":"clipboardRead","handle":handle}),
-                json!({"method":"clipboardReadText","handle":handle}),
-                json!({"method":"clipboardWriteText","handle":handle,"text":"fixture"}),
-                json!({"method":"clipboardWrite","handle":handle,"items":[{"entries":[{"mimeType":"text/plain","text":"fixture"}]}]}),
-                json!({"method":"browserMutation","handle":handle,"locator":{"selector":"button"},"operation":{"kind":"click"}}),
-            ] {
-                let command =
-                    serde_json::from_value(payload.clone()).expect("public Computer Use command");
-                assert_eq!(
-                    browser_command(&command),
-                    handle["kind"] == "tab",
-                    "{payload}"
-                );
-            }
-        }
-    }
-
-    struct QueuedAudio {
-        native: Arc<tokio::sync::Mutex<maka_computer_use::Session>>,
-        admission: Arc<admission::Gate>,
-        started: CancellationToken,
-    }
-    impl ToolExecutor for QueuedAudio {
-        fn names(&self) -> Vec<String> {
-            vec!["queued_audio".into()]
-        }
-        fn invoke(&self, _: String, _: Value, cancellation: CancellationToken) -> ToolFuture {
-            let receipt = self.admission.register();
-            let native = self.native.clone();
-            self.started.cancel();
-            Box::pin(async move {
-                let receipt = receipt?;
-                let result = audio_consent(&native, &cancellation).await;
-                receipt.complete_call();
-                result.map(Value::Bool)
-            })
-        }
-    }
-
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn vm_timeout_rejects_audio_queued_behind_an_accepted_native_operation() {
-        let native = Arc::new(tokio::sync::Mutex::new(maka_computer_use::Session::new(
-            Arc::new(tokio::sync::Mutex::new(maka_computer_use::Driver::default())),
-        )));
-        let accepted_native = native.clone().lock_owned().await;
-        let admission = Arc::new(admission::Gate::default());
-        let started = CancellationToken::new();
-        let runtime = Repl::new_observed(
-            "Object.defineProperty(globalThis,'audio',{value:()=>call('queued_audio',{})});",
-            CellLimits::default(),
-            admission.clone(),
-        )
-        .unwrap();
-        let context =
-            CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![]).unwrap();
-        let result = tokio::time::timeout(
-            Duration::from_secs(3),
-            runtime.evaluate(
-                "await audio()".into(),
-                Arc::new(QueuedAudio {
-                    native,
-                    admission,
-                    started: started.clone(),
-                }),
-                CancellationToken::new(),
-                context,
-                Duration::from_millis(100),
+    async fn bridge_allows_reported_browser_unknown_and_drained_native_unknown_to_continue() {
+        use maka_agent_facts::tool_call::ToolOrigin;
+        use maka_capabilities::call::{Identity, Issuer};
+        use maka_code_runtime::CellAbort;
+        use maka_computer_use::protocol::Command;
+        use maka_event_log::root::{RootNamespaces, RootOwner};
+
+        for (browser_operation, drained, error) in [
+            (
+                true,
+                false,
+                ToolError::OutcomeUnknown("browser navigation outcome unknown".into()),
             ),
-        )
-        .await
-        .expect("VM admission must not wait for the old native operation")
-        .unwrap();
-        assert!(started.is_cancelled());
-        assert!(matches!(result, CellResult::Failure { .. }));
-        runtime.close().await.unwrap();
-        // The accepted native operation has deliberately not released its lock.
-        drop(accepted_native);
+            (
+                false,
+                true,
+                ToolError::OutcomeUnknown("native outcome unknown".into()),
+            ),
+            (
+                false,
+                false,
+                ToolError::OutcomeUnknown("native outcome unknown".into()),
+            ),
+            (
+                false,
+                false,
+                ToolError::Persistence("interruption write failed".into()),
+            ),
+            (
+                false,
+                false,
+                ToolError::CleanupUnconfirmed("missing interruption writer".into()),
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let root = Arc::new(
+                maka_event_log::RootStore::open(Arc::new(
+                    RootOwner::create(
+                        &directory.path().join("root"),
+                        &RootNamespaces {
+                            ownership: directory.path().join("ownership"),
+                            control: directory.path().join("control"),
+                        },
+                    )
+                    .unwrap(),
+                ))
+                .await
+                .unwrap(),
+            );
+            let tasks = tokio_util::task::TaskTracker::new();
+            let owner = Arc::new(Computer {
+                store: root.clone(),
+                configuration: Default::default(),
+                sessions: sessions::Sessions::with_audio(false, tasks.clone()),
+                resources: Arc::default(),
+                stopping: CancellationToken::new(),
+                tasks,
+                origin: ToolOrigin::HostSdk {
+                    package_id: "fixture".into(),
+                    entry_id: "computer".into(),
+                    activation: "host".into(),
+                    parent: None,
+                },
+                popup_provenance: None,
+            });
+            let interaction = owner.sessions.get("session").unwrap();
+            let kernel = interaction.fresh_kernel().unwrap();
+            let admission = kernel.admission.clone();
+            let scope = Issuer::default()
+                .issue(
+                    Identity::Agent {
+                        invocation: Invocation {
+                            session_id: "session".into(),
+                            turn_id: "turn".into(),
+                            run_id: "run".into(),
+                            invocation_id: "invocation".into(),
+                        },
+                        operation_id: Some("outer".into()),
+                    },
+                    CancellationToken::new(),
+                )
+                .unwrap();
+            let native_error = error.clone();
+            let fixture: OperationFixture = Arc::new(move |input| {
+                let command: Command = serde_json::from_value(input).unwrap();
+                match command {
+                    Command::ListWindows { .. } | Command::ListTabs { .. } => {
+                        Err(OperationFailure::reported(
+                            native_error.clone(),
+                            browser_command(&command),
+                            drained,
+                        ))
+                    }
+                    Command::ListBrowsers { .. } => Ok(json!("browser-still-live")),
+                    command => panic!("unexpected facade command: {command:?}"),
+                }
+            });
+            let context =
+                CellContext::new(maka_code_runtime::CellStore::temporary().unwrap(), vec![])
+                    .unwrap();
+            let bridge = Arc::new(Bridge {
+                owner: owner.clone(),
+                call: scope,
+                interaction: interaction.clone(),
+                epoch: kernel.epoch.clone(),
+                admission: admission.clone(),
+                basis: PermissionBasis {
+                    boundary_revision: 0,
+                    binding: maka_agent_facts::workspace::BindingStamp {
+                        id: Uuid::new_v4(),
+                        permission_epoch: 0,
+                    },
+                },
+                language: Language::En,
+                cell: context.clone(),
+                operation_fixture: Some(fixture),
+                input_resources: None,
+            });
+            let bootstrap = format!(
+                "{}\nglobalThis.native=()=>invoke('listWindows',{{options:{{}}}});globalThis.browser=()=>invoke('listBrowsers',{{options:{{}}}});",
+                maka_computer_use::facade()
+            );
+            let bootstrap = if browser_operation {
+                bootstrap.replace("invoke('listWindows'", "invoke('listTabs'")
+            } else {
+                bootstrap
+            };
+            let runtime = Repl::new(bootstrap, CellLimits::default()).unwrap();
+            let result = runtime.evaluate(
+                "let caught=false;try{await native()}catch(e){caught=true}nodeRepl.write({caught,browser:await browser()});".into(),
+                bridge.clone(), CancellationToken::new(), context.clone(), Duration::from_secs(3),
+            ).await;
+            if browser_operation || drained {
+                assert!(
+                    matches!(&result, Ok(CellResult::Success { .. })),
+                    "{result:?}"
+                );
+                assert!(!owner.stopping.is_cancelled());
+                assert!(admission.check_open().is_ok());
+                assert!(!runtime.is_closed());
+                let output = context.take_output();
+                let [CellOutput::Text { text }] = output.as_slice() else {
+                    panic!("expected recovered native call and browser result: {output:?}");
+                };
+                assert_eq!(
+                    serde_json::from_str::<Value>(text).unwrap(),
+                    json!({"caught":true,"browser":"browser-still-live"}),
+                );
+            } else {
+                match (&error, &result) {
+                    (ToolError::OutcomeUnknown(_), Ok(CellResult::Failure { .. })) => {}
+                    (
+                        ToolError::Persistence(expected),
+                        Err(CellAbort::Tool(ToolError::Persistence(actual))),
+                    )
+                    | (
+                        ToolError::CleanupUnconfirmed(expected),
+                        Err(CellAbort::Tool(ToolError::CleanupUnconfirmed(actual))),
+                    ) => {
+                        assert_eq!(actual, expected);
+                    }
+                    _ => panic!("unexpected bridge failure for {error:?}: {result:?}"),
+                }
+                assert!(!owner.stopping.is_cancelled());
+                assert!(admission.check_open().is_err());
+            }
+            runtime.close().await.unwrap();
+            drop(bridge);
+            kernel.close(CancellationToken::new()).await.unwrap();
+            owner.sessions.close().await.unwrap();
+            owner.resources.settle().await.unwrap();
+            owner.tasks.close();
+            owner.tasks.wait().await;
+            drop((interaction, owner));
+            Arc::try_unwrap(root).ok().unwrap().close().await.unwrap();
+        }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "evaluate/browser_handoff_test.rs"]
+mod browser_handoff_test;

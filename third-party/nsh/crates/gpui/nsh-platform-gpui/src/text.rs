@@ -2320,7 +2320,12 @@ pub(crate) fn draw(cx: &mut DrawCx<'_>, state: &ViewState) {
             .get(span_at(&text.spans, index))
             .map_or(&default, |s| &s.style)
     };
-    let animated = state.anim.color;
+    // An animated color, or a transition of the text's color, over the
+    // runs' own.
+    let animated = state
+        .anim
+        .color
+        .or_else(|| state.live.as_ref()?.text_color());
     let mut glyphs = Vec::with_capacity(layout.glyphs.len());
     for g in &layout.glyphs {
         let o = cx.map(ox + g.x, oy + g.y);

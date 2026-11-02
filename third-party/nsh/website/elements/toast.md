@@ -1,7 +1,6 @@
 ---
 title: Toast
 description: "Toast, ToastStack and ToastManager: unstyled toasts as gpui-base's, a semantic root with a transition status, a stack that lays toasts out as layers, and their headless lifecycle."
-order: 29.5
 group: base
 demo: el-toast
 ---

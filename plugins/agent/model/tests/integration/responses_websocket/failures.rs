@@ -376,3 +376,39 @@ async fn interrupted_reads_preserve_diagnostics_and_decoder_replay_safety() {
         }
     }).await.unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn websocket_provider_errors_use_common_semantics_without_granting_replay_safety() {
+    use maka_model::{ModelError, ProviderFailureReason};
+    tokio::time::timeout(Duration::from_secs(15), async {
+        for (code, reason) in [("insufficient_quota", ProviderFailureReason::QuotaExhausted),
+            ("rate_limit_exceeded", ProviderFailureReason::RateLimit), ("1308", ProviderFailureReason::RateLimit)] {
+            for unsafe_effect in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let base = format!("http://{}/v1", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    let mut socket = accept(&listener).await;
+                    wire(&mut socket, "normalized-error").await;
+                    if unsafe_effect {
+                        socket.send(Message::Text(json!({"type":"response.future_call.in_progress"}).to_string().into())).await.unwrap();
+                    }
+                    socket.send(Message::Text(json!({"type":"response.failed","response":{"error":{"type":"rate_limit_error","code":code,"message":"usage limit alone does not define quota","isRetryable":true}}}).to_string().into())).await.unwrap();
+                    assert!(socket.next().await.is_none_or(|frame| frame.is_err() || matches!(frame, Ok(Message::Close(_)))));
+                    assert!(listener.accept().now_or_never().is_none(), "error normalization never sends a replay itself");
+                });
+                let executor = ModelExecutor::new(Duration::from_secs(5)).unwrap();
+                let mut stream = executor.stream_in_conversation(request(&base, "normalized-error"), CancellationToken::new(), Some(Conversation::default())).await.unwrap();
+                let error = loop { match stream.next().await.expect("error must be terminal") { Ok(_) => {}, Err(error) => break error } };
+                stream.cancel_and_wait().await.unwrap();
+                server.await.unwrap();
+                let ModelError::Provider(failure) = error else { panic!("shared provider category lost: {error}") };
+                assert_eq!(failure.reason(), reason);
+                assert_eq!(failure.code(), Some(code));
+                assert_eq!(failure.status(), None);
+                assert_eq!(failure.retry_at_unix_ms(), None, "no frame reset schema is invented");
+                assert_eq!(failure.retryable(), reason == ProviderFailureReason::RateLimit);
+                assert_eq!(failure.replay_safe(), !unsafe_effect, "provider retryable must not override actual effects");
+            }
+        }
+    }).await.expect("normalized WS errors must settle without timers or hidden sends");
+}

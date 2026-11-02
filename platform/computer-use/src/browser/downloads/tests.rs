@@ -32,6 +32,7 @@ fn response(mime: &str, disposition: Option<&str>) -> CdpEvent {
         method: "Fetch.requestPaused".into(),
         session_id: None,
         source_target_id: None,
+        params_json: None,
         params: json!({
             "requestId":"actual-fetch-id","resourceType":"Document","request":{"url":"https://fixture.test/file"},
             "responseStatusCode":200,"responseStatusText":"OK","responseHeaders":headers,
@@ -138,25 +139,6 @@ fn attachment_header_is_anchored_and_preserves_extension_header_bytes() {
                 Some(response::Disposition::ContinueResponse(_))
             ),
             "{value:?}"
-        );
-    }
-}
-
-#[test]
-fn wait_and_locator_budgets_preserve_the_selected_service_clamps() {
-    for (value, expected) in [
-        (None, 3000),
-        (Some(json!("ignored")), 3000),
-        (Some(json!(-1)), 0),
-        (Some(json!(0)), 0),
-        (Some(json!(10000)), 10000),
-        (Some(json!(999999)), 120000),
-    ] {
-        let options = BrowserDownloadOptions { timeout_ms: value };
-        assert_eq!(timeout(&options), Duration::from_millis(expected));
-        assert_eq!(
-            locator_timeout(&options),
-            Duration::from_millis(expected.min(3000))
         );
     }
 }

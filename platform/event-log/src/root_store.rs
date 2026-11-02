@@ -35,14 +35,17 @@ pub use effects::BrowserLeaseChildReceipt;
 mod family;
 mod gates;
 mod lifecycle;
+mod material;
 pub use execution::{
     InvocationEffectLease, InvocationEffects, SessionExecutionLease, SessionExecutionScope,
 };
 pub(crate) use lifecycle::{StageOwner, StageRegistration};
 mod applications;
 mod attachments;
+mod checkpoints;
 mod computer_apps;
 mod control;
+pub use checkpoints::{Checkout, HistoryCheckpoints};
 pub(crate) use computer_apps::activity::{
     record_computer_app_activity, require_computer_app_running,
 };
@@ -160,7 +163,6 @@ impl SessionStore {
 
 impl RootStore {
     /// Observe canonical owners once: control first, then partition order.
-    /// Disposable prepared actors are excluded.
     pub async fn sqlite_resource_stats(
         &self,
     ) -> Result<Vec<crate::connection::ConnectionResourceStats>, StoreError> {
@@ -220,10 +222,26 @@ impl RootStore {
             // Recovery also owns real workers. Install their independent close
             // observer before recovery can retain a failed SQL job or stage.
             store.recover_creations().await?;
-            // No admission or retirement can observe abandoned cross-partition
-            // auxiliary work as live after a process restart.
+            store.recover_checkpoints().await?;
+            // No admission or retirement can observe work abandoned by the
+            // previous owner as live after a process restart.
             store.recover_host_effects().await?;
             store.recover_auxiliary_models().await?;
+            store
+                .recover_invocations()
+                .await
+                .map_err(|error| match error {
+                    crate::recovery::RecoveryError::Store(error) => error,
+                    error => StoreError::InvalidTransition(error.to_string()),
+                })?;
+            store
+                .recover_shell_runs(crate::native_approvals::now_millis()?)
+                .await?;
+            store
+                .lifecycle
+                .as_mut()
+                .expect("Root lifecycle is installed before recovery")
+                .start_maintenance()?;
             Ok::<(), StoreError>(())
         }
         .await;
@@ -407,4 +425,58 @@ async fn pin_partition(
         .read(bindings.into_iter().map(gates::Key::Binding))
         .await?;
     Ok(owner.scoped(Arc::new((session_pins, binding_pins))))
+}
+
+impl RootStore {
+    pub async fn ready_native_approval_sessions(&self) -> Result<Vec<String>, StoreError> {
+        self.require_open()?;
+        let mut sessions = Vec::new();
+        for partition in &self.partitions {
+            sessions.extend(partition.ready_native_approval_sessions().await?);
+        }
+        sessions.sort();
+        sessions.dedup();
+        Ok(sessions)
+    }
+}
+
+impl RootStore {
+    pub async fn reconcile_activation_controls(&self) -> Result<(), StoreError> {
+        self.require_open()?;
+        for partition in &self.partitions {
+            partition.reconcile_activation_controls().await?;
+        }
+        Ok(())
+    }
+}
+
+impl RootStore {
+    pub async fn due_model_retry_sessions(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<Vec<String>, StoreError> {
+        self.require_open()?;
+        let mut candidates = Vec::new();
+        for partition in &self.partitions {
+            candidates.extend(partition.due_model_retry_candidates(now_unix_ms).await?);
+        }
+        candidates.sort();
+        Ok(candidates
+            .into_iter()
+            .map(|(_, _, session)| session)
+            .collect())
+    }
+    pub async fn next_model_retry_deadline(
+        &self,
+        now_unix_ms: u64,
+    ) -> Result<Option<u64>, StoreError> {
+        self.require_open()?;
+        let mut deadline = None;
+        for partition in &self.partitions {
+            if let Some(next) = partition.next_model_retry_deadline(now_unix_ms).await? {
+                deadline = Some(deadline.map_or(next, |saved: u64| saved.min(next)));
+            }
+        }
+        Ok(deadline)
+    }
 }

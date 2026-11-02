@@ -3,7 +3,9 @@
 // the browser's module loader. No eval or Function compilation is used.
 import { createChunkLoader } from "./loader.js";
 const host = globalThis.__nsh_browser_realm;
-Object.defineProperty(globalThis, "__nsh_import", { value: createChunkLoader(host.entry, host.live, url => import(url), host.prepareChunk) });
+Object.defineProperty(globalThis, "__nsh_import", { value: createChunkLoader(host.base, host.live, url => import(url), host.prepareChunk) });
+// Hot updates of development bundles are modules too, imported here.
+host.setImporter(url => import(url));
 if (host.modules.get("process")) Object.defineProperty(globalThis, "process", { value: host.modules.get("process").default, writable: true, configurable: true });
 Object.defineProperty(globalThis, "Buffer", { value: host.modules.get("buffer").Buffer, writable: true, configurable: true });
 // Keep browser WebCrypto and extend only this app realm with NSH utilities.

@@ -17,10 +17,10 @@
  * under the License.
  */
 
-use super::ownership::{Creator, Disposition, Lease, Origin};
+use super::ownership::{Creator, Disposition, Lease, MarkFailure, Origin, Retention, TabMark};
 use super::*;
 use cua_driver_core::browser::{
-    CleanupProof, ExtensionAttachmentPreparation, ExtensionBrowserProvider,
+    CleanupProof, ExtensionAdapterMode, ExtensionAttachmentPreparation, ExtensionBrowserProvider,
     ExtensionClaimCdpDrainProof, ExtensionClaimPreparationProof, ExtensionCreatedTab,
     ExtensionCreationReceipt, ExtensionEffectOwner, ExtensionFixedSessionReceipt,
     ExtensionGroupColor, ExtensionGroupPresentation, ExtensionHeader, ExtensionHeaderPolicyScope,
@@ -30,7 +30,21 @@ use cua_driver_core::browser::{
     ExtensionSessionHeaderProof, ExtensionSessionPopupRequest, ExtensionSessionPreparation,
     ExtensionSessionRequestRegistration, ExtensionUserTabsOrder, ExtensionWireContext,
 };
+fn mark_to_core(mark: TabMark) -> cua_driver_core::browser::ExtensionKeepStatus {
+    match mark {
+        TabMark::Handoff => cua_driver_core::browser::ExtensionKeepStatus::Handoff,
+        TabMark::Deliverable => cua_driver_core::browser::ExtensionKeepStatus::Deliverable,
+    }
+}
+fn mark_from_core(mark: cua_driver_core::browser::ExtensionKeepStatus) -> TabMark {
+    match mark {
+        cua_driver_core::browser::ExtensionKeepStatus::Handoff => TabMark::Handoff,
+        cua_driver_core::browser::ExtensionKeepStatus::Deliverable => TabMark::Deliverable,
+    }
+}
+
 mod fixed_session;
+mod upload;
 pub(super) use fixed_session::{
     FixedCleanupPurpose, FixedPresentationScope, configure_fixed_session_ui,
 };
@@ -39,10 +53,250 @@ use std::{
     collections::HashSet,
     sync::{
         Arc, Weak,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering},
     },
 };
 use tokio_util::sync::CancellationToken;
+pub(super) use upload::UploadControl;
+
+// Add beside the existing CallScope and Host implementations in extension.rs.
+struct UserContextReader<'call, 'invocation> {
+    scope: CallScope,
+    host: Arc<tokio::sync::Mutex<Host>>,
+    document: crate::BrowserDocument,
+    invocation: &'call crate::InvocationContext<'invocation>,
+    cancellation: &'call CancellationToken,
+}
+impl UserContextReader<'_, '_> {
+    async fn check(&self) -> Result<(), ToolError> {
+        check_input(self.cancellation)?;
+        self.host
+            .lock()
+            .await
+            .user_context_current(&self.scope, &self.document)?;
+        let authorization = self
+            .invocation
+            .browser_authorization()
+            .ok_or_else(|| failed("Browser site access requires Host authorization"))?;
+        for access in [
+            crate::BrowserAccess::Metadata {
+                document: self.document.clone(),
+            },
+            crate::BrowserAccess::Read {
+                document: self.document.clone(),
+            },
+        ] {
+            authorization
+                .check(access, self.cancellation.clone())
+                .await?;
+        }
+        self.host
+            .lock()
+            .await
+            .user_context_current(&self.scope, &self.document)?;
+        check_input(self.cancellation)
+    }
+}
+impl super::context::UserTabReader for UserContextReader<'_, '_> {
+    async fn read(
+        &self,
+        request: cua_driver_core::browser::BrowserUserTabRead,
+    ) -> Result<Value, ToolError> {
+        self.check().await?;
+        let tab_id = cua_driver_core::browser::parse_browser_tab_id(&self.document.tab_id)
+            .ok_or_else(|| failed("extension tab ID must convert to a positive safe integer"))?;
+        let value =
+            self.scope
+                .dispatch(
+                    self.scope
+                        .control
+                        .read_user_tab(tab_id, &self.document.url, request),
+                )
+                .await
+                .map_err(|error| match error.as_ref() {
+                    cua_driver_core::browser::ExtensionProviderError::ChromeRejected {
+                        message,
+                        ..
+                    }
+                    | cua_driver_core::browser::ExtensionProviderError::Refused {
+                        message, ..
+                    } if message == "The selected tab changed while being read" => failed(message),
+                    cua_driver_core::browser::ExtensionProviderError::OutcomeUnknown {
+                        details: Some(details),
+                        ..
+                    } if details.get("remoteMessage").and_then(Value::as_str)
+                        == Some("The selected tab changed while being read") =>
+                    {
+                        // Preserve the source error for export fallback decisions.
+                        // This does not erase the scope's logical Finish obligation.
+                        failed("The selected tab changed while being read")
+                    }
+                    error => provider::extension_error(error),
+                })?;
+        self.check().await?;
+        Ok(value)
+    }
+}
+impl Host {
+    fn user_context_current(
+        &self,
+        scope: &CallScope,
+        document: &crate::BrowserDocument,
+    ) -> Result<(), ToolError> {
+        let extension = scope
+            .provider
+            .extension()
+            .ok_or_else(|| failed("extension provider required"))?;
+        let browser = BrowserIdentity::of(&scope.provider, &extension.identity().generation)?;
+        self.known(&browser)?;
+        let tab = browser.tab(&document.tab_id);
+        if scope.purpose != CallPurpose::UserContext
+            || scope.target.as_deref() != Some(document.tab_id.as_str())
+            || extension.is_closed()
+            || document.browser_id != scope.provider.id()
+            || document.generation != extension.identity().generation
+            || !self.visible(&tab, scope.owner)
+        {
+            return Err(failed(
+                "user-tab context is outside its current visible provider scope",
+            ));
+        }
+        let state = self
+            .extension
+            .get(&(scope.owner, browser))
+            .ok_or_else(|| failed("user-tab context provider retired"))?;
+        let call = state
+            .calls
+            .get(&scope.context.operation_id)
+            .ok_or_else(|| failed("user-tab context lost its original Host operation"))?;
+        if state.current_turn.as_deref() != Some(scope.context.turn_id.as_str())
+            || state.retiring_turn.is_some()
+            || state.headers_unknown
+            || call.epoch != scope.epoch
+            || call.turn != scope.context.turn_id
+            || !call.purposes.contains(&CallPurpose::UserContext)
+            || call.controls.is_sealed()
+            || !Arc::ptr_eq(&call.issuing, &scope.issuing)
+            || !Arc::ptr_eq(&call.activation, &scope.activation)
+            || !Arc::ptr_eq(&call.controls, &scope.controls)
+        {
+            return Err(ToolError::CleanupUnconfirmed(
+                "user-tab context call is no longer current".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+impl Browsers {
+    pub(super) async fn user_tab_context(
+        &self,
+        browser_id: &str,
+        raw_id: &str,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<Value, ToolError> {
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .ok_or_else(|| failed("requested browser provider is unavailable"))?;
+        let extension = provider.extension().cloned().ok_or_else(|| {
+            failed("browser.user.getTabContext requires a connected extension adapter")
+        })?;
+        if !extension
+            .capabilities()
+            .map_err(provider::extension_error)?
+            .user_tab_context_read
+        {
+            return Err(failed(
+                "selected browser extension does not support browser.user.getTabContext",
+            ));
+        }
+        let id = cua_driver_core::browser::parse_browser_tab_id(raw_id)
+            .ok_or_else(|| failed("extension tab ID must convert to a positive safe integer"))?;
+        // Match the selected Original security path: the authorized URL comes
+        // from actual user inventory, never a model argument or a bound-tab URL.
+        let rows = extension
+            .list_user_tabs()
+            .await
+            .map_err(provider::extension_error)?;
+        let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
+        let host = self.host().await;
+        let url = {
+            let ledger = host.lock().await;
+            ledger.known(&browser)?;
+            if !ledger.visible(&browser.tab(&id.to_string()), self.owner) {
+                return Err(failed("selected user tab is not visible to this session"));
+            }
+            rows.iter()
+                .find(|tab| tab.id == id)
+                .and_then(|tab| tab.url.as_deref())
+                .filter(|url| !url.trim().is_empty())
+                .map(str::to_owned)
+                .ok_or_else(|| failed("Missing authorized user tab URL"))?
+        };
+        let parsed = reqwest::Url::parse(&url)
+            .map_err(|_| failed("Tab reads require an HTTP or HTTPS URL"))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(failed("Tab reads require an HTTP or HTTPS URL"));
+        }
+        let document = crate::BrowserDocument {
+            browser_id: provider.id().to_owned(),
+            generation: extension.identity().generation.clone(),
+            tab_id: id.to_string(),
+            url,
+        };
+        invocation
+            .authorize_browser(
+                crate::BrowserAccess::Metadata {
+                    document: document.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        invocation
+            .authorize_browser(
+                crate::BrowserAccess::Read {
+                    document: document.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        let scope = host.lock().await.extension_context(
+            self.owner,
+            &provider,
+            operation(invocation)?,
+            self.epoch,
+            CallTarget::UserContext {
+                tab: document.tab_id.clone(),
+            },
+            true,
+        )?;
+        let reader = UserContextReader {
+            scope,
+            host,
+            document,
+            invocation,
+            cancellation,
+        };
+        reader.check().await?;
+        let context = super::context::read_context(&reader, &reader.document.url).await?;
+        reader.check().await?;
+        let services = invocation
+            .prepare_browser_services(
+                crate::BrowserAccess::Read {
+                    document: reader.document.clone(),
+                },
+                cancellation,
+            )
+            .await?;
+        if let Some(files) = services.files {
+            reader.check().await?;
+            super::context::publish_document(context, files.as_ref(), cancellation).await
+        } else {
+            Ok(context)
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum ClaimIntent {
@@ -188,6 +442,72 @@ enum ClaimRetirement {
     Unknown(String),
 }
 
+/// One authorized replacement attempt in the existing Lease. The old Creator
+/// remains authoritative until a matched acquisition acknowledgement commits it.
+pub(super) struct HandoffTransfer {
+    requested: Creator,
+    operation: ExtensionHostOperation,
+    epoch: crate::desktop::NativeEpochId,
+    previous: ClaimState,
+    previous_parked: bool,
+    previous_retention: Retention,
+    unknown: Option<String>,
+    retained_completion: Option<u64>,
+    preparation_phase: Arc<AtomicU8>,
+    custody: Option<Box<cua_driver_core::browser::ExtensionKnownCustody>>,
+}
+const HANDOFF_RESERVED: u8 = 0;
+const HANDOFF_ENTERED: u8 = 1;
+const HANDOFF_RETIRED: u8 = 2;
+
+fn enter_handoff_preparation(
+    boundary: Option<&Arc<AtomicU8>>,
+) -> Result<(), Box<cua_driver_core::browser::ExtensionProviderError>> {
+    if let Some(phase) = boundary {
+        phase
+            .compare_exchange(
+                HANDOFF_RESERVED,
+                HANDOFF_ENTERED,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            )
+            .map_err(|_| {
+                Box::new(cua_driver_core::browser::ExtensionProviderError::Refused {
+                    kind: "retired_handoff_reservation".into(),
+                    message:
+                        "explicit handoff reservation retired before entering Core preparation"
+                            .into(),
+                    details: None,
+                })
+            })?;
+    }
+    Ok(())
+}
+
+impl HandoffTransfer {
+    fn matches(
+        &self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        context: &ExtensionHostOperation,
+        epoch: crate::desktop::NativeEpochId,
+    ) -> bool {
+        self.requested.owner == owner
+            && self.requested.provider == *provider
+            && self.operation == *context
+            && self.epoch == epoch
+    }
+}
+
+#[derive(Clone, Default)]
+enum RetainedPresentation {
+    #[default]
+    NotAttempted,
+    Pending,
+    Acknowledged(cua_driver_core::browser::ExtensionRetentionPresentationAck),
+    Failed(String),
+}
+
 #[derive(Clone, Default)]
 pub(super) struct ClaimState {
     claim: Option<ExtensionPhysicalClaim>,
@@ -195,6 +515,7 @@ pub(super) struct ClaimState {
     creation: Option<ExtensionCreationReceipt>,
     creation_operation: Option<CreatedOperation>,
     group: Option<ExtensionManagedGroupReceipt>,
+    retained_group_release: ControlCleanup,
     revoked: bool,
     headers_active: bool,
     active: bool,
@@ -219,6 +540,7 @@ pub(super) struct ClaimState {
     released: bool,
     closed: bool,
     presentation_error: Option<String>,
+    retained_presentation: RetainedPresentation,
 }
 impl ClaimState {
     fn finish_preparation_error(
@@ -484,16 +806,8 @@ struct ControlDrain {
 }
 impl ControlDrain {
     async fn wait(self) -> Result<(), ToolError> {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
         for gate in self.gates {
-            if tokio::time::timeout_at(deadline, gate.idle())
-                .await
-                .is_err()
-            {
-                return Err(ToolError::CleanupUnconfirmed(
-                    "extension control futures remain active; original custody retained".to_owned(),
-                ));
-            }
+            gate.idle().await;
         }
         Ok(())
     }
@@ -532,12 +846,18 @@ impl CallContext {
 enum CallPurpose {
     Tab(Origin),
     SessionInventory,
+    UserContext,
+    SessionPresentation,
+    SessionHistory,
     FixedConfiguration,
     Retirement,
 }
 enum CallTarget {
     Tab { origin: Origin, tab: Option<String> },
     SessionInventory,
+    UserContext { tab: String },
+    SessionPresentation,
+    SessionHistory,
     FixedConfiguration { tab: String },
     Retirement,
 }
@@ -613,7 +933,32 @@ pub(super) struct TransportCall {
     _agent: Option<AgentTransportCall>,
 }
 
+/// Lifetime of one already admitted owned-input sequence. Holding this is not
+/// a release acknowledgement; failed cleanup keeps it on the canonical lease.
+pub(super) struct OwnedInputAdmission {
+    _transport: Option<TransportCall>,
+    _control: Option<ControlPermit>,
+}
+
 impl PreparationTransport {
+    pub(super) async fn before_owned_input(&self) -> Result<OwnedInputAdmission, ToolError> {
+        let transport = self.before_request().await?;
+        let control = transport
+            .as_ref()
+            .and_then(|call| call._agent.as_ref())
+            .map(|call| {
+                call._scope
+                    .controls
+                    .enter()
+                    .map_err(provider::extension_error)
+            })
+            .transpose()?;
+        Ok(OwnedInputAdmission {
+            _transport: transport,
+            _control: control,
+        })
+    }
+
     pub(super) fn with_effect_scope(&self, scope: Arc<dyn crate::BrowserEffectScope>) -> Self {
         match self {
             Self::NotRequired => Self::NotRequired,
@@ -728,21 +1073,20 @@ impl CallScope {
         }
     }
 
-    async fn dispatch<T, F>(
+    async fn dispatch<T, E, F>(
         &self,
         future: F,
     ) -> Result<T, Box<cua_driver_core::browser::ExtensionProviderError>>
     where
-        F: std::future::Future<
-                Output = Result<T, cua_driver_core::browser::ExtensionProviderError>,
-            >,
+        F: std::future::Future<Output = Result<T, E>>,
+        E: Into<Box<cua_driver_core::browser::ExtensionProviderError>>,
     {
         let _control = self.controls.enter()?;
         let _dispatch = self.enter_retirement_dispatch();
         // Core records logical registration before transport admission on this
         // exact view. A completed local preflight refusal registers nothing;
         // a registered request keeps its duty regardless of its outcome.
-        future.await.map_err(Box::new)
+        future.await.map_err(Into::into)
     }
     async fn dispatch_retirement<F: std::future::Future>(&self, future: F) -> F::Output {
         let _dispatch = self.enter_retirement_dispatch();
@@ -892,7 +1236,7 @@ impl SessionMetadataCall {
     pub(super) fn generation(&self) -> &str {
         &self.request.generation
     }
-    async fn check(&self) -> Result<(), ToolError> {
+    pub(super) async fn check(&self) -> Result<(), ToolError> {
         self.host
             .lock()
             .await
@@ -923,6 +1267,13 @@ impl SessionMetadataCall {
             .dispatch(self.scope.control.list_session_tabs(&ids))
             .await;
         let rows = result.map_err(provider::extension_error)?;
+        // This successful scoped result proves the actual turn activated even
+        // if a later Host authorization check rejects use of the observations.
+        self.host.lock().await.resume_marked_handoffs(
+            self.scope.owner,
+            &self.scope.provider,
+            &self.scope.context.turn_id,
+        );
         self.check().await?;
         let ledger = self.host.lock().await;
         ledger.extension_preparation_current(&self.scope, &self.request)?;
@@ -947,7 +1298,7 @@ impl SessionMetadataCall {
     }
 }
 
-async fn session_metadata_call(
+pub(super) async fn session_metadata_call(
     host: Arc<tokio::sync::Mutex<Host>>,
     owner: uuid::Uuid,
     provider: &Provider,
@@ -1001,6 +1352,54 @@ async fn session_metadata_call(
     })
 }
 
+async fn session_surface_call(
+    host: Arc<tokio::sync::Mutex<Host>>,
+    owner: uuid::Uuid,
+    provider: &Provider,
+    epoch: crate::desktop::NativeEpochId,
+    call: BrowserCall<'_>,
+    history: bool,
+) -> Result<SessionMetadataCall, ToolError> {
+    check_input(call.cancellation)?;
+    register(&host, owner, provider).await?;
+    let scope = host.lock().await.extension_context(
+        owner,
+        provider,
+        operation(call.invocation)?,
+        epoch,
+        if history {
+            CallTarget::SessionHistory
+        } else {
+            CallTarget::SessionPresentation
+        },
+        true,
+    )?;
+    let request = scope
+        .authorize_preparation(
+            &host,
+            call.invocation,
+            if history {
+                crate::BrowserPreparationTarget::SessionHistory
+            } else {
+                crate::BrowserPreparationTarget::SessionPresentation
+            },
+            call.cancellation,
+        )
+        .await?;
+    let authorization = call
+        .invocation
+        .browser_authorization()
+        .ok_or_else(|| failed("browser session surface requires current Host authorization"))?;
+    Ok(SessionMetadataCall {
+        host,
+        scope,
+        request,
+        authorization,
+        cancellation: call.cancellation.clone(),
+        history: Vec::new(),
+    })
+}
+
 enum FinishPhase {
     Required,
     Pending,
@@ -1010,14 +1409,18 @@ enum FinishPhase {
 }
 pub(super) struct ProviderState {
     provider: Provider,
-    current_turn: Option<String>,
+    pub(super) current_turn: Option<String>,
+    pub(super) pending_viewport: Option<capability::viewport::Pending>,
     retiring_turn: Option<String>,
     logical_active: Option<String>,
+    session_group_title: Option<String>,
     calls: HashMap<String, CallContext>,
     applied: HashSet<u64>,
     finish_phases: HashMap<String, FinishPhase>,
     session_headers: Option<ExtensionSessionHeaderProof>,
     headers_unknown: bool,
+    uploads: upload::Custody,
+    owner_parked: bool,
 }
 
 impl ProviderState {
@@ -1139,26 +1542,30 @@ fn context_operation(turn: &str) -> ExtensionHostOperation {
 pub(super) fn tab_info(tab: &cua_driver_core::browser::ExtensionTabInfo) -> Value {
     let mut result = json!({"id":tab.id.to_string()});
     for (key, value) in [
-        ("title", tab.title.as_ref()),
-        ("url", tab.url.as_ref()),
-        ("tabGroup", tab.group_title.as_ref()),
+        ("titleJson", tab.title.as_ref()),
+        ("tabGroupJson", tab.group_title.as_ref()),
     ] {
         if let Some(value) = value {
             result[key] = json!(value);
         }
     }
-    if let Some(value) = &tab.last_opened {
-        result["lastOpened"] = json!(value);
-    }
-    if let Some(value) = &tab.provider_tab_id {
-        result["providerTabId"] = json!(value);
+    for (key, value) in [
+        ("url", tab.url.as_ref()),
+        ("lastOpened", tab.last_opened.as_ref()),
+        ("providerTabId", tab.provider_tab_id.as_ref()),
+    ] {
+        if let Some(value) = value {
+            result[key] = json!(value);
+        }
     }
     result
 }
 fn managed_tab_info(tab: &cua_driver_core::browser::ExtensionTabInfo) -> Value {
     let mut result = json!({"id":tab.id.to_string()});
+    if let Some(value) = &tab.title {
+        result["titleJson"] = json!(value);
+    }
     for (key, value) in [
-        ("title", tab.title.as_ref()),
         ("url", tab.url.as_ref()),
         ("providerTabId", tab.provider_tab_id.as_ref()),
     ] {
@@ -1299,6 +1706,17 @@ impl Host {
         Ok(lease.origin)
     }
 
+    /// The logical session active tab; this never consults operating-system focus.
+    pub(super) fn logical_active(
+        &self,
+        owner: uuid::Uuid,
+        browser: &BrowserIdentity,
+    ) -> Option<String> {
+        self.extension
+            .get(&(owner, browser.clone()))
+            .and_then(|state| state.logical_active.clone())
+    }
+
     fn extension_preparation_current(
         &self,
         scope: &CallScope,
@@ -1359,11 +1777,25 @@ impl Host {
                 }
                 scope.target.as_ref()
             }
-            crate::BrowserPreparationTarget::SessionInventory => {
-                if scope.target.is_some() || !call.purposes.contains(&CallPurpose::SessionInventory)
+            crate::BrowserPreparationTarget::SessionInventory
+            | crate::BrowserPreparationTarget::SessionPresentation
+            | crate::BrowserPreparationTarget::SessionHistory => {
+                let purpose = match &request.target {
+                    crate::BrowserPreparationTarget::SessionInventory => {
+                        CallPurpose::SessionInventory
+                    }
+                    crate::BrowserPreparationTarget::SessionPresentation => {
+                        CallPurpose::SessionPresentation
+                    }
+                    crate::BrowserPreparationTarget::SessionHistory => CallPurpose::SessionHistory,
+                    _ => unreachable!(),
+                };
+                if scope.target.is_some()
+                    || scope.purpose != purpose
+                    || !call.purposes.contains(&purpose)
                 {
                     return Err(failed(
-                        "extension session metadata has no current inventory call",
+                        "extension session surface has no current exact-purpose call",
                     ));
                 }
                 None
@@ -1384,6 +1816,15 @@ impl Host {
             ) && extension.capabilities().is_ok_and(|caps| {
                 caps.session_preparation == ExtensionSessionPreparation::ExplicitFixed
             });
+            // A handed-off resource is still owned by this same Session, but
+            // carries no physical claim. Only a newly authorized reservation
+            // may prepare it; ClaimedTab/CDP checks keep their exact-turn rule.
+            let prospective_handoff = matches!(
+                request.target,
+                crate::BrowserPreparationTarget::ReservedTab { .. }
+            ) && matches!(lease.retention, Retention::Handoff)
+                && state.claim.is_none()
+                && state.physical_epoch.is_none();
             let logical_fixed = prospective_fixed
                 || matches!(
                     &request.target,
@@ -1391,11 +1832,21 @@ impl Host {
                 ) && extension.capabilities().is_ok_and(|caps| {
                     caps.session_preparation == ExtensionSessionPreparation::ExplicitFixed
                 });
-            if lease.creator.owner != scope.owner
-                || lease.creator.provider != scope.provider
+            let prospective_transfer =
+                matches!(
+                    request.target,
+                    crate::BrowserPreparationTarget::ReservedTab { .. }
+                ) && lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+                    attempt.matches(scope.owner, &scope.provider, &scope.context, scope.epoch)
+                        && attempt.unknown.is_none()
+                });
+            if (!prospective_transfer
+                && (lease.creator.owner != scope.owner || lease.creator.provider != scope.provider))
                 || lease.creator.generation != request.generation
                 || (!configuration
                     && !prospective_fixed
+                    && !prospective_handoff
+                    && !prospective_transfer
                     && lease.creator.turn != scope.context.turn_id)
                 || !matches!(lease.disposition, Disposition::Live)
                 || (!logical_fixed && (state.revoked || state.cleanup_started || state.released))
@@ -1736,7 +2187,10 @@ impl Host {
 
     fn acquisition(&self, owner: uuid::Uuid, identity: &TabIdentity) -> Option<Acquisition> {
         let lease = self.tabs.get(identity)?;
-        if lease.creator.owner != owner || !matches!(lease.disposition, Disposition::Live) {
+        if lease.creator.owner != owner
+            || !matches!(lease.disposition, Disposition::Live)
+            || matches!(lease.retention, Retention::Handoff)
+        {
             return None;
         }
         let state = lease.extension.as_ref()?;
@@ -1825,6 +2279,23 @@ impl Host {
                         .map(|record| (record.sequence, identity.target.clone()))
                 }),
         );
+        // A handoff keeps logical ownership, not its old physical claim. The
+        // retained real insertion sequence permits scoped metadata candidates
+        // after epoch reset without inventing an acquisition or a site grant.
+        known.extend(self.tabs.iter().filter_map(|(identity, lease)| {
+            (identity.browser == *browser
+                && lease.creator.owner == owner
+                && matches!(lease.disposition, Disposition::Live)
+                && lease.extension.as_ref().is_some_and(|state| {
+                    !state.closed && state.unknown.is_none() && state.cdp_effect_unknown.is_none()
+                }))
+            .then(|| {
+                lease
+                    .extension_sequence
+                    .map(|sequence| (sequence, identity.target.clone()))
+            })
+            .flatten()
+        }));
         // Several wrappers can retain the same real acquisition. Use the newest
         // issued acquisition order, never raw-ID/time order or a metadata row.
         known.sort_unstable_by_key(|(sequence, _)| std::cmp::Reverse(*sequence));
@@ -1952,6 +2423,9 @@ impl Host {
         let (purpose, target) = match target {
             CallTarget::Tab { origin, tab } => (CallPurpose::Tab(origin), tab),
             CallTarget::SessionInventory => (CallPurpose::SessionInventory, None),
+            CallTarget::UserContext { tab } => (CallPurpose::UserContext, Some(tab)),
+            CallTarget::SessionPresentation => (CallPurpose::SessionPresentation, None),
+            CallTarget::SessionHistory => (CallPurpose::SessionHistory, None),
             CallTarget::FixedConfiguration { tab } => (CallPurpose::FixedConfiguration, Some(tab)),
             CallTarget::Retirement => (CallPurpose::Retirement, None),
         };
@@ -1961,6 +2435,20 @@ impl Host {
         let identity = BrowserIdentity::of(provider, &extension.identity().generation)?;
         if activate {
             self.known(&identity)?;
+            // A new logical turn would invalidate an older retained input's
+            // actual wire context, including when claiming a sibling tab.
+            // Same-turn body preparation still uses the original admission.
+            for lease in self
+                .tabs
+                .values()
+                .filter(|lease| lease.creator.owner == owner && lease.creator.provider == *provider)
+            {
+                if let Some(input) = &lease.input
+                    && !input.belongs(Some(&context.turn_id), None)
+                {
+                    input.check_settled()?;
+                }
+            }
         }
         if activate
             && self.tabs.values().any(|lease| {
@@ -1982,20 +2470,23 @@ impl Host {
                         }))
             })
         {
-            return Err(ToolError::CleanupUnconfirmed("previous extension attachment settlement must finish before this provider admits more effects".into()));
+            return Err(ToolError::Failed("previous extension attachment settlement must finish before this provider admits more effects".into()));
         }
         let state = self
             .extension
             .get_mut(&(owner, identity))
             .ok_or_else(|| failed("extension provider is not registered to this Session owner"))?;
+        if state.owner_parked {
+            return Err(failed("extension owner has permanently retired"));
+        }
         if activate && state.retiring_turn.is_some() {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "extension turn cleanup must settle before this provider admits another effect"
                     .into(),
             ));
         }
         if activate && state.headers_unknown {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "extension session header state remains uncertain".into(),
             ));
         }
@@ -2007,7 +2498,7 @@ impl Host {
         ) && (state.retiring_turn.is_some()
             || state.current_turn.as_deref() != Some(&context.turn_id))
         {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "extension call no longer belongs to the current live turn".to_owned(),
             ));
         }
@@ -2076,6 +2567,259 @@ impl Host {
             purpose,
         })
     }
+    fn begin_handoff_transfer(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        operation: &ExtensionHostOperation,
+        epoch: crate::desktop::NativeEpochId,
+        target: &str,
+    ) -> Result<bool, ToolError> {
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("extension provider required"))?;
+        let browser = BrowserIdentity::of(provider, &extension.identity().generation)?;
+        self.known(&browser)?;
+        self.check_extension_binding(&browser.tab(target))?;
+        self.check_owned_input(&browser.tab(target))?;
+        let Some(lease) = self.tabs.get_mut(&browser.tab(target)) else {
+            return Ok(false);
+        };
+        if lease.handoff_transfer.is_some() {
+            return Err(unknown(
+                "explicit handoff claim remains unsettled; it was not replayed",
+            ));
+        }
+        let same_parked =
+            lease.creator.owner == owner && matches!(lease.disposition, Disposition::Parked);
+        if !matches!(lease.retention, Retention::Handoff) && !same_parked {
+            return Ok(false);
+        }
+        if (!same_parked && lease.creator.provider != *provider)
+            || lease.creator.generation != extension.identity().generation
+        {
+            return Err(failed(
+                "explicit handoff claim changed its connected provider",
+            ));
+        }
+        let state = lease
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("handoff lost logical custody"))?;
+        if state.claim.is_some()
+            || state.physical_epoch.is_some()
+            || state.physical_cleanup.is_some()
+            || state.unknown.is_some()
+            || state.cdp_effect_unknown.is_some()
+            || !state.fixed_preparation.settled()
+            || !state.preparation_effects.settled()
+        {
+            return Err(unknown("handoff still has physical or uncertain custody"));
+        }
+        lease.handoff_transfer = Some(Box::new(HandoffTransfer {
+            requested: Creator {
+                owner,
+                turn: operation.turn_id.clone(),
+                provider: provider.clone(),
+                generation: extension.identity().generation.clone(),
+            },
+            operation: operation.clone(),
+            epoch,
+            previous: state.clone(),
+            previous_parked: matches!(lease.disposition, Disposition::Parked),
+            previous_retention: lease.retention.clone(),
+            unknown: None,
+            retained_completion: None,
+            preparation_phase: Arc::new(AtomicU8::new(HANDOFF_RESERVED)),
+            custody: None,
+        }));
+        lease.extension = Some(ClaimState::default());
+        lease.disposition = Disposition::Live;
+        Ok(true)
+    }
+
+    fn handoff_preparation_boundary(
+        &self,
+        scope: &CallScope,
+        identity: &TabIdentity,
+    ) -> Option<Arc<AtomicU8>> {
+        self.tabs
+            .get(identity)
+            .and_then(|lease| lease.handoff_transfer.as_ref())
+            .filter(|attempt| {
+                attempt.matches(scope.owner, &scope.provider, &scope.context, scope.epoch)
+            })
+            .map(|attempt| attempt.preparation_phase.clone())
+    }
+
+    fn rollback_owner_unentered_handoffs(
+        &mut self,
+        owner: uuid::Uuid,
+        adapter: Option<ExtensionAdapterMode>,
+    ) {
+        let calls: Vec<_> = self
+            .tabs
+            .values()
+            .filter_map(|lease| {
+                let attempt = lease.handoff_transfer.as_ref()?;
+                ((attempt.requested.owner == owner || lease.creator.owner == owner)
+                    && adapter.is_none_or(|adapter| {
+                        lease.creator.provider.extension_adapter() == Some(adapter)
+                    }))
+                .then(|| (attempt.requested.owner, attempt.requested.provider.clone()))
+            })
+            .collect();
+        for (requested, provider) in calls {
+            self.rollback_unentered_handoffs(requested, &provider);
+        }
+    }
+
+    fn rollback_unentered_handoffs(&mut self, owner: uuid::Uuid, provider: &Provider) {
+        let candidates: Vec<_> = self
+            .tabs
+            .iter()
+            .filter_map(|(identity, lease)| {
+                let attempt = lease.handoff_transfer.as_ref()?;
+                if attempt.requested.owner != owner
+                    || attempt.requested.provider != *provider
+                    || attempt.preparation_phase.load(Ordering::SeqCst) != HANDOFF_RESERVED
+                    || attempt.retained_completion.is_some()
+                    || attempt.unknown.is_some()
+                    || attempt.custody.is_some()
+                {
+                    return None;
+                }
+                let call_idle = self
+                    .extension
+                    .get(&(owner, identity.browser.clone()))
+                    .and_then(|state| state.calls.get(&attempt.operation.operation_id))
+                    .is_none_or(|call| {
+                        Arc::strong_count(&call.issuing) == 1
+                            && call.issuing.load(Ordering::SeqCst) == 0
+                            && call.controls.is_idle()
+                    });
+                call_idle.then(|| {
+                    (
+                        identity.clone(),
+                        attempt.operation.clone(),
+                        attempt.preparation_phase.clone(),
+                        self.extension
+                            .get(&(owner, identity.browser.clone()))
+                            .and_then(|state| state.calls.get(&attempt.operation.operation_id))
+                            .map(|call| call.controls.clone()),
+                    )
+                })
+            })
+            .collect();
+        for (identity, operation, phase, controls) in candidates {
+            if let Some(controls) = controls {
+                controls.seal();
+            }
+            if phase
+                .compare_exchange(
+                    HANDOFF_RESERVED,
+                    HANDOFF_RETIRED,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                self.rollback_handoff_transfer(&identity, owner, &operation);
+            }
+        }
+    }
+
+    fn rollback_handoff_transfer(
+        &mut self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        operation: &ExtensionHostOperation,
+    ) -> bool {
+        let Some(lease) = self.tabs.get_mut(identity) else {
+            return false;
+        };
+        if !lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+            attempt.requested.owner == owner
+                && attempt.operation == *operation
+                && attempt.unknown.is_none()
+                && attempt.custody.is_none()
+        }) {
+            return false;
+        }
+        let attempt = lease
+            .handoff_transfer
+            .take()
+            .expect("matched prospective handoff");
+        attempt
+            .preparation_phase
+            .store(HANDOFF_RETIRED, Ordering::SeqCst);
+        lease.extension = Some(attempt.previous);
+        lease.retention = attempt.previous_retention;
+        lease.disposition = if attempt.previous_parked {
+            Disposition::Parked
+        } else {
+            Disposition::Live
+        };
+        true
+    }
+
+    /// Called only with the original call gate's unentered fact or Core's
+    /// opaque typed no-dispatch evidence, never a generic remote refusal.
+    fn settle_undispatched_preparation(&mut self, scope: &CallScope, identity: &TabIdentity) {
+        if self.rollback_handoff_transfer(identity, scope.owner, &scope.context) {
+            return;
+        }
+        if let Some(lease) = self.tabs.get_mut(identity)
+            && lease.creator.owner == scope.owner
+            && lease.creator.provider == scope.provider
+            && lease.handoff_transfer.is_none()
+            && let Some(state) = &mut lease.extension
+            && matches!(&state.user_preparation, UserPreparation::Pending(issued) if issued == &scope.context)
+        {
+            state.user_preparation = UserPreparation::NotAttempted;
+        }
+    }
+
+    fn commit_handoff_transfer(
+        &mut self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        context: &ExtensionHostOperation,
+        epoch: crate::desktop::NativeEpochId,
+    ) -> Result<(), ToolError> {
+        let Some(lease) = self.tabs.get(identity) else {
+            return Err(unknown("claim ACK lost its lease"));
+        };
+        let Some(attempt) = lease.handoff_transfer.as_ref() else {
+            return Ok(());
+        };
+        if !attempt.matches(owner, provider, context, epoch) || attempt.unknown.is_some() {
+            return Err(unknown("claim ACK changed its pending handoff operation"));
+        }
+        // Allocate only after the matched ACK; metadata selection never acquires.
+        let sequence = self.allocate_extension_sequence()?;
+        let lease = self
+            .tabs
+            .get_mut(identity)
+            .expect("validated handoff lease");
+        let attempt = lease
+            .handoff_transfer
+            .take()
+            .expect("validated handoff attempt");
+        let foreign = lease.creator.owner != owner;
+        lease.creator = attempt.requested;
+        if foreign {
+            lease.origin = Origin::UserClaimed;
+        }
+        lease.extension_sequence = Some(sequence);
+        lease.retention = Retention::Unmarked;
+        lease.disposition = Disposition::Live;
+        // The fresh preparation remains in lease.extension. Previous creation,
+        // group, physical tokens and old grants are deliberately not inherited.
+        Ok(())
+    }
+
     fn extension_reserve(
         &mut self,
         owner: uuid::Uuid,
@@ -2090,7 +2834,13 @@ impl Host {
         let browser = BrowserIdentity::of(provider, &extension.identity().generation)?;
         self.known(&browser)?;
         let identity = browser.tab(target);
+        self.check_extension_binding(&identity)?;
         if let Some(lease) = self.tabs.get(&identity) {
+            if lease.handoff_transfer.is_some() {
+                return Err(ToolError::CleanupUnconfirmed(
+                    "explicit handoff claim remains unsettled; it was not replayed".into(),
+                ));
+            }
             if lease.creator.owner != owner {
                 return Err(failed("tab_owned_by_another_session"));
             }
@@ -2111,6 +2861,8 @@ impl Host {
         self.tabs.insert(
             identity,
             Lease {
+                viewport: None,
+                input: None,
                 extension_sequence: None,
                 creator: Creator {
                     owner,
@@ -2120,16 +2872,21 @@ impl Host {
                 },
                 origin,
                 disposition: Disposition::Live,
+                retention: Retention::Unmarked,
+                handoff_transfer: None,
+                logical_lease: None,
+                provider_tab_id: None,
                 extension: Some(ClaimState::default()),
             },
         );
         Ok(())
     }
-    async fn reconcile_provider(
+    pub(super) async fn reconcile_provider(
         &mut self,
         owner: uuid::Uuid,
         provider: &Provider,
     ) -> Result<bool, ToolError> {
+        self.rollback_unentered_handoffs(owner, provider);
         let extension = provider
             .extension()
             .ok_or_else(|| failed("extension provider required"))?;
@@ -2148,6 +2905,19 @@ impl Host {
                 return Err(unknown(
                     "extension completion belongs to another physical generation",
                 ));
+            }
+            if completion
+                .wire_context
+                .as_ref()
+                .is_some_and(|context| context.host_session_id() != owner.to_string())
+                || completion.host_operation.as_ref().is_some_and(|context| {
+                    !self
+                        .extension
+                        .get(&(owner, browser.clone()))
+                        .is_some_and(|state| state.calls.contains_key(&context.operation_id))
+                })
+            {
+                continue;
             }
             if completion.outcome.is_none() {
                 unsettled = true;
@@ -2183,6 +2953,17 @@ impl Host {
                     .recover_completion(completion.id)
                     .await
                     .map_err(provider::extension_error)?;
+                if let Some(context) = &completion.host_operation {
+                    for lease in self.tabs.values_mut() {
+                        if let Some(attempt) = &mut lease.handoff_transfer
+                            && attempt.requested.owner == owner
+                            && attempt.requested.provider == *provider
+                            && attempt.operation == *context
+                        {
+                            attempt.retained_completion = Some(completion.id);
+                        }
+                    }
+                }
                 let completed = cua_driver_core::browser::ExtensionOperationCompletion {
                     id: completion.id,
                     provider: completion.provider.clone(),
@@ -2205,7 +2986,14 @@ impl Host {
                         .and_then(|state| state.physical_cleanup.as_ref())
                         .is_some_and(|cleanup| cleanup.completion_id() == completion.id)
             });
-            if !retained_cleanup {
+            let retained_transfer = self.tabs.values().any(|lease| {
+                lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+                    attempt.requested.owner == owner
+                        && attempt.requested.provider == *provider
+                        && attempt.retained_completion == Some(completion.id)
+                })
+            });
+            if !retained_cleanup && !retained_transfer {
                 extension
                     .acknowledge_completion(completion.id)
                     .await
@@ -2234,6 +3022,69 @@ impl Host {
         }
         Ok(unsettled)
     }
+    fn apply_mark_result(
+        &mut self,
+        identity: &TabIdentity,
+        owner: uuid::Uuid,
+        context: Option<&ExtensionHostOperation>,
+        epoch: crate::desktop::NativeEpochId,
+        expected_status: Option<TabMark>,
+        result: Result<(), MarkFailure>,
+    ) -> Result<(), ToolError> {
+        let operation =
+            context.ok_or_else(|| unknown("tab mark lost its issued Host operation"))?;
+        let attempt = match &self
+            .tabs
+            .get(identity)
+            .ok_or_else(|| unknown("tab mark lost its owned lease"))?
+            .retention
+        {
+            Retention::Pending(attempt) | Retention::Unknown { attempt, .. } => attempt.clone(),
+            _ => return Err(unknown("tab mark reply has no pending issued intent")),
+        };
+        if !attempt.matches(operation, epoch)
+            || expected_status.is_some_and(|status| status != attempt.status())
+        {
+            return Err(unknown(
+                "tab mark reply changed its issued turn, operation or epoch",
+            ));
+        }
+        self.mark_result(identity, owner, &attempt, result)
+    }
+
+    fn resume_marked_handoffs(&mut self, owner: uuid::Uuid, provider: &Provider, turn: &str) {
+        let mut resumed = Vec::new();
+        for (identity, lease) in &mut self.tabs {
+            if lease.creator.owner == owner
+                && lease.creator.provider == *provider
+                && lease.handoff_transfer.is_none()
+                && matches!(lease.retention, Retention::Handoff)
+                && lease.creator.turn != turn
+            {
+                lease.creator.turn = turn.to_owned();
+                lease.retention = Retention::Unmarked;
+                resumed.push((
+                    lease.extension_sequence.unwrap_or(u64::MAX),
+                    identity.target.clone(),
+                    lease.extension.as_ref().is_some_and(|state| state.active),
+                ));
+            }
+        }
+        resumed.sort_unstable_by_key(|row| row.0);
+        let active = resumed
+            .iter()
+            .find(|row| row.2)
+            .or_else(|| resumed.first())
+            .map(|row| row.1.clone());
+        if let Some(active) = active
+            && let Some(extension) = provider.extension()
+            && let Ok(browser) = BrowserIdentity::of(provider, &extension.identity().generation)
+            && let Some(state) = self.extension.get_mut(&(owner, browser))
+        {
+            state.logical_active = Some(active);
+        }
+    }
+
     fn apply_extension_cleanup(
         &mut self,
         owner: uuid::Uuid,
@@ -2255,6 +3106,9 @@ impl Host {
         }
         if let Some(target) = target
             && let Some(lease) = self.tabs.get_mut(&browser.tab(target))
+            && lease.creator.owner == owner
+            && lease.creator.provider == *provider
+            && lease.handoff_transfer.is_none()
             && let Some(state) = &mut lease.extension
         {
             match operation {
@@ -2297,6 +3151,16 @@ impl Host {
         identity: &TabIdentity,
         control: &ExtensionBrowserProvider,
     ) -> Result<(), ToolError> {
+        let owned = self.tabs.get(identity).is_some_and(|lease| {
+            lease.creator.owner == owner
+                && lease.creator.provider == *provider
+                && lease.handoff_transfer.is_none()
+        });
+        if !owned {
+            return Err(unknown(
+                "old cleanup cannot retire another owner's resource",
+            ));
+        }
         // This folds extension-local facts only. The outer Host's original journal
         // and retained effect futures keep their own T1/T2 custody independently.
         if self.reconcile_provider(owner, provider).await? {
@@ -2413,41 +3277,160 @@ impl Host {
         let target =
             target.ok_or_else(|| unknown("extension preparation ACK lost its issued target"))?;
         if tab.id.to_string() != target {
-            // Leave the original completion retained and its current
-            // Pending/Unknown custody untouched; this is not an ACK.
             return Err(unknown(
                 "extension preparation ACK changed its issued target",
             ));
         }
-        let generation = &provider
+        let extension = provider
             .extension()
-            .ok_or_else(|| unknown("extension preparation ACK lost its provider"))?
-            .identity()
-            .generation;
+            .ok_or_else(|| unknown("preparation ACK lost its provider"))?;
+        let generation = &extension.identity().generation;
+        let persistent = extension
+            .capabilities()
+            .is_ok_and(|caps| caps.logical_lease_persistence);
+        let provider_tab_id = tab.provider_tab_id.filter(|id| !id.is_empty());
+        let logical_lease = if persistent { tab.logical_lease } else { None };
         let identity = browser.tab(&target);
+        let acquired = match &receipt {
+            PreparedOperation::Acquired { operation, epoch } => Some((operation, *epoch)),
+            _ => None,
+        };
+        if let Some(logical) = &logical_lease {
+            if logical.tab_id.to_string() != target
+                || logical.host_session_id != owner.to_string()
+                || acquired.is_some_and(|(operation, _)| logical.host_turn_id != operation.turn_id)
+                || logical.phase != cua_driver_core::browser::ExtensionLogicalLeasePhase::Live
+            {
+                return Err(unknown(
+                    "acquisition logical projection changed its issued scope",
+                ));
+            }
+        } else if acquired.is_some() && persistent {
+            return Err(unknown(
+                "persistent acquisition omitted its logical projection",
+            ));
+        }
         let lease = self
             .tabs
             .get(&identity)
-            .ok_or_else(|| unknown("extension preparation ACK lost its reserved lease"))?;
-        if lease.creator.owner != owner
-            || lease.creator.provider != *provider
+            .ok_or_else(|| unknown("preparation ACK lost its reserved lease"))?;
+        let prospective = lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+            acquired.is_some_and(|(operation, epoch)| {
+                attempt.matches(owner, provider, operation, epoch)
+            }) && attempt.unknown.is_none()
+        });
+        if (!prospective && (lease.creator.owner != owner || lease.creator.provider != *provider))
             || &lease.creator.generation != generation
             || lease.extension.is_none()
         {
             return Err(unknown(
-                "extension preparation ACK changed its reserved owner or custody",
+                "preparation ACK changed its reserved owner or custody",
             ));
         }
-        let sequence = match (&receipt, lease.extension_sequence) {
+        if let Some((operation, epoch)) = acquired {
+            let current = self
+                .extension
+                .get(&(owner, browser.clone()))
+                .is_some_and(|state| {
+                    !state.owner_parked
+                        && state.retiring_turn.is_none()
+                        && state.current_turn.as_deref() == Some(operation.turn_id.as_str())
+                        && state
+                            .calls
+                            .get(&operation.operation_id)
+                            .is_some_and(|call| {
+                                call.epoch == epoch
+                                    && call.turn == operation.turn_id
+                                    && !call.controls.is_sealed()
+                            })
+                });
+            if !current {
+                return Err(unknown(
+                    "late acquisition ACK is retained for cleanup after its call retired",
+                ));
+            }
+        }
+        // All receipt, current-call and projection checks precede changing Creator.
+        // Fixed preparation has already retained and validated its exact receipt.
+        if let Some((operation, epoch)) = acquired {
+            self.commit_handoff_transfer(&identity, owner, provider, operation, epoch)?;
+        }
+        let chatgpt = provider.extension_adapter() == Some(ExtensionAdapterMode::Chatgpt);
+        let previous_logical = acquired.and_then(|_| {
+            self.tabs.iter().find_map(|(old, lease)| {
+                if *old == identity || lease.creator.owner != owner {
+                    return None;
+                }
+                let projected = logical_lease.as_ref().is_some_and(|logical| {
+                    lease.logical_lease.as_ref().is_some_and(|previous| {
+                        previous.chrome_session_id == logical.chrome_session_id
+                            && previous.logical_lease_id == logical.logical_lease_id
+                            && previous.host_session_id == logical.host_session_id
+                            && previous.tab_id == logical.tab_id
+                    })
+                });
+                let retained_page = chatgpt
+                    && matches!(lease.disposition, Disposition::Parked)
+                    && old.browser.same_extension_instance(&identity.browser)
+                    && provider_tab_id
+                        .as_ref()
+                        .is_some_and(|id| lease.provider_tab_id.as_ref() == Some(id));
+                (projected || retained_page)
+                    .then(|| (old.clone(), lease.extension_sequence, lease.origin))
+            })
+        });
+        let prior_sequence = self.tabs[&identity].extension_sequence.or_else(|| {
+            previous_logical
+                .as_ref()
+                .and_then(|(_, sequence, _)| *sequence)
+        });
+        let sequence = match (&receipt, prior_sequence) {
             (_, Some(sequence)) => Some(sequence),
             (PreparedOperation::Acquired { .. }, None) => Some(self.allocate_extension_sequence()?),
             (PreparedOperation::Observed, None) => None,
         };
+        let previous_origin = previous_logical.as_ref().map(|(_, _, origin)| *origin);
+        if let Some((previous, _, _)) = previous_logical {
+            let settled = self.tabs[&previous].extension.as_ref().is_none_or(|state| {
+                state.claim.is_none()
+                    && state.unknown.is_none()
+                    && state.cdp_effect_unknown.is_none()
+                    && state.fixed_preparation.settled()
+                    && state.preparation_effects.settled()
+            });
+            if settled {
+                self.tabs.remove(&previous);
+            } else if let Some(old) = self.tabs.get_mut(&previous) {
+                old.logical_lease = None;
+                old.retention = Retention::Unmarked;
+                old.disposition = Disposition::Closing;
+            }
+        }
         let lease = self
             .tabs
             .get_mut(&identity)
             .expect("validated reserved lease");
         lease.extension_sequence = sequence;
+        if let Some(origin) = previous_origin {
+            lease.origin = origin;
+        }
+        if provider_tab_id.is_some() {
+            lease.provider_tab_id = provider_tab_id;
+        }
+        if let Some(logical) = logical_lease {
+            lease.origin = match logical.origin {
+                cua_driver_core::browser::ExtensionLogicalLeaseOrigin::AgentCreated => {
+                    Origin::AgentCreated
+                }
+                cua_driver_core::browser::ExtensionLogicalLeaseOrigin::UserClaimed => {
+                    Origin::UserClaimed
+                }
+            };
+            lease.retention = logical.status.map_or(Retention::Unmarked, |status| {
+                Retention::Marked(mark_from_core(status))
+            });
+            lease.logical_lease = Some(logical);
+        }
         if let PreparedOperation::Acquired { operation, .. } = &receipt {
             lease.creator.turn = operation.turn_id.clone();
         }
@@ -2460,12 +3443,80 @@ impl Host {
         Ok(())
     }
 
+    fn apply_logical_commit(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        turn: &str,
+        commit: Option<&cua_driver_core::browser::ExtensionLogicalLeaseCommit>,
+    ) -> Result<(), ToolError> {
+        if !provider.extension().is_some_and(|extension| {
+            extension
+                .capabilities()
+                .is_ok_and(|caps| caps.logical_lease_persistence)
+        }) {
+            return Ok(());
+        }
+        let Some(commit) = commit else {
+            return Ok(());
+        };
+        for lease in self.tabs.values_mut().filter(|lease| {
+            lease.creator.owner == owner
+                && lease.creator.provider == *provider
+                && lease.creator.turn == turn
+        }) {
+            let Some(current) = &lease.logical_lease else {
+                continue;
+            };
+            if current.chrome_session_id != commit.chrome_session_id {
+                return Err(unknown("logical commit changed browser session"));
+            }
+            if let Some(kept) = commit
+                .kept
+                .iter()
+                .find(|entry| entry.logical_lease_id == current.logical_lease_id)
+            {
+                if kept.tab_id != current.tab_id
+                    || kept.origin != current.origin
+                    || lease.retention.mark()? != Some(TabMark::Handoff)
+                {
+                    return Err(unknown(
+                        "logical handoff commit changed its resource or disposition",
+                    ));
+                }
+                lease.logical_lease = Some(kept.clone());
+            } else if let Some(released) = commit
+                .released
+                .iter()
+                .find(|entry| entry.logical_lease_id == current.logical_lease_id)
+            {
+                if released.tab_id != current.tab_id
+                    || released.origin != current.origin
+                    || released.status != lease.retention.mark()?.map(mark_to_core)
+                {
+                    return Err(unknown(
+                        "logical release commit changed its resource or mark",
+                    ));
+                }
+                lease.logical_lease = None;
+            } else if lease.retention.mark()?.is_some()
+                && !lease.extension.as_ref().is_some_and(|state| state.closed)
+            {
+                return Err(unknown(
+                    "logical commit omitted an existing marked resource",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn finish_session_activation(
         &mut self,
         owner: uuid::Uuid,
         browser: &BrowserIdentity,
         turn: &str,
     ) {
+        self.clear_pending_viewport(owner, browser, turn);
         if let Some(state) = self.extension.get_mut(&(owner, browser.clone())) {
             for call in state.calls.values_mut().filter(|call| call.turn == turn) {
                 call.activation.store(false, Ordering::SeqCst);
@@ -2522,7 +3573,14 @@ impl Host {
             ));
         }
         let target = match operation {
-            ExtensionOperation::Attach { tab_id }
+            ExtensionOperation::BeginUpload { tab_id, .. } => Some(tab_id.to_string()),
+            ExtensionOperation::WriteUploadChunk { stage, .. }
+            | ExtensionOperation::RetainUploadForSelection { stage }
+            | ExtensionOperation::AbandonUpload { stage } => {
+                self.upload_target(owner, &browser, stage)
+            }
+            ExtensionOperation::MarkTab { tab_id, .. }
+            | ExtensionOperation::Attach { tab_id }
             | ExtensionOperation::PrepareUserTab { tab_id }
             | ExtensionOperation::PrepareSessionTab { tab_id }
             | ExtensionOperation::PrepareFixedSessionTab { tab_id, .. } => Some(tab_id.to_string()),
@@ -2568,11 +3626,127 @@ impl Host {
                 .map(|(identity, _)| identity.target.clone()),
             _ => None,
         };
+        // Only known completed activating controls resume old logical handoffs.
+        // No preparation claim, grant or mark survives from their previous turn.
+        if !matches!(
+            &recovered,
+            ExtensionRecoveredOperation::Unknown { .. }
+                | ExtensionRecoveredOperation::Refused { .. }
+                | ExtensionRecoveredOperation::ChromeRejected { .. }
+                | ExtensionRecoveredOperation::NotDispatched { .. }
+        ) && matches!(
+            operation,
+            ExtensionOperation::SessionInventory
+                | ExtensionOperation::ResolveSessionTab { .. }
+                | ExtensionOperation::CommittedSessionTabUrl { .. }
+                | ExtensionOperation::PrepareSessionTab { .. }
+                | ExtensionOperation::PrepareFixedSessionTab { .. }
+                | ExtensionOperation::Attach { .. }
+                | ExtensionOperation::CreateTab { .. }
+                | ExtensionOperation::CreatePopupTab { .. }
+                | ExtensionOperation::CreateSessionPopupTab { .. }
+                | ExtensionOperation::SetSessionHeaders { .. }
+                | ExtensionOperation::ClearSessionHeaders
+                | ExtensionOperation::MarkTab { .. }
+                | ExtensionOperation::MoveMousePresentation { .. }
+        ) && let Some(context) = context
+        {
+            self.resume_marked_handoffs(owner, provider, &context.turn_id);
+        }
+        if let (Some(target), Some(context), Some(call)) = (target.as_ref(), context, call.as_ref())
+        {
+            let identity = browser.tab(target);
+            let pending = self
+                .tabs
+                .get(&identity)
+                .and_then(|lease| lease.handoff_transfer.as_ref())
+                .is_some_and(|attempt| attempt.matches(owner, provider, context, call.epoch));
+            if pending {
+                match &recovered {
+                    ExtensionRecoveredOperation::NotDispatched { .. } => {
+                        self.rollback_handoff_transfer(&identity, owner, context);
+                        return Ok(());
+                    }
+                    ExtensionRecoveredOperation::Unknown {
+                        reason, custody, ..
+                    } => {
+                        let attempt = self
+                            .tabs
+                            .get_mut(&identity)
+                            .and_then(|lease| lease.handoff_transfer.as_mut())
+                            .expect("matched pending handoff");
+                        attempt.unknown = Some(reason.clone());
+                        attempt.custody = Some(custody.clone());
+                        return Ok(());
+                    }
+                    ExtensionRecoveredOperation::Refused { message, .. }
+                    | ExtensionRecoveredOperation::ChromeRejected { message, .. } => {
+                        self.tabs
+                            .get_mut(&identity)
+                            .and_then(|lease| lease.handoff_transfer.as_mut())
+                            .expect("matched pending handoff")
+                            .unknown = Some(message.clone());
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
         let not_dispatched = matches!(
             &recovered,
             ExtensionRecoveredOperation::NotDispatched { .. }
         );
         match recovered {
+            ExtensionRecoveredOperation::UserHistory => {}
+            ExtensionRecoveredOperation::SessionNamed { name } => {
+                let state = self
+                    .extension
+                    .get_mut(&(owner, browser.clone()))
+                    .ok_or_else(|| unknown("session-name owner retired"))?;
+                state.session_group_title = Some(name);
+            }
+            upload @ (ExtensionRecoveredOperation::UploadBegun(_)
+            | ExtensionRecoveredOperation::UploadChunkWritten(_)
+            | ExtensionRecoveredOperation::UploadRetained(_)
+            | ExtensionRecoveredOperation::UploadAbandoned(_)) => {
+                self.apply_upload_completion(owner, provider, completion, upload)?
+            }
+            ExtensionRecoveredOperation::Marked(ack) => {
+                let target = target
+                    .as_ref()
+                    .ok_or_else(|| unknown("tab mark ACK lost its target"))?;
+                let call = call
+                    .as_ref()
+                    .ok_or_else(|| unknown("tab mark ACK lost its epoch"))?;
+                if ack.host_session_id != owner.to_string()
+                    || ack.host_turn_id != call.turn
+                    || ack.generation != extension.identity().generation
+                    || ack.tab_id.to_string() != *target
+                    || ack.is_cleanup_only()
+                {
+                    return Err(unknown(
+                        "tab mark ACK changed its captured owner, turn or target",
+                    ));
+                }
+                if extension
+                    .capabilities()
+                    .is_ok_and(|caps| caps.logical_lease_persistence)
+                    && let Some(logical) = &ack.logical_lease
+                {
+                    self.tabs
+                        .get_mut(&browser.tab(target))
+                        .ok_or_else(|| unknown("mark projection lost its lease"))?
+                        .logical_lease = Some(logical.clone());
+                }
+                self.apply_mark_result(
+                    &browser.tab(target),
+                    owner,
+                    context,
+                    call.epoch,
+                    Some(mark_from_core(ack.status)),
+                    Ok(()),
+                )?;
+            }
             ExtensionRecoveredOperation::SessionHeaders(proof) => {
                 let call = call
                     .as_ref()
@@ -2592,6 +3766,7 @@ impl Host {
                 state.session_headers = Some(proof);
             }
             ExtensionRecoveredOperation::FixedSessionPrepared(prepared) => {
+                let prepared = *prepared;
                 let tab = prepared.tab.clone();
                 self.apply_fixed_preparation(owner, provider, operation, context, prepared)?;
                 if let Some(state) = self
@@ -2648,6 +3823,12 @@ impl Host {
                 if ack.host_session_id != owner.to_string() || ack.host_turn_id != call.turn {
                     return Err(unknown("extension logical finish identity mismatch"));
                 }
+                self.apply_logical_commit(
+                    owner,
+                    provider,
+                    &call.turn,
+                    ack.logical_lease_commit.as_ref(),
+                )?;
                 self.extension
                     .get_mut(&(owner, browser.clone()))
                     .ok_or_else(|| unknown("extension finish owner retired"))?
@@ -2675,6 +3856,8 @@ impl Host {
                 self.tabs.insert(
                     identity,
                     Lease {
+                        viewport: None,
+                        input: None,
                         extension_sequence: Some(sequence),
                         creator: Creator {
                             owner,
@@ -2684,6 +3867,14 @@ impl Host {
                         },
                         origin: Origin::AgentCreated,
                         disposition: Disposition::Live,
+                        retention: Retention::Unmarked,
+                        handoff_transfer: None,
+                        logical_lease: None,
+                        provider_tab_id: created
+                            .tab
+                            .provider_tab_id
+                            .clone()
+                            .filter(|id| !id.is_empty()),
                         extension: Some(ClaimState {
                             creation: Some(created.creation_receipt().clone()),
                             creation_operation: context.cloned().map(|operation| {
@@ -2819,6 +4010,26 @@ impl Host {
             ExtensionRecoveredOperation::NotDispatched { message, .. }
             | ExtensionRecoveredOperation::Refused { message, .. }
             | ExtensionRecoveredOperation::ChromeRejected { message, .. } => {
+                if matches!(operation, ExtensionOperation::MarkTab { .. }) {
+                    let target = target
+                        .as_ref()
+                        .ok_or_else(|| unknown("rejected mark lost target"))?;
+                    let call = call
+                        .as_ref()
+                        .ok_or_else(|| unknown("rejected mark lost epoch"))?;
+                    self.apply_mark_result(
+                        &browser.tab(target),
+                        owner,
+                        context,
+                        call.epoch,
+                        None,
+                        if not_dispatched {
+                            Err(MarkFailure::NotDispatched)
+                        } else {
+                            Err(MarkFailure::Unknown(message.clone()))
+                        },
+                    )?;
+                }
                 if not_dispatched
                     && matches!(
                         operation,
@@ -2897,6 +4108,45 @@ impl Host {
             ExtensionRecoveredOperation::Unknown {
                 reason, custody, ..
             } => {
+                self.apply_upload_unknown(owner, provider, completion, &custody)?;
+                if matches!(operation, ExtensionOperation::MarkTab { .. }) {
+                    let target = target
+                        .as_ref()
+                        .ok_or_else(|| unknown("unknown mark lost target"))?;
+                    let call = call
+                        .as_ref()
+                        .ok_or_else(|| unknown("unknown mark lost epoch"))?;
+                    let known = custody.marked.as_ref().is_some_and(|ack| {
+                        ack.host_session_id == owner.to_string()
+                            && ack.host_turn_id == call.turn
+                            && ack.generation == extension.identity().generation
+                            && ack.tab_id.to_string() == *target
+                            && (!extension
+                                .capabilities()
+                                .is_ok_and(|caps| caps.logical_lease_persistence)
+                                || ack.logical_lease.is_some())
+                    });
+                    // A captured late ACK may settle the retained intent for cleanup.
+                    // The originating API still reports Unknown, never delivery success.
+                    self.apply_mark_result(
+                        &browser.tab(target),
+                        owner,
+                        context,
+                        call.epoch,
+                        custody
+                            .marked
+                            .as_ref()
+                            .map(|ack| mark_from_core(ack.status)),
+                        if known {
+                            Ok(())
+                        } else {
+                            Err(MarkFailure::Unknown(reason.clone()))
+                        },
+                    )?;
+                }
+                if matches!(operation, ExtensionOperation::MarkTab { .. }) {
+                    return Ok(());
+                }
                 if let Some(proof) = custody.preparation {
                     self.apply_claim_preparation(owner, provider, context, proof)?;
                 }
@@ -2917,6 +4167,12 @@ impl Host {
                     if ack.host_session_id != owner.to_string() || ack.host_turn_id != call.turn {
                         return Err(unknown("uncertain finish identity mismatch"));
                     }
+                    self.apply_logical_commit(
+                        owner,
+                        provider,
+                        &call.turn,
+                        ack.logical_lease_commit.as_ref(),
+                    )?;
                     self.extension
                         .get_mut(&(owner, browser.clone()))
                         .ok_or_else(|| unknown("uncertain finish owner retired"))?
@@ -2985,6 +4241,8 @@ impl Host {
                     let identity = browser.tab(&created.tab.id.to_string());
                     let sequence = self.allocate_extension_sequence()?;
                     self.tabs.entry(identity).or_insert(Lease {
+                        viewport: None,
+                        input: None,
                         extension_sequence: Some(sequence),
                         creator: Creator {
                             owner,
@@ -2994,6 +4252,14 @@ impl Host {
                         },
                         origin: Origin::AgentCreated,
                         disposition: Disposition::Closing,
+                        retention: Retention::Unmarked,
+                        handoff_transfer: None,
+                        logical_lease: None,
+                        provider_tab_id: created
+                            .tab
+                            .provider_tab_id
+                            .clone()
+                            .filter(|id| !id.is_empty()),
                         extension: Some(ClaimState {
                             creation: Some(created.creation_receipt().clone()),
                             unknown: Some(reason.clone()),
@@ -3137,12 +4403,17 @@ impl Host {
         owner: uuid::Uuid,
         turn: Option<&str>,
         epoch: Option<crate::desktop::NativeEpochId>,
+        adapter: Option<ExtensionAdapterMode>,
     ) -> ControlDrain {
         let mut gates = Vec::new();
         let tabs = &self.tabs;
         let creations = &self.uncertain_creations;
         for ((current, browser), state) in &mut self.extension {
-            if *current != owner {
+            if *current != owner
+                || state.owner_parked
+                || adapter
+                    .is_some_and(|adapter| state.provider.extension_adapter() != Some(adapter))
+            {
                 continue;
             }
             for call in state.calls.values().filter(|call| {
@@ -3195,15 +4466,323 @@ impl Host {
         ControlDrain { gates }
     }
 
+    async fn release_deliverable_group(
+        &mut self,
+        owner: uuid::Uuid,
+        identity: &TabIdentity,
+        scope: &CallScope,
+    ) -> Result<(), ToolError> {
+        let state = self.tabs[identity]
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("marked tab lost extension custody"))?;
+        if state.group.is_none() {
+            return Ok(());
+        }
+        match &state.retained_group_release {
+            ControlCleanup::NotAttempted => {}
+            ControlCleanup::Confirmed => return Ok(()),
+            ControlCleanup::Pending => {
+                return Err(ToolError::CleanupUnconfirmed(
+                    "deliverable group release is pending; it was not replayed".into(),
+                ));
+            }
+            ControlCleanup::Unconfirmed(reason) => {
+                return Err(ToolError::CleanupUnconfirmed(format!(
+                    "deliverable group release remains unknown: {reason}"
+                )));
+            }
+        }
+        let creation = state
+            .creation
+            .clone()
+            .ok_or_else(|| unknown("deliverable group lost its creation receipt"))?;
+        let group = state.group.clone().expect("checked managed group");
+        self.tabs
+            .get_mut(identity)
+            .unwrap()
+            .extension
+            .as_mut()
+            .unwrap()
+            .retained_group_release = ControlCleanup::Pending;
+        let released = scope
+            .dispatch_retirement(scope.control.release_created_tab_group(&creation, &group))
+            .await;
+        self.reconcile_provider(owner, &scope.provider).await?;
+        let phase = match &released {
+            Ok(_) => ControlCleanup::Confirmed,
+            Err(error) if scope.control.undispatched_control(error).is_some() => {
+                ControlCleanup::NotAttempted
+            }
+            Err(error) => ControlCleanup::Unconfirmed(error.to_string()),
+        };
+        self.tabs
+            .get_mut(identity)
+            .unwrap()
+            .extension
+            .as_mut()
+            .unwrap()
+            .retained_group_release = phase;
+        released.map_err(provider::extension_error)?;
+        Ok(())
+    }
+
+    pub(super) fn forget_parked_handoff(&mut self, owner: uuid::Uuid) {
+        self.extension.retain(|(current, _), state| {
+            *current != owner
+                || !state.owner_parked
+                || state.provider.extension_adapter() != Some(ExtensionAdapterMode::Chatgpt)
+        });
+    }
+
+    /// Permanent transport-owner teardown is not turnEnded/finalizeTabs.
+    /// Retire physical resources while retaining logical origin/marks in Lease.
+    pub(super) async fn park_extension_owner(
+        &mut self,
+        owner: uuid::Uuid,
+        adapter: Option<ExtensionAdapterMode>,
+    ) -> Result<Vec<TabIdentity>, ToolError> {
+        self.rollback_owner_unentered_handoffs(owner, adapter);
+        if self.tabs.values().any(|lease| {
+            adapter
+                .is_none_or(|adapter| lease.creator.provider.extension_adapter() == Some(adapter))
+                && lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+                    attempt.requested.owner == owner || lease.creator.owner == owner
+                })
+        }) {
+            return Err(unknown(
+                "explicit handoff replacement still holds cleanup custody",
+            ));
+        }
+        let providers: Vec<_> = self
+            .extension
+            .iter()
+            .filter(|((id, _), state)| {
+                *id == owner
+                    && adapter
+                        .is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+            })
+            .map(|(_, state)| state.provider.clone())
+            .collect();
+        for provider in providers {
+            let extension = provider
+                .extension()
+                .ok_or_else(|| failed("extension provider required"))?;
+            let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
+            let caps = extension
+                .capabilities()
+                .map_err(provider::extension_error)?;
+            if self.reconcile_provider(owner, &provider).await? {
+                return Err(unknown(
+                    "extension cleanup requires the original control operations to settle",
+                ));
+            }
+            if self
+                .uncertain_creations
+                .contains_key(&(owner, browser.clone()))
+            {
+                return Err(unknown(
+                    "owner teardown retains unknown tab creation custody",
+                ));
+            }
+            let identities: Vec<_> = self
+                .tabs
+                .iter()
+                .filter(|(_, lease)| {
+                    lease.creator.owner == owner
+                        && lease.creator.provider == provider
+                        && !matches!(lease.disposition, Disposition::Parked)
+                })
+                .map(|(identity, _)| identity.clone())
+                .collect();
+            let state = self
+                .extension
+                .get(&(owner, browser.clone()))
+                .ok_or_else(|| failed("extension owner retired"))?;
+            if state.owner_parked {
+                continue;
+            }
+            if state.calls.values().any(|call| !call.controls.is_idle()) {
+                return Err(unknown(
+                    "owner teardown must drain original admitted control futures first",
+                ));
+            }
+            let turn = state.current_turn.clone().or_else(|| {
+                identities
+                    .first()
+                    .map(|identity| self.tabs[identity].creator.turn.clone())
+            });
+            let Some(turn) = turn else {
+                if let Some(state) = self.extension.get_mut(&(owner, browser.clone())) {
+                    state.owner_parked = true;
+                }
+                continue;
+            };
+            // Seal original calls before making only retirement-scoped requests.
+            for call in self.extension[&(owner, browser.clone())].calls.values() {
+                call.controls.seal();
+            }
+            let scope = self.extension_context(
+                owner,
+                &provider,
+                context_operation(&turn),
+                crate::desktop::NativeEpochId::new(),
+                CallTarget::Retirement,
+                false,
+            )?;
+            let clear_headers =
+                self.extension
+                    .get(&(owner, browser.clone()))
+                    .is_some_and(|state| {
+                        state.headers_unknown
+                            || state
+                                .session_headers
+                                .as_ref()
+                                .is_some_and(|proof| proof.active || !proof.cleanup_confirmed)
+                    });
+            if caps.header_scope == ExtensionHeaderPolicyScope::Session && clear_headers {
+                let result = scope
+                    .dispatch_retirement(scope.control.clear_session_headers())
+                    .await;
+                self.reconcile_provider(owner, &provider).await?;
+                let proof = result.map_err(provider::extension_error)?;
+                if proof.active || !proof.cleanup_confirmed {
+                    return Err(unknown("owner session headers remain unconfirmed"));
+                }
+            }
+            for identity in identities {
+                self.park_extension_tab(owner, &provider, &identity, &scope)
+                    .await?;
+            }
+            if let Some(state) = self.extension.get_mut(&(owner, browser)) {
+                for call in state.calls.values() {
+                    call.controls.seal();
+                }
+                state.current_turn = None;
+                state.retiring_turn = None;
+                state.logical_active = None;
+                state.owner_parked = true;
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    async fn park_extension_tab(
+        &mut self,
+        owner: uuid::Uuid,
+        provider: &Provider,
+        identity: &TabIdentity,
+        scope: &CallScope,
+    ) -> Result<(), ToolError> {
+        let caps = scope
+            .control
+            .capabilities()
+            .map_err(provider::extension_error)?;
+        let state = self.tabs[identity]
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("owner teardown lost physical custody"))?
+            .clone();
+        if state.unknown.is_some() || state.cdp_effect_unknown.is_some() {
+            return Err(unknown("owner teardown retains unknown physical effects"));
+        }
+        if state.claim.is_some()
+            || !matches!(state.fixed_preparation, FixedPreparation::NotAttempted)
+        {
+            self.cleanup_extension_control(owner, identity, FixedCleanupPurpose::Owner)
+                .await?;
+        }
+        if let Some(claim) = &state.claim {
+            if caps.header_scope == ExtensionHeaderPolicyScope::Claim
+                && (state.headers_active || state.preparation_effects.headers_may_exist)
+            {
+                let result = scope
+                    .dispatch_retirement(scope.control.clear_scoped_headers(claim))
+                    .await;
+                self.reconcile_provider(owner, provider).await?;
+                if !result.map_err(provider::extension_error)?.cleanup_confirmed {
+                    return Err(unknown("owner scoped headers remain unconfirmed"));
+                }
+            }
+            if state.cdp_drain.is_none() {
+                return Err(unknown(
+                    "extension claim must be drained before physical retirement",
+                ));
+            }
+            self.reconcile_provider(owner, provider).await?;
+            if !self.tabs[identity]
+                .extension
+                .as_ref()
+                .is_some_and(|state| state.released)
+            {
+                self.begin_extension_cleanup(identity)?;
+                let result = scope
+                    .dispatch_retirement(scope.control.detach_tab(claim))
+                    .await;
+                self.reconcile_provider(owner, provider).await?;
+                result.map_err(provider::extension_error)?;
+            }
+        }
+        self.retire_extension_cleanup(owner, provider, identity, &scope.control)
+            .await?;
+        let lease = self
+            .tabs
+            .get_mut(identity)
+            .ok_or_else(|| unknown("owner retirement lost lease"))?;
+        let state = lease
+            .extension
+            .as_ref()
+            .ok_or_else(|| unknown("owner retirement lost custody"))?;
+        if state.claim.is_some()
+            || !state.fixed_preparation.settled()
+            || !state.preparation_effects.settled()
+        {
+            return Err(unknown("owner physical retirement remains unconfirmed"));
+        }
+        // Source cleanup provenance stays with this connection; no
+        // physical claim, prepared grant or CDP route survives parking.
+        lease.extension = Some(ClaimState {
+            creation: state.creation.clone(),
+            creation_operation: state.creation_operation.clone(),
+            group: state.group.clone(),
+            revoked: true,
+            released: true,
+            ..Default::default()
+        });
+        lease.disposition = Disposition::Parked;
+        Ok(())
+    }
+
     pub(super) async fn finish_extension(
         &mut self,
         owner: uuid::Uuid,
         turn: Option<&str>,
+        adapter: Option<ExtensionAdapterMode>,
     ) -> Result<Vec<TabIdentity>, ToolError> {
+        if turn.is_none() {
+            return self.park_extension_owner(owner, adapter).await;
+        }
+        self.rollback_owner_unentered_handoffs(owner, adapter);
+        if self.tabs.values().any(|lease| {
+            adapter
+                .is_none_or(|adapter| lease.creator.provider.extension_adapter() == Some(adapter))
+                && lease.handoff_transfer.as_ref().is_some_and(|attempt| {
+                    attempt.requested.owner == owner || lease.creator.owner == owner
+                })
+        }) {
+            return Err(unknown(
+                "normal turn cleanup retains pending explicit handoff replacement",
+            ));
+        }
         let providers: Vec<_> = self
             .extension
             .iter()
-            .filter(|((current, _), _)| *current == owner)
+            .filter(|((current, _), state)| {
+                *current == owner
+                    && !state.owner_parked
+                    && adapter
+                        .is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+            })
             .map(|(_, state)| state.provider.clone())
             .collect();
         let mut closed = Vec::new();
@@ -3216,17 +4795,10 @@ impl Host {
                 .capabilities()
                 .map_err(provider::extension_error)?;
             let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
-            let mut events = extension.subscribe_events();
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-            while self.reconcile_provider(owner, &provider).await? {
-                match tokio::time::timeout_at(deadline, events.recv()).await {
-                    Ok(Ok(_)) | Ok(Err(tokio::sync::broadcast::error::RecvError::Lagged(_))) => {}
-                    _ => {
-                        return Err(ToolError::CleanupUnconfirmed(
-                            "extension operations remain in flight; custody retained".into(),
-                        ));
-                    }
-                }
+            if self.reconcile_provider(owner, &provider).await? {
+                return Err(unknown(
+                    "extension cleanup requires the original control operations to settle",
+                ));
             }
             let candidates: Vec<_> = self
                 .tabs
@@ -3234,6 +4806,7 @@ impl Host {
                 .filter(|(_, lease)| {
                     lease.creator.owner == owner
                         && lease.creator.provider == provider
+                        && !matches!(lease.retention, Retention::Handoff)
                         && turn.is_none_or(|turn| {
                             lease.creator.turn == turn
                                 || lease.extension.as_ref().is_some_and(|state| {
@@ -3369,6 +4942,7 @@ impl Host {
             for identity in &identities {
                 let lease = &self.tabs[identity];
                 let origin = lease.origin;
+                let mark = lease.retention.mark()?;
                 let state = lease
                     .extension
                     .as_ref()
@@ -3395,26 +4969,26 @@ impl Host {
                         ));
                     }
                 }
+                if capabilities.turn_lifecycle_owner == ExtensionEffectOwner::Host
+                    && let Some(mark) = mark
+                {
+                    // A presentation failure is best effort, as in the reference.
+                    // Existing fixed cleanup still drains the actual admitted promise.
+                    self.finalize_retained_presentation(owner, identity, mark)
+                        .await;
+                }
                 if capabilities.cursor_presentation_owner == ExtensionEffectOwner::Host
                     || !matches!(state.fixed_preparation, FixedPreparation::NotAttempted)
                 {
                     self.cleanup_extension_control(owner, identity, purpose.clone())
                         .await?;
                 }
-                if let Some(claim) = &state.claim {
-                    let drain = scope
-                        .dispatch_retirement(
-                            scope
-                                .control
-                                .wait_claim_cdp_drained(claim, Duration::from_secs(10)),
-                        )
-                        .await
-                        .map_err(provider::extension_error)?;
-                    self.tabs
-                        .get_mut(identity)
-                        .and_then(|lease| lease.extension.as_mut())
-                        .ok_or_else(|| unknown("extension drain lost its exact claim"))?
-                        .cdp_drain = Some(drain);
+                if state.claim.is_some() {
+                    if state.cdp_drain.is_none() {
+                        return Err(unknown(
+                            "extension claim must be drained before Turn cleanup",
+                        ));
+                    }
                     if self.reconcile_provider(owner, &provider).await? {
                         return Err(ToolError::CleanupUnconfirmed(
                             "extension CDP settled but retained operation custody is still pending"
@@ -3422,7 +4996,26 @@ impl Host {
                         ));
                     }
                 }
+                if mark == Some(TabMark::Deliverable)
+                    && capabilities.created_presentation_owner == ExtensionEffectOwner::Host
+                {
+                    self.release_deliverable_group(owner, identity, &scope)
+                        .await?;
+                }
                 match origin {
+                    _ if mark.is_some() && !state.released => {
+                        let claim = state.claim.as_ref().ok_or_else(|| {
+                            ToolError::CleanupUnconfirmed(
+                                "marked tab lacks its exact physical detach custody".into(),
+                            )
+                        })?;
+                        self.begin_extension_cleanup(identity)?;
+                        let detached = scope
+                            .dispatch_retirement(scope.control.detach_tab(claim))
+                            .await;
+                        self.reconcile_provider(owner, &provider).await?;
+                        detached.map_err(provider::extension_error)?;
+                    }
                     Origin::UserClaimed if !state.released => {
                         if let Some(claim) = &state.claim {
                             self.begin_extension_cleanup(identity)?;
@@ -3449,6 +5042,7 @@ impl Host {
                     }
                     Origin::AgentCreated
                         if capabilities.turn_lifecycle_owner == ExtensionEffectOwner::Host
+                            && mark.is_none()
                             && !state.closed =>
                     {
                         let receipt = state.creation.as_ref().ok_or_else(|| {
@@ -3527,7 +5121,10 @@ impl Host {
                 for identity in &identities {
                     let lease = &self.tabs[identity];
                     let state = lease.extension.as_ref().unwrap();
-                    if lease.origin == Origin::AgentCreated && !state.closed {
+                    if lease.origin == Origin::AgentCreated
+                        && lease.retention.mark()?.is_none()
+                        && !state.closed
+                    {
                         let receipt = state.creation.clone().ok_or_else(|| {
                             ToolError::CleanupUnconfirmed("created tab lost its receipt".into())
                         })?;
@@ -3555,14 +5152,81 @@ impl Host {
                     return Err(ToolError::CleanupUnconfirmed("extension tab creation outcome remains unknown without a recoverable receipt; creation was not replayed".into()));
                 }
             }
-            for identity in identities {
-                self.retire_extension_cleanup(owner, &provider, &identity, &scope.control)
+            let kept_inventory = if identities.iter().any(|identity| {
+                self.tabs[identity]
+                    .retention
+                    .mark()
+                    .is_ok_and(|mark| mark.is_some())
+            }) {
+                // Keep the original retirement scope/observer. This is a
+                // cleanup existence observation, never a new acquisition.
+                let tabs = scope
+                    .dispatch_retirement(scope.control.list_user_tabs())
+                    .await
+                    .map_err(provider::extension_error)?;
+                if BrowserIdentity::of(&provider, &scope.control.identity().generation)? != browser
+                {
+                    return Err(ToolError::CleanupUnconfirmed(
+                        "marked tab provider changed before retained-resource observation".into(),
+                    ));
+                }
+                Some(
+                    tabs.into_iter()
+                        .map(|tab| tab.id.to_string())
+                        .collect::<HashSet<_>>(),
+                )
+            } else {
+                None
+            };
+            let handoff_active = self
+                .extension
+                .get(&(owner, browser.clone()))
+                .and_then(|state| state.logical_active.clone());
+            for identity in &identities {
+                self.retire_extension_cleanup(owner, &provider, identity, &scope.control)
                     .await?;
+            }
+            if capabilities.turn_lifecycle_owner == ExtensionEffectOwner::Host
+                && capabilities.logical_lease_persistence
+            {
+                let phase = self
+                    .extension
+                    .get(&(owner, browser.clone()))
+                    .and_then(|state| state.finish_phases.get(&cleanup_turn));
+                match phase {
+                    Some(FinishPhase::Acknowledged) => {}
+                    Some(
+                        FinishPhase::Pending | FinishPhase::Unknown(_) | FinishPhase::Refused(_),
+                    ) => {
+                        return Err(unknown(
+                            "logical projection commit remains unsettled; it was not replayed",
+                        ));
+                    }
+                    Some(FinishPhase::Required) | None => {
+                        self.extension
+                            .get_mut(&(owner, browser.clone()))
+                            .ok_or_else(|| unknown("logical commit owner retired"))?
+                            .finish_phases
+                            .insert(cleanup_turn.clone(), FinishPhase::Pending);
+                        let finished = scope
+                            .dispatch_retirement(scope.control.finish_turn(None))
+                            .await;
+                        self.reconcile_provider(owner, &provider).await?;
+                        finished.map_err(provider::extension_error)?;
+                    }
+                }
+            }
+            for identity in identities {
                 let lease = &self.tabs[&identity];
                 let state = lease.extension.as_ref().unwrap();
-                let complete = match lease.origin {
-                    Origin::AgentCreated => state.closed,
-                    Origin::UserClaimed => state.released,
+                let mark = lease.retention.mark()?;
+                let complete = if mark.is_some() {
+                    state.released
+                } else {
+                    match lease.origin {
+                        Origin::AgentCreated => state.closed,
+                        Origin::UserClaimed => state.released,
+                    }
                 };
                 if !state.fixed_preparation.settled() {
                     return Err(ToolError::CleanupUnconfirmed(
@@ -3575,10 +5239,37 @@ impl Host {
                         "extension tab lacks its physical cleanup proof".into(),
                     ));
                 }
-                if lease.origin == Origin::AgentCreated {
+                if mark.is_some()
+                    && kept_inventory
+                        .as_ref()
+                        .is_some_and(|tabs| !tabs.contains(&identity.target))
+                {
+                    // Known authoritative absence settles custody but never means
+                    // that the requested deliverable was physically delivered.
                     closed.push(identity.clone());
+                    self.tabs.remove(&identity);
+                } else if mark == Some(TabMark::Handoff) {
+                    let lease = self
+                        .tabs
+                        .get_mut(&identity)
+                        .expect("validated handoff lease");
+                    let state = lease.extension.as_mut().expect("validated handoff custody");
+                    let creation = state.creation.clone();
+                    let group = state.group.clone();
+                    let active = handoff_active.as_deref() == Some(identity.target.as_str());
+                    *state = ClaimState {
+                        creation,
+                        group,
+                        active,
+                        ..Default::default()
+                    };
+                    lease.retention = Retention::Handoff;
+                } else {
+                    if mark.is_none() && lease.origin == Origin::AgentCreated {
+                        closed.push(identity.clone());
+                    }
+                    self.tabs.remove(&identity);
                 }
-                self.tabs.remove(&identity);
             }
             if let Some(state) = self.extension.get_mut(&(owner, browser)) {
                 if state.current_turn.as_deref() == Some(&cleanup_turn) {
@@ -3838,7 +5529,15 @@ async fn register(
     let browser = BrowserIdentity::of(provider, &connection.identity().generation)?;
     let key = (owner, browser.clone());
     let mut ledger = host.lock().await;
-    if ledger.extension.contains_key(&key) {
+    if let Some(state) = ledger.extension.get_mut(&key) {
+        if state.owner_parked && state.provider == *provider {
+            state.owner_parked = false;
+            state.current_turn = None;
+            state.retiring_turn = None;
+            state.calls.clear();
+            state.finish_phases.clear();
+            state.applied.clear();
+        }
         return Ok(());
     }
     ledger.extension.insert(
@@ -3846,13 +5545,17 @@ async fn register(
         ProviderState {
             provider: provider.clone(),
             current_turn: None,
+            pending_viewport: None,
             retiring_turn: None,
             logical_active: None,
+            session_group_title: None,
             calls: HashMap::new(),
             applied: HashSet::new(),
             finish_phases: HashMap::new(),
             session_headers: None,
             headers_unknown: false,
+            uploads: upload::Custody::default(),
+            owner_parked: false,
         },
     );
     let mut events = connection.subscribe_events();
@@ -3894,7 +5597,11 @@ async fn register(
                     dispatch_extension_popups(&host, owner, &provider).await
                 }));
             }
-            if !ledger.extension.contains_key(&(owner, browser.clone())) {
+            if !ledger
+                .extension
+                .get(&(owner, browser.clone()))
+                .is_some_and(|state| state.provider == provider)
+            {
                 break;
             }
             match event {
@@ -3915,13 +5622,11 @@ async fn register(
                     }
                 }
                 Ok(ExtensionProviderEvent::ClaimUnavailable { claim, reason }) => {
-                    let explicit_fixed = provider.extension().is_some_and(|extension| {
-                        extension.capabilities().is_ok_and(|caps| {
-                            caps.session_preparation == ExtensionSessionPreparation::ExplicitFixed
-                        })
-                    });
+                    tracing::warn!(%owner, %claim, %reason, "Browser extension claim unavailable");
                     for lease in ledger.tabs.values_mut().filter(|lease| {
-                        lease.creator.owner == owner && lease.creator.provider == provider
+                        lease.creator.owner == owner
+                            && lease.creator.provider == provider
+                            && !matches!(lease.disposition, Disposition::Parked)
                     }) {
                         if let Some(state) = &mut lease.extension
                             && state
@@ -3929,39 +5634,26 @@ async fn register(
                                 .as_ref()
                                 .is_some_and(|owned| owned.claim_id() == claim)
                         {
-                            let logical_retained = explicit_fixed
-                                && state.fixed_preparation.cleanup_receipt().is_some_and(
-                                    |receipt| {
-                                        receipt.wire_context().host_session_id()
-                                            == owner.to_string()
-                                            && receipt.generation() == lease.creator.generation
-                                            && provider.extension().is_some_and(|extension| {
-                                                receipt.generation()
-                                                    == extension.identity().generation
-                                            })
-                                            && state.claim.as_ref().is_some_and(|physical| {
-                                                physical.tab_id() == receipt.tab_id()
-                                            })
-                                    },
-                                );
                             state.revoked = true;
-                            if state.cleanup_started || logical_retained {
-                                // This is a physical-route observation, never
-                                // logical cleanup or underlying-effect proof.
-                                // Core retains every actual pending CDP effect
-                                // independently before broadcasting this event.
-                                // Keep all previous Unknown and physical flags;
-                                // only exact cleanup+drain can retire the claim.
-                                state.cleanup_revocation.get_or_insert(reason.clone());
-                            } else {
-                                state.unknown = Some(reason.clone());
-                            }
+                            // Route loss does not establish an unknown effect.
+                            // Pending CDP and preparation custody remains in its own ledger.
+                            state.cleanup_revocation.get_or_insert(reason.clone());
                         }
                     }
                 }
                 Ok(ExtensionProviderEvent::GenerationClosed { reason }) => {
+                    if ledger
+                        .extension
+                        .get(&(owner, browser.clone()))
+                        .is_some_and(|state| state.owner_parked)
+                    {
+                        ledger.extension.remove(&(owner, browser.clone()));
+                        break;
+                    }
                     for lease in ledger.tabs.values_mut().filter(|lease| {
-                        lease.creator.owner == owner && lease.creator.provider == provider
+                        lease.creator.owner == owner
+                            && lease.creator.provider == provider
+                            && !matches!(lease.disposition, Disposition::Parked)
                     }) {
                         if let Some(state) = &mut lease.extension {
                             state.unknown = Some(reason.clone());
@@ -4030,7 +5722,141 @@ async fn register(
     Ok(())
 }
 
+pub(super) async fn drain_extension_cleanup(
+    host: &Arc<tokio::sync::Mutex<Host>>,
+    owner: uuid::Uuid,
+    turn: Option<&str>,
+    adapter: Option<ExtensionAdapterMode>,
+    target: Option<&TabIdentity>,
+) -> Result<(), ToolError> {
+    let providers: Vec<_> = host
+        .lock()
+        .await
+        .extension
+        .iter()
+        .filter(|((id, browser), state)| {
+            *id == owner
+                && !state.owner_parked
+                && adapter.is_none_or(|adapter| state.provider.extension_adapter() == Some(adapter))
+                && target.is_none_or(|target| target.browser == *browser)
+        })
+        .map(|(_, state)| state.provider.clone())
+        .collect();
+    for provider in providers {
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("extension provider required"))?;
+        let mut events = extension.subscribe_events();
+        loop {
+            let pending = host
+                .lock()
+                .await
+                .reconcile_provider(owner, &provider)
+                .await?;
+            if !pending {
+                break;
+            }
+            match events.recv().await {
+                Ok(ExtensionProviderEvent::GenerationClosed { reason }) => {
+                    return Err(unknown(reason));
+                }
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => return Err(unknown(error)),
+            }
+        }
+        let claims = {
+            let mut ledger = host.lock().await;
+            let claims: Vec<_> = ledger
+                .tabs
+                .iter()
+                .filter(|(identity, lease)| {
+                    lease.creator.owner == owner
+                        && lease.creator.provider == provider
+                        && !matches!(lease.disposition, Disposition::Parked)
+                        && target.is_none_or(|target| *identity == target)
+                        && turn.is_none_or(|turn| {
+                            !matches!(lease.retention, Retention::Handoff)
+                                && (lease.creator.turn == turn
+                                    || lease.extension.as_ref().is_some_and(|state| {
+                                        !matches!(
+                                            state.fixed_preparation,
+                                            FixedPreparation::NotAttempted
+                                        )
+                                    }))
+                        })
+                })
+                .filter_map(|(identity, lease)| {
+                    lease
+                        .extension
+                        .as_ref()?
+                        .claim
+                        .clone()
+                        .map(|claim| (identity.clone(), claim, lease.creator.turn.clone()))
+                })
+                .collect();
+            let mut planned = Vec::new();
+            for (identity, claim, claim_turn) in claims {
+                if let Some(turn) = turn
+                    && ledger.fixed_cleanup_protected(
+                        owner,
+                        &identity,
+                        &FixedCleanupPurpose::Turn {
+                            turn: turn.to_owned(),
+                        },
+                    )?
+                {
+                    continue;
+                }
+                ledger.check_owned_input(&identity)?;
+                let scope = ledger.extension_context(
+                    owner,
+                    &provider,
+                    context_operation(turn.unwrap_or(&claim_turn)),
+                    crate::desktop::NativeEpochId::new(),
+                    CallTarget::Retirement,
+                    false,
+                )?;
+                planned.push((identity, claim, scope));
+            }
+            planned
+        };
+        for (identity, claim, scope) in claims {
+            let drain = scope
+                .dispatch_retirement(scope.control.wait_claim_cdp_drained(&claim))
+                .await
+                .map_err(provider::extension_error)?;
+            let mut ledger = host.lock().await;
+            let state = ledger
+                .tabs
+                .get_mut(&identity)
+                .filter(|lease| lease.creator.owner == owner && lease.creator.provider == provider)
+                .and_then(|lease| lease.extension.as_mut())
+                .filter(|state| {
+                    state
+                        .claim
+                        .as_ref()
+                        .is_some_and(|current| current.claim_id() == claim.claim_id())
+                })
+                .ok_or_else(|| {
+                    unknown("extension drain no longer belongs to the retained claim")
+                })?;
+            state.cdp_drain = Some(drain);
+        }
+    }
+    Ok(())
+}
+
 impl Browsers {
+    pub(super) async fn drain_handoff_controls(&self) -> Result<(), ToolError> {
+        let drain = self.host().await.lock().await.seal_extension_controls(
+            self.owner,
+            None,
+            None,
+            Some(ExtensionAdapterMode::Chatgpt),
+        );
+        drain.wait().await
+    }
+
     pub(super) async fn drain_extension_controls(
         &self,
         turn: Option<&str>,
@@ -4040,7 +5866,7 @@ impl Browsers {
         let drain = host
             .lock()
             .await
-            .seal_extension_controls(self.owner, turn, epoch);
+            .seal_extension_controls(self.owner, turn, epoch, None);
         // A control future may need a Host callback before it becomes ready.
         // Keep its original permit/resource and wait only after releasing Host.
         drain.wait().await
@@ -4093,7 +5919,44 @@ impl Browsers {
             self.acquisition_history(provider),
         )
         .await?;
-        let rows = pending.list().await?;
+        let mut rows = pending.list().await?;
+        let source_active = provider
+            .extension()
+            .expect("extension provider")
+            .capabilities()
+            .map_err(provider::extension_error)?
+            .session_logical_active;
+        let identity = BrowserIdentity::of(provider, &generation)?;
+        let host = self.host().await;
+        let mut ledger = host.lock().await;
+        let state = ledger
+            .extension
+            .get_mut(&(self.owner, identity))
+            .ok_or_else(|| failed("session metadata owner retired"))?;
+        let active = if source_active {
+            rows.iter()
+                .find(|row| row.active == Some(true))
+                .map(|row| row.id.to_string())
+        } else {
+            state
+                .logical_active
+                .as_ref()
+                .filter(|active| rows.iter().any(|row| row.id.to_string() == active.as_str()))
+                .cloned()
+                .or_else(|| {
+                    rows.iter()
+                        .find(|row| row.active == Some(true))
+                        .map(|row| row.id.to_string())
+                })
+                .or_else(|| rows.first().map(|row| row.id.to_string()))
+        };
+        state.logical_active = active.clone();
+        if let Some(active) = active {
+            for row in &mut rows {
+                row.active = Some(row.id.to_string() == active);
+            }
+        }
+        drop(ledger);
         // ChatGPT SID rows absent from Main history remain metadata only.
         // Listing never constructs a lease, acquisition, sequence or grant.
         Ok((
@@ -4121,6 +5984,201 @@ impl Browsers {
             })?;
         Ok((generation, tab))
     }
+    pub(super) async fn extension_user_history(
+        &self,
+        browser_id: &str,
+        options: BrowserHistoryOptions,
+        call: BrowserCall<'_>,
+    ) -> Result<Value, ToolError> {
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .expect("selected provider");
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("selected browser does not support browser-wide history"))?;
+        if !extension
+            .capabilities()
+            .map_err(provider::extension_error)?
+            .user_history
+        {
+            return Err(failed(
+                "selected browser does not support browser-wide history",
+            ));
+        }
+        let pending = session_surface_call(
+            self.host().await,
+            self.owner,
+            &provider,
+            self.epoch,
+            call,
+            true,
+        )
+        .await?;
+        pending
+            .authorization
+            .authorize_history(pending.request.clone(), pending.cancellation.clone())
+            .await?;
+        pending.check().await?;
+        pending
+            .authorization
+            .check_history(pending.request.clone(), pending.cancellation.clone())
+            .await?;
+        let mut params = serde_json::to_value(options).map_err(failed)?;
+        params
+            .as_object_mut()
+            .expect("history options object")
+            .retain(|_, value| !value.is_null());
+        let result = pending
+            .scope
+            .dispatch(pending.scope.control.user_history(params))
+            .await;
+        pending
+            .host
+            .lock()
+            .await
+            .reconcile_provider(self.owner, &provider)
+            .await?;
+        let result = result.map_err(provider::extension_error)?;
+        pending.check().await?;
+        pending
+            .authorization
+            .check_history(pending.request.clone(), pending.cancellation.clone())
+            .await?;
+        Ok(result)
+    }
+
+    pub(super) async fn name_session(
+        &self,
+        browser_id: &str,
+        name: &str,
+        call: BrowserCall<'_>,
+    ) -> Result<Value, ToolError> {
+        let name = name.trim_matches(|character| {
+            matches!(character,
+            '\u{0009}'..='\u{000d}' | '\u{0020}' | '\u{00a0}' | '\u{1680}' |
+            '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}' |
+            '\u{205f}' | '\u{3000}' | '\u{feff}')
+        });
+        if name.is_empty() {
+            return Err(failed("name_session requires a name"));
+        }
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .expect("selected provider");
+        let extension = provider
+            .extension()
+            .ok_or_else(|| failed("selected browser does not support sessionName"))?;
+        let capabilities = extension
+            .capabilities()
+            .map_err(provider::extension_error)?;
+        if capabilities.created_presentation_owner != ExtensionEffectOwner::Host
+            && !capabilities.session_naming
+        {
+            return Err(failed("selected browser does not support sessionName"));
+        }
+        let pending = session_surface_call(
+            self.host().await,
+            self.owner,
+            &provider,
+            self.epoch,
+            call,
+            false,
+        )
+        .await?;
+        pending.check().await?;
+        if capabilities.created_presentation_owner == ExtensionEffectOwner::Provider {
+            let result = pending
+                .scope
+                .dispatch(pending.scope.control.name_session(name))
+                .await;
+            pending
+                .host
+                .lock()
+                .await
+                .reconcile_provider(self.owner, &provider)
+                .await?;
+            result.map_err(provider::extension_error)?;
+            pending.check().await?;
+            return Ok(Value::Null);
+        }
+        let browser = BrowserIdentity::of(&provider, &extension.identity().generation)?;
+        let groups = {
+            let mut host = pending.host.lock().await;
+            check_input(call.cancellation)?;
+            host.extension_preparation_current(&pending.scope, &pending.request)?;
+            host.extension
+                .get_mut(&(self.owner, browser.clone()))
+                .ok_or_else(|| failed("session presentation owner retired"))?
+                .session_group_title = Some(name.to_owned());
+            host.tabs
+                .iter()
+                .filter(|(identity, lease)| {
+                    identity.browser == browser
+                        && lease.creator.owner == self.owner
+                        && lease.creator.provider == provider
+                        && lease.origin == Origin::AgentCreated
+                        && matches!(lease.disposition, Disposition::Live)
+                })
+                .filter_map(|(_, lease)| {
+                    let state = lease.extension.as_ref()?;
+                    Some((
+                        lease.extension_sequence?,
+                        state.creation.clone()?,
+                        state.group.clone()?,
+                    ))
+                })
+                .collect::<Vec<_>>()
+        };
+        // Source behavior persists the requested title before a best-effort
+        // existing-group update. Lifetime/uncertain transport failures remain
+        // visible to the Host rather than becoming false cleanup proof.
+        let mut groups = groups;
+        groups.sort_by_key(|(sequence, _, _)| *sequence);
+        let mut updated = HashSet::new();
+        for (_, creation, group) in groups {
+            if !updated.insert(group.group_id()) {
+                continue;
+            }
+            pending.check().await?;
+            let result = pending
+                .scope
+                .dispatch(pending.scope.control.update_created_tab_group(
+                    &creation,
+                    &group,
+                    &ExtensionGroupPresentation {
+                        title: Some(name.to_owned()),
+                        color: None,
+                    },
+                ))
+                .await;
+            pending
+                .host
+                .lock()
+                .await
+                .reconcile_provider(self.owner, &provider)
+                .await?;
+            match result.as_ref().map_err(|error| error.as_ref()) {
+                Ok(_)
+                | Err(cua_driver_core::browser::ExtensionProviderError::ChromeRejected {
+                    ..
+                }) => break,
+                Err(cua_driver_core::browser::ExtensionProviderError::Refused { kind, .. })
+                    if matches!(
+                        kind.as_str(),
+                        "group_unavailable" | "tab_unavailable" | "creation_unavailable"
+                    ) =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(provider::extension_error(error)),
+            }
+        }
+        pending.check().await?;
+        Ok(Value::Null)
+    }
+
     pub(super) async fn managed_tabs(
         &self,
         browser_id: &str,
@@ -4143,26 +6201,26 @@ impl Browsers {
                 .collect::<Vec<_>>()
         ))
     }
-    pub(super) async fn reconcile_extension_command(
-        &mut self,
-        command: &Command,
-    ) -> Result<(), ToolError> {
-        let selected = match command {
+    pub(super) fn command_browser_id<'a>(&'a self, command: &'a Command) -> Option<&'a str> {
+        match command {
             Command::BrowserTab { browser_id, .. }
             | Command::BrowserManagedTabs { browser_id }
+            | Command::BrowserSelectedTab { browser_id }
+            | Command::BrowserNameSession { browser_id, .. }
+            | Command::BrowserHistory { browser_id, .. }
+            | Command::BrowserViewportSet { browser_id, .. }
+            | Command::BrowserViewportReset { browser_id }
             | Command::BrowserUserOpenTabs { browser_id }
+            | Command::BrowserUserGetTabContext { browser_id, .. }
             | Command::BrowserUserClaimTab { browser_id, .. }
-            | Command::CreateBrowserTab { browser_id, .. } => {
-                self.providers(Some(browser_id))?.pop()
-            }
+            | Command::CreateBrowserTab { browser_id, .. } => Some(browser_id.as_str()),
             Command::GetTab { options, .. } | Command::ListTabs { options } => {
-                match options.browser.as_deref() {
-                    Some(id) => self.providers(Some(id))?.pop(),
-                    None => None,
-                }
+                options.browser.as_deref()
             }
             Command::Observe { handle, .. }
             | Command::Action { handle, .. }
+            | Command::BrowserMarkTab { handle, .. }
+            | Command::BrowserScreenshot { handle, .. }
             | Command::TabMetadata { handle }
             | Command::ClipboardRead { handle }
             | Command::ClipboardReadText { handle }
@@ -4170,14 +6228,32 @@ impl Browsers {
             | Command::ClipboardWriteText { handle, .. }
             | Command::GetJsDialog { handle }
             | Command::HandleJsDialog { handle, .. }
+            | Command::BrowserEvaluate { handle, .. }
             | Command::BrowserRead { handle, .. }
+            | Command::TabPageAssetsList { handle }
+            | Command::TabPageAssetsBundle { handle, .. }
+            | Command::BrowserCua { handle, .. }
             | Command::BrowserWait { handle, .. }
             | Command::BrowserMutation { handle, .. } => match handle {
-                Handle::Tab(id) => self.targets.get(id).map(|tab| tab.provider.clone()),
+                Handle::Tab(id) => self.targets.get(id).map(|tab| tab.provider.id()),
                 Handle::App(_) => None,
             },
             _ => None,
-        };
+        }
+    }
+
+    pub(super) async fn reconcile_extension_command(
+        &mut self,
+        command: &Command,
+    ) -> Result<(), ToolError> {
+        let selected = self
+            .command_browser_id(command)
+            .map(|id| {
+                self.providers(Some(id))
+                    .map(|mut providers| providers.pop())
+            })
+            .transpose()?
+            .flatten();
         let Some(provider) = selected.filter(|provider| provider.extension().is_some()) else {
             return Ok(());
         };
@@ -4193,7 +6269,7 @@ impl Browsers {
             .reconcile_provider(self.owner, provider)
             .await?
         {
-            return Err(ToolError::CleanupUnconfirmed(
+            return Err(ToolError::Failed(
                 "a previous extension mutation is still in flight".into(),
             ));
         }
@@ -4225,6 +6301,109 @@ impl Browsers {
         }
         Ok(json!(result))
     }
+    pub(super) async fn mark_tab(
+        &mut self,
+        handle: &str,
+        status: crate::protocol::BrowserTabMark,
+        invocation: &crate::InvocationContext<'_>,
+        cancellation: &CancellationToken,
+        language: Language,
+    ) -> Result<Value, ToolError> {
+        let host = self.host().await;
+        let tab = self
+            .targets
+            .get_mut(handle)
+            .ok_or_else(|| failed("stale_tab: bind it again"))?;
+        if tab.provider.extension().is_none() {
+            return Err(failed("tab retention marks are unavailable for direct CDP"));
+        }
+        // Like normal claim use, this runs the already-authorized session
+        // preparer. Metadata-only attachment cannot stand in for a provider
+        // whose real requireSessionTab performs full preparation.
+        tab.prepare_extension_session(invocation, cancellation, language, ClaimIntent::Implicit)
+            .await?;
+        let identity = tab.identity()?;
+        let claim = tab
+            .extension_claim
+            .clone()
+            .ok_or_else(|| failed("tab mark requires its currently admitted physical claim"))?;
+        let issued = operation(invocation)?;
+        let scope = host.lock().await.extension_context(
+            self.owner,
+            &tab.provider,
+            issued.clone(),
+            self.epoch,
+            CallTarget::Tab {
+                origin: Origin::UserClaimed,
+                tab: Some(tab.info.id.clone()),
+            },
+            true,
+        )?;
+        let requested = match status {
+            crate::protocol::BrowserTabMark::Handoff => TabMark::Handoff,
+            crate::protocol::BrowserTabMark::Deliverable => TabMark::Deliverable,
+        };
+        if requested == TabMark::Handoff
+            && tab.provider.extension_adapter() == Some(ExtensionAdapterMode::Chatgpt)
+            && host
+                .lock()
+                .await
+                .tabs
+                .get(&identity)
+                .is_some_and(|lease| lease.provider_tab_id.is_none())
+        {
+            let observed = scope
+                .dispatch(scope.control.resolve_session_tab(&tab.info.id))
+                .await;
+            let mut ledger = host.lock().await;
+            ledger.reconcile_provider(self.owner, &tab.provider).await?;
+            let observed = observed.map_err(provider::extension_error)?;
+            if observed.id.to_string() != identity.target {
+                return Err(unknown("retained page metadata changed its issued tab"));
+            }
+            let page_id = observed
+                .provider_tab_id
+                .filter(|id| !id.is_empty())
+                .ok_or_else(|| {
+                    failed("ChatGPT did not provide a stable identity for the retained page")
+                })?;
+            ledger
+                .tabs
+                .get_mut(&identity)
+                .ok_or_else(|| unknown("retained page lost its current custody"))?
+                .provider_tab_id = Some(page_id);
+        }
+        check_input(cancellation)?;
+        let attempt = host
+            .lock()
+            .await
+            .begin_mark(&identity, self.owner, &issued, self.epoch, requested)?;
+        let result = scope
+            .dispatch(scope.control.mark_tab(&claim, mark_to_core(requested)))
+            .await;
+        let no_dispatch = result
+            .as_ref()
+            .err()
+            .is_some_and(|error| scope.control.undispatched_control(error).is_some());
+        let mut ledger = host.lock().await;
+        ledger.reconcile_provider(self.owner, &tab.provider).await?;
+        if ledger.mark_attempt_pending(&identity, self.owner, &attempt) {
+            let outcome = match &result {
+                Ok(_) => {
+                    return Err(unknown(
+                        "tab mark ACK was not folded into its exact issued ledger",
+                    ));
+                }
+                Err(_) if no_dispatch => Err(MarkFailure::NotDispatched),
+                Err(error) => Err(MarkFailure::Unknown(error.to_string())),
+            };
+            ledger.mark_result(&identity, self.owner, &attempt, outcome)?;
+        }
+        result.map_err(provider::extension_error)?;
+        tab.last_turn = invocation.turn().to_owned();
+        Ok(Value::Null)
+    }
+
     pub(super) async fn check_download_tab_lease(
         &self,
         handle: &str,
@@ -4310,6 +6489,14 @@ impl Browsers {
         let host = self.host().await;
         let generation = extension.identity().generation.clone();
         let identity = BrowserIdentity::of(&provider, &generation)?.tab(&id.to_string());
+        let revoked = host.lock().await.tabs.get(&identity).is_some_and(|lease| {
+            lease.creator.owner == self.owner
+                && !matches!(lease.disposition, Disposition::Parked)
+                && lease.extension.as_ref().is_some_and(|state| state.revoked)
+        });
+        if revoked {
+            drain_extension_cleanup(&host, self.owner, None, None, Some(&identity)).await?;
+        }
         let history = self
             .acquisition_history(&provider)
             .into_iter()
@@ -4317,27 +6504,55 @@ impl Browsers {
             .max_by_key(|record| record.sequence);
         let scope = {
             let mut ledger = host.lock().await;
-            ledger.extension_reserve(
+            let context = operation(invocation)?;
+            let scope = ledger.extension_context(
                 self.owner,
                 &provider,
-                invocation.turn(),
-                &id.to_string(),
-                Origin::UserClaimed,
-            )?;
-            ledger.restore_acquisition_order(self.owner, &identity, history.as_ref());
-            ledger.extension_context(
-                self.owner,
-                &provider,
-                operation(invocation)?,
+                context.clone(),
                 self.epoch,
                 CallTarget::Tab {
                     origin: Origin::UserClaimed,
                     tab: Some(id.to_string()),
                 },
                 true,
-            )?
+            )?;
+            if ledger.tabs.get(&identity).is_some_and(|lease| {
+                lease.creator.owner == self.owner
+                    && !matches!(lease.disposition, Disposition::Parked)
+                    && lease.extension.as_ref().is_some_and(|state| state.revoked)
+            }) {
+                ledger.check_owned_input(&identity)?;
+                let retirement = ledger.extension_context(
+                    self.owner,
+                    &provider,
+                    context_operation(invocation.turn()),
+                    self.epoch,
+                    CallTarget::Retirement,
+                    false,
+                )?;
+                ledger
+                    .park_extension_tab(self.owner, &provider, &identity, &retirement)
+                    .await?;
+            }
+            if !ledger.begin_handoff_transfer(
+                self.owner,
+                &provider,
+                &context,
+                self.epoch,
+                &id.to_string(),
+            )? {
+                ledger.extension_reserve(
+                    self.owner,
+                    &provider,
+                    invocation.turn(),
+                    &id.to_string(),
+                    Origin::UserClaimed,
+                )?;
+                ledger.restore_acquisition_order(self.owner, &identity, history.as_ref());
+            }
+            scope
         };
-        let preparation = scope
+        let preparation = match scope
             .authorize_preparation(
                 &host,
                 invocation,
@@ -4346,7 +6561,17 @@ impl Browsers {
                 },
                 cancellation,
             )
-            .await?;
+            .await
+        {
+            Ok(request) => request,
+            Err(error) => {
+                // This boundary ran only Host authorization, before Core dispatch.
+                host.lock()
+                    .await
+                    .rollback_handoff_transfer(&identity, self.owner, &scope.context);
+                return Err(error);
+            }
+        };
         let _effects = invocation
             .browser_host_effects()
             .ok_or_else(|| failed("direct extension claim requires Host effect custody"))?;
@@ -4430,13 +6655,38 @@ impl Browsers {
                 }
                 state.user_preparation = UserPreparation::Pending(scope.context.clone());
             }
+            let boundary = host
+                .lock()
+                .await
+                .handoff_preparation_boundary(&scope, &identity);
             let mut entered = false;
             let prepared = scope
                 .dispatch(async {
+                    enter_handoff_preparation(boundary.as_ref())?;
                     entered = true;
-                    scope.control.prepare_session_tab(id).await
+                    if provider.extension_mode() == Some(ExtensionAdapterMode::Chatgpt) {
+                        scope
+                            .control
+                            .take_over_session_tab(id)
+                            .await
+                            .map_err(Box::new)
+                    } else {
+                        scope
+                            .control
+                            .prepare_session_tab(id)
+                            .await
+                            .map_err(Box::new)
+                    }
                 })
                 .await;
+            let preparation_not_dispatched = prepared.as_ref().err().is_some_and(|error| {
+                !entered || scope.control.undispatched_control(error).is_some()
+            });
+            if preparation_not_dispatched {
+                host.lock()
+                    .await
+                    .settle_undispatched_preparation(&scope, &identity);
+            }
             host.lock()
                 .await
                 .reconcile_provider(self.owner, &provider)
@@ -4536,7 +6786,7 @@ impl Browsers {
         validate_url(&request.url)?;
         let browser = BrowserIdentity::of(&provider, &request.generation)?;
         let host = self.host().await;
-        let (scope, opener, source) = {
+        let (scope, opener, source, viewport) = {
             let mut ledger = host.lock().await;
             let completion = extension
                 .pending_operations()
@@ -4584,6 +6834,10 @@ impl Browsers {
                     "extension popup was not issued by its prepared source lease",
                 ));
             }
+            let viewport = ledger
+                .tabs
+                .get(&browser.tab(&request.opener_tab_id.to_string()))
+                .and_then(|lease| lease.viewport);
             let opener = actual.opener(&ledger, self.owner, &provider)?;
             // Only the real service InvocationContext supplies this operation;
             // the popup metadata and old preparation scope supply no cause ID.
@@ -4598,7 +6852,7 @@ impl Browsers {
                 },
                 true,
             )?;
-            (scope, opener, actual.clone())
+            (scope, opener, actual.clone(), viewport)
         };
         let preparation = scope
             .authorize_preparation(&host, invocation, source.preparation_target(), cancellation)
@@ -4640,6 +6894,12 @@ impl Browsers {
                 "extension popup source expired after child creation",
             ));
         }
+        host.lock()
+            .await
+            .tabs
+            .get_mut(&browser.tab(&created.tab.id.to_string()))
+            .ok_or_else(|| unknown("extension popup child lost its issued lease"))?
+            .viewport = viewport;
         let BoundExtensionCreated {
             response,
             handle,
@@ -4676,6 +6936,9 @@ impl Browsers {
             child
                 .authorize(None, invocation, cancellation, language)
                 .await?;
+            child
+                .apply_pending_viewport(BrowserCall::new(invocation, cancellation, language))
+                .await?;
             origin.check_current(child).await?;
         }
         if let Some(state) = host
@@ -4688,7 +6951,8 @@ impl Browsers {
         }
         // This exact captured page request uses the service's dedicated current
         // global/network authorization. Ordinary model Navigate is unchanged.
-        self.use_tab(&identity, invocation.turn()).await?;
+        self.use_tab(&identity, invocation.turn(), cancellation)
+            .await?;
         let child = self
             .targets
             .get_mut(&handle)
@@ -4830,7 +7094,14 @@ impl Browsers {
                             .and_then(|state| state.group.clone())
                     });
                 let presentation = ExtensionGroupPresentation {
-                    title: Some("Maka".into()),
+                    title: Some(
+                        host.lock()
+                            .await
+                            .extension
+                            .get(&(self.owner, identity.browser.clone()))
+                            .and_then(|state| state.session_group_title.clone())
+                            .unwrap_or_else(|| "Maka".into()),
+                    ),
                     color: Some(ExtensionGroupColor::Blue),
                 };
                 scope
@@ -5164,6 +7435,15 @@ impl Tab {
         point: Option<[f64; 2]>,
         operation: &str,
     ) -> Result<Option<Value>, ToolError> {
+        self.extension_cursor_presentation_with_arrival(point, operation, None)
+            .await
+    }
+    pub(in crate::browser) async fn extension_cursor_presentation_with_arrival(
+        &mut self,
+        point: Option<[f64; 2]>,
+        operation: &str,
+        wait_for_arrival: Option<bool>,
+    ) -> Result<Option<Value>, ToolError> {
         let Some(extension) = self.provider.extension().cloned() else {
             return Ok(None);
         };
@@ -5217,7 +7497,11 @@ impl Tab {
             false,
         )?;
         let shown = scope
-            .dispatch(scope.control.move_mouse_presentation(&claim, x, y, None))
+            .dispatch(
+                scope
+                    .control
+                    .move_mouse_presentation(&claim, x, y, wait_for_arrival),
+            )
             .await;
         self.cursor_host
             .lock()
@@ -6768,11 +9052,7 @@ impl Tab {
                 .await?;
         }
         let drain = scope
-            .dispatch_retirement(
-                scope
-                    .control
-                    .wait_claim_cdp_drained(&claim, Duration::from_secs(10)),
-            )
+            .dispatch_retirement(scope.control.wait_claim_cdp_drained(&claim))
             .await
             .map_err(provider::extension_error)?;
         {
@@ -6980,7 +9260,7 @@ mod tests {
         );
         assert_eq!(
             managed_tab_info(&tab),
-            json!({"id":"17","title":"Observed title","url":"https://fixture.test/","providerTabId":"actual-provider-id"})
+            json!({"id":"17","titleJson":"\"Observed title\"","url":"https://fixture.test/","providerTabId":"actual-provider-id"})
         );
         assert_eq!(managed_tab_info(&row(18, json!({}))), json!({"id":"18"}));
         assert!(is_internal_url("chrome://settings"));
@@ -7045,51 +9325,30 @@ mod preparation_effect_tests {
     use super::*;
 
     #[test]
-    fn old_scope_cleanup_does_not_release_new_scope_or_header_liability() {
+    fn cleanup_and_refused_retries_preserve_other_scopes_and_header_liability() {
         let old = ExtensionWireContext::new("fixture-session", "old-turn").unwrap();
         let current = ExtensionWireContext::new("fixture-session", "current-turn").unwrap();
         let mut effects = PreparationEffects::default();
         effects.begin(&old, true);
         effects.begin(&current, true);
+        let retry = effects.begin(&current, true);
+        effects.refused(&current, retry);
+        assert_eq!(effects.scopes, [old.clone(), current.clone()]);
         effects.fixed_cleanup(&old, true);
         assert_eq!(effects.scopes.as_slice(), std::slice::from_ref(&current));
-        assert!(
-            !effects.settled(),
-            "old logical cleanup cannot clear current preparation"
-        );
+        assert!(!effects.settled());
         effects.fixed_cleanup(&current, true);
+        assert!(effects.scopes.is_empty());
         assert!(
             !effects.settled(),
-            "fixed hooks are separate from scoped headers"
+            "fixed cleanup does not acknowledge headers"
         );
         effects.headers_may_exist = false;
         assert!(effects.settled());
     }
 
     #[test]
-    fn known_undispatched_refusal_preserves_prior_scope_and_creates_no_new_debt() {
-        let wire = ExtensionWireContext::new("fixture-session", "current-turn").unwrap();
-        let mut effects = PreparationEffects::default();
-        let first = effects.begin(&wire, true);
-        effects.refused(&wire, first);
-        assert!(
-            effects.settled(),
-            "an undispatched attempt created no fixed or header effect"
-        );
-        effects.begin(&wire, true);
-        let next = effects.begin(&wire, true);
-        effects.refused(&wire, next);
-        assert_eq!(effects.scopes, [wire]);
-        assert!(
-            !effects.settled(),
-            "no-dispatch for a new attempt is not cleanup of prior effects"
-        );
-    }
-
-    #[test]
     fn preparation_refusal_keeps_unknown_and_only_current_no_dispatch_refunds() {
-        // State-fold projection only. The broker/provider keepers establish the
-        // trusted phase separately; these inputs are not native/authority proof.
         fn pending() -> (ClaimState, ExtensionHostOperation) {
             let operation = context_operation("projection-turn");
             let wire = ExtensionWireContext::new("projection-session", "projection-turn").unwrap();
@@ -7166,6 +9425,8 @@ mod control_lifetime_tests {
             ProviderState {
                 provider,
                 current_turn: Some("old-turn".into()),
+                pending_viewport: None,
+                session_group_title: None,
                 retiring_turn: None,
                 logical_active: None,
                 calls: HashMap::new(),
@@ -7173,6 +9434,8 @@ mod control_lifetime_tests {
                 finish_phases: HashMap::new(),
                 session_headers: None,
                 headers_unknown: false,
+                uploads: upload::Custody::default(),
+                owner_parked: false,
             },
         )
     }
@@ -7217,7 +9480,7 @@ mod control_lifetime_tests {
         let drain = host
             .lock()
             .await
-            .seal_extension_controls(owner, Some("old-turn"), None);
+            .seal_extension_controls(owner, Some("old-turn"), None, None);
         let mut drained = Box::pin(drain.wait());
         assert!(
             std::future::poll_fn(|cx| Poll::Ready(drained.as_mut().poll(cx).is_pending())).await
@@ -7327,7 +9590,7 @@ mod control_lifetime_tests {
         state.calls.insert("new".into(), new);
         let mut host = Host::default();
         host.extension.insert((owner, browser.clone()), state);
-        host.seal_extension_controls(owner, None, Some(old_epoch))
+        host.seal_extension_controls(owner, None, Some(old_epoch), None)
             .wait()
             .await
             .unwrap();
@@ -7349,7 +9612,7 @@ mod control_lifetime_tests {
         state.logical_active = Some("current-target".into());
         let mut host = Host::default();
         host.extension.insert((owner, browser.clone()), state);
-        host.seal_extension_controls(owner, Some("old-turn"), None)
+        host.seal_extension_controls(owner, Some("old-turn"), None, None)
             .wait()
             .await
             .unwrap();
@@ -7423,3 +9686,98 @@ mod control_lifetime_tests {
 #[cfg(all(test, unix))]
 #[path = "extension/inventory_tests.rs"]
 mod inventory_tests;
+
+// Append in browser/extension.rs. This reuses the same metadata operation
+// registration, session ownership and current Host session-preparation check.
+impl Browsers {
+    pub(super) async fn set_browser_viewport(
+        &mut self,
+        browser_id: &str,
+        value: Option<crate::protocol::BrowserViewport>,
+        call: BrowserCall<'_>,
+    ) -> Result<Value, ToolError> {
+        let value = value
+            .map(crate::protocol::BrowserViewport::validate)
+            .transpose()
+            .map_err(failed)?;
+        let provider = self
+            .providers(Some(browser_id))?
+            .pop()
+            .expect("selected provider");
+        self.extension_session_metadata(&provider, call).await?;
+        let pending = session_metadata_call(
+            self.host().await,
+            self.owner,
+            &provider,
+            self.epoch,
+            call,
+            self.acquisition_history(&provider),
+        )
+        .await?;
+        pending.check().await?;
+        let browser = BrowserIdentity::of(&provider, pending.generation())?;
+        let identity = self.host().await.lock().await.set_viewport(
+            self.owner,
+            &browser,
+            call.invocation.turn(),
+            value,
+        )?;
+        let Some(identity) = identity else {
+            return Ok(Value::Null);
+        };
+        let row = pending.resolve(&identity.target).await?;
+        let bound = self
+            .bind(
+                TabSource {
+                    provider,
+                    generation: pending.generation().to_owned(),
+                    info: provider::extension_tab(row),
+                },
+                InitialState::Deferred,
+                call.invocation,
+                call.cancellation,
+                call.language,
+            )
+            .await?;
+        let Handle::Tab(handle) =
+            serde_json::from_value(bound["handle"].clone()).map_err(failed)?
+        else {
+            unreachable!()
+        };
+        let tab = self
+            .targets
+            .get_mut(&handle)
+            .expect("viewport active tab bound");
+        tab.prepare_origin_transport(
+            call.invocation,
+            call.cancellation,
+            call.language,
+            ClaimIntent::Implicit,
+        )
+        .await?;
+        pending.check().await?;
+        super::capability::viewport::apply(tab, value).await?;
+        Ok(Value::Null)
+    }
+}
+
+#[cfg(test)]
+mod encoded_title_tests {
+    use super::*;
+
+    #[test]
+    fn title_and_group_use_only_encoded_text_until_the_facade() {
+        let tab: cua_driver_core::browser::ExtensionTabInfo = serde_json::from_value(json!({
+            "id":17,"titleJson":r#""\ud800""#,"groupTitleJson":r#""\udc00""#,"url":"about:blank"
+        }))
+        .unwrap();
+        assert_eq!(
+            tab_info(&tab),
+            json!({"id":"17","titleJson":r#""\ud800""#,"tabGroupJson":r#""\udc00""#,"url":"about:blank"})
+        );
+        assert_eq!(
+            managed_tab_info(&tab),
+            json!({"id":"17","titleJson":r#""\ud800""#,"url":"about:blank"})
+        );
+    }
+}

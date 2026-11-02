@@ -121,7 +121,6 @@ export async function releaseNativeCli({ source, keys, target, validator, output
     if (cli?.version !== candidate.version) {
       throw new Error('Native CLI version does not match the source archive');
     }
-    const reviewedNotices = await verifyNotices(repositoryRoot);
     if (platform.os === 'darwin') {
       const sdk = (
         await run('xcrun', ['--sdk', 'macosx', '--show-sdk-version'], { env })
@@ -167,6 +166,18 @@ export async function releaseNativeCli({ source, keys, target, validator, output
         ).stdout,
       ),
     });
+    const triple = rustTarget(platform.os, platform.cpu);
+    const { binary, bundleInputs } = await buildCli({
+      release: true,
+      target: triple,
+      repositoryRoot,
+      env: { ...env, ...v8.environment },
+    });
+    const reviewedNotices = await verifyNotices(repositoryRoot, {
+      bundleInputs,
+      target: triple,
+      env,
+    });
     const notices = join(stage, 'THIRD_PARTY_NOTICES.txt');
     const sysroot = (
       await run('rustc', ['--print', 'sysroot'], { cwd: repositoryRoot, env })
@@ -179,12 +190,6 @@ export async function releaseNativeCli({ source, keys, target, validator, output
       notices,
       [await readFile(reviewedNotices, 'utf8'), v8.notices, rustNotices].join('\n\n'),
     );
-    const binary = await buildCli({
-      release: true,
-      target: rustTarget(platform.os, platform.cpu),
-      repositoryRoot,
-      env: { ...env, ...v8.environment },
-    });
     if (native) {
       const { stdout } = await run(
         join(dirname(binary), desktopShell(platform.os)),

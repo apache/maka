@@ -271,7 +271,7 @@ function ErrorBoundary(props: {
 }): JSX.Element;
 ```
 
-渲染它的子元素；子元素下的代码抛出异常后（组件函数体、绑定、effect 或事件处理函数），改为渲染 `fallback`。失败的部分被移除，fallback 显示在原处。`fallback(error, reset)` 得到抛出的值和 `reset`，`reset` 重新渲染子元素；不带参数的 `fallback` 按原样显示。失败交给它上方最近的错误边界，fallback 中的失败交给再上一层的错误边界。Rust 组件使用 `catch_error`（[错误边界](../docs/reactivity.md#错误边界)）。
+渲染它的子元素；子元素下的代码抛出异常后（组件函数体、绑定、effect 或事件处理函数），改为渲染 `fallback`。失败的部分被移除，fallback 显示在原处。函数形式的 `fallback` 总是以 `fallback(error, reset)` 调用，得到抛出的值和 `reset`，`reset` 重新渲染子元素，与它声明了几个参数无关；元素形式的 `fallback` 按原样显示。失败交给它上方最近的错误边界，fallback 中的失败交给再上一层的错误边界。Rust 组件使用 `catch_error`（[错误边界](../docs/reactivity.md#错误边界)）。
 
 ```tsx
 import { ErrorBoundary, Text, View } from "nsh";
@@ -976,6 +976,7 @@ interface Platform {
   readonly isTerminal: boolean;
   readonly version: string;
   readonly idiom: "phone" | "pad" | "mac" | "tv" | "desktop";
+  readonly desktop: boolean;
   readonly catalyst: boolean;
   select<T>(spec: PlatformSelectSpec<T>): T | undefined;
 }
@@ -987,8 +988,9 @@ interface Platform {
 |---|---|---|
 | `os` | `os() -> Os`（`os().name()` 即 TS 的字符串） | 操作系统。iOS、iOS 模拟器和 Mac Catalyst 都报告 `"ios"`，浏览器报告 `"web"`。 |
 | `version` | `os_version() -> (u16, u16)` | iOS 和桌面系统：系统版本（`"17.5"`）；Android：API 级别（`"35"`）；Web：`"0.0"`。Rust 给出主版本和次版本号，在 Android 上是 API 级别和 0。 |
-| `idiom` | `idiom() -> Idiom` | 设备类型：`"phone"`、`"pad"`（iPad、Android 平板）、`"mac"`（以 Mac 形态运行的 Mac Catalyst）、`"tv"`（Apple TV、Android TV）或 `"desktop"`，即桌面设备类型：macOS、Windows、Linux，以及有鼠标且窗口较宽的浏览器。 |
-| `catalyst` | `idiom() == Idiom::Mac` | 以 Mac 形态运行的 Mac Catalyst。 |
+| `idiom` | `idiom() -> Idiom` | 设备类型：桌面操作系统和桌面形态浏览器报告 `"desktop"`；终端保留宿主设备类型。其他类型是 `"phone"`、`"pad"`（iPad、Android 平板、以 iPad 形态运行的 Mac Catalyst）、`"mac"`（以 UIKit 的 Mac 形态运行的 Mac Catalyst，属于移动端形态）或 `"tv"`（Apple TV、Android TV）。 |
+| `desktop` | `is_desktop() -> bool` | 适用图形桌面行为：macOS、Windows、Linux，以及有鼠标且窗口较宽的浏览器，不包括终端。`desktop={{…}}` 属性和 `select({ desktop })` 以它为准。Mac Catalyst 运行 iOS 后端，属于移动端：那里适用 `ios={{…}}` 属性。[`nsh/desktop`](./nsh-desktop.md#isavailable) 的 `isAvailable` 表示原生桌面和终端的标题及菜单 API 可用。 |
+| `catalyst` | `is_catalyst() -> bool` | 应用运行在 Mac Catalyst 下，无论是 Mac 形态还是 iPad 形态（`os` 为 `"ios"`）。 |
 | `renderer` | `renderer()` | 界面的呈现方式：平台视图或桌面图形（`"native"`）、浏览器 HTML（`"web"`）或终端字符单元格（`"terminal"`）。 |
 | `isTerminal` | `is_terminal()` | 界面渲染为终端字符单元格。`os` 报告终端宿主的操作系统。 |
 | `select(spec)` | `match os() { … }` | 当前平台对应的值（见下文）。 |
@@ -998,7 +1000,7 @@ let columns = if is_desktop() { 3 } else { 1 };
 ```
 
 ```tsx tabs
-const columns = platform.idiom === "desktop" && !platform.isTerminal ? 3 : 1;
+const columns = platform.desktop ? 3 : 1;
 ```
 
 #### platform.select
@@ -1012,14 +1014,14 @@ interface PlatformSelectSpec<T> {
   linux?: T;
   web?: T;
   terminal?: T; // 终端渲染，优先于操作系统
-  mobile?: T;   // iOS、Android，以及手机和平板上的浏览器
-  desktop?: T;  // macOS、Windows、Linux，以及桌面浏览器
+  mobile?: T;   // 图形移动端：iOS（包括 Mac Catalyst）、Android，以及手机和平板上的浏览器
+  desktop?: T;  // platform.desktop 为 true：macOS、Windows、Linux，以及桌面浏览器
   native?: T;   // 除 Web 外的所有平台
   default?: T;
 }
 ```
 
-依次返回当前操作系统（`ios`、`android`、`web` 等）对应的值，否则 `mobile` / `desktop`，否则 `native`（除 Web 外的所有平台），否则 `default`，都没有则返回 `undefined`。在浏览器中，`mobile` 还是 `desktop` 由设备类型决定。Rust 代码对 `os()` 做 `match`（`mobile` / `desktop` 用 `is_desktop()`）。
+依次返回当前操作系统（`ios`、`android`、`web` 等）对应的值，否则按 `platform.desktop` 取 `desktop` 或 `mobile`，否则 `native`（除 Web 外的所有平台），否则 `default`，都没有则返回 `undefined`。Rust 代码对 `os()` 做 `match`（`mobile` / `desktop` 用 `is_desktop()`）。
 
 终端依次查找 `terminal`、宿主操作系统、`native` 和 `default`。可用 `platform.select({ terminal: "Press Enter", default: "Tap" })` 为终端选择交互提示。
 
@@ -1102,8 +1104,8 @@ button()
 </Button>
 ```
 
-- URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址，会抛出 `TypeError`。
-- 声明了能力的应用需要 `openUrl`：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme；其他 URL 抛出 `TypeError`（见[沙箱与能力](../docs/sandbox-and-capabilities.md)）。
+- URL 必须是绝对地址（带 scheme）。会执行代码或访问应用自身数据的 URL，即 `javascript:`、`data:`、`blob:`、`file:`、`about:` 和 `asset:`，以及相对地址，会让 Promise 以 `TypeError` reject。`openUrl` 从不抛出：所有失败都以 reject 报告。
+- 声明了能力的应用需要 `openUrl`：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme；其他 URL 以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"openUrl"`，`resource` 为该 URL（见[沙箱与能力](../docs/sandbox-and-capabilities.md)）。在 Rust 中，`open_url` 对这些 URL 回答 `false`，并在日志中说明原因。
 - 嵌入它的应用先看到这个 URL，可以改由自己的路由处理（Swift `NshAppView.onOpenURL`、Java `NshView.setOpenUrlHandler`、Rust `AppView::host().handle_open_url`；见 [iOS](../docs/ios.md#应用打开的链接) 和 [Android](../docs/android.md#应用打开的链接)），此时 `opened` 为 `true`。
 - 各平台用自己的方式打开：iOS 用 `UIApplication.open`（嵌入时是宿主应用的 application），Android 用 `ACTION_VIEW` Intent，macOS 用 `NSWorkspace`，Windows 用 `ShellExecuteW`，Linux 用 `GtkUriLauncher`，GPUI 用它的 `open_url`，Web 在新标签页中打开。`nsh test` 记录这些 URL，而不真正打开。
 - [`TextView`](../elements/text-view.md) 设置 `links="open"` 后，以同样的方式打开其中的链接。
@@ -1327,8 +1329,8 @@ const Clipboard: {
 };
 
 interface ClipboardImage {
-  url: string; // data:image/png;base64,…
-  size: PixelSize;
+  url: string; // Image 能显示、fetch 能读取的 URL
+  size: PixelSize; // 像素
 }
 ```
 
@@ -1343,6 +1345,10 @@ interface ClipboardImage {
 | `await Clipboard.readFiles()` | `clipboard_files().await -> Vec<String>` |
 
 Rust 的读取函数返回一个应答，在任务中（`spawn`，或 `async` 模块函数）await 它；`ClipboardImage` 是 `nsh_core::element::ClipboardImage`，含 `url` 和 `size`（一个 `Size<DevicePixels>`）。
+
+iOS、桌面和 Web 上可以通过剪贴板传递图片。在 Android 上，剪贴板传递文本：`writeImage` 和 `readImage` 以 `code` 为
+`"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 的 `Error` 拒绝，`hasImage` 返回 `false`。在 Rust 中，`set_clipboard_image`
+在那里保持剪贴板不变，`clipboard_image` 返回 `None`。
 
 用户也可以自己从[可选文本](../elements/text.md)中复制；剪贴板 API 用于在代码中复制，比如“复制”按钮。
 
@@ -1431,7 +1437,7 @@ Clipboard.hasText().then((has) => canPaste.set(has));
 readImage(): Promise<ClipboardImage | null>;
 ```
 
-返回剪贴板上的图片，没有时为 `null`：粘贴的截图，或在浏览器、图片编辑器里复制的图片。Rust：`clipboard_image()`，没有时为 `None`。`url` 是图片的 `data:` URL（PNG，或剪贴板自带的 JPEG、GIF、WebP、BMP），可直接作为 [`Image`](../elements/image.md) 的 `src`；在 TSX 中用 `fetch(url)` 拿到它的字节用于上传，在 Rust 中解码逗号之后的 base64 即得到字节。`size`（`width` 和 `height`）是像素尺寸。和 `readText` 一样，在用户要求粘贴时再读。可读取的图片最大 48 MB（编码后），这样 `data:` URL 能放进应用的内存；更大的图片 `readImage` 返回 `null`，`hasImage` 返回 `true`。
+返回剪贴板上的图片，没有时为 `null`：粘贴的截图，或在浏览器、图片编辑器里复制的图片。Rust：`clipboard_image()`，没有时为 `None`。`url` 是图片（PNG，或剪贴板自带的 JPEG、GIF、WebP、BMP）的 URL，[`Image`](../elements/image.md) 能把它作为 `src` 显示，`fetch` 能读取它：用 `fetch(url)` 拿到它的字节用于上传。`size`（`width` 和 `height`）是解码后的像素尺寸。和 `readText` 一样，在用户要求粘贴时再读。可读取的图片最大 48 MB（编码后），这样图片能放进应用的内存；更大的图片会以 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 的 `Error` 拒绝（消息给出图片大小和上限），此时 `hasImage` 返回 `true`。Rust：`clipboard_image()` 对它返回 `None`。
 
 ```rust tabs
 use base64::Engine as _;
@@ -1522,7 +1528,7 @@ keymap.bind("mod+v", async () => {
 hasImage(): Promise<boolean>;
 ```
 
-返回剪贴板上是否有图片，不读取内容：iOS 上不会出现粘贴提示。Rust：`clipboard_has_image()`。
+返回剪贴板上是否有图片，不读取内容：iOS 上不会出现粘贴提示。Rust：`clipboard_has_image()`。Android 上返回 `false`。
 
 ### Clipboard.writeImage
 
@@ -1530,7 +1536,7 @@ hasImage(): Promise<boolean>;
 writeImage(src: string): Promise<void>;
 ```
 
-把 `src`（base64 `data:` URL，例如 `readImage` 给的）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。
+把 `src`（base64 `data:` URL，或 `readImage` 给的 `url`）的图片放到剪贴板上，替换原有内容。Rust：`set_clipboard_image(src)`。Windows 上接受 PNG，这是浏览器、Office 和截图工具读取的格式。Android 上以 `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` 拒绝。
 
 ```rust tabs
 set_clipboard_image(image.url.clone());
@@ -1562,7 +1568,16 @@ const names = files.map((url) => decodeURIComponent(new URL(url).pathname.split(
 ```
 
 > [!NOTE]
-> 如果应用在 `nsh.json` 中声明了 `capabilities`，必须用 `"clipboard": true` 授予剪贴板。否则 `writeText` 和 `writeImage` 不做任何事，`readText` 返回 `""`，`readImage` 返回 `null`，`readFiles` 返回 `[]`，`hasText` 和 `hasImage` 返回 `false`，Rust 与 TSX 都是如此。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
+> 如果应用在 `nsh.json` 中声明了 `capabilities`，必须用 `"clipboard": true` 授予剪贴板。否则 `Clipboard` 的每个函数都以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"clipboard"`，`resource` 为 `""`，系统剪贴板不会被访问。在 Rust 中，写入保持剪贴板不变，读取得到空剪贴板的回答（`""`、`None`、空列表、`false`），拒绝会记录在日志中。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
+>
+> ```tsx
+> try {
+>   await Clipboard.writeText(code());
+> } catch (error) {
+>   if (error.code === "ERR_ACCESS_DENIED") showHint("此应用已关闭复制");
+>   else throw error;
+> }
+> ```
 
 ## Picker
 
@@ -1617,8 +1632,9 @@ pickImages(options?: PickImagesOptions): Promise<PickedImage[]>;
 ```
 
 显示选择器，按选中的顺序 resolve 为用户选中的图片；用户取消时 resolve 为 `[]`。Rust：`pick_images(request)`，在任务里
-（`spawn`，或 `async` 模块函数）await 它的结果。超出范围的选项（`limit: 0`、不在 0 到 1 之间的 `quality`）会在调用时抛出
-`RangeError`。
+（`spawn`，或 `async` 模块函数）await 它的结果。`pickImages` 从不抛出：超出范围的选项（`limit: 0`、不在 0 到 1 之间的
+`quality`）让 Promise 以 `RangeError` reject，应用的能力不允许的选取以 `ERR_ACCESS_DENIED` reject（见下文）。取消是用户的
+回答而不是失败：resolve 为 `[]`。
 
 图片拿到手就可以发送：
 
@@ -1723,8 +1739,9 @@ photos.set([...photos(), ...images.map((image) => URL.createObjectURL(image.file
 选取会被取消。见[测试](../docs/testing-and-trace.md)。
 
 > [!NOTE]
-> 应用在 `nsh.json` 中声明了 `capabilities` 时，需要用 `"picker": true` 授予选择器。没有授予时 `pickImages` resolve 为
-> `[]`，什么也不显示，Rust 和 TSX 都一样。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
+> 应用在 `nsh.json` 中声明了 `capabilities` 时，需要用 `"picker": true` 授予选择器。没有授予时 `pickImages` 什么也不显示，
+> 并以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"picker"`，`resource` 为 `""`。在 Rust
+> 中，`pick_images` 回答没有文件，拒绝会记录在日志中。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
 
 ## Storage
 
@@ -1795,7 +1812,7 @@ const theme = (await Storage.getItem("theme")) ?? "system";
 setItem(key: string, value: string): Promise<void>;
 ```
 
-把 `key` 设为 `value`，替换原有的值。如果存储会超过 5 MB，则 Promise 被拒绝，值不会被保存。Rust：`Storage::set_item(key, value)`，此时返回 `Err(StorageFull)`。值都是字符串：结构化数据保存为 JSON（Rust 用 `serde_json::to_string`，TSX 用 `JSON.stringify`），再读回（`serde_json::from_str`、`JSON.parse`）。
+把 `key` 设为 `value`，替换原有的值。如果存储会超过 5 MB，则 Promise 以一个 `code` 为 `"ERR_NSH_QUOTA_EXCEEDED"` 的 `Error` 拒绝，值不会被保存。Rust：`Storage::set_item(key, value)`，此时返回 `Err(StorageFull)`。值都是字符串：结构化数据保存为 JSON（Rust 用 `serde_json::to_string`，TSX 用 `JSON.stringify`），再读回（`serde_json::from_str`、`JSON.parse`）。
 
 ```rust tabs
 let draft = serde_json::json!({ "title": title.get(), "body": body.get() });
@@ -1889,7 +1906,7 @@ const host: {
   post(name: string, data?: unknown): void;
   available(): boolean;
   call(name: string, args?: unknown, options?: { timeout?: number }): Promise<unknown>;
-  on(event: string, listener: (payload: unknown) => void): (() => void) & { remove(): void };
+  on(event: string, listener: (payload: unknown) => void): () => void;
 };
 ```
 
@@ -1914,32 +1931,45 @@ import { host } from "nsh";
 call(name: string, args?: unknown, options?: { timeout?: number }): Promise<unknown>;
 ```
 
-以 `args`（任意 JSON 值；不传时为 `null`）调用宿主的函数 `name`，resolve 为它的返回值。函数失败时以宿主给出的错误消息拒绝；`host.available()` 为 `false` 时以 `nsh/host: this platform has no host` 拒绝；`name` 不在应用的 [`host` 能力](#能力)中，或不是合法名字（由 `A`–`Z`、`a`–`z`、`0`–`9`、`_`、`.`、`:`、`-` 组成，长度 1 到 128，不含 `..`）时也会拒绝。
+以 `args`（任意 JSON 值；不传时为 `null`）调用宿主的函数 `name`，resolve 为它的返回值。`host.call` 从不抛出：每种失败都让 Promise 以一个 `Error` 拒绝，它的 `code` 说明发生了什么（消息是写给人看的，可能变化）：
 
-调用最多等待宿主应答 30 秒，之后以 `nsh/host: <name> timed out after 30000 ms` 拒绝，之后才到的应答会被丢弃。`options.timeout` 以毫秒设置等待时间，`0` 表示不限时；大到时钟永远走不到的值（约 1e22 毫秒）同样不限时，负数、`NaN` 或无穷大则以 `nsh/host: invalid timeout <value>` 拒绝调用。计时用的是应用的时间，与它的定时器一致：在使用手动时钟的 `nsh test` 中随时钟推进。
+| `code` | 何时 |
+|---|---|
+| `ERR_NSH_HOST_ERROR` | 宿主的函数失败，或宿主没有名为 `name` 的函数；消息是宿主给出的 |
+| `ERR_ACCESS_DENIED` | `name` 不在应用的 [`host` 能力](#能力)中；`permission` 为 `"host"`，`resource` 为该名字 |
+| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | 平台没有宿主：`host.available()` 为 `false` |
+| `ETIMEDOUT` | 宿主没有及时应答 |
+| `ERR_NSH_QUOTA_EXCEEDED` | 已有 1024 个调用在等待嵌入应用的应答 |
+
+不是合法名字（由 `A`–`Z`、`a`–`z`、`0`–`9`、`_`、`.`、`:`、`-` 组成，长度 1 到 128，不含 `..`）的 `name` 以 `TypeError` 拒绝。
+
+调用最多等待宿主应答 30 秒，之后以 `ETIMEDOUT` 拒绝，之后才到的应答会被丢弃。`options.timeout` 以毫秒设置等待时间，`0` 表示不限时；大到时钟永远走不到的值（约 1e22 毫秒）同样不限时，负数、`NaN` 或无穷大则以 `RangeError` 拒绝调用。计时用的是应用的时间，与它的定时器一致：在使用手动时钟的 `nsh test` 中随时钟推进。
 
 ```ts
 const user = (await host.call("getUserInfo")) as { name: string };
-const quote = await host.call("quote.refresh", { symbol: "AAPL" }, { timeout: 5000 });
+const quote = await host.call("quote.refresh", { symbol: "AAPL" }, { timeout: 5000 }).catch((error) => {
+  if (error.code === "ETIMEDOUT" || error.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM") return null;
+  throw error;
+});
 ```
 
 ### host.on
 
 ```ts
-on(event: string, listener: (payload: unknown) => void): (() => void) & { remove(): void };
+on(event: string, listener: (payload: unknown) => void): () => void;
 ```
 
-平台事件中，宿主每发送一次 `event`，就以它的数据调用 `listener`，直到调用 `remove()`。宿主在应用启动前发送的事件会在应用启动后送达，应用顶层注册的监听器能收到；监听器注册之前发送的事件不会补发给它。应用启动时的状态用 `host.call` 读取，之后的变化用 `host.on` 跟进。
+平台事件中，宿主每发送一次 `event`，就以它的数据调用 `listener`，直到调用 `host.on` 返回的函数；在组件渲染期间添加的监听器随组件一起停止。宿主在应用启动前发送的事件会在应用启动后送达，应用顶层注册的监听器能收到；监听器注册之前发送的事件不会补发给它。应用启动时的状态用 `host.call` 读取，之后的变化用 `host.on` 跟进。
 
 ```ts
-const sub = host.on("loginChanged", (payload) => console.log(payload));
+const stop = host.on("loginChanged", (payload) => console.log(payload));
 // 之后
-sub.remove();
+stop();
 ```
 
 ### 能力
 
-应用调用的每个函数都必须列在 `nsh.json` 的 `capabilities.host` 中：精确的名字、以 `*` 结尾的前缀，或者用 `true` 允许全部。所有应用都是如此，没有声明其他 `capabilities` 的应用也一样：宿主的函数从不默认授予。未授权的调用会被拒绝并记录日志；构建从 `nsh` 导入了 `host` 却没有声明 `capabilities.host` 的应用时会给出警告。事件无需授权。参见[沙箱与能力](../docs/sandbox-and-capabilities.md#host)。
+应用调用的每个函数都必须列在 `nsh.json` 的 `capabilities.host` 中：精确的名字、以 `*` 结尾的前缀，或者用 `true` 允许全部。所有应用都是如此，没有声明其他 `capabilities` 的应用也一样：宿主的函数从不默认授予。未授权的调用会以 `ERR_ACCESS_DENIED` 拒绝并记录日志，向嵌入应用 `host.post` 这样的名字会抛出同样的错误；构建从 `nsh` 导入了 `host` 却没有声明 `capabilities.host` 的应用时会给出警告。事件无需授权。参见[沙箱与能力](../docs/sandbox-and-capabilities.md#host)。
 
 ```json
 { "capabilities": { "host": ["getUserInfo", "bridge.*"] } }
@@ -1975,7 +2005,7 @@ mount(() => (conversation ? <Conversation id={conversation} /> : <Inbox />));
 
 ### 原生 SDK 通道
 
-原生 SDK 的 `send` 会保留尚未监听的事件，最多 256 条。最后一个监听器在接收过程中取消订阅时，其余事件仍按原顺序等待；重载停机期间发送的事件交给下一次加载的应用。`host.on` 返回的订阅既可作为清理函数调用，也提供 `remove()`。`host.post(name, data)` 向原生 SDK 的处理函数投递数据，处理函数可用 `isPost` 区分投递与调用。
+原生 SDK 的 `send` 会保留尚未监听的事件，最多 256 条。最后一个监听器在接收过程中停止监听时，其余事件仍按原顺序等待；重载停机期间发送的事件交给下一次加载的应用。`host.post(name, data)` 向原生 SDK 的处理函数投递数据，处理函数可用 `isPost` 区分投递与调用。
 
 ### 嵌入方的一侧
 
@@ -2409,17 +2439,20 @@ function nativeModule<T extends object>(specifier: string): T;
 返回嵌入应用以 `specifier` 注册的套件的导出：其中的模块、类、函数和 Rust 组件，合成一个对象。类型 `T` 由应用自己声明，因此构建应用时不需要了解宿主。与宿主的 crate 一起构建的 Rust 代码直接以 Rust 调用这些函数；`nativeModule` 是 TSX 访问它们的方式。
 
 ```ts
-import { nativeModule } from "nsh";
+import { nativeModule, signal } from "nsh";
 
 interface TradingApi {
   quote(symbol: string): number;
   placeOrder(symbol: string, quantity: number, side: "Buy" | "Sell"): Promise<Order>;
-  subscribe(onChange: (state: Desk) => void): Promise<void>;
+  on(event: "change", listener: (desk: Desk) => void): () => void;
 }
 
 const { Trading } = nativeModule<{ Trading: TradingApi }>("host/trading");
 
 const price = Trading.quote("AAPL");
+
+const desk = signal<Desk | null>(null);
+Trading.on("change", (d) => desk.set(d));
 ```
 
 - 调用方式与导入套件时相同：普通 Rust 函数立即返回结果，`async` 函数返回 Promise，传入的函数是 Rust 之后可以调用的回调。Rust 检查每个参数，参数类型不对时抛出 `TypeError`。
@@ -2430,6 +2463,8 @@ const price = Trading.quote("AAPL");
 宿主用 Rust 注册套件：在创建视图之前调用平台 crate 的 `set_ui_sets`（与 NSH 自己的套件放在一起），或使用 `EngineConfig::ui_sets`：
 
 ```rust
+use std::{cell::RefCell, rc::Rc};
+
 use nsh_core::prelude::*;
 
 pub struct Trading;
@@ -2439,15 +2474,26 @@ impl Trading {
     /// A sample price.
     pub fn quote(symbol: String) -> Result<f64, String> { /* ... */ }
 
-    /// Calls `on_change` with the desk now and on every change.
-    pub async fn subscribe(on_change: Callback<Desk>) {
-        let mut desk = DESK.subscribe(); // a tokio watch channel the host keeps
-        loop {
-            on_change.post(desk.borrow_and_update().clone());
-            if desk.changed().await.is_err() {
-                return;
-            }
+    /// Calls `listener` with the desk now and after every change
+    /// (`change`, the one event), until the returned function is called
+    /// or what called `on` goes.
+    pub fn on(event: String, listener: Callback<Desk>, cx: CallCx<'_>) -> Result<Stop, String> {
+        if event != "change" {
+            return Err(format!("no Trading event `{event}`"));
         }
+        let listener = Rc::new(RefCell::new(Some(listener)));
+        let held = listener.clone();
+        cx.start(async move {
+            let mut desk = DESK.subscribe(); // a tokio watch channel the host keeps
+            loop {
+                let Some(listener) = held.borrow().clone() else { return };
+                listener.post(desk.borrow_and_update().clone());
+                if desk.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Stop::new(move || drop(listener.take())))
     }
 }
 
@@ -2456,7 +2502,7 @@ trading.module::<Trading>();
 nsh_platform_gpui::set_ui_sets(vec![nsh_base::registry(), trading]);
 ```
 
-`subscribe` 让宿主的数据与每个应用保持同步：它的任务等待宿主的变化，并把每次变化发送给应用；因此宿主自己做出的修改，或任一应用通过其他函数做出的修改，都会到达所有订阅了的应用。
+`on` 让宿主的数据与每个应用保持同步：它启动的任务等待宿主的变化，并把每次变化发送给应用；因此宿主自己做出的修改，或任一应用通过其他函数做出的修改，都会到达所有在监听的应用。它返回的 `Stop` 就是 TSX 中 `Trading.on` 返回的函数：它只运行一次，在应用调用它时，或在调用 `on` 的一方（组件，或热重载下模块的这次运行）消失时；这里它丢弃监听器，任务随之结束。
 
 嵌入宿主还可以通过 `Registry::value(name, factory)` 注册已有客户端。工厂捕获宿主授予该界面的客户端，
 并返回 `Instance::new(service)` 等类型化值；其 Rust 类方法组成应用可使用的 API。取消和外部资源由宿主管理。

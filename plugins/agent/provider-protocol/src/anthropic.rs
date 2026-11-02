@@ -166,12 +166,28 @@ pub enum Warning {
 
 /// Owned by one request builder and shared across its message and tool passes.
 /// It cannot leak capacity or warnings into another concurrent request.
-#[derive(Default)]
 pub struct CacheBudget {
     attempted: usize,
     warnings: Vec<Warning>,
+    record_warnings: bool,
+}
+impl Default for CacheBudget {
+    fn default() -> Self {
+        Self {
+            attempted: 0,
+            warnings: Vec::new(),
+            record_warnings: true,
+        }
+    }
 }
 impl CacheBudget {
+    pub(crate) fn replay() -> Self {
+        Self {
+            attempted: 0,
+            warnings: Vec::new(),
+            record_warnings: false,
+        }
+    }
     pub fn reserve(
         &mut self,
         directive: Option<CacheDirective>,
@@ -179,14 +195,18 @@ impl CacheBudget {
     ) -> Option<CacheDirective> {
         let directive = directive?;
         if !site.can_cache() {
-            self.warnings.push(Warning::CacheNotAllowed(site));
+            if self.record_warnings {
+                self.warnings.push(Warning::CacheNotAllowed(site));
+            }
             return None;
         }
         self.attempted = self.attempted.saturating_add(1);
         if self.attempted > 4 {
-            self.warnings.push(Warning::CacheLimit {
-                attempted: self.attempted,
-            });
+            if self.record_warnings {
+                self.warnings.push(Warning::CacheLimit {
+                    attempted: self.attempted,
+                });
+            }
             None
         } else {
             Some(directive)

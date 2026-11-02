@@ -212,6 +212,11 @@ host_element! {
 }
 
 host_element! {
+    /// An SVG drawn as authored, made by [`svg`].
+    Svg
+}
+
+host_element! {
     /// A view whose box a shader draws under its children (`<shader>`, TS:
     /// `Shader` of `nsh`), made by [`shader`] ([`crate::shader`]).
     ShaderView
@@ -359,6 +364,98 @@ pub fn canvas(painter: impl IntoReactive<Painter>) -> CanvasView {
 }
 
 crate::static_reactive!(Painter: Painter, Drawing);
+
+/// An SVG image drawn as authored, in its own colors, as an `<svg>` written
+/// inline in a web page draws: `svg(asset!("logo.svg"))`, a URL, a file or
+/// the markup itself (`svg(ImageSrc::svg_markup(include_str!("logo.svg")))`).
+/// Its `currentColor` is the element's text color (`color`, inherited), so
+/// an icon drawn with `stroke="currentColor"` follows the theme and the
+/// app's `text-*` classes. It lays out at the SVG's `width` and `height`
+/// (else its `viewBox`'s size) where its style sets no size, keeping that
+/// aspect ratio where it sets one side, as an image does; its `viewBox`
+/// is fitted into the box it gets as its `preserveAspectRatio` says.
+///
+/// On the native backends it is a canvas of the SVG's shapes, which the
+/// platform draws at its device pixels: sharp at every size and scale. Its
+/// bytes load as an image's do (the shared loader and its caches); the
+/// drawing is parsed once per source and kept in the decoded images'
+/// budget (`docs/dev/images.md`), leased while an element shows it. Inline
+/// markup and a drawing in memory show in the first frame; others when
+/// they load. A source that cannot be drawn draws nothing (logged). The
+/// web runtime shows it as an image the browser draws, where
+/// `currentColor` is black.
+pub fn svg(src: impl IntoReactive<super::ImageSrc>) -> Svg {
+    #[cfg(all(feature = "svg", not(target_arch = "wasm32")))]
+    {
+        let mut node = ElNode::new(Tag::Canvas);
+        let shown = svg_drawing(src);
+        node.bind_attr(
+            move || shown.get(),
+            |attrs, drawing| attrs.drawing = drawing,
+        );
+        Svg(node)
+    }
+    #[cfg(not(all(feature = "svg", not(target_arch = "wasm32"))))]
+    {
+        let mut node = ElNode::new(Tag::Image);
+        node.style.value(
+            crate::StyleKey::ObjectFit,
+            crate::PropertyValue::ObjectFit(Some(ResizeMode::Contain)),
+        );
+        node.bind_attr(src, |attrs, src| attrs.src = Some(src));
+        Svg(node)
+    }
+}
+
+/// The drawing an [`svg`] of `src` shows: here and now when its bytes are
+/// in hand (inline markup) or it is in memory, else once it loads. A
+/// source that changes drops the load running and the lease of the
+/// drawing shown.
+#[cfg(all(feature = "svg", not(target_arch = "wasm32")))]
+fn svg_drawing(
+    src: impl IntoReactive<super::ImageSrc>,
+) -> super::reactive::Signal<Option<Arc<Drawing>>> {
+    use super::reactive::{SignalEquals, render_effect, signal_with, stored, untracked};
+    let src = src.into_reactive();
+    let shown = signal_with(None::<Arc<Drawing>>, SignalEquals::Never);
+    let lease = stored(crate::image::Lease::none());
+    let task = stored(None::<super::Spawned<()>>);
+    render_effect(move || {
+        let src = match &src {
+            super::Reactive::Static(src) => src.clone(),
+            super::Reactive::Bound(f) => f(),
+        };
+        untracked(|| {
+            drop(task.replace(None));
+            let context = crate::image::loader::context();
+            let source = crate::ImageSource {
+                uri: src.uri.as_str().into(),
+                size: None,
+                scales: crate::ImageScales::NONE,
+                data: None,
+            }
+            .inline();
+            let Some(location) = context.locate(&source) else {
+                log::warn!("svg: unsupported source `{}`", source.uri);
+                shown.set(None);
+                lease.replace(crate::image::Lease::none());
+                return;
+            };
+            if let Some((drawing, held)) = crate::svg::drawings::now(&location) {
+                shown.set(Some(drawing));
+                lease.replace(held);
+                return;
+            }
+            let load = crate::svg::drawings::load(location, context);
+            task.replace(Some(super::spawn(async move {
+                let (drawing, held) = load.await;
+                shown.set(Some(drawing));
+                lease.replace(held);
+            })));
+        });
+    });
+    shown
+}
 
 /// A view whose box a shader draws, under its children: give it the
 /// program with [`ShaderView::source`] and its uniforms with
@@ -1032,7 +1129,7 @@ impl Overlay {
     /// anchor (its parent without one) for `delay`, until the pointer
     /// leaves or presses the anchor, on the desktops only; it is placed
     /// against the anchor and should not take the pointer
-    /// ([`Interactive::pointer_events`] none). [`Self::hint_open`] decides
+    /// ([`super::Styled::pointer_events`] none). [`Self::hint_open`] decides
     /// instead of the pointer.
     pub fn hint(self, delay: impl IntoReactive<std::time::Duration>) -> Self {
         self.bind_prop(delay, |d| Prop::Overlay(OverlayProp::Hint(Some(d))))

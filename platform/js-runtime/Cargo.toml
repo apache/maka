@@ -16,6 +16,7 @@
 # under the License.
 
 [package]
+autotests = false
 name = "maka-js-runtime"
 version.workspace = true
 edition.workspace = true
@@ -51,3 +52,11 @@ sha2-transitive = { package = "sha2", version = "0.10.9", features = ["asm"] }
 
 [package.metadata.cargo-machete]
 ignored = ["sha2-transitive"]
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+
+[[test]]
+name = "repl_gc"
+path = "tests/repl_gc.rs"

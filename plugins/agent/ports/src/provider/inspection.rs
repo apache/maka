@@ -64,7 +64,7 @@ impl Definition {
         request: Discovery,
         context: Context,
     ) -> Result<Vec<ModelInfo>, Error> {
-        if !self.descriptor.discovery {
+        if !self.policy.descriptor.discovery {
             return Err(Error::Unavailable);
         }
         self.validate_inspection(

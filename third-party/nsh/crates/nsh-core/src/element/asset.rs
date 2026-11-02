@@ -87,6 +87,10 @@ pub struct ImageSrc {
     pub(crate) uri: SharedString,
     pub(crate) size: Option<(f32, f32)>,
     pub(crate) scales: crate::ImageScales,
+    /// The bytes of a `blob:` URL the app's VM resolved, as `<Image>`'s
+    /// `src` has them ([`super::JsHost::image_blob`]); the URI is then their
+    /// key.
+    pub(crate) data: Option<crate::ImageData>,
 }
 
 impl<T: Into<SharedString>> From<T> for ImageSrc {
@@ -95,6 +99,7 @@ impl<T: Into<SharedString>> From<T> for ImageSrc {
             uri: uri.into(),
             size: None,
             scales: crate::ImageScales::NONE,
+            data: None,
         }
     }
 }
@@ -105,6 +110,7 @@ impl From<ImageAsset> for ImageSrc {
             uri: asset.url.into(),
             size: Some((asset.size.width.0, asset.size.height.0)),
             scales: asset.scales.iter().copied().collect(),
+            data: None,
         }
     }
 }
@@ -112,6 +118,31 @@ impl From<ImageAsset> for ImageSrc {
 impl From<&ImageAsset> for ImageSrc {
     fn from(asset: &ImageAsset) -> Self {
         (*asset).into()
+    }
+}
+
+impl ImageSrc {
+    /// Whether its URL is empty: no image, as an `<Image>` whose `src`
+    /// is `""` shows none.
+    pub fn is_empty(&self) -> bool {
+        self.uri.is_empty()
+    }
+
+    /// The SVG document `markup` itself as a source ([`super::svg`],
+    /// [`super::image`]): its markup is the image, as an `<svg>` written
+    /// inline in a web page is.
+    pub fn svg_markup(markup: &str) -> Self {
+        use std::fmt::Write;
+        let mut uri = String::with_capacity(markup.len() + 32);
+        uri.push_str("data:image/svg+xml,");
+        for b in markup.bytes() {
+            if b.is_ascii_alphanumeric() || b" -._~!$'()*+,;=:@/?".contains(&b) {
+                uri.push(b as char);
+            } else {
+                let _ = write!(uri, "%{b:02X}");
+            }
+        }
+        uri.into()
     }
 }
 

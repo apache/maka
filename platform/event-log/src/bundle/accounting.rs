@@ -21,8 +21,8 @@ use super::format::Record;
 use crate::StoreError;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelEvent;
 use maka_agent_facts::model::ModelUsage;
+use maka_agent_facts::model::recorded::ModelObservation;
 use sqlx::SqliteConnection;
 
 /// The first provider usage fact fixes a request's valuation, if it was quoted.
@@ -32,9 +32,9 @@ pub(super) async fn witness(
 ) -> Result<Option<u64>, StoreError> {
     let row: Option<i64> = sqlx::query_scalar(
         "SELECT MIN(e.sequence) FROM runtime_events r JOIN runtime_events e ON e.invocation_id=r.invocation_id
-         AND json_extract(e.event_json,'$.fact.step_id')=json_extract(r.event_json,'$.fact.step_id')
+         AND json_extract(e.event_header,'$.fact.step_id')=json_extract(r.event_header,'$.fact.step_id')
          WHERE r.event_id=? AND (e.kind='model_completed' OR
-          (e.kind='model_observed' AND json_extract(e.event_json,'$.fact.event.kind')='finished'))"
+          (e.kind='model_observed' AND json_extract(e.event_header,'$.fact.event.kind')='finished'))"
     ).bind(request).fetch_one(db).await?;
     row.map(crate::sequence_number).transpose()
 }
@@ -58,7 +58,7 @@ pub(super) async fn validate(
             unreachable!()
         };
         let request: Option<String> = sqlx::query_scalar(
-            "SELECT event_json FROM runtime_events WHERE event_id=? AND kind='model_requested'",
+            "SELECT event_header FROM runtime_events WHERE event_id=? AND kind='model_requested'",
         )
         .bind(&event_id)
         .fetch_optional(&mut *original)
@@ -77,9 +77,9 @@ pub(super) async fn validate(
         let mut sequence = 0i64;
         loop {
             let row: Option<(i64, String)> = sqlx::query_as(
-                "SELECT sequence,event_json FROM runtime_events WHERE invocation_id=?1 AND sequence>?2
-                 AND json_extract(event_json,'$.fact.step_id')=?3 AND (kind='model_completed' OR
-                  (kind='model_observed' AND json_extract(event_json,'$.fact.event.kind')='finished'))
+                "SELECT sequence,event_header FROM runtime_events WHERE invocation_id=?1 AND sequence>?2
+                 AND json_extract(event_header,'$.fact.step_id')=?3 AND (kind='model_completed' OR
+                  (kind='model_observed' AND json_extract(event_header,'$.fact.event.kind')='finished'))
                  ORDER BY sequence LIMIT 1"
             ).bind(&event.invocation.invocation_id).bind(sequence).bind(step_id).fetch_optional(&mut *original).await?;
             let Some((next, json)) = row else { break };
@@ -87,7 +87,7 @@ pub(super) async fn validate(
             let usage = match usage_event.fact {
                 Fact::ModelCompleted { output, .. } => output.usage,
                 Fact::ModelObserved {
-                    event: ModelEvent::Finished { usage, .. },
+                    event: ModelObservation::Finished { usage, .. },
                     ..
                 } => usage,
                 _ => unreachable!(),

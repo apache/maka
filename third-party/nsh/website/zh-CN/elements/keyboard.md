@@ -1,7 +1,7 @@
 ---
 title: 键盘
 description: keyboard-inset-height 环境变量、Keyboard.dismiss 和键盘高度：让内容保持在软键盘之上，并随键盘移动。
-order: 10.7
+order: 120
 group: primitives
 demo: el-keyboard
 ---

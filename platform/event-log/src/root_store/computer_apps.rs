@@ -22,6 +22,7 @@
 //! read-only attachment. The only cross-writer wait is partition -> control;
 //! control callbacks never wait for a partition, a gate, or a human response.
 use super::{RootStore, SessionStore, gates};
+use crate::append::ComputerAppDispatch;
 use crate::connection::BoxFuture;
 use crate::interactions::InteractionCommit;
 use crate::interactions::records::{
@@ -467,25 +468,72 @@ impl SessionStore {
     /// exact T1, then is released before potentially long native execution.
     pub async fn append_computer_app_dispatch(
         &self,
+        prefix: &[EventWrite],
         event: &EventWrite,
         targets: &[GrantTarget],
         app: &GrantTarget,
         display: &maka_agent_facts::interaction::ComputerAppDisplay,
         basis: &PermissionBasis,
-    ) -> Result<u64, CommitError> {
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
+        self.append_app_dispatch_in_lane(
+            prefix,
+            event,
+            targets,
+            ComputerAppDispatch {
+                target: app,
+                display,
+            },
+            basis,
+            crate::append::ComputerLane::Other,
+        )
+        .await
+    }
+
+    pub async fn append_native_computer_app_dispatch(
+        &self,
+        prefix: &[EventWrite],
+        event: &EventWrite,
+        targets: &[GrantTarget],
+        app: &GrantTarget,
+        display: &maka_agent_facts::interaction::ComputerAppDisplay,
+        basis: &PermissionBasis,
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
+        self.append_app_dispatch_in_lane(
+            prefix,
+            event,
+            targets,
+            ComputerAppDispatch {
+                target: app,
+                display,
+            },
+            basis,
+            crate::append::ComputerLane::Native,
+        )
+        .await
+    }
+
+    async fn append_app_dispatch_in_lane(
+        &self,
+        prefix: &[EventWrite],
+        event: &EventWrite,
+        targets: &[GrantTarget],
+        app: ComputerAppDispatch<'_>,
+        basis: &PermissionBasis,
+        lane: crate::append::ComputerLane,
+    ) -> Result<maka_agent_facts::event::PrefixReceipt, CommitError> {
         let Fact::ToolDispatched { operation_id, .. } = &event.event().fact else {
             return Err(CommitError::Rejected(
                 "app admission requires a native tool dispatch".into(),
             ));
         };
-        let key = app_key(app).map_err(super::session_store::commit_error)?;
+        let key = app_key(app.target).map_err(super::session_store::commit_error)?;
         let pin = self
             .gates
             .read([gates::Key::ComputerApp(key)])
             .await
             .map_err(super::session_store::commit_error)?;
         if !self
-            .computer_app_granted(&event.event().invocation, operation_id, app, basis)
+            .computer_app_granted(&event.event().invocation, operation_id, app.target, basis)
             .await
             .map_err(super::session_store::commit_error)?
         {
@@ -496,7 +544,7 @@ impl SessionStore {
             .await
             .map_err(super::session_store::commit_error)?;
         log.scoped(Arc::new(pin))
-            .append_computer_app_dispatch(event, targets, app, display, basis)
+            .append_computer_app_dispatch(prefix, event, targets, app, basis, lane)
             .await
     }
 
@@ -531,13 +579,17 @@ impl SessionStore {
                             })
                         })
                         .await?;
-                    let local_count = crate::interactions::lifecycle::close_in_transaction(
-                        &mut tx,
-                        Some(&invocation),
-                        &outcome,
-                    )
-                    .await?;
+                    let (local_count, approval_ready) =
+                        crate::interactions::lifecycle::close_notified_in_transaction(
+                            &mut tx,
+                            Some(&invocation),
+                            &outcome,
+                        )
+                        .await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                    if approval_ready {
+                        notice.activations();
+                    }
                     if local_count > 0 {
                         notice.metadata();
                     }

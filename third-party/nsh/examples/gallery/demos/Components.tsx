@@ -215,7 +215,7 @@ function Accessory() {
         ios={{ inputAccessoryViewID: "counter" }}
       />
       <Caption
-        label={platform.idiom === "desktop" ? "Desktops have no input accessories" : platform.os === "android" ? "Android has no input accessories" : "The bar counts what you type"} note='inputAccessoryViewID="counter"' />
+        label={platform.desktop ? "Desktops have no input accessories" : platform.os === "android" ? "Android has no input accessories" : "The bar counts what you type"} note='inputAccessoryViewID="counter"' />
       <InputAccessoryView nativeID="counter" style={{ backgroundColor: colors.surface }}>
         <View
           style={{
@@ -331,7 +331,7 @@ function PlatformInfo() {
   const rows = (): [string, string][] => [
     ["platform.os", platform.os],
     ["platform.version", platform.version],
-    ["platform.idiom / catalyst", `${platform.idiom} / ${platform.catalyst}`],
+    ["platform.idiom / desktop / catalyst", `${platform.idiom} / ${platform.desktop} / ${platform.catalyst}`],
     ["platform.select", platform.select({ ios: "ios branch", android: "android branch" }) ?? ""],
     ["pixelRatio()", String(pixelRatio())],
     ["10.3 on whole pixels", String(Math.round(10.3 * pixelRatio()) / pixelRatio())],

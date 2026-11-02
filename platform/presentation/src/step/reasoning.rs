@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use maka_agent_facts::model::body::TextBody;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -62,4 +63,92 @@ fn safe_id(value: &str) -> bool {
         && !value
             .chars()
             .any(|character| character <= '\u{1f}' || character == '\u{7f}')
+}
+
+/// Separate provider summary items in the disposable view, retaining raw model text for replay.
+pub fn display_text(text: &TextBody, options: Option<&Value>) -> TextBody {
+    let Some(breaks) = options.and_then(|options| summary_breaks(text, options)) else {
+        return text.clone();
+    };
+    let mut displayed = text.clone();
+    let mut previous = text.len_bytes();
+    for offset in breaks.into_iter().rev() {
+        if offset > previous {
+            return text.clone();
+        }
+        if offset > 0 && offset < previous {
+            let Some(next) = displayed.inserted(offset, "\n\n") else {
+                return text.clone();
+            };
+            displayed = next;
+        }
+        previous = offset;
+    }
+    displayed
+}
+
+fn summary_breaks(text: &TextBody, options: &Value) -> Option<Vec<usize>> {
+    let replay = &options["openai"]["responsesReplay"];
+    if replay["textField"] == "summary" {
+        let mut bytes = 0usize;
+        let mut breaks = Vec::new();
+        for part in replay["parts"].as_array()? {
+            bytes = bytes.checked_add(usize::try_from(part["bytes"].as_u64()?).ok()?)?;
+            breaks.push(bytes);
+        }
+        return (bytes == text.len_bytes()).then_some(breaks);
+    }
+    if let Some(lengths) = options["makaResponses"]["summaryPartLengths"].as_array() {
+        let mut chars = text.chunks().flat_map(str::chars);
+        let mut bytes = 0;
+        let mut breaks = Vec::new();
+        for length in lengths {
+            let length = length.as_u64()?;
+            let mut units = 0;
+            while units < length {
+                let ch = chars.next()?;
+                units += ch.len_utf16() as u64;
+                bytes += ch.len_utf8();
+            }
+            if units != length {
+                return None;
+            }
+            breaks.push(bytes);
+        }
+        return chars.next().is_none().then_some(breaks);
+    }
+    options["makaSummaryBreaks"]
+        .as_array()?
+        .iter()
+        .map(|offset| usize::try_from(offset.as_u64()?).ok())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn summary_display_keeps_unsegmented_markdown_and_ignores_invalid_boundaries() {
+        let text = TextBody::from("**检查🙂****Build**");
+        for options in [
+            None,
+            Some(json!({"makaSummaryBreaks":[11]})),
+            Some(json!({"makaSummaryBreaks":[14,5]})),
+            Some(json!({"makaResponses":{"summaryPartLengths":[5,12]}})),
+            Some(
+                json!({"openai":{"responsesReplay":{"textField":"summary","parts":[{"bytes":14}]}}}),
+            ),
+        ] {
+            assert_eq!(
+                display_text(&text, options.as_ref()).to_string(),
+                "**检查🙂****Build**"
+            );
+        }
+        assert_eq!(
+            display_text(&text, Some(&json!({"makaSummaryBreaks":[14]}))).to_string(),
+            "**检查🙂**\n\n**Build**"
+        );
+    }
 }

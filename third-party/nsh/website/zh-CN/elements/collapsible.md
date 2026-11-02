@@ -1,7 +1,6 @@
 ---
 title: Collapsible
-description: Collapsible 组件：内容可展开和收起的区域，应用让它展开时内容显示在子元素之后，触发控件和全部外观都由应用决定。
-order: 20.7
+description: Collapsible 组件：内容可展开和收起的区域，应用让它展开时内容显示在子元素之后，可按需以弹簧高度展开，触发控件和全部外观都由应用决定。
 group: base
 demo: el-collapsible
 ---
@@ -9,7 +8,8 @@ demo: el-collapsible
 # Collapsible
 
 Collapsible 是内容可展开和收起的区域：摘要下面的详情、“显示更多”、一组高级设置。它始终渲染子元素，`open` 时在子元素之后渲染
-`content`。`open` 和切换它的触发控件（子元素之一）由应用持有，外观也由应用决定：`Collapsible` 没有自己的触发控件、箭头、动效或文字。
+`content`。`open` 和切换它的触发控件（子元素之一）由应用持有，外观也由应用决定：`Collapsible` 没有自己的触发控件、箭头或文字。设置 `reveal`
+后，内容带动效展开和收起：它所在区域的高度从零弹到内容自身的高度再弹回，collapsible 之后的内容随之移动。
 
 ```rust tabs
 use nsh_base::{collapsible, theme};
@@ -19,6 +19,7 @@ fn storage() -> impl IntoElement {
     let open = signal(false);
     collapsible()
         .open(open)
+        .reveal(true)
         .gap_2()
         .child(
             view()
@@ -49,6 +50,7 @@ function App() {
   return (
     <Collapsible
       open={open()}
+      reveal
       class="gap-2"
       content={<Text class="text-muted-foreground">Photos 120 GB · Apps 54 GB · System 38 GB</Text>}
     >
@@ -70,13 +72,14 @@ mount(App);
 
 `Collapsible` 来自 [`nsh/base`](../modules/nsh-base.md)，在 Rust 里是 `nsh-base` crate。值由应用持有：触发控件切换 `open`，
 collapsible 显示应用传入的值。在 Rust 里，`collapsible()` 创建一个 collapsible，每个属性一个 setter（`.open(..)`、
-`.content(..)`），区域本身用类型化的样式方法，始终显示的部分用 `.child(..)`。
+`.reveal(..)`、`.content(..)`），区域本身用类型化的样式方法，始终显示的部分用 `.child(..)`。
 
 ## 属性
 
 | 属性 | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
 | `open` | `.open(..)` | `boolean` | `false` | 展开：`content` 在树中，位于子元素之后。值由应用持有。 |
+| `reveal` | `.reveal(..)` | `boolean` | `false` | 以展开动效打开和收起：内容放在一个裁剪它的区域里，`open` 打开时区域高度从零弹到内容自身的高度，关闭时弹回，临界阻尼（约 265 毫秒，不过冲）。collapsible 之后的内容随之移动，内容一直留在树中，直到区域收起。减少动态效果时立即打开和收起。收起时这个区域也在布局里，高度为零，所以 collapsible 的 `gap` 也会出现在它之前。 |
 | `content` | `.content(..)` | `JSX.Element` | 无 | 展开的内容。它只创建一次，收起时保留，所以里面的状态（输入框的文字、滚动位置、开关）在下次展开时还在。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 始终显示的部分：摘要、切换 `open` 的触发控件。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 包住子元素和内容的区域（`gap-2` 设置它们的间距）。 |
@@ -91,10 +94,12 @@ collapsible 本身不报告事件：触发控件是应用的，应用在它的�
 |---|---|---|
 | 区域 | | `class`、`style` |
 | 子元素 | 区域里，最先 | 它们自己的元素 |
-| 内容 | 区域里，子元素之后，`open` 时 | 它自己的元素（`content`） |
+| 展开区域 | 区域里，子元素之后，设置 `reveal` 时 | 无：它裁剪内容，高度取内容的高度 |
+| 内容 | 区域里，子元素之后（设置 `reveal` 时在展开区域里），`open` 时 | 它自己的元素（`content`） |
 
-内容立即出现和离开。应用自己的过渡表现这个变化：触发控件的箭头转动（`transition-transform`），内容也可以用它自己的类淡入。内容出现或离开时，
-每个平台都会重新布局这个区域。
+不设置 `reveal` 时，内容立即出现和离开，内容出现或离开时每个平台都会重新布局这个区域。设置 `reveal` 后，这个变化是改变 `open` 的那次提交的布局动画
+（和 `LayoutAnimation.configureNext` 一样在原生侧运行，移动期间不运行 JavaScript）：展开区域从零长到内容的高度再缩回，同一变化移动的其他视图
+（包括 collapsible 之后的视图）的位置也随之移动。应用自己的过渡同时进行：触发控件的箭头转动（`transition-transform`），内容也可以用它自己的类淡入。
 
 ## 无障碍
 
@@ -107,4 +112,5 @@ collapsible 本身不报告事件：触发控件是应用的，应用在它的�
 ## 平台说明
 
 - 每个平台都在 `open` 时把内容显示在子元素之后，否则把它留在布局之外。
+- 设置 `reveal` 时，每个平台（iOS、Android、macOS、Windows、Linux、GPUI 和 Web）都用自己的动画器弹动区域的高度；系统要求减少动态效果时立即打开和收起。
 - iOS、Android 和 Mac Catalyst：触发控件的按压是轻点。桌面（macOS、Windows、Linux、GPUI）和 Web：点击；在 macOS 和 Web 上，获得焦点的触发控件也响应空格或 Return。

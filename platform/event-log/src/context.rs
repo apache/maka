@@ -18,6 +18,8 @@
  */
 
 mod boundary;
+pub(crate) mod frozen_request;
+pub use frozen_request::FrozenModelRequest;
 pub(crate) mod evidence;
 pub(crate) mod frozen;
 pub(crate) mod history;
@@ -30,7 +32,6 @@ pub(crate) mod read;
 mod report;
 mod request;
 pub use report::{ContextReport, ContextRequest, ContextRequestState};
-pub mod prepared;
 pub(crate) mod safety;
 pub(crate) mod selection;
 pub mod semantic;
@@ -72,8 +73,6 @@ pub struct ContextView {
     pub selection: semantic::SemanticSelection,
     pub has_new_history: bool,
     pub prior_unknown: bool,
-    pub unknown_tools: Vec<(String, String)>,
-    pub unknown_tool_count: u64,
 }
 
 /// Complete source evidence and its distinct, bounded model rendering input.
@@ -147,6 +146,3 @@ pub struct ArchivedToolResult {
 fn invalid(reason: &str) -> StoreError {
     StoreError::InvalidTransition(format!("invalid context checkpoint: {reason}"))
 }
-
-#[cfg(test)]
-mod admission_tests;

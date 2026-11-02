@@ -1,6 +1,8 @@
 # What a user does and sees (compat/apps.rs): each case after its tap.
 # mod-standard-access
 tap id:case-mod-standard-access
+# What the app did not declare rejects with ERR_ACCESS_DENIED; wrong uses
+# with a TypeError (a bad URL of the global WebSocket throws SyntaxError).
 expect Standard grants files=true tcp=true websocket=true global=true
 covers [fs/promises] default
 covers [fs/promises] readFile
@@ -16,7 +18,8 @@ covers [fs/promises] rename
 covers [fs/promises] readlink
 covers [net] default
 covers [net] connect
-covers [websocket] WebSocket
+covers [websocket] default
+covers [websocket] connect
 covers [globals] WebSocket
 covers [net] Socket
 covers [websocket] WebSocketConnection
@@ -56,11 +59,11 @@ expect Failed: none
 covers [nsh] Clipboard
 # mod-picker
 tap id:case-mod-picker
-# options out of range throw a RangeError in the call; a pick is a promise,
-# which no picker answers there.
+# a pick is a promise that never throws: options out of range reject it with
+# a RangeError; a pick no picker answers there stays pending.
 expect Picked: not picked
 tap id:pick
-expect Thrown: RangeError
+expect Refused: rejected RangeError
 expect Picked: pending
 wait 300
 expect Picked: pending
@@ -89,6 +92,7 @@ tap id:case-mod-device
 # iOS phone at 1 pixel per point, in the light scheme.
 expect OS: ios
 expect Idiom: phone
+expect Desktop: false
 expect Catalyst: false
 expect Version: 0.0
 expect Select: ios
@@ -102,7 +106,8 @@ expect Scheme: dark
 absent Scheme: light
 tap id:system
 expect Scheme: light
-# openUrl: a promise for a web page, a TypeError for a `javascript:` URL.
+# openUrl: a promise for a web page, rejected with a TypeError for a
+# `javascript:` URL.
 expect Open: not opened
 tap id:open
 expect Open: function, refused TypeError
@@ -115,13 +120,14 @@ covers [nsh] fontScale
 covers [nsh] windowSize
 # mod-host-channel
 tap id:case-mod-host-channel
-# no embedding app: no parameters, posts go nowhere and calls fail at once.
+# no embedding app: no parameters, posts go nowhere and calls reject at
+# once with ERR_FEATURE_UNAVAILABLE_ON_PLATFORM.
 expect Params: 0 object
 expect Calls: not called
 expect Call failed: none
 tap id:call
 expect Calls: function, post done
-expect Call failed: nsh: this platform has no host
+expect Call failed: Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
 covers [nsh] host
 # mod-ios
 tap id:case-mod-ios
@@ -168,15 +174,23 @@ tap id:remove
 expect Storage removed: a=1 missing=null
 tap id:clear
 expect Storage cleared: none missing=null
+# A value past the quota rejects with a code and is not kept.
+tap id:full
+expect Storage full: Error ERR_NSH_QUOTA_EXCEEDED kept=false
 covers [nsh] Storage
 # mod-host
 tap id:case-mod-host
-# no host on this platform: the call rejects at once; the root's events
-# reach the listener.
+# no host on this platform: the call rejects at once with
+# ERR_FEATURE_UNAVAILABLE_ON_PLATFORM; the root's events reach the listener.
 expect Host available: false
 expect Host call: not called
 tap id:call
-expect Host call: rejected nsh: this platform has no host
+expect Host call: rejected Error ERR_FEATURE_UNAVAILABLE_ON_PLATFORM
 event id:heard onHost type=event event=tick payload=1
+expect Host heard: [1]
+# Stopped, the listener hears no more.
+tap id:stop
+event id:heard onHost type=event event=tick payload=2
+wait 50
 expect Host heard: [1]
 covers [nsh] host

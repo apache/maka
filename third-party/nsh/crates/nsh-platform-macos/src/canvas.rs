@@ -1,5 +1,5 @@
-//! `<Canvas>`: the recorded [`Drawing`] replayed with Core Graphics in
-//! `drawRect:`.
+//! `<Canvas>`: the recorded [`Drawing`] replayed with Core Graphics into the
+//! view's content layer (`drawLayer:inContext:`).
 //!
 //! Canvas semantics differ from Core Graphics in a few places, so the
 //! replay keeps its own state: the current path is built in the view's

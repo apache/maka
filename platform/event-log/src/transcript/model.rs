@@ -41,27 +41,27 @@ const PRODUCER: &str = "SELECT e.invocation_id, e.kind, e.operation_id
 FROM runtime_events e WHERE e.sequence = ?2 AND e.sequence <= ?3
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
-const REQUESTED: &str = "SELECT json_extract(e.event_json, '$.fact.model_id')
+const REQUESTED: &str = "SELECT json_extract(e.event_header, '$.fact.model_id')
 FROM runtime_events e WHERE e.operation_id = ?3 AND e.kind = 'model_requested'
   AND e.invocation_id = ?2 AND e.sequence <= ?4
-  AND json_extract(e.event_json, '$.fact.step_id') = ?3
+  AND json_extract(e.event_header, '$.fact.step_id') = ?3
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
-const OBSERVED: &str = "SELECT e.sequence, json_extract(e.event_json, '$.fact.event.data.model')
+const OBSERVED: &str = "SELECT e.sequence, json_extract(e.event_header, '$.fact.event.data.model')
 FROM runtime_events e WHERE e.invocation_id = ?2
-  AND CAST(json_extract(e.event_json, '$.fact.step_id') AS TEXT) = ?3
-  AND json_extract(e.event_json, '$.fact.step_id') = ?3
-  AND e.sequence <= ?4 AND e.kind = 'model_observed' AND e.event_json IS NOT NULL
-  AND json_extract(e.event_json, '$.fact.event.kind') = 'response_metadata'
-  AND json_type(e.event_json, '$.fact.event.data.model') = 'text'
+  AND CAST(json_extract(e.event_header, '$.fact.step_id') AS TEXT) = ?3
+  AND json_extract(e.event_header, '$.fact.step_id') = ?3
+  AND e.sequence <= ?4 AND e.kind = 'model_observed' AND e.event_header IS NOT NULL
+  AND json_extract(e.event_header, '$.fact.event.kind') = 'response_metadata'
+  AND json_type(e.event_header, '$.fact.event.data.model') = 'text'
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))
 ORDER BY e.sequence DESC LIMIT 1";
-const COMPLETED: &str = "SELECT e.sequence, json_extract(e.event_json, '$.fact.output.model')
+const COMPLETED: &str = "SELECT e.sequence, json_extract(e.event_header, '$.fact.output.model')
 FROM runtime_events e WHERE e.operation_id = ?3 AND e.kind = 'model_completed'
   AND e.invocation_id = ?2 AND e.sequence <= ?4
-  AND json_extract(e.event_json, '$.fact.step_id') = ?3
-  AND json_type(e.event_json, '$.fact.output.model') = 'text'
+  AND json_extract(e.event_header, '$.fact.step_id') = ?3
+  AND json_type(e.event_header, '$.fact.output.model') = 'text'
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
 const EXECUTOR: &str = "SELECT EXISTS(SELECT 1 FROM runtime_events e
@@ -100,8 +100,8 @@ pub(super) async fn resolve_on_worker(
     let kind: String = producer.try_get(1)?;
     if kind == "message_imported" {
         let (content, model): (String, Option<String>) = sqlx::query_as(
-            "SELECT json_extract(event_json, '$.fact.record.content.kind'),
-                json_extract(event_json, '$.fact.record.content.model')
+            "SELECT json_extract(event_header, '$.fact.record.content.kind'),
+                json_extract(event_header, '$.fact.record.content.model')
              FROM runtime_events WHERE sequence = ?",
         )
         .bind(producer_sequence)
@@ -138,7 +138,7 @@ pub(super) async fn resolve_on_worker(
         // later public fence that may contain unrelated model steps.
         super::evidence::pending_step_on_worker(tx, &invocation, producer_sequence).await?
     } else if kind == "model_observed" {
-        sqlx::query_scalar("SELECT json_extract(event_json, '$.fact.step_id') FROM runtime_events WHERE sequence = ?")
+        sqlx::query_scalar("SELECT json_extract(event_header, '$.fact.step_id') FROM runtime_events WHERE sequence = ?")
             .bind(producer_sequence).fetch_one(&mut *tx).await?
     } else if matches!(kind.as_str(), "model_completed" | "model_interrupted") {
         producer.try_get(2)?
@@ -213,21 +213,27 @@ mod tests {
             for step in ["with-report", "without-report"] {
                 sequence += 1;
                 let requested = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_requested","step_id":step,"model_id":format!("alias-{step}")}});
-                sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?, 'invocation','model_requested',?,?)")
-                    .bind(sequence).bind(format!("event-{sequence}")).bind(step).bind(requested.to_string()).execute(&mut *db).await?;
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),
+                    kind: "model_requested", operation_id: Some(step), json: &requested.to_string(),
+                }).execute(&mut *db).await?;
                 for delta in 0..128 {
                     sequence += 1;
                     let event = if step == "with-report" && delta == 0 {
                         json!({"kind":"response_metadata","data":{"model":"reported-early"}})
-                    } else { json!({"kind":"part_delta","data":{"id":"part","text":"text"}}) };
+                    } else { json!({"kind":"provider_options","data":{"provider_part_id":"part","options":{"opaque":"metadata"}}}) };
                     let observed = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_observed","step_id":step,"event":event}});
-                    sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,event_json) VALUES(?,?,'invocation','model_observed',?)")
-                        .bind(sequence).bind(format!("event-{sequence}")).bind(observed.to_string()).execute(&mut *db).await?;
+                    crate::canonical_insert::insert(crate::canonical_insert::Record {
+                        sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),
+                        kind: "model_observed", operation_id: None, json: &observed.to_string(),
+                    }).execute(&mut *db).await?;
                 }
                 sequence += 1;
                 let completed = json!({"invocation":{"session_id":"source"},"fact":{"kind":"model_completed","step_id":step,"output":{"model":if step=="with-report" {Some("reported-final")} else {None},"parts":[{"text":"large output".repeat(16384)}]}}});
-                sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,'invocation','model_completed',?,?)")
-                    .bind(sequence).bind(format!("event-{sequence}")).bind(step).bind(completed.to_string()).execute(&mut *db).await?;
+                crate::canonical_insert::insert(crate::canonical_insert::Record {
+                    sequence: Some(sequence), event_id: &format!("event-{sequence}"), invocation_id: Some("invocation"),
+                    kind: "model_completed", operation_id: Some(step), json: &completed.to_string(),
+                }).execute(&mut *db).await?;
             }
             for (query, expected_index) in [(REQUESTED, "operation_fact"), (OBSERVED, "model_response_identity"), (COMPLETED, "operation_fact")] {
                 let explain = format!("EXPLAIN QUERY PLAN {query}");

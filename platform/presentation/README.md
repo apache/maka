@@ -23,6 +23,6 @@
 
 Projects committed invocation facts into display rows, messages and navigation. These projections can be discarded and rebuilt. They are separate from model context: showing interrupted output in a timeline does not admit that text into a later model request. Start with `InvocationView`, `Row` and `navigation`.
 
-The configured content limit applies to retained text state and individual content records, rather than the combined tool payloads of a model step.
+Model rows use complete canonical part identities and timestamps. Terminal references resolve only against the same step’s original part records. Interrupted Main partials remain display evidence; live model previews belong to the active attempt rather than this committed-fact projection.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

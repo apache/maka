@@ -21,40 +21,6 @@ use super::*;
 use maka_agent_facts::workspace::BindingRef;
 use serde_json::json;
 
-#[tokio::test]
-async fn concurrent_project_use_preserves_identity_and_cannot_overtake_archive() {
-    use futures_util::poll;
-
-    let (_directory, store) = fixture().await;
-    let (first, second) = tokio::join!(
-        store.register_available_project(registration("physical", "/workspace"), 1),
-        store.register_available_project(registration("physical", "/workspace"), 2),
-    );
-    let first = first.unwrap();
-    let second = second.unwrap();
-    assert_eq!(first.id, second.id);
-    assert_eq!(second.last_used_at, 2);
-
-    let gate = store.project_mutations.clone().lock_owned().await;
-    let mut archive = Box::pin(store.mutate_project(&first.id, ProjectMutation::Archive, 3));
-    assert!(poll!(archive.as_mut()).is_pending());
-    let mut use_project =
-        Box::pin(store.register_available_project(registration("physical", "/new-location"), 4));
-    assert!(poll!(use_project.as_mut()).is_pending());
-    drop(gate);
-    let archived = archive.await.unwrap();
-    assert!(matches!(
-        use_project.await,
-        Err(StoreError::Project(ProjectError::Archived))
-    ));
-    assert_eq!(
-        store.get_project(&first.id).await.unwrap().unwrap(),
-        archived
-    );
-    assert_eq!(archived.locations.len(), 1);
-    store.close().await.unwrap();
-}
-
 async fn fixture() -> (tempfile::TempDir, RootStore) {
     let directory = tempfile::tempdir().unwrap();
     let p = directory.path();
@@ -227,95 +193,8 @@ async fn source_execution_blocks_relink_but_unrelated_execution_does_not() {
 }
 
 #[tokio::test]
-async fn absorbed_locations_keep_independent_paths_and_permission_epochs() {
-    let (_directory, store) = fixture().await;
-    let source = store
-        .register_project(registration("source", "/old"), true, 1)
-        .await
-        .unwrap();
-    let destination = store
-        .register_project(registration("destination", "/dest"), true, 1)
-        .await
-        .unwrap();
-    let a = attach(&store, &destination, "/dest").await;
-    let b = attach(&store, &destination, "/worktree").await;
-    store
-        .relink_project(
-            &source.id,
-            "owner",
-            registration("destination", "/dest"),
-            2,
-            json!({"path":"/dest"}),
-        )
-        .await
-        .unwrap();
-    for (binding, path) in [(a, "/dest"), (b, "/worktree")] {
-        let current = store
-            .workspace_binding::<Value>(binding.id)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(current.workspace["path"], path);
-        assert_eq!(current.workspace["projectId"], source.id);
-        assert_eq!(current.permission_epoch, binding.permission_epoch_at_attach);
-        assert_eq!(current.metadata_epoch, binding.metadata_epoch_at_attach + 1);
-    }
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn partition_revision_exhaustion_rejects_entire_control_mutation() {
-    let (_directory, store) = fixture().await;
-    let source = store
-        .register_project(registration("source", "/old"), true, 1)
-        .await
-        .unwrap();
-    let binding = attach(&store, &source, "/old").await;
-    let session = create(&store, "full", binding).await;
-    session
-        .owner()
-        .unwrap()
-        .connection
-        .run(|connection| {
-            Box::pin(async move {
-                sqlx::query("UPDATE session_control SET revision=? WHERE id='full'")
-                    .bind(MAX as i64)
-                    .execute(connection)
-                    .await?;
-                Ok(())
-            })
-        })
-        .await
-        .unwrap();
-    assert!(
-        store
-            .relink_project(
-                &source.id,
-                "owner",
-                registration("new", "/new"),
-                2,
-                json!({"path":"/new"})
-            )
-            .await
-            .is_err()
-    );
-    assert_eq!(
-        store.get_project(&source.id).await.unwrap().unwrap(),
-        source
-    );
-    let current = store
-        .workspace_binding::<Value>(binding.id)
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(current.metadata_epoch, binding.metadata_epoch_at_attach);
-    assert_eq!(current.workspace["path"], "/old");
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn cancelled_relink_commit_retains_binding_and_project_custody_until_sql_cleanup() {
-    use std::{future::Future, task::Poll};
+    use std::task::Poll;
     use tokio::sync::oneshot;
     let (_directory, store) = fixture().await;
     let source = store

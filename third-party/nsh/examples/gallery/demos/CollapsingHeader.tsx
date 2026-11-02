@@ -2,7 +2,7 @@ import { List, platform, Scroll, Text, View } from "nsh";
 import { createAnimatedValue } from "nsh";
 import { alpha, colors, density, finish } from "../ui";
 
-const pointer = platform.idiom === "desktop";
+const pointer = platform.desktop;
 /** How tall the header is open, and the bar it collapses to: compact with
  * a pointer, roomier on a touch screen. */
 const OPEN = pointer ? 168 : 220;

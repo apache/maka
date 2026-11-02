@@ -33,7 +33,7 @@ import {
   controlDisabledStyle,
 } from './ui';
 
-export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
+export function Terminals(props: { model: TerminalsModel }) {
   const model = props.model;
   return (
     <View style={{ flex: 1, minHeight: 0, gap: 8 }}>
@@ -74,51 +74,9 @@ export function Terminals(props: { model: TerminalsModel; sessionId: string }) {
           {model.error()}
         </Text>
       </If>
-      <Each of={model.pending()} key={(operation) => operation.id}>
-        {(operation) => (
-          <View style={{ gap: 8, padding: 12, borderRadius: 8, backgroundColor: C.surface }}>
-            <Text style={{ ...bodyTextStyle, color: C.warning }}>
-              {tr('Unresolved {method} · input has not been repeated.', {
-                method: operation().method,
-              })}
-            </Text>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              <Button
-                disabled={model.recovering()}
-                onPress={inputAction(model.recover, {
-                  sessionId: props.sessionId,
-                  id: operation().id,
-                  abandon: false,
-                })}
-                style={controlStyle}
-                hoverStyle={controlHoverStyle()}
-                focusStyle={controlFocusStyle()}
-                disabledStyle={controlDisabledStyle}
-              >
-                <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Recover original')}</Text>
-              </Button>
-              <If when={!operation().reference}>
-                <Button
-                  disabled={model.recovering()}
-                  onPress={inputAction(model.recover, {
-                    sessionId: props.sessionId,
-                    id: operation().id,
-                    abandon: true,
-                  })}
-                  style={controlStyle}
-                  hoverStyle={controlHoverStyle()}
-                  focusStyle={controlFocusStyle()}
-                  disabledStyle={controlDisabledStyle}
-                >
-                  <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                    {tr('Cancel undispatched action')}
-                  </Text>
-                </Button>
-              </If>
-            </View>
-          </View>
-        )}
-      </Each>
+      <If when={model.pending().length > 0}>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Checking action status…')}</Text>
+      </If>
       <If when={model.loading() && !model.entries().length}>
         <Text style={{ ...bodyTextStyle, color: C.muted }}>{tr('Reading terminals…')}</Text>
       </If>

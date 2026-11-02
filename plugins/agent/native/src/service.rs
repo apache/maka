@@ -32,6 +32,7 @@ use serde_json::Value;
 use std::sync::Arc;
 
 mod diagnostics;
+mod preview;
 
 pub(crate) struct Agent(pub Arc<Owner>);
 impl Handler for Agent {
@@ -79,12 +80,14 @@ impl Handler for Agent {
                             match catalog_page(&owner, &input).await {
                                 Ok(page) => {
                                     revision = Some(page.revision.clone());
-                                    input.position = page.sessions.first().map_or(
-                                        SessionPosition::Start,
-                                        |session| SessionPosition::At {
-                                            cursor: session.id.clone(),
-                                        },
-                                    );
+                                    if !matches!(input.position, SessionPosition::Start) {
+                                        input.position = page.sessions.first().map_or(
+                                            SessionPosition::Start,
+                                            |session| SessionPosition::At {
+                                                cursor: session.id.clone(),
+                                            },
+                                        );
+                                    }
                                     context.emit(encode(page)?).await?;
                                 }
                                 // Start/At can race an internal snapshot read.
@@ -133,7 +136,7 @@ impl Handler for Agent {
                         .await?,
                 ),
                 "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
-                "tools" => encode(owner.tool_names()),
+                "tools" => encode(owner.tool_names(context.scope()).await?),
                 "plan" => encode(owner.plan(decode(input)?).await?),
                 "planHistory" => encode(owner.plan_history(decode(input)?).await?),
                 "planReceipt" => encode(owner.plan_receipt(decode(input)?).await?),
@@ -182,19 +185,27 @@ impl Handler for Agent {
                 "watchGoal" => {
                     let input: GoalRead = decode(input)?;
                     let mut changes = owner.goal_changes();
-                    let mut revision = None;
+                    let mut store_changes = owner.store.subscribe_changes();
+                    let mut previous = None;
                     loop {
                         changes.borrow_and_update();
+                        store_changes.borrow_and_update();
                         let page = owner.goal(input.clone()).await?;
-                        let next = page.current.as_ref().map(|goal| goal.revision);
-                        if revision != Some(next) {
-                            revision = Some(next);
-                            context.emit(encode(page)?).await?;
+                        let running = page
+                            .current
+                            .as_ref()
+                            .is_some_and(|goal| goal.status == GoalStatus::Active || goal.pending);
+                        let value = encode(page)?;
+                        if previous.as_ref() != Some(&value) {
+                            previous = Some(value.clone());
+                            context.emit(value).await?;
                         }
                         tokio::select! {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("goal_observation_cancelled".into()),
                             result = changes.changed() => result.map_err(|_| "goal_observation_closed")?,
+                            result = store_changes.changed() => result.map_err(|_| "goal_observation_closed")?,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if running => {},
                         }
                     }
                 }
@@ -231,6 +242,34 @@ impl Handler for Agent {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("checklist_observation_cancelled".into()),
                             result = changes.changed() => result.map_err(|_| "checklist_observation_closed")?,
+                        }
+                    }
+                }
+                "openBot" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .open_bot(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "botOutbox" => encode(owner.bot_outbox(&decode(input)?).await?),
+                "watchBotOutbox" => {
+                    let input: BotOutboxRead = decode(input)?;
+                    let mut changes = owner.bot_changes();
+                    let mut through = None;
+                    loop {
+                        changes.borrow_and_update();
+                        let page = owner.bot_outbox(&input).await?;
+                        let observed = (page.session_id.clone(), page.through);
+                        if through.as_ref() != Some(&observed) {
+                            through = Some(observed);
+                            context.emit(encode(page)?).await?;
+                        }
+                        tokio::select! {
+                            biased;
+                            _ = context.scope().cancellation.cancelled() => return Err("bot_observation_cancelled".into()),
+                            result = changes.changed() => result.map_err(|_| "bot_observation_closed")?,
                         }
                     }
                 }
@@ -294,6 +333,36 @@ impl Handler for Agent {
                     context.operation().ok_or("agent_mutation_required")?;
                     encode(owner.project(decode(input)?).await?)
                 }
+                "mcpConfigurations" | "manageMcpServer" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_mcp_user_action_required".into());
+                    }
+                    if method == "manageMcpServer" {
+                        context.operation().ok_or("agent_mutation_required")?;
+                        encode(
+                            owner
+                                .manage_mcp_server(decode(input)?, context.scope())
+                                .await?,
+                        )
+                    } else {
+                        encode(
+                            owner
+                                .mcp_configurations(decode(input)?, context.scope())
+                                .await?,
+                        )
+                    }
+                }
+                "selectWorkspace" => {
+                    context.operation().ok_or("agent_mutation_required")?;
+                    if context.scope().identity.agent().is_some() {
+                        return Err("agent_workspace_user_action_required".into());
+                    }
+                    encode(
+                        owner
+                            .select_workspace(decode(input)?, context.scope())
+                            .await?,
+                    )
+                }
                 "directories" => encode(
                     maka_workspace_support::query(owner.workspace_roots.clone(), decode(input)?)
                         .await?,
@@ -301,7 +370,11 @@ impl Handler for Agent {
                 "create" => {
                     let input: Create = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.create(input, operation, context.scope()).await?)
+                    let created = owner.create(input, operation, context.scope()).await?;
+                    if let Created::Created { session } = &created {
+                        owner.bot_watch(context.scope(), &session.id).await;
+                    }
+                    encode(created)
                 }
                 "fork" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
@@ -517,6 +590,7 @@ impl Handler for Agent {
                             chunks: chunks
                                 .into_iter()
                                 .map(|chunk| HistoryChunk {
+                                    model_part: chunk.model_part,
                                     has_references: chunk.has_references,
                                     final_output: chunk.final_output,
                                     model: chunk.model,
@@ -584,6 +658,7 @@ impl Handler for Agent {
                                 position: landmark.position,
                                 last_position: landmark.last_position,
                                 label: landmark.label,
+                                origin: landmark.origin,
                             })
                             .collect(),
                     };
@@ -850,9 +925,23 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "send" => {
-                    let input: Send = decode(input)?;
+                    let mut input: Send = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.send(input, operation, context.scope()).await?)
+                    owner.use_bot_model(context.scope(), &mut input.model).await;
+                    if !owner
+                        .may_control(context.scope(), &input.session_id)
+                        .await?
+                    {
+                        return encode(crate::contract::SendResult::NotYourWorker {
+                            session_id: input.session_id,
+                        });
+                    }
+                    let worker = input.session_id.clone();
+                    let sent = owner.send(input, operation, context.scope()).await?;
+                    if matches!(sent, SendResult::Started { .. } | SendResult::Queued { .. }) {
+                        owner.bot_watch(context.scope(), &worker).await;
+                    }
+                    encode(sent)
                 }
                 "executorSetup" => owner.executor_setup(decode(input)?, context).await,
                 "executors" => {
@@ -882,6 +971,11 @@ impl Handler for Agent {
                     )
                 }
                 "execution" => encode(owner.execution(decode(input)?).await?),
+                "resumable" => encode(
+                    owner
+                        .resumable(decode(input)?, &context.scope().cancellation)
+                        .await?,
+                ),
                 "compactionPrompt" => encode(owner.compaction_prompt(decode(input)?).await?),
                 "compact" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
@@ -894,6 +988,12 @@ impl Handler for Agent {
                 "stop" => {
                     let input: Stop = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
+                    if !owner
+                        .may_control(context.scope(), &input.session_id)
+                        .await?
+                    {
+                        return encode(Stopped { requested: false });
+                    }
                     encode(Stopped {
                         requested: owner
                             .stop_run(&input.session_id, &input.invocation_id, operation)
@@ -949,77 +1049,123 @@ impl Handler for Agent {
                         .await?
                         .subscribe_commits()
                         .map_err(|error| error.to_string())?;
+                    let mut preview = preview::Delivery::new(owner.preview_epoch());
                     let mut after = input.after;
                     let mut queue_revision = None;
                     let mut interactions_delivered = None;
                     let mut computer_apps_delivered = None;
+                    // Previews live in memory: the store is read only for a commit
+                    // notice or for committed events not delivered yet.
+                    let mut stale = true;
                     loop {
                         if context.scope().cancellation.is_cancelled() {
                             return Err("agent_observation_cancelled".into());
                         }
-                        // Queue edits need not advance the transcript cursor. Deliver
-                        // them fairly even while catching up a growing transcript.
-                        let revision = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .message_queue_revision(&input.session_id)
-                            .await
-                            .map_err(|_| "agent_queue_unavailable")?;
-                        if queue_revision != Some(revision) {
-                            let queue = owner.queue(&input.session_id).await?;
-                            queue_revision = Some(queue.revision);
-                            let update = encode(DeliveryPage::Queue { queue })?;
-                            maka_plugin_core::json::exact_numbers(&update)
+                        if stale {
+                            // Queue edits need not advance the transcript cursor. Deliver
+                            // them fairly even while catching up a growing transcript.
+                            let revision = owner
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
+                                .message_queue_revision(&input.session_id)
+                                .await
                                 .map_err(|_| "agent_queue_unavailable")?;
-                            context.emit(update).await?;
+                            if queue_revision != Some(revision) {
+                                let queue = owner.queue(&input.session_id).await?;
+                                queue_revision = Some(queue.revision);
+                                let update = encode(DeliveryPage::Queue { queue })?;
+                                maka_plugin_core::json::exact_numbers(&update)
+                                    .map_err(|_| "agent_queue_unavailable")?;
+                                context.emit(update).await?;
+                            }
+                            let pending = owner.pending_interactions(&input.session_id).await?;
+                            if interactions_delivered.as_ref() != Some(&pending) {
+                                context
+                                    .emit(encode(DeliveryPage::Interactions {
+                                        pending: pending.clone(),
+                                    })?)
+                                    .await?;
+                                interactions_delivered = Some(pending);
+                            }
+                            let apps = owner.computer_apps(&input.session_id).await?;
+                            if computer_apps_delivered.as_ref() != Some(&apps) {
+                                context
+                                    .emit(encode(DeliveryPage::ComputerApps {
+                                        apps: apps.clone(),
+                                    })?)
+                                    .await?;
+                                computer_apps_delivered = Some(apps);
+                            }
+                            owner.require_session(&input.session_id).await?;
                         }
-                        let pending = owner.pending_interactions(&input.session_id).await?;
-                        if interactions_delivered.as_ref() != Some(&pending) {
+                        let mut reader = owner.preview_reader(&input.session_id).await;
+                        let current = reader
+                            .as_mut()
+                            .and_then(|reader| reader.borrow_and_update().clone());
+                        preview.current(current);
+                        if reader
+                            .as_ref()
+                            .is_some_and(|reader| reader.has_changed().is_err())
+                        {
+                            reader = None;
+                        }
+                        if stale {
+                            let committed = owner
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
+                                .committed_sequence()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            if after > committed {
+                                return Err("agent_cursor_invalid".into());
+                            }
+                            let through = preview
+                                .initial_fence()
+                                .map_or(committed, |fence| committed.min(fence.max(after)));
+                            let page = owner
+                                .scoped_store(context.scope(), &input.session_id)
+                                .await?
+                                .session_stream_events(
+                                    &input.session_id,
+                                    after,
+                                    through,
+                                    32,
+                                    48 * 1024,
+                                )
+                                .await
+                                .map_err(|_| "agent_observation_unavailable")?;
+                            preview.committed(&page.events);
+                            after = page.next_after.unwrap_or(page.through_sequence);
+                            stale = page.next_after.is_some() || through < committed;
                             context
-                                .emit(encode(DeliveryPage::Interactions {
-                                    pending: pending.clone(),
+                                .emit(encode(DeliveryPage::Events {
+                                    through: page.through_sequence,
+                                    next_after: after,
+                                    events: page.events.into_iter().map(delivery).collect(),
                                 })?)
                                 .await?;
-                            interactions_delivered = Some(pending);
                         }
-                        let apps = owner.computer_apps(&input.session_id).await?;
-                        if computer_apps_delivered.as_ref() != Some(&apps) {
+                        let mut ready = stale;
+                        if let Some(update) = preview.next(after)? {
                             context
-                                .emit(encode(DeliveryPage::ComputerApps { apps: apps.clone() })?)
+                                .emit(encode(DeliveryPage::Preview { page: update })?)
                                 .await?;
-                            computer_apps_delivered = Some(apps);
-                        }
-                        owner.require_session(&input.session_id).await?;
-                        let through = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .committed_sequence()
-                            .await
-                            .map_err(|error| error.to_string())?;
-                        if after > through {
-                            return Err("agent_cursor_invalid".into());
-                        }
-                        let page = owner
-                            .scoped_store(context.scope(), &input.session_id)
-                            .await?
-                            .session_stream_events(&input.session_id, after, through, 32, 48 * 1024)
-                            .await
-                            .map_err(|_| "agent_observation_unavailable")?;
-                        after = page.next_after.unwrap_or(page.through_sequence);
-                        context
-                            .emit(encode(DeliveryPage::Events {
-                                through: page.through_sequence,
-                                next_after: after,
-                                events: page.events.into_iter().map(delivery).collect(),
-                            })?)
-                            .await?;
-                        if page.next_after.is_some() {
-                            continue;
+                            ready = true;
                         }
                         tokio::select! {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("agent_observation_cancelled".into()),
-                            result = commits.changed() => result.map_err(|_| "agent_observation_closed")?,
+                            result = commits.changed() => {
+                                result.map_err(|_| "agent_observation_closed")?;
+                                stale = true;
+                            },
+                            () = std::future::ready(()), if ready => {},
+                            _ = async {
+                                match reader.as_mut() {
+                                    Some(reader) => { let _ = reader.changed().await; },
+                                    None => std::future::pending::<()>().await,
+                                }
+                            } => {},
                         }
                     }
                 }
@@ -1031,6 +1177,10 @@ impl Handler for Agent {
 async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, String> {
     let selection = match &input.scope {
         SessionListScope::All => CatalogSelection::All,
+        SessionListScope::Children { session_id } => {
+            owner.require_session(session_id).await?;
+            CatalogSelection::Children(session_id.clone())
+        }
         SessionListScope::Project { project_id } => CatalogSelection::Project(*project_id),
         SessionListScope::Workspace { session_id } => CatalogSelection::Workspace {
             session_id: session_id.clone(),
@@ -1052,7 +1202,7 @@ async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, Stri
 fn catalog_filter(input: &List) -> maka_event_log::sessions::CatalogFilter {
     maka_event_log::sessions::CatalogFilter {
         archived_only: matches!(input.filter, SessionFilter::Archived),
-        include_archived: matches!(input.filter, SessionFilter::Archived),
+        include_archived: input.include_archived || matches!(input.filter, SessionFilter::Archived),
         pending_only: matches!(input.filter, SessionFilter::NeedsYou),
     }
 }
@@ -1151,6 +1301,7 @@ pub(crate) fn summary_for(
             position: origin.position.clone(),
         });
     Session {
+        parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,
         collaboration_mode: session.configuration.collaboration_mode,
@@ -1167,6 +1318,7 @@ pub(crate) fn summary_for(
         workspace: session.configuration.workspace,
         updated_at: session.updated_at,
         archived: session.archived,
+        pinned: session.configuration.pinned,
         has_unread: session.read_state.has_unread,
         tail_message_id: session.last_message.map(|message| message.tail_message_id),
     }
@@ -1194,46 +1346,14 @@ fn delivery(event: StoreStreamEvent) -> Delivery {
             step_id: event.invocation.invocation_id.clone(),
             completed: true,
         },
-        StreamFact::PartStarted {
+        StreamFact::ModelPartCommitted {
             step_id,
-            part_id,
-            text_kind,
-        } => DeliveryFact::PartStarted {
-            message_id: event.id,
+            message_id,
+            ordinal,
+        } => DeliveryFact::PartCommitted {
             step_id,
-            part_id,
-            text_kind: text_kind.into(),
-        },
-        StreamFact::PartDelta {
-            step_id,
-            part_id,
-            text,
-        } => DeliveryFact::Delta {
-            step_id,
-            part_id,
-            text,
-        },
-        StreamFact::PartFinished { step_id, part_id } => {
-            DeliveryFact::PartFinished { step_id, part_id }
-        }
-        StreamFact::ToolInputStarted {
-            step_id,
-            tool_call_id,
-            name,
-            provider_executed,
-        } => DeliveryFact::ToolInputStarted {
-            tool_use_id: model_tool_id(&step_id, &tool_call_id),
-            step_id,
-            name,
-            provider_executed,
-        },
-        StreamFact::ToolInputDelta {
-            step_id,
-            tool_call_id,
-            text,
-        } => DeliveryFact::ToolInputDelta {
-            tool_use_id: model_tool_id(&step_id, &tool_call_id),
-            text,
+            message_id,
+            ordinal,
         },
         StreamFact::ToolInputReady {
             step_id,

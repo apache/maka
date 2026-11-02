@@ -3,8 +3,9 @@
 // directory (`${dataDir}`, which the fixture runs with, new and empty).
 // Each call runs in the granted root and shows what it did; paths outside
 // the root, and the other capabilities the app did not declare (sockets,
-// processes), are still refused. Its script
-// checks each.
+// processes), are still refused: the promise rejects with
+// `ERR_ACCESS_DENIED`, naming the capability and what was asked for (a path
+// that climbs out of `${dataDir}` with `..` too). Its script checks each.
 import { Text, View, signal } from "nsh";
 import fs, { exists, lstat, mkdir, readFile, readdir, rename, rmdir, stat, unlink, writeFile } from "fs/promises";
 import { connect } from "net";
@@ -13,13 +14,21 @@ import process, { run } from "process";
 const lines = signal<string[]>([]);
 const show = (line: string) => lines.set([...lines(), line]);
 
-function refused(call: () => unknown): string {
+// A function returning a promise never throws: what it refuses rejects.
+async function refused(call: () => Promise<unknown>, resource: string): Promise<string> {
+  let promise: Promise<unknown>;
   try {
-    call();
-    return "allowed";
+    promise = call();
   } catch (error) {
-    return error instanceof TypeError ? "refused" : `threw ${error}`;
+    return `threw ${error}`;
   }
+  return promise.then(
+    () => "allowed",
+    (error) => {
+      if (error.resource !== resource) return `rejected ${error.name} ${error.code} ${error.resource}`;
+      return `${error.code} ${error.permission}`;
+    },
+  );
 }
 
 async function main() {
@@ -48,10 +57,10 @@ async function main() {
     (error) => error.code,
   );
   show(`Missing: ${missing}`);
-  show(`Outside: ${refused(() => readFile("/nsh-compat-outside/file"))}`);
-  show(`Escape: ${refused(() => writeFile(`${root}/../escape.txt`, "x"))}`);
-  show(`Socket: ${refused(() => connect({ host: "compat.invalid", port: 80 }))}`);
-  show(`Process: ${refused(() => run("nsh-compat-ungranted", []))}`);
+  show(`Outside: ${await refused(() => readFile("/nsh-compat-outside/file"), "/nsh-compat-outside/file")}`);
+  show(`Escape: ${await refused(() => writeFile(`${root}/../escape.txt`, "x"), `${root}/../escape.txt`)}`);
+  show(`Socket: ${await refused(() => connect({ host: "compat.invalid", port: 80 }), "compat.invalid:80")}`);
+  show(`Process: ${await refused(() => run("nsh-compat-ungranted", []), "nsh-compat-ungranted")}`);
 }
 
 main().catch((error) => show(`Failed: ${error}`));

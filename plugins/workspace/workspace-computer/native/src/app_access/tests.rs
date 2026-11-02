@@ -171,7 +171,7 @@ async fn app_stop_cancels_only_its_original_promise_and_waits_for_real_cleanup()
         ))
         .unwrap();
         store
-            .append_computer_app_dispatch(&dispatch, &[api::target()], &app, &display, &basis)
+            .append_computer_app_dispatch(&[], &dispatch, &[api::target()], &app, &display, &basis)
             .await
             .unwrap();
         let parent = CancellationToken::new();

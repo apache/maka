@@ -18,15 +18,15 @@
  */
 
 use maka_agent_authority::interaction_wait::{wait, withdraw};
-use maka_agent_facts::interaction::Decision;
-use maka_agent_facts::interaction::InteractionOutcome;
-use maka_agent_facts::interaction::InteractionRecord;
-use maka_agent_facts::interaction::InteractionRequest;
-use maka_agent_facts::tools::ToolCallContext;
-use maka_agent_facts::tools::ToolError;
+use maka_agent_facts::interaction::{
+    Decision, InteractionOutcome, InteractionRecord, InteractionRequest,
+};
+use maka_agent_facts::native_approval::{DispatchReceipt, NativeApprovalPending};
+use maka_agent_facts::tools::{EstablishedApproval, ToolCallContext, ToolError};
 use maka_event_log::SessionStore;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) struct Selection<'a> {
@@ -36,20 +36,37 @@ pub(crate) struct Selection<'a> {
     pub service: &'a str,
 }
 
-pub(crate) async fn confirm(
+async fn establish_interaction(
     store: &SessionStore,
     context: &ToolCallContext,
     selection: Selection<'_>,
     input: &Value,
     cancellation: &CancellationToken,
-) -> Result<(), ToolError> {
+) -> Result<
+    (
+        DispatchReceipt,
+        InteractionRecord,
+        Option<InteractionOutcome>,
+    ),
+    ToolError,
+> {
     if cancellation.is_cancelled() {
         return Err(ToolError::Failed("service confirmation cancelled".into()));
     }
-    let through = store
-        .tool_dispatch_fence(context, selection.name, input)
+    #[cfg(test)]
+    eprintln!(
+        "native approval stage=dispatch_receipt_before operation={}",
+        context.operation_id
+    );
+    let dispatch = store
+        .tool_dispatch_receipt(context, selection.name, input)
         .await
         .map_err(|_| ToolError::Failed("service confirmation source unavailable".into()))?;
+    #[cfg(test)]
+    eprintln!(
+        "native approval stage=dispatch_receipt_after operation={}",
+        context.operation_id
+    );
     let record = InteractionRecord {
         session_id: context.invocation.session_id.clone(),
         turn_id: context.invocation.turn_id.clone(),
@@ -72,30 +89,92 @@ pub(crate) async fn confirm(
             service: selection.service.into(),
             method: selection.method.into(),
             binding: selection.binding.into(),
-            through,
+            through: dispatch.sequence,
         },
         outcome: None,
     };
-    let result = async {
-        let committed = store
-            .establish_run_interaction(&context.invocation, &record)
-            .await
-            .map_err(|_| "service confirmation publication unavailable")?;
-        if !committed.matches {
-            return Err("service confirmation identity conflict");
+    #[cfg(test)]
+    eprintln!(
+        "native approval stage=establish_interaction_before operation={}",
+        context.operation_id
+    );
+    let publication = store
+        .establish_run_interaction(&context.invocation, &record)
+        .await;
+    #[cfg(test)]
+    eprintln!(
+        "native approval stage=establish_interaction_after operation={}",
+        context.operation_id
+    );
+    let observed = match publication {
+        Ok(committed) if committed.matches => None,
+        result => {
+            let message = match result {
+                Ok(_) => "service confirmation identity conflict",
+                Err(_) => "service confirmation publication unavailable",
+            };
+            match withdraw(store, &record).await {
+                Ok(Some(outcome)) => Some(outcome),
+                Ok(None) => return Err(ToolError::Failed(message.into())),
+                Err(cleanup) => return Err(ToolError::CleanupUnconfirmed(cleanup.into())),
+            }
         }
-        wait(store, &record, cancellation).await
-    }
-    .await;
-    let outcome = match result {
-        Ok(outcome) => outcome,
-        Err(error) => match withdraw(store, &record).await {
-            Ok(Some(outcome)) => outcome,
-            Ok(None) => return Err(ToolError::Failed(error.into())),
-            Err(cleanup) => return Err(ToolError::CleanupUnconfirmed(cleanup.into())),
-        },
     };
-    match outcome {
+    Ok((dispatch, record, observed))
+}
+
+async fn answer(
+    store: &SessionStore,
+    record: &InteractionRecord,
+    observed: Option<InteractionOutcome>,
+    cancellation: &CancellationToken,
+) -> Result<InteractionOutcome, ToolError> {
+    if let Some(outcome) = observed {
+        return Ok(outcome);
+    }
+    match wait(store, record, cancellation).await {
+        Ok(outcome) => Ok(outcome),
+        Err(error) => match withdraw(store, record).await {
+            Ok(Some(outcome)) => Ok(outcome),
+            Ok(None) => Err(ToolError::Failed(error.into())),
+            Err(cleanup) => Err(ToolError::CleanupUnconfirmed(cleanup.into())),
+        },
+    }
+}
+
+pub(crate) async fn establish(
+    store: Arc<SessionStore>,
+    context: ToolCallContext,
+    selection: Selection<'_>,
+    input: &Value,
+    native: Value,
+    cancellation: CancellationToken,
+) -> Result<EstablishedApproval, ToolError> {
+    let (dispatch, record, observed) =
+        establish_interaction(&store, &context, selection, input, &cancellation).await?;
+    let pending = NativeApprovalPending {
+        invocation: context.invocation,
+        operation_id: context.operation_id,
+        dispatch,
+        interaction_id: record.request_id.clone(),
+        native,
+    };
+    Ok(EstablishedApproval {
+        pending,
+        answer: Box::pin(async move { answer(&store, &record, observed, &cancellation).await }),
+    })
+}
+
+pub(crate) async fn confirm(
+    store: &SessionStore,
+    context: &ToolCallContext,
+    selection: Selection<'_>,
+    input: &Value,
+    cancellation: &CancellationToken,
+) -> Result<(), ToolError> {
+    let (_, record, observed) =
+        establish_interaction(store, context, selection, input, cancellation).await?;
+    match answer(store, &record, observed, cancellation).await? {
         InteractionOutcome::ServiceApprovalDecision {
             decision: Decision::Allow,
             ..

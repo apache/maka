@@ -39,6 +39,8 @@ just check
 
 The [product guide](products/maka/README.md) explains TypeScript development. The [plugin guide](plugins/README.md) covers declarations and composition. Native packaging and V8 requirements live in [scripts/rust](scripts/rust/README.md). The [website](website/README.md) has a separate manifest and lockfile.
 
+`just` and CI share [suite definitions and commands](scripts/ci.mjs). See the [CI commands](scripts/rust/README.md#ci) to inspect an affected-change plan or reproduce a suite locally.
+
 ## Code and documentation
 
 - Use `name.rs` with `name/` for child modules. Keep unit tests with their implementation and integration tests under `tests/`.

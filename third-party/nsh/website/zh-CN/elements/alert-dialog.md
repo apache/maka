@@ -1,7 +1,6 @@
 ---
 title: AlertDialog
 description: AlertDialog：平台自己的警告框或操作表，在原生侧显示，并以用户选择的操作作为结果。
-order: 25
 group: base
 demo: el-alert-dialog
 ---
@@ -92,7 +91,7 @@ alert_dialog().title(..).description(..).action(..).cancel(..).destructive(..).s
     -> impl Future<Output = Result<AlertDialogResult, String>>
 ```
 
-结果是 `{ action }`（`AlertDialogResult`）：所选操作的 `id`，对话框未经操作关闭时为 `null`（`None`）：在 `closeOnBackdropPress` 和 `closeOnEscape` 允许时，点按对话框外部、Escape 或返回键。没有任何操作时是一个错误（被拒绝的 promise、一个 `Err`）。在 Rust 中，`nsh_base::alert_dialog()` 用一个方法设置一个选项或添加一个操作，操作按添加的顺序显示，`.show()` 显示对话框；在任务（`spawn`）中 await 它的结果。
+结果是 `{ action }`（`AlertDialogResult`）：所选操作的 `id`，对话框未经操作关闭时为 `null`（`None`）：在 `closeOnBackdropPress` 和 `closeOnEscape` 允许时，点按对话框外部、Escape 或返回键。没有任何操作时 promise 以 `TypeError` 拒绝（在 Rust 中是一个 `Err`）。在 Rust 中，`nsh_base::alert_dialog()` 用一个方法设置一个选项或添加一个操作，操作按添加的顺序显示，`.show()` 显示对话框；在任务（`spawn`）中 await 它的结果。
 
 <a id="action-sheets"></a>
 

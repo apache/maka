@@ -70,6 +70,8 @@ ttf-parser = "0.25"
 oxc_sourcemap = "9"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# Calendar dates and times of day (`nsh-base`'s `Calendar`, `TimeField`, `DatePicker`).
+chrono = { version = "0.4.45", default-features = false, features = ["std"] }
 plist = "1.7"
 zip = { version = "8", default-features = false, features = ["deflate"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
@@ -100,6 +102,8 @@ flate2 = "1"
 brotli = { version = "9", default-features = false, features = ["std"] }
 zstd = { version = "0.14", default-features = false }
 tar = { version = "0.4", default-features = false }
+# Pruning the web runtime to what an app uses (`nsh package --target web`).
+wasmparser = { version = "0.262", default-features = false, features = ["std", "validate", "simd"] }
 base64 = "0.22"
 getrandom = "0.3"
 slab = "0.4"
@@ -502,18 +506,26 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.usvg]
 opt-level = 3
+# Photos are decoded and shrunk to their views' sizes as they load: unoptimized,
+# a 12-megapixel JPEG takes seconds.
+[profile.dev.package.image]
+opt-level = 3
+[profile.dev.package.zune-jpeg]
+opt-level = 3
+[profile.dev.package.zune-core]
+opt-level = 3
+[profile.dev.package.png]
+opt-level = 3
+[profile.dev.package.fdeflate]
+opt-level = 3
 
-# The web runtime (`nsh.wasm`): what pages download, so Rust is optimized for
-# size (3.7 MB instead of 5.0, 1.0 MB with brotli); QuickJS keeps `-O3`, as
-# the interpreter is the slowest link (it is 0.45 MB of the difference).
+# The web runtime (`nsh.wasm`): what pages download, so it is optimized for
+# size.
 [profile.web]
 inherits = "release"
 opt-level = "z"
 strip = true
 panic = "abort"
-[profile.web.package.quickjs-jit-sys]
-opt-level = 3
-
 # Same codec as ratatui-image; only its output sink is made fallible.
 [patch.crates-io]
 icy_sixel = { path = "third-party/icy_sixel" }

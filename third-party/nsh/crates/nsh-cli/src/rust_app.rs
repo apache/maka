@@ -961,8 +961,7 @@ members = [\"describe\", \"test\", \"ios-host\", \"ios-app\", \"macos-host\", \"
 # (`RustApp::gpui_workspace`): other builds never resolve GPUI's crates.
 exclude = [\"gpui\"]
 
-# The web runtime, as nsh builds its own (nsh's `Cargo.toml`): Rust for
-# size, QuickJS at -O3.
+# The web runtime, as nsh builds its own (nsh's `Cargo.toml`): for size.
 [profile.web]
 inherits = \"release\"
 opt-level = \"z\"
@@ -970,8 +969,6 @@ lto = \"fat\"
 codegen-units = 1
 strip = true
 panic = \"abort\"
-[profile.web.package.quickjs-jit-sys]
-opt-level = 3
 {web_dev}"),
             false,
         )?;
@@ -1293,11 +1290,10 @@ opt-level = 3
             &format!(
                 "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
                  [lib]\nname = {:?}\npath = \"lib.rs\"\ncrate-type = [\"cdylib\"]\n\n\
-                 [features]\n# The runtime of published apps: bytecode only (nsh-platform-web).\n\
-                 bytecode-only = [\"nsh-platform-web/bytecode-only\"]\n\
+                 [features]\n# The runtime of published apps: TSX on the browser's JavaScript engine.\n\
                  browser = [\"nsh-platform-web/browser\"]\n\
-                 # The development host's: what `nsh test --target web` asks about.\n\
-                 dev = [\"nsh-platform-web/dev\", \"nsh-platform-web/base-full\", \"nsh-platform-web/std-zlib\", \"nsh-platform-web/std-crypto\"]\n\n\
+                 # The development host's: hot updates, and what `nsh test --target web` asks about.\n\
+                 dev = [\"nsh-platform-web/dev\"]\n\n\
                  [dependencies]\nnsh-core = {}\nnsh-base = {}\n{app}\n\n\
                  [target.'cfg(target_arch = \"wasm32\")'.dependencies]\nnsh-platform-web = {}\n",
                 self.bin("web"),
@@ -1309,7 +1305,7 @@ opt-level = 3
             ),
         )?;
         // nsh's `.cargo/config.toml` gives its own web runtime this stack
-        // (QuickJS recursion, deep component trees); the app's build does
+        // (deep component trees); the app's build does
         // not run under it, so this package passes the link argument.
         write(&ws.join("web/build.rs"), WEB_BUILD_RS)?;
         // A Rust app's root too, which the development host's page runs
@@ -1343,7 +1339,7 @@ opt-level = 3
     /// so an edit to an app crate rebuilds in well under a second where
     /// `web`'s fat LTO over one codegen unit re-optimizes the whole module.
     /// The app's crates are at `-O1` (what changes), the other crates for
-    /// size and QuickJS at `-O3` (it dominates the runtime's cost). It panics
+    /// size. It panics
     /// as `web` does (`abort`) and has no debug assertions, so the page
     /// behaves as the published one.
     fn web_dev_profile(&self) -> String {
@@ -1351,7 +1347,7 @@ opt-level = 3
             "
 # The development web runtime (`nsh run --target web`): built again on
 # every change to the app's Rust code, so incremental and without LTO; the
-# app's crates at -O1, the others for size, QuickJS at -O3.
+# app's crates at -O1, the others for size.
 [profile.web-dev]
 inherits = \"dev\"
 opt-level = 1
@@ -1361,8 +1357,6 @@ overflow-checks = false
 panic = \"abort\"
 [profile.web-dev.package.\"*\"]
 opt-level = \"s\"
-[profile.web-dev.package.quickjs-jit-sys]
-opt-level = 3
 ",
         );
         for c in &self.crates {
@@ -1441,18 +1435,16 @@ opt-level = 3
             return Ok((runtime.wasm.exists() && runtime.js.exists()).then_some(runtime));
         }
         let mut cmd = Command::new(cargo());
-        // QuickJS' archive needs an `ar` that knows WebAssembly objects.
+        // The C code of the dependencies (zstd) needs an `ar` that knows
+        // WebAssembly objects.
         let ar = format!("AR_{}", WASM.replace('-', "_"));
         if env::var_os(&ar).is_none() && env::var_os("AR").is_none() {
             cmd.env(&ar, "llvm-ar");
         }
-        // A Rust app's runtime is one: no QuickJS, so neither the parser
-        // nor hot updates.
+        // A Rust app's runtime is one: it has no JS, so no hot updates.
         let features: &[&str] = match kind {
             _ if rust => &[],
-            crate::runtime::WebKind::Browser | crate::runtime::WebKind::Lite => {
-                &["--features", "browser"]
-            }
+            crate::runtime::WebKind::Browser => &["--features", "browser"],
             crate::runtime::WebKind::Dev => &["--features", "dev"],
         };
         let (package, artifact) = if rust {
@@ -1958,13 +1950,10 @@ fn main() {
 }
 "#;
 
-/// The `build.rs` of the web runtimes: the 8 MiB stack nsh's own has, and
-/// QuickJS' local time from the page (`nsh-platform-web`'s `build.rs`).
-const WEB_BUILD_RS: &str = "//! The web runtime's stack: 8 MiB, as nsh's own (`.cargo/config.toml`);\n\
-    //! QuickJS' local time from the page, as nsh's own (`nsh-platform-web`'s `build.rs`).\n\n\
+/// The `build.rs` of the web runtimes: the 8 MiB stack nsh's own has.
+const WEB_BUILD_RS: &str = "//! The web runtime's stack: 8 MiB, as nsh's own (`.cargo/config.toml`).\n\n\
     fn main() {\n    if std::env::var(\"CARGO_CFG_TARGET_ARCH\").as_deref() == Ok(\"wasm32\") {\n        \
-    println!(\"cargo:rustc-link-arg=-zstack-size=8388608\");\n        \
-    println!(\"cargo:rustc-link-arg=--wrap=localtime_r\");\n    }\n}\n";
+    println!(\"cargo:rustc-link-arg=-zstack-size=8388608\");\n    }\n}\n";
 
 impl RustApp {
     /// The `[dependencies]` lines of its crates, for a generated crate.
@@ -2225,7 +2214,7 @@ fn nsh_crate(source: &Path, name: &str) -> PathBuf {
 /// published apps, `web-dev` for development ([`RustApp::web_dev_profile`]).
 fn web_profile(kind: crate::runtime::WebKind) -> &'static str {
     match kind {
-        crate::runtime::WebKind::Browser | crate::runtime::WebKind::Lite => "web",
+        crate::runtime::WebKind::Browser => "web",
         crate::runtime::WebKind::Dev => "web-dev",
     }
 }
@@ -3044,10 +3033,7 @@ mod tests {
             profile("profile.web-dev.package.\"*\""),
             ["opt-level = \"s\""]
         );
-        assert_eq!(
-            profile("profile.web-dev.package.quickjs-jit-sys"),
-            ["opt-level = 3"]
-        );
+        assert!(profile("profile.web-dev.package.quickjs-jit-sys").is_empty());
         for package in ["app-charts", "app-storage"] {
             let name = format!("profile.web-dev.package.\"{package}\"");
             assert_eq!(profile(&name), ["opt-level = 1"], "{manifest}");
@@ -3084,11 +3070,9 @@ lto = \"fat\"
 codegen-units = 1
 strip = true
 panic = \"abort\"
-[profile.web.package.quickjs-jit-sys]
-opt-level = 3
 ";
         assert!(manifest.contains(web), "{manifest}");
-        assert_eq!(manifest.matches("[profile.web.").count(), 1, "{manifest}");
+        assert_eq!(manifest.matches("[profile.web.").count(), 0, "{manifest}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3111,14 +3095,9 @@ opt-level = 3
         let web = read("web/Cargo.toml");
         assert!(web.contains("crate-type = [\"cdylib\"]"), "{web}");
         assert!(web.contains("name = \"nsh_app_app_native_web\""), "{web}");
-        assert!(
-            web.contains("bytecode-only = [\"nsh-platform-web/bytecode-only\"]"),
-            "{web}"
-        );
+        assert!(web.contains("dev = [\"nsh-platform-web/dev\"]"), "{web}");
         let build = read("web/build.rs");
         assert!(build.contains("-zstack-size=8388608"), "{build}");
-        // QuickJS' local time comes from the page (`__wrap_localtime_r`).
-        assert!(build.contains("--wrap=localtime_r"), "{build}");
         assert!(read("web/lib.rs").contains("nsh_platform_web::ui_sets!("));
         assert!(!app.workspace.join("gpui").exists());
         assert_eq!(app.gpui_workspace().unwrap(), app.workspace.join("gpui"));

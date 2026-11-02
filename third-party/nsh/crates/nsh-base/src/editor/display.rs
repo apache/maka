@@ -923,7 +923,7 @@ fn slice_text(rope: &Rope, range: Range<usize>) -> String {
 /// `folds` sorted, without empty ones, ones past the last line and ones
 /// overlapping an earlier one.
 fn valid_folds(mut folds: Vec<FoldRange>, line_count: usize) -> Vec<FoldRange> {
-    folds.sort_by_key(|fold| (fold.start, fold.end));
+    crate::sort::sort_by_key(&mut folds, |fold| (fold.start, fold.end));
     let mut last_end = None;
     folds.retain(|fold| {
         let keep = fold.start < fold.end

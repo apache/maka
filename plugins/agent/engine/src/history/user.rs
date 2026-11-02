@@ -19,36 +19,19 @@
 
 use maka_agent_facts::language::Language;
 
-use super::{images, references};
+use super::references;
 use crate::RunError;
-use maka_agent_facts::attachment::AttachmentKind;
 use maka_agent_facts::input::MessageInput;
 use maka_model::prompt::Message;
 
 /// The event identity owns the injection. Equal text in another user message
 /// is never deduplicated or mistaken for a steering directive.
-pub(super) fn project<'a>(
-    content: &'a MessageInput,
+pub(super) fn project(
+    content: &MessageInput,
     resources: &super::resources::Resources<'_>,
     steering: bool,
-    index: usize,
-    images: &mut Vec<images::Target<'a>>,
-    vision: bool,
     language: Language,
 ) -> Result<Message, RunError> {
-    if vision {
-        images.extend(
-            content
-                .attachments
-                .iter()
-                .flatten()
-                .filter(|image| image.kind == AttachmentKind::Image)
-                .map(|image| images::Target::User {
-                    message: index,
-                    image,
-                }),
-        );
-    }
     let text = references::text(content, resources, language)?;
     let text = if steering {
         let label = match language {

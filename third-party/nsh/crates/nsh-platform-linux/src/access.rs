@@ -60,10 +60,13 @@ struct Spec {
     range: Option<Range>,
     disabled: bool,
     selected: bool,
-    /// `Pressed` for buttons (toggle buttons, as ARIA's `aria-pressed`;
-    /// GTK's `ToggleButton` role would lose the name computed from the
-    /// content), `Checked` for the rest.
+    /// `Pressed` for buttons (toggle buttons, as ARIA's `aria-pressed`:
+    /// `accessibilityState.pressed`, else `checked`; GTK's `ToggleButton`
+    /// role would lose the name computed from the content), `Checked` for
+    /// the rest.
     checked: Option<Checked>,
+    /// A heading's level, a tree item's depth (`accessibilityLevel`).
+    level: Option<u32>,
     expanded: Option<bool>,
     busy: bool,
     hidden: bool,
@@ -302,6 +305,15 @@ fn apply(view: &NshView, old: Option<&Spec>, new: &Spec) {
             gtk::AccessibleProperty::ValueText,
         );
     }
+    if old.is_none_or(|o| o.level != new.level) {
+        match new.level {
+            Some(l) => props.push(accessible::Property::Level(l.min(i32::MAX as u32) as i32)),
+            None if old.is_some_and(|o| o.level.is_some()) => {
+                reset.push(gtk::AccessibleProperty::Level)
+            }
+            None => {}
+        }
+    }
     if !props.is_empty() {
         view.update_property(&props);
     }
@@ -441,7 +453,11 @@ fn spec_for(
         }),
         disabled: a.state.disabled,
         selected: a.state.selected,
-        checked: a.state.checked,
+        checked: match role {
+            Gtk::Button => a.state.pressed.or(a.state.checked),
+            _ => a.state.checked,
+        },
+        level: a.level,
         expanded: a.state.expanded,
         busy: a.state.busy,
         hidden: a.hidden || invisible,
@@ -473,8 +489,12 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Gtk {
         Role::Combobox => Gtk::ComboBox,
         Role::Menu => Gtk::Menu,
         Role::Menubar => Gtk::MenuBar,
-        Role::Menuitem if a.state.checked.is_some() => Gtk::MenuItemCheckbox,
+        Role::Menuitem | Role::MenuItemCheckbox if a.state.checked.is_some() => {
+            Gtk::MenuItemCheckbox
+        }
         Role::Menuitem => Gtk::MenuItem,
+        Role::MenuItemCheckbox => Gtk::MenuItemCheckbox,
+        Role::MenuItemRadio => Gtk::MenuItemRadio,
         Role::Progressbar => Gtk::ProgressBar,
         Role::Radio => Gtk::Radio,
         Role::Radiogroup => Gtk::RadioGroup,
@@ -494,6 +514,11 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Gtk {
         Role::RowGroup => Gtk::RowGroup,
         Role::Listbox => Gtk::ListBox,
         Role::Option => Gtk::Option,
+        Role::Group => Gtk::Group,
+        Role::Region => Gtk::Region,
+        Role::Navigation => Gtk::Navigation,
+        Role::Tree => Gtk::Tree,
+        Role::TreeItem => Gtk::TreeItem,
     }
 }
 
@@ -612,6 +637,48 @@ mod tests {
         assert_eq!(
             role_for(&checked_item, ViewKind::View, false),
             Gtk::MenuItemCheckbox
+        );
+        for (role, gtk) in [
+            (Role::Group, Gtk::Group),
+            (Role::Region, Gtk::Region),
+            (Role::Navigation, Gtk::Navigation),
+            (Role::Tree, Gtk::Tree),
+            (Role::TreeItem, Gtk::TreeItem),
+            (Role::MenuItemCheckbox, Gtk::MenuItemCheckbox),
+            (Role::MenuItemRadio, Gtk::MenuItemRadio),
+        ] {
+            assert_eq!(
+                role_for(&with_role(role), ViewKind::View, false),
+                gtk,
+                "{role:?}"
+            );
+        }
+    }
+
+    /// A button's pressed state is GTK's `Pressed`; a level is kept.
+    #[test]
+    fn pressed_and_level() {
+        let toggle = Accessibility {
+            role: Role::Button,
+            level: Some(2),
+            state: AccessibilityState {
+                pressed: Some(Checked::Mixed),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = spec_for(&toggle, ViewKind::View, true, None, false);
+        assert_eq!(s.role, Gtk::Button);
+        assert_eq!(s.checked, Some(Checked::Mixed));
+        assert_eq!(s.level, Some(2));
+        // Outside buttons, a pressed state is not a checked one.
+        let checkbox = Accessibility {
+            role: Role::Checkbox,
+            ..toggle
+        };
+        assert_eq!(
+            spec_for(&checkbox, ViewKind::View, true, None, false).checked,
+            None
         );
     }
 

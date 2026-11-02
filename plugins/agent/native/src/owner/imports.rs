@@ -349,12 +349,17 @@ impl Owner {
                         &owner,
                         &transcript.source,
                         &StoredSessionConfiguration {
+                            parent_session_id: scope
+                                .identity
+                                .agent()
+                                .map(|source| source.session_id.clone()),
                             backend: None,
                             compaction_prompt: None,
                             collaboration_mode: CollaborationMode::Agent,
                             tools: None,
                             title,
                             title_is_manual: true,
+                            pinned: false,
                             labels: vec![],
                             workspace,
                             permissions: self.settings.permissions.clone(),

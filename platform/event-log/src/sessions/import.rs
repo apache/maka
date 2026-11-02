@@ -188,7 +188,7 @@ async fn append(
         let json = serde_json::to_string(&event)?;
         if replay {
             let prior: (Option<String>, Option<String>) =
-                sqlx::query_as("SELECT event_json,body_digest FROM event_log WHERE event_id=?")
+                sqlx::query_as("SELECT event_header,body_digest FROM event_log WHERE event_id=?")
                     .bind(event_id)
                     .fetch_one(&mut *connection)
                     .await?;
@@ -211,7 +211,6 @@ async fn append(
         .await?;
         last = Some(sequence);
         super::project_execution(connection, sequence).await?;
-        crate::transcript::directory::record_source(connection, session, sequence).await?;
         sqlx::query("UPDATE session_imports SET records=records+1,bytes=?,conversation=conversation+? WHERE session_id=?")
                     .bind(bytes as i64).bind(i64::from(conversation)).bind(session).execute(&mut *connection).await?;
     }

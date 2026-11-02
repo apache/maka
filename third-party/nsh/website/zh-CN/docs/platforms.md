@@ -70,7 +70,7 @@ Rust 宿主以 `AppSource::Rust` 或 `App::Rust` 挂载 Rust 根组件（`Root::
 
 应用的大部分代码不需要判断平台：元素、样式、布局和模块在各处行为一致。平台确实不同的地方，NSH 给它一个固定的位置（[平台特定代码](./platform-specific.md)）：
 
-- **环境说明应用运行在哪里**：Rust 里是 `os()`、`idiom()` 和 `is_desktop()`（`nsh_core::prelude`），TSX 里是 `nsh` 的 `platform.os`、`platform.idiom` 和 `platform.select`。操作系统是 iOS、Android、macOS、Windows、Linux 或 Web。
+- **环境说明应用运行在哪里**：Rust 里是 `os()`、`idiom()` 和 `is_desktop()`（`nsh_core::prelude`），TSX 里是 `nsh` 的 `platform.os`、`platform.idiom`、`platform.desktop` 和 `platform.select`。操作系统是 iOS、Android、macOS、Windows、Linux 或 Web。
 - **平台专属属性**在 TSX 里放在 `ios={{…}}`、`android={{…}}`、`web={{…}}` 或 `desktop={{…}}` 里（`desktop`：macOS、Windows、Linux 和桌面浏览器）。
 - **渲染器**由 `platform.renderer` 标识（`"native"`、`"web"` 或 `"terminal"`）；终端保持实际的 `platform.os`。选择终端呈现时使用 `platform.isTerminal`。
 - **输入跟随平台。** 手机上是触摸和软键盘；桌面上是鼠标、触控板和键盘。
@@ -103,7 +103,7 @@ import { platform } from "nsh";
 
 export function Shell() {
   // macOS、Windows、Linux 和桌面浏览器用侧边栏；手机用标签页。
-  return <View class="flex-1">{platform.idiom === "desktop" ? <SidebarLayout /> : <TabLayout />}</View>;
+  return <View class="flex-1">{platform.desktop ? <SidebarLayout /> : <TabLayout />}</View>;
 }
 
 function SidebarLayout() {

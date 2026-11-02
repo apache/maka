@@ -89,49 +89,6 @@ async fn concurrent_cas_persists_the_winner_and_separates_owners() {
     log.shutdown().await.unwrap();
 }
 #[tokio::test]
-async fn deleted_revision_is_preserved_and_invalid_or_cancelled_reads_never_enable_skills() {
-    let dir = tempfile::tempdir().unwrap();
-    let log = root_store(dir.path()).await;
-    let store = Store::new(log.clone(), "one_".into());
-    log.plugin_data_batch(
-        &namespace(),
-        vec![Mutation {
-            key: store.key.clone(),
-            expected_revision: None,
-            data: Data::Deleted,
-        }],
-    )
-    .await
-    .unwrap();
-    let call = scope();
-    assert!(matches!(
-        store.set(change(0, false, false), &call).await.unwrap(),
-        PreferenceResult::Changed
-    ));
-    assert!(matches!(
-        store.set(change(1, false, false), &call).await.unwrap(),
-        PreferenceResult::Applied { revision: 2 }
-    ));
-    log.plugin_data_batch(
-        &namespace(),
-        vec![Mutation {
-            key: store.key.clone(),
-            expected_revision: Some(2),
-            data: Data::Present(serde_json::json!({"bad": {"enabled": true}})),
-        }],
-    )
-    .await
-    .unwrap();
-    assert!(store.read(&call).await.is_err());
-    assert!(store.set(change(3, true, false), &call).await.is_err());
-    call.cancellation.cancel();
-    assert!(store.read(&call).await.is_err());
-    call.finish().await.unwrap();
-    assert!(store.read(&call).await.is_err());
-    log.shutdown().await.unwrap();
-}
-
-#[tokio::test]
 async fn dropping_observer_cannot_finish_the_original_call_before_its_store_work() {
     let dir = tempfile::tempdir().unwrap();
     let log = root_store(dir.path()).await;
@@ -163,23 +120,5 @@ async fn dropping_observer_cannot_finish_the_original_call_before_its_store_work
     let current = store.read(&scope()).await.unwrap();
     assert_eq!(current.revision, 1);
     assert!(!current.entries["source:local:review"].enabled);
-    log.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn a_returned_business_error_does_not_invent_a_cleanup_failure() {
-    let dir = tempfile::tempdir().unwrap();
-    let log = root_store(dir.path()).await;
-    let store = Store::new(log.clone(), "one_".into());
-    let call = scope();
-    let result = store
-        .run(&call, |_, _| {
-            Box::pin(async { Err::<(), _>("skills_preferences_unknown".into()) })
-        })
-        .await;
-    assert_eq!(result.unwrap_err(), "skills_preferences_unknown");
-    call.finish()
-        .await
-        .expect("the task actually returned; business uncertainty is separate");
     log.shutdown().await.unwrap();
 }

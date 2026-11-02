@@ -1,7 +1,8 @@
 //! [`Rows`]: the rows of data a component takes from JS (`data: T[]`), read
-//! natively as columns of numbers by key, and [`RowAccessor`]: how it reads
-//! a value of each row (a key, or the app's function of a row), and
-//! [`RowText`]: how it reads a text of each row (a label beside a value).
+//! natively as columns of numbers and of texts by key, and [`RowAccessor`]:
+//! how it reads a value of each row (a key, or the app's function of a
+//! row), and [`RowText`]: how it reads a text of each row (a label beside
+//! a value, a category).
 
 use std::{fmt, rc::Rc, sync::Arc};
 
@@ -13,15 +14,18 @@ use super::{
 };
 
 /// Rows of data a component takes, `T[]` in TypeScript (its props generic
-/// over `T`: `#[props(generic)]`): JS objects whose number fields are read
-/// once, when JS sets the prop, into a column per key, so the component
-/// reads its values by key ([`Rows::column`]) without calling into JS
-/// again. A field that is not a number on some row (missing, `null`, a
-/// string) is `NaN` there: a gap.
+/// over `T`: `#[props(generic)]`): JS objects whose number and string
+/// fields are read once, when JS sets the prop, into a column per key, so
+/// the component reads its values by key ([`Rows::column`]) without
+/// calling into JS again. A field that is not a number on some row
+/// (missing, `null`, a string) is `NaN` there: a gap.
 #[derive(Clone, Default)]
 pub struct Rows {
     len: usize,
     columns: Vec<(SharedString, Arc<[f64]>)>,
+    /// The string fields, a column per key (empty where a row has none):
+    /// what [`RowText`] reads of a field that holds text.
+    texts: Vec<(SharedString, Arc<[SharedString]>)>,
     /// The JS array, kept to hand its rows to the app's functions
     /// ([`RowAccessor::Js`]); none for rows made in Rust.
     js: Option<Rc<dyn CallbackHandle>>,
@@ -32,6 +36,7 @@ impl fmt::Debug for Rows {
         f.debug_struct("Rows")
             .field("len", &self.len)
             .field("columns", &self.columns)
+            .field("texts", &self.texts)
             .finish_non_exhaustive()
     }
 }
@@ -53,6 +58,7 @@ impl Rows {
         Self {
             len,
             columns,
+            texts: Vec::new(),
             js: None,
         }
     }
@@ -85,15 +91,23 @@ impl Rows {
             .map(|(_, values)| &**values)
     }
 
+    /// The texts of string field `key`, one per row (empty where a row has
+    /// no string there); `None` when no row has one.
+    fn text_column(&self, key: &str) -> Option<&[SharedString]> {
+        self.texts
+            .iter()
+            .find(|(k, _)| &**k == key)
+            .map(|(_, texts)| &**texts)
+    }
+
     /// The keys with numbers, in the order they first appear.
     pub fn keys(&self) -> impl Iterator<Item = &str> {
         self.columns.iter().map(|(k, _)| &**k)
     }
 }
 
-/// Equal rows hold the same numbers (including gaps) and retained JS rows.
-/// Arbitrary JS fields matter too: a different retained array must replace
-/// the prop even when its numeric columns are unchanged.
+/// Equal rows hold the same numbers (including gaps), texts and retained JS rows.
+/// A different retained array replaces the prop even when its columns are unchanged.
 impl PartialEq for Rows {
     fn eq(&self, other: &Self) -> bool {
         let same_rows = match (&self.js, &other.js) {
@@ -112,6 +126,7 @@ impl PartialEq for Rows {
                         .zip(b.1.iter())
                         .all(|(x, y)| x.to_bits() == y.to_bits())
             })
+            && self.texts == other.texts
     }
 }
 
@@ -125,6 +140,7 @@ impl JsValue for Rows {
             .array_len()?
             .ok_or_else(|| value.expected("an array of objects"))?;
         let mut columns: Vec<(SharedString, Vec<f64>)> = Vec::new();
+        let mut texts: Vec<(SharedString, Vec<SharedString>)> = Vec::new();
         for i in 0..len {
             let row = value.index(i)?;
             let row = row.get();
@@ -132,26 +148,41 @@ impl JsValue for Rows {
                 continue;
             }
             for key in row.keys()? {
-                let Some(n) = row.field(&key)?.get().as_number() else {
-                    continue;
-                };
-                let at = match columns.iter().position(|(k, _)| **k == *key) {
-                    Some(at) => at,
-                    None => {
-                        columns.push((SharedString::from(key), vec![f64::NAN; len]));
-                        columns.len() - 1
-                    }
-                };
-                columns[at].1[i] = n;
+                let field = row.field(&key)?;
+                let field = field.get();
+                if let Some(n) = field.as_number() {
+                    let at = match columns.iter().position(|(k, _)| **k == *key) {
+                        Some(at) => at,
+                        None => {
+                            columns.push((SharedString::from(key), vec![f64::NAN; len]));
+                            columns.len() - 1
+                        }
+                    };
+                    columns[at].1[i] = n;
+                } else if field.kind() == JsKind::String {
+                    let Some(text) = field.as_string() else {
+                        continue;
+                    };
+                    let at = match texts.iter().position(|(k, _)| **k == *key) {
+                        Some(at) => at,
+                        None => {
+                            let column = vec![SharedString::default(); len];
+                            texts.push((SharedString::from(key), column));
+                            texts.len() - 1
+                        }
+                    };
+                    texts[at].1[i] = text.into();
+                }
             }
         }
         let mut rows = Rows::from_columns(len, columns);
+        rows.texts = texts.into_iter().map(|(k, t)| (k, t.into())).collect();
         rows.js = value.host().retain(value.raw());
         Ok(rows)
     }
 
     fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
-        // The numbers it read, one object per row.
+        // The numbers and texts it read, one object per row.
         let mut rows = Vec::with_capacity(self.len);
         for i in 0..self.len {
             let row = JsOwned::new(host, host.new_object()?);
@@ -159,6 +190,11 @@ impl JsValue for Rows {
                 let n = values[i];
                 if !n.is_nan() {
                     host.set_field(row.get().raw(), key, host.new_number(n))?;
+                }
+            }
+            for (key, texts) in &self.texts {
+                if !texts[i].is_empty() {
+                    host.set_field(row.get().raw(), key, host.new_string(&texts[i])?)?;
                 }
             }
             rows.push(row);
@@ -313,16 +349,17 @@ impl JsValue for RowAccessor {
 
 /// How a component reads a text of each of its [`Rows`] (TS
 /// `Extract<keyof T, string> | ((d: T, index: number) => string)`): the
-/// number field of a name, written as JS writes a number (`String(n)`),
-/// read natively; or the app's function of a row and its index, for text
-/// the app formats (units, separators, its locale), which a component
-/// calls once per row when the rows or the function change, in the next
-/// JS turn, and never while it draws (so the function is pure: the same
-/// row, the same text). [`RowAccessor`]'s twin for what a component shows
-/// as text, such as a value beside a bar.
+/// field of a name, its string or its number written as JS writes it
+/// (`String(n)`), read natively; or the app's function of a row and its
+/// index, for text the app formats (units, separators, its locale), which
+/// a component calls once per row when the rows or the function change,
+/// in the next JS turn, and never while it draws (so the function is
+/// pure: the same row, the same text). [`RowAccessor`]'s twin for what a
+/// component shows as text, such as a value beside a bar, or reads as a
+/// category.
 #[derive(Clone)]
 pub enum RowText {
-    /// The number field `key`, as JS writes it.
+    /// The field `key`: its string, or its number as JS writes it.
     Key(SharedString),
     /// The app's JS function of a row and its index.
     Js(Callback<(RowRef, u32), SharedString>),
@@ -331,7 +368,7 @@ pub enum RowText {
 }
 
 impl RowText {
-    /// The field `key`, as JS writes its numbers.
+    /// The field `key`: its strings, and its numbers as JS writes them.
     pub fn key(key: impl Into<SharedString>) -> Self {
         RowText::Key(key.into())
     }
@@ -343,13 +380,20 @@ impl RowText {
 
     /// The texts of `rows` when they need no JS (a key or a Rust
     /// function); `None` for a JS function ([`RowText::texts`]). A row
-    /// without a number in the field has no text (empty).
+    /// without a string or a number in the field has no text (empty).
     pub fn texts_now(&self, rows: &Rows) -> Option<Arc<[SharedString]>> {
         match self {
-            RowText::Key(key) => Some(match rows.column(key) {
-                Some(values) => values.iter().map(|&v| js_number_text(v)).collect(),
-                None => vec![SharedString::default(); rows.len()].into(),
-            }),
+            RowText::Key(key) => {
+                let (numbers, texts) = (rows.column(key), rows.text_column(key));
+                Some(
+                    (0..rows.len())
+                        .map(|i| match numbers.map(|n| n[i]) {
+                            Some(n) if !n.is_nan() => js_number_text(n),
+                            _ => texts.map(|t| t[i].clone()).unwrap_or_default(),
+                        })
+                        .collect(),
+                )
+            }
             RowText::Rust(f) => Some((0..rows.len()).map(|i| f(i)).collect()),
             RowText::Js(_) => None,
         }
@@ -508,5 +552,26 @@ mod tests {
         assert_eq!(&*named.texts_now(&rows).unwrap()[3], "#3");
         assert_eq!(key, RowText::from("v"));
         assert_ne!(named, RowText::from_fn(|i| format!("#{i}").into()));
+    }
+
+    /// A field's strings as they are (a category), its numbers as JS
+    /// writes them where a row holds one; rows with different texts are
+    /// different rows.
+    #[test]
+    fn texts_read_a_string_field_as_it_is() {
+        let mut rows = Rows::from_columns(3, [("region".into(), vec![f64::NAN, 7.0])]);
+        let before = rows.clone();
+        rows.texts = vec![(
+            "region".into(),
+            ["EMEA", "", "APAC"].map(SharedString::from).into(),
+        )];
+        let texts = RowText::key("region").texts_now(&rows).unwrap();
+        assert_eq!(
+            texts.iter().map(|t| &**t).collect::<Vec<_>>(),
+            ["EMEA", "7", "APAC"]
+        );
+        assert_ne!(rows, before);
+        assert_eq!(rows.text_column("region").map(<[_]>::len), Some(3));
+        assert_eq!(rows.text_column("name"), None);
     }
 }

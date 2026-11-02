@@ -22,17 +22,12 @@ use tokio::io::AsyncReadExt;
 use tokio::net::TcpStream;
 
 pub async fn read_request(socket: &mut TcpStream) -> Value {
-    read_request_bounded(socket, 16 * 1024 * 1024).await
-}
-
-pub async fn read_request_bounded(socket: &mut TcpStream, max_body_bytes: usize) -> Value {
     let mut bytes = Vec::new();
     let boundary = loop {
         let mut chunk = [0; 4096];
         let count = socket.read(&mut chunk).await.unwrap();
         assert_ne!(count, 0);
         bytes.extend_from_slice(&chunk[..count]);
-        assert!(bytes.len() < 128 * 1024);
         if let Some(at) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
             break at + 4;
         }
@@ -65,13 +60,21 @@ pub async fn read_request_bounded(socket: &mut TcpStream, max_body_bytes: usize)
             .unwrap();
             offset = line_end + 2;
             if size == 0 {
+                while bytes.len() < offset + 2 {
+                    read_more(socket, &mut bytes).await;
+                }
+                assert_eq!(&bytes[offset..offset + 2], b"\r\n");
+                assert_eq!(
+                    bytes.len(),
+                    offset + 2,
+                    "unexpected bytes after request EOF"
+                );
                 break;
             }
             while bytes.len() < offset + size + 2 {
                 read_more(socket, &mut bytes).await;
             }
             body.extend_from_slice(&bytes[offset..offset + size]);
-            assert!(body.len() <= max_body_bytes);
             assert_eq!(&bytes[offset + size..offset + size + 2], b"\r\n");
             offset += size + 2;
             bytes.drain(..offset);
@@ -88,7 +91,6 @@ pub async fn read_request_bounded(socket: &mut TcpStream, max_body_bytes: usize)
                 .then(|| value.trim().parse().unwrap())
         })
         .unwrap();
-    assert!(length <= max_body_bytes);
     while bytes.len() < boundary + length {
         read_more(socket, &mut bytes).await;
     }

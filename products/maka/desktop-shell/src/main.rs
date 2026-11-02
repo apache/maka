@@ -25,16 +25,20 @@
 //! `MAKA_HOST_EPOCH`. Closing the window detaches this client; the Host keeps
 //! the work it accepted. If that Host stops while the window is open, the
 //! window connects to the Root's next Host, which the launcher named by
-//! `MAKA_LAUNCHER` starts, and loads the workbench again.
+//! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
+//! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
+//! On macOS, `MAKA_APPKIT` selects NSH's AppKit backend instead (`appkit`).
 
+#[cfg(target_os = "macos")]
+mod appkit;
+#[cfg(all(windows, feature = "direct2d-experiment"))]
+mod direct2d_folder;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod window;
-#[cfg(all(windows, feature = "direct2d-experiment"))]
-mod direct2d_folder;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -121,7 +125,8 @@ fn answer(arguments: impl IntoIterator<Item = std::ffi::OsString>) -> Option<Str
         if argument == "--help" || argument == "-h" {
             return Some(format!(
                 "{version}\n\nStarted by `maka desktop --root PATH`, which names the Host in \
-                 {ROOT}, {ENDPOINT} and {EPOCH}, and itself in {LAUNCHER}."
+                 {ROOT}, {ENDPOINT} and {EPOCH}, and itself in {LAUNCHER}. Opened \
+                 without them, it runs `maka desktop` beside it."
             ));
         }
         if argument == "--version" || argument == "-V" {
@@ -149,6 +154,12 @@ fn main() -> ExitCode {
 fn run() -> Result<(), String> {
     use maka_host_runtime::application::host::Client as HostClient;
 
+    if [ROOT, ENDPOINT, EPOCH, LAUNCHER]
+        .iter()
+        .all(|name| std::env::var_os(name).is_none())
+    {
+        return launch();
+    }
     let target = Target::from(|name| std::env::var_os(name))?;
     let root = host::Root::find(target.root, target.launcher)?;
     let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
@@ -159,7 +170,11 @@ fn run() -> Result<(), String> {
     })?;
     #[cfg(all(windows, feature = "direct2d-experiment"))]
     {
-        let host::Connection { bindings, mut config, .. } = first;
+        let host::Connection {
+            bindings,
+            mut config,
+            ..
+        } = first;
         let (_active, foreground) = tokio::sync::watch::channel(true);
         config.context = config.context.with(maka_workbench::Foreground(foreground));
         config.host.handle("workspace.chooseFolder", move |call| {
@@ -178,11 +193,52 @@ fn run() -> Result<(), String> {
                 ..Default::default()
             },
         );
-        runtime.block_on(bindings.close()).map_err(|error| error.to_string())?;
-        if result == ExitCode::SUCCESS { Ok(()) } else { Err("Direct2D experiment failed".into()) }
+        runtime
+            .block_on(bindings.close())
+            .map_err(|error| error.to_string())?;
+        if result == ExitCode::SUCCESS {
+            Ok(())
+        } else {
+            Err("Direct2D experiment failed".into())
+        }
     }
     #[cfg(not(all(windows, feature = "direct2d-experiment")))]
-    window::run(first, root, runtime)
+    {
+        #[cfg(target_os = "macos")]
+        if std::env::var_os(appkit::ENABLE).is_some_and(|value| !value.is_empty()) {
+            return appkit::run(first, runtime);
+        }
+
+        window::run(first, root, runtime)
+    }
+}
+
+/// Runs `maka desktop` from the directory the launcher stages the shell in,
+/// which opens a window of its own for the default Root.
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+fn launch() -> Result<(), String> {
+    let shell = std::env::current_exe()
+        .and_then(|shell| shell.canonicalize())
+        .map_err(|error| error.to_string())?;
+    // The inverse of the launcher's `SHELL` path.
+    let levels = if cfg!(target_os = "macos") { 4 } else { 1 };
+    let launcher = shell
+        .ancestors()
+        .nth(levels)
+        .ok_or_else(|| format!("{} is not in a Maka installation", shell.display()))?
+        .join(if cfg!(windows) { "maka.exe" } else { "maka" });
+    let mut command = std::process::Command::new(&launcher);
+    command.arg("desktop");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        command.creation_flags(CREATE_NO_WINDOW);
+    }
+    command
+        .spawn()
+        .map(drop)
+        .map_err(|error| format!("{}: {error}", launcher.display()))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]

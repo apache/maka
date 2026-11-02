@@ -22,9 +22,10 @@
 use maka_skills_api::contract;
 mod management;
 mod model;
-pub mod outcomes;
 mod preferences;
 mod preparation;
+mod registrations;
+mod remote;
 use contract::*;
 use futures_util::future::BoxFuture;
 use maka_capabilities::call::Scope;
@@ -41,7 +42,6 @@ use std::{
     sync::Arc,
 };
 
-mod imports;
 mod sources;
 use sources::CapturedSource;
 
@@ -53,8 +53,7 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     registry.insert(
         maka_skills_api::IMPLEMENTATION.into(),
         Arc::new(|context, configuration| Box::pin(activate(context, configuration))),
-    )?;
-    outcomes::provide(registry)
+    )
 }
 async fn activate(context: NativeContext, configuration: Value) -> NativeActivation {
     let opened = async {
@@ -78,7 +77,7 @@ async fn activate(context: NativeContext, configuration: Value) -> NativeActivat
                 .await
                 .map_err(|_| "skills_open_failed")??;
         if manage {
-            library.managed = Some(management::Managed::open(root, namespace).await?);
+            library.managed = Some(management::Managed::open(root, persistence.store().clone()));
         }
         Ok::<_, String>(library)
     }
@@ -157,7 +156,9 @@ impl Library {
             sources.push(CapturedSource::custom(source, root));
         }
         if let Some(home) = configuration.home {
-            sources.extend(sources::home(&home, policy.clone())?);
+            let mut standard = sources::home(&home, policy.clone())?;
+            standard.append(&mut sources);
+            sources = standard;
         }
         let projects = sources::projects(configuration.project_roots, &managed)?;
         Ok(Self {
@@ -173,25 +174,11 @@ impl Library {
         })
     }
     async fn discover(&self, scope: &Scope) -> Result<maka_skills::DiscoverySnapshot, String> {
-        let mut sources: Vec<_> = self
+        let sources: Vec<_> = self
             .sources
             .iter()
             .map(|source| source.bind(scope))
             .collect();
-        if let Some(managed) = &self.managed {
-            let access = managed.read.bind_scope(scope);
-            sources.insert(
-                self.sources.iter().take_while(|s| s.project()).count(),
-                maka_skills::Source {
-                    root: access.location(),
-                    access,
-                    directory: PathBuf::from("skills"),
-                    scope: maka_skills::SkillScope::Workspace,
-                    source: maka_skills::SkillSource::Maka,
-                    reference_prefix: "installed".into(),
-                },
-            );
-        }
         let snapshot = if self.bundled {
             maka_skills::scan_with_bundled(&sources, &scope.cancellation).await
         } else {
@@ -200,28 +187,15 @@ impl Library {
         snapshot.map_err(|_| "skills_discovery_unavailable".into())
     }
     async fn snapshot(&self, scope: &Scope) -> Result<Snapshot, String> {
-        let mut discovery = self.discover(scope).await?;
-        let mut imported_diagnostics = Vec::new();
-        if let Some(managed) = &self.managed {
-            let imported = managed.imported_snapshot(scope).await?;
-            discovery.inventory.extend(imported.inventory);
-            discovery.rejected.extend(imported.rejected);
-            imported_diagnostics = imported
-                .diagnostics
-                .iter()
-                .map(|diagnostic| format!("Imported: {:?}", diagnostic.reason))
-                .collect();
-        }
+        let discovery = self.discover(scope).await?;
+        let installations = match &self.managed {
+            Some(managed) => managed.registrations.list().await?,
+            None => BTreeMap::new(),
+        };
         let preferences = self.preferences.read(scope).await?;
         let label = |reference: &str| {
-            if reference.starts_with("imported:") {
-                return "Imported";
-            }
             if reference.starts_with("bundled:") {
                 return "Built-in";
-            }
-            if reference.starts_with("installed:") {
-                return "Installed";
             }
             self.sources
                 .iter()
@@ -232,7 +206,7 @@ impl Library {
         let mut entries = Vec::new();
         for skill in discovery.inventory {
             let entry = entry(
-                &skill.location.reference,
+                &skill.location,
                 label(&skill.location.reference),
                 &skill.document.manifest.name,
                 &skill.document.manifest.description,
@@ -244,7 +218,7 @@ impl Library {
         }
         for skill in discovery.rejected {
             let entry = entry(
-                &skill.location.reference,
+                &skill.location,
                 label(&skill.location.reference),
                 skill
                     .document
@@ -260,13 +234,12 @@ impl Library {
             entries.push((entry, skill.content_sha256, skill.document.body));
         }
         for (entry, _, _) in &mut entries {
-            if entry.imported {
-                entry.preference = maka_skills::Preference {
-                    enabled: false,
-                    pinned: false,
-                };
-                continue;
-            }
+            entry.location = self
+                .sources
+                .iter()
+                .find(|source| source.contains(&entry.reference))
+                .and_then(|source| source.location);
+            entry.installation = installations.get(&entry.path).cloned();
             entry.preference = preferences
                 .entries
                 .get(&entry.reference)
@@ -278,24 +251,13 @@ impl Library {
             .diagnostics
             .iter()
             .map(|diagnostic| {
-                let project_count = self
+                let label = self
                     .sources
-                    .iter()
-                    .take_while(|source| source.project())
-                    .count();
-                let label = if self.managed.is_some() && diagnostic.precedence == project_count {
-                    "Installed"
-                } else {
-                    &self.sources[diagnostic.precedence
-                        - usize::from(
-                            self.managed.is_some() && diagnostic.precedence > project_count,
-                        )]
-                    .metadata
-                    .label
-                };
+                    .get(diagnostic.precedence)
+                    .map(|source| source.metadata.label.as_str())
+                    .unwrap_or("Built-in");
                 format!("{label}: {:?}", diagnostic.reason)
             })
-            .chain(imported_diagnostics)
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
@@ -319,6 +281,16 @@ impl Library {
         );
         Ok(Snapshot {
             writable: self.managed.is_some(),
+            targets: self
+                .sources
+                .iter()
+                .filter_map(|source| {
+                    source.location.map(|location| Target {
+                        location,
+                        path: source.metadata.path.clone(),
+                    })
+                })
+                .collect(),
             preferences_writable: self.preferences_writable,
             preference_revision: preferences.revision,
             entries,
@@ -329,6 +301,7 @@ impl Library {
 }
 struct Snapshot {
     writable: bool,
+    targets: Vec<Target>,
     preferences_writable: bool,
     preference_revision: u64,
     entries: Vec<(Entry, String, String)>,
@@ -343,7 +316,7 @@ fn bound(value: &str, limit: usize) -> String {
     value[..end].to_owned()
 }
 fn entry(
-    reference: &str,
+    location: &maka_skills::SkillLocation,
     source: &str,
     name: &str,
     description: &str,
@@ -351,12 +324,15 @@ fn entry(
     shadowed_by: Option<String>,
     issues: &[maka_skills::Issue],
 ) -> Entry {
+    let reference = &location.reference;
+    let path = location.path.to_string_lossy().into_owned();
     Entry {
+        location: None,
+        installation: None,
+        path,
         bundled: reference.starts_with("bundled:"),
-        installed: reference.starts_with("installed:"),
-        imported: reference.starts_with("imported:"),
         preference: Default::default(),
-        reference: reference.into(),
+        reference: reference.clone(),
         source: source.into(),
         name: name.into(),
         description: description.into(),
@@ -406,6 +382,7 @@ impl Snapshot {
             entries.push(entry.clone());
             let page = Page::Page {
                 writable: self.writable,
+                targets: self.targets.clone(),
                 preferences_writable: self.preferences_writable,
                 preference_revision: self.preference_revision,
                 revision: self.revision.clone(),
@@ -421,6 +398,7 @@ impl Snapshot {
         let after = after(entries.len());
         Ok(Page::Page {
             writable: self.writable,
+            targets: self.targets,
             preferences_writable: self.preferences_writable,
             preference_revision: self.preference_revision,
             revision: self.revision,
@@ -453,7 +431,7 @@ impl Snapshot {
             before += 1;
         }
         Ok(Document::Page {
-            writable: self.writable && !entry.bundled,
+            writable: self.writable && entry.location.is_some(),
             preferences_writable: self.preferences_writable,
             preference_revision: self.preference_revision,
             entry: Box::new(entry),
@@ -501,25 +479,11 @@ impl Handler for Library {
                         .await?;
                     encode(library.snapshot(context.scope()).await?.read(input)?)
                 }
-                "preview" => {
-                    let input =
-                        serde_json::from_value(input).map_err(|_| "skills_change_invalid")?;
-                    let input: Change = input;
-                    let library = library
-                        .for_workspace(input.workspace.clone(), context.scope())
-                        .await?;
-                    encode(library.preview(input, context.scope()).await?)
-                }
                 "setPreference" => {
                     let input =
                         serde_json::from_value(input).map_err(|_| "skills_preference_invalid")?;
                     context.operation().ok_or("skills_mutation_required")?;
                     let input: SetPreference = input;
-                    if input.reference.starts_with("imported:") {
-                        return encode(PreferenceResult::Rejected {
-                            reason: "read_only_source".into(),
-                        });
-                    }
                     if !library.preferences_writable {
                         return encode(PreferenceResult::Rejected {
                             reason: "read_only_preferences".into(),
@@ -527,40 +491,43 @@ impl Handler for Library {
                     }
                     encode(library.preferences.set(input, context.scope()).await?)
                 }
-                "importSource" => {
-                    let input =
-                        serde_json::from_value(input).map_err(|_| "skills_change_invalid")?;
-                    let operation = context.operation().ok_or("skills_mutation_required")?;
-                    encode(
-                        library
-                            .import_source(
-                                input,
-                                operation,
-                                context.scope(),
-                                context.attachments().clone(),
+                "discoverSource" | "install" | "update" | "delete" => {
+                    if context.scope().identity.agent().is_some() {
+                        return Err("skills_user_action_required".into());
+                    }
+                    if method != "discoverSource" {
+                        context.operation().ok_or("skills_mutation_required")?;
+                    }
+                    match method.as_str() {
+                        "discoverSource" => {
+                            let input: DiscoverSource =
+                                serde_json::from_value(input).map_err(|error| error.to_string())?;
+                            let library = library
+                                .for_workspace(input.workspace.clone(), context.scope())
+                                .await?;
+                            encode(library.discover_source(input, context.scope()).await?)
+                        }
+                        "install" => {
+                            let input: Install =
+                                serde_json::from_value(input).map_err(|error| error.to_string())?;
+                            let library = library
+                                .for_workspace(input.workspace.clone(), context.scope())
+                                .await?;
+                            encode(library.install(input, context.scope()).await?)
+                        }
+                        _ => {
+                            let input: ManageSkill =
+                                serde_json::from_value(input).map_err(|error| error.to_string())?;
+                            let library = library
+                                .for_workspace(input.workspace.clone(), context.scope())
+                                .await?;
+                            encode(
+                                library
+                                    .manage_skill(input, method == "update", context.scope())
+                                    .await?,
                             )
-                            .await?,
-                    )
-                }
-                "apply" | "deleteSource" => {
-                    let input =
-                        serde_json::from_value(input).map_err(|_| "skills_change_invalid")?;
-                    let operation = context.operation().ok_or("skills_mutation_required")?;
-                    let input: Review = input;
-                    let library = library
-                        .for_workspace(input.change.workspace.clone(), context.scope())
-                        .await?;
-                    encode(if method == "deleteSource" {
-                        library
-                            .delete_source(
-                                input,
-                                &management::operation(operation)?,
-                                context.scope(),
-                            )
-                            .await?
-                    } else {
-                        library.apply(input, operation, context.scope()).await?
-                    })
+                        }
+                    }
                 }
                 _ => Err("skills_method_unavailable".into()),
             }

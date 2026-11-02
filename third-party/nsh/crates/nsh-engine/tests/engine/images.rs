@@ -25,6 +25,15 @@ const QUIET: Duration = Duration::from_millis(300);
 /// `app` (TSX), bundled, compiled and started on a surface at
 /// `pixel_ratio`.
 fn start(app: &str, pixel_ratio: f32) -> (Engine, Receiver<MountBatch>) {
+    start_with(app, pixel_ratio, Vec::new())
+}
+
+/// [`start`] on a host that serves `ui_sets` (`nsh/base`).
+fn start_with(
+    app: &str,
+    pixel_ratio: f32,
+    ui_sets: Vec<nsh_core::element::Registry>,
+) -> (Engine, Receiver<MountBatch>) {
     static APPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let dir = std::env::temp_dir().join(format!(
         "nsh-variants-{}-{}",
@@ -38,16 +47,22 @@ fn start(app: &str, pixel_ratio: f32) -> (Engine, Receiver<MountBatch>) {
         entry,
         minify: false,
         split: false,
-        ui_sets: Vec::new(),
+        ui_sets: ui_sets.iter().map(Into::into).collect(),
     })
     .unwrap();
-    let bytecode = nsh_js::compile_bytecode_with(&bundle.code, false, &[]).unwrap();
+    let bytecode = nsh_js::compile_bytecode_with(
+        &bundle.code,
+        false,
+        &ui_sets.iter().map(Into::into).collect::<Vec<_>>(),
+    )
+    .unwrap();
     let (tx, rx) = crossbeam_channel::unbounded();
     let config = EngineConfig {
         environment: Environment {
             pixel_ratio,
             ..Environment::default()
         },
+        ui_sets,
         // SAFETY: compiled just now by this runtime.
         ..EngineConfig::new(nsh_engine::App::Js(unsafe { Bundle::bytecode(bytecode) }))
     };
@@ -428,4 +443,42 @@ URL.revokeObjectURL(url);
     let (revoked, revoked_bytes) = &mounted[3];
     assert!(revoked.starts_with("blob:"), "{revoked}");
     assert_eq!(revoked_bytes, &None);
+}
+
+/// A Rust component's image prop takes a `blob:` URL as `<Image>`'s `src`
+/// does: `nsh/base`'s `Avatar` loads its blob's bytes, by the same key as
+/// an `<Image>` of the URL (one digest, shared bytes), and a revoked URL
+/// keeps its URL and no bytes, so the avatar shows its fallback.
+#[test]
+fn a_components_image_prop_resolves_blob_urls() {
+    const APP: &str = r#"import { mount, View, Image } from "nsh";
+import { Avatar } from "nsh/base";
+
+const photo = new Blob([new Uint8Array([137, 80, 78, 71, 4, 5, 6])], { type: "image/png" });
+const url = URL.createObjectURL(photo);
+const revoked = URL.createObjectURL(new Blob([new Uint8Array([9])]));
+URL.revokeObjectURL(revoked);
+
+mount(() => (
+  <View>
+    <Avatar src={url} name="Ada Lovelace" style={{ width: 40, height: 40 }} />
+    <Image src={url} />
+    <Avatar src={revoked} name="Grace Hopper" style={{ width: 40, height: 40 }} />
+  </View>
+));
+"#;
+    let (_engine, rx) = start_with(APP, 1.0, vec![nsh_base::registry()]);
+    let mounted: Vec<_> = sent(&rx).iter().flat_map(inline_images).collect();
+    assert_eq!(mounted.len(), 3, "{mounted:?}");
+    // The avatar's image and the host image of the URL: one key, its bytes
+    // (in whichever order they are mounted).
+    let (resolved, failed): (Vec<_>, Vec<_>) = mounted.iter().partition(|(_, d)| d.is_some());
+    assert_eq!(resolved.len(), 2, "{mounted:?}");
+    assert_eq!(resolved[0], resolved[1]);
+    let (key, bytes) = resolved[0];
+    assert!(key.starts_with("data:image/png;nsh-key="), "{key}");
+    assert_eq!(bytes.as_deref(), Some(&[137, 80, 78, 71, 4, 5, 6][..]));
+    // The revoked URL's avatar: its URL and no bytes.
+    assert_eq!(failed.len(), 1, "{mounted:?}");
+    assert!(failed[0].0.starts_with("blob:"), "{mounted:?}");
 }

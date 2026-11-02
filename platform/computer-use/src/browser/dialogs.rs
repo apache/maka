@@ -804,9 +804,9 @@ impl super::Tab {
         self.refs.clear();
         self.frame = None;
         let document = format!("javascript-dialog:{}", dialog.metadata.id);
-        let (full, refs) =
-            self.ax
-                .render(&document, &dialog.ax_nodes(&self.info.title), language)?;
+        let (full, refs) = self
+            .ax
+            .render_dialog(&document, &dialog, &self.info.title, language)?;
         self.refs = refs;
         let full = if matches!(kind, ObservationKind::Both) {
             format!("{full}\n\n{message}")
@@ -1109,6 +1109,7 @@ mod iframe_effect_tests {
             params: json!({"sessionId":session,"targetInfo":{"type":"iframe"}}),
             session_id: None,
             source_target_id: None,
+            params_json: None,
         };
         route_event(
             event("unadmitted-child"),

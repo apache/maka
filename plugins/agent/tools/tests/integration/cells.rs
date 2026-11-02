@@ -22,9 +22,6 @@ use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelFinishReason;
-use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::tool_call::ToolOrigin;
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
@@ -80,6 +77,10 @@ async fn invoke_result(
         EventWrite::plain(RuntimeEvent::new(
             invocation.clone(),
             Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: 0,
+                    prior_unknown: false,
+                },
                 context_breakdown: None,
                 item_acceptance: false,
                 step_id: step.into(),
@@ -98,25 +99,9 @@ async fn invoke_result(
         .unwrap(),
         EventWrite::plain(RuntimeEvent::new(
             invocation.clone(),
-            Fact::ModelObserved {
-                step_id: step.into(),
-                event: maka_agent_facts::model::ModelEvent::ToolCall(call.clone()),
-            },
-        ))
-        .unwrap(),
-        EventWrite::plain(RuntimeEvent::new(
-            invocation.clone(),
             Fact::ModelCompleted {
                 step_id: step.into(),
-                output: ModelStep {
-                    parts: vec![ModelPart::ToolCall { call: call.clone() }],
-                    finish_reason: ModelFinishReason::ToolCalls,
-                    usage: Default::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
+                output: fixture::completion(invocation, step, std::slice::from_ref(&call)),
             },
         ))
         .unwrap(),
@@ -127,7 +112,11 @@ async fn invoke_result(
         .await
         .unwrap()
         .into_step(step)
-        .invoke(&call, CancellationToken::new())
+        .prepare(call, CancellationToken::new())
+        .await?
+        .publish(&[])
+        .await?
+        .completion
         .await
 }
 

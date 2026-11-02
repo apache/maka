@@ -200,10 +200,10 @@ async fn selected(
     let filter = Selection::archive_predicate("t", "a", "9223372036854775807", "NULL");
     let rows: Vec<(Option<String>, Option<i64>, Option<i64>)> =
         sqlx::query_as(sqlx::AssertSqlSafe(format!(
-        "SELECT json_extract(a.event_json,'$.invocation.session_id'), a.sequence, t.archive_sequence
+        "SELECT json_extract(a.event_header,'$.invocation.session_id'), a.sequence, t.archive_sequence
          FROM session_history_events t LEFT JOIN runtime_events a
            ON a.kind='tool_result_archived'
-           AND CAST(json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id') AS TEXT)=t.event_id
+           AND CAST(json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id') AS TEXT)=t.event_id
            AND {filter}
          WHERE t.owner_session_id=?1 AND t.event_id=?2 LIMIT 2"
     )))

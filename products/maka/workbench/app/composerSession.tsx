@@ -39,11 +39,6 @@ export function projectComposerAttachments(
         name: row.name,
         kind: row.kind,
         ...(row.error === undefined ? {} : { error: renderText(row.error) }),
-        recovery: !row.original
-          ? 'inspect'
-          : row.original.reference
-            ? 'recover'
-            : 'recover_or_abandon',
       })),
     ids: draft.ids,
     picker: draft.picker,
@@ -59,10 +54,6 @@ export function projectComposerAttachments(
     dropFiles: (uris, onText) => draft.observeIntake(draft.client.beginFileDrop(uris), onText),
     open: draft.open,
     remove: draft.remove,
-    recover: draft.recover,
-    abandon: draft.abandon,
-    inspect: draft.inspect,
-    retry: draft.retry,
     reportError: draft.reportError,
     notify: draft.notify,
     clearNotice: draft.clearNotice,

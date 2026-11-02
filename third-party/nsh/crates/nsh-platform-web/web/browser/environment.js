@@ -5,8 +5,8 @@ export function createEnvironment(reactive, invoke, dom) {
   const fields = Object.fromEntries(Object.entries(initial).map(([name, value]) => [name, reactive.signal(value)]));
   const tokens = reactive.signal(0);
   const insets = reactive.context(() => fields.safeArea());
-  const platform = { os: "web", version: "0.0", idiom: "desktop", catalyst: false,
-    select(spec) { return "web" in spec ? spec.web : this.idiom === "desktop" ? spec.desktop ?? spec.default : spec.mobile ?? spec.default; } };
+  const platform = { os: "web", version: "0.0", idiom: "desktop", desktop: true, catalyst: false,
+    select(spec) { return "web" in spec ? spec.web : this.desktop ? spec.desktop ?? spec.default : spec.mobile ?? spec.default; } };
   let appearance = "system", systemScheme = "light";
   const setColorScheme = scheme => {
     if (!["light", "dark", "system"].includes(scheme)) throw new TypeError('setColorScheme: expected "light", "dark" or "system"');

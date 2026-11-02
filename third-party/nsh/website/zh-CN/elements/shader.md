@@ -1,7 +1,7 @@
 ---
 title: Shader
 description: Shader 元素：由 WGSL 编写的 GPU 程序绘制其区域的视图，绘制在子元素之下。
-order: 8.5
+order: 70
 group: primitives
 demo: el-shader
 ---

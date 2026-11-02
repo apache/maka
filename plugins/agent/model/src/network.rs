@@ -57,13 +57,33 @@ impl Transport for Call {
                 biased;
                 _ = self.cancellation.cancelled() => {
                     stop.cancel();
+                    let cleanup_started = tokio::time::Instant::now();
                     tokio::time::timeout(std::time::Duration::from_secs(11), &mut pending).await
-                        .map_err(|_| cleanup_unconfirmed())??
+                        .map_err(|_| {
+                            tracing::error!(
+                                stage = "model_call_cancel_drain",
+                                outcome = "timeout",
+                                timeout_ms = 11000_u64,
+                                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                                "cleanup unconfirmed"
+                            );
+                            cleanup_unconfirmed()
+                        })??
                 },
                 _ = cancellation.cancelled() => {
                     stop.cancel();
+                    let cleanup_started = tokio::time::Instant::now();
                     tokio::time::timeout(std::time::Duration::from_secs(11), &mut pending).await
-                        .map_err(|_| cleanup_unconfirmed())??
+                        .map_err(|_| {
+                            tracing::error!(
+                                stage = "model_request_cancel_drain",
+                                outcome = "timeout",
+                                timeout_ms = 11000_u64,
+                                elapsed_ms = cleanup_started.elapsed().as_millis(),
+                                "cleanup unconfirmed"
+                            );
+                            cleanup_unconfirmed()
+                        })??
                 },
                 response = &mut pending => response?,
             };
@@ -251,6 +271,12 @@ impl Drop for Body {
         self.cancelled.cancel();
     }
 }
+fn response_error(error: reqwest::Error) -> http::Error {
+    match failure(error) {
+        Error::Provider(_) => http::Error::Failed("model HTTP stream interrupted".into()),
+        _ => http::Error::Invalid("invalid model HTTP stream".into()),
+    }
+}
 impl http::Body for Body {
     fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
         Box::pin(async move {
@@ -259,13 +285,25 @@ impl http::Body for Body {
                 self.upload.finish().await?;
                 return Ok(None);
             };
-            let result = tokio::select! {
-                biased;
-                _ = self.cancelled.cancelled() => Err(http::Error::Denied),
-                result = body.chunk() => result.map_err(|error| match failure(error) {
-                    Error::Provider(_) => http::Error::Failed("model HTTP stream interrupted".into()),
-                    _ => http::Error::Invalid("invalid model HTTP stream".into()),
-                }),
+            let result = {
+                let chunk = body.chunk();
+                tokio::pin!(chunk);
+                let mut receipt = self.upload.receipt.lock().await;
+                let close_source = receipt.needs_source_close();
+                tokio::select! {
+                    biased;
+                    _ = self.cancelled.cancelled() => Err(http::Error::Denied),
+                    result = &mut chunk => result.map_err(response_error),
+                    released = receipt.source_released(), if close_source => {
+                        released?;
+                        receipt.close_source().await?;
+                        tokio::select! {
+                            biased;
+                            _ = self.cancelled.cancelled() => Err(http::Error::Denied),
+                            result = &mut chunk => result.map_err(response_error),
+                        }
+                    }
+                }
             };
             match result {
                 Ok(Some(bytes)) => Ok(Some(bytes.to_vec())),
@@ -298,7 +336,7 @@ fn websocket_failure(operation: &str, cause: tokio_tungstenite::tungstenite::Err
         WsError::ConnectionClosed
         | WsError::AlreadyClosed
         | WsError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
-        WsError::Io(cause) => transient_io(cause.kind()),
+        WsError::Io(cause) => transport_cause(cause).0,
         _ => false,
     };
     let message = format!("model WebSocket {operation} failed: {cause}");
@@ -331,28 +369,40 @@ fn transient_io(kind: std::io::ErrorKind) -> bool {
     )
 }
 
-pub(super) fn failure(error: reqwest::Error) -> Error {
-    use std::error::Error as _;
-    let mut transient = error.is_timeout() || error.is_dns();
-    let mut cause = error.source();
-    while let Some(error) = cause {
+fn transport_cause(mut error: &(dyn std::error::Error + 'static)) -> (bool, String) {
+    let mut transient = false;
+    loop {
         if let Some(error) = error.downcast_ref::<hyper::Error>() {
             transient |= error.is_closed() || error.is_incomplete_message();
         }
-        if let Some(error) = error.downcast_ref::<std::io::Error>() {
-            transient |= transient_io(error.kind());
+        let next = if let Some(io) = error.downcast_ref::<std::io::Error>() {
+            transient |= transient_io(io.kind());
+            // io::Error::source() can skip the wrapped error itself.
+            io.get_ref()
+                .map(|inner| inner as &(dyn std::error::Error + 'static))
+                .or_else(|| error.source())
+        } else {
+            error.source()
+        };
+        match next {
+            Some(next) => error = next,
+            None => return (transient, error.to_string()),
         }
-        cause = error.source();
     }
-    if transient {
+}
+
+pub(super) fn failure(error: reqwest::Error) -> Error {
+    let error = error.without_url();
+    let (source_transient, detail) = transport_cause(&error);
+    if error.is_timeout() || error.is_dns() || source_transient {
         Error::Provider(ProviderFailure::new(
             ProviderFailureReason::Network,
-            "model HTTP transport interrupted",
+            format!("model HTTP transport interrupted: {detail}"),
             true,
             None,
         ))
     } else {
-        Error::Adapter("model HTTP request failed".into())
+        Error::Adapter(format!("model HTTP request failed: {detail}"))
     }
 }
 
@@ -385,25 +435,27 @@ mod tests {
     #[test]
     fn socket_write_failures_preserve_transient_network_evidence() {
         use tokio_tungstenite::tungstenite::{Error as WsError, error::ProtocolError};
-        let error = websocket_failure(
-            "send",
-            WsError::Io(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
-        );
-        let Error::Provider(failure) = error else {
-            panic!("broken pipe must remain a network failure")
-        };
-        assert_eq!(failure.reason(), ProviderFailureReason::Network);
-        assert!(
-            failure.message().contains("send failed")
-                && failure
-                    .message()
-                    .to_ascii_lowercase()
-                    .contains("broken pipe")
-        );
-        assert!(
-            !failure.replay_safe(),
-            "only the protocol decoder can authorize replay"
-        );
+        for cause in [
+            std::io::Error::from(std::io::ErrorKind::BrokenPipe),
+            std::io::Error::other(std::io::Error::from(std::io::ErrorKind::BrokenPipe)),
+        ] {
+            let error = websocket_failure("send", WsError::Io(cause));
+            let Error::Provider(failure) = error else {
+                panic!("broken pipe must remain a network failure")
+            };
+            assert_eq!(failure.reason(), ProviderFailureReason::Network);
+            assert!(
+                failure.message().contains("send failed")
+                    && failure
+                        .message()
+                        .to_ascii_lowercase()
+                        .contains("broken pipe")
+            );
+            assert!(
+                !failure.replay_safe(),
+                "only the protocol decoder can authorize replay"
+            );
+        }
         assert!(
             matches!(
                 websocket_failure("send", WsError::Protocol(ProtocolError::SendAfterClosing)),

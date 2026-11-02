@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { Popover } from "nsh/base";
-import { button, buttonText, desktop, Inspector, Log, Segmented, Stage, ui, wide } from "./palette";
+import { button, buttonText, desktop, Inspector, Log, PopIn, Segmented, Stage, ui, wide } from "./palette";
 
 type Placement = "top" | "bottom" | "left" | "right";
 
@@ -18,8 +18,6 @@ function App() {
       placement={placement()}
       offset={offset()}
       margin={12}
-      popupClass="w-56 gap-2 rounded-xl p-4"
-      popupStyle={ui().card}
       onOpenChange={({ open, reason }) => events.set([`${open ? "opened" : "closed"} · ${reason}`, ...events()].slice(0, 4))}
       trigger={
         <View {...button("accent")}>
@@ -27,12 +25,15 @@ function App() {
         </View>
       }
     >
-      <Text style={{ fontSize: 15, fontWeight: "600", color: ui().text }}>Shipped yesterday</Text>
-      <Text style={{ fontSize: 13, color: ui().muted }}>Arriving Friday. The trigger, a press outside and Escape close this.</Text>
-      <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
-        <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ui().up }} />
-        <Text style={{ fontSize: 12, color: ui().up }}>In transit</Text>
-      </View>
+      {/* The panel grows out of the trigger's side each time it opens. */}
+      <PopIn side={placement()} class="w-56 gap-2 rounded-xl p-4" style={ui().card}>
+        <Text style={{ fontSize: 15, fontWeight: "600", color: ui().text }}>Shipped yesterday</Text>
+        <Text style={{ fontSize: 13, color: ui().muted }}>Arriving Friday. The trigger, a press outside and Escape close this.</Text>
+        <View style={{ flexDirection: "row", gap: 6, alignItems: "center" }}>
+          <View style={{ width: 8, height: 8, borderRadius: 4, backgroundColor: ui().up }} />
+          <Text style={{ fontSize: 12, color: ui().up }}>In transit</Text>
+        </View>
+      </PopIn>
     </Popover>
   );
   const count = () => (

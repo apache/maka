@@ -26,10 +26,12 @@ mod decor;
 #[cfg(feature = "dev")]
 pub mod dev;
 mod file_drop;
+mod file_requests;
 mod fps;
 mod image;
 mod input;
 mod keymap;
+mod menu_style;
 mod mount;
 mod native;
 mod navigation;

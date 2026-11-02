@@ -171,7 +171,7 @@ web view 内的顶层导航也会在加载前由平台的导航代理检查。�
 
 ### `openUrl`
 
-允许应用在应用之外打开 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme。scheme 未被授予的 URL 会抛出 `TypeError`。会执行代码或访问应用自身数据的 URL（`javascript:`、`data:`、`file:` 等）无论能力如何都不会打开。
+允许应用在应用之外打开 URL（[`openUrl`](../modules/nsh.md#openurl)，以及 `links="open"` 的 `TextView` 中的链接）：`"openUrl": true` 允许所有 scheme，`"openUrl": { "schemes": ["https", "mailto"] }` 只允许列出的 scheme。scheme 未被授予的 URL 以 `ERR_ACCESS_DENIED` reject（`permission` 为 `"openUrl"`，`resource` 为该 URL）。会执行代码或访问应用自身数据的 URL（`javascript:`、`data:`、`file:` 等）无论能力如何都不会打开。
 
 ### 存储
 
@@ -192,24 +192,48 @@ import { host } from "nsh";
 
 if (host.available()) {
   const user = await host.call("getUserInfo");
-  const sub = host.on("loginChanged", (payload) => console.log(payload));
-  sub.remove();
+  const stop = host.on("loginChanged", (payload) => console.log(payload));
+  stop();
 }
 ```
 
-在嵌入了宿主的平台上 `host.available()` 为 true；在其他平台上 `host.call` 会以
-`nsh/host: this platform has no host` reject。
+在嵌入了宿主的平台上 `host.available()` 为 true；在其他平台上 `host.call` 会以 `code`
+`"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` reject。
 
 ### 被拒绝时的表现
 
 | 请求 | 结果 |
 |---|---|
-| `fetch` | Promise 被 reject；请求根本不会发到网络。 |
-| 远程图片 | 图片加载失败，触发 `onError`。 |
-| 视频源、web view 源、状态栏修改 | 不显示也不修改任何东西。 |
-| 剪贴板 | `writeText` 和 `writeImage` 不做任何事；`readText` 返回 `""`，`readImage` 返回 `null`，`readFiles` 返回 `[]`，`hasText` 和 `hasImage` 返回 `false`。 |
-| 选择器 | `pickImages` 不显示任何内容，返回 `[]`。 |
-| 宿主调用 | Promise 被 reject，错误信息提示把该函数加入 `capabilities.host`；调用不会到达宿主。 |
+| `fetch` | Promise 像每个失败的请求一样以 `TypeError` 被 reject，其 `code` 为 `ERR_ACCESS_DENIED`，`permission` 为 `"network"`，`resource` 为该 URL（请求的或重定向的）；请求根本不会发到网络。 |
+| `Image.getSize`、`Image.prefetch` | Promise 以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"network"`，`resource` 为该 URL；图片不会被请求。 |
+| 远程图片、视频源、web view 源或 `html` | 不显示任何内容，元素的 `onError` 以 `code` `"ERR_ACCESS_DENIED"` 报告。web view 跳到未授权主机的导航会被取消，并以同样方式报告。 |
+| 状态栏修改、画布图片 | 不修改也不绘制任何东西；拒绝会记录在日志中。 |
+| 剪贴板 | `Clipboard` 的每个函数都以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"clipboard"`，`resource` 为 `""`；不会访问系统剪贴板。 |
+| 选择器 | `pickImages` 不显示任何内容，以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"picker"`，`resource` 为 `""`。 |
+| `openUrl` | Promise 以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"openUrl"`，`resource` 为该 URL；不会打开任何东西。 |
+| 宿主调用 | `host.call` 以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"host"`，`resource` 为函数名（`host.post` 抛出同样的错误）；调用不会到达宿主。 |
+| 文件（`fs/promises`） | Promise 以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"fs"`，`resource` 为该路径；不会访问磁盘。 |
+| 进程（`process`） | `run` 被 reject，`spawn` 和 `exit` 抛出，错误为 `ERR_ACCESS_DENIED`，`permission` 为 `"process"`，`resource` 为该命令（`exit` 为 `"exit"`）；不会启动子进程。 |
+| TCP socket（`net.connect`） | Promise 以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"network"`，`resource` 为 `"host:port"`；发生在任何 DNS 查询之前。 |
+| WebSocket | `websocket` 模块的 `connect` 以 `ERR_ACCESS_DENIED` 被 reject，`permission` 为 `"network"`，`resource` 为该 URL；全局 `WebSocket` 像连接失败时那样先触发 `error`，再触发 `close`（code 为 1006）。 |
+
+[标准模块](../modules/standard-modules.md#失败)的错误带有 `code` `"ERR_ACCESS_DENIED"`，应用借此区分被拒绝与操作失败；
+错误的 `permission` 和 `resource` 指出所需的能力和所请求的对象。[`nsh`](../modules/nsh.md) 的模块也以同样方式拒绝：它们的
+Promise 以带有 `permission` 和 `resource` 的 `ERR_ACCESS_DENIED` reject（`fetch` 用 `TypeError`，即每个失败请求的类）。
+
+```ts
+import { Clipboard } from "nsh";
+
+try {
+  await Clipboard.writeText(link);
+} catch (error) {
+  if (error.code !== "ERR_ACCESS_DENIED") throw error;
+  console.warn(`${error.permission} is not granted`); // "clipboard"
+}
+```
+
+Rust 组件以 Rust 的方式得到同样的拒绝：被拒绝的剪贴板读取得到空剪贴板的回答，被拒绝的选取没有文件，被拒绝的 `open_url`
+为 `false`，被拒绝的 `fetch` 为带有消息的 `Err`。
 
 每种拒绝只记录一次日志，并说明需要添加哪个键：
 
@@ -266,7 +290,7 @@ nsh.setGrantedCapabilities("{ \"network\": { \"hosts\": [\"api.example.com\"] } 
 |---|---|---|
 | 限制（堆、栈、时间、节点） | 运行时，按 VM | 宿主应用按视图设定（嵌入的应用） |
 | 加固 | 运行时，在加载时 | 开发环境之外始终开启 |
-| 能力 | 运行时（fetch、图片、视频、web view、状态栏） | 应用（`nsh.json`）和宿主应用（授权） |
+| 能力 | 运行时（fetch、图片、视频、web view、状态栏、文件、进程、socket） | 应用（`nsh.json`）和宿主应用（授权） |
 | 代码完整性 | 签名验证 | `nsh publish`；宿主应用信任的根密钥 |
 
 ## 另请参阅

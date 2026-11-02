@@ -19,6 +19,9 @@
 
 //! Minimal embedding executable for the private desktop and cursor helpers.
 fn main() -> std::process::ExitCode {
+    if let Some(exit) = maka_computer_use::extension_browser_host::bootstrap() {
+        return exit;
+    }
     tracing_subscriber::fmt()
         .with_max_level(tracing_subscriber::filter::LevelFilter::DEBUG)
         .with_ansi(false)

@@ -110,25 +110,6 @@ impl Lane {
         let mut next = pending.length;
         let mut response_end = None;
         let mut settled = settled_tool_call_ids.iter();
-        // A local closure consumes only current-message identifiers; none are
-        // retained after their indexed metadata row is released.
-        let mut check = |index: usize, role: &str, ids: &[String]| {
-            if index != next {
-                return false;
-            }
-            next += 1;
-            if role == "tool" {
-                response_end.get_or_insert(index);
-                for tool_id in ids {
-                    if settled.next().copied() != Some(tool_id.as_str()) {
-                        return false;
-                    }
-                }
-            } else if role != "assistant" || response_end.is_some() {
-                return false;
-            }
-            true
-        };
         if let Some(wire) = replay.wire(WireFormat::Responses) {
             let Some(mut cursor) = wire.source.open_metadata(pending.length) else {
                 return false;
@@ -139,24 +120,59 @@ impl Lane {
                     Ok(None) => break,
                     Err(_) => return false,
                 };
-                let Some(role) = row.metadata["role"].as_str() else {
+                use maka_agent_facts::model::prompt_source::{
+                    WireItemMetadata, source::MessageRole,
+                };
+                let WireItemMetadata::Message(metadata) = row.metadata else {
                     return false;
                 };
-                let Some(ids) = row.metadata["settledToolCallIds"].as_array() else {
+                if row.message_index != next {
                     return false;
-                };
-                let Some(ids) = ids
-                    .iter()
-                    .map(|id| id.as_str().map(str::to_owned))
-                    .collect::<Option<Vec<_>>>()
-                else {
-                    return false;
-                };
-                if !check(row.message_index, role, &ids) {
-                    return false;
+                }
+                next += 1;
+                match metadata.role {
+                    MessageRole::Tool => {
+                        response_end.get_or_insert(row.message_index);
+                        let mut ids = metadata.settled_tool_call_ids.open(0);
+                        loop {
+                            let id = match ids.next().await {
+                                Ok(Some(id)) => id,
+                                Ok(None) => break,
+                                Err(_) => return false,
+                            };
+                            let Some(expected) = settled.next() else {
+                                return false;
+                            };
+                            let identity: [u8; 32] = Sha256::digest(expected.as_bytes()).into();
+                            if id.identity != identity {
+                                return false;
+                            }
+                        }
+                    }
+                    MessageRole::Assistant if response_end.is_none() => {}
+                    _ => return false,
                 }
             }
         } else {
+            // A local closure consumes only current-message identifiers; none are
+            // retained after their indexed metadata row is released.
+            let mut check = |index: usize, role: &str, ids: &[String]| {
+                if index != next {
+                    return false;
+                }
+                next += 1;
+                if role == "tool" {
+                    response_end.get_or_insert(index);
+                    for tool_id in ids {
+                        if settled.next().copied() != Some(tool_id.as_str()) {
+                            return false;
+                        }
+                    }
+                } else if role != "assistant" || response_end.is_some() {
+                    return false;
+                }
+                true
+            };
             let Some(messages) = replay.memory_messages() else {
                 return false;
             };

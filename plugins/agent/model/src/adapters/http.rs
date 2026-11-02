@@ -17,7 +17,9 @@
  * under the License.
  */
 
-use super::{anthropic, body, error, events, request};
+use super::{anthropic, anthropic_documents, body, error, events, request};
+#[cfg(test)]
+mod upload_tests;
 use crate::{ModelError, ProviderFailureReason};
 use maka_agent_facts::model::budget;
 use maka_agent_ports::model::{Context, Emission, Lifetime, ProviderAdapter, Request, Session};
@@ -76,14 +78,19 @@ impl Session for HttpSession {
     }
 }
 pub(super) enum Decoder {
-    Anthropic(Box<protocol_anthropic::stream::Stream>),
+    Anthropic {
+        stream: Box<protocol_anthropic::stream::Stream>,
+        documents: Option<anthropic_documents::Documents>,
+    },
     Chat(Box<chat::Stream>),
 }
 impl Decoder {
     fn push(&mut self, bytes: &[u8]) -> Result<Vec<Event>, ModelError> {
         let mut next_id = || uuid::Uuid::new_v4().to_string();
         match self {
-            Self::Anthropic(stream) => stream.push(bytes, &mut next_id, |_| {}).map_err(failure),
+            Self::Anthropic { stream, .. } => {
+                stream.push(bytes, &mut next_id, |_| {}).map_err(failure)
+            }
             Self::Chat(stream) => {
                 let mut events = stream.push(bytes, &mut next_id).map_err(failure)?;
                 if stream.terminal() {
@@ -93,9 +100,23 @@ impl Decoder {
             }
         }
     }
+    async fn resolve(
+        &self,
+        events: &mut [Event],
+        cancellation: &CancellationToken,
+    ) -> Result<(), ModelError> {
+        if let Self::Anthropic {
+            documents: Some(documents),
+            ..
+        } = self
+        {
+            documents.resolve(events, cancellation).await?;
+        }
+        Ok(())
+    }
     fn finish(&mut self) -> Result<Vec<Event>, ModelError> {
         match self {
-            Self::Anthropic(stream) => Ok(stream.finish()),
+            Self::Anthropic { stream, .. } => Ok(stream.finish()),
             Self::Chat(stream) => stream
                 .finish(&mut || uuid::Uuid::new_v4().to_string())
                 .map_err(failure),
@@ -104,6 +125,37 @@ impl Decoder {
 }
 pub(super) fn failure(error: maka_provider_protocol::Error) -> ModelError {
     ModelError::Adapter(error.to_string())
+}
+
+#[derive(Clone)]
+enum BodyEncoding {
+    Chat(
+        chat::request::PromptOptions,
+        maka_agent_facts::language::Language,
+    ),
+    Anthropic(Arc<protocol_anthropic::prompt::streaming::Context>),
+}
+impl BodyEncoding {
+    fn body(
+        &self,
+        fields: super::http_header::Header,
+        prompt: crate::prompt::Prompt,
+    ) -> Result<http::RequestBody, ModelError> {
+        match self {
+            Self::Chat(options, language) => {
+                Ok(body::chat(fields, prompt, options.clone(), *language))
+            }
+            Self::Anthropic(metadata) => {
+                let wire = prompt
+                    .wire(crate::prompt::WireFormat::Anthropic)
+                    .ok_or_else(|| {
+                        ModelError::Adapter("reopened request lacks its Anthropic wire".into())
+                    })?
+                    .clone();
+                anthropic::body(fields, wire, metadata.clone())
+            }
+        }
+    }
 }
 
 async fn run(request: Request, context: &Context, shared: Arc<Shared>) -> Result<(), ModelError> {
@@ -121,6 +173,7 @@ async fn run_inner(
     shared: Arc<Shared>,
     response_body: &mut Option<Arc<dyn http::Body>>,
 ) -> Result<(), ModelError> {
+    let quota_scope = error::QuotaScope::endpoint(&request.provider.base_url);
     let mut prepared = tokio::select! {
         biased;
         _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
@@ -140,40 +193,106 @@ async fn run_inner(
             .expect("request object")
             .remove("stream_options");
     }
-    let mut events = events::Events::new(prepared.anthropic);
+    let request::Prepared {
+        url,
+        headers,
+        body,
+        mut decoder,
+        compatible,
+        anthropic,
+        mut anthropic_source,
+        mut chat,
+    } = prepared;
+    let mut encoded_header = tokio::select! {
+        biased;
+        _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+        header = super::http_header::Header::freeze(body) => header,
+    };
+    let mut events = events::Events::new(anthropic);
+    events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
+    let encoding = if let Some((_, options, language)) = &chat {
+        BodyEncoding::Chat(options.clone(), *language)
+    } else {
+        BodyEncoding::Anthropic(
+            anthropic_source
+                .as_ref()
+                .expect("Anthropic encoding")
+                .1
+                .clone(),
+        )
+    };
     loop {
+        let upload = if let Some(source) = &context.source {
+            let (initial, cleanup) = if let Some((prompt, _, _)) = chat.take() {
+                (
+                    encoding.body(encoded_header.clone(), prompt)?,
+                    source.cleanup.clone(),
+                )
+            } else if let Some((wire, metadata)) = anthropic_source.take() {
+                (
+                    anthropic::body(encoded_header.clone(), wire, metadata)?,
+                    source.cleanup.clone(),
+                )
+            } else {
+                let materialized = source.frozen.open(context.cancellation.clone()).await?;
+                let body = encoding.body(encoded_header.clone(), materialized.prompt);
+                match body {
+                    Ok(body) => (body, materialized.cleanup),
+                    Err(error) => {
+                        materialized.cleanup.close().await.map_err(body_error)?;
+                        return Err(error);
+                    }
+                }
+            };
+            let fields = encoded_header.clone();
+            let frozen = source.frozen.clone();
+            let encoding = encoding.clone();
+            http::RequestBody::with_replay(initial.with_cleanup(cleanup), move |cancellation| {
+                let fields = fields.clone();
+                let frozen = frozen.clone();
+                let encoding = encoding.clone();
+                Box::pin(async move {
+                    let materialized = frozen.open(cancellation).await.map_err(upload_error)?;
+                    match encoding.body(fields, materialized.prompt) {
+                        Ok(body) => Ok(body.with_cleanup(materialized.cleanup)),
+                        Err(error) => {
+                            materialized.cleanup.close().await?;
+                            Err(upload_error(error))
+                        }
+                    }
+                })
+            })
+        } else if let Some((prompt, options, language)) = &chat {
+            let fields = encoded_header.clone();
+            let prompt = prompt.clone();
+            let options = options.clone();
+            let language = *language;
+            http::RequestBody::replayable(move || {
+                body::chat(fields.clone(), prompt.clone(), options.clone(), language)
+            })
+        } else {
+            let (wire, metadata) = anthropic_source.as_ref().expect("Anthropic encoding");
+            let fields = encoded_header.clone();
+            let wire = wire.clone();
+            let metadata = metadata.clone();
+            http::RequestBody::replayable(move || {
+                anthropic::body(fields.clone(), wire.clone(), metadata.clone()).unwrap_or_else(
+                    |error| {
+                        http::RequestBody::stream(futures_util::stream::once(async move {
+                            Err(upload_error(error))
+                        }))
+                    },
+                )
+            })
+        };
         let response = dispatch(
             context,
             http::Request {
                 method: http::Method::Post,
-                url: prepared.url.clone(),
-                headers: prepared.headers.clone(),
-                body: if let Some((source, options, language)) = &prepared.chat {
-                    let fields = prepared.body.clone();
-                    let source = source.clone();
-                    let options = options.clone();
-                    let language = *language;
-                    http::RequestBody::replayable(move || {
-                        body::chat(fields.clone(), source.clone(), options.clone(), language)
-                    })
-                } else {
-                    let (wire, context) = prepared
-                        .anthropic_source
-                        .as_ref()
-                        .expect("Anthropic encoding");
-                    let fields = prepared.body.clone();
-                    let wire = wire.clone();
-                    let context = context.clone();
-                    http::RequestBody::replayable(move || {
-                        anthropic::body(fields.clone(), wire.clone(), context.clone())
-                            .unwrap_or_else(|error| {
-                                http::RequestBody::stream(futures_util::stream::once(async move {
-                                    Err(upload_error(error))
-                                }))
-                            })
-                    })
-                },
+                url: url.clone(),
+                headers: headers.clone(),
+                body: upload,
             },
         )
         .await
@@ -187,28 +306,27 @@ async fn run_inner(
                 .next()
                 .is_some_and(|v| v.trim().eq_ignore_ascii_case("text/event-stream"))
         });
+        let retry_after = super::retry::at(&response.head);
+        events.evidence.retry_at_unix_ms = retry_after;
         if !(200..300).contains(&status) || !sse {
-            let retry_after = retry_after(&response.head);
             let read = read_body(&body.0, &response.head, context).await;
             let bytes = match read {
                 Ok(bytes) => bytes,
-                Err(ModelError::Provider(failure))
-                    if failure.reason() == ProviderFailureReason::Network
-                        && !(200..300).contains(&status) =>
+                Err(error)
+                    if !(200..300).contains(&status)
+                        && (matches!(error, ModelError::TimedOut)
+                            || matches!(&error, ModelError::Provider(failure)
+                                if failure.reason() == ProviderFailureReason::Network)) =>
                 {
                     return Err(events.evidence.provider(
-                        error::http_error(status, &[]),
-                        prepared.anthropic,
+                        error::http_body_error(status, error),
+                        anthropic,
                         retry_after,
                     ));
                 }
                 Err(error) => return Err(error),
             };
-            if prepared.compatible
-                && !retried
-                && status == 400
-                && prepared.body.get("stream_options").is_some()
-            {
+            if compatible && !retried && status == 400 && encoded_header.has_stream_options() {
                 let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
                 if text.contains("stream_options") || text.contains("include_usage") {
                     {
@@ -218,11 +336,11 @@ async fn run_inner(
                         }
                         cache.insert(route.clone());
                     }
-                    prepared
-                        .body
-                        .as_object_mut()
-                        .expect("request object")
-                        .remove("stream_options");
+                    encoded_header = tokio::select! {
+                        biased;
+                        _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
+                        header = encoded_header.without_usage() => header,
+                    };
                     retried = true;
                     body.0.close().await.map_err(body_error)?;
                     continue;
@@ -230,17 +348,24 @@ async fn run_inner(
             }
             return Err(events.evidence.provider(
                 error::http_error(status, &bytes),
-                prepared.anthropic,
+                anthropic,
                 retry_after,
             ));
         }
         // Request bytes have been dispatched. Retain only the decoder and
         // protocol metadata while receiving; output owns its actual queue budget.
-        drop(prepared.body);
+        drop(encoded_header);
+        drop(anthropic_source.take());
+        drop(chat.take());
         loop {
             let chunk = tokio::time::timeout(context.idle_timeout, body.0.next())
                 .await
-                .map_err(|_| ModelError::TimedOut)?
+                .map_err(|_| {
+                    events.evidence.interrupted(
+                        ProviderFailureReason::TimedOut,
+                        ModelError::TimedOut.to_string(),
+                    )
+                })?
                 .map_err(|error| match error {
                     http::Error::Denied => ModelError::Cancelled,
                     http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
@@ -256,7 +381,8 @@ async fn run_inner(
                     // Bound the vector of decoded events even if an HTTP peer
                     // combines many records into one transport chunk.
                     for bytes in bytes.chunks(16 * 1024) {
-                        let decoded = prepared.decoder.push(bytes)?;
+                        let mut decoded = decoder.push(bytes)?;
+                        decoder.resolve(&mut decoded, &context.cancellation).await?;
                         emit(decoded, &mut events, context, &shared).await?;
                         if events.finished {
                             body.0.close().await.map_err(body_error)?;
@@ -265,7 +391,9 @@ async fn run_inner(
                     }
                 }
                 None => {
-                    emit(prepared.decoder.finish()?, &mut events, context, &shared).await?;
+                    let mut decoded = decoder.finish()?;
+                    decoder.resolve(&mut decoded, &context.cancellation).await?;
+                    emit(decoded, &mut events, context, &shared).await?;
                     return if events.finished {
                         Ok(())
                     } else {
@@ -295,15 +423,35 @@ fn body_error(error: http::Error) -> ModelError {
     }
 }
 
-async fn dispatch(context: &Context, request: http::Request) -> Result<http::Response, ModelError> {
+fn observe_upload(
+    input: http::RequestBody,
+    activity: tokio::sync::watch::Sender<tokio::time::Instant>,
+) -> http::RequestBody {
+    input.inspect(move |chunk| {
+        if chunk.as_ref().is_ok_and(|bytes| !bytes.is_empty()) {
+            activity.send_replace(tokio::time::Instant::now());
+        }
+    })
+}
+
+async fn dispatch(
+    context: &Context,
+    mut request: http::Request,
+) -> Result<http::Response, ModelError> {
+    let (activity, mut progress) = tokio::sync::watch::channel(tokio::time::Instant::now());
+    request.body = observe_upload(request.body, activity);
     let cancellation = context.cancellation.child_token();
     let pending = context.transport.request(request, cancellation.clone());
     tokio::pin!(pending);
-    let cause = tokio::select! {
-        biased;
-        result = &mut pending => return result,
-        _ = context.cancellation.cancelled() => ModelError::Cancelled,
-        _ = tokio::time::sleep(context.idle_timeout) => ModelError::TimedOut,
+    let cause = loop {
+        let deadline = *progress.borrow_and_update() + context.idle_timeout;
+        break tokio::select! {
+            biased;
+            result = &mut pending => return result,
+            _ = context.cancellation.cancelled() => ModelError::Cancelled,
+            Ok(()) = progress.changed() => continue,
+            _ = tokio::time::sleep_until(deadline) => ModelError::TimedOut,
+        };
     };
     cancellation.cancel();
     match pending.await {
@@ -374,9 +522,9 @@ async fn read_body(
         .map_err(|error| match error {
             http::Error::Denied => ModelError::Cancelled,
             http::Error::CleanupUnconfirmed => ModelError::CleanupUnconfirmed,
-            http::Error::Failed(_) => ModelError::Provider(crate::ProviderFailure::new(
+            http::Error::Failed(message) => ModelError::Provider(crate::ProviderFailure::new(
                 ProviderFailureReason::Network,
-                "error body interrupted",
+                message,
                 true,
                 None,
             )),
@@ -391,18 +539,141 @@ async fn read_body(
     }
     Ok(bytes)
 }
-fn retry_after(head: &http::Head) -> Option<u64> {
-    let delay = if let Some(ms) = header(head, "retry-after-ms") {
-        ms.parse::<f64>().ok()?
-    } else {
-        let seconds = header(head, "retry-after")?;
-        if let Ok(seconds) = seconds.parse::<f64>() {
-            seconds * 1000.0
-        } else {
-            let date = jiff::fmt::rfc2822::parse(seconds).ok()?;
-            let now = jiff::Timestamp::now().as_millisecond();
-            (date.timestamp().as_millisecond() - now) as f64
-        }
+
+#[cfg(test)]
+mod quota_scope_tests {
+    use super::*;
+    use futures_util::{StreamExt, future::BoxFuture};
+    use maka_agent_ports::model::{Connect, Credentials, Events, Provider, Socket, Transport};
+    use std::{
+        sync::atomic::{AtomicBool, Ordering},
+        time::Duration,
     };
-    (delay.is_finite() && delay > 0.0 && delay <= 2_147_483_647.0).then_some(delay.ceil() as u64)
+
+    struct NoEvents;
+    impl Events for NoEvents {
+        fn emit(&self, _: Emission) -> BoxFuture<'_, Result<(), ModelError>> {
+            Box::pin(async { panic!("a rejected request cannot emit model output") })
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct Rejection {
+        read: Arc<AtomicBool>,
+        closed: Arc<AtomicBool>,
+    }
+    impl http::Body for Rejection {
+        fn next(&self) -> BoxFuture<'_, Result<Option<Vec<u8>>, http::Error>> {
+            Box::pin(async move {
+                Ok((!self.read.swap(true, Ordering::SeqCst)).then(|| {
+                    br#"{"error":{"code":"1308","message":"original quota diagnostic"}}"#.to_vec()
+                }))
+            })
+        }
+        fn cancel(&self) {}
+        fn close(&self) -> BoxFuture<'_, Result<(), http::Error>> {
+            Box::pin(async move {
+                self.closed.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
+    impl Transport for Rejection {
+        fn identity(&self) -> u64 {
+            1
+        }
+        fn connect(&self, _: Connect) -> BoxFuture<'_, Result<Arc<dyn Socket>, ModelError>> {
+            Box::pin(async { panic!("the HTTP quota boundary cannot open a WebSocket") })
+        }
+        fn request(
+            &self,
+            request: http::Request,
+            _: CancellationToken,
+        ) -> BoxFuture<'_, Result<http::Response, ModelError>> {
+            Box::pin(async move {
+                let mut upload = request.body.into_stream();
+                while let Some(bytes) = upload.next().await {
+                    bytes.unwrap();
+                }
+                Ok(http::Response {
+                    head: http::Head {
+                        status: 429,
+                        url: request.url,
+                        headers: vec![
+                            ("content-type".into(), b"application/json".to_vec()),
+                            ("retry-after".into(), b"18000".to_vec()),
+                        ],
+                    },
+                    body: Arc::new(self.clone()),
+                })
+            })
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn http_dispatch_keeps_quota_scope_original_diagnostics_and_retry_deadline() {
+        for (endpoint, reason) in [
+            (
+                "https://api.z.ai/api/coding/paas/v4",
+                ProviderFailureReason::QuotaExhausted,
+            ),
+            (
+                "https://foreign.invalid/v1",
+                ProviderFailureReason::RateLimit,
+            ),
+        ] {
+            let response = Rejection::default();
+            let context = Context {
+                transport: Arc::new(response.clone()),
+                events: Arc::new(NoEvents),
+                cancellation: CancellationToken::new(),
+                idle_timeout: Duration::from_secs(10),
+                source: None,
+            };
+            let before = crate::ProviderFailure::now_unix_ms();
+            let start = tokio::time::Instant::now();
+            let error = run(
+                Request {
+                    language: Default::default(),
+                    provider: Provider {
+                        kind: crate::ProviderKind::OpenaiCompatible {
+                            name: "fixture".into(),
+                        },
+                        model: "quota-fixture".into(),
+                        base_url: endpoint.into(),
+                        auth: Credentials::ApiKey("fixture".into()),
+                        headers: Default::default(),
+                        body_overlay: None,
+                    },
+                    prompt: vec![crate::prompt::Message::user("hello")].into(),
+                    tools: vec![],
+                    provider_options: serde_json::Value::Null,
+                    max_output_tokens: None,
+                },
+                &context,
+                Arc::new(Shared::default()),
+            )
+            .await
+            .unwrap_err();
+            let after = crate::ProviderFailure::now_unix_ms();
+            let ModelError::Provider(failure) = error else {
+                panic!("typed quota evidence lost: {error}")
+            };
+            assert_eq!(failure.reason(), reason);
+            assert_eq!(
+                failure.retryable(),
+                reason == ProviderFailureReason::RateLimit
+            );
+            assert!(failure.replay_safe());
+            assert_eq!(failure.status(), Some(429));
+            assert_eq!(failure.code(), Some("1308"));
+            assert_eq!(failure.message(), "original quota diagnostic");
+            assert!(
+                (before + 18_000_000..=after + 18_000_000)
+                    .contains(&failure.retry_at_unix_ms().unwrap())
+            );
+            assert_eq!(start.elapsed(), Duration::ZERO);
+            assert!(response.closed.load(Ordering::SeqCst));
+        }
+    }
 }

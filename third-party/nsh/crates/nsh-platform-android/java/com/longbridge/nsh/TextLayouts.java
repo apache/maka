@@ -351,13 +351,28 @@ final class TextLayouts {
                 direction);
     }
 
+    /**
+     * A width in dp to whole pixels, down ({@code up} false) or up. Layout
+     * lands widths on device pixels (a text measured 64 pixels is 64 / 2.625
+     * dp), but a width that went through the layout's arithmetic (a box's
+     * width less its padding) comes back a hair off: 63.99999 pixels, which
+     * floored is a pixel narrower than the text and breaks its last word onto
+     * a line of its own. Within a thousandth of a pixel is that pixel.
+     */
+    private static int toPixels(float dp, float density, boolean up) {
+        float px = dp * density;
+        int nearest = Math.round(px);
+        if (Math.abs(px - nearest) < 1e-3f) return nearest;
+        return (int) (up ? Math.ceil(px) : Math.floor(px));
+    }
+
     /** Size in dp, packed as two float bit patterns (width high). */
     static long measure(Object prepared, float maxWidthDp) {
         Prepared p = (Prepared) prepared;
         int width = p.desired();
         if (!Float.isNaN(maxWidthDp)) {
             // Text that fits lays out as at its natural width: same layout.
-            width = Math.min(width, (int) Math.floor(maxWidthDp * p.density));
+            width = Math.min(width, toPixels(maxWidthDp, p.density, false));
         }
         StaticLayout layout = p.layout(width);
         // Without an ellipsis StaticLayout ignores maxLines: count the lines
@@ -377,7 +392,7 @@ final class TextLayouts {
     /** The final layout, in px, for a box of the given dp size. */
     static Object layout(Object prepared, float widthDp, float heightDp) {
         Prepared p = (Prepared) prepared;
-        int width = (int) Math.ceil(widthDp * p.density);
+        int width = toPixels(widthDp, p.density, true);
         // Left-aligned LTR text that fits draws the same in a wider box:
         // keep the measured layout. Not text a paragraph span aligns to the
         // right: laid out at its natural width, it would stay on the left.

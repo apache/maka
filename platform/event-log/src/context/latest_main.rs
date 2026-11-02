@@ -87,36 +87,36 @@ pub(super) async fn read_selected_at(
     // summary can be skipped; missing trace must not reveal an older main.
     let mut rows = sqlx::query(sqlx::AssertSqlSafe(format!(
         "WITH runtime_events AS NOT MATERIALIZED (SELECT e.* FROM main.runtime_events e WHERE e.sequence <= ?2 AND {filter})
-         SELECT c.sequence, json_extract(c.event_json, '$.invocation') AS ci,
-         json_extract(r.event_json, '$.invocation') AS ri, json_extract(o.event_json, '$.invocation') AS oi,
-         json_extract(o.event_json, '$.fact.input.kind') AS opening_kind,
-         json_extract(r.event_json, '$.fact.purpose') AS purpose,
-         (SELECT json_extract(f.event_json, '$.recorded_at') FROM runtime_events f
+         SELECT c.sequence, json_extract(c.event_header, '$.invocation') AS ci,
+         json_extract(r.event_header, '$.invocation') AS ri, json_extract(o.event_header, '$.invocation') AS oi,
+         json_extract(o.event_header, '$.fact.input.kind') AS opening_kind,
+         json_extract(r.event_header, '$.fact.purpose') AS purpose,
+         (SELECT json_extract(f.event_header, '$.recorded_at') FROM runtime_events f
            WHERE f.invocation_id=c.invocation_id AND f.kind='model_observed'
-             AND json_extract(f.event_json, '$.invocation.session_id')=?1
-             AND CAST(json_extract(f.event_json, '$.fact.step_id') AS TEXT)=json_extract(c.event_json, '$.fact.step_id')
-             AND json_extract(f.event_json, '$.fact.event.kind')='finished'
+             AND json_extract(f.event_header, '$.invocation.session_id')=?1
+             AND CAST(json_extract(f.event_header, '$.fact.step_id') AS TEXT)=json_extract(c.event_header, '$.fact.step_id')
+             AND json_extract(f.event_header, '$.fact.event.kind')='finished'
              AND f.sequence>r.sequence AND f.sequence<c.sequence
            ORDER BY f.sequence LIMIT 1) AS finished_at,
-         json_extract(r.event_json, '$.recorded_at') AS requested_at,
-         json_extract(c.event_json, '$.fact.output.usage') AS usage,
-         json_extract(r.event_json, '$.fact.model_id') AS model_id,
-         json_extract(r.event_json, '$.fact.route_identity') AS route_identity,
-         json_extract(r.event_json, '$.fact.context') AS context,
-         json_extract(r.event_json, '$.fact.checkpoint_event_id') AS checkpoint_id,
-         json_extract(o.event_json, '$.fact.configuration.model.connection_id') AS connection_id,
-         json_extract(c.event_json, '$.fact.step_id') AS cs,
-         json_extract(r.event_json, '$.fact.step_id') AS rs,
+         json_extract(r.event_header, '$.recorded_at') AS requested_at,
+         json_extract(c.event_header, '$.fact.output.usage') AS usage,
+         json_extract(r.event_header, '$.fact.model_id') AS model_id,
+         json_extract(r.event_header, '$.fact.route_identity') AS route_identity,
+         json_extract(r.event_header, '$.fact.context') AS context,
+         json_extract(r.event_header, '$.fact.checkpoint_event_id') AS checkpoint_id,
+         json_extract(o.event_header, '$.fact.configuration.model.connection_id') AS connection_id,
+         json_extract(c.event_header, '$.fact.step_id') AS cs,
+         json_extract(r.event_header, '$.fact.step_id') AS rs,
          c.operation_id AS operation_id, r.sequence AS requested, o.sequence AS opened
          , NOT EXISTS(SELECT 1 FROM main.runtime_events a LEFT JOIN main.runtime_events target
-             ON target.event_id=json_extract(a.event_json,'$.fact.placeholder.identity.runtime_event_id')
+             ON target.event_id=json_extract(a.event_header,'$.fact.placeholder.identity.runtime_event_id')
            WHERE a.kind='tool_result_archived' AND a.sequence < ?4 AND {archive_filter}
-             AND json_extract(a.event_json,'$.invocation.session_id')=json_extract(c.event_json,'$.invocation.session_id')
-             AND a.sequence > r.sequence AND (target.sequence IS NULL OR target.sequence <= json_extract(r.event_json,'$.fact.source_high_water'))) AS projection_current
+             AND json_extract(a.event_header,'$.invocation.session_id')=json_extract(c.event_header,'$.invocation.session_id')
+             AND a.sequence > r.sequence AND (target.sequence IS NULL OR target.sequence <= json_extract(r.event_header,'$.fact.source_high_water'))) AS projection_current
          FROM runtime_events c LEFT JOIN runtime_events r ON r.invocation_id = c.invocation_id
            AND r.operation_id = c.operation_id AND r.kind = 'model_requested'
          LEFT JOIN runtime_events o ON o.invocation_id = c.invocation_id AND o.kind = 'invocation_opened'
-         WHERE c.kind = 'model_completed' AND json_extract(c.event_json, '$.invocation.session_id') = ?1
+         WHERE c.kind = 'model_completed' AND json_extract(c.event_header, '$.invocation.session_id') = ?1
          ORDER BY c.sequence DESC"
     ))).bind(session).bind(through as i64).bind(&selection.lineage)
         .bind(archives_before.min(i64::MAX as u64) as i64).fetch(connection);

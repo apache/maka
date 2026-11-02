@@ -110,8 +110,9 @@ pub enum FunctionCall {
     /// converted in the JS call): it reaches the platform with the same free
     /// functions views use (`dialog`, `clipboard_string`, ...).
     Async(AsyncCall),
-    /// In the JS call, returning a task's start ([`super::Later`]): what
-    /// the call throws throws there; JS gets a promise of the task.
+    /// In the JS call, returning a task's start ([`super::Later`]): JS gets
+    /// a promise of the task, rejected with what the call refuses (a
+    /// function returning a promise never throws).
     Start(AsyncCall),
 }
 

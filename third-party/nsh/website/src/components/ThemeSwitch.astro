@@ -3,6 +3,8 @@
 // kept in localStorage (`theme`, absent for System); the pre-paint script in
 // BaseLayout applies it before the first frame and follows the system.
 import type { Lang } from '../lib/site';
+import ToggleGroup from './ui/ToggleGroup.astro';
+import ToggleGroupItem from './ui/ToggleGroupItem.astro';
 export interface Props { lang?: Lang }
 const { lang = 'en' } = Astro.props;
 const names = lang === 'zh-CN'
@@ -14,13 +16,13 @@ const icons = {
   dark: '<path d="M20.985 12.486a9 9 0 1 1-9.473-9.472c.405-.022.617.46.402.803a6 6 0 0 0 8.268 8.268c.344-.215.825-.004.803.401"/>',
 };
 ---
-<div class="theme-switch segmented" role="radiogroup" aria-label={names.label}>
+<ToggleGroup class="theme-switch" variant="segmented" size="xs" aria-label={names.label}>
   {(['system', 'light', 'dark'] as const).map((pref) => (
-    <button type="button" role="radio" data-pref={pref} aria-label={names[pref]} title={names[pref]} aria-checked="false">
+    <ToggleGroupItem data-pref={pref} aria-label={names[pref]} title={names[pref]}>
       <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={icons[pref]} />
-    </button>
+    </ToggleGroupItem>
   ))}
-</div>
+</ToggleGroup>
 
 <script>
   const root = document.documentElement;
@@ -60,10 +62,4 @@ const icons = {
 
 <style is:global>
   .theme-switch { flex-shrink: 0; margin-right: 0.25rem; }
-  .theme-switch.segmented button { display: grid; place-items: center; width: 1.6rem; height: 1.4rem; padding: 0; }
-  .theme-switch button svg { width: 14px; height: 14px; }
-  .theme-switch.segmented button[aria-checked="true"] { background: var(--glass-thumb); color: var(--foreground); box-shadow: var(--glass-thumb-edge); }
-  @media (max-width: 640px) {
-    .theme-switch.segmented button { width: 1.4rem; }
-  }
 </style>

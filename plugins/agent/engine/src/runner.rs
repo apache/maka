@@ -46,35 +46,15 @@ pub async fn run(
     handoff: Option<crate::HandoffGate>,
     prepared_claim: Option<crate::continuation::PreparedClaim>,
     effects: Arc<maka_event_log::root_store::InvocationEffects>,
-) -> Result<Invocation, RunError> {
+) -> Result<crate::ActivationExit, RunError> {
     let cancellation = cancellation_owner.clone();
     if cancellation.is_cancelled() {
         return Err(RunError::Cancelled);
     }
-    let manual_message = matches!(
-        &input.work,
-        RunWork::Message {
-            allow_prior_unknown: true,
-            ..
-        }
-    );
     let prior_unknown = tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
-        result = async {
-            if manual_message {
-                inner
-                    .log
-                    .check_manual_message_history(&input.invocation.session_id)
-                    .await
-            } else {
-                inner
-                    .log
-                    .prepare_prune_candidates(&input.invocation.session_id, None, 0, 0, None)
-                    .await
-                    .map(|_| false)
-            }
-        } => result,
+        result = inner.log.check_history(&input.invocation.session_id) => result,
     };
     let prior_unknown = match prior_unknown {
         Ok(value) => value,
@@ -110,9 +90,15 @@ pub async fn run(
             None,
             RunWork::Continuation { source, tools, .. } | RunWork::Handoff { source, tools, .. },
         ) => Some(
-            crate::continuation::prepare(&inner, &input, source, tools, &cancellation)
-                .await?
-                .claim,
+            Box::pin(crate::continuation::prepare(
+                &inner,
+                &input,
+                source,
+                tools,
+                &cancellation,
+            ))
+            .await?
+            .claim,
         ),
         _ => None,
     };
@@ -190,11 +176,10 @@ pub async fn run(
     let _ = admitted.send(());
     let result = async {
         let mut inspected_through = 0;
-        if !prior_unknown {
-            prune::run(&inner, &input, &cancellation, &mut inspected_through).await?;
-        }
+        prune::run(&inner, &input, &cancellation, &mut inspected_through).await?;
         if let Some(work) = model_work {
-            steps::run(
+            // Model steps include frozen retry preparation; keep that frame out of the runner.
+            Box::pin(steps::run(
                 &inner,
                 &mut input,
                 work,
@@ -205,9 +190,9 @@ pub async fn run(
                 prior_unknown,
                 inspected_through,
                 &effects,
-            )
+            ))
             .await
-            .map(|outcome| (outcome, None))
+            .map(|exit| (exit, None))
         } else {
             // Compaction owns a larger preparation frame than normal steps.
             // Allocate it only for this branch, not for every live invocation.
@@ -221,17 +206,46 @@ pub async fn run(
             .await
             .map(|(outcome, checkpoint)| {
                 (
-                    InvocationOutcome::ContextCompactFinished { outcome },
+                    steps::StepExit::Terminal(InvocationOutcome::ContextCompactFinished {
+                        outcome,
+                    }),
                     checkpoint,
                 )
             })
         }
     }
     .await;
+    finish(
+        &inner,
+        input.invocation,
+        result,
+        &cancellation,
+        handoff.as_ref(),
+        &effects,
+    )
+    .await
+}
+
+pub(super) async fn finish(
+    inner: &Arc<RunContext>,
+    invocation: Invocation,
+    result: Result<(steps::StepExit, Option<RuntimeEvent>), RunError>,
+    cancellation: &tokio_util::sync::CancellationToken,
+    handoff: Option<&crate::HandoffGate>,
+    effects: &maka_event_log::root_store::InvocationEffects,
+) -> Result<crate::ActivationExit, RunError> {
     let result = match effects.settle().await {
         Ok(()) => result,
-        Err(error) => Err(RunError::from(error)),
+        Err(error) => crate::model_attempt::additional_failure(result, error.into()),
     };
+    let result = crate::model_attempt::seal_unfinished_attempts(inner, result).await;
+    if let Ok((steps::StepExit::Parked(receipt), _)) = &result {
+        return Ok(crate::ActivationExit::Parked(receipt.clone()));
+    }
+    let result = result.map(|(exit, checkpoint)| match exit {
+        steps::StepExit::Terminal(outcome) => (outcome, checkpoint),
+        steps::StepExit::Parked(_) => unreachable!("parked exits returned above"),
+    });
     let result = if matches!(&result, Err(RunError::Commit(CommitError::Retired)))
         || (matches!(&result, Ok((outcome, _)) if !matches!(outcome, InvocationOutcome::HandoffPaused { .. }))
             && cancellation.is_cancelled())
@@ -262,8 +276,7 @@ pub async fn run(
     };
     if let Some(checkpoint) = checkpoint {
         // A checkpoint is adopted only with its successful terminal in this transaction.
-        let terminal =
-            RuntimeEvent::new(input.invocation.clone(), Fact::InvocationEnded { outcome });
+        let terminal = RuntimeEvent::new(invocation.clone(), Fact::InvocationEnded { outcome });
         let committed = inner
             .log
             .append_batch(&[EventWrite::plain(checkpoint)?, EventWrite::plain(terminal)?])
@@ -271,8 +284,8 @@ pub async fn run(
         if let Err(error) = committed {
             if matches!(error, CommitError::Rejected(_)) {
                 append(
-                    &inner,
-                    &input.invocation,
+                    inner,
+                    &invocation,
                     Fact::InvocationEnded {
                         outcome: InvocationOutcome::Failed {
                             class: "event_commit".into(),
@@ -285,19 +298,19 @@ pub async fn run(
             }
             return Err(error.into());
         }
-        inner.shared.clear_loaded(&input.invocation.session_id)?;
+        inner.shared.clear_loaded(&invocation.session_id)?;
     } else {
         let pause = match &outcome {
             InvocationOutcome::HandoffPaused { pause } => Some(pause.clone()),
             _ => None,
         };
-        append(&inner, &input.invocation, Fact::InvocationEnded { outcome }).await?;
+        append(inner, &invocation, Fact::InvocationEnded { outcome }).await?;
         if let Some(pause) = pause {
-            handoff.as_ref().expect("model Run handoff").sealed(&pause);
+            handoff.expect("model Run handoff").sealed(&pause);
         }
     }
     result?;
-    Ok(input.invocation)
+    Ok(crate::ActivationExit::Terminal(invocation))
 }
 
 fn failure_class(error: &RunError) -> &'static str {
@@ -314,6 +327,12 @@ fn failure_class(error: &RunError) -> &'static str {
         RunError::Model(maka_model::ModelError::Http { .. }) => "model_http",
         RunError::Model(maka_model::ModelError::TimedOut) => "model_timeout",
         RunError::Model(maka_model::ModelError::Adapter(_)) => "model_adapter",
+        RunError::Model(maka_model::ModelError::ImageInputRejected { .. }) => {
+            "image_input_rejected"
+        }
+        RunError::Model(maka_model::ModelError::ImageInputPayloadTooLarge { .. }) => {
+            "image_input_payload_too_large"
+        }
         RunError::Model(maka_model::ModelError::Provider(failure))
             if failure.reason()
                 == maka_agent_facts::model::error::ProviderFailureReason::TimedOut =>
@@ -324,7 +343,10 @@ fn failure_class(error: &RunError) -> &'static str {
         RunError::Model(maka_model::ModelError::ContextOverflow { .. }) => "context_overflow",
         RunError::Tool(_) => "tool_execution",
         RunError::Internal(_) => "runtime_internal",
+        RunError::Checkpoint(_) => "activation_checkpoint",
+        RunError::Preparation(_) => "model_preparation",
         RunError::CleanupUnconfirmed
+        | RunError::PreparationCleanup(_)
         | RunError::Model(maka_model::ModelError::CleanupUnconfirmed) => "cleanup_unconfirmed",
     }
 }

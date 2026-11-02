@@ -24,6 +24,14 @@ use serde_json::Value;
 use std::time::SystemTime;
 use uuid::Uuid;
 
+/// Projection visibility captured by the source reader, before request publication.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceCapture {
+    pub publication_watermark: u64,
+    pub prior_unknown: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Invocation {
     pub session_id: String,
@@ -131,6 +139,7 @@ pub enum Fact {
         model_id: String,
         source_scope: LogScope,
         source_high_water: u64,
+        source_capture: SourceCapture,
         source_digest: String,
         input_digest: String,
         route_identity: String,
@@ -161,7 +170,7 @@ pub enum Fact {
     /// arrive; completion-only requests accept history at ModelCompleted.
     ModelObserved {
         step_id: String,
-        event: crate::model::ModelEvent,
+        event: crate::model::recorded::ModelObservation,
     },
     ModelInterrupted {
         step_id: String,
@@ -172,10 +181,12 @@ pub enum Fact {
         diagnostic: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         model_failure: Option<crate::model::error::ModelFailureCause>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        partial: Option<crate::model::recorded::ModelPartial>,
     },
     ModelCompleted {
         step_id: String,
-        output: crate::model::ModelStep,
+        output: crate::model::recorded::ModelCompletion,
     },
     ToolDispatched {
         /// Opaque renderer key captured by the tool before admission, never a grant.
@@ -417,6 +428,9 @@ pub enum CommitError {
     /// A captured permission boundary changed before T1; no effect was admitted.
     #[error("permission grant is no longer current")]
     PermissionRevoked,
+    /// A physical native interruption fences only this logical Turn's helper.
+    #[error("native Computer Use is stopped for this logical Turn")]
+    NativeTurnInterrupted,
     #[error("event rejected: {0}")]
     Rejected(String),
     #[error("event commit outcome unknown: {0}")]
@@ -434,6 +448,37 @@ pub trait EventSink: Send + Sync + 'static {
         None
     }
     fn commit(self: std::sync::Arc<Self>, event: EventWrite) -> CommitFuture;
+    /// Atomically append ordinary prefix facts and the designated final event.
+    /// Capture owned event handles before returning; the receipt is the final
+    /// event's actual sequence and every original prefix sequence.
+    fn commit_with_prefix(
+        self: std::sync::Arc<Self>,
+        prefix: &[EventWrite],
+        last: EventWrite,
+    ) -> PrefixCommitFuture;
 }
 
 pub type CommitFuture = std::pin::Pin<Box<dyn Future<Output = Result<u64, CommitError>> + Send>>;
+
+/// Actual storage sequences for an ordered prefix and its designated final event.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PrefixReceipt {
+    pub prefix_sequences: Vec<u64>,
+    pub last_sequence: u64,
+}
+
+impl PrefixReceipt {
+    /// Split the actual nonempty append receipt without assuming contiguous sequences.
+    pub fn from_sequences(mut sequences: Vec<u64>) -> Self {
+        let last_sequence = sequences
+            .pop()
+            .expect("designated final event has a sequence");
+        Self {
+            prefix_sequences: sequences,
+            last_sequence,
+        }
+    }
+}
+
+pub type PrefixCommitFuture =
+    std::pin::Pin<Box<dyn Future<Output = Result<PrefixReceipt, CommitError>> + Send>>;

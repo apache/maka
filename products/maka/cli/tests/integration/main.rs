@@ -24,9 +24,14 @@ mod code_command;
 mod desktop;
 mod initialize;
 #[allow(dead_code)]
-#[path = "../../../../../platform/transport/tests/support/mod.rs"]
+#[path = "../../../../../platform/transport/tests/integration/support/mod.rs"]
 mod local_fixture;
+#[cfg(target_os = "linux")]
+mod network_sandbox;
+mod product_composition;
 mod sandbox;
+mod startup;
 mod terminal_shell;
-#[path = "../../src/tests.rs"]
-mod unwind;
+
+#[path = "../../../terminal-shell/tests/real_host/mod.rs"]
+mod terminal;

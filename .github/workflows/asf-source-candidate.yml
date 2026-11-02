@@ -31,7 +31,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   candidate:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
       RELEASE_VERSION: ${{ inputs.version }}
@@ -41,26 +41,32 @@ jobs:
         env:
           RELEASE_REF: ${{ github.ref }}
         run: test "$RELEASE_REF" = refs/heads/main
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
           fetch-depth: 0
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      - uses: actions/setup-node@v7
         with:
-          node-version: "26"
+          node-version: latest
       - name: Update Rust
         run: rustup update stable --no-self-update
-      - uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2.87.31
+      - uses: taiki-e/install-action@68a389c788b2cd04016ce8c80ee23b80d2ab3d68 # v2.88.1
         with:
-          tool: just@1.59.0,cargo-nextest@0.9.149,cargo-deny
+          tool: cargo-binstall
+      - name: Install latest Rust tools
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cargo binstall --no-confirm --force cargo-binstall
+          cargo binstall --no-confirm --force just cargo-nextest cargo-deny
       - name: Install native dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y bubblewrap ripgrep pkg-config libx11-dev libxi-dev libxtst-dev libxext-dev
           sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Select npm
-        run: npm install --global --no-audit --no-fund "$(node -p 'require("./package.json").packageManager')"
+        run: npm install --global --no-audit --no-fund npm@latest
       - name: Create source candidate
         run: just source "$RELEASE_VERSION" "$GITHUB_SHA"
       - name: Extract exact candidate
@@ -84,7 +90,7 @@ jobs:
         run: |
           just website-setup
           just website-check
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@v7
         with:
           name: asf-source-candidate
           path: release/asf/*

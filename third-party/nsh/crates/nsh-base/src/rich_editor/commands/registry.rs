@@ -132,9 +132,7 @@ impl<'a> Args<'a> {
     fn attrs(&self, key: &str) -> Result<Attrs, String> {
         match self.get(key) {
             None => Ok(Attrs::new()),
-            Some(Value::Object(map)) => {
-                Ok(map.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
-            }
+            Some(Value::Object(map)) => Ok(crate::rich_editor::model::object_attrs(map)),
             Some(other) => Err(format!("{}: `{key}` is an object, got {other}", self.name)),
         }
     }

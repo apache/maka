@@ -17,6 +17,7 @@ use nsh_core::{
     geometry::{point, px},
     keymap::Keymap,
     overlay::HintObservation,
+    platform::clipboard::{files_answer, image_answer},
 };
 use ratatui::{buffer::Buffer, layout::Rect as CellRect};
 
@@ -1328,6 +1329,12 @@ impl Surface {
             Command::Announce(text) => self.announce(text),
             Command::SetClipboard(text) => self.write_clipboard(text),
             Command::ReadClipboard { id, has_only } => self.read_clipboard(id, has_only),
+            Command::ReadClipboardImage { id, .. } => {
+                self.emit(ROOT_ID, EventKind::Clipboard, image_answer(id, false, None));
+            }
+            Command::ReadClipboardFiles { id } => {
+                self.emit(ROOT_ID, EventKind::Clipboard, files_answer(id, &[]));
+            }
             // A terminal has no system image picker. Complete the request as
             // cancelled instead of leaving the app's answer pending.
             Command::PickImages { id, .. } => self.emit(
@@ -2233,6 +2240,50 @@ mod tests {
     use nsh_core::{LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition};
 
     use super::*;
+
+    #[nsh_core::element::component]
+    fn ClipboardReadProbe() -> impl nsh_core::element::IntoElement {
+        use nsh_core::element::{
+            clipboard_files, clipboard_has_image, clipboard_image, signal, spawn, text,
+        };
+
+        let result = signal(String::from("pending"));
+        let (has, image, files) = (clipboard_has_image(), clipboard_image(), clipboard_files());
+        spawn(async move {
+            result.set(format!(
+                "has={} image={} files={}",
+                has.await,
+                image.await.is_some(),
+                files.await.len()
+            ));
+        });
+        text(move || result.get())
+    }
+
+    #[test]
+    fn public_clipboard_image_and_file_reads_complete_without_native_support() {
+        let metrics = CellMetrics::default();
+        let mut core = nsh_core::Core::new(
+            crate::TerminalTextEngine::new(metrics),
+            metrics.viewport(40, 5),
+        );
+        core.set_access(Arc::new(Access::all()));
+        core.mount_root(&nsh_core::element::Root::of::<ClipboardReadProbe>());
+        let mut surface = Surface::new(40, 5, metrics);
+        loop {
+            core.run_component_tasks();
+            let Some(batch) = core.commit() else {
+                break;
+            };
+            surface.apply(batch);
+            for event in surface.drain_events() {
+                if let SurfaceEvent::Event(id, kind, payload) = event {
+                    core.component_event(id, kind, &payload);
+                }
+            }
+        }
+        assert!(surface.snapshot().contains("has=false image=false files=0"));
+    }
 
     #[test]
     fn an_unsupported_url_open_answers_once_without_launching() {

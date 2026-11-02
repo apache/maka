@@ -392,23 +392,12 @@ impl Stream {
             }
             Chunk::ContentBlockStop { index } => events.extend(self.stop(index)),
             Chunk::Error { error } => {
-                let inferred = match error.r#type.as_str() {
-                    "api_error" => Some((500, true)),
-                    "overloaded_error" => Some((529, true)),
-                    "rate_limit_error" => Some((429, true)),
-                    "request_too_large" => Some((413, false)),
-                    "authentication_error" => Some((401, false)),
-                    "permission_error" => Some((403, false)),
-                    "not_found_error" => Some((404, false)),
-                    "billing_error" | "invalid_request_error" => Some((400, false)),
-                    _ => None,
-                };
                 events.push(Event::ProviderError(output::ProviderError {
                     message: Some(error.message),
                     kind: Some(error.r#type),
                     code: error.code.map(|v| json!(v)),
-                    status: error.status.or(inferred.map(|v| v.0)),
-                    retryable: error.retryable.or(inferred.map(|v| v.1)),
+                    status: error.status,
+                    retryable: error.retryable,
                     data: raw["error"].get("data").cloned().unwrap_or_else(|| {
                         let mut data = raw["error"].clone();
                         data.as_object_mut().unwrap().retain(|key, _| {

@@ -19,7 +19,7 @@
 
 // The desktop window's appearance (Settings › General): its colors, its
 // palette and its text size, kept in the app's storage. Terminals keep their own.
-import { host as shell, setColorScheme, signal, Storage } from 'nsh';
+import { host as shell, setColorScheme, signal, Storage, type Signal } from 'nsh';
 import { ownTitleBar } from './chrome';
 import { parseHex, presetRecipes, type PaletteId, type PaletteRecipe } from './colorPalette';
 
@@ -41,12 +41,27 @@ const THEME = 'appearance-theme';
 const TEXT_SIZE = 'appearance-text-size';
 const PALETTE = 'appearance-palette';
 const CUSTOM_PALETTE = 'appearance-custom-palette';
-const theme = signal<ColorTheme>('system');
-const textSize = signal(1);
-const palette = signal<PaletteId>('default');
-// The custom palette starts from the first preset.
-const custom = signal<PaletteRecipe>(presetRecipes.mist);
-let initialized = false;
+// The root, Settings and each other UI package bundle their own copy of this
+// module. They share one state, kept on the global object, so a choice made in
+// Settings recolors every package's view, and the first to start loads it.
+const STATE = Symbol.for('maka.appearance');
+type State = {
+  theme: Signal<ColorTheme>;
+  textSize: Signal<number>;
+  palette: Signal<PaletteId>;
+  custom: Signal<PaletteRecipe>;
+  initialized: boolean;
+};
+const shared = globalThis as { [STATE]?: State };
+const state = (shared[STATE] ??= {
+  theme: signal<ColorTheme>('system'),
+  textSize: signal(1),
+  palette: signal<PaletteId>('default'),
+  // The custom palette starts from the first preset.
+  custom: signal<PaletteRecipe>(presetRecipes.mist),
+  initialized: false,
+});
+const { theme, textSize, palette, custom } = state;
 
 const validRecipe = (value: unknown): value is PaletteRecipe => {
   const recipe = value as PaletteRecipe | null;
@@ -102,8 +117,8 @@ export const appearance = {
 };
 
 export function initializeAppearance() {
-  if (initialized || !appearance.supported) return;
-  initialized = true;
+  if (state.initialized || !appearance.supported) return;
+  state.initialized = true;
   void Storage.getItem(THEME)
     .then((value) => {
       if (value === 'light' || value === 'dark' || value === 'system') {

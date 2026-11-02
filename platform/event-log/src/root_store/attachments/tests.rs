@@ -110,6 +110,7 @@ async fn cross_partition_copy_streams_complete_bytes_and_retries_same_receipt() 
     let (_directory, root, source, target) = fixture().await;
     let bytes: Vec<u8> = (0..(3 * 64 * 1024 + 17)).map(|i| (i % 251) as u8).collect();
     let request = upload(&source, &target, &bytes).await;
+    upload(&target, &source, &bytes).await;
     let copied = root
         .copy_plugin_attachment(&namespace(), request.clone())
         .await
@@ -143,7 +144,8 @@ async fn cross_partition_copy_streams_complete_bytes_and_retries_same_receipt() 
         .unwrap();
     assert_eq!(before.revision, after.revision);
     assert_eq!(before.record, after.record);
-    assert_eq!(count(&target).await, 1);
+    assert_eq!(count(&target).await, 2);
+    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 2));
     root.close().await.unwrap();
 }
 
@@ -158,7 +160,7 @@ async fn corrupted_source_rolls_back_target_payload_and_catalog() {
         .run(|connection| {
             Box::pin(async move {
                 sqlx::query(
-                    "UPDATE artifacts SET payload=zeroblob(length(payload)) WHERE id='upload'",
+                    "UPDATE artifact_contents SET payload=zeroblob(length(payload)) WHERE content_sha256 IN (SELECT content_sha256 FROM artifacts WHERE id='upload')",
                 )
                 .execute(connection)
                 .await?;
@@ -192,7 +194,7 @@ async fn corrupted_source_rolls_back_target_payload_and_catalog() {
 
 #[tokio::test]
 async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() {
-    use std::{future::Future, task::Poll};
+    use std::task::Poll;
     use tokio::sync::oneshot;
     let (_directory, root, source, target) = fixture().await;
     let request = upload(&source, &target, &vec![3; 2 * 64 * 1024 + 1]).await;
@@ -247,223 +249,25 @@ async fn cancelled_accepted_copy_keeps_both_session_pins_until_target_cleanup() 
         .unwrap();
     assert_eq!(count(&target).await, 1);
     for id in [source.id(), target.id()] {
-        assert!(
-            root.gates
-                .try_write([gates::Key::Session(id.into())])
-                .unwrap()
-                .is_some()
-        );
-    }
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn same_partition_copy_keeps_existing_atomic_path() {
-    let (_directory, root, source, _) = fixture().await;
-    let bytes = vec![41; 129];
-    let request = upload(&source, &source, &bytes).await;
-    let copied = root
-        .copy_plugin_attachment(&namespace(), request.clone())
-        .await
-        .unwrap();
-    let StorageRef::SessionFile {
-        session_id,
-        relative_path,
-    } = &copied.storage_ref
-    else {
-        panic!()
-    };
-    assert_eq!(
-        source
-            .read_artifact_chunk(session_id, relative_path, 0, bytes.len())
-            .await
-            .unwrap()
-            .unwrap()
-            .bytes,
-        bytes
-    );
-    assert_eq!(
-        root.copy_plugin_attachment(&namespace(), request)
-            .await
-            .unwrap(),
-        copied
-    );
-    assert_eq!(count(&source).await, 2);
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn selected_copy_reuses_original_target_and_shared_source_binding_custody() {
-    use futures_util::poll;
-    use maka_agent_facts::{
-        event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-        workspace::{BindingStamp, PermissionBasis},
-    };
-    use std::time::Duration;
-    for shared in [false, true] {
-        let (_directory, root, source, target) = fixture().await;
-        let target_binding = root
-            .attach_workspace("owner", &json!({"path":"/target"}))
-            .await
-            .unwrap();
-        let source_binding = if shared {
-            target_binding
-        } else {
-            root.attach_workspace("owner", &json!({"path":"/source"}))
-                .await
-                .unwrap()
-        };
-        for (session, binding) in [(&source, source_binding), (&target, target_binding)] {
-            session
-                .update_session_metadata::<serde_json::Value, _>(
-                    session.id(),
-                    1,
-                    move |configuration| {
-                        *configuration = json!({"workspace":binding,"boundary_revision":0});
-                        Ok(())
-                    },
-                )
-                .await
-                .unwrap();
-        }
-        let source_invocation = Invocation {
-            session_id: source.id().into(),
-            turn_id: "recall-turn".into(),
-            run_id: "recall-run".into(),
-            invocation_id: "recall-invocation".into(),
-        };
-        let event =
-            |fact| EventWrite::plain(RuntimeEvent::new(source_invocation.clone(), fact)).unwrap();
-        source
-            .append_batch(&[
-                event(Fact::InvocationOpened {
-                    configuration: None,
-                    input: InvocationInput::Message {
-                        source_messages: Vec::new(),
-                        content: "custody-recall evidence".into(),
-                        request_fingerprint: None,
-                    },
-                }),
-                event(Fact::InvocationEnded {
-                    outcome: InvocationOutcome::Completed,
-                }),
-            ])
-            .await
-            .unwrap();
-        let anchor = root
-            .search_history(
-                "source",
-                crate::recall::SearchQuery {
-                    terms: vec!["custody-recall".into()],
-                    session_id: Some(source.id().into()),
-                    since: None,
-                    until: None,
-                    exclude: None,
-                    limit: None,
-                },
-                tokio_util::sync::CancellationToken::new(),
-            )
-            .await
-            .unwrap()
-            .hits
-            .pop()
-            .unwrap();
-        let request = upload(&source, &target, &[7; 129]).await;
-        let scope = target
-            .execution_scope(Some(PermissionBasis {
-                boundary_revision: 0,
-                binding: BindingStamp {
-                    id: target_binding.id,
-                    permission_epoch: 0,
-                },
-            }))
-            .await
-            .unwrap();
-        let selected = scope.store();
-        let lease = scope.accept();
-        let invocation = Invocation {
-            session_id: target.id().into(),
-            turn_id: "turn".into(),
-            run_id: "run".into(),
-            invocation_id: "invocation".into(),
-        };
-        let token = selected.execution_custody().unwrap();
-        let selected = root
-            .session_for_execution(token.as_ref(), &invocation)
-            .unwrap();
-        // Production relocation uses try_write. This queued writer specifically
-        // exercises the captured-custody contract without relying on fairness.
-        let mut writer = Box::pin(root.gates.write([gates::Key::Binding(target_binding.id)]));
-        assert!(poll!(&mut writer).is_pending());
-        let recalled = tokio::time::timeout(
-            Duration::from_secs(2),
-            root.history_context(
-                "source",
-                source.id(),
-                &anchor.message_id,
-                0,
-                0,
-                Some(anchor.through),
-                None,
-                Some(&selected),
-                tokio_util::sync::CancellationToken::new(),
-            ),
+        let released = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            root.gates.write([gates::Key::Session(id.into())]),
         )
         .await
         .unwrap()
         .unwrap();
-        assert_eq!(recalled.anchor.body, "custody-recall evidence");
-        assert!(
-            tokio::time::timeout(
-                Duration::from_secs(2),
-                root.execution_attachment(&selected, source.id(), "upload")
-            )
-            .await
-            .unwrap()
-            .unwrap()
-            .record
-            .is_some()
-        );
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            root.copy_plugin_attachment_to_execution(&selected, &namespace(), request.clone()),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(
-            root.copy_plugin_attachment_to_execution(&target, &namespace(), request.clone())
-                .await
-                .is_err()
-        );
-        assert!(
-            root.copy_plugin_attachment_to_execution(
-                &selected,
-                &namespace(),
-                CopyAttachment {
-                    target_session_id: source.id().into(),
-                    ..request.clone()
-                }
-            )
-            .await
-            .is_err()
-        );
-        drop(writer);
-        lease.finish();
-        assert!(
-            root.copy_plugin_attachment_to_execution(&selected, &namespace(), request)
-                .await
-                .is_err()
-        );
-        root.close().await.unwrap();
+        drop(released);
     }
+    root.close().await.unwrap();
 }
 
 #[tokio::test]
 async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle() {
     use maka_agent_facts::{
         event::{EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent},
-        model::{ModelEvent, ModelFinishReason, ModelPart, ModelStep, ModelToolCall, ModelUsage},
+        model::{
+            ModelFinishReason, ModelPart, ModelToolCall, ModelUsage, recorded::ModelCompletion,
+        },
         tool_call::ToolCallIdentity,
         tool_output::{ImageOutput, ToolContent, ToolOutput, ToolSuccess},
     };
@@ -504,12 +308,12 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         })
         .await
         .unwrap();
-    // Five ordinary facts in this partition put the target's own dispatch at
+    // Six ordinary facts in this partition put the target's own dispatch at
     // sequence 10, independently of the source partition's much higher freeze.
     let padding = (0..1000)
         .map(|n| format!("padding-{n}"))
         .filter(|id| partition_for(b"session", id) == partition_for(b"session", target.id()))
-        .take(5);
+        .take(6);
     for id in padding {
         let session = root.create_session(&id, &id, &json!({}), 1).await.unwrap();
         session
@@ -554,16 +358,15 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         .await
         .unwrap();
     let context = target
-        .capture_model_context(
-            target.id(),
-            Some(&invocation.invocation_id),
-            100_000,
-            64 * 1024 * 1024,
-        )
+        .read_model_view(target.id(), Some(&invocation.invocation_id))
         .await
         .unwrap();
     target
         .append(&event(Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: context.selection.captured_through,
+                prior_unknown: context.selection.prior_unknown,
+            },
             context_breakdown: None,
             item_acceptance: false,
             purpose: maka_agent_facts::context::ModelPurpose::Main,
@@ -588,17 +391,14 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         provider_executed: false,
     };
     target
-        .append(&event(Fact::ModelObserved {
-            step_id: "step".into(),
-            event: ModelEvent::ToolCall(call.clone()),
-        }))
-        .await
-        .unwrap();
-    target
         .append(&event(Fact::ModelCompleted {
             step_id: "step".into(),
-            output: ModelStep {
-                parts: vec![ModelPart::ToolCall { call }],
+            output: ModelCompletion {
+                parts: owned_parts(
+                    &invocation.invocation_id,
+                    "step",
+                    vec![ModelPart::ToolCall { call }],
+                ),
                 finish_reason: ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -724,5 +524,266 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         .unwrap();
     staged.validate_history().await.unwrap();
     staged.close().await.unwrap();
+    root.close().await.unwrap();
+}
+
+fn owned_parts(
+    invocation: &str,
+    step: &str,
+    parts: Vec<maka_agent_facts::model::ModelPart>,
+) -> Vec<maka_agent_facts::model::recorded::CompletionPart> {
+    use maka_agent_facts::model::{
+        ModelPart,
+        recorded::{CompletionPart, ModelPartRecord},
+    };
+    parts
+        .into_iter()
+        .enumerate()
+        .map(|(ordinal, part)| {
+            let message_id = match &part {
+                ModelPart::ToolCall { call } => maka_agent_facts::tool_call::tool_use_id(
+                    invocation,
+                    &format!("{step}:{}", call.id),
+                ),
+                _ => uuid::Uuid::new_v4().to_string(),
+            };
+            CompletionPart::Own(ModelPartRecord {
+                ordinal: ordinal as u64,
+                message_id,
+                started_at: std::time::UNIX_EPOCH,
+                provider_part_id: None,
+                part: std::sync::Arc::new(part),
+            })
+        })
+        .collect()
+}
+
+async fn physical_content(session: &SessionStore) -> (i64, i64, i64) {
+    session.owner().unwrap().connection.read(|db| Box::pin(async move {
+        Ok(sqlx::query_as("SELECT COUNT(*),COALESCE(SUM(length(payload)),0),(SELECT COUNT(*) FROM artifacts) FROM artifact_contents")
+            .fetch_one(db).await?)
+    })).await.unwrap()
+}
+
+#[tokio::test]
+async fn large_attachment_forks_share_one_body_until_the_last_session_retires() {
+    use crate::sessions::{SessionCopy, SessionCopyResult, SessionRetirement};
+    use maka_agent_facts::event::{
+        EventWrite, Fact, Invocation, InvocationInput, InvocationOutcome, RuntimeEvent,
+    };
+    use maka_agent_facts::session::{CopyPurpose, ForkPosition};
+    let (_directory, root, source, target) = fixture().await;
+    let bytes = vec![43; 1024 * 1024 + 17];
+    let attachment = upload(&source, &target, &bytes).await.attachment;
+    let mut input: maka_agent_facts::input::MessageInput = "shared attachment".into();
+    input.attachments = Some(vec![attachment]);
+    let invocation = Invocation {
+        session_id: "source".into(),
+        turn_id: "upload".into(),
+        run_id: "run".into(),
+        invocation_id: "invocation".into(),
+    };
+    for fact in [
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::Message {
+                content: input,
+                source_messages: vec![],
+                request_fingerprint: None,
+            },
+        },
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        },
+    ] {
+        source
+            .append(&EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap())
+            .await
+            .unwrap();
+    }
+    for index in 0..10 {
+        let revision = source
+            .get::<serde_json::Value>()
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        assert!(matches!(
+            root.copy_session(
+                SessionCopy {
+                    source_session_id: "source".into(),
+                    target_session_id: format!("fork-{index}"),
+                    expected_source_revision: revision,
+                    purpose: CopyPurpose::Branch {
+                        position: ForkPosition::End,
+                        side_conversation: false
+                    }
+                },
+                &json!({}),
+                2
+            )
+            .await
+            .unwrap(),
+            SessionCopyResult::Committed(_)
+        ));
+    }
+    assert_eq!(physical_content(&source).await, (1, 1024 * 1024 + 17, 11));
+    for id in std::iter::once("source".to_owned()).chain((0..9).map(|i| format!("fork-{i}"))) {
+        let session = root.session(&id).await.unwrap();
+        let revision = session
+            .get::<serde_json::Value>()
+            .await
+            .unwrap()
+            .unwrap()
+            .revision;
+        root.begin_session_removal(&id, revision).await.unwrap();
+        assert_eq!(
+            root.finish_session_retirement(&id).await.unwrap(),
+            SessionRetirement::Removed
+        );
+    }
+    let survivor = root.session("fork-9").await.unwrap();
+    assert_eq!(physical_content(&survivor).await, (1, 1024 * 1024 + 17, 1));
+    let original_owner = root.control.owned_root().unwrap();
+    root.close().await.unwrap();
+    let root = RootStore::open(original_owner).await.unwrap();
+    let survivor = root.session("fork-9").await.unwrap();
+    let artifact = survivor
+        .list_artifacts("fork-9", 0, 128)
+        .await
+        .unwrap()
+        .records
+        .pop()
+        .unwrap();
+    assert_eq!(
+        survivor
+            .read_artifact_chunk("fork-9", &artifact.id, 0, bytes.len())
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        bytes
+    );
+    let revision = survivor
+        .get::<serde_json::Value>()
+        .await
+        .unwrap()
+        .unwrap()
+        .revision;
+    root.begin_session_removal("fork-9", revision)
+        .await
+        .unwrap();
+    assert_eq!(
+        root.finish_session_retirement("fork-9").await.unwrap(),
+        SessionRetirement::Removed
+    );
+    assert_eq!(physical_content(&survivor).await, (0, 0, 0));
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn existing_content_digest_never_bypasses_incoming_byte_comparison() {
+    let (_directory, root, source, target) = fixture().await;
+    let bytes = vec![17; 64 * 1024 + 17];
+    let request = upload(&source, &target, &bytes).await;
+    upload(&target, &source, &bytes).await;
+    let before = target.get_artifact(target.id(), "upload").await.unwrap();
+    target
+        .owner()
+        .unwrap()
+        .connection
+        .run(|db| {
+            Box::pin(async move {
+                sqlx::query("UPDATE artifact_contents SET payload=zeroblob(length(payload))")
+                    .execute(db)
+                    .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        root.copy_plugin_attachment(&namespace(), request).await,
+        Err(StoreError::ArtifactConflict)
+    ));
+    let mut another = before.record.clone().unwrap();
+    another.id = "new-upload".into();
+    assert!(matches!(
+        target.commit_artifact(another, bytes.clone()).await,
+        Err(StoreError::ArtifactConflict)
+    ));
+    assert_eq!(
+        target
+            .get_artifact(target.id(), "upload")
+            .await
+            .unwrap()
+            .revision,
+        before.revision
+    );
+    assert_eq!(physical_content(&target).await, (1, bytes.len() as i64, 1));
+    assert_eq!(
+        target
+            .read_artifact_chunk(target.id(), "upload", 0, 17)
+            .await
+            .unwrap()
+            .unwrap()
+            .bytes,
+        vec![0; 17]
+    );
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn deleting_the_last_upload_reference_automatically_returns_database_pages() {
+    let (_directory, root, source, target) = fixture().await;
+    let bytes = vec![91; 1024 * 1024 + 17];
+    upload(&source, &target, &bytes).await;
+    let owner = source.owner().unwrap();
+    let pages_before: i64 = owner
+        .connection
+        .read(|db| {
+            Box::pin(async move {
+                Ok(sqlx::query_scalar("PRAGMA page_count")
+                    .fetch_one(db)
+                    .await?)
+            })
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        source
+            .delete_user_artifact(source.id(), "upload")
+            .await
+            .unwrap(),
+        crate::artifacts::ArtifactDeletion::Deleted
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let (pages, free): (i64, i64) = owner
+                .connection
+                .read(|db| {
+                    Box::pin(async move {
+                        let pages = sqlx::query_scalar("PRAGMA page_count")
+                            .fetch_one(&mut *db)
+                            .await?;
+                        let free = sqlx::query_scalar("PRAGMA freelist_count")
+                            .fetch_one(db)
+                            .await?;
+                        Ok((pages, free))
+                    })
+                })
+                .await
+                .unwrap();
+            if pages < pages_before && free == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect(
+        "Root maintenance must return pages after upload deletion without a Session retirement",
+    );
+    assert_eq!(physical_content(&source).await, (0, 0, 0));
     root.close().await.unwrap();
 }

@@ -19,7 +19,7 @@
 //! runtime/android/release/             classes.dex + lib/<abi>/libnsh.so
 //! runtime/android/dev/                 the same with development support
 //! runtime/web/nsh.wasm                 the web runtime (`nsh-platform-web`)
-//! runtime/web/nsh-browser-lite.wasm            the same with `nsh/base`'s core only, no `zlib` / `crypto`
+//!                                      (`nsh-browser.wasm`: linkable, `nsh package` links each app's from it)
 //! runtime/web/nsh.js                   the DOM runtime that loads it
 //! runtime/web/nsh-syntaxes.bin         the syntaxes it fetches to highlight code
 //! ```
@@ -331,12 +331,13 @@ pub(crate) fn package_dir(
 /// Which web runtime.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WebKind {
-    /// Trusted standalone apps, executed by browser JavaScript.
+    /// Published apps': every part of `nsh/base` and every standard
+    /// module, linkable (feature `linkable`): `nsh package` drops what the
+    /// app does not use (`web/prune.rs`). `nsh-browser.wasm`.
     Browser,
-    /// Browser runtime with the core base components only.
-    Lite,
     /// The development host's (`nsh dev`, `nsh run --target web`): it runs
-    /// JS source and hot updates. `nsh-dev.wasm`.
+    /// development bundles on the browser's JavaScript engine, with hot
+    /// updates. `nsh-dev.wasm`.
     Dev,
 }
 
@@ -346,7 +347,6 @@ impl WebKind {
     pub(crate) fn file(self) -> &'static str {
         match self {
             WebKind::Browser => "nsh-browser.wasm",
-            WebKind::Lite => "nsh-browser-lite.wasm",
             WebKind::Dev => "nsh-dev.wasm",
         }
     }
@@ -354,43 +354,15 @@ impl WebKind {
     /// The features `nsh-platform-web` is built with for it.
     pub(crate) fn features(self) -> &'static [&'static str] {
         match self {
-            WebKind::Browser => &["--no-default-features", "--features", "browser"],
-            WebKind::Lite => &["--no-default-features", "--features", "browser-core"],
-            WebKind::Dev => &["--features", "dev"],
+            WebKind::Browser => &["--no-default-features", "--features", "browser,linkable"],
+            WebKind::Dev => &["--no-default-features", "--features", "dev"],
         }
     }
 }
 
-/// The web runtime `nsh package --target web` ships: the lite one when
-/// `lite` (the app uses nothing else) and this CLI has one (its
-/// distribution's, or this checkout's, built now), else the full one.
-pub(crate) fn package_web(lite: bool) -> anyhow::Result<(WebRuntime, WebKind)> {
-    if lite && crate::rust_app::current().is_none() && has_lite()? {
-        let mut runtime = web(WebKind::Lite, true)?.context("no web runtime")?;
-        // It has nothing that highlights code.
-        runtime.syntaxes = None;
-        return Ok((runtime, WebKind::Lite));
-    }
-    let runtime = web(WebKind::Browser, true)?.context("no web runtime")?;
-    Ok((runtime, WebKind::Browser))
-}
-
-/// Whether there is a lite web runtime: in `NSH_RUNTIME` or the
-/// distribution, or a checkout that builds one.
-fn has_lite() -> anyhow::Result<bool> {
-    if let Some(root) = env::var_os("NSH_RUNTIME") {
-        return Ok(PathBuf::from(root)
-            .join("web")
-            .join(WebKind::Lite.file())
-            .exists());
-    }
-    let exe = cli_exe()?;
-    let bin = exe.parent().context("cli has no parent directory")?;
-    Ok(bin
-        .join("../runtime/web")
-        .join(WebKind::Lite.file())
-        .exists()
-        || checkout(bin).is_some())
+/// The web runtime `nsh package` links an app's from ([`WebKind::Browser`]).
+pub(crate) fn package_web() -> anyhow::Result<WebRuntime> {
+    web(WebKind::Browser, true)?.context("no web runtime")
 }
 
 /// The web runtime `nsh test --target web` runs apps in: the development
@@ -457,7 +429,8 @@ pub(crate) fn web(kind: WebKind, build: bool) -> anyhow::Result<Option<WebRuntim
             .args(["--target", WASM])
             .current_dir(&root);
         web_build_flags(&mut command);
-        // QuickJS' archive needs an `ar` that knows WebAssembly objects.
+        // The C code of the dependencies (zstd) needs an `ar` that knows
+        // WebAssembly objects.
         let ar = format!("AR_{}", WASM.replace('-', "_"));
         if env::var_os(&ar).is_none() && env::var_os("AR").is_none() {
             command.env(&ar, "llvm-ar");
@@ -692,13 +665,9 @@ mod tests {
         use super::WebKind;
         assert_eq!(
             WebKind::Browser.features(),
-            ["--no-default-features", "--features", "browser"]
+            ["--no-default-features", "--features", "browser,linkable"]
         );
-        assert_eq!(
-            WebKind::Lite.features(),
-            ["--no-default-features", "--features", "browser-core"]
-        );
-        assert_eq!(WebKind::Lite.file(), "nsh-browser-lite.wasm");
+        assert_eq!(WebKind::Browser.file(), "nsh-browser.wasm");
     }
 
     #[test]

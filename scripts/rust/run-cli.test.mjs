@@ -42,9 +42,17 @@ test('development builds select capabilities once for the CLI and worker, then r
     if (command === 'cargo') child.stdout = new PassThrough();
     queueMicrotask(() => {
       if (child.stdout) {
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'build-script-executed',
+            package_id: 'cli-source',
+            out_dir: join(tmpdir(), 'cli-source/out'),
+          }) + '\n',
+        );
         child.stdout.end(
           JSON.stringify({
             reason: 'compiler-artifact',
+            package_id: 'cli-source',
             target: { name: 'maka', kind: ['bin'] },
             executable,
           }) + '\n',
@@ -130,9 +138,17 @@ test('desktop development stages the current macOS shell before starting Maka', 
       assert.ok(args.includes('maka-desktop-shell'));
       child.stdout = new PassThrough();
       queueMicrotask(() => {
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'build-script-executed',
+            package_id: 'cli-source',
+            out_dir: join(tmpdir(), 'cli-source/out'),
+          }) + '\n',
+        );
         child.stdout.end(
           JSON.stringify({
             reason: 'compiler-artifact',
+            package_id: 'cli-source',
             target: { name: 'maka', kind: ['bin'] },
             executable,
           }) + '\n',

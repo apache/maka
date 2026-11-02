@@ -1,5 +1,15 @@
 //! Global WebSocket transport selection. The browser uses its host service;
 //! native hosts retain the VM-owned tungstenite transport.
+//!
+//! As a browser's, the constructor throws only for a wrong use (a bad URL
+//! or protocol: `SyntaxError`); a URL the app's network capabilities do
+//! not grant opens no connection, and the socket fires `error` and then
+//! `close` (code 1006, not clean), as a refused connection does; so does
+//! one the host refuses (a test's network,
+//! `nsh_core::element::System::refuse_connections`). A used-up
+//! quota (32 WebSockets per VM, shared with the `websocket` module) throws
+//! `ERR_NSH_QUOTA_EXCEEDED`, a platform without WebSockets
+//! `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`.
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "websocket_native.rs"]
 mod native;
@@ -11,11 +21,108 @@ use std::{
     task::{Poll, Waker},
 };
 
-use nsh_core::websocket::{WebSocketData, WebSocketEvent, WebSocketRequest, WebSocketTask};
+use nsh_core::{
+    element::{IntoThrown, JsError, codes},
+    websocket::{WebSocketData, WebSocketEvent, WebSocketRequest, WebSocketTask},
+};
 use rquickjs::{Ctx, Exception, Function, Object, Result, Value, function::Func};
 
 const MAX_MESSAGE: usize = 8 * 1024 * 1024;
 const QUEUE: usize = 32;
+
+/// Throws `error` with its class and properties (`code`, ...).
+fn throw(cx: &Ctx<'_>, error: JsError) -> rquickjs::Error {
+    let raw = cx.as_raw().as_ptr();
+    let value = crate::classes::error_value(raw, &error.into_thrown());
+    let _ = crate::web::js::throw(raw, value);
+    rquickjs::Error::Exception
+}
+
+/// The VM's place for one more WebSocket (shared with the `websocket`
+/// module), or the thrown `ERR_NSH_QUOTA_EXCEEDED`.
+fn slot(cx: &Ctx<'_>) -> Result<nsh_core::element::Held> {
+    use nsh_core::runtime::{MAX_WEBSOCKETS, WEBSOCKETS};
+    crate::dom::shared(cx.as_raw().as_ptr())
+        .system_quotas
+        .take(WEBSOCKETS, MAX_WEBSOCKETS)
+        .ok_or_else(|| {
+            throw(
+                cx,
+                JsError::Error(format!(
+                    "At most {MAX_WEBSOCKETS} concurrent WebSockets are allowed per VM"
+                ))
+                .with_code(codes::QUOTA_EXCEEDED),
+            )
+        })
+}
+
+/// A quota of one socket is used up (its queue, its buffered bytes).
+fn exceeded(cx: &Ctx<'_>, message: &str) -> rquickjs::Error {
+    throw(
+        cx,
+        JsError::Error(message.to_owned()).with_code(codes::QUOTA_EXCEEDED),
+    )
+}
+
+/// Why a WebSocket to `url` opens no connection: the app's capabilities do
+/// not grant it.
+fn denial(url: &url::Url) -> String {
+    format!(
+        "a WebSocket to `{url}` is not granted; add its host to capabilities.network.hosts or a GET rule in capabilities.network.http"
+    )
+}
+
+/// Why the host refuses a WebSocket to `url` before it reaches the network
+/// (a test's network: `nsh_core::element::System::refuse_connections`), if
+/// it does.
+fn host_refusal(cx: &Ctx<'_>, url: &url::Url) -> Option<String> {
+    let refuse = crate::dom::shared(cx.as_raw().as_ptr())
+        .system_refuse_connections
+        .borrow()
+        .clone()?;
+    Some(refuse(url.as_str()).message().to_owned())
+}
+
+/// The transport of a WebSocket that opens no connection: as a browser's
+/// refused connection, it fires `error` (with `message`) and then `close`
+/// (1006, not clean) after the constructor returns, so the app's handlers
+/// set in the same turn hear them.
+fn refused<'js>(cx: Ctx<'js>, callback: Function<'js>, message: String) -> Result<Object<'js>> {
+    let handle = Object::new(cx.clone())?;
+    handle.set("bufferedAmount", Func::from(|| 0usize))?;
+    handle.set("send", Func::from(|_: Value<'js>| -> Result<()> { Ok(()) }))?;
+    handle.set(
+        "close",
+        Func::from(|_: u16, _: String| -> Result<()> { Ok(()) }),
+    )?;
+    let task_cx = cx.clone();
+    cx.spawn(async move {
+        let mut yielded = false;
+        std::future::poll_fn(|cx| {
+            if yielded {
+                Poll::Ready(())
+            } else {
+                yielded = true;
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        })
+        .await;
+        if deliver(&task_cx, &callback, WebSocketEvent::Error(message), &[]).is_ok() {
+            let _ = deliver(
+                &task_cx,
+                &callback,
+                WebSocketEvent::Close {
+                    code: 1006,
+                    reason: String::new(),
+                    was_clean: false,
+                },
+                &[],
+            );
+        }
+    });
+    Ok(handle)
+}
 
 #[derive(Default)]
 struct Events {
@@ -44,10 +151,12 @@ pub(crate) fn connect(
         #[cfg(not(target_arch = "wasm32"))]
         return native::connect(cx, url, protocols, callback);
         #[cfg(target_arch = "wasm32")]
-        return Err(crate::web::js::type_error(
-            cx,
-            "The host has no WebSocket transport configured",
-        ));
+        {
+            let error = JsError::Error("The host has no WebSocket transport configured".into())
+                .with_code(codes::UNAVAILABLE);
+            let value = crate::classes::error_value(cx, &error.into_thrown());
+            return Err(crate::web::js::throw(cx, value));
+        }
     };
     // SAFETY: the caller lends a live context for this operation.
     let rq = unsafe { Ctx::from_raw(std::ptr::NonNull::new(cx).expect("a live context")) };
@@ -87,53 +196,46 @@ fn open<'js>(
         .borrow()
         .allows_websocket(parsed.as_str())
     {
-        return Err(Exception::throw_type(
-            &cx,
-            "WebSocket network capability denied",
-        ));
+        return refused(cx, callback, denial(&parsed));
     }
-    use nsh_core::runtime::{MAX_WEBSOCKETS, WEBSOCKETS};
-    let slot = shared
-        .system_quotas
-        .take(WEBSOCKETS, MAX_WEBSOCKETS)
-        .ok_or_else(|| {
-            Exception::throw_range(
-                &cx,
-                &format!("At most {MAX_WEBSOCKETS} concurrent WebSockets are allowed per VM"),
-            )
-        })?;
+    if let Some(message) = host_refusal(&cx, &parsed) {
+        return refused(cx, callback, message);
+    }
+    let slot = slot(&cx)?;
     let events = Rc::new(RefCell::new(Events::default()));
     let incoming = events.clone();
-    let task = transport
-        .connect(
-            WebSocketRequest {
-                url: parsed.to_string(),
-                protocols: protocols.clone(),
-                headers: Vec::new(),
-            },
-            Box::new(move |event| {
-                let mut queue = incoming.borrow_mut();
-                if queue.cancelled || queue.overflow {
-                    return;
-                }
-                let size = match &event {
-                    WebSocketEvent::Message(WebSocketData::Text(text)) => text.len(),
-                    WebSocketEvent::Message(WebSocketData::Bytes(bytes)) => bytes.len(),
-                    _ => 0,
-                };
-                if queue.pending.len() >= QUEUE
-                    || size > MAX_MESSAGE
-                    || queue.bytes.saturating_add(size) > MAX_MESSAGE
-                {
-                    queue.overflow = true;
-                } else {
-                    queue.bytes += size;
-                    queue.pending.push_back(event);
-                }
-                queue.wake();
-            }),
-        )
-        .map_err(|error| Exception::throw_type(&cx, &error))?;
+    let task = match transport.connect(
+        WebSocketRequest {
+            url: parsed.to_string(),
+            protocols: protocols.clone(),
+            headers: Vec::new(),
+        },
+        Box::new(move |event| {
+            let mut queue = incoming.borrow_mut();
+            if queue.cancelled || queue.overflow {
+                return;
+            }
+            let size = match &event {
+                WebSocketEvent::Message(WebSocketData::Text(text)) => text.len(),
+                WebSocketEvent::Message(WebSocketData::Bytes(bytes)) => bytes.len(),
+                _ => 0,
+            };
+            if queue.pending.len() >= QUEUE
+                || size > MAX_MESSAGE
+                || queue.bytes.saturating_add(size) > MAX_MESSAGE
+            {
+                queue.overflow = true;
+            } else {
+                queue.bytes += size;
+                queue.pending.push_back(event);
+            }
+            queue.wake();
+        }),
+    ) {
+        Ok(task) => task,
+        // The host refused it: as a connection that failed.
+        Err(error) => return refused(cx, callback, error),
+    };
     let task: Rc<RefCell<Option<Box<dyn WebSocketTask>>>> = Rc::new(RefCell::new(Some(task)));
     let handle = Object::new(cx.clone())?;
     let read_task = Rc::downgrade(&task);
@@ -191,21 +293,20 @@ fn open<'js>(
                     "WebSocket message exceeds 8 MiB",
                 ));
             }
-            let task = send_task
-                .upgrade()
-                .ok_or_else(|| Exception::throw_type(&cx, "WebSocket is closed"))?;
+            // A socket that is closing discards what is sent, as a
+            // browser's does: its `close` event follows.
+            let Some(task) = send_task.upgrade() else {
+                return Ok(());
+            };
             let mut task = task.borrow_mut();
-            let task = task
-                .as_mut()
-                .ok_or_else(|| Exception::throw_type(&cx, "WebSocket is closed"))?;
+            let Some(task) = task.as_mut() else {
+                return Ok(());
+            };
             if task.buffered_amount().saturating_add(size) > MAX_MESSAGE {
-                return Err(Exception::throw_range(
-                    &cx,
-                    "WebSocket buffered data exceeds 8 MiB",
-                ));
+                return Err(exceeded(&cx, "WebSocket buffered data exceeds 8 MiB"));
             }
             task.send(data)
-                .map_err(|error| Exception::throw_type(&cx, &error))
+                .map_err(|error| throw(&cx, JsError::Error(error)))
         }),
     )?;
     let close_task = Rc::downgrade(&task);
@@ -217,7 +318,7 @@ fn open<'js>(
                     && let Some(task) = task.borrow_mut().as_mut()
                 {
                     task.close(code, &reason)
-                        .map_err(|error| Exception::throw_type(&cx, &error))?;
+                        .map_err(|error| throw(&cx, JsError::Error(error)))?;
                 }
                 Ok(())
             },
@@ -418,6 +519,7 @@ mod tests {
         fn buffered_amount(&self) -> usize {
             0
         }
+        fn pause(&mut self, _: bool) {}
     }
     impl Drop for Task {
         fn drop(&mut self) {
@@ -514,7 +616,11 @@ mod tests {
     #[test]
     fn service_transport_denies_capabilities_before_host_connect() {
         let host = host();
-        host.eval_source("let denied=false;try{new WebSocket('ws://example.org/')}catch(e){denied=String(e).includes('capability denied')}if(!denied)throw Error('permission escaped');").unwrap();
+        // No throw: the handlers set after the constructor hear `error` and
+        // `close` (evaluating runs the turn's jobs, which deliver them).
+        host.eval_source("globalThis.events=[];const s=new WebSocket('ws://example.org/');globalThis.before=[events.length,s.readyState];s.onerror=e=>events.push(e.type);s.onclose=e=>events.push(e.code,e.wasClean,s.readyState);").unwrap();
+        host.run_jobs();
+        host.eval_source("const seen=JSON.stringify([before,events]);if(seen!=='[[0,0],[\"error\",1006,false,3]]')throw Error(seen);").unwrap();
         CALLBACK.with(|callback| assert!(callback.borrow().is_none()));
     }
 }

@@ -91,7 +91,7 @@ impl Mark {
 
     /// `marks` as a set: sorted by rank.
     pub fn set_from(mut marks: Vec<Mark>) -> Vec<Mark> {
-        marks.sort_by_key(|m| m.ty.rank());
+        crate::sort::sort_by_key(&mut marks, |m| m.ty.rank());
         marks
     }
 

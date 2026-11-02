@@ -26,7 +26,9 @@
   `decay` takes `clamp: [min, max]` and `bounce`: at a bound it stops, or a new segment of the closed form starts from the
   bound at the exact time it got there with `-bounce` of its speed (frame-rate independent, several per frame if need be).
   Values have an offset (`setOffset` / `flattenOffset` / `extractOffset`, React Native's): they evaluate to value +
-  offset; drivers, `set` and gestures move the value. JS reads a node back with `getValue()` (and `stop()`'s promise):
+  offset; drivers, `set` and gestures move the value. A node is evaluated once for each state of the graph
+  (`Graph::eval` keeps its value until an op, a `set`, a settling or a frame changes the graph), so a node many read
+  (the time, a shared track) costs one evaluation a frame. JS reads a node back with `getValue()` (and `stop()`'s promise):
   `AnimationOp::Read` answers with a `Finished` carrying `value`, through the same path as animation ends (Rust
   components: `AnimatedValue::value()`, its request id odd, answered in `Core::animations_finished`).
   `Easing.sample`, `Animated.sampleSpring` / `sampleDecay` return the curves from `nsh_core::animation::sample_easing` /
@@ -75,14 +77,53 @@
 - **Layout animation**: `LayoutAnimation.configureNext(config)` (or the `easeInEaseOut` / `linear` / `spring` presets) animates
   the next commit's frames, insertions and removals natively. The presets are `LayoutAnimation::EASE_IN_EASE_OUT` /
   `LINEAR` / `SPRING` in Rust (what Rust components pass to `animate_layout`), handed to `nsh`'s `LayoutAnimation` as data; the config's
-  decoding and types come from the same module.
+  decoding and types come from the same module. That animates every frame of the commit, app-wide; a component that
+  sizes one region (a reveal) scopes it with `ElementRef::animate_layout(transition)`, `Command::LayoutAnimation`
+  sent to the region's node: only the frames its change moves animate (its subtree's, its ancestors' children, and
+  the content of those that changed size). The platforms know nothing of the scope: before handing out the batch,
+  the core leads each run of frames with the layout animation it takes, an empty one for the rest
+  (`core/layout_scope.rs`), as the platforms animate a frame with the last `MountItem::LayoutAnimation` before it.
+  Insertions and removals are not scoped (their animations are decided per batch on iOS, Android and the web).
+- **A view that follows another** (`View::follow(target)`, `core/follow.rs`; `nsh/base`'s `Tabs` indicator): its frame
+  along its parent's main axis is the target's, placed by the core after layout, with no layout of its own and no
+  JS. Following another element runs its `follow_transition` as a layout animation of its own frame alone (a scope of
+  the follower's node in `core/layout_scope.rs`, without its ancestors' children: what changes around it in that
+  commit changes at once); the first placement and a layout that moves the target place it at once, in the same
+  batch. The component decides the transition, `None` under reduced motion (`Tabs`: `spring_move`'s spring,
+  `LayoutCurve::Spring { damping: 0.85 }` over 362 ms). A follower hidden (`display: none`) forgets where it was, so
+  shown again it is placed at once. A target that changes size in the commit that makes it the target is followed
+  to its new frame, animated once; a resize sends no layout animation item. With no follower the pass returns at
+  once and `set_frame` notes nothing (`nothing_follows_while_no_view_follows_an_element`).
 - **Desktop backends** (Windows, GPUI, Linux, macOS): one platform-free copy of what they animate. `nsh_core::transition`
   holds a view's layout animation, style transition and keyframes (`Live`: curves, springs, interpolation of frames,
   colors, transforms, shadows and corner radii, timing), which each backend steps on its frame clock and applies to its
-  own views; `nsh_core::animation::Animator` holds the graph with its bindings to views, gestures and scroll views
+  own views; a text's color, which lives in its typeset runs rather than its style, transitions as a color the backend
+  draws the whole text in over its runs (`Live::text_color`, `transition::recolor`: when the text is one color before
+  and after), the way it draws an animated `color`, so no frame typesets the text again; `nsh_core::animation::Animator` holds the graph with its bindings to views, gestures and scroll views
   and hands each bound view its `AnimValues`.
+- **Mobile backends**: style transitions are the platform's (Core Animation on iOS, `ValueAnimator`s in
+  `Mounter.java` on Android). A text's color follows the same rules as on the desktops and is drawn the same way,
+  over the laid-out lines in an in-between color, as an animated `color` is: iOS steps a `transition::TextColor` per
+  text (`transition::recolor` decides) on a display link that runs only while one moves (`interaction.rs`
+  `TextColors`); on Android the `TEXT` item carries the text's one color (`uniform_color`) and `TextBox.recolor`
+  runs a `ValueAnimator` on the view's transition (reduced motion: animators off, at once).
 - **Web**: animated values run in Rust as elsewhere; layout animations, transitions, keyframes and screen transitions
-  are Web Animations and CSS made to match the Linux backend (`web.md` "Animation").
+  are Web Animations and CSS made to match the Linux backend (`web.md` "Animation"); a text's color is a CSS
+  transition of its element's `color`, which its runs inherit.
+
+## Pointer-driven motion follows the pointer
+
+What the pointer drives follows it in the same frame: a hover's cross line, dots and tooltip, a dragged thumb, a
+scroll bar's thumb, a resize handle, a color area's knob, a dragged column, a dock's drag preview, a swiped toast or
+sheet. The component sets it (`AnimatedValue::set`, a style, `pan_values`) from the event, never eases or springs it
+toward the pointer: a position that trails the hand reads as dropped frames. Transitions and springs are for discrete
+changes: a step of the keys (a plot's hover glides to the next row on `motion.pointer`), snapping to a row or a slot
+as the pointer enters or leaves it, the app setting a value, a release (a swipe settles or flies off), entering and
+exiting (the hover's fade), and data changes. "Follows the hand and still animates" is that split: a plot's cross
+line snaps to the row under the pointer at once while its fade in and out animate. The app's transitions on a part
+the component moves (`transition-all` on a scroll bar's thumb) must not reach the moving property: the component
+moves a wrapper of its own (`scrollbar.rs`'s holder). Tests assert it: a pointer move starts no animation
+(`nsh-base/tests/base/plot.rs`).
 
 ## Compared with gpui-base's motion
 
@@ -102,7 +143,7 @@ maps to what:
 | `Sequence` | `Animated.sequence` / `Animation::sequence` (each step starts at the exact end of the one before) |
 | `Stagger` / `StaggerOrigin` (first, last, center, index) | `Animated.stagger(ms, list, { from })` / `Animation::stagger_from`, `StaggerFrom` |
 | `Presence` / `PresencePhase` (keeps content mounted while it exits) | `createMotion({ enter })` / `motion().entering(..)` for entrances, `await play(exit)` then removing the view for exits. Gap: no presence component that keeps a removed view mounted through its exit |
-| `MotionReveal` (measured vertical reveal, clipped) | Gap: not provided; buildable with an animated `maskImage`-style fade or `scaleY` on a clipped view, or a layout animation of the height (heights are not bindable to animated values) |
+| `MotionReveal` (measured vertical reveal, clipped) | `nsh/base`'s `Collapsible` `reveal`: a clip view between zero and the content's height whose change is a layout animation of the frames it moves (`ElementRef::animate_layout`; a critically damped spring of `spring_control`'s time), the content kept until it has closed (`docs/dev/components.md` "Children, slots and rows"). Heights are not bindable to animated values, so a reveal is a layout animation, not a progress the app drives; no reveal element of its own yet |
 | Reduced motion (transitions and springs snap) | Motions land at their end; the low-level `Animated` / `timing` / `keyframes` play as written and apps choose with `reduce_motion()` |
 | `MotionTransform` (translation, scale, rotation, opacity bundle) | A `Motion`'s channels (opacity, translate X / Y, rotate, rotate X / Y, scale, scale X / Y), bound with `style={m.style}` / `bind_motion` |
 

@@ -13,7 +13,7 @@ mod tiptap;
 mod typing;
 mod view_features;
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use nsh_base::rich_editor::{
     extensions::{markdown::markdown, starter, suggestion::mention_node},
@@ -22,7 +22,7 @@ use nsh_base::rich_editor::{
     view::{EditorSession, NodeView, NodeViewCx, NodeViews, rich_editor},
 };
 use nsh_core::{
-    PasteEvent, Size,
+    PasteEvent, PayloadValue, Size,
     element::Root,
     platform::{Idiom, Os},
     prelude::*,
@@ -178,6 +178,41 @@ fn keys(app: &mut Headless, list: &[&str]) {
     for k in list {
         app.press_key(k).unwrap();
     }
+}
+
+/// An input method's composition in the editor's sink: started or
+/// changed (`composing`) with `text`, or ended. The headless driver has
+/// no composition step and does not expose an input's node id, so the
+/// event goes to every node; only the sink listens to it.
+fn compose(app: &mut Headless, composing: bool, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::CompositionChange,
+            EventPayload::Map(vec![
+                ("composing", PayloadValue::Bool(composing)),
+                ("text", PayloadValue::Str(text.to_owned())),
+            ]),
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
+}
+
+/// The sink's text changed to `text`, as platforms report it while an
+/// input method composes (the uncommitted text in it). Sent to every node,
+/// as [`compose`] is.
+fn sink_text(app: &mut Headless, text: &str) {
+    for id in 1..4096 {
+        app.engine().control().dispatch_event(
+            id,
+            EventKind::ChangeText,
+            EventPayload::Text {
+                text: text.to_owned(),
+                count: 0,
+            },
+        );
+    }
+    app.wait(Duration::from_millis(50)).unwrap();
 }
 
 #[test]

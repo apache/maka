@@ -32,10 +32,13 @@ mod journal;
 mod preparation;
 mod provider;
 use crate::tool_call::ToolCallIdentity;
-pub use journal::ToolJournal;
+pub use journal::{
+    AdmittedTool, ApprovalContinuation, PublishedTool, ToolContinuation, ToolJournal,
+};
 pub use preparation::{
-    EffectAdmission, ExecutionCustody, PreparationFuture, PreparedEffect, ToolCallContext,
-    ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
+    ApprovalAnswerFuture, EffectAdmission, EstablishNativeApproval, EstablishedApproval, Execute,
+    ExecutionCustody, PreparationFuture, PreparedEffect, PreparedExecution, PreparedNativeApproval,
+    ToolCallContext, ToolHandler, ToolNesting, ToolPreparer, ToolRegistration, ToolSemantics,
 };
 pub use provider::{ModelToolContext, ProviderTool, ProviderToolProtocol};
 
@@ -61,11 +64,25 @@ pub enum FreeformGrammar {
     Lark { definition: String },
 }
 
+/// A known native-tool failure whose JavaScript error properties are preserved.
+#[derive(Clone, Debug, Serialize, Deserialize, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
+#[error("{message}")]
+pub struct NativeToolError {
+    pub name: String,
+    pub code: i32,
+    pub error_name: String,
+    pub message: String,
+}
+
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ToolError {
     /// An ordinary tool failure with a known outcome.
     #[error("tool failed: {0}")]
     Failed(String),
+    /// An ordinary native failure with a known outcome, not effect uncertainty.
+    #[error(transparent)]
+    Native(Box<NativeToolError>),
     /// A completed filesystem operation that failed before making its effect.
     #[error("tool I/O failed: {message}")]
     Io {
@@ -74,7 +91,7 @@ pub enum ToolError {
     },
     #[error("tool persistence failed: {0}")]
     Persistence(String),
-    /// The worker has stopped; its external effect cannot be confirmed.
+    /// The external effect cannot be confirmed; cleanup is tracked separately.
     #[error("tool effect outcome unknown: {0}")]
     OutcomeUnknown(String),
     /// Exact application receipt is durable evidence, never model error text.
@@ -140,6 +157,7 @@ impl ToolExecutor for JournaledTools {
             ToolCallIdentity::standalone(Uuid::new_v4().to_string()),
             name,
             input,
+            None,
             cancellation,
             move |cancellation| executor.invoke(effect_name, effect_input, cancellation),
         )

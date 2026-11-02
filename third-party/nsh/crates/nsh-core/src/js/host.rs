@@ -702,8 +702,8 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
     (
         EventKind::Error,
         on::IMAGE | on::WEBVIEW | on::VIDEO,
-        "(e: { message: string }) => void",
-        "",
+        "(e: { message: string; code?: string }) => void",
+        "The source failed to load. `code` is `\"ERR_ACCESS_DENIED\"` when the app's capabilities do not grant it (an image's or video's URL: `network`; a web view's page or `html`: `webview`).",
     ),
     (
         EventKind::LoadEnd,
@@ -875,6 +875,8 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::Host,
     EventKind::Pick,
     EventKind::OpenUrl,
+    EventKind::ScreenColor,
+    EventKind::FileRequest,
     EventKind::KeyCommand,
     EventKind::Menu,
     EventKind::ViewableItemsChange,
@@ -914,7 +916,7 @@ const GROUPS: &[(u32, &str, &str)] = &[
 /// The declarations of the host elements' props: the named types they use
 /// and one interface per element group and platform (`InputHostProps`,
 /// `IOSInputHostProps`, ...), which the element types and the components
-/// of `nsh/webview`, `nsh/video`, ... extend.
+/// of `nsh` (`WebView`, `Video`, ...) extend.
 pub fn declarations() -> String {
     use std::fmt::Write as _;
     let mut types = TsTypes::default();

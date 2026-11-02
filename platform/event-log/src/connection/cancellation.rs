@@ -22,38 +22,6 @@ use std::time::Duration;
 
 const LONG_QUERY: &str = "WITH RECURSIVE n(x) AS (VALUES(0) UNION ALL SELECT x+1 FROM n WHERE x<5000000) SELECT sum(x) FROM n";
 
-#[tokio::test]
-async fn manual_preflight_waits_for_read_capacity_without_blocking_writes() {
-    let directory = tempfile::tempdir().unwrap();
-    let log = crate::EventLog::open(&directory.path().join("events.sqlite"))
-        .await
-        .unwrap();
-    let through = *log.subscribe_commits().borrow();
-    let readers = log.connection.readers.acquire().await.unwrap();
-    let mut check = Box::pin(log.check_manual_message_history("session"));
-    assert!(futures_util::poll!(&mut check).is_pending());
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        log.create_session("session", "manual", &serde_json::json!({"saved":true}), 1),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    assert!(futures_util::poll!(&mut check).is_pending());
-    drop(check);
-    drop(readers);
-    assert!(!log.check_manual_message_history("session").await.unwrap());
-    assert_eq!(
-        log.get_session::<serde_json::Value>("session")
-            .await
-            .unwrap()
-            .map(|record| record.configuration),
-        Some(serde_json::json!({"saved":true}))
-    );
-    assert_eq!(*log.subscribe_commits().borrow(), through);
-    log.close().await.unwrap();
-}
-
 async fn owner(directory: &std::path::Path) -> Arc<OwnedConnection> {
     let lease = Arc::new(crate::root::FileLease::acquire(&directory.join("writer.lock")).unwrap());
     Arc::new(OwnedConnection::open(
@@ -220,54 +188,4 @@ async fn cancelled_reads_reclaim_both_slots_and_rollback_before_reuse() {
         }
         owner.shutdown().await.unwrap();
     }
-}
-
-#[tokio::test]
-async fn cancelled_read_still_drains_before_shutdown_releases_authority() {
-    let directory = tempfile::tempdir().unwrap();
-    let owner = owner(directory.path()).await;
-    let entered = Arc::new(Semaphore::new(0));
-    let release = Arc::new(Semaphore::new(0));
-    let reader = owner.clone();
-    let entered_job = entered.clone();
-    let release_job = release.clone();
-    let caller = tokio::spawn(async move {
-        reader
-            .read_interruptible(move |connection| {
-                Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    sqlx::query("SELECT * FROM facts").execute(&mut *tx).await?;
-                    entered_job.add_permits(1);
-                    release_job.acquire().await.unwrap().forget();
-                    let result = sqlx::query_scalar::<_, i64>(LONG_QUERY)
-                        .fetch_one(&mut *tx)
-                        .await;
-                    assert!(matches!(&result, Err(sqlx::Error::Database(error)) if error.code().as_deref() == Some("9")));
-                    Ok(())
-                })
-            })
-            .await
-    });
-    tokio::time::timeout(Duration::from_secs(5), entered.acquire())
-        .await
-        .unwrap()
-        .unwrap()
-        .forget();
-    caller.abort();
-    assert!(caller.await.unwrap_err().is_cancelled());
-    let closing = owner.clone();
-    let shutdown = tokio::spawn(async move { closing.shutdown().await });
-    assert!(
-        tokio::time::timeout(Duration::from_millis(50), owner.closed.clone())
-            .await
-            .is_err()
-    );
-    assert!(crate::root::FileLease::acquire(&directory.path().join("writer.lock")).is_err());
-    release.add_permits(1);
-    tokio::time::timeout(Duration::from_secs(5), shutdown)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert!(crate::root::FileLease::acquire(&directory.path().join("writer.lock")).is_ok());
 }

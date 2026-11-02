@@ -19,7 +19,100 @@
 
 use super::*;
 
+pub(crate) struct ModelMetadataUpdate {
+    key: (String, String, MessageKind),
+    meta: acp::Meta,
+    pub update: acp::SessionUpdate,
+}
+
 impl Projection {
+    pub fn pending_model_positions(
+        &self,
+        steps: Option<&HashSet<String>>,
+    ) -> Vec<(
+        maka_agent_ports::session::history::RowPosition,
+        HistoryField,
+    )> {
+        let rows: Vec<_> = if let Some(steps) = steps {
+            steps
+                .iter()
+                .filter_map(|step| self.pending_models.get(step))
+                .collect()
+        } else {
+            self.pending_models.values().collect()
+        };
+        rows.into_iter()
+            .flat_map(|rows| rows.iter())
+            .map(|(position, kind)| {
+                (
+                    *position,
+                    if *kind == MessageKind::Thinking {
+                        HistoryField::Thinking
+                    } else {
+                        HistoryField::Body
+                    },
+                )
+            })
+            .collect()
+    }
+
+    pub fn acknowledge_models(&mut self, steps: Option<&HashSet<String>>) {
+        if let Some(steps) = steps {
+            for step in steps {
+                self.pending_models.remove(step);
+            }
+        } else {
+            self.pending_models.clear();
+        }
+    }
+
+    pub fn prepare_model_metadata(
+        &self,
+        chunk: &HistoryChunk,
+    ) -> Result<Option<ModelMetadataUpdate>, crate::Error> {
+        let kind = if chunk.field == HistoryField::Thinking {
+            MessageKind::Thinking
+        } else {
+            MessageKind::Text
+        };
+        let key = (chunk.turn_id.clone(), chunk.message_id.clone(), kind);
+        let message = self
+            .streams
+            .get(&key)
+            .ok_or("Model metadata has no canonical message")?;
+        let model = chunk.model.as_ref().map(serde_json::to_value).transpose()?;
+        if message.meta["maka"].get("model") == model.as_ref() {
+            return Ok(None);
+        }
+        let mut meta = message.meta.clone();
+        let metadata = meta
+            .get_mut("maka")
+            .and_then(Value::as_object_mut)
+            .expect("message metadata");
+        if let Some(model) = model {
+            metadata.insert("model".into(), model);
+        } else {
+            metadata.remove("model");
+        }
+        let update = if kind == MessageKind::Thinking {
+            acp::SessionUpdate::AgentThought(
+                acp::AgentThought::new(format!("thinking:{}", chunk.message_id)).meta(meta.clone()),
+            )
+        } else {
+            acp::SessionUpdate::AgentMessage(
+                acp::AgentMessage::new(chunk.message_id.clone()).meta(meta.clone()),
+            )
+        };
+        Ok(Some(ModelMetadataUpdate { key, meta, update }))
+    }
+
+    pub fn commit_model_metadata(&mut self, update: ModelMetadataUpdate) {
+        self.streams
+            .get_mut(&update.key)
+            .expect("retained canonical message")
+            .meta = update.meta;
+    }
+
     pub(super) fn replace_text(
         &mut self,
         turn: &str,
@@ -58,11 +151,13 @@ impl Projection {
                     .meta(metadata),
             ),
         };
+        let canonical = previous.is_some_and(|message| message.canonical);
         self.streams.insert(
             key,
             Message {
                 text: next.to_owned(),
                 meta,
+                canonical,
             },
         );
         vec![update]
@@ -72,50 +167,86 @@ impl Projection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn long_sessions_keep_every_message_instead_of_rejecting_total_history_size() {
-        let mut projection = Projection::default();
-        let text = "x".repeat(4096);
-        for i in 0..4200 {
-            let updates =
-                projection.append("turn", &format!("message-{i}"), &ContentKind::Text, &text);
-            assert_eq!(updates.len(), 1);
-            let update = serde_json::to_value(&updates[0]).unwrap();
-            assert_eq!(update["sessionUpdate"], "agent_message_chunk");
-            assert_eq!(update["messageId"], format!("message-{i}"));
-            assert_eq!(update["content"]["text"], text);
-        }
-        // Revisit an early message after the complete history has passed through.
-        let update = projection.append("turn", "message-0", &ContentKind::Text, "尾");
-        let update = serde_json::to_value(&update[0]).unwrap();
-        assert_eq!(update["messageId"], "message-0");
-        assert_eq!(update["content"]["text"], "尾");
-        let canonical = format!("{text}尾");
-        let chunk = HistoryChunk {
-            final_output: false,
-            has_references: false,
-            model: None,
-            origin: None,
-            compaction: None,
-            attachments: Vec::new(),
-            timing: None,
-            field: HistoryField::Body,
-            message_id: "message-0".into(),
+    fn preview_page(revision: u64, offset: u64, total_bytes: u64, text: &str) -> PreviewPage {
+        PreviewPage::Cut {
+            host_epoch: "epoch".into(),
+            invocation_id: "invocation".into(),
             turn_id: "turn".into(),
-            timestamp: 0,
-            role: Role::Assistant,
-            position: maka_agent_ports::session::history::RowPosition {
-                source_sequence: 1,
-                item_index: 0,
-            },
-            offset: 0,
-            total_bytes: canonical.len() as u64,
-            text: canonical,
-            tool: None,
-        };
+            step_id: "step".into(),
+            revision,
+            depends_on: 17,
+            first: offset == 0,
+            last: offset + text.len() as u64 == total_bytes,
+            parts: vec![maka_agent_api::contract::PreviewPart {
+                ordinal: Some(0),
+                message_id: "message".into(),
+                provider_part_id: Some("part".into()),
+                started_at: 0.0,
+                field: PreviewField::Text {
+                    text_kind: ContentKind::Text,
+                },
+                offset,
+                total_bytes,
+                text: text.into(),
+            }],
+        }
+    }
+
+    #[test]
+    fn paginated_preview_seed_replaces_once_then_suffix_appends_without_duplication() {
+        let mut projection = Projection::default();
         assert!(
-            projection.chunk(&chunk).unwrap().is_empty(),
-            "canonical replay must not duplicate the retained early message"
+            projection
+                .preview(&preview_page(1, 0, 8, "🦀"))
+                .unwrap()
+                .is_empty()
+        );
+        let seed = projection.preview(&preview_page(1, 4, 8, "中!")).unwrap();
+        let seed = serde_json::to_value(&seed[0]).unwrap();
+        assert_eq!(seed["sessionUpdate"], "agent_message");
+        assert_eq!(seed["content"][0]["text"], "🦀中!");
+        let suffix = projection.preview(&preview_page(2, 8, 9, "?")).unwrap();
+        let suffix = serde_json::to_value(&suffix[0]).unwrap();
+        assert_eq!(suffix["sessionUpdate"], "agent_message_chunk");
+        assert_eq!(suffix["content"]["text"], "?");
+        assert!(
+            projection
+                .preview(&preview_page(2, 0, 9, "🦀中!?"))
+                .unwrap()
+                .is_empty(),
+            "reconnect seed must replace the same ID without replaying its prefix"
+        );
+    }
+
+    #[test]
+    fn committed_message_and_closed_step_discard_unfinished_old_seed() {
+        let mut projection = Projection::default();
+        assert!(
+            projection
+                .preview(&preview_page(1, 0, 8, "🦀"))
+                .unwrap()
+                .is_empty()
+        );
+        projection.commit_preview("invocation", "step", Some("message"));
+        assert!(
+            projection
+                .preview(&preview_page(1, 4, 8, "中!"))
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            projection
+                .preview(&preview_page(2, 0, 9, "🦀中!?"))
+                .unwrap()
+                .is_empty()
+        );
+        let mut projection = Projection::default();
+        projection.commit_preview("invocation", "step", None);
+        assert!(
+            projection
+                .preview(&preview_page(1, 0, 8, "🦀中!"))
+                .unwrap()
+                .is_empty()
         );
     }
 
@@ -129,6 +260,7 @@ mod tests {
             "!"
         );
         let mut chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -184,6 +316,7 @@ mod tests {
     fn missing_history_fragment_is_rejected() {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -211,6 +344,7 @@ mod tests {
     fn attachment_only_user_message_keeps_safe_descriptions_during_replay() {
         let mut projection = Projection::default();
         let chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -264,6 +398,7 @@ mod tests {
     fn diagnostic_history_replays_as_marked_text_without_tool_metadata() {
         let mut projection = Projection::default();
         let mut chunk = HistoryChunk {
+            model_part: None,
             final_output: false,
             has_references: false,
             model: None,
@@ -301,5 +436,41 @@ mod tests {
         chunk.text.clear();
         chunk.total_bytes = 0;
         assert!(projection.chunk(&chunk).unwrap().is_empty());
+    }
+
+    #[test]
+    fn late_model_metadata_updates_the_accepted_body_without_replaying_it() {
+        let mut projection = Projection::default();
+        let mut chunk: HistoryChunk = serde_json::from_value(json!({
+            "messageId":"accepted", "turnId":"turn", "timestamp":1,
+            "position":{"sourceSequence":10,"itemIndex":0},
+            "field":"body","role":"assistant","offset":0,"totalBytes":7,"text":"你好!",
+            "modelPart":{"stepId":"step","ordinal":0},
+            "model":{"kind":"native","requestedModelId":"alias","reportedModelId":null}
+        }))
+        .unwrap();
+        projection.chunk(&chunk).unwrap();
+        assert_eq!(
+            projection.pending_model_positions(None),
+            vec![(chunk.position, HistoryField::Body)]
+        );
+        chunk.text = "你".into();
+        chunk.model = Some(maka_agent_ports::session::history::HistoryModel::Native {
+            requested_model_id: "alias".into(),
+            reported_model_id: Some("concrete".into()),
+        });
+        let update = projection.prepare_model_metadata(&chunk).unwrap().unwrap();
+        let value = serde_json::to_value(&update.update).unwrap();
+        assert_eq!(value["messageId"], "accepted");
+        assert_eq!(
+            value["_meta"]["maka"]["model"]["reportedModelId"],
+            "concrete"
+        );
+        assert!(value.get("content").is_none());
+        assert!(projection.prepare_model_metadata(&chunk).unwrap().is_some());
+        projection.commit_model_metadata(update);
+        assert!(projection.prepare_model_metadata(&chunk).unwrap().is_none());
+        projection.acknowledge_models(None);
+        assert!(projection.pending_model_positions(None).is_empty());
     }
 }

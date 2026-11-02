@@ -1216,7 +1216,7 @@ impl<M: TextEngine> Core<M> {
                 origin: m.page,
                 size: m.frame.size,
             }),
-            OverlayAnchor::Content(id) => self.content_bounds(id),
+            OverlayAnchor::Content(id) => self.content_bounds(self.content_anchor(id)),
         };
         let Some(anchor) = anchor else {
             return frame.origin;

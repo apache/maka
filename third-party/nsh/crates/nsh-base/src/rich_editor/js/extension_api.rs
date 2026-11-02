@@ -730,7 +730,7 @@ extension_classes! {
     Strike => "strike", "Strikethrough (`strike`): `Mod-Shift-s`, `~~text~~`; `setStrike`, `toggleStrike`, `unsetStrike`.";
     Code => "code", "Inline code (`code`): `Mod-e`, `` `text` ``; `setCode`, `toggleCode`, `unsetCode`.";
     Underline => "underline", "Underline (`underline`): `Mod-u`; `setUnderline`, `toggleUnderline`, `unsetUnderline`.";
-    Link => "link", "Links (`link`, `href` and `title`); its commands are `setLink`, `toggleLink`, `unsetLink`.";
+    RichLink => "link", "Links (`link`, Tiptap's `Link`: `href` and `title`); its commands are `setLink`, `toggleLink`, `unsetLink`.";
     Highlight => "highlight", "Highlights (`highlight`, with a `color`): `Mod-Shift-h`, `==text==`; `setHighlight`, `toggleHighlight`, `unsetHighlight`.";
     Subscript => "subscript", "Subscript (`subscript`): `Mod-,`; `setSubscript`, `toggleSubscript`, `unsetSubscript`.";
     Superscript => "superscript", "Superscript (`superscript`): `Mod-.`; `setSuperscript`, `toggleSuperscript`, `unsetSuperscript`.";

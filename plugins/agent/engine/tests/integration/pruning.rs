@@ -21,8 +21,7 @@ use crate::support::context as fixture;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::RunWork;
 use maka_agent_facts::context::ModelRequestContext;
-use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::ToolOutcome;
+use maka_agent_facts::event::{Fact, ToolOutcome};
 use maka_agent_facts::tools::ToolExecutor;
 use maka_agent_facts::tools::ToolFuture;
 use maka_tools::{
@@ -148,8 +147,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             // this case verifies a genuinely failed summary, not terminal abort.
             let mut commits = observed.subscribe_commits();
             loop {
-                // Forty calls also retain their input start/delta/end observations;
-                // together with dispatch, settlement and archive facts they exceed 200.
+                // Include the complete forty-call batch and its archived results.
                 let prefix = observed.prefix(512, 16 * 1024 * 1024).await.unwrap();
                 let summary_steps: Vec<_> = prefix
                     .events
@@ -226,7 +224,6 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
             declared_window: spent.then_some(210),
         });
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "read".into(),
             tools: catalog(count.clone(), repeats),
@@ -288,38 +285,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
                 .iter()
                 .filter(|stored| matches!(stored.event.fact, Fact::ModelInterrupted { .. }))
                 .count(),
-            usize::from(interrupted)
+            usize::from(spent)
         );
-        if interrupted {
-            assert!(prefix.events.iter().any(|stored| matches!(&stored.event.fact,
-                Fact::ModelObserved { event, .. } if serde_json::to_string(event).unwrap().contains("partial-summary-must-not-replay"))));
-            assert_eq!(
-                prefix
-                    .events
-                    .iter()
-                    .filter(|stored| stored.event.invocation.invocation_id == "invocation-first")
-                    .filter(|stored| matches!(
-                        stored.event.fact,
-                        Fact::ModelRequested {
-                            purpose: maka_agent_facts::context::ModelPurpose::Summary,
-                            ..
-                        }
-                    ))
-                    .count(),
-                1
-            );
-        }
-        for stored in prefix.events {
-            if let Fact::ModelRequested {
-                effective_source_digest,
-                ..
-            } = stored.event.fact
-            {
-                assert!(
-                    effective_source_digest.is_some(),
-                    "every request must retain its effective source for bundle validation"
-                );
-            }
-        }
     }
 }

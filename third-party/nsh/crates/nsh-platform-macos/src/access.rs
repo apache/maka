@@ -91,6 +91,8 @@ struct AxState {
     enabled: bool,
     selected: bool,
     expanded: bool,
+    /// A tree item's depth below the top (AppKit's disclosure level).
+    disclosure: Option<u32>,
     /// The children are hidden as a group (`grouped`, or the view is
     /// hidden): the view answers none ([`hides_children`]).
     grouped: bool,
@@ -104,6 +106,8 @@ enum Ax {
     /// No element.
     Generic,
     Button,
+    /// A button that stays on or off (`accessibilityState.pressed`).
+    Toggle,
     Link,
     Text,
     Image,
@@ -132,6 +136,12 @@ enum Ax {
     Alert,
     Status,
     Timer,
+    /// A landmark of a section (ARIA's `region`).
+    Region,
+    /// A landmark of navigation (ARIA's `navigation`).
+    Navigation,
+    /// An item of a tree.
+    TreeItem,
 }
 
 /// A view's value.
@@ -161,6 +171,8 @@ struct Spec {
     disabled: bool,
     selected: bool,
     expanded: Option<bool>,
+    /// A tree item's level (1 at the top).
+    level: Option<u32>,
     /// Hidden with its subtree.
     hidden: bool,
     /// One element: its children are not exposed.
@@ -353,6 +365,10 @@ fn apply(view: &NSView, spec: &Spec, was: &AxState) -> AxState {
     let enabled = !spec.disabled;
     let selected = spec.selected;
     let expanded = spec.expanded.unwrap_or(false);
+    let disclosure = spec
+        .level
+        .filter(|_| spec.role == Ax::TreeItem)
+        .map(|l| l.saturating_sub(1));
     let grouped = spec.grouped || spec.hidden;
 
     // The role group: a different role is a different kind of element.
@@ -403,6 +419,9 @@ fn apply(view: &NSView, spec: &Spec, was: &AxState) -> AxState {
     if was.expanded != expanded {
         view.setAccessibilityExpanded(expanded);
     }
+    if was.disclosure != disclosure {
+        view.setAccessibilityDisclosureLevel(disclosure.unwrap_or(0) as isize);
+    }
     AxState {
         element,
         hidden: spec.hidden,
@@ -413,6 +432,7 @@ fn apply(view: &NSView, spec: &Spec, was: &AxState) -> AxState {
         enabled,
         selected,
         expanded,
+        disclosure,
         grouped,
         range: (min, max),
     }
@@ -455,6 +475,12 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
         match role {
             Ax::Generic => (None, None),
             Ax::Button => (constant(NSAccessibilityButtonRole), None),
+            // WebKit's toggle button (ARIA's `aria-pressed`): a checkbox
+            // whose value is on or off, read as "toggle button".
+            Ax::Toggle => (
+                constant(NSAccessibilityCheckBoxRole),
+                constant(NSAccessibilityToggleSubrole),
+            ),
             Ax::Link => (constant(NSAccessibilityLinkRole), None),
             Ax::Text => (constant(NSAccessibilityStaticTextRole), None),
             Ax::Image => (constant(NSAccessibilityImageRole), None),
@@ -506,6 +532,18 @@ fn ax_role(role: Ax) -> (Option<Retained<NSString>>, Option<Retained<NSString>>)
                 constant(NSAccessibilityGroupRole),
                 named("AXApplicationTimer"),
             ),
+            Ax::Region => (
+                constant(NSAccessibilityGroupRole),
+                named("AXLandmarkRegion"),
+            ),
+            Ax::Navigation => (
+                constant(NSAccessibilityGroupRole),
+                named("AXLandmarkNavigation"),
+            ),
+            // As an option: AppKit's outline rows need the outline's rows
+            // and columns; an item of a tree is static text that reports
+            // its expanded state and its disclosure level.
+            Ax::TreeItem => (constant(NSAccessibilityStaticTextRole), None),
         }
     }
 }
@@ -524,10 +562,15 @@ fn spec_for(
     let label = a.label.as_deref().or(text).map(str::to_owned);
     let checkable = matches!(
         role,
-        Ax::CheckBox | Ax::Switch | Ax::Radio | Ax::MenuItem | Ax::Button | Ax::Tab
+        Ax::CheckBox | Ax::Switch | Ax::Radio | Ax::MenuItem | Ax::Button | Ax::Tab | Ax::Toggle
     );
     let value_text = a.value.as_ref().and_then(|v| v.text.as_deref());
-    let (label, value) = match (role, &a.value, a.state.checked) {
+    // A toggle button's value is its pressed state.
+    let checked = match role {
+        Ax::Toggle => a.state.pressed,
+        _ => a.state.checked,
+    };
+    let (label, value) = match (role, &a.value, checked) {
         (r, Some(v), _) if is_range(r) => (
             label,
             Value::Range {
@@ -546,7 +589,7 @@ fn spec_for(
             }),
         ),
         // VoiceOver reads static text's value, not its label.
-        (Ax::Text | Ax::Heading | Ax::Option, _, _) => (
+        (Ax::Text | Ax::Heading | Ax::Option | Ax::TreeItem, _, _) => (
             None,
             label.map_or(Value::None, |l| match value_text {
                 Some(v) => Value::Text(format!("{l}, {v}")),
@@ -566,6 +609,7 @@ fn spec_for(
         disabled: a.state.disabled,
         selected: a.state.selected,
         expanded: a.state.expanded,
+        level: a.level,
         hidden: a.hidden || invisible,
         grouped: a.accessible == Some(true) && kind != ViewKind::Text,
     }
@@ -573,6 +617,18 @@ fn spec_for(
 
 /// The element a view of `kind` is, with press handlers or not.
 fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
+    let role = base_role(a, kind, pressable);
+    // A button with a pressed state is a toggle button, as browsers make
+    // ARIA's `aria-pressed`.
+    if role == Ax::Button && a.state.pressed.is_some() {
+        Ax::Toggle
+    } else {
+        role
+    }
+}
+
+/// [`role_for`], whatever the pressed state.
+fn base_role(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
     match a.role {
         Role::None => match kind {
             ViewKind::Text => Ax::Text,
@@ -595,7 +651,7 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::Combobox => Ax::ComboBox,
         Role::Menu => Ax::Menu,
         Role::Menubar => Ax::MenuBar,
-        Role::Menuitem => Ax::MenuItem,
+        Role::Menuitem | Role::MenuItemCheckbox | Role::MenuItemRadio => Ax::MenuItem,
         Role::Progressbar => Ax::Progress,
         Role::Radio => Ax::Radio,
         Role::Radiogroup => Ax::RadioGroup,
@@ -611,7 +667,12 @@ fn role_for(a: &Accessibility, kind: ViewKind, pressable: bool) -> Ax {
         Role::Option => Ax::Option,
         Role::Grid | Role::Table => Ax::Grid,
         // Groups that read their children, a cell's text among them.
-        Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup => Ax::Group,
+        Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup | Role::Group => Ax::Group,
+        Role::Region => Ax::Region,
+        Role::Navigation => Ax::Navigation,
+        // A tree is a list of its items, as a listbox is (see `TreeItem`).
+        Role::Tree => Ax::List,
+        Role::TreeItem => Ax::TreeItem,
     }
 }
 
@@ -767,6 +828,73 @@ mod tests {
         assert_eq!(s.value, Value::Text("Apple".into()));
         assert!(s.selected);
     }
+    /// The roles of gpui-base's structural components, and a button with a
+    /// pressed state: a toggle button whose value is that state.
+    #[test]
+    fn structural_roles_and_toggle_buttons() {
+        for (role, ax) in [
+            (Role::Group, Ax::Group),
+            (Role::Region, Ax::Region),
+            (Role::Navigation, Ax::Navigation),
+            (Role::Tree, Ax::List),
+            (Role::TreeItem, Ax::TreeItem),
+            (Role::MenuItemCheckbox, Ax::MenuItem),
+            (Role::MenuItemRadio, Ax::MenuItem),
+        ] {
+            assert_eq!(role_for(&with_role(role), ViewKind::View, false), ax);
+        }
+        let toggle = |pressed| Accessibility {
+            role: Role::Button,
+            state: AccessibilityState {
+                pressed,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = spec_for(
+            &toggle(Some(Checked::True)),
+            ViewKind::View,
+            true,
+            None,
+            false,
+        );
+        assert_eq!(s.role, Ax::Toggle);
+        assert_eq!(s.value, Value::Checked(1));
+        let s = spec_for(
+            &toggle(Some(Checked::Mixed)),
+            ViewKind::View,
+            true,
+            None,
+            false,
+        );
+        assert_eq!(s.value, Value::Checked(2));
+        // Without a pressed state it stays a button.
+        let s = spec_for(&toggle(None), ViewKind::View, true, None, false);
+        assert_eq!(s.role, Ax::Button);
+        assert_eq!(s.value, Value::None);
+        // A view with press handlers and a pressed state is one too.
+        let pressable = Accessibility {
+            state: AccessibilityState {
+                pressed: Some(Checked::False),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let s = spec_for(&pressable, ViewKind::View, true, None, false);
+        assert_eq!(s.role, Ax::Toggle);
+        assert_eq!(s.value, Value::Checked(0));
+        // A tree item keeps its level for its disclosure level.
+        let item = Accessibility {
+            role: Role::TreeItem,
+            label: Some("src".into()),
+            level: Some(2),
+            ..Default::default()
+        };
+        let s = spec_for(&item, ViewKind::View, true, None, false);
+        assert_eq!(s.level, Some(2));
+        assert_eq!(s.value, Value::Text("src".into()));
+    }
+
     /// The reviewer's case: `accessibilityValue={{ text: "1" }}` on a view
     /// that later becomes checked. The contents are `1` both times; what
     /// AppKit must be handed changes from an NSString to an NSNumber.

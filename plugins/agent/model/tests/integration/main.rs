@@ -20,8 +20,6 @@
 mod adapters;
 mod concurrency;
 mod context_overflow;
-mod live_search;
-mod openrouter;
 mod provider_compatible;
 mod provider_ingress;
 mod provider_responses;

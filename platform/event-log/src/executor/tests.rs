@@ -55,7 +55,7 @@ async fn check_after_deltas(deltas: usize) -> [usize; 3] {
     .unwrap();
     sqlx::query(
         "WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<?1)
-        INSERT INTO event_log(event_id,invocation_id,kind,event_json)
+        INSERT INTO event_log(event_id,invocation_id,kind,event_header)
         SELECT printf('delta-%08d',x),'invocation','executor_observed',
             json_object('invocation',json_object('session_id','session'),
                 'fact',json_object('output',json_object('type','output_delta','text','chunk')))
@@ -79,7 +79,7 @@ async fn check_after_deltas(deltas: usize) -> [usize; 3] {
     let (native, native_steps) = counted(&mut db, &event).await;
     native.unwrap();
     sqlx::query(
-        "INSERT INTO event_log(event_id,invocation_id,kind,event_json)
+        "INSERT INTO event_log(event_id,invocation_id,kind,event_header)
         VALUES('started','invocation','executor_started','{}')",
     )
     .execute(&mut db)
@@ -91,7 +91,7 @@ async fn check_after_deltas(deltas: usize) -> [usize; 3] {
         if reason == "executor completion requires a durable final result")
     );
     sqlx::query(
-        "INSERT INTO event_log(event_id,invocation_id,kind,event_json)
+        "INSERT INTO event_log(event_id,invocation_id,kind,event_header)
         VALUES('completed','invocation','executor_completed','{}')",
     )
     .execute(&mut db)

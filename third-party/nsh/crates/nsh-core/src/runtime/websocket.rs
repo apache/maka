@@ -1,6 +1,33 @@
-//! The explicit WebSocket client: capability and quota checks run in the
-//! call, then either the host transport (the browser's WebSocket API) or
-//! the native socket drives I/O. Both enforce bounded messages and queues.
+//! `websocket`: an explicit WebSocket client. `connect(url, options)`
+//! resolves a [`WebSocketConnection`] whose `read()` takes the messages in
+//! arrival order; either the host transport (the browser's WebSocket API)
+//! or the native socket (`native.rs`) drives its I/O, both with bounded
+//! messages and queues.
+//!
+//! Every call returns a promise, and every failure rejects it: a URL the
+//! app's network capabilities do not grant with `ERR_ACCESS_DENIED`
+//! (`permission` `"network"`, `resource` the URL), a used-up quota (32
+//! connections per VM, 8 MiB of writes waiting) with
+//! `ERR_NSH_QUOTA_EXCEEDED`, a deadline with `ETIMEDOUT`, a connection
+//! that ended without a close handshake (or is used after it ended) with
+//! `ERR_SOCKET_CLOSED`, a protocol violation with `EPROTO`, a socket error
+//! with the OS's code, a close code or reason out of range with a
+//! `RangeError` (`ERR_OUT_OF_RANGE`).
+//!
+//! A connection that closes cleanly is no failure: once its close
+//! handshake completed (started by the peer or by `close(code, reason)`)
+//! and every message received before it was read, `read()` resolves
+//! `null`, as `net`'s `Socket.read()` does at the end of the stream, and
+//! `closeCode` / `closeReason` tell the close frame's code and reason
+//! (1005 for a frame without a code, 1006 for a connection that ended
+//! without one).
+//!
+//! Unread messages are back pressure, not a failure: while 8 messages or
+//! 8 MiB wait to be read, the connection stops reading from the network
+//! (the native socket is not polled, so TCP holds the peer back; a host
+//! transport is paused, [`WebSocketTask::pause`]) and resumes as the app
+//! reads. The memory a connection keeps stays bounded: what crossed the
+//! threshold is at most one message of 8 MiB more.
 use std::{
     cell::RefCell,
     collections::VecDeque,
@@ -14,16 +41,103 @@ use crate::{
     JsonValue,
     element::{
         Held, JsError, JsHost, JsIn, JsOwned, JsValue, Later, PropError, System, TsTypes, class,
-        module,
+        codes, module,
     },
     websocket::{WebSocketData, WebSocketEvent, WebSocketRequest, WebSocketTask},
 };
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
+/// The largest message one write sends or one read returns, and the bytes
+/// of unread messages past which reading pauses.
 const LIMIT: usize = 8 * 1024 * 1024;
+/// Unread messages at which reading pauses.
 const UNREAD: usize = 8;
+/// The longest close reason, in UTF-8 bytes: what fits a control frame's
+/// 125 bytes after the code (RFC 6455 5.5).
+const MAX_REASON: usize = 123;
+/// The close code of a connection that ended without a close frame.
+const ABNORMAL: u16 = 1006;
 
-/// `WebSocket.connect`'s options.
+/// The connection is closed: by the app, by the peer, or after a failure.
+fn closed(message: impl Into<String>) -> JsError {
+    JsError::Error(message.into()).with_code("ERR_SOCKET_CLOSED")
+}
+
+/// `operation` ran out of time.
+fn timed_out(operation: &str) -> JsError {
+    JsError::Error(format!("{operation} timed out")).with_code(codes::TIMED_OUT)
+}
+
+/// A quota of the connection or the VM is used up.
+fn exceeded(message: String) -> JsError {
+    JsError::Error(message).with_code(codes::QUOTA_EXCEEDED)
+}
+
+/// What the app's capabilities do not grant: a WebSocket to `url`.
+fn denied(url: &str) -> JsError {
+    JsError::access_denied(
+        format!(
+            "a WebSocket to `{url}` is not granted; add its host to capabilities.network.hosts or a GET rule in capabilities.network.http"
+        ),
+        "network",
+        url,
+    )
+}
+
+/// The VM's place for one more WebSocket.
+fn slot(sys: &System) -> Result<Held, JsError> {
+    sys.quotas.take(WEBSOCKETS, MAX_WEBSOCKETS).ok_or_else(|| {
+        exceeded(format!(
+            "At most {MAX_WEBSOCKETS} concurrent WebSockets are allowed per VM"
+        ))
+    })
+}
+
+/// A connection's close frame: the code and reason it closed with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CloseStatus {
+    /// The close code.
+    code: u16,
+    /// The close reason.
+    reason: String,
+}
+
+impl CloseStatus {
+    /// A connection that ended without a close frame.
+    fn abnormal() -> Self {
+        Self {
+            code: ABNORMAL,
+            reason: String::new(),
+        }
+    }
+
+    /// `close(code, reason)`'s frame, checked as the WHATWG `close()`
+    /// checks it (RFC 6455 7.4): a code of 1000 (the default) or
+    /// 3000–4999, a reason of at most 123 UTF-8 bytes.
+    fn requested(code: Option<f64>, reason: Option<String>) -> Result<Self, JsError> {
+        let reason = reason.unwrap_or_default();
+        if reason.len() > MAX_REASON {
+            return Err(JsError::Range(format!(
+                "WebSocket close reason of {} bytes exceeded the {MAX_REASON} byte limit",
+                reason.len()
+            ))
+            .with_code("ERR_OUT_OF_RANGE"));
+        }
+        let code = code.unwrap_or(1000.0);
+        if code != 1000.0 && !((3000.0..=4999.0).contains(&code) && code.fract() == 0.0) {
+            return Err(JsError::Range(format!(
+                "WebSocket close code {code} is neither 1000 nor an integer from 3000 to 4999"
+            ))
+            .with_code("ERR_OUT_OF_RANGE"));
+        }
+        Ok(Self {
+            code: code as u16,
+            reason,
+        })
+    }
+}
+
+/// `connect`'s options.
 #[derive(Debug, Default)]
 pub(crate) struct ConnectOptions {
     /// Extra handshake headers, checked in the call.
@@ -33,7 +147,7 @@ pub(crate) struct ConnectOptions {
 impl JsValue for ConnectOptions {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("WebSocketConnectOptions", |_| {
-            "/** `WebSocket.connect`'s options. */\nexport interface WebSocketConnectOptions {\n  /** Extra handshake headers; credentials and handshake-control headers are refused. */\n  headers?: Record<string, string>;\n}".into()
+            "/** `connect`'s options. */\nexport interface WebSocketConnectOptions {\n  /** Extra handshake headers; credentials and handshake-control headers are refused. */\n  headers?: Record<string, string>;\n}".into()
         })
     }
 
@@ -44,7 +158,7 @@ impl JsValue for ConnectOptions {
         };
         if let Some(key) = options.keys().find(|key| *key != "headers") {
             return Err(PropError(format!(
-                "unknown option `{key}` for WebSocket.connect(url, options); expected headers"
+                "unknown option `{key}` for connect(url, options); expected headers"
             )));
         }
         let headers = match options.get("headers") {
@@ -143,10 +257,15 @@ impl JsValue for Data {
 #[module]
 pub(crate) struct WebSocket;
 
-#[module]
+#[module(flat, default)]
 impl WebSocket {
     /// Connects to a ws/wss URL allowed by capabilities.network; up to 32
-    /// connections are shared with the global WebSocket constructor.
+    /// connections are shared with the global WebSocket constructor. A bad
+    /// URL or option rejects with a `TypeError`, a URL not granted with
+    /// `ERR_ACCESS_DENIED`, the 33rd connection with
+    /// `ERR_NSH_QUOTA_EXCEEDED`, a failed handshake with the OS's code or
+    /// `EPROTO`, a slow one with `ETIMEDOUT`, one the host refuses (a
+    /// test's network) with the host's error.
     pub(crate) fn connect(
         url: String,
         options: Option<ConnectOptions>,
@@ -163,9 +282,10 @@ impl WebSocket {
                 }));
             }
             #[cfg(target_arch = "wasm32")]
-            return Err(JsError::Type(
-                "The host has no WebSocket transport configured".into(),
-            ));
+            return Err(
+                JsError::Error("The host has no WebSocket transport configured".into())
+                    .with_code(codes::UNAVAILABLE),
+            );
         };
         let parsed = url::Url::parse(&url)
             .map_err(|error| JsError::Type(format!("invalid WebSocket URL: {error}")))?;
@@ -175,29 +295,28 @@ impl WebSocket {
             || !parsed.username().is_empty()
             || parsed.password().is_some()
         {
-            return Err(JsError::Type("WebSocket.connect(url) expects a ws:// or wss:// URL without credentials or fragment".into()));
+            return Err(JsError::Type(
+                "connect(url) expects a ws:// or wss:// URL without credentials or fragment".into(),
+            ));
         }
         if !sys.access.allows_websocket(parsed.as_str()) {
-            return Err(JsError::Type("WebSocket network capability denied".into()));
+            return Err(denied(parsed.as_str()));
         }
+        sys.check_connection(parsed.as_str())?;
         let headers = options.map(|options| options.headers).unwrap_or_default();
         if !headers.is_empty() && !transport.supports_headers() {
             return Err(JsError::Type(
                 "The browser WebSocket API does not support custom handshake headers".into(),
             ));
         }
-        let held = sys.quotas.take(WEBSOCKETS, MAX_WEBSOCKETS).ok_or_else(|| {
-            JsError::Range(format!(
-                "At most {MAX_WEBSOCKETS} concurrent WebSockets are allowed per VM"
-            ))
-        })?;
+        let held = slot(&sys)?;
         let state = Rc::new(RefCell::new(HostState {
             held: Some(held),
             ..HostState::default()
         }));
         let events = state.clone();
         // The transport owns the callback; its weak task reference in State
-        // lets an overflowing queue cancel I/O without retaining a cycle.
+        // lets an ending connection cancel I/O without retaining a cycle.
         let task = transport.connect(
             WebSocketRequest {
                 url: parsed.into(),
@@ -207,7 +326,8 @@ impl WebSocket {
             Box::new(move |event| HostState::event(&events, event)),
         );
         Ok(Later::new(async move {
-            let task = Rc::new(RefCell::new(Some(task?)));
+            let task = task.map_err(JsError::Error)?;
+            let task = Rc::new(RefCell::new(Some(task)));
             state.borrow_mut().task = Rc::downgrade(&task);
             let host = HostConnection { task, state };
             let opening = host.state.clone();
@@ -216,9 +336,11 @@ impl WebSocket {
                 poll_fn(move |cx| {
                     let mut state = opening.borrow_mut();
                     if state.open {
-                        Poll::Ready(Ok::<_, String>(()))
+                        Poll::Ready(Ok(()))
                     } else if let Some(error) = &state.error {
                         Poll::Ready(Err(error.clone()))
+                    } else if state.status.is_some() {
+                        Poll::Ready(Err(closed("WebSocket closed during the handshake")))
                     } else {
                         state.waker = Some(cx.waker().clone());
                         Poll::Pending
@@ -226,7 +348,7 @@ impl WebSocket {
                 }),
             )
             .await?;
-            Ok::<_, String>(WebSocketConnection {
+            Ok::<_, JsError>(WebSocketConnection {
                 inner: Connection::Host(host),
             })
         }))
@@ -247,7 +369,10 @@ pub(crate) struct WebSocketConnection {
 
 #[class]
 impl WebSocketConnection {
-    /// Sends a string or Uint8Array of at most 8 MiB; queued bytes are bounded.
+    /// Sends a string or Uint8Array of at most 8 MiB (a `RangeError` with
+    /// `ERR_OUT_OF_RANGE` past it); at most 8 MiB may wait to be sent
+    /// (`ERR_NSH_QUOTA_EXCEEDED`). After the connection ended it rejects
+    /// with `ERR_SOCKET_CLOSED`.
     pub(crate) fn write(&self, data: Data) -> Result<Later<()>, JsError> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
@@ -258,27 +383,25 @@ impl WebSocketConnection {
                     Data::Bytes(bytes) => WebSocketData::Bytes(bytes),
                 };
                 if data.len() > LIMIT {
-                    return Err(JsError::Range(format!(
-                        "WebSocket write exceeded the {LIMIT} byte limit"
-                    )));
+                    return Err(too_long(data.len()));
                 }
                 let mut task = host.task.borrow_mut();
                 let result = match task.as_mut() {
-                    None => Err("WebSocket connection is closed".to_owned()),
+                    None => Err(closed("WebSocket connection is closed")),
                     Some(task) => {
                         if task.buffered_amount().saturating_add(data.len()) > LIMIT {
-                            return Err(JsError::Range(format!(
+                            return Err(exceeded(format!(
                                 "WebSocket writes waiting to be sent exceeded the {LIMIT} byte limit"
                             )));
                         }
-                        task.send(data)
+                        task.send(data).map_err(JsError::Error)
                     }
                 };
                 let state = host.state.clone();
                 let task = host.task.clone();
                 Ok(Later::new(async move {
                     if let Err(error) = result {
-                        HostState::event(&state, WebSocketEvent::Error(error.clone()));
+                        HostState::fail(&state, error.clone());
                         return Err(error);
                     }
                     let sent = timeout("WebSocket write", async {
@@ -289,7 +412,7 @@ impl WebSocketConnection {
                                 }
                                 let task = task.borrow();
                                 let Some(task) = task.as_ref() else {
-                                    return Err("WebSocket connection is closed".into());
+                                    return Err(closed("WebSocket connection is closed"));
                                 };
                                 if task.buffered_amount() == 0 {
                                     return Ok(());
@@ -301,7 +424,7 @@ impl WebSocketConnection {
                     })
                     .await;
                     if let Err(error) = &sent {
-                        HostState::event(&state, WebSocketEvent::Error(error.clone()));
+                        HostState::fail(&state, error.clone());
                     }
                     sent
                 }))
@@ -309,31 +432,45 @@ impl WebSocketConnection {
         }
     }
 
-    /// Reads the next string or Uint8Array, in arrival order.
-    pub(crate) fn read(&self) -> Result<Later<Data>, JsError> {
+    /// Reads the next string or Uint8Array, in arrival order. Once the
+    /// connection closed cleanly and what arrived before was read, it
+    /// resolves `null`; a connection that failed rejects instead, with why
+    /// (`ERR_SOCKET_CLOSED` for one that ended without a close handshake,
+    /// `ETIMEDOUT`, `EPROTO`, the OS's code). While 8 messages or 8 MiB wait
+    /// unread, the connection stops reading from the network until this
+    /// takes one.
+    pub(crate) fn read(&self) -> Result<Later<Option<Data>>, JsError> {
         match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
             Connection::Native(connection) => connection.read(),
             Connection::Host(host) => {
                 if host.state.borrow_mut().reading.replace(true) {
-                    return Err(JsError::Type(
-                        "WebSocket.read() already has an outstanding read".into(),
-                    ));
+                    return Err(busy());
                 }
                 let reading = Reading(host.state.clone());
                 let task = host.task.clone();
                 Ok(Later::new(async move {
-                    let _transport = task;
                     poll_fn(|cx| {
                         let mut state = reading.0.borrow_mut();
-                        if let Some(message) = state.messages.pop_front() {
+                        let message = state.messages.pop_front();
+                        if let Some(message) = message {
                             state.bytes -= message.len();
-                            Poll::Ready(Ok(match message {
+                            let resume = state.paused && !state.full();
+                            if resume {
+                                state.paused = false;
+                            }
+                            drop(state);
+                            if resume && let Some(task) = task.borrow_mut().as_mut() {
+                                task.pause(false);
+                            }
+                            Poll::Ready(Ok(Some(match message {
                                 WebSocketData::Text(text) => Data::Text(text),
                                 WebSocketData::Bytes(bytes) => Data::Bytes(bytes),
-                            }))
+                            })))
                         } else if let Some(error) = &state.error {
                             Poll::Ready(Err(error.clone()))
+                        } else if state.status.is_some() {
+                            Poll::Ready(Ok(None))
                         } else {
                             state.waker = Some(cx.waker().clone());
                             Poll::Pending
@@ -345,34 +482,56 @@ impl WebSocketConnection {
         }
     }
 
-    /// Closes the connection and discards unread messages.
-    pub(crate) fn close(&self) -> Later<()> {
-        match &self.inner {
+    /// Closes the connection with `code` (1000, the default, or 3000–4999)
+    /// and `reason` (at most 123 UTF-8 bytes; a `RangeError` with
+    /// `ERR_OUT_OF_RANGE` past either), discards unread messages and
+    /// resolves once the peer answered the close handshake; `read()` then
+    /// resolves `null`.
+    pub(crate) fn close(
+        &self,
+        code: Option<f64>,
+        reason: Option<String>,
+    ) -> Result<Later<()>, JsError> {
+        let frame = CloseStatus::requested(code, reason)?;
+        Ok(match &self.inner {
             #[cfg(not(target_arch = "wasm32"))]
-            Connection::Native(connection) => connection.close(),
+            Connection::Native(connection) => connection.close(frame),
             Connection::Host(host) => {
-                host.state.borrow_mut().messages.clear();
-                host.state.borrow_mut().bytes = 0;
+                let paused = {
+                    let mut state = host.state.borrow_mut();
+                    state.messages.clear();
+                    state.bytes = 0;
+                    // What arrives from now on is dropped, and the close
+                    // handshake's reply must reach the state.
+                    state.closing = true;
+                    std::mem::take(&mut state.paused)
+                };
                 let result = host
                     .task
                     .borrow_mut()
                     .as_mut()
-                    .map(|task| task.close(1000, ""))
+                    .map(|task| {
+                        if paused {
+                            task.pause(false);
+                        }
+                        task.close(frame.code, &frame.reason)
+                            .map_err(JsError::Error)
+                    })
                     .unwrap_or(Ok(()));
                 let state = host.state.clone();
                 let task = host.task.clone();
                 Later::new(async move {
                     let _transport = task;
                     if let Err(error) = result {
-                        HostState::event(&state, WebSocketEvent::Error(error.clone()));
+                        HostState::fail(&state, error.clone());
                         return Err(error);
                     }
                     let closed = timeout(
                         "WebSocket close",
                         poll_fn(|cx| {
                             let mut state = state.borrow_mut();
-                            if state.error.is_some() {
-                                Poll::Ready(Ok::<_, String>(()))
+                            if state.status.is_some() {
+                                Poll::Ready(Ok(()))
                             } else {
                                 if !state
                                     .close_wakers
@@ -387,19 +546,56 @@ impl WebSocketConnection {
                     )
                     .await;
                     if let Err(error) = &closed {
-                        HostState::event(&state, WebSocketEvent::Error(error.clone()));
+                        HostState::fail(&state, error.clone());
                     }
                     closed
                 })
             }
+        })
+    }
+
+    /// The code of the close frame the connection closed with: the peer's
+    /// (1005 when it had none), 1006 when the connection ended without one;
+    /// `null` while it is open.
+    #[getter]
+    pub(crate) fn close_code(&self) -> Option<u16> {
+        self.status().map(|status| status.code)
+    }
+
+    /// The reason of the close frame the connection closed with (`""` when
+    /// it had none); `null` while it is open.
+    #[getter]
+    pub(crate) fn close_reason(&self) -> Option<String> {
+        self.status().map(|status| status.reason)
+    }
+
+    /// How the connection closed, once it did.
+    fn status(&self) -> Option<CloseStatus> {
+        match &self.inner {
+            #[cfg(not(target_arch = "wasm32"))]
+            Connection::Native(connection) => connection.status(),
+            Connection::Host(host) => host.state.borrow().status.clone(),
         }
     }
 }
 
+/// A write of `len` bytes, past the one-message limit.
+fn too_long(len: usize) -> JsError {
+    JsError::Range(format!(
+        "WebSocket write of {len} bytes exceeded the {LIMIT} byte limit"
+    ))
+    .with_code("ERR_OUT_OF_RANGE")
+}
+
+/// A second read while one waits: a wrong use.
+fn busy() -> JsError {
+    JsError::Type("WebSocketConnection.read() already has an outstanding read".into())
+}
+
 async fn timeout<T>(
     operation: &str,
-    work: impl Future<Output = Result<T, String>>,
-) -> Result<T, String> {
+    work: impl Future<Output = Result<T, JsError>>,
+) -> Result<T, JsError> {
     use std::future::Future;
     let mut work = std::pin::pin!(work);
     let mut timer = std::pin::pin!(crate::element::timer(std::time::Duration::from_secs(30)));
@@ -408,7 +604,7 @@ async fn timeout<T>(
             return Poll::Ready(result);
         }
         if timer.as_mut().poll(cx).is_ready() {
-            return Poll::Ready(Err(format!("{operation} timed out")));
+            return Poll::Ready(Err(timed_out(operation)));
         }
         Poll::Pending
     })
@@ -427,10 +623,7 @@ impl Drop for HostConnection {
         if Rc::strong_count(&self.task) > 1 {
             return;
         }
-        HostState::event(
-            &self.state,
-            WebSocketEvent::Error("WebSocket connection is closed".into()),
-        );
+        HostState::fail(&self.state, closed("WebSocket connection is closed"));
         self.task.borrow_mut().take();
         self.state.borrow_mut().held.take();
     }
@@ -445,9 +638,18 @@ impl Drop for Reading {
 #[derive(Default)]
 struct HostState {
     open: bool,
-    error: Option<String>,
+    /// How the connection closed, once it ended (cleanly or not).
+    status: Option<CloseStatus>,
+    /// Why the connection failed, which reads reject with once the
+    /// messages before it are read; `None` for a clean close, after which
+    /// reads resolve `null`.
+    error: Option<JsError>,
     messages: VecDeque<WebSocketData>,
     bytes: usize,
+    /// The transport is paused: the unread messages fill their queue.
+    paused: bool,
+    /// The app closed the connection: what arrives is dropped.
+    closing: bool,
     reading: std::cell::Cell<bool>,
     waker: Option<Waker>,
     close_wakers: Vec<Waker>,
@@ -455,38 +657,84 @@ struct HostState {
     task: std::rc::Weak<RefCell<Option<Box<dyn WebSocketTask>>>>,
 }
 impl HostState {
+    /// Whether the unread messages fill their queue: reading pauses.
+    fn full(&self) -> bool {
+        self.messages.len() >= UNREAD || self.bytes >= LIMIT
+    }
+
+    /// Ends the connection with `error`, as a transport event would.
+    fn fail(shared: &Rc<RefCell<Self>>, error: JsError) {
+        Self::apply(shared, Err(error));
+    }
+
     fn event(shared: &Rc<RefCell<Self>>, event: WebSocketEvent) {
+        Self::apply(shared, Ok(event));
+    }
+
+    fn apply(shared: &Rc<RefCell<Self>>, event: Result<WebSocketEvent, JsError>) {
         let mut state = shared.borrow_mut();
-        if state.error.is_some() {
+        if state.status.is_some() {
             return;
         }
+        let mut pause = false;
         match event {
-            WebSocketEvent::Open { .. } => state.open = true,
-            WebSocketEvent::Message(message) => {
+            Err(error) => state.end(CloseStatus::abnormal(), Some(error)),
+            Ok(WebSocketEvent::Open { .. }) => state.open = true,
+            Ok(WebSocketEvent::Message(_)) if state.closing => {}
+            Ok(WebSocketEvent::Message(message)) => {
+                // A paused transport may still deliver what was on its way;
+                // twice the queue bounds a transport that keeps delivering.
                 if message.len() > LIMIT
-                    || state.messages.len() >= UNREAD
-                    || state.bytes.saturating_add(message.len()) > LIMIT
+                    || state.messages.len() >= 2 * UNREAD
+                    || state.bytes.saturating_add(message.len()) > 2 * LIMIT
                 {
-                    state.error = Some(format!(
-                        "WebSocket closed: more than {UNREAD} messages or {LIMIT} bytes arrived unread"
-                    ));
+                    state.end(
+                        CloseStatus::abnormal(),
+                        Some(exceeded(format!(
+                            "WebSocket closed: the transport kept delivering while {UNREAD} messages or {LIMIT} bytes waited unread"
+                        ))),
+                    );
                 } else {
                     state.bytes += message.len();
                     state.messages.push_back(message);
+                    if !state.paused && state.full() {
+                        state.paused = true;
+                        pause = true;
+                    }
                 }
             }
-            WebSocketEvent::Error(error) => state.error = Some(error),
-            WebSocketEvent::Close { .. } => state.error = Some("WebSocket closed by peer".into()),
+            // The browser reports no reason: the connection failed.
+            Ok(WebSocketEvent::Error(error)) => {
+                state.end(CloseStatus::abnormal(), Some(closed(error)))
+            }
+            Ok(WebSocketEvent::Close {
+                code,
+                reason,
+                was_clean,
+            }) => {
+                let error = (!was_clean).then(|| {
+                    closed(format!(
+                        "WebSocket connection ended without a close handshake ({code})"
+                    ))
+                });
+                state.end(CloseStatus { code, reason }, error);
+            }
         }
-        let task = if state.error.is_some() {
+        let task = if state.status.is_some() {
             state.held.take();
             state.task.upgrade()
         } else {
             None
         };
+        let paused = pause.then(|| state.task.upgrade()).flatten();
         let waker = state.waker.take();
         let close_wakers = std::mem::take(&mut state.close_wakers);
         drop(state);
+        if let Some(task) = paused
+            && let Some(task) = task.borrow_mut().as_mut()
+        {
+            task.pause(true);
+        }
         if let Some(task) = task {
             task.borrow_mut().take();
         }
@@ -497,10 +745,33 @@ impl HostState {
             waker.wake();
         }
     }
+
+    /// The connection ended: closed with `status`, failed with `error`.
+    fn end(&mut self, status: CloseStatus, error: Option<JsError>) {
+        self.status = Some(status);
+        self.error = error;
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    /// What `later` settles JS's promise with: its value as JSON (`null`
+    /// for `undefined` too), or its error's `code`.
+    async fn settled<T: crate::element::Ret + 'static>(
+        later: crate::element::Later<T>,
+    ) -> Result<serde_json::Value, Option<String>> {
+        match later.into_future().await {
+            Ok(value) => Ok(crate::element::json_host::result(Ok(value))
+                .unwrap()
+                .unwrap_or_default()),
+            Err(crate::element::Thrown::Fields(fields)) => Err(fields
+                .field("code")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)),
+            Err(_) => Err(None),
+        }
+    }
+
     use std::{cell::Cell, sync::Arc};
 
     use super::*;
@@ -512,6 +783,7 @@ mod tests {
     thread_local! {
         static EVENTS:RefCell<Option<WebSocketEvents>>=RefCell::new(None);
         static DROPS:Cell<usize>=const {Cell::new(0)};
+        static PAUSES:RefCell<Vec<bool>>=const {RefCell::new(Vec::new())};
     }
     struct Browser;
     struct Task {
@@ -531,6 +803,9 @@ mod tests {
         }
         fn buffered_amount(&self) -> usize {
             self.buffered
+        }
+        fn pause(&mut self, paused: bool) {
+            PAUSES.with(|pauses| pauses.borrow_mut().push(paused));
         }
     }
     impl WebSocketTransport for Browser {
@@ -615,13 +890,57 @@ mod tests {
     }
 
     #[test]
+    fn a_host_refusing_connections_refuses_websockets_and_sockets() {
+        let refuse: crate::element::RefuseConnections = Arc::new(|target: &str| {
+            JsError::Error(format!("{target}: refused")).with_code("ERR_TEST_REFUSED")
+        });
+        let host = system().with_refuse_connections(Some(refuse.clone()));
+        let Err(error) = WebSocket::connect("ws://example.com".into(), None, host.clone()) else {
+            panic!("a refused WebSocket connected")
+        };
+        assert_eq!(error.code(), Some("ERR_TEST_REFUSED"));
+        assert_eq!(error.message(), "ws://example.com/: refused");
+        assert_eq!(host.quotas.held(WEBSOCKETS), 0);
+        let sockets = serde_json::json!({ "network": { "hosts": ["*"], "sockets": ["[::1]:7"] } });
+        let native = System {
+            access: Arc::new(Access {
+                declared: crate::access::Capabilities::from_json(&sockets).unwrap(),
+                granted: None,
+            }),
+            ..System::default()
+        }
+        .with_refuse_connections(Some(refuse));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let Err(error) = WebSocket::connect("ws://example.com".into(), None, native.clone())
+            else {
+                panic!("a refused WebSocket connected")
+            };
+            assert_eq!(error.code(), Some("ERR_TEST_REFUSED"));
+        }
+        let options = super::super::net::ConnectOptions {
+            host: "::1".into(),
+            port: 7,
+        };
+        let Err(error) = super::super::net::Net::connect(options, native.clone()) else {
+            panic!("a refused socket connected")
+        };
+        assert_eq!(error.code(), Some("ERR_TEST_REFUSED"));
+        assert_eq!(error.message(), "[::1]:7: refused");
+        assert_eq!(native.quotas.held("net.sockets"), 0);
+    }
+
+    #[test]
     fn host_checks_grants_headers_and_shared_quota_before_connecting() {
         let mut denied = system();
         denied.access = Arc::new(Access {
             declared: crate::access::Capabilities::default(),
             granted: None,
         });
-        assert!(WebSocket::connect("ws://example.com".into(), None, denied).is_err());
+        let Err(error) = WebSocket::connect("ws://example.com".into(), None, denied) else {
+            panic!("an ungranted URL connected")
+        };
+        assert_eq!(error.code(), Some(codes::ACCESS_DENIED));
         let sys = system();
         let headers = ConnectOptions {
             headers: vec![("x-test".into(), "test".into())],
@@ -631,7 +950,10 @@ mod tests {
             .quotas
             .reserve(WEBSOCKETS, MAX_WEBSOCKETS, MAX_WEBSOCKETS)
             .unwrap();
-        assert!(WebSocket::connect("ws://example.com".into(), None, sys).is_err());
+        let Err(error) = WebSocket::connect("ws://example.com".into(), None, sys) else {
+            panic!("the 33rd WebSocket connected")
+        };
+        assert_eq!(error.code(), Some(codes::QUOTA_EXCEEDED));
     }
 
     fn host(buffered: usize) -> WebSocketConnection {
@@ -648,8 +970,19 @@ mod tests {
         }
     }
 
+    fn clean_close(state: &Rc<RefCell<HostState>>, code: u16, reason: &str) {
+        HostState::event(
+            state,
+            WebSocketEvent::Close {
+                code,
+                reason: reason.into(),
+                was_clean: true,
+            },
+        );
+    }
+
     #[tokio::test]
-    async fn host_bounds_writes_and_reads_messages_before_close_error() {
+    async fn host_reads_what_came_before_a_clean_close_then_null() {
         let connection = host(LIMIT);
         assert!(connection.write(Data::Text("x".into())).is_err());
         let Connection::Host(ref host) = connection.inner else {
@@ -659,20 +992,47 @@ mod tests {
             &host.state,
             WebSocketEvent::Message(WebSocketData::Text("before close".into())),
         );
+        assert_eq!(connection.close_code(), None);
+        clean_close(&host.state, 4000, "done");
+        assert_eq!(connection.close_code(), Some(4000));
+        assert_eq!(connection.close_reason().as_deref(), Some("done"));
+        assert_eq!(
+            settled(connection.read().unwrap()).await,
+            Ok(serde_json::json!("before close"))
+        );
+        assert_eq!(
+            settled(connection.read().unwrap()).await,
+            Ok(serde_json::json!(null))
+        );
+        assert_eq!(
+            settled(connection.read().unwrap()).await,
+            Ok(serde_json::json!(null))
+        );
+    }
+
+    #[tokio::test]
+    async fn host_rejects_reads_after_a_connection_that_ended_without_a_handshake() {
+        let connection = host(0);
+        let Connection::Host(ref host) = connection.inner else {
+            unreachable!()
+        };
         HostState::event(
             &host.state,
             WebSocketEvent::Close {
-                code: 1000,
+                code: 1006,
                 reason: String::new(),
-                was_clean: true,
+                was_clean: false,
             },
         );
-        assert!(connection.read().unwrap().into_future().await.is_ok());
-        assert!(connection.read().unwrap().into_future().await.is_err());
+        let error = settled(connection.read().unwrap()).await.unwrap_err();
+        assert_eq!(error.as_deref(), Some("ERR_SOCKET_CLOSED"));
+        assert_eq!(connection.close_code(), Some(ABNORMAL));
+        assert_eq!(connection.close_reason().as_deref(), Some(""));
     }
 
-    #[test]
-    fn host_unread_overflow_cancels_transport_and_outstanding_read_is_exclusive() {
+    #[tokio::test]
+    async fn host_pauses_the_transport_while_the_unread_queue_is_full() {
+        PAUSES.with(|pauses| pauses.borrow_mut().clear());
         let connection = host(0);
         let reading = connection.read().unwrap();
         assert!(connection.read().is_err());
@@ -680,29 +1040,96 @@ mod tests {
         let Connection::Host(ref host) = connection.inner else {
             unreachable!()
         };
-        for _ in 0..=UNREAD {
-            HostState::event(
-                &host.state,
-                WebSocketEvent::Message(WebSocketData::Bytes(vec![1])),
+        let message = || WebSocketEvent::Message(WebSocketData::Bytes(vec![1]));
+        for _ in 0..UNREAD {
+            HostState::event(&host.state, message());
+        }
+        PAUSES.with(|pauses| assert_eq!(*pauses.borrow(), [true]));
+        // What was on its way still arrives and is kept.
+        HostState::event(&host.state, message());
+        assert!(host.task.borrow().is_some());
+        assert!(host.state.borrow().error.is_none());
+        assert_eq!(host.state.borrow().messages.len(), UNREAD + 1);
+        // Reading below the threshold resumes the transport.
+        for _ in 0..2 {
+            assert!(
+                settled(connection.read().unwrap())
+                    .await
+                    .is_ok_and(|v| !v.is_null())
             );
         }
+        PAUSES.with(|pauses| assert_eq!(*pauses.borrow(), [true, false]));
+        // A transport that keeps delivering past twice the queue fails.
+        for _ in 0..=UNREAD + 1 {
+            HostState::event(&host.state, message());
+        }
         assert!(host.task.borrow().is_none());
-        assert_eq!(host.state.borrow().messages.len(), UNREAD);
-        assert!(
-            host.state
-                .borrow()
-                .error
-                .as_ref()
-                .unwrap()
-                .contains("arrived unread")
+        assert_eq!(
+            host.state.borrow().error.as_ref().unwrap().code(),
+            Some(codes::QUOTA_EXCEEDED)
         );
+        assert_eq!(connection.close_code(), Some(ABNORMAL));
+    }
+
+    #[tokio::test]
+    async fn host_close_sends_its_frame_and_drops_unread_messages() {
+        let connection = host(0);
+        let Connection::Host(ref host) = connection.inner else {
+            unreachable!()
+        };
+        let state = host.state.clone();
+        HostState::event(
+            &state,
+            WebSocketEvent::Message(WebSocketData::Text("unread".into())),
+        );
+        let mut close = std::pin::pin!(
+            connection
+                .close(Some(4001.0), Some("bye".into()))
+                .unwrap()
+                .into_future()
+        );
+        assert!(poll(close.as_mut()).is_pending());
+        // Arriving before the peer's reply: dropped.
+        HostState::event(
+            &state,
+            WebSocketEvent::Message(WebSocketData::Text("late".into())),
+        );
+        clean_close(&state, 4001, "bye");
+        assert!(matches!(poll(close.as_mut()), Poll::Ready(Ok(_))));
+        assert_eq!(
+            settled(connection.read().unwrap()).await,
+            Ok(serde_json::json!(null))
+        );
+        assert_eq!(connection.close_code(), Some(4001));
+    }
+
+    #[test]
+    fn close_codes_and_reasons_are_checked() {
+        let requested = |code: Option<f64>, reason: &str| {
+            CloseStatus::requested(code, Some(reason.into())).map(|status| status.code)
+        };
+        assert_eq!(requested(None, ""), Ok(1000));
+        assert_eq!(requested(Some(1000.0), ""), Ok(1000));
+        assert_eq!(requested(Some(3000.0), ""), Ok(3000));
+        assert_eq!(requested(Some(4999.0), &"x".repeat(MAX_REASON)), Ok(4999));
+        for code in [0.0, 999.0, 1001.0, 1005.0, 2999.0, 3000.5, 5000.0, f64::NAN] {
+            let error = requested(Some(code), "").unwrap_err();
+            assert!(
+                matches!(&error, JsError::Fields(fields) if fields.class == crate::element::ErrorClass::Range),
+                "{code}"
+            );
+            assert_eq!(error.code(), Some("ERR_OUT_OF_RANGE"));
+        }
+        // 124 bytes, as 62 two-byte characters.
+        let error = requested(None, &"é".repeat(62)).unwrap_err();
+        assert_eq!(error.code(), Some("ERR_OUT_OF_RANGE"));
     }
 
     #[tokio::test]
     async fn operations_keep_transport_alive_after_connection_is_collected() {
         let connection = host(0);
         let read = connection.read().unwrap();
-        let close = connection.close();
+        let close = connection.close(None, None).unwrap();
         let mut read = std::pin::pin!(read.into_future());
         let mut close = std::pin::pin!(close.into_future());
         assert!(poll(read.as_mut()).is_pending());
@@ -714,15 +1141,14 @@ mod tests {
         drop(connection);
         assert!(poll(read.as_mut()).is_pending());
         assert!(poll(close.as_mut()).is_pending());
-        HostState::event(
-            &state,
-            WebSocketEvent::Close {
-                code: 1000,
-                reason: String::new(),
-                was_clean: true,
-            },
+        clean_close(&state, 1000, "");
+        let Poll::Ready(Ok(read)) = poll(read.as_mut()) else {
+            panic!("the read is settled")
+        };
+        assert_eq!(
+            crate::element::json_host::result(Ok(read)),
+            Ok(Some(serde_json::Value::Null))
         );
-        assert!(matches!(poll(read.as_mut()), Poll::Ready(Err(_))));
         assert!(matches!(poll(close.as_mut()), Poll::Ready(Ok(_))));
     }
 }

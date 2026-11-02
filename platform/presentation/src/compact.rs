@@ -150,17 +150,35 @@ impl InvocationView {
 mod tests {
     use super::*;
     use maka_agent_facts::context::{CheckpointMode, ContextCheckpoint, TextSummary};
-    use maka_agent_facts::event::{Invocation, InvocationOutcome, StoredEvent};
-    use maka_agent_facts::model::ModelStep;
+    use maka_agent_facts::event::{
+        Invocation, InvocationOutcome, LogScope, SourceCapture, StoredEvent,
+    };
+    use maka_agent_facts::model::recorded::ModelCompletion;
     use serde_json::json;
     use std::time::{Duration, UNIX_EPOCH};
 
     fn request(id: &str) -> Fact {
-        serde_json::from_value(json!({
-            "kind":"model_requested", "step_id":id, "purpose":"summary", "model_id":"model",
-            "item_acceptance":false, "source_scope":{"kind":"session","id":"session"},
-            "source_high_water":1, "source_digest":"source", "input_digest":"input", "route_identity":"route"
-        })).unwrap()
+        Fact::ModelRequested {
+            item_acceptance: false,
+            step_id: id.into(),
+            model_id: "model".into(),
+            source_scope: LogScope::Session {
+                id: "session".into(),
+            },
+            source_high_water: 1,
+            source_capture: SourceCapture {
+                publication_watermark: 1,
+                prior_unknown: false,
+            },
+            source_digest: "source".into(),
+            input_digest: "input".into(),
+            route_identity: "route".into(),
+            checkpoint_event_id: None,
+            purpose: ModelPurpose::Summary,
+            context: None,
+            context_breakdown: None,
+            effective_source_digest: None,
+        }
     }
 
     fn push(view: &mut InvocationView, sequence: u64, at: u64, fact: Fact) -> Vec<crate::Row> {
@@ -202,10 +220,11 @@ mod tests {
                         },
                     },
                 );
-                let output: ModelStep = serde_json::from_value(json!({
-                    "parts":[{"kind":"text","text_kind":"text","text":"private summary beyond presentation budget"}],
+                let output: ModelCompletion = serde_json::from_value(json!({
+                    "parts":[],
                     "finish_reason":"stop","usage":{}
-                })).unwrap();
+                }))
+                .unwrap();
                 assert!(push(&mut view, 2, 1000, request("summary")).is_empty());
                 assert!(
                     push(
@@ -309,7 +328,7 @@ mod tests {
                 *purpose = ModelPurpose::Main;
             }
             push(&mut view, 3, 1500, main);
-            let output: ModelStep =
+            let output: ModelCompletion =
                 serde_json::from_value(json!({"parts":[],"finish_reason":"stop","usage":{}}))
                     .unwrap();
             push(
@@ -325,11 +344,13 @@ mod tests {
             if new_source
                 && let Fact::ModelRequested {
                     source_high_water,
+                    source_capture,
                     source_digest,
                     ..
                 } = &mut retry
             {
                 *source_high_water = 2;
+                source_capture.publication_watermark = 2;
                 *source_digest = "new-source".into();
             }
             push(&mut view, 5, 3000, retry);

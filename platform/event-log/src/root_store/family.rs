@@ -577,7 +577,6 @@ impl RootStore {
 }
 
 #[cfg(test)]
-#[path = "family_tests.rs"]
 mod tests;
 
 impl RootStore {

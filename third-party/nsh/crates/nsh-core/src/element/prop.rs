@@ -175,7 +175,15 @@ impl<T: Clone + PartialEq + 'static> Prop<T> {
             Origin::Bound => {
                 let binding = *self;
                 let node = signal(binding.get_untracked()).node();
-                super::reactive::render_effect(move || node.set::<T>(binding.get()));
+                // The binding is of the region that made the element: when
+                // that region runs again it goes, and the instance with it
+                // once the core releases its host. A write doing both may
+                // still reach this effect first; there is nothing to follow.
+                super::reactive::render_effect(move || {
+                    if binding.node.is_live() {
+                        node.set::<T>(binding.get());
+                    }
+                });
                 Self::of(node, Origin::Held)
             }
         }
@@ -305,6 +313,27 @@ impl IntoProp<Option<super::SharedString>, PropText> for String {
     }
 }
 
+/// A URL as a set image prop (`.src("https://…")`).
+impl IntoProp<Option<super::ImageSrc>, PropText> for &'static str {
+    fn into_prop(self) -> Reactive<Option<super::ImageSrc>> {
+        Reactive::Static(Some(self.into()))
+    }
+}
+
+/// A URL as a set image prop.
+impl IntoProp<Option<super::ImageSrc>, PropText> for String {
+    fn into_prop(self) -> Reactive<Option<super::ImageSrc>> {
+        Reactive::Static(Some(self.into()))
+    }
+}
+
+/// A crate's image as a set image prop (`.src(asset!("ada.png"))`).
+impl IntoProp<Option<super::ImageSrc>, PropText> for super::ImageAsset {
+    fn into_prop(self) -> Reactive<Option<super::ImageSrc>> {
+        Reactive::Static(Some(self.into()))
+    }
+}
+
 impl<T, U: Into<T>> IntoProp<T, PropValue> for U {
     fn into_prop(self) -> Reactive<T> {
         Reactive::Static(self.into())
@@ -333,4 +362,49 @@ impl<T> IntoProp<T, PropHandle> for Reactive<T> {
     fn into_prop(self) -> Reactive<T> {
         self
     }
+}
+
+/// A field's new value from JS (`None`: unset, back to its default `init`):
+/// what each arm of `#[derive(Props)]`'s `set` does, once per type rather
+/// than once per field.
+fn take_prop<T: Clone + 'static>(
+    value: Option<super::AnyValue>,
+    js: &'static str,
+    init: fn() -> T,
+) -> Result<T, super::PropError> {
+    match value {
+        Some(v) => v.take::<T>().ok_or_else(|| of_another_type(js)),
+        None => Ok(init()),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn of_another_type(js: &'static str) -> super::PropError {
+    super::PropError(format!("`{js}`: a value of another type"))
+}
+
+/// `#[derive(Props)]`'s `set` of a `Prop<T>` field `js`: whether it changed.
+#[inline(never)]
+pub fn set_held<T: Clone + PartialEq + 'static>(
+    prop: &mut Prop<T>,
+    value: Option<super::AnyValue>,
+    js: &'static str,
+    init: fn() -> T,
+) -> Result<bool, super::PropError> {
+    Ok(prop.__set(Reactive::Static(take_prop(value, js, init)?)))
+}
+
+/// `#[derive(Props)]`'s `set` of a plain field `js`: whether it changed.
+#[inline(never)]
+pub fn set_plain<T: Clone + PartialEq + 'static>(
+    field: &mut T,
+    value: Option<super::AnyValue>,
+    js: &'static str,
+    init: fn() -> T,
+) -> Result<bool, super::PropError> {
+    let value = take_prop(value, js, init)?;
+    let changed = *field != value;
+    *field = value;
+    Ok(changed)
 }

@@ -27,4 +27,6 @@ Bundled skill and SDK files are enumerated in `build.rs`; adding one requires up
 
 Immutable bundled documents and resource contents are prepared once and shared across discoveries. Discovery captures complete catalogs and contained resources; model metadata remains a preview with exact source references and pageable reads. Filesystem sources are captured afresh under the current request capabilities.
 
+Skills with the same `SKILL.md` name use the first discovered location: project `.maka`, project `.agents`, user `.maka`, then user `.agents`. The selected document and resources always come from the same directory. Lower-priority instances remain in the inventory with their shadowing reference; removing an override reveals the next instance.
+
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

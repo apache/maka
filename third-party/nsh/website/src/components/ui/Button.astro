@@ -1,0 +1,21 @@
+---
+// shadcn/ui's Button: an <a> when it has `href`, else a <button>. The look
+// is `src/styles/ui.css` (`data-slot="button"`).
+import type { HTMLAttributes } from 'astro/types';
+
+export type ButtonVariant = 'default' | 'secondary' | 'outline' | 'ghost' | 'destructive' | 'link';
+export type ButtonSize = 'default' | 'xs' | 'sm' | 'lg' | 'icon' | 'icon-sm' | 'icon-xs' | 'icon-lg';
+
+type Props = Omit<HTMLAttributes<'button'>, 'type'> &
+  Omit<HTMLAttributes<'a'>, 'type'> & {
+    variant?: ButtonVariant;
+    size?: ButtonSize;
+    href?: string;
+    type?: 'button' | 'submit' | 'reset';
+  };
+
+const { variant = 'default', size = 'default', href, type = 'button', ...rest } = Astro.props;
+---
+{href
+  ? <a data-slot="button" data-variant={variant} data-size={size} href={href} {...rest}><slot /></a>
+  : <button data-slot="button" data-variant={variant} data-size={size} type={type} {...rest}><slot /></button>}

@@ -133,7 +133,7 @@ pub(crate) struct CanvasState {
     args: Vec<Option<AnimationValue>>,
     /// The images the drawing names, by URI: `None` while loading (or
     /// when they failed to load).
-    images: FxHashMap<Arc<str>, Option<Rc<Frame>>>,
+    images: FxHashMap<Arc<str>, Option<Arc<Frame>>>,
     /// What was recorded (made while drawing, which only sees the state).
     cache: RefCell<Cache>,
 }
@@ -378,7 +378,7 @@ fn record(
     ops: &[CanvasOp],
     from: usize,
     args: &[Option<AnimationValue>],
-    images: &FxHashMap<Arc<str>, Option<Rc<Frame>>>,
+    images: &FxHashMap<Arc<str>, Option<Arc<Frame>>>,
     text: &mut TextCache,
 ) -> windows::core::Result<ID2D1CommandList> {
     // The pool leaves the thread-local while recording, which never
@@ -531,7 +531,7 @@ struct Replay<'a> {
     /// The main list being recorded.
     main: Option<ID2D1CommandList>,
     args: &'a [Option<AnimationValue>],
-    images: &'a FxHashMap<Arc<str>, Option<Rc<Frame>>>,
+    images: &'a FxHashMap<Arc<str>, Option<Arc<Frame>>>,
     text: &'a mut TextCache,
     state: State,
     /// Saved states and how many clips each had.

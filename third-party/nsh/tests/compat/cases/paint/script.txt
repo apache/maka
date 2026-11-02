@@ -604,6 +604,41 @@ style id:trigger backgroundColor #ccccccff
 style id:trigger borderWidth 0
 style id:chevron backgroundColor #ffffffff
 covers [props] expandedStyle
+# state-pressed
+tap id:case-state-pressed
+expect Bold: false
+# Off: the plain classes, on the button and on the icon.
+prop id:bold role button
+style id:bold backgroundColor #ccccccff
+style id:bold borderWidth 0
+style id:icon backgroundColor #ffffffff
+# On: `aria-pressed:` and `pressedStyle` on the button,
+# `group-aria-pressed:` on the icon.
+tap id:bold
+expect Bold: true
+style id:bold backgroundColor #3355ffff
+style id:bold borderWidth 2
+style id:bold borderColor #000000ff
+style id:icon backgroundColor #222222ff
+# Mixed is not pressed.
+tap id:mixed
+style id:bold backgroundColor #ccccccff
+style id:bold borderWidth 0
+style id:icon backgroundColor #ffffffff
+tap id:mixed
+style id:bold backgroundColor #3355ffff
+style id:icon backgroundColor #222222ff
+# Off again.
+tap id:bold
+expect Bold: false
+style id:bold backgroundColor #ccccccff
+style id:bold borderWidth 0
+style id:icon backgroundColor #ffffffff
+# The other `aria-*` variants, from their accessibility states.
+style id:busy backgroundColor #ff0000ff
+style id:checked backgroundColor #00ff00ff
+style id:selected backgroundColor #0000ffff
+covers [props] pressedStyle
 # paint-inline-align
 tap id:case-paint-inline-align
 # The headless engine's 16.8 pt line has its baseline at the bottom and a

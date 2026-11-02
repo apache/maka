@@ -116,7 +116,7 @@ impl EventLog {
                             return Err(ProjectError::Changed.into());
                         }
                     }
-                    let updated_bindings = reassign_bindings(
+                    let (updated_bindings, permission_changed) = reassign_bindings(
                         &mut tx,
                         &project,
                         conflict.as_ref(),
@@ -178,6 +178,9 @@ impl EventLog {
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     if updated_bindings != 0 {
                         commits.metadata_scope(&owner_scope);
+                        if permission_changed {
+                            commits.activations();
+                        }
                     }
                     Ok(ProjectRelink {
                         project,
@@ -196,12 +199,13 @@ async fn reassign_bindings(
     owner_scope: &str,
     mut selected_workspace: Value,
     now: u64,
-) -> Result<usize> {
+) -> Result<(usize, bool)> {
     if !selected_workspace.is_object() {
         return Err(invalid("invalid relocated workspace"));
     }
     selected_workspace["projectId"] = Value::String(source.id.clone());
     let mut updated = 0usize;
+    let mut permission_changed = false;
     for (project, relocation) in
         std::iter::once((source, true)).chain(absorbed.map(|project| (project, false)))
     {
@@ -237,6 +241,7 @@ async fn reassign_bindings(
                     )
                     .await?;
                     if relocation {
+                        permission_changed = true;
                         let current =
                             crate::workspace_bindings::read::<Value>(connection, binding_id)
                                 .await?
@@ -261,5 +266,5 @@ async fn reassign_bindings(
     if updated != 0 {
         advance_catalog(connection).await?;
     }
-    Ok(updated)
+    Ok((updated, permission_changed))
 }

@@ -3,6 +3,7 @@ platform macos
 # desktop-props
 tap id:case-desktop-props
 expect Title bar
+expect Desktop: true desktop desktop
 prop id:bar desktop.windowDrag true
 prop id:body windowDrag false
 covers [props] desktop
@@ -57,11 +58,12 @@ expect Entries: a.txt:file,drafts:dir
 expect Renamed: false true
 expect Removed: 0
 expect Missing: ENOENT
-# Outside the granted root, and what the app did not declare: refused.
-expect Outside: refused
-expect Escape: refused
-expect Socket: refused
-expect Process: refused
+# Outside the granted root, and what the app did not declare: refused,
+# with the capability the call needs.
+expect Outside: ERR_ACCESS_DENIED fs
+expect Escape: ERR_ACCESS_DENIED fs
+expect Socket: ERR_ACCESS_DENIED network
+expect Process: ERR_ACCESS_DENIED process
 covers [fs/promises] default
 covers [fs/promises] readFile
 covers [fs/promises] writeFile
@@ -139,3 +141,23 @@ covers [events] DockArea.onLayoutChange
 covers [events] DockArea.onPanelRemove
 covers [events] DockArea.onZoomChange
 covers [events] DockArea.onPanelActiveChange
+# mod-access-denied
+tap id:case-mod-access-denied
+# The app declares files only: the clipboard, the picker, opening URLs and
+# the network are refused. Each call's promise rejects with
+# ERR_ACCESS_DENIED, the capability and what was asked for; fetch with a
+# TypeError, as every failed fetch.
+tap id:run
+expect Clipboard: Error ERR_ACCESS_DENIED clipboard ""
+expect Clipboard denied: 7 of 7
+expect Picker: Error ERR_ACCESS_DENIED picker ""
+expect Open: Error ERR_ACCESS_DENIED openUrl "https://example.com/docs"
+expect Image size: Error ERR_ACCESS_DENIED network "https://example.com/a.png"
+expect Image prefetch: Error ERR_ACCESS_DENIED network "https://example.com/b.png"
+expect Fetch: TypeError ERR_ACCESS_DENIED network "https://example.com/data"
+expect WebSocket: Error ERR_ACCESS_DENIED network "ws://example.com/feed"
+expect Global WebSocket: error,1006,false
+covers [nsh] Clipboard
+covers [nsh] Picker
+covers [nsh] openUrl
+covers [nsh] Image

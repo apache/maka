@@ -43,7 +43,7 @@ impl Columns {
     pub(crate) fn new(specs: Vec<Spec>) -> Columns {
         let widths = specs.iter().map(|s| clamp(s, s.width)).collect();
         let mut order: Vec<usize> = (0..specs.len()).collect();
-        order.sort_by_key(|&i| !specs[i].fixed);
+        crate::sort::sort_by_key(&mut order, |&i| !specs[i].fixed);
         let fixed = specs.iter().filter(|s| s.fixed).count();
         let mut columns = Columns {
             specs,
@@ -84,8 +84,7 @@ impl Columns {
                 *at = self.shown[old];
             }
         }
-        next.order
-            .sort_by_key(|&n| (!next.specs[n].fixed, position[n], n));
+        crate::sort::sort_by_key(&mut next.order, |&n| (!next.specs[n].fixed, position[n], n));
         next.reindex();
         next.rebuild(0);
         next

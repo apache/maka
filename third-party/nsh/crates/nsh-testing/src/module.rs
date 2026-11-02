@@ -1,6 +1,7 @@
 //! `nsh/test`, the module test files import: `test` declares a test,
 //! `open` starts the app on a headless engine of its own and gives an
-//! [`App`] to take steps on, `expect` checks values. Written in Rust, its
+//! [`App`] to take steps on, `expect` checks values as Jest does, as JS
+//! made them ([`crate::values`]). Written in Rust, its
 //! TypeScript face and declarations are generated, as a UI set's are; only
 //! the engine `nsh test` runs a test file on serves it.
 
@@ -16,7 +17,10 @@ use std::{
 
 use nsh_core::{
     JsonValue,
-    element::{Arg, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, Registry, TsTypes},
+    element::{
+        Arg, Exception, JsClass, JsError, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError,
+        Registry, TsTypes,
+    },
     prelude::*,
 };
 use nsh_engine::{HostCall, HostChannel, HttpBody, HttpRequest};
@@ -24,8 +28,10 @@ use nsh_engine::{HostCall, HostChannel, HttpBody, HttpRequest};
 use crate::{
     MemoryStorage,
     driver::{Driver, headless_only},
+    failure,
     headless::{self, RecordingNetwork, StubReply, StubResponse, StubRoute, default_answer},
     run::{OpenApp, Session},
+    values::{self, Check, Kept},
 };
 
 /// The specifier test files import.
@@ -46,7 +52,8 @@ pub fn registry() -> Registry {
         .class::<App>()
         .class::<Clock>()
         .class::<Expectation>()
-        .class::<Rejection>();
+        .class::<Rejection>()
+        .class::<Resolution>();
     registry
 }
 
@@ -245,9 +252,13 @@ impl Testing {
     /// on a phone-sized headless engine of its own, with what `options`
     /// set up, and resolves once it rendered and is quiet. Its requests
     /// fail unless `options.network` lists them; its storage starts with
-    /// `options.storage`.
-    pub async fn open(entry: String, options: Option<OpenOptions>) -> Result<App, String> {
-        let session = Session::current()?;
+    /// `options.storage`. With `nsh test --target`, an option the target's
+    /// platform cannot honor rejects (`ERR_NSH_TEST_UNSUPPORTED`, naming
+    /// it): `width` and `height` on iOS and Android, a `platform` the
+    /// target is not (a phone's on a desktop, a desktop's on a phone, the
+    /// other phone), `host.handlers`.
+    pub async fn open(entry: String, options: Option<OpenOptions>) -> Result<App, JsError> {
+        let session = Session::current().map_err(JsError::Error)?;
         let options = options.unwrap_or_default();
         let (network, mut server) = network_setup(options.network);
         let host_handlers = options
@@ -256,17 +267,18 @@ impl Testing {
             .and_then(|h| h.handlers.as_ref())
             .is_some_and(|h| !h.0.is_empty());
         let (host, record) = host_setup(options.host, &mut server);
+        let manual_clock = options.clock.is_some();
         let launch = Launch {
             storage: options.storage.unwrap_or_default(),
             network,
             width: options.width,
             height: options.height,
-            safe_area: options.safe_area.unwrap_or_default(),
+            safe_area: options.safe_area,
             clipboard: options.clipboard,
-            color_scheme: options.color_scheme.unwrap_or_default(),
+            color_scheme: options.color_scheme,
             locale: options.locale,
-            reduced_motion: options.reduced_motion.unwrap_or(false),
-            platform: options.platform.unwrap_or_default(),
+            reduced_motion: options.reduced_motion,
+            platform: options.platform,
             clock: options
                 .clock
                 .map(|c| c.time.map_or_else(std::time::SystemTime::now, |t| t.0)),
@@ -275,8 +287,10 @@ impl Testing {
         };
         let opening = blocking(move || session.open(&entry, launch));
         let (app, storage, requests) = serve(server.as_ref(), opening)
-            .await?
-            .map_err(|e| e.to_string())??;
+            .await
+            .map_err(step_error)?
+            .map_err(|e| step_error(e.to_string()))?
+            .map_err(step_error)?;
         Ok(App {
             steps: Steps {
                 app,
@@ -287,25 +301,28 @@ impl Testing {
             storage,
             requests,
             host: record,
+            manual_clock,
         })
     }
 
-    /// What to expect of `value`, compared as JSON is (`undefined` is
-    /// `null`): `expect(app.texts()).toContain("Saved")`. Given a function,
-    /// what it throws: `expect(() => parse("x")).toThrow("not a number")`,
-    /// and with `rejects` what the promise it returns rejects with.
+    /// What to expect of `value`, compared as Jest compares values (as JS
+    /// made them: `toBe` by `Object.is`, `toEqual` member by member):
+    /// `expect(app.texts()).toContain("Saved")`. Given a function, what it
+    /// throws: `expect(() => parse("x")).toThrow("not a number")`; given a
+    /// promise (or a function returning one), with `rejects` and
+    /// `resolves` what it settles to:
+    /// `await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" })`.
     pub fn expect(value: Subject) -> Expectation {
-        match value {
-            Subject::Value(value) => Expectation {
-                value,
-                run: None,
-                not: false,
-            },
-            Subject::Function(run) => Expectation {
-                value: JsonValue::Null,
-                run: Some(run),
-                not: false,
-            },
+        let Subject {
+            value,
+            run,
+            promise,
+        } = value;
+        Expectation {
+            value,
+            run,
+            promise,
+            not: false,
         }
     }
 }
@@ -374,9 +391,11 @@ pub struct OpenOptions {
     /// `*` matches any text): a response, or a function of the request that
     /// returns one; a request not listed fails. `"live"`: the network.
     pub network: Option<NetworkOption>,
-    /// The viewport's width (390 points).
+    /// The viewport's width (390 points). With `--target ios` or
+    /// `android` the app fills the device's screen: giving it rejects with
+    /// `ERR_NSH_TEST_UNSUPPORTED`.
     pub width: Option<Points>,
-    /// The viewport's height (844 points).
+    /// The viewport's height (844 points), as `width`.
     pub height: Option<Points>,
     /// The safe area insets in points (none).
     pub safe_area: Option<SafeArea>,
@@ -389,12 +408,15 @@ pub struct OpenOptions {
     /// The user asked for less motion (false).
     pub reduced_motion: Option<bool>,
     /// The platform the app believes it runs on headless (`"ios"`; a
-    /// desktop's: `"macos"`, `"windows"`, `"linux"`, `"web"`). On a real
-    /// platform it is that one.
+    /// desktop's: `"macos"`, `"windows"`, `"linux"`, `"web"`). With
+    /// `--target`, the app runs on the target's platform: a desktop's runs
+    /// on any desktop and the web, `"ios"` and `"android"` on their own,
+    /// and another rejects with `ERR_NSH_TEST_UNSUPPORTED`.
     pub platform: Option<Platform>,
     /// A manual clock for the app (none: the system's): its time moves only
     /// as the test moves it (`app.clock`), steps finish native animations
-    /// at once, and `app.wait` moves it.
+    /// at once (one looping forever moves with the clock instead), and
+    /// `app.wait`, `app.waitFor` and `app.waitUntil` move it.
     pub clock: Option<ClockOptions>,
     /// The embedding app the test plays for the app (`nsh/host`): the
     /// launch parameters it reads as `host.params` and the handlers of its
@@ -663,7 +685,7 @@ pub struct Dialog {
 
 /// A pick the app asked for (`Picker.pickImages`), as a test reads it.
 #[derive(Debug, Clone, PartialEq, JsObject)]
-pub struct Pick {
+pub struct PickRequest {
     /// The user may pick several.
     pub multiple: bool,
     /// At most this many.
@@ -677,9 +699,9 @@ pub struct Pick {
     pub format: String,
 }
 
-impl From<&nsh_core::picker::PickRequest> for Pick {
+impl From<&nsh_core::picker::PickRequest> for PickRequest {
     fn from(request: &nsh_core::picker::PickRequest) -> Self {
-        Pick {
+        PickRequest {
             multiple: request.multiple(),
             limit: request.limit,
             max_dimension: request.max_dimension.map(|d| d.0.max(0) as u32),
@@ -1059,12 +1081,15 @@ pub(crate) struct Launch {
     pub(crate) network: NetworkSetup,
     pub(crate) width: Option<Points>,
     pub(crate) height: Option<Points>,
-    pub(crate) safe_area: SafeArea,
+    /// What the test gives of the environment: a real platform's host pins
+    /// it, defaults included, and keeps its own for what it leaves out.
+    pub(crate) safe_area: Option<SafeArea>,
     pub(crate) clipboard: Option<String>,
-    pub(crate) color_scheme: ColorScheme,
+    pub(crate) color_scheme: Option<ColorScheme>,
     pub(crate) locale: Option<String>,
-    pub(crate) reduced_motion: bool,
-    pub(crate) platform: Platform,
+    pub(crate) reduced_motion: Option<bool>,
+    /// The platform `open` named (headless: iOS when it named none).
+    pub(crate) platform: Option<Platform>,
     /// A manual clock's start.
     pub(crate) clock: Option<std::time::SystemTime>,
     /// The embedding app's channel with the app: the test's launch
@@ -1307,7 +1332,12 @@ fn stub_response(value: &JsonValue) -> Result<StubResponse, PropError> {
 /// `text:<text>`, `view:<id>` or a bare string (a test id, a label, then a
 /// text), where a user would look first (the top modal, the top screen of
 /// a stack). A step resolves once the app is quiet and rejects, with what
-/// is on screen, when it cannot be taken or the app threw.
+/// is on screen, when it cannot be taken or the app threw. The failures a
+/// test may expect carry a `code` to match (messages may change):
+/// `ERR_NSH_TEST_NOT_FOUND` (nothing matches the selector),
+/// `ERR_NSH_TEST_DISABLED` (what it names is disabled), `ETIMEDOUT` (a wait
+/// ran out of time), `ERR_NSH_TEST_NO_BACK` (nothing to go back from).
+/// The app closes when the test that opened it ends.
 #[class]
 pub struct App {
     steps: Steps,
@@ -1317,6 +1347,8 @@ pub struct App {
     requests: Option<Arc<RecordingNetwork>>,
     /// The calls and posts the handlers of `open`'s `host` got.
     host: HostRecord,
+    /// It runs on a manual clock (`open`'s `clock`).
+    manual_clock: bool,
 }
 
 /// The embedding app the test plays for an app (`app.host`, after
@@ -1337,7 +1369,7 @@ impl AppHost {
         this: Instance<Self>,
         name: String,
         data: Option<JsonValue>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         let steps = this.with(|h| h.steps.clone());
         let data = data.unwrap_or(JsonValue::Null);
         steps.run(move |app| app.send_host_event(&name, data)).await
@@ -1381,7 +1413,7 @@ struct Steps {
 }
 
 /// A test's answer to the picks (`app.onPick`).
-type PickCallback = Callback<Pick, Option<Vec<PickFile>>>;
+type PickCallback = Callback<PickRequest, Option<Vec<PickFile>>>;
 
 /// A test's answer to the dialogs (`app.onDialog`).
 type DialogCallback = Callback<Dialog, Option<String>>;
@@ -1399,8 +1431,8 @@ impl Clock {
     /// Moves the clock by `ms` milliseconds, a display frame at a time:
     /// timers, frames and native animations run as they come due, in order;
     /// resolves once the app is quiet.
-    pub async fn run_for(this: Instance<Self>, ms: f64) -> Result<(), String> {
-        let time = duration(ms)?;
+    pub async fn run_for(this: Instance<Self>, ms: f64) -> Result<(), JsError> {
+        let time = duration(ms).map_err(JsError::Range)?;
         let steps = this.with(|c| c.steps.clone());
         steps.run(move |app| app.run_for(time)).await
     }
@@ -1408,8 +1440,8 @@ impl Clock {
     /// Moves the clock by `ms` milliseconds at once, as a device waking from
     /// sleep: the timers due meanwhile run once each; resolves once the app
     /// is quiet.
-    pub async fn fast_forward(this: Instance<Self>, ms: f64) -> Result<(), String> {
-        let time = duration(ms)?;
+    pub async fn fast_forward(this: Instance<Self>, ms: f64) -> Result<(), JsError> {
+        let time = duration(ms).map_err(JsError::Range)?;
         let steps = this.with(|c| c.steps.clone());
         steps.run(move |app| app.fast_forward(time)).await
     }
@@ -1435,7 +1467,7 @@ impl Keyboard {
     /// `"shift+/"`, `"escape"`; `mod` is the platform's command key): the
     /// app's shortcut of it hears it (`onKeyCommand`), else the focused
     /// input takes it, else Escape goes back.
-    pub async fn press(this: Instance<Self>, keys: String) -> Result<(), String> {
+    pub async fn press(this: Instance<Self>, keys: String) -> Result<(), JsError> {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.press_key(&keys)).await
     }
@@ -1443,13 +1475,13 @@ impl Keyboard {
     /// Holds modifier keys down (`"mod"`, `"shift"`, `"alt"`, `"ctrl"`,
     /// `"meta"`, joined by `+`) until `up`: the presses, drags and hovers
     /// meanwhile carry them (a Mod-click, a Shift-drag). Headless and on Linux.
-    pub async fn down(this: Instance<Self>, keys: String) -> Result<(), String> {
+    pub async fn down(this: Instance<Self>, keys: String) -> Result<(), JsError> {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.hold_keys(&keys, true)).await
     }
 
     /// Lets go of modifier keys `down` held.
-    pub async fn up(this: Instance<Self>, keys: String) -> Result<(), String> {
+    pub async fn up(this: Instance<Self>, keys: String) -> Result<(), JsError> {
         let steps = this.with(|k| k.steps.clone());
         steps.run(move |app| app.hold_keys(&keys, false)).await
     }
@@ -1471,7 +1503,7 @@ const CLOSED: &str = "the app is closed: the test that opened it ended";
 impl App {
     /// Presses what `selector` names (or the nearest view around it that
     /// hears presses, as a tap on a button's text does).
-    pub async fn press(this: Instance<Self>, selector: String) -> Result<(), String> {
+    pub async fn press(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.press(&selector)).await
     }
 
@@ -1482,13 +1514,13 @@ impl App {
         this: Instance<Self>,
         selector: String,
         text: String,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         step(&this, move |app| app.type_text(&selector, &text)).await
     }
 
     /// The return key in the input `selector` names, as its
     /// `submitBehavior` says.
-    pub async fn submit(this: Instance<Self>, selector: String) -> Result<(), String> {
+    pub async fn submit(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.submit(&selector)).await
     }
 
@@ -1499,7 +1531,7 @@ impl App {
         this: Instance<Self>,
         selector: String,
         distance: f64,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         step(&this, move |app| {
             app.scroll(&selector, nsh_core::geometry::px(distance as f32))
         })
@@ -1511,7 +1543,7 @@ impl App {
     /// (`onPanStart`, `onPanEnd`), the views listening to touches hear them,
     /// a scroll view scrolls (pulled past its top, it refreshes), and the
     /// press under the finger is cancelled.
-    pub async fn drag(this: Instance<Self>, selector: String, by: DragBy) -> Result<(), String> {
+    pub async fn drag(this: Instance<Self>, selector: String, by: DragBy) -> Result<(), JsError> {
         let by = nsh_core::geometry::point(by.x, by.y);
         step(&this, move |app| app.drag(&selector, by)).await
     }
@@ -1523,7 +1555,7 @@ impl App {
         this: Instance<Self>,
         selector: String,
         by: DragBy,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         let by = nsh_core::geometry::point(by.x, by.y);
         step(&this, move |app| app.drag_and_hold(&selector, by)).await
     }
@@ -1535,12 +1567,12 @@ impl App {
         this: Instance<Self>,
         selector: String,
         uris: Vec<String>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         step(&this, move |app| app.drop_files(&selector, uris)).await
     }
 
     /// Lifts the finger `dragAndHold` left down, where it is.
-    pub async fn drop(this: Instance<Self>) -> Result<(), String> {
+    pub async fn drop(this: Instance<Self>) -> Result<(), JsError> {
         step(&this, move |app| app.drop_held()).await
     }
 
@@ -1548,7 +1580,7 @@ impl App {
     /// names: it, or the nearest view around it listening, hears
     /// `onContextMenu`, whose handler shows a menu (`Menu.popup`: read it
     /// with `menu()`). Desktops and the web only: a phone has no mouse.
-    pub async fn right_click(this: Instance<Self>, selector: String) -> Result<(), String> {
+    pub async fn right_click(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.right_click(&selector)).await
     }
 
@@ -1561,20 +1593,20 @@ impl App {
         this: Instance<Self>,
         selector: String,
         content: PasteContent,
-    ) -> Result<(), String> {
-        let content = content.read()?;
+    ) -> Result<(), JsError> {
+        let content = content.read().map_err(JsError::Error)?;
         step(&this, move |app| app.paste(&selector, &content)).await
     }
 
     /// Chooses the open context menu's action labelled `label` (a
     /// submenu's: `"Share > Mail"`), as a click on it: the app hears
     /// `onMenu`, then the menu closes.
-    pub async fn choose_menu_item(this: Instance<Self>, label: String) -> Result<(), String> {
+    pub async fn choose_menu_item(this: Instance<Self>, label: String) -> Result<(), JsError> {
         step(&this, move |app| app.choose_menu_item(&label)).await
     }
 
     /// Closes the open context menu with nothing chosen, as Escape does.
-    pub async fn close_menu(this: Instance<Self>) -> Result<(), String> {
+    pub async fn close_menu(this: Instance<Self>) -> Result<(), JsError> {
         step(&this, move |app| app.close_menu()).await
     }
 
@@ -1583,24 +1615,29 @@ impl App {
     /// take their `hover:` styles and hear `onMouseMove`, with no button
     /// down. Desktops and the web (at any width: a browser has a mouse)
     /// only: an iOS or Android phone has none.
-    pub async fn hover(this: Instance<Self>, selector: String) -> Result<(), String> {
+    pub async fn hover(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.hover(&selector)).await
     }
 
     /// Lets the app run for `ms` milliseconds (timers and animations): on a
     /// manual clock, moves it by `ms` (`clock.runFor`).
-    pub async fn wait(this: Instance<Self>, ms: f64) -> Result<(), String> {
+    pub async fn wait(this: Instance<Self>, ms: f64) -> Result<(), JsError> {
         let time = Duration::from_secs_f64(ms.max(0.0) / 1000.0);
         step(&this, move |app| app.wait(time)).await
     }
 
-    /// Resolves once a view on screen matches `selector`; rejects after
-    /// `timeout` milliseconds (5000).
+    /// Resolves once a view on screen matches `selector`; rejects
+    /// (`ETIMEDOUT`) after `timeout` milliseconds (5000). On a manual clock
+    /// the wait moves it, a display frame at a time, looking after each
+    /// frame (the timers due run on the way, as with `clock.runFor`), by
+    /// `timeout` at most: it rejects once the clock moved that far and as
+    /// much real time passed, which what comes from outside the app (a
+    /// route's function, the network) has.
     pub async fn wait_for(
         this: Instance<Self>,
         selector: String,
         options: Option<WaitOptions>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         let options = options.unwrap_or_default();
         let timeout = options.timeout();
         match options.state.unwrap_or_default() {
@@ -1612,80 +1649,109 @@ impl App {
     }
 
     /// Resolves once `condition` returns true, looking again after each
-    /// change of the app (a render, an animation frame); rejects after
-    /// `options.timeout` milliseconds (5000): for what no selector says
-    /// (`app.storage().note === "Milk"`).
+    /// change of the app (a render, an animation frame); rejects
+    /// (`ETIMEDOUT`) after `options.timeout` milliseconds (5000): for what
+    /// no selector says
+    /// (`app.storage().note === "Milk"`). On a manual clock it moves the
+    /// clock as `waitFor` does, a display frame between two looks, by the
+    /// timeout at most, and rejects as `waitFor` does.
     pub async fn wait_until(
         this: Instance<Self>,
         condition: Callback<(), bool>,
         options: Option<WaitOptions>,
-    ) -> Result<(), String> {
+    ) -> Result<(), JsError> {
         let timeout = options.unwrap_or_default().timeout();
         let deadline = std::time::Instant::now() + timeout;
         let app = this.with(|a| a.steps.app.clone());
         let server = this.with(|a| a.steps.server.clone());
+        // On a manual clock: how far the wait moved it, which the timeout
+        // measures.
+        let mut moved = this.with(|a| a.manual_clock).then_some(Duration::ZERO);
         on_app(&app, |a| {
             a.step("waitUntil");
             Ok(())
         })
-        .await?;
+        .await
+        .map_err(step_error)?;
         loop {
-            if condition.call_async(()).await? {
+            if condition.call_async(()).await.map_err(JsError::Error)? {
                 return Ok(());
             }
+            // The clock moves by the timeout at most; then the wait goes on
+            // for what comes from outside the app, until as much real time
+            // passed.
+            let clock_left = moved.map(|moved| timeout.saturating_sub(moved));
             let left = deadline.saturating_duration_since(std::time::Instant::now());
-            if left.is_zero() {
-                let screen = on_app(&app, |a| Ok(format!("{:?}", a.texts()?))).await?;
-                return Err(format!(
+            if left.is_zero() && clock_left.is_none_or(|l| l.is_zero()) {
+                let screen = on_app(&app, |a| Ok(format!("{:?}", a.texts()?)))
+                    .await
+                    .map_err(step_error)?;
+                return Err(JsError::Error(format!(
                     "the condition never held in {} ms; on screen: {screen}",
                     timeout.as_millis()
-                ));
+                ))
+                .with_code(failure::TIMED_OUT));
+            }
+            if let (Some(moved), Some(clock_left)) = (&mut moved, clock_left)
+                && !clock_left.is_zero()
+            {
+                let by = serve(
+                    server.as_deref(),
+                    on_app(&app, move |a| a.next_frame(clock_left)),
+                )
+                .await
+                .and_then(|framed| framed)
+                .map_err(step_error)?;
+                *moved += by;
+                continue;
             }
             let wait = left.min(Duration::from_millis(50));
             serve(
                 server.as_deref(),
                 on_app(&app, move |a| a.next_change(wait)),
             )
-            .await??;
+            .await
+            .and_then(|changed| changed)
+            .map_err(step_error)?;
         }
     }
 
     /// Holds a finger on what `selector` names (or the nearest view around
     /// it that hears long presses or presses) for its `delayLongPress`
     /// (500 ms): `onPressDown`, `onLongPress`, `onPressUp`.
-    pub async fn long_press(this: Instance<Self>, selector: String) -> Result<(), String> {
+    pub async fn long_press(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.long_press(&selector)).await
     }
 
     /// Empties the input `selector` names, as selecting all and deleting
     /// does.
-    pub async fn clear(this: Instance<Self>, selector: String) -> Result<(), String> {
+    pub async fn clear(this: Instance<Self>, selector: String) -> Result<(), JsError> {
         step(&this, move |app| app.clear(&selector)).await
     }
 
     /// How many views on screen match `selector` now.
-    pub fn count(&self, selector: String) -> Result<u32, String> {
+    pub fn count(&self, selector: String) -> Result<u32, JsError> {
         self.with(|app| Ok(app.count(&selector)? as u32))
     }
 
     /// Whether the view `selector` names takes input now: neither it nor a
     /// view around it is disabled, and an input is not `readonly`.
-    pub fn enabled(&self, selector: String) -> Result<bool, String> {
+    pub fn enabled(&self, selector: String) -> Result<bool, JsError> {
         self.with(|app| app.enabled(&selector))
     }
 
     /// Whether a view on screen matches `selector` now.
-    pub fn shows(&self, selector: String) -> Result<bool, String> {
+    pub fn shows(&self, selector: String) -> Result<bool, JsError> {
         self.with(|app| app.shows(&selector))
     }
 
     /// The texts on screen now, in order.
-    pub fn texts(&self) -> Result<Vec<String>, String> {
+    pub fn texts(&self) -> Result<Vec<String>, JsError> {
         self.with(|app| app.texts())
     }
 
     /// The text of the input `selector` names, `null` when none matches.
-    pub fn value(&self, selector: String) -> Result<Option<String>, String> {
+    pub fn value(&self, selector: String) -> Result<Option<String>, JsError> {
         self.with(|app| app.value(&selector))
     }
 
@@ -1694,7 +1760,7 @@ impl App {
     /// where the text reads it. The parts before the last name the views
     /// to look in (`id:note >> text:here`). Headless tests read this style;
     /// an empty span reports an error because it has no first character.
-    pub fn span_style(&self, selector: String) -> Result<SpanStyle, String> {
+    pub fn span_style(&self, selector: String) -> Result<SpanStyle, JsError> {
         self.with(|app| app.span_style(&selector).map(SpanStyle::from))
     }
 
@@ -1705,16 +1771,16 @@ impl App {
         }
         // On a real host: as the host's app keeps it.
         let mut app = self.steps.app.lock().unwrap_or_else(|e| e.into_inner());
-        let driver = app.as_mut().ok_or("the app is closed")?;
+        let driver = app.as_mut().ok_or(CLOSED)?;
         Ok(Entries(driver.storage()?))
     }
 
     /// Goes back as the user does (a header's back button, swiping a sheet
     /// down): the innermost stack of the newest modal (else of the screen)
     /// pops its top screen, or asks it when it prevents going back; without
-    /// one, the newest modal asks to close. Rejects when there is nothing
-    /// to go back from.
-    pub async fn back(this: Instance<Self>) -> Result<(), String> {
+    /// one, the newest modal asks to close. Rejects (`ERR_NSH_TEST_NO_BACK`)
+    /// when there is nothing to go back from.
+    pub async fn back(this: Instance<Self>) -> Result<(), JsError> {
         step(&this, |app| app.back()).await
     }
 
@@ -1732,24 +1798,24 @@ impl App {
     /// picks, given as they are (no scaling or conversion), or `null` to
     /// cancel. Without a handler, every pick is cancelled. Headless runs
     /// only: a real platform shows its picker.
-    pub fn on_pick(&mut self, #[args(pick)] handler: Callback<Pick, Option<Vec<PickFile>>>) {
+    pub fn on_pick(&mut self, #[args(pick)] handler: Callback<PickRequest, Option<Vec<PickFile>>>) {
         *self.steps.pick.borrow_mut() = Some(handler);
     }
 
     /// The picks the app asked for, in order.
-    pub fn picks(&self) -> Result<Vec<Pick>, String> {
-        self.with(|app| Ok(app.picks()?.iter().map(Pick::from).collect()))
+    pub fn picks(&self) -> Result<Vec<PickRequest>, JsError> {
+        self.with(|app| Ok(app.picks()?.iter().map(PickRequest::from).collect()))
     }
 
     /// The dialogs the app showed, in order.
-    pub fn dialogs(&self) -> Result<Vec<Dialog>, String> {
+    pub fn dialogs(&self) -> Result<Vec<Dialog>, JsError> {
         self.with(|app| Ok(app.dialogs()?.iter().map(Dialog::from).collect()))
     }
 
     /// The actions of the context menu the app shows (`Menu.popup`), a
     /// submenu's after its label (`"Share > Mail"`); `null` when none is
     /// open.
-    pub fn menu(&self) -> Result<Option<Vec<MenuEntry>>, String> {
+    pub fn menu(&self) -> Result<Option<Vec<MenuEntry>>, JsError> {
         self.with(|app| {
             Ok(app.menu()?.map(|entries| {
                 entries
@@ -1772,12 +1838,15 @@ impl App {
         }
     }
 
-    /// The app's manual clock (`open`'s `clock`), which the test moves.
+    /// The app's manual clock (`open`'s `clock`), which the test moves;
+    /// `null` when the app runs on the system's clock.
     #[getter]
-    pub fn clock(&self) -> Clock {
-        Clock {
-            steps: self.steps.clone(),
-        }
+    pub fn clock(&self) -> Option<Instance<Clock>> {
+        self.manual_clock.then(|| {
+            Instance::new(Clock {
+                steps: self.steps.clone(),
+            })
+        })
     }
 
     /// The embedding app the test plays (`open`'s `host`): its events to
@@ -1793,7 +1862,7 @@ impl App {
     /// The URLs the app opened (`openUrl` of `nsh/device`, a `TextView`'s
     /// links), in order: recorded, never opened, and reported opened to
     /// the app.
-    pub fn opened_urls(&self) -> Result<Vec<String>, String> {
+    pub fn opened_urls(&self) -> Result<Vec<String>, JsError> {
         self.with(|app| app.opened_urls())
     }
 
@@ -1826,25 +1895,36 @@ impl App {
 
     /// Makes the viewport `width` × `height` points (a rotation, a resized
     /// window) and resolves once the app laid itself out again.
-    pub async fn set_viewport(this: Instance<Self>, width: f64, height: f64) -> Result<(), String> {
+    pub async fn set_viewport(
+        this: Instance<Self>,
+        width: f64,
+        height: f64,
+    ) -> Result<(), JsError> {
         let size = nsh_core::Size::new(Points(width as f32), Points(height as f32));
         step(&this, move |app| app.set_viewport(size)).await
     }
 
     /// Switches the system's appearance to `scheme`, as the user does.
-    pub async fn set_color_scheme(this: Instance<Self>, scheme: ColorScheme) -> Result<(), String> {
+    pub async fn set_color_scheme(
+        this: Instance<Self>,
+        scheme: ColorScheme,
+    ) -> Result<(), JsError> {
         step(&this, move |app| app.set_color_scheme(scheme.into())).await
     }
 
     /// The text on the clipboard now, `null` when it holds none.
-    pub fn clipboard(&self) -> Result<Option<String>, String> {
+    pub fn clipboard(&self) -> Result<Option<String>, JsError> {
         self.with(|app| app.clipboard())
     }
 
-    /// `f` with the app as it is now (the batches that came applied).
-    fn with<R>(&self, f: impl FnOnce(&mut dyn Driver) -> Result<R, String>) -> Result<R, String> {
+    /// `f` with the app as it is now (the batches that came applied); a
+    /// failure has the `code` it says ([`step_error`]).
+    fn with<R>(&self, f: impl FnOnce(&mut dyn Driver) -> Result<R, String>) -> Result<R, JsError> {
         let mut app = self.steps.app.lock().unwrap_or_else(|e| e.into_inner());
-        f(app.as_deref_mut().ok_or(CLOSED)?)
+        let Some(app) = app.as_deref_mut() else {
+            return Err(JsError::Error(CLOSED.to_owned()));
+        };
+        f(app).map_err(step_error)
     }
 }
 
@@ -1854,14 +1934,30 @@ impl App {
 async fn step(
     this: &Instance<App>,
     f: impl FnOnce(&mut dyn Driver) -> Result<(), String> + Send + 'static,
-) -> Result<(), String> {
+) -> Result<(), JsError> {
     this.with(|a| a.steps.clone()).run(f).await
+}
+
+/// A step's failure as JS gets it: an `Error` with the `code` its message
+/// says ([`failure::code_of`]), which tests match instead of the message.
+fn step_error(message: String) -> JsError {
+    match failure::code_of(&message) {
+        Some(code) => JsError::Error(message).with_code(code),
+        None => JsError::Error(message),
+    }
 }
 
 impl Steps {
     /// Runs the step `f` on a blocking thread, then answers the dialogs it
-    /// showed ([`step`]).
+    /// showed ([`step`]); a failure has the `code` it says ([`step_error`]).
     async fn run(
+        &self,
+        f: impl FnOnce(&mut dyn Driver) -> Result<(), String> + Send + 'static,
+    ) -> Result<(), JsError> {
+        self.run_step(f).await.map_err(step_error)
+    }
+
+    async fn run_step(
         &self,
         f: impl FnOnce(&mut dyn Driver) -> Result<(), String> + Send + 'static,
     ) -> Result<(), String> {
@@ -1882,7 +1978,7 @@ impl Steps {
                 let handler = pick.borrow().clone();
                 let files = match handler {
                     Some(handler) => handler
-                        .call_async(Pick::from(&asked))
+                        .call_async(PickRequest::from(&asked))
                         .await?
                         .unwrap_or_default()
                         .into_iter()
@@ -1928,13 +2024,18 @@ async fn on_app<R: Send + 'static>(
     .map_err(|e| e.to_string())?
 }
 
-/// What a test expects of a value (`expect`); each check throws
-/// when it does not hold.
+/// What a test expects of a value (`expect`); each check throws when it
+/// does not hold. Values are compared as Jest compares them, as JS made
+/// them ([`crate::values`]).
 #[class]
 pub struct Expectation {
-    value: JsonValue,
-    /// The function `expect` was given, for `toThrow` and `rejects`.
-    run: Option<Callback<(), JsonValue>>,
+    /// The value `expect` was given (a function or a promise too).
+    value: Kept,
+    /// The function `expect` was given, for `toThrow`, `rejects` and
+    /// `resolves`; with `promise`, the stand-in of the promise it was given.
+    run: Option<Callback<(), Kept>>,
+    /// `expect` was given a promise.
+    promise: bool,
     not: bool,
 }
 
@@ -1946,161 +2047,469 @@ impl Expectation {
         Expectation {
             value: self.value.clone(),
             run: self.run.clone(),
+            promise: self.promise,
             not: !self.not,
         }
     }
 
-    /// The checks of what the promise the function returns rejects with:
-    /// `await expect(() => app.press("Pay")).rejects.toThrow("declined")`.
+    /// The checks of what the promise rejects with (given a function, the
+    /// promise it returns):
+    /// `await expect(app.press("Pay")).rejects.toMatchObject({ code: "ERR_NSH_TEST_DISABLED" })`.
     #[getter]
     pub fn rejects(&self) -> Result<Rejection, String> {
-        let run = self
-            .run
-            .clone()
-            .ok_or("`rejects` checks a function: `expect(() => promise).rejects`")?;
-        Ok(Rejection { run, not: self.not })
+        let run = self.run.clone().ok_or(
+            "`rejects` checks a promise, or a function returning one: `expect(promise).rejects`",
+        )?;
+        Ok(Rejection {
+            run,
+            promise: self.promise,
+            not: self.not,
+        })
     }
 
-    /// The value matches `pattern`: contains it (a string), or matches it (a
-    /// `RegExp`).
-    pub fn to_match(&self, pattern: Pattern) -> Result<(), String> {
-        let holds = match &self.value {
-            JsonValue::String(s) => pattern.matches(s),
-            _ => false,
-        };
-        self.check(holds, "to match", Some(&pattern.describe()))
+    /// The checks of what the promise resolves to (given a function, the
+    /// promise it returns): `await expect(load()).resolves.toEqual({ ok: true })`.
+    #[getter]
+    pub fn resolves(&self) -> Result<Resolution, String> {
+        let run = self.run.clone().ok_or(
+            "`resolves` checks a promise, or a function returning one: `expect(promise).resolves`",
+        )?;
+        Ok(Resolution {
+            run,
+            promise: self.promise,
+            not: self.not,
+        })
     }
 
-    /// The value (an array or a string) has `length` items (UTF-16 units
-    /// for a string, as JS counts them).
-    pub fn to_have_length(&self, length: f64) -> Result<(), String> {
-        let len = match &self.value {
-            JsonValue::Array(items) => Some(items.len()),
-            JsonValue::String(s) => Some(s.encode_utf16().count()),
-            _ => None,
-        };
-        self.check(
-            len.is_some_and(|n| n as f64 == length),
-            "to have length",
-            Some(&JsonValue::from(length)),
-        )
+    /// The value (a string) matches `pattern`, as Jest's `toMatch`: contains
+    /// it (a string), or matches it (a `RegExp`, run by the JS engine as
+    /// `text.search(pattern)` runs it).
+    pub fn to_match(&self, pattern: Pattern) -> Check {
+        self.verdict("to match", move |host, value| {
+            let holds = match value.as_string() {
+                Some(text) => pattern.matches(host, &text)?,
+                None => false,
+            };
+            Ok((holds, Some(pattern.describe())))
+        })
     }
 
-    /// The value is `null` (or `undefined`).
-    pub fn to_be_null(&self) -> Result<(), String> {
-        self.check(self.value.is_null(), "to be null", None)
+    /// The value has a `length` of `length`: a string (UTF-16 units, as JS
+    /// counts them), an array, a typed array, or any object with a numeric
+    /// `length`.
+    pub fn to_have_length(&self, length: f64) -> Check {
+        self.verdict("to have length", move |_, value| {
+            let len = match value.kind() {
+                JsKind::String => value.as_string().map(|s| s.encode_utf16().count() as f64),
+                JsKind::Array | JsKind::Function | JsKind::Object => {
+                    value.field("length").map_err(|e| e.0)?.get().as_number()
+                }
+                _ => None,
+            };
+            Ok((len == Some(length), Some(values::number(length))))
+        })
+    }
+
+    /// The value is `null` (`toBeUndefined` checks for `undefined`).
+    pub fn to_be_null(&self) -> Check {
+        self.verdict("to be null", |_, value| {
+            Ok((value.kind() == JsKind::Null, None))
+        })
+    }
+
+    /// The value is `undefined`.
+    pub fn to_be_undefined(&self) -> Check {
+        self.verdict("to be undefined", |_, value| {
+            Ok((value.kind() == JsKind::Undefined, None))
+        })
+    }
+
+    /// The value is defined: anything but `undefined`, `null` included.
+    pub fn to_be_defined(&self) -> Check {
+        self.verdict("to be defined", |_, value| {
+            Ok((value.kind() != JsKind::Undefined, None))
+        })
+    }
+
+    /// The value is `NaN`.
+    #[allow(non_snake_case)]
+    pub fn to_be_NaN(&self) -> Check {
+        self.verdict("to be NaN", |_, value| {
+            Ok((value.as_number().is_some_and(f64::is_nan), None))
+        })
     }
 
     /// The value (a number) is more than `n`.
-    pub fn to_be_greater_than(&self, n: f64) -> Result<(), String> {
-        self.compare(n, "to be greater than", |a| a > n)
+    pub fn to_be_greater_than(&self, n: f64) -> Check {
+        self.compare(n, "to be greater than", move |a| a > n)
     }
 
     /// The value (a number) is `n` or more.
-    pub fn to_be_greater_than_or_equal(&self, n: f64) -> Result<(), String> {
-        self.compare(n, "to be greater than or equal to", |a| a >= n)
+    pub fn to_be_greater_than_or_equal(&self, n: f64) -> Check {
+        self.compare(n, "to be greater than or equal to", move |a| a >= n)
     }
 
     /// The value (a number) is less than `n`.
-    pub fn to_be_less_than(&self, n: f64) -> Result<(), String> {
-        self.compare(n, "to be less than", |a| a < n)
+    pub fn to_be_less_than(&self, n: f64) -> Check {
+        self.compare(n, "to be less than", move |a| a < n)
     }
 
     /// The value (a number) is `n` or less.
-    pub fn to_be_less_than_or_equal(&self, n: f64) -> Result<(), String> {
-        self.compare(n, "to be less than or equal to", |a| a <= n)
+    pub fn to_be_less_than_or_equal(&self, n: f64) -> Check {
+        self.compare(n, "to be less than or equal to", move |a| a <= n)
     }
 
-    /// The function throws, with a message matching `message` when given
-    /// (contains a string, matches a `RegExp`).
-    pub fn to_throw(&self, message: Option<Pattern>) -> Result<(), String> {
-        let run = self
-            .run
-            .as_ref()
-            .ok_or("`toThrow` checks a function: `expect(() => parse(text)).toThrow()`")?;
-        thrown(run.call(()).err(), message.as_ref(), self.not, "to throw")
-    }
-
-    fn compare(&self, n: f64, what: &str, holds: impl Fn(f64) -> bool) -> Result<(), String> {
-        let holds = self.value.as_f64().is_some_and(holds);
-        self.check(holds, what, Some(&JsonValue::from(n)))
-    }
-
-    /// The value is `expected`.
-    pub fn to_be(&self, expected: JsonValue) -> Result<(), String> {
-        self.check(same(&self.value, &expected), "to be", Some(&expected))
-    }
-
-    /// The value equals `expected`, member by member.
-    pub fn to_equal(&self, expected: JsonValue) -> Result<(), String> {
-        self.check(same(&self.value, &expected), "to equal", Some(&expected))
-    }
-
-    /// The value (an array) holds `item`, or (a string) contains it.
-    pub fn to_contain(&self, item: JsonValue) -> Result<(), String> {
-        let holds = match (&self.value, &item) {
-            (JsonValue::Array(items), _) => items.iter().any(|i| same(i, &item)),
-            (JsonValue::String(s), JsonValue::String(part)) => s.contains(part.as_str()),
-            _ => false,
+    /// The function throws; given `expected`, an error that matches it: a
+    /// message containing a string or matching a `RegExp` (run by the JS
+    /// engine), an error class (the error's `name` is the class's,
+    /// `TypeError`; `Error` matches every error), or an error with the same
+    /// message.
+    pub fn to_throw(&self, expected: Option<ErrorMatch>) -> Result<Check, String> {
+        let run = match &self.run {
+            Some(run) if !self.promise => run,
+            Some(_) => {
+                return Err("`toThrow` checks a function; what a promise rejects with: \
+                     `await expect(promise).rejects.toThrow()`"
+                    .into());
+            }
+            None => {
+                return Err(
+                    "`toThrow` checks a function: `expect(() => parse(text)).toThrow()`".into(),
+                );
+            }
         };
-        self.check(holds, "to contain", Some(&item))
+        let error = run.call_traced(()).err();
+        let not = self.not;
+        Ok(Check::new(move |host| {
+            thrown(
+                host,
+                error.as_ref(),
+                expected.as_ref(),
+                not,
+                "the function",
+                "to throw",
+            )
+        }))
+    }
+
+    fn compare(&self, n: f64, what: &'static str, holds: impl Fn(f64) -> bool + 'static) -> Check {
+        self.verdict(what, move |_, value| {
+            let holds = value.kind() == JsKind::Number && value.as_number().is_some_and(holds);
+            Ok((holds, Some(values::number(n))))
+        })
+    }
+
+    /// The value is `expected`, as `Object.is` says (Jest's `toBe`): the
+    /// same primitive (`NaN` is `NaN`, `0` is not `-0`), or the same object.
+    pub fn to_be(&self, expected: Kept) -> Check {
+        self.verdict("to be", move |host, value| {
+            let expected = expected.get(host)?;
+            let expected = expected.get();
+            if value.same_value(expected) {
+                return Ok((true, None));
+            }
+            let mut shown = values::show(expected);
+            if values::equals(value, expected).map_err(|e| e.0)? {
+                shown.push_str(" (an equal value, not the same one: `toEqual` compares members)");
+            }
+            Ok((false, Some(shown)))
+        })
+    }
+
+    /// The value equals `expected` as Jest's `toEqual` says, member by
+    /// member: own enumerable properties (an `undefined` one is as one
+    /// missing), arrays item by item, dates by their time, regular
+    /// expressions by source and flags, maps and sets by their entries,
+    /// `ArrayBuffer`s and typed arrays by their bytes, errors by name and
+    /// message; `NaN` equals `NaN`; classes are not compared.
+    pub fn to_equal(&self, expected: Kept) -> Check {
+        self.verdict("to equal", move |host, value| {
+            let expected = expected.get(host)?;
+            let holds = values::equals(value, expected.get()).map_err(|e| e.0)?;
+            Ok((holds, Some(values::show(expected.get()))))
+        })
+    }
+
+    /// The value has every property of `subset`, each equal to it (as
+    /// `toEqual` says) and an object matching it in turn, as Jest's
+    /// `toMatchObject`; other properties are not looked at (arrays match
+    /// item by item, all of them):
+    /// `expect(app.dialogs()[0]).toMatchObject({ title: "Delete?" })`.
+    pub fn to_match_object(&self, subset: Kept) -> Check {
+        self.verdict("to match object", move |host, value| {
+            let subset = subset.get(host)?;
+            subset_of(subset.get())?;
+            let holds = values::matches_object(value, subset.get()).map_err(|e| e.0)?;
+            Ok((holds, Some(values::show(subset.get()))))
+        })
+    }
+
+    /// The value (an array, a `Set`, a typed array or any other iterable)
+    /// holds `item`, as `===` says (Jest's `toContain`); or (a string)
+    /// contains it.
+    pub fn to_contain(&self, item: Kept) -> Check {
+        self.verdict("to contain", move |host, value| {
+            let item = item.get(host)?;
+            let holds = match (value.as_string(), item.get().as_string()) {
+                (Some(text), Some(part)) => text.contains(&part),
+                (Some(_), None) => false,
+                (None, _) => items(value)?
+                    .iter()
+                    .any(|i| values::strict_equal(i.get(), item.get())),
+            };
+            Ok((holds, Some(values::show(item.get()))))
+        })
+    }
+
+    /// The value (an array, a `Set`, a typed array or any other iterable)
+    /// holds an item equal to `item`, as `toEqual` says (Jest's
+    /// `toContainEqual`).
+    pub fn to_contain_equal(&self, item: Kept) -> Check {
+        self.verdict("to contain equal", move |host, value| {
+            let item = item.get(host)?;
+            let mut holds = false;
+            for i in items(value)? {
+                if values::equals(i.get(), item.get()).map_err(|e| e.0)? {
+                    holds = true;
+                    break;
+                }
+            }
+            Ok((holds, Some(values::show(item.get()))))
+        })
     }
 
     /// The value is truthy, as JS sees it.
-    pub fn to_be_truthy(&self) -> Result<(), String> {
-        self.check(truthy(&self.value), "to be truthy", None)
+    pub fn to_be_truthy(&self) -> Check {
+        self.verdict("to be truthy", |_, value| Ok((values::truthy(value), None)))
     }
 
     /// The value is falsy, as JS sees it.
-    pub fn to_be_falsy(&self) -> Result<(), String> {
-        self.check(!truthy(&self.value), "to be falsy", None)
+    pub fn to_be_falsy(&self) -> Check {
+        self.verdict("to be falsy", |_, value| Ok((!values::truthy(value), None)))
     }
 
-    fn check(&self, holds: bool, what: &str, expected: Option<&JsonValue>) -> Result<(), String> {
-        if self.run.is_some() {
-            return Err(format!(
-                "`{what}` checks a value, and `expect` was given a function: call it, or check what it throws (`toThrow`)"
-            ));
-        }
-        if holds != self.not {
-            return Ok(());
-        }
-        let not = if self.not { "not " } else { "" };
-        Err(match expected {
-            Some(expected) => format!("expected {} {not}{what} {expected}", self.value),
-            None => format!("expected {} {not}{what}", self.value),
+    /// The check `holds` makes of the value, made as it goes back to JS:
+    /// whether it holds, and what it expected, shown (`None`: nothing).
+    fn verdict(
+        &self,
+        what: &'static str,
+        holds: impl FnOnce(&dyn JsHost, JsIn<'_>) -> Result<(bool, Option<String>), String> + 'static,
+    ) -> Check {
+        let (value, not) = (self.value.clone(), self.not);
+        let hint = match (&self.run, self.promise) {
+            (_, true) => {
+                "; `expect` was given a promise: check what it settles to with `resolves` or `rejects`"
+            }
+            (Some(_), false) => {
+                "; `expect` was given a function: call it, or check what it throws with `toThrow`"
+            }
+            (None, false) => "",
+        };
+        Check::new(move |host| {
+            let value = value.get(host)?;
+            let (holds, expected) = holds(host, value.get())?;
+            if holds != not {
+                return Ok(());
+            }
+            let not = if not { "not " } else { "" };
+            let shown = values::show(value.get());
+            Err(match expected {
+                Some(expected) => format!("expected {shown} {not}{what} {expected}{hint}"),
+                None => format!("expected {shown} {not}{what}{hint}"),
+            })
         })
     }
+}
+
+/// The items of `value` to look in (`toContain`): what it yields as an
+/// iterable (an array's items, a `Set`'s values); none when it is not one.
+fn items<'a>(value: JsIn<'a>) -> Result<Vec<JsOwned<'a>>, String> {
+    Ok(value.iterate().map_err(|e| e.0)?.unwrap_or_default())
 }
 
 /// What a promise rejects with ([`Expectation::rejects`]).
 #[class]
 pub struct Rejection {
-    run: Callback<(), JsonValue>,
+    /// The promise's stand-in, or the function returning it.
+    run: Callback<(), Kept>,
+    promise: bool,
     not: bool,
 }
 
 #[class]
 impl Rejection {
-    /// The promise rejects, with a message matching `message` when given
-    /// (contains a string, matches a `RegExp`).
-    pub async fn to_throw(this: Instance<Self>, message: Option<Pattern>) -> Result<(), String> {
-        let (run, not) = this.with(|r| (r.run.clone(), r.not));
-        let error = run.call_async_traced(()).await.err().map(|e| e.message);
-        thrown(error, message.as_ref(), not, "to reject")
+    /// The opposite checks: `await expect(save()).rejects.not.toThrow(TypeError)`.
+    #[getter]
+    pub fn not(&self) -> Rejection {
+        Rejection {
+            run: self.run.clone(),
+            promise: self.promise,
+            not: !self.not,
+        }
+    }
+
+    /// The promise rejects; given `expected`, with an error that matches it,
+    /// as `toThrow` says.
+    pub async fn to_throw(
+        this: Instance<Self>,
+        expected: Option<ErrorMatch>,
+    ) -> Result<Check, String> {
+        let (run, promise, not) = this.with(|r| (r.run.clone(), r.promise, r.not));
+        let error = run.call_async_traced(()).await.err();
+        Ok(Check::new(move |host| {
+            thrown(
+                host,
+                error.as_ref(),
+                expected.as_ref(),
+                not,
+                subject(promise),
+                "to reject",
+            )
+        }))
+    }
+
+    /// The promise rejects with a value that matches `subset` as
+    /// `toMatchObject` says: an error's own properties (its `code`, ...)
+    /// with its `name` and `message`. Codes, unlike messages, stay as they
+    /// are: `await expect(app.back()).rejects.toMatchObject({ code: "ERR_NSH_TEST_NO_BACK" })`.
+    pub async fn to_match_object(this: Instance<Self>, subset: Kept) -> Result<Check, String> {
+        let (run, promise, not) = this.with(|r| (r.run.clone(), r.promise, r.not));
+        let error = run
+            .call_async_traced(())
+            .await
+            .err()
+            .map(|e| error_json(&e));
+        Ok(Check::new(move |host| {
+            let subset = subset.get(host)?;
+            subset_of(subset.get())?;
+            let error = match &error {
+                Some(json) => Some(JsOwned::new(host, host.json(json).map_err(|e| e.0)?)),
+                None => None,
+            };
+            let holds = match &error {
+                Some(error) => {
+                    values::matches_object(error.get(), subset.get()).map_err(|e| e.0)?
+                }
+                None => false,
+            };
+            if holds != not {
+                return Ok(());
+            }
+            let not_ = if not { "not " } else { "" };
+            let subject = subject(promise);
+            let subset = values::show(subset.get());
+            Err(match error {
+                Some(error) => format!(
+                    "expected {subject} {not_}to reject with a value matching {subset}; it rejected with {}",
+                    values::show(error.get())
+                ),
+                None => format!(
+                    "expected {subject} {not_}to reject with a value matching {subset}; it resolved"
+                ),
+            })
+        }))
     }
 }
 
-/// Checks what a function threw (`error`, its message; `None`: nothing)
-/// against `message`.
-fn thrown(
-    error: Option<String>,
-    message: Option<&Pattern>,
+/// What a promise resolves to ([`Expectation::resolves`]).
+#[class]
+pub struct Resolution {
+    /// The promise's stand-in, or the function returning it.
+    run: Callback<(), Kept>,
+    promise: bool,
     not: bool,
+}
+
+#[class]
+impl Resolution {
+    /// The opposite checks: `await expect(load()).resolves.not.toBe(null)`.
+    #[getter]
+    pub fn not(&self) -> Resolution {
+        Resolution {
+            run: self.run.clone(),
+            promise: self.promise,
+            not: !self.not,
+        }
+    }
+
+    /// The promise resolves to `expected`, as `toBe` says.
+    pub async fn to_be(this: Instance<Self>, expected: Kept) -> Result<Check, String> {
+        Ok(resolved(this).await?.to_be(expected))
+    }
+
+    /// The promise resolves to a value equal to `expected`, as `toEqual`
+    /// says.
+    pub async fn to_equal(this: Instance<Self>, expected: Kept) -> Result<Check, String> {
+        Ok(resolved(this).await?.to_equal(expected))
+    }
+
+    /// The promise resolves to a value that matches `subset`, as
+    /// `toMatchObject` says.
+    pub async fn to_match_object(this: Instance<Self>, subset: Kept) -> Result<Check, String> {
+        Ok(resolved(this).await?.to_match_object(subset))
+    }
+}
+
+/// The value the promise of `this` resolves to, to check; an error when it
+/// rejects.
+async fn resolved(this: Instance<Resolution>) -> Result<Expectation, String> {
+    let (run, promise, not) = this.with(|r| (r.run.clone(), r.promise, r.not));
+    match run.call_async_traced(()).await {
+        Ok(value) => Ok(Expectation {
+            value,
+            run: None,
+            promise: false,
+            not,
+        }),
+        Err(error) => Err(format!(
+            "expected {} to resolve; it rejected with {:?}",
+            subject(promise),
+            error.message
+        )),
+    }
+}
+
+/// What failure messages call what `expect` was given.
+fn subject(promise: bool) -> &'static str {
+    if promise {
+        "the promise"
+    } else {
+        "the function"
+    }
+}
+
+/// `subset` as `toMatchObject` takes it: an object (or an array).
+fn subset_of(subset: JsIn<'_>) -> Result<(), String> {
+    match subset.class() {
+        Some(class) if class != JsClass::Function => Ok(()),
+        _ => Err(format!(
+            "`toMatchObject` takes an object of the properties to match, not {}",
+            values::show(subset)
+        )),
+    }
+}
+
+/// What JS threw, as checks see it: the value thrown as JSON
+/// ([`Exception::thrown`]), else (an error Rust made) its message.
+fn error_json(error: &Exception) -> JsonValue {
+    error
+        .thrown
+        .clone()
+        .unwrap_or_else(|| serde_json::json!({ "name": "Error", "message": error.message }))
+}
+
+/// Checks what a function threw or a promise rejected with (`error`;
+/// `None`: nothing) against `expected`; `subject` names what was checked.
+fn thrown(
+    host: &dyn JsHost,
+    error: Option<&Exception>,
+    expected: Option<&ErrorMatch>,
+    not: bool,
+    subject: &str,
     what: &str,
 ) -> Result<(), String> {
-    let holds = match (&error, message) {
-        (Some(error), Some(pattern)) => pattern.matches(error),
+    let holds = match (error, expected) {
+        (Some(error), Some(expected)) => expected.matches(host, error)?,
         (Some(_), None) => true,
         (None, _) => false,
     };
@@ -2108,19 +2517,41 @@ fn thrown(
         return Ok(());
     }
     let not_ = if not { "not " } else { "" };
-    let wanted = message.map_or(String::new(), |p| format!(" {}", p.describe()));
+    let wanted = expected.map_or(String::new(), |e| format!(" {}", e.describe()));
     Err(match error {
-        Some(error) => format!("expected the function {not_}{what}{wanted}; it threw {error:?}"),
-        None => format!("expected the function {not_}{what}{wanted}; it did not"),
+        Some(error) => format!(
+            "expected {subject} {not_}{what}{wanted}; it threw {}",
+            describe_error(error)
+        ),
+        None => format!("expected {subject} {not_}{what}{wanted}; it did not"),
     })
 }
 
-/// What `expect` checks: a value, or a function (for `toThrow`, `rejects`).
-pub enum Subject {
-    /// A value, as JSON.
-    Value(JsonValue),
-    /// A function.
-    Function(Callback<(), JsonValue>),
+/// `error` as failure messages say it: its class, message and `code`
+/// (`TypeError "not a number"`, `Error "denied" (code "ERR_ACCESS_DENIED")`).
+fn describe_error(error: &Exception) -> String {
+    let json = error_json(error);
+    let field = |key: &str| json.get(key).and_then(JsonValue::as_str);
+    let mut text = match field("name") {
+        Some(name) => format!("{name} {:?}", error.message),
+        None => format!("{:?}", error.message),
+    };
+    if let Some(code) = field("code") {
+        text.push_str(&format!(" (code {code:?})"));
+    }
+    text
+}
+
+/// What `expect` checks: a value, kept as JS made it; a function (for
+/// `toThrow`, `rejects`, `resolves`) or a promise (`rejects`, `resolves`)
+/// is one too.
+pub struct Subject {
+    value: Kept,
+    /// A function's, or a promise's stand-in that answers what it settles
+    /// to ([`Callback::settling`]).
+    run: Option<Callback<(), Kept>>,
+    /// The value is a promise.
+    promise: bool,
 }
 
 impl Arg for Subject {
@@ -2129,33 +2560,132 @@ impl Arg for Subject {
     }
 
     fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
-        if value.kind() == JsKind::Function {
-            return <Callback<(), JsonValue> as Arg>::from_js(value).map(Subject::Function);
-        }
-        <JsonValue as JsValue>::from_js(value).map(Subject::Value)
+        let (run, promise) = match value.kind() {
+            JsKind::Function => (Some(<Callback<(), Kept> as Arg>::from_js(value)?), false),
+            JsKind::Object if is_thenable(value) => {
+                let run = Callback::settling(value)
+                    .ok_or_else(|| value.expected("a value, a function or a promise"))?;
+                (Some(run), true)
+            }
+            _ => (None, false),
+        };
+        Ok(Subject {
+            value: <Kept as JsValue>::from_js(value)?,
+            run,
+            promise,
+        })
     }
 }
 
-/// A text a check wants: contained (a string), or matched (a `RegExp`).
+/// Whether `value` is a promise (has a `then` method).
+fn is_thenable(value: JsIn<'_>) -> bool {
+    value
+        .field("then")
+        .is_ok_and(|then| then.get().kind() == JsKind::Function)
+}
+
+/// What error a check wants (`toThrow`): its message containing a string
+/// or matching a `RegExp`, an error class, or an error with the same
+/// message.
+pub enum ErrorMatch {
+    /// The message matches this.
+    Message(Pattern),
+    /// The error's `name` is this class's (`TypeError`); `Error` matches
+    /// every error.
+    Class(String),
+    /// The message is this one (an error given).
+    Error(String),
+}
+
+impl ErrorMatch {
+    fn matches(&self, host: &dyn JsHost, error: &Exception) -> Result<bool, String> {
+        Ok(match self {
+            ErrorMatch::Message(pattern) => pattern.matches(host, &error.message)?,
+            ErrorMatch::Error(message) => error.message == *message,
+            ErrorMatch::Class(class) => is_of_class(error, class),
+        })
+    }
+
+    fn describe(&self) -> String {
+        match self {
+            ErrorMatch::Message(pattern) => pattern.describe(),
+            ErrorMatch::Class(class) => class.clone(),
+            ErrorMatch::Error(message) => format!("an error {}", JsonValue::from(message.as_str())),
+        }
+    }
+}
+
+impl JsValue for ErrorMatch {
+    fn ts_type(_types: &mut TsTypes) -> String {
+        "string | RegExp | (abstract new (...args: any[]) => Error) | Error".into()
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        let text = |key: &str| value.field(key).ok().and_then(|v| v.get().as_string());
+        if value.kind() == JsKind::Function {
+            return text("name")
+                .filter(|name| !name.is_empty())
+                .map(ErrorMatch::Class)
+                .ok_or_else(|| value.expected("a named error class"));
+        }
+        if value.kind() == JsKind::Object
+            && value.class() != Some(JsClass::RegExp)
+            && let Some(message) = text("message")
+        {
+            return Ok(ErrorMatch::Error(message));
+        }
+        <Pattern as JsValue>::from_js(value)
+            .map(ErrorMatch::Message)
+            .map_err(|_| value.expected("a string, a RegExp, an error class or an error"))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        Ok(JsOwned::new(host, host.new_string(&self.describe())?))
+    }
+}
+
+/// Whether `error` is of error class `class` (`TypeError`): its `name` is
+/// the class's, and every error (a value with a `name` and a `message`) is
+/// an `Error`.
+fn is_of_class(error: &Exception, class: &str) -> bool {
+    let json = error_json(error);
+    let field = |key: &str| json.get(key).and_then(JsonValue::as_str);
+    match (field("name"), field("message")) {
+        (Some(name), Some(_)) => name == class || class == "Error",
+        (Some(name), None) => name == class,
+        _ => false,
+    }
+}
+
+/// A text a check wants: contained (a string), or matched (a `RegExp`,
+/// which the JS engine runs).
 pub enum Pattern {
     /// Contains this.
     Contains(String),
-    /// Matches this (the `RegExp`'s source and flags).
-    Regex(regex::Regex, String),
+    /// Matches this `RegExp`, written as it reads (`/a+/i`).
+    RegExp(Kept, String),
 }
 
 impl Pattern {
-    fn matches(&self, text: &str) -> bool {
+    /// Whether `text` contains or matches it (`text.search(re)` finds it:
+    /// `lastIndex` and the `g` flag do not matter).
+    fn matches(&self, host: &dyn JsHost, text: &str) -> Result<bool, String> {
         match self {
-            Pattern::Contains(part) => text.contains(part.as_str()),
-            Pattern::Regex(re, _) => re.is_match(text),
+            Pattern::Contains(part) => Ok(text.contains(part.as_str())),
+            Pattern::RegExp(re, _) => {
+                let re = re.get(host)?;
+                let text = JsOwned::new(host, host.new_string(text).map_err(|e| e.0)?);
+                let at = text.get().invoke("search", &[re.get()]).map_err(|e| e.0)?;
+                Ok(at.get().as_number().is_some_and(|at| at >= 0.0))
+            }
         }
     }
 
-    fn describe(&self) -> JsonValue {
+    /// As failure messages show it: a string quoted, a `RegExp` as it reads.
+    fn describe(&self) -> String {
         match self {
-            Pattern::Contains(part) => JsonValue::String(part.clone()),
-            Pattern::Regex(_, source) => JsonValue::String(source.clone()),
+            Pattern::Contains(part) => JsonValue::String(part.clone()).to_string(),
+            Pattern::RegExp(_, source) => source.clone(),
         }
     }
 }
@@ -2169,54 +2699,23 @@ impl JsValue for Pattern {
         if let Some(text) = value.as_string() {
             return Ok(Pattern::Contains(text));
         }
-        let field = |name: &str| value.field(name).ok().and_then(|v| v.get().as_string());
-        let (Some(source), Some(flags)) = (field("source"), field("flags")) else {
+        if value.class() != Some(JsClass::RegExp) {
             return Err(value.expected("a string or a RegExp"));
-        };
-        let inline: String = flags
-            .chars()
-            .filter(|f| matches!(f, 'i' | 'm' | 's'))
-            .collect();
-        let pattern = if inline.is_empty() {
-            source.clone()
-        } else {
-            format!("(?{inline}){source}")
-        };
-        let re = regex::Regex::new(&pattern).map_err(|e| PropError(format!("/{source}/: {e}")))?;
-        Ok(Pattern::Regex(re, format!("/{source}/{flags}")))
+        }
+        let field = |name: &str| value.field(name).ok().and_then(|v| v.get().as_string());
+        let written = format!(
+            "/{}/{}",
+            field("source").unwrap_or_default(),
+            field("flags").unwrap_or_default()
+        );
+        Ok(Pattern::RegExp(<Kept as JsValue>::from_js(value)?, written))
     }
 
     fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
-        let text = match self {
-            Pattern::Contains(part) => part.clone(),
-            Pattern::Regex(_, source) => source.clone(),
-        };
-        Ok(JsOwned::new(host, host.new_string(&text)?))
-    }
-}
-
-/// Whether `a` and `b` are the same JSON value (numbers by value).
-fn same(a: &JsonValue, b: &JsonValue) -> bool {
-    match (a, b) {
-        (JsonValue::Number(a), JsonValue::Number(b)) => a.as_f64() == b.as_f64(),
-        (JsonValue::Array(a), JsonValue::Array(b)) => {
-            a.len() == b.len() && a.iter().zip(b).all(|(a, b)| same(a, b))
+        match self {
+            Pattern::Contains(part) => Ok(JsOwned::new(host, host.new_string(part)?)),
+            Pattern::RegExp(re, _) => re.to_js(host),
         }
-        (JsonValue::Object(a), JsonValue::Object(b)) => {
-            a.len() == b.len() && a.iter().all(|(k, v)| b.get(k).is_some_and(|w| same(v, w)))
-        }
-        _ => a == b,
-    }
-}
-
-/// JS's truthiness of `value`.
-fn truthy(value: &JsonValue) -> bool {
-    match value {
-        JsonValue::Null => false,
-        JsonValue::Bool(b) => *b,
-        JsonValue::Number(n) => n.as_f64().is_some_and(|n| n != 0.0 && !n.is_nan()),
-        JsonValue::String(s) => !s.is_empty(),
-        JsonValue::Array(_) | JsonValue::Object(_) => true,
     }
 }
 
@@ -2231,50 +2730,311 @@ mod tests {
         assert_eq!(registry().undocumented(), Vec::<String>::new());
     }
 
+    /// Runs `checks`, a module importing `expect` from `nsh/test`, on a VM
+    /// of its own, and panics with what it threw. In it, `fails(f,
+    /// message)` checks that `f` throws `message`.
+    fn run(checks: &str) {
+        let host = nsh_js::Host::with_options(nsh_js::HostOptions {
+            ui_sets: vec![registry()],
+            ..Default::default()
+        })
+        .unwrap();
+        let source = format!(
+            r#"import {{ expect }} from "nsh/test";
+const fails = (f, message) => {{
+  let got;
+  try {{ f(); }} catch (e) {{ got = e.message; }}
+  if (got !== message) throw new Error(`${{f}}: threw ${{JSON.stringify(got)}}, not ${{JSON.stringify(message)}}`);
+}};
+{checks}"#
+        );
+        if let Err(e) = host.eval_source(&source) {
+            panic!("{}", e.message);
+        }
+    }
+
     #[test]
-    fn values_compare_as_json_and_checks_say_what_failed() {
-        assert!(same(&json!(1), &json!(1.0)));
-        assert!(same(&json!({"a": [1, "b"]}), &json!({"a": [1.0, "b"]})));
-        assert!(!same(&json!([1]), &json!([1, 2])));
-        let value = |v: JsonValue| Testing::expect(Subject::Value(v));
-        let texts = value(json!(["Buy milk", "1 item left"]));
-        assert_eq!(texts.to_contain(json!("1 item left")), Ok(()));
+    fn to_be_is_object_is() {
+        run(r#"
+            expect(1).toBe(1);
+            expect("a").toBe("a");
+            expect(NaN).toBe(NaN);
+            expect(0).not.toBe(-0);
+            const o = {};
+            expect(o).toBe(o);
+            const f = () => 1;
+            expect(f).toBe(f);
+            fails(() => expect({}).toBe({}), "expected {} to be {} (an equal value, not the same one: `toEqual` compares members)");
+            fails(() => expect([1]).toBe([2]), "expected [1] to be [2]");
+            fails(() => expect(1).toBe("1"), 'expected 1 to be "1"');
+            fails(() => expect(undefined).toBe(null), "expected undefined to be null");
+            fails(() => expect({ a: undefined, b: -0 }).toBe(1), 'expected {"a":undefined,"b":-0} to be 1');
+            fails(
+                () => expect(Promise.resolve(1)).toBe(1),
+                "expected Promise {} to be 1; `expect` was given a promise: check what it settles to with `resolves` or `rejects`",
+            );
+        "#);
+    }
+
+    #[test]
+    fn to_equal_compares_as_jest_does() {
+        run(r#"
+            expect({ a: 1, b: [1, "x"] }).toEqual({ b: [1, "x"], a: 1 });
+            expect([1]).not.toEqual([1, 2]);
+            // Properties that are `undefined` are as ones missing, holes as
+            // `undefined`.
+            expect({ a: 1, b: undefined }).toEqual({ a: 1 });
+            expect({ a: 1 }).toEqual({ a: 1, b: undefined });
+            expect([, 1]).toEqual([undefined, 1]);
+            expect([undefined]).not.toEqual([]);
+            expect(NaN).toEqual(NaN);
+            expect(0).not.toEqual(-0);
+            expect(null).not.toEqual(undefined);
+            // Dates by their time.
+            expect(new Date(1000)).toEqual(new Date(1000));
+            expect(new Date(NaN)).toEqual(new Date(NaN));
+            expect(new Date(0)).not.toEqual("1970-01-01T00:00:00.000Z");
+            expect(new Date(0)).not.toEqual({});
+            fails(
+                () => expect(new Date(1000)).toEqual(new Date(2000)),
+                "expected Date(1970-01-01T00:00:01.000Z) to equal Date(1970-01-01T00:00:02.000Z)",
+            );
+            // Regular expressions by source and flags.
+            expect(/a+/gi).toEqual(/a+/gi);
+            expect(/a+/g).not.toEqual(/a+/i);
+            expect(/a/).not.toEqual(/b/);
+            // Maps and sets by their entries, in any order.
+            expect(new Map([["a", { x: 1 }], ["b", 2]])).toEqual(new Map([["b", 2], ["a", { x: 1 }]]));
+            expect(new Map([["a", 1]])).not.toEqual(new Map([["a", 2]]));
+            expect(new Map([["a", 1]])).not.toEqual(new Map());
+            expect(new Map()).not.toEqual(new Set());
+            expect(new Set([1, { y: 2 }])).toEqual(new Set([{ y: 2 }, 1]));
+            expect(new Set([1, 2])).not.toEqual(new Set([1, 3]));
+            expect(new Set()).not.toEqual({});
+            fails(() => expect(new Map([["a", 1]])).toEqual(new Map([["a", 2]])), 'expected Map {"a" => 1} to equal Map {"a" => 2}');
+            fails(() => expect(new Set([1])).toEqual(new Set()), "expected Set {1} to equal Set {}");
+            // Typed arrays, `ArrayBuffer`s and `DataView`s by their bytes.
+            expect(new Uint8Array([1, 2])).toEqual(new Uint8Array([1, 2]));
+            expect(new Uint8Array([1, 2])).not.toEqual(new Uint8Array([1, 3]));
+            expect(new Uint8Array([1, 2])).not.toEqual(new Int8Array([1, 2]));
+            expect(new Uint8Array([1, 2])).not.toEqual({ 0: 1, 1: 2 });
+            expect(new Uint8Array([1, 2])).not.toEqual([1, 2]);
+            expect(new Uint8Array([1, 2, 3]).subarray(1)).toEqual(new Uint8Array([2, 3]));
+            expect(new Float64Array([NaN, 1.5])).toEqual(new Float64Array([NaN, 1.5]));
+            expect(new Uint8Array([1, 2]).buffer).toEqual(new Uint8Array([1, 2]).buffer);
+            expect(new ArrayBuffer(2)).not.toEqual(new ArrayBuffer(3));
+            expect(new DataView(new ArrayBuffer(2))).toEqual(new DataView(new ArrayBuffer(2)));
+            fails(() => expect(new Uint8Array([1])).toEqual(new Uint8Array([2])), "expected Uint8Array [1] to equal Uint8Array [2]");
+            // Instances by their properties, not their class.
+            class Point { constructor(x) { this.x = x; } }
+            expect(new Point(1)).toEqual({ x: 1 });
+            expect(new Point(1)).not.toEqual(new Point(2));
+            fails(() => expect(new Point(1)).toEqual(new Point(2)), 'expected Point {"x":1} to equal Point {"x":2}');
+            // Functions only by identity; errors by name and message.
+            const f = () => 1;
+            expect(f).toEqual(f);
+            expect(() => 1).not.toEqual(() => 1);
+            expect(new TypeError("x")).toEqual(new TypeError("x"));
+            expect(new TypeError("x")).not.toEqual(new RangeError("x"));
+            expect(new Error("x")).not.toEqual(new Error("y"));
+            // A value inside itself.
+            const a = { name: "a" };
+            a.self = a;
+            const b = { name: "a" };
+            b.self = b;
+            expect(a).toEqual(b);
+            fails(() => expect(a).toEqual({ name: "b" }), 'expected {"name":"a","self":[Circular]} to equal {"name":"b"}');
+        "#);
+    }
+
+    #[test]
+    fn null_undefined_and_nan_are_told_apart() {
+        run(r#"
+            expect(null).toBeNull();
+            fails(() => expect(undefined).toBeNull(), "expected undefined to be null");
+            fails(() => expect(NaN).toBeNull(), "expected NaN to be null");
+            expect(undefined).toBeUndefined();
+            expect(null).not.toBeUndefined();
+            fails(() => expect(0).toBeUndefined(), "expected 0 to be undefined");
+            expect(null).toBeDefined();
+            expect(0).toBeDefined();
+            fails(() => expect(undefined).toBeDefined(), "expected undefined to be defined");
+            expect(NaN).toBeNaN();
+            expect(1).not.toBeNaN();
+            expect("NaN").not.toBeNaN();
+            fails(() => expect(1).toBeNaN(), "expected 1 to be NaN");
+        "#);
+    }
+
+    #[test]
+    fn regular_expressions_run_on_the_js_engine() {
+        run(r#"
+            expect("Saved at 9:41").toMatch("Saved");
+            expect("Saved at 9:41").toMatch(/\d+:\d+$/);
+            // What only JavaScript's regular expressions have: look-behind
+            // and backreferences.
+            expect("price: $5").toMatch(/(?<=\$)\d/);
+            expect("abab").toMatch(/(ab)\1/);
+            expect("HELLO").toMatch(/hello/i);
+            // `lastIndex` does not matter, a sticky one matches at the start.
+            const g = /a/g;
+            g.lastIndex = 5;
+            expect("a").toMatch(g);
+            expect("ba").not.toMatch(/a/y);
+            fails(() => expect("abc").toMatch(/^b/), 'expected "abc" to match /^b/');
+            fails(() => expect("abc").toMatch("x"), 'expected "abc" to match "x"');
+            fails(() => expect(1).toMatch(/1/), "expected 1 to match /1/");
+            expect(() => { throw new Error("price: $5"); }).toThrow(/(?<=\$)\d/);
+            fails(
+                () => expect(() => { throw new TypeError("boom"); }).toThrow(/^x/),
+                'expected the function to throw /^x/; it threw TypeError "boom"',
+            );
+        "#);
+    }
+
+    #[test]
+    fn errors_match_by_message_class_and_error() {
+        run(r#"
+            const boom = () => { throw new TypeError("not a number"); };
+            expect(boom).toThrow();
+            expect(boom).toThrow("a number");
+            expect(boom).toThrow(TypeError);
+            expect(boom).toThrow(Error);
+            expect(boom).not.toThrow(RangeError);
+            expect(boom).toThrow(new Error("not a number"));
+            expect(boom).not.toThrow(new Error("not a"));
+            // A string thrown is no error of any class.
+            expect(() => { throw "x"; }).not.toThrow(Error);
+            fails(() => expect(() => {}).toThrow("x"), 'expected the function to throw "x"; it did not');
+            fails(
+                () => expect(() => {
+                    const e = new Error("fs is not granted");
+                    e.code = "ERR_ACCESS_DENIED";
+                    throw e;
+                }).toThrow(TypeError),
+                'expected the function to throw TypeError; it threw Error "fs is not granted" (code "ERR_ACCESS_DENIED")',
+            );
+            fails(
+                () => expect(1).toThrow(),
+                "`toThrow` checks a function: `expect(() => parse(text)).toThrow()`",
+            );
+        "#);
+    }
+
+    #[test]
+    fn lengths_of_strings_arrays_and_typed_arrays() {
+        run(r#"
+            expect("héllo").toHaveLength(5);
+            expect("😀").toHaveLength(2);
+            expect([1, 2]).toHaveLength(2);
+            expect(new Uint8Array(3)).toHaveLength(3);
+            expect(new Float64Array(4)).toHaveLength(4);
+            expect({ length: 1 }).toHaveLength(1);
+            expect(5).not.toHaveLength(1);
+            fails(() => expect([1, 2]).toHaveLength(3), "expected [1,2] to have length 3");
+            fails(() => expect(new Uint8Array(2)).toHaveLength(3), "expected Uint8Array [0,0] to have length 3");
+        "#);
+    }
+
+    #[test]
+    fn objects_match_a_subset_of_their_properties() {
+        run(r#"
+            const value = {
+                a: 1,
+                b: { c: [1, { d: 2, e: 3 }], f: null },
+                when: new Date(5),
+                tags: new Set(["x"]),
+            };
+            expect(value).toMatchObject({});
+            expect(value).toMatchObject({ a: 1 });
+            expect(value).toMatchObject({ b: { c: [1, { d: 2 }] } });
+            // Arrays match item by item, all of them.
+            expect(value).not.toMatchObject({ b: { c: [1] } });
+            expect(value).not.toMatchObject({ a: 2 });
+            expect(value).not.toMatchObject({ g: undefined });
+            expect(value).toMatchObject({ b: { f: null } });
+            // Leaves equal as `toEqual` says.
+            expect(value).toMatchObject({ when: new Date(5), tags: new Set(["x"]) });
+            expect(value).not.toMatchObject({ when: new Date(6) });
+            expect(value).not.toMatchObject({ when: "1970-01-01T00:00:00.005Z" });
+            expect({ n: NaN }).toMatchObject({ n: NaN });
+            // As in Jest: a plain object is a subset of the bytes it names.
+            expect({ bytes: new Uint8Array([1]) }).toMatchObject({ bytes: { 0: 1 } });
+            // What an error inherits counts (its `name`).
+            expect(new TypeError("x")).toMatchObject({ name: "TypeError", message: "x" });
+            expect(1).not.toMatchObject({ a: 1 });
+            fails(() => expect({ a: 1 }).toMatchObject({ a: 2 }), 'expected {"a":1} to match object {"a":2}');
+            fails(() => expect({ a: 1 }).toMatchObject("a"), '`toMatchObject` takes an object of the properties to match, not "a"');
+        "#);
+    }
+
+    #[test]
+    fn to_contain_is_strict_and_to_contain_equal_deep() {
+        run(r#"
+            const texts = ["Buy milk", "1 item left"];
+            expect(texts).toContain("1 item left");
+            expect(texts).not.toContain("Error");
+            fails(() => expect(texts).toContain("2 items left"), 'expected ["Buy milk","1 item left"] to contain "2 items left"');
+            fails(() => expect(texts).not.toContain("Buy milk"), 'expected ["Buy milk","1 item left"] not to contain "Buy milk"');
+            expect("Saved!").toContain("Saved");
+            expect("Saved!").not.toContain(1);
+            const item = { id: 1 };
+            expect([item]).toContain(item);
+            expect([{ id: 1 }]).not.toContain({ id: 1 });
+            expect([{ id: 1 }]).toContainEqual({ id: 1 });
+            expect([{ id: 1 }]).not.toContainEqual({ id: 2 });
+            expect([NaN]).not.toContain(NaN);
+            expect([NaN]).toContainEqual(NaN);
+            expect([-0]).toContain(0);
+            expect(new Set(["a"])).toContain("a");
+            expect(new Uint8Array([7])).toContain(7);
+            expect(1).not.toContain(1);
+        "#);
+    }
+
+    #[test]
+    fn truthiness_and_numbers_as_js_sees_them() {
+        run(r#"
+            expect(0).toBeFalsy();
+            expect("").toBeFalsy();
+            expect(NaN).toBeFalsy();
+            expect(null).toBeFalsy();
+            expect(undefined).toBeFalsy();
+            expect(0n).toBeFalsy();
+            expect(1n).toBeTruthy();
+            expect([]).toBeTruthy();
+            expect({}).toBeTruthy();
+            fails(() => expect("").toBeTruthy(), 'expected "" to be truthy');
+            expect(3).toBeGreaterThan(2);
+            expect(3).toBeGreaterThanOrEqual(3);
+            expect(2).toBeLessThanOrEqual(2);
+            expect("3").not.toBeGreaterThan(2);
+            fails(() => expect(3).toBeLessThan(2.5), "expected 3 to be less than 2.5");
+            fails(() => expect(3).toBeLessThan(2), "expected 3 to be less than 2");
+        "#);
+    }
+
+    /// An error as `nsh-js` reports one thrown: `thrown` holds its own
+    /// properties with its `name` and `message`.
+    fn error(name: &str, message: &str) -> Exception {
+        let mut exception = Exception::from(message.to_owned());
+        exception.thrown = Some(json!({ "name": name, "message": message }));
+        exception
+    }
+
+    #[test]
+    fn errors_are_of_their_class_and_errors_rust_made_are_errors() {
+        let type_error = error("TypeError", "not a number");
+        assert!(is_of_class(&type_error, "TypeError"));
+        assert!(is_of_class(&type_error, "Error"));
+        assert!(!is_of_class(&type_error, "RangeError"));
+        let mut text = Exception::from("x".to_owned());
+        text.thrown = Some(json!("x"));
+        assert!(!is_of_class(&text, "Error"));
+        assert!(is_of_class(&Exception::from("lost".to_owned()), "Error"));
         assert_eq!(
-            texts.to_contain(json!("2 items left")),
-            Err(r#"expected ["Buy milk","1 item left"] to contain "2 items left""#.into())
-        );
-        assert_eq!(texts.not().to_contain(json!("Error")), Ok(()));
-        assert_eq!(
-            texts.not().to_contain(json!("Buy milk")),
-            Err(r#"expected ["Buy milk","1 item left"] not to contain "Buy milk""#.into())
-        );
-        assert_eq!(value(json!("Saved!")).to_contain(json!("Saved")), Ok(()));
-        assert_eq!(value(json!(0)).to_be_falsy(), Ok(()));
-        assert_eq!(
-            value(json!("")).to_be_truthy(),
-            Err(r#"expected "" to be truthy"#.into())
-        );
-        assert_eq!(value(json!("héllo")).to_have_length(5.0), Ok(()));
-        assert_eq!(value(json!([1, 2])).to_have_length(2.0), Ok(()));
-        assert_eq!(value(json!(null)).to_be_null(), Ok(()));
-        assert_eq!(value(json!(3)).to_be_greater_than(2.0), Ok(()));
-        assert_eq!(
-            value(json!(3)).to_be_less_than(2.0),
-            Err("expected 3 to be less than 2.0".into())
-        );
-        assert_eq!(
-            value(json!("Saved at 9:41")).to_match(Pattern::Contains("Saved".into())),
-            Ok(())
-        );
-        assert_eq!(thrown(Some("boom".into()), None, false, "to throw"), Ok(()));
-        assert_eq!(
-            thrown(
-                None,
-                Some(&Pattern::Contains("x".into())),
-                false,
-                "to throw"
-            ),
-            Err(r#"expected the function to throw "x"; it did not"#.into())
+            error_json(&Exception::from("lost".to_owned())),
+            json!({ "name": "Error", "message": "lost" })
         );
     }
 

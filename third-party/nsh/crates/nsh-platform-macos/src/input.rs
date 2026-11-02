@@ -687,14 +687,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
     surface.control(|control| control.set_focus_path(focus_path(surface)));
     if let Some(view) = control_activation_target(surface, event) {
         if down && !event.isARepeat() {
-            let events = view.state().events;
-            for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
-                if events.contains(kind) {
-                    // From the keyboard: no pointer to report.
-                    log::debug!(target: "nsh::input", "{} on {} (keyboard)", kind.prop_name(), view.id());
-                    surface.event(view.id(), kind, EventPayload::None);
-                }
-            }
+            activate(surface, &view);
         }
         return true;
     }
@@ -762,6 +755,17 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &NSEvent, down: bool) -> bool {
     crate::scroll::key_scroll(surface, &hit.view, horizontal, m)
 }
 
+/// Presses `view` from the keyboard or accessibility: no pointer to report.
+pub(crate) fn activate(surface: &Surface, view: &NshView) {
+    let events = view.state().events;
+    for kind in [EventKind::PressDown, EventKind::PressUp, EventKind::Press] {
+        if events.contains(kind) {
+            log::debug!(target: "nsh::input", "{} on {} (keyboard)", kind.prop_name(), view.id());
+            surface.event(view.id(), kind, EventPayload::None);
+        }
+    }
+}
+
 /// A mounted ordinary view the keyboard focus stops at (Tab): one that
 /// takes presses, or any `focusable` one ([`nsh_core::ViewProps::focus_stop`]),
 /// shown and reachable by the pointer.
@@ -783,6 +787,21 @@ pub(crate) fn is_key_stop(view: &NshView) -> bool {
 /// stop that takes none hears its keys through the app's keymap.
 pub(crate) fn is_key_control(view: &NshView) -> bool {
     is_key_stop(view) && view.state().events.contains(EventKind::Press)
+}
+
+/// What an accessibility press presses: `focusable={false}` only leaves a
+/// view out of the keyboard's stops.
+pub(crate) fn takes_accessibility_press(view: &NshView) -> bool {
+    {
+        let state = view.state();
+        if state.kind == ViewKind::Input
+            || !state.events.contains(EventKind::Press)
+            || state.props.accessibility.state.disabled
+        {
+            return false;
+        }
+    }
+    view.can_target() && !view.ns().isHiddenOrHasHiddenAncestor()
 }
 
 /// Current AppKit keyboard focus, from the responder through its native
@@ -1506,7 +1525,7 @@ pub(crate) fn retiring(surface: &Rc<Surface>, cell: &NshView) {
         .filter(|view| !inside(view))
         .cloned()
         .collect();
-    set_hovered(surface, hovered);
+    set_hovered(surface, hovered, 0.0, 0.0, Mouse::now());
     for slot in [&surface.input.pinch, &surface.input.rotation] {
         let affected = slot
             .borrow()

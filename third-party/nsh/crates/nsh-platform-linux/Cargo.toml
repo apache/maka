@@ -27,18 +27,18 @@ log.workspace = true
 
 # Empty off Linux (like the other platform crates off their targets).
 [target.'cfg(target_os = "linux")'.dependencies]
-nsh-core = { workspace = true, features = ["svg"] }
+nsh-core = { workspace = true, features = ["svg", "loader"] }
 nsh-engine = { workspace = true, features = ["net", "shader"] }
 nsh-base = { workspace = true, features = ["highlight"] }
 gtk4.workspace = true
-# GIF and WebP (first frame), which GDK cannot decode without gdk-pixbuf loaders.
-image = { workspace = true, features = ["gif", "webp"] }
+# GIF and WebP (first frame), which GDK cannot decode without gdk-pixbuf loaders;
+# JPEG (and PNG) shrunk to the size a view shows them at.
+image = { workspace = true, features = ["gif", "jpeg", "webp"] }
 pango.workspace = true
 pangocairo.workspace = true
 rustc-hash.workspace = true
 serde_json.workspace = true
 ttf-parser.workspace = true
-ureq.workspace = true
 crossbeam-channel.workspace = true
 nsh-dev = { workspace = true, features = ["client"], optional = true }
 nsh-testing = { workspace = true, features = ["agent"], optional = true }

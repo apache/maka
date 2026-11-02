@@ -71,7 +71,7 @@ impl EventLog {
                 "SELECT s.id, s.revision,
                  b.metadata_epoch,json_extract(s.configuration,'$.workspace.metadataEpochAtAttach') AS attached_epoch,
                  COALESCE((SELECT MAX(e.sequence) FROM runtime_events e WHERE
-                    (e.event_json IS NOT NULL AND e.event_session=s.id)), 0) AS sequence,
+                    (e.event_header IS NOT NULL AND e.event_session=s.id)), 0) AS sequence,
                  EXISTS(SELECT 1 FROM shell_runs r WHERE r.session_id = s.id AND
                     json_extract(r.record_json, '$.state.outcome.kind') = 'orphaned') AS orphaned
                  FROM workspace_bindings b

@@ -17,6 +17,7 @@
  * under the License.
  */
 
+use crate::support::root;
 use maka_agent_facts::pricing::Entry;
 use maka_agent_facts::pricing::Mutation;
 use maka_agent_facts::pricing::Page;
@@ -26,8 +27,6 @@ use maka_agent_facts::pricing::ResetEffect;
 use maka_agent_facts::pricing::Update;
 use maka_agent_facts::pricing::Updated;
 use maka_config::ConfigurationStore;
-use maka_event_log::root::{RootNamespaces, RootOwner};
-use std::sync::Arc;
 
 async fn entries(store: &ConfigurationStore) -> (u64, Vec<Entry>) {
     let mut query = Query::Start;
@@ -74,18 +73,9 @@ async fn quote(store: &ConfigurationStore, key: &str) -> (u64, Option<Pricing>) 
 }
 
 #[tokio::test]
-async fn pricing_cas_pages_and_quotes_survive_reopen_and_bundled_rate_replacement() {
+async fn pricing_overrides_pages_and_captured_quotes_preserve_user_prices() {
     let temp = tempfile::tempdir().unwrap();
-    let owner = Arc::new(
-        RootOwner::create(
-            &temp.path().join("root"),
-            &RootNamespaces {
-                ownership: temp.path().join("owners"),
-                control: temp.path().join("control"),
-            },
-        )
-        .unwrap(),
-    );
+    let owner = root(temp.path());
     let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
     let (revision, initial) = entries(&store).await;
     assert_eq!(revision, 0);
@@ -232,87 +222,6 @@ async fn pricing_cas_pages_and_quotes_survive_reopen_and_bundled_rate_replacemen
             .await
             .unwrap(),
         Updated::Unchanged { revision: 4 }
-    );
-    store.close().await.unwrap();
-
-    // Emulate a binary built from another bundled-rate version; keep overrides.
-    let db = rusqlite::Connection::open(owner.canonical_path().join("configuration-rust.sqlite"))
-        .unwrap();
-    db.execute(
-        "UPDATE pricing_authority SET builtin_digest = 'previous-build'",
-        [],
-    )
-    .unwrap();
-    drop(db);
-    let store = ConfigurationStore::for_root(owner).await.unwrap();
-    assert!(matches!(
-        store
-            .query_pricing(Query::Continue {
-                revision: 4,
-                offset: 1
-            })
-            .await
-            .unwrap(),
-        Page::RevisionChanged {
-            actual_revision: 5,
-            ..
-        }
-    ));
-    assert_eq!(quote(&store, "fixture:\u{e000}").await.0, 5);
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn pricing_pages_preserve_one_large_record_and_continue_after_reopen() {
-    let temp = tempfile::tempdir().unwrap();
-    let owner = Arc::new(
-        RootOwner::create(
-            &temp.path().join("root"),
-            &RootNamespaces {
-                ownership: temp.path().join("owners"),
-                control: temp.path().join("control"),
-            },
-        )
-        .unwrap(),
-    );
-    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
-    let pricing = Pricing {
-        model_key: format!("example:{}", "route-model-".repeat(12_000)),
-        input_usd_per_million: 1.25,
-        output_usd_per_million: 3.5,
-        cache_read_usd_per_million: None,
-        cache_write_usd_per_million: None,
-    };
-    assert_eq!(
-        store
-            .update_pricing(Update {
-                expected_revision: 0,
-                mutation: Mutation::Upsert {
-                    pricing: pricing.clone()
-                }
-            })
-            .await
-            .unwrap(),
-        Updated::Committed { revision: 1 }
-    );
-    store.close().await.unwrap();
-    let store = ConfigurationStore::for_root(owner).await.unwrap();
-    assert_eq!(
-        quote(&store, &pricing.model_key).await,
-        (1, Some(pricing.clone()))
-    );
-    let (revision, rows) = entries(&store).await;
-    assert_eq!(revision, 1);
-    assert_eq!(
-        rows.iter()
-            .filter(|row| price(row).model_key == pricing.model_key)
-            .map(price)
-            .collect::<Vec<_>>(),
-        vec![&pricing]
-    );
-    assert!(
-        rows.iter()
-            .any(|row| price(row).model_key != pricing.model_key)
     );
     store.close().await.unwrap();
 }

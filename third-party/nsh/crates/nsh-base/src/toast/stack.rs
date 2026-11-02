@@ -184,7 +184,7 @@ pub fn ToastStack(props: ToastStackProps, cx: Scope<ToastStackEvent>) -> impl In
     // The measured heights, oldest first.
     let heights = computed(move || {
         let mut all = items.get();
-        all.sort_by_key(|i| i.index);
+        crate::sort::sort_by_key(&mut all, |i| i.index);
         all.into_iter().map(|i| i.height).collect::<Vec<_>>()
     });
     let height = move || {

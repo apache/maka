@@ -29,6 +29,11 @@ pub(crate) struct ReturnRoute {
     pub(crate) workspace: Workspace,
     pub(crate) binding: maka_agent_facts::workspace::BindingStamp,
 }
+impl ReturnRoute {
+    pub(crate) fn binding_model(&self) -> &maka_agent_facts::execution::ModelBinding {
+        &self.model.binding
+    }
+}
 impl Owner {
     pub(crate) fn background<F, Fut>(&self, task: F)
     where
@@ -49,7 +54,7 @@ impl Owner {
             .controls
             .get(&source.session_id)
             .ok_or("workhub_source_inactive")?;
-        if control.invocation != *source || control.failure.is_some() {
+        if control.invocation != *source {
             return Err("workhub_source_changed".into());
         }
         Ok(ReturnRoute {
@@ -75,7 +80,7 @@ impl Owner {
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
-        if runs.controls.contains_key(&source.session_id) {
+        if runs.busy(&source.session_id) || self.has_parked_invocation(&source.session_id).await? {
             return Ok(None);
         }
         let session = match self.session(&source.session_id).await {
@@ -107,22 +112,23 @@ impl Owner {
         let language = self.resolve_language(&snapshot);
         let text = render(language);
         drop(runs);
-        let mcp_revision = self.mcp_projects.capture(&route.workspace).await?;
+        let selected_catalog = self.mcp_projects.base.clone();
         let runs = self.runs.lock().await;
         if runs.closing || self.stop.is_cancelled() {
             return Err("agent_closed".into());
         }
         let current = self.session(&source.session_id).await?;
-        if runs.controls.contains_key(&source.session_id)
+        if runs.busy(&source.session_id)
+            || self.has_parked_invocation(&source.session_id).await?
             || current.configuration != session.configuration
             || current.archived
         {
             return Ok(None);
         }
 
-        let selected_catalog = self.mcp_projects.catalog(mcp_revision.as_deref())?;
         let mut basis = MessageBasis {
-            mcp_revision,
+            mcp_revision: None,
+            mcp_catalog: None,
             language,
             compaction_prompt: Some(self.effective_compaction_prompt(
                 session.configuration.compaction_prompt.as_deref(),
@@ -143,9 +149,14 @@ impl Owner {
             tools: self.tool_basis.clone(),
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
-            behavior: self
-                .capture_behavior(&route.workspace, &snapshot, language)
-                .await?,
+            behavior: self.bot_behavior(
+                &source.session_id,
+                self.capture_behavior(&route.workspace, &snapshot, language)
+                    .await?,
+                &snapshot,
+                language,
+                session.configuration.tools.as_deref(),
+            ),
         };
         self.prepare_plan_behavior(&source.session_id, &mut basis)
             .await?;
@@ -190,12 +201,12 @@ impl Owner {
         self: &Arc<Self>,
         admission: &PendingMessageAdmission,
     ) -> Result<bool, String> {
-        let mut runs = self.runs.lock().await;
         let session = &admission.invocation.session_id;
         let message = &admission.source.message.message_id;
         if admission.execution.owner != self.prefix || !self.owns(session) {
             return Err("agent_queue_owner_invalid".into());
         }
+        let ordered = self.runs.ordered(session).await;
         if self
             .store
             .session(session)
@@ -216,31 +227,55 @@ impl Owner {
         {
             return Ok(true);
         }
-        if let Some(original) = self
+        let original = self
             .store
             .session(session)
             .await
             .map_err(|error| error.to_string())?
             .message_admission(session, message)
             .await
-            .map_err(|_| "agent_queue_unavailable")?
-        {
-            if original != *admission {
+            .map_err(|_| "agent_queue_unavailable")?;
+        if let Some(original) = &original {
+            let mut descriptor = admission.clone();
+            let mut expected: MessageBasis =
+                serde_json::from_value(descriptor.execution.basis.clone())
+                    .map_err(|error| error.to_string())?;
+            let accepted: MessageBasis = serde_json::from_value(original.execution.basis.clone())
+                .map_err(|error| error.to_string())?;
+            expected.mcp_revision = accepted.mcp_revision;
+            expected.internal_tools = accepted.internal_tools;
+            expected.internal_bindings = accepted.internal_bindings;
+            descriptor.execution.basis =
+                serde_json::to_value(expected).map_err(|error| error.to_string())?;
+            if *original != descriptor {
                 return Err("agent_message_identity_changed".into());
             }
-        } else {
+        }
+        let cancellation = self.stop.child_token();
+        {
+            let mut runs = ordered.state().await;
             if runs.closing || self.stop.is_cancelled() {
-                return Err("agent_closed".into());
+                return if original.is_some() {
+                    Ok(true)
+                } else {
+                    Err("agent_closed".into())
+                };
             }
-            if runs.controls.contains_key(session) {
-                return Ok(false);
+            if runs.busy(session) || self.has_parked_invocation(session).await? {
+                return Ok(original.is_some());
+            }
+            runs.preparing.insert(session.clone(), cancellation.clone());
+        }
+        let accepted = async {
+            if original.is_some() {
+                return Ok(true);
             }
             let current = match self.session(session).await {
                 Ok(session) => session,
                 Err(error) if error == "agent_session_unavailable" => return Ok(false),
                 Err(error) => return Err(error),
             };
-            let basis: MessageBasis = serde_json::from_value(admission.execution.basis.clone())
+            let mut basis: MessageBasis = serde_json::from_value(admission.execution.basis.clone())
                 .map_err(|_| "agent_message_basis_invalid")?;
             self.validate_background(&basis).await?;
             basis.validate_background_target(&current)?;
@@ -250,16 +285,33 @@ impl Owner {
             {
                 return Ok(false);
             }
+            // Deferred work captures runtime tools when accepted; retries keep that original basis.
+            let catalog = self.mcp_projects.capture(&basis.workspace).await?;
+            basis.mcp_revision = catalog.revision.clone();
+            basis.mcp_catalog = Some(catalog.clone());
+            basis.internal_tools = catalog.definitions.clone();
+            basis.internal_bindings = catalog.bindings.clone();
+            let mut accepted = admission.clone();
+            accepted.execution.basis =
+                serde_json::to_value(&basis).map_err(|error| error.to_string())?;
             self.store
                 .session(&admission.invocation.session_id)
                 .await
                 .map_err(|error| error.to_string())?
-                .admit_message(admission.clone())
+                .admit_message(accepted)
                 .await
                 .map_err(|_| "agent_admission_unknown")?;
+            Ok(true)
         }
-        // The durable queue preserves ordering with any original Session worker.
-        self.schedule_locked(&mut runs)
+        .await;
+        match accepted {
+            Ok(true) => {}
+            result => {
+                ordered.state().await.preparing.remove(session);
+                return result;
+            }
+        }
+        self.start_pending(session, ordered, cancellation)
             .await
             .map_err(public_error)?;
         Ok(true)

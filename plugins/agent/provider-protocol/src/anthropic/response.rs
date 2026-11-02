@@ -41,7 +41,7 @@ use wire::Block;
 pub struct Options {
     /// Provider names to names advertised by the host.
     pub tool_names: BTreeMap<String, String>,
-    pub documents: Vec<Document>,
+    pub documents: citations::DocumentReferences,
     pub json_tool: bool,
     pub implicit_code_execution: bool,
     pub metadata_namespace: Option<String>,

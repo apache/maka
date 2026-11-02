@@ -1,5 +1,6 @@
 //! `fs/promises`: capability-checked files. A call checks its path against
-//! `capabilities.fs` (a `TypeError` there) and its limits (a `RangeError`)
+//! `capabilities.fs` (an `ERR_ACCESS_DENIED` rejection there) and its limits
+//! (a `RangeError`, or `ERR_NSH_QUOTA_EXCEEDED` for the runtime's quotas)
 //! by the path's text and the VM's resolved roots, without disk work; the
 //! work then runs off the engine thread, confined to the granted root by a
 //! cap-std `Dir`, so a symlink inside a root cannot lead a later operation
@@ -12,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::element::{
     ClassDef, Held, Instance, JsError, JsHost, JsIn, JsKind, JsObject, JsOwned, JsValue, Later,
-    PropError, Quotas, Ret, System, TsTypes, class, module,
+    PropError, Quotas, Ret, System, TsTypes, class, codes, module,
 };
 
 /// The largest file `readFile` returns.
@@ -40,9 +41,12 @@ const MAX_NAME_BYTES: usize = 1024 * 1024;
 #[cfg(not(target_arch = "wasm32"))]
 const NAME_BATCH: usize = 64 * 1024;
 
-/// Promise-based files under the roots `capabilities.fs` grants. Failures
-/// carry Node's `code` (`ENOENT`, `EEXIST`, ...), `syscall` and `path`; a
-/// path no grant covers throws a `TypeError` with `code` `EACCES`.
+/// Promise-based files under the roots `capabilities.fs` grants. Every
+/// failure rejects. I/O failures carry Node's `code` (`ENOENT`, `EEXIST`,
+/// ...), `syscall` and `path`; a path no grant covers rejects with `code`
+/// `ERR_ACCESS_DENIED` (`permission` `"fs"`, `resource` the path), a
+/// platform without files with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, a
+/// used-up quota with `ERR_NSH_QUOTA_EXCEEDED`.
 #[module]
 pub(crate) struct Fs;
 
@@ -81,6 +85,7 @@ impl Fs {
                 "`{}` write is {len} bytes, over the {MAX_WRITE}-byte fs.writeFile limit",
                 grant.name()
             ))
+            .with_code("ERR_OUT_OF_RANGE")
         };
         let bytes = match data {
             FileData::Text(text) => text.into_bytes(),
@@ -95,9 +100,10 @@ impl Fs {
             .quotas
             .reserve(IN_FLIGHT, bytes.len(), MAX_IN_FLIGHT)
             .ok_or_else(|| {
-                JsError::Range(format!(
+                JsError::Error(format!(
                     "fs exceeded the per-runtime limit of {MAX_IN_FLIGHT} bytes of file data in flight"
                 ))
+                .with_code(codes::QUOTA_EXCEEDED)
             })?;
         Ok(Later::new(async move {
             let _held = (pending, held);
@@ -183,9 +189,10 @@ impl Fs {
 /// One outstanding operation of the VM's at most [`MAX_PENDING`].
 fn pending(sys: &System) -> Result<Held, JsError> {
     sys.quotas.take(PENDING, MAX_PENDING).ok_or_else(|| {
-        JsError::Range(format!(
+        JsError::Error(format!(
             "fs exceeded the per-runtime outstanding host task limit of {MAX_PENDING}"
         ))
+        .with_code(codes::QUOTA_EXCEEDED)
     })
 }
 
@@ -608,8 +615,8 @@ fn grant(sys: &System, path: &str, write: bool) -> Result<Grant, JsError> {
     let available = available || (cfg!(target_arch = "wasm32") && sys.filesystem.is_some());
     if !roots.is_empty() && !available {
         return Err(
-            JsError::Type("native filesystem unavailable on this platform".into())
-                .with_code("ENOSYS"),
+            JsError::Error("native filesystem unavailable on this platform".into())
+                .with_code(codes::UNAVAILABLE),
         );
     }
     // By the path's text and the VM's resolved roots: no disk work on the
@@ -619,11 +626,7 @@ fn grant(sys: &System, path: &str, write: bool) -> Result<Grant, JsError> {
     {
         let roots_of = sys.locals.get::<Roots>();
         let data = sys.data_dir.clone().unwrap_or_default();
-        let requested = if path.starts_with("${") {
-            sys.paths.resolve_root(path, &data).map_err(JsError::Type)?
-        } else {
-            PathBuf::from(path)
-        };
+        let requested = requested_path(sys, path, &data)?;
         let host: Option<Vec<(PathBuf, PathBuf)>> = access.granted.as_ref().map(|host| {
             let grants = if write { &host.fs.write } else { &host.fs.read };
             grants.iter().filter_map(|r| roots_of.get(sys, r)).collect()
@@ -694,11 +697,37 @@ fn grant(sys: &System, path: &str, write: bool) -> Result<Grant, JsError> {
         });
     }
     let what = if write { "write" } else { "read" };
-    Err(JsError::Type(format!(
-        "filesystem {what} is not granted by capabilities.fs.{what}"
+    Err(JsError::access_denied(
+        format!("filesystem {what} of `{path}` is not granted by capabilities.fs.{what}"),
+        "fs",
+        path,
     ))
-    .with_code("EACCES")
-    .with("path", path))
+}
+
+/// The path a call names, its placeholder (`${dataDir}`, ...) resolved. A
+/// `..` the placeholder's own resolution refuses is kept as written, so a
+/// path climbing out of every root is refused as any path outside them is
+/// (`ERR_ACCESS_DENIED`), and one staying inside a root is that path.
+fn requested_path(sys: &System, path: &str, data: &Path) -> Result<PathBuf, JsError> {
+    if !path.starts_with("${") {
+        return Ok(PathBuf::from(path));
+    }
+    sys.paths.resolve_root(path, data).or_else(|error| {
+        let (head, tail) = path.split_at(path.find('}').map_or(path.len(), |end| end + 1));
+        let climbs = tail.split('/').any(|part| part == "..");
+        match sys.paths.resolve_root(head, data) {
+            Ok(anchor) if climbs && tail.starts_with('/') && !tail.contains(['\0', '*']) => {
+                // Component by component: `/` separates nothing in a
+                // verbatim Windows anchor.
+                Ok(anchor.join(
+                    tail.split('/')
+                        .filter(|part| !part.is_empty())
+                        .collect::<PathBuf>(),
+                ))
+            }
+            _ => Err(JsError::Type(error)),
+        }
+    })
 }
 
 /// Intersects manifest and host grants inside the app's private data root.
@@ -715,11 +744,7 @@ fn virtual_relative(sys: &System, path: &str, write: bool) -> Result<Option<Stri
         &access.declared.fs.read
     };
     let expand = |raw: &str| sys.paths.resolve_root(raw, &data).ok().map(|p| lexical(&p));
-    let requested = if path.starts_with("${") {
-        sys.paths.resolve_root(path, &data).map_err(JsError::Type)?
-    } else {
-        PathBuf::from(path)
-    };
+    let requested = requested_path(sys, path, &data)?;
     if path.contains('\0') {
         return Err(JsError::Type("filesystem path contains NUL".into())
             .with_code("EINVAL")
@@ -758,6 +783,7 @@ fn exceeded(name: &str) -> JsError {
     JsError::Error(format!(
         "cannot read `{name}`: the runtime already holds {MAX_IN_FLIGHT} bytes of file data in flight"
     ))
+    .with_code(codes::QUOTA_EXCEEDED)
 }
 
 /// Runs `work` off the engine thread (on the tasks' runtime's blocking
@@ -1566,7 +1592,15 @@ mod tests {
         assert_eq!(check(&sys, "../other/a.txt", false), None);
         assert_eq!(check(&sys, "/app-data/gallery-other/a.txt", false), None);
         assert_eq!(check(&sys, "${dataDir}/outside/a.txt", true), None);
-        assert!(super::virtual_relative(&sys, "${dataDir}/notes/../../secret", true).is_err());
+        // `..` after a placeholder resolves as in any path: outside every
+        // root it is refused as such (`ERR_ACCESS_DENIED`), inside one it
+        // is that path.
+        assert_eq!(check(&sys, "${dataDir}/notes/../../secret", true), None);
+        assert_eq!(
+            check(&sys, "${dataDir}/notes/../notes/a.txt", true).as_deref(),
+            Some("notes/a.txt")
+        );
+        assert!(super::virtual_relative(&sys, "${dataDir}x/a.txt", false).is_err());
         assert_eq!(
             super::virtual_relative(&sys, "bad\0name", false)
                 .unwrap_err()

@@ -55,14 +55,6 @@ impl Modules {
                     function.set("name", &Value::string(f.name)?)?;
                     function.set("getter", &Value(if f.getter { 3 } else { 2 }))?;
                     function.set("promise", &Value(if f.promises() { 3 } else { 2 }))?;
-                    function.set(
-                        "throws",
-                        &Value(if matches!(f.call, FunctionCall::Start(_)) {
-                            3
-                        } else {
-                            2
-                        }),
-                    )?;
                     functions.push(function);
                 }
                 module.set("functions", &Value::array(functions)?)?;
@@ -158,14 +150,6 @@ impl Modules {
                     item.set(
                         "promise",
                         &Value(if member.call.is_async() { 3 } else { 2 }),
-                    )?;
-                    item.set(
-                        "throws",
-                        &Value(if matches!(member.call, MemberCall::Start(_)) {
-                            3
-                        } else {
-                            2
-                        }),
                     )?;
                     members.push(item);
                 }

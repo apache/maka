@@ -39,13 +39,13 @@ impl EventLog {
         let session = session.to_owned();
         self.connection.run(move |connection| Box::pin(async move {
             Ok(sqlx::query_scalar(
-                "SELECT json_extract(opening.event_json, '$.invocation.run_id')
+                "SELECT json_extract(opening.event_header, '$.invocation.run_id')
                  FROM runtime_events opening JOIN runtime_events terminal
                    ON terminal.invocation_id = opening.invocation_id AND terminal.kind = 'invocation_ended'
                  WHERE opening.kind = 'invocation_opened'
-                   AND json_extract(opening.event_json, '$.invocation.session_id') = ?
-                   AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
-                   AND json_extract(terminal.event_json, '$.fact.outcome.kind') IN ('failed', 'cancelled')
+                   AND json_extract(opening.event_header, '$.invocation.session_id') = ?
+                   AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')
+                   AND json_extract(terminal.event_header, '$.fact.outcome.kind') IN ('failed', 'cancelled')
                  ORDER BY opening.sequence DESC LIMIT 1"
             ).bind(session).fetch_optional(connection).await?)
         })).await
@@ -67,12 +67,12 @@ impl EventLog {
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin().await?;
             let rows: Vec<(i64, Option<String>)> = sqlx::query_as(
-                "SELECT sequence, CASE WHEN length(CAST(event_json AS BLOB)) <= 1048576 THEN event_json END
+                "SELECT sequence, CASE WHEN length(CAST(event_header AS BLOB)) <= 1048576 THEN event_header END
                  FROM runtime_events WHERE kind='invocation_opened'
-                 AND json_extract(event_json,'$.fact.input.kind') IN ('continuation','handoff')
-                 AND json_extract(event_json,'$.invocation.session_id')=?
-                 AND json_extract(event_json,'$.fact.input.claim.source.invocation.run_id')=?
-                 AND json_extract(event_json,'$.fact.input.claim.source.high_water')=? LIMIT 2"
+                 AND json_extract(event_header,'$.fact.input.kind') IN ('continuation','handoff')
+                 AND json_extract(event_header,'$.invocation.session_id')=?
+                 AND json_extract(event_header,'$.fact.input.claim.source.invocation.run_id')=?
+                 AND json_extract(event_header,'$.fact.input.claim.source.high_water')=? LIMIT 2"
             ).bind(&source.invocation.session_id).bind(&source.invocation.run_id)
                 .bind(source.high_water as i64).fetch_all(&mut *tx).await?;
             if rows.len() > 1 { return Err(invalid("ambiguous continuation claim")); }
@@ -115,8 +115,8 @@ pub(crate) async fn validate(
         .ok_or_else(|| invalid("continuation has no observed workspace identity"))?;
     let reused: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE kind='invocation_opened'
-         AND json_extract(event_json,'$.invocation.session_id')=?1
-         AND ((?4 AND json_extract(event_json,'$.invocation.turn_id')=?2) OR json_extract(event_json,'$.invocation.run_id')=?3))"
+         AND json_extract(event_header,'$.invocation.session_id')=?1
+         AND ((?4 AND json_extract(event_header,'$.invocation.turn_id')=?2) OR json_extract(event_header,'$.invocation.run_id')=?3))"
     ).bind(&event.invocation.session_id).bind(&event.invocation.turn_id).bind(&event.invocation.run_id)
         .bind(matches!(input, InvocationInput::Continuation { .. })).fetch_one(&mut *connection).await?;
     if reused {

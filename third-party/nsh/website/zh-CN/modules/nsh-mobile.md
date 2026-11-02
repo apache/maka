@@ -215,7 +215,7 @@ function Note() {
 
 ```ts
 const BackHandler: {
-  onBackPress(listener: () => boolean | void): () => void;
+  on(event: "press", listener: () => boolean | void): () => void;
   exitApp(): void;
 };
 ```
@@ -224,7 +224,7 @@ const BackHandler: {
 
 | 成员 | Rust | 说明 |
 |---|---|---|
-| `onBackPress(listener)` | `on_back_press(listener)` | `listener` 处理了这次返回时返回 `true`。返回一个停止监听的函数；在组件渲染（或 effect 运行）期间添加的监听器随之停止，Rust 与 TSX 都是如此。 |
+| `on("press", listener)` | `on_back_press(listener)` | `listener` 处理了这次返回时返回 `true`。返回一个停止监听的函数；在组件渲染（或 effect 运行）期间添加的监听器随之停止，Rust 与 TSX 都是如此。 |
 | `exitApp()` | 监听器返回 `false` | 退出应用。Rust 监听器返回 `false` 时，返回操作继续传递，由导航栈返回或应用退出。 |
 
 ```rust tabs
@@ -258,7 +258,7 @@ import { AlertDialog } from "nsh/base";
 function Editor() {
   const dirty = signal(false);
   // Editor 移除时停止监听。
-  BackHandler.onBackPress(() => {
+  BackHandler.on("press", () => {
     if (!dirty()) return false; // 交给应用返回或退出
     AlertDialog.show({
       title: "Discard changes?",

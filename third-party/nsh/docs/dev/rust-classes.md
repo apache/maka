@@ -115,13 +115,13 @@ so a class's methods can run directly inside the JS call, as the web classes nsh
   `with_mut` borrow the value between awaits) and returns a promise; it runs as a task of the core, where the free
   functions work (`dialog`, `timer`, `blocking`, `background`, the clipboard), as an `async` module function does.
   `this` and the arguments are converted in the JS call, as a synchronous member's are (a wrong one rejects the
-  promise with the same `TypeError`), into the start of the task: a closure holding the typed values, the
+  promise with the same `TypeError`: a call returning a promise never throws), into the start of the task: a closure holding the typed values, the
   instance among them, that an op carries to the core ([below](#how-calls-cross)). The task keeps the instance
   alive until it ends.
 - **One object per instance.** While both live, an instance has one JS object (`nsh-js` remembers it by the `Rc`'s
   address): a member returning an instance Rust keeps gives the object it has, so `a.badge === a.badge`.
-- **Errors.** `Result<T, E: Display>` throws (`Error` with the message) or rejects; a wrong argument throws a
-  `TypeError` naming the member and the parameter (``Tally.add: `by`: expected a number, got "x"``), and so does a
+- **Errors.** `Result<T, E: Display>` throws (`Error` with the message) or rejects; a wrong argument throws (or,
+  for a member returning a promise, rejects with) a `TypeError` naming the member and the parameter (``Tally.add: `by`: expected a number, got "x"``), and so does a
 disposed or busy instance passed for a borrowed parameter (``Account.transfer: `to`: Account is disposed``); a panic in
   Rust is caught and thrown as an `Error`, or rejects (the engine stays up) where Rust unwinds: the web runtime is
   built with `panic = "abort"` (`[profile.web]`), so there a panic ends the page's engine. Integer parameters take
@@ -211,16 +211,19 @@ For that, two choices of the first version change:
   `TrustedPaths`, the VM's `Quotas` (counts of limited resources, `quotas.take(kind, max)` or
   `quotas.reserve(kind, amount, max)` giving a `Held` back when dropped) and the surface's `Os`. The host provides it (`JsHost::system`); one that configured nothing grants nothing.
 - **Work started in the call**: a function or method that is not `async` and returns `Later<T>` (or
-  `Result<Later<T>, E>`) runs in the JS call, where its checks throw as a synchronous call's do, and the work it
-  returns runs as a core task: TS `Promise<T>` (`FunctionCall::Start`, `MemberCall::Start`). The system modules
-  use it to keep Node's shape, a `RangeError` at the call and I/O errors as rejections (`net`, `fs/promises`).
+  `Result<Later<T>, E>`) runs in the JS call, in order with what JS sent before it, and the work it returns runs
+  as a core task: TS `Promise<T>` (`FunctionCall::Start`, `MemberCall::Start`). What the call refuses (an
+  argument, a grant, a quota) rejects the promise, as the task's errors do: a call returning a promise never
+  throws (`docs/dev/api-naming.md` "Failures"). The system modules use it (`net`, `fs/promises`).
 - **Errors of a chosen class**: `Result<T, JsError>` throws a `TypeError`, `RangeError` or `Error`
   (`JsError::Type` / `Range` / `Error`); any other `E: Display` throws an `Error` with its message. A `Later`
   task's (and an `async` function's) `Err(JsError)` rejects with the same, any other error with an `Error` of its
   message (the reply carries a `Thrown`). `JsError::with(key, value)` / `with_code(code)` add properties
   (`JsError::Fields`), so errors keep Node's shape: `code`, `syscall`, `path` (`error.code === "ENOENT"`);
   `JsError::from(io::Error)` and `io_code` name an I/O error's code from its OS error or kind. The system modules
-  share it (`fs/promises`; `process` and `net` can).
+  share it (`fs/promises`; `process` and `net` can). `JsError::access_denied(message, permission, resource)` is what
+  a call the capabilities do not grant fails with (`ERR_ACCESS_DENIED`), and `nsh_core::element::codes` holds the
+  codes NSH's calls use beside I/O's (`docs/dev/api-naming.md` "Failures").
 - **What a synchronous call can do beyond computing**: a parameter `cx: CallCx` (filled in by the call, never in an
   `async` one) starts a task of the core in order with the ops (`cx.start(future)`, nothing waits for it) and ties
   work to what owns the call in JS (`cx.on_cleanup(f)`: the reactive owner, else the module's run under hot
@@ -294,8 +297,12 @@ impl Downloader {
   never holds back later posts), and what the ops JS sent before it post while the core applies them goes before
   it. So an op function posting and then a synchronous one posting arrive in that order, and a task posting while
   JS is still busy after the synchronous call arrives after it. Once the VM stops, queued calls and those posted later are
-  dropped and their replies say so. `call_async_traced` is `call_async` with what was thrown whole (`Exception`: its
-  message and, for an `Error`, its stack), for a caller that says where it was thrown (`nsh test`'s failures).
+  dropped and their replies say so. `call_async_traced` is `call_async` (and `call_traced` is `call`) with what was
+  thrown whole (`Exception`: its message, for an `Error` its stack, and the value as JSON, `thrown`: an object's own
+  enumerable properties with its `name` and `message`, `None` when converting it throws), for a caller that says
+  where it was thrown or checks it (`nsh test`'s failures, its `toThrow` and `toMatchObject`).
+  `Callback::settling(value)` keeps a value in place of a function: `call_async` of it answers the value, a
+  promise what it settles to (`nsh/test`'s `expect(promise)`).
   `call` rethrows an uncatchable exception (the CPU budget's interrupt, running
   out of memory) when the synchronous call around it returns, whatever Rust made of its `Err`.
 - **In a finalizer:** a value whose JS object goes drops inside QuickJS's finalizer, where no JS may run. That is
@@ -319,11 +326,17 @@ impl Downloader {
   it alone holds: a `Drop` that moves such an instance out (into a static, a task) keeps the instance, but its
   callbacks are dead (calling fails, posting does nothing). `Trace` never panics, allocates JS values or runs JS
   (it runs in the collector's mark phase), part of its safety contract.
-- **Functions take them too:** `fn watch(path: String, on_change: Callback<String>)` (`on_change` kept and posted
+- **Functions take them too:** `fn on(event: String, listener: Callback<String>) -> Stop` (`listener` kept and posted
   later), and `async` functions and members can `call_async`.
 - **Listeners**: an instance keeps them in a field (`listeners: Vec<Callback<String>>`, added by
-  `on(&mut self, listener: Callback<String>)`) and its tasks post to them (`Later` work cloning the field); the
+  `on(&mut self, event: String, listener: Callback<String>) -> Stop`, below) and its tasks post to them (`Later` work cloning the field); the
   field is traced like any other, so no event machinery is needed for `child.on("stdout", ..)`.
+- **Stopping**: a function or method that registers a listener (`on(event, listener)`, `docs/dev/api-naming.md`
+  "Listening") returns `Stop` (`nsh_core::prelude`, `element/system.rs`; `Stop::new(f)`), which crosses as a JS
+  function (`() => void`). `f` runs once: when JS calls it, or when the owner of the call in JS goes (the reactive
+  owner it runs under, or the module's run under hot module replacement: `JsHost::on_cleanup`), whichever comes
+  first; calling it unregisters the cleanup, so a long-lived owner does not collect stopped listeners. The
+  Node-shaped standard modules keep Node's `on` returning the instance (`child.on(..)` chains).
 
 
 ## How calls cross

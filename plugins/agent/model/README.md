@@ -29,4 +29,6 @@ Adapters own HTTP/WebSocket transport and disposable connection state. Requests 
 
 Canonical response items and text remain complete across HTTP, SSE, WebSocket and durable reconstruction. Chunking and bounded channels apply backpressure without a separate whole-response quota. Disposable continuation caches may be evicted; canonical history remains the recovery source. Request token selection, provider protocol validation and owned idle/cancellation cleanup stay separate from content retention.
 
+HTTP connection failures retain their underlying cause without the request URL. Nested socket errors, including TLS handshake EOF, use the existing network retry policy; invalid TLS remains non-retryable.
+
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

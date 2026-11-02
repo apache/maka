@@ -12,11 +12,11 @@ Build web apps with Native Shell using the same components, styles and applicati
 
 `nsh package --target web` publishes the app as a static site for any web server or CDN ([Publish an app](#publish-an-app)), and `nsh run --target web` runs it in the browser while you edit it ([Develop in the browser](#develop-in-the-browser)). Every live demo on this site uses this web backend.
 
-Published TSX apps use the browser JavaScript engine. Packaging selects a lite runtime for apps that use the core components and standard APIs it serves, and the full runtime for other apps. Syntax highlighting data loads when code is first highlighted.
+Published TSX apps use the browser JavaScript engine. Packaging links each app its own runtime, holding only the `nsh/base` components and standard modules the app imports: an app built from the core components downloads about 1.1 MB. Syntax highlighting data loads when code is first highlighted.
 
 ## What runs where
 
-The page is built from HTML elements styled with CSS. NSH turns component updates into batches of DOM changes, while the browser displays the interface and handles scrolling, text selection and input. WebAssembly hosts the shared Rust engine for component state, layout and updates: with a Rust app's crate compiled in, or alongside the browser JavaScript engine for a published TSX app. Development and embedded players use QuickJS.
+The page is built from HTML elements styled with CSS. NSH turns component updates into batches of DOM changes, while the browser displays the interface and handles scrolling, text selection and input. WebAssembly hosts the shared Rust engine for component state, layout and updates: with a Rust app's crate compiled in, or alongside the browser's JavaScript engine, which runs a TSX app's code as ES modules: published apps, the dev server's page, this site's demos and the playground alike.
 
 On every native platform the engine has its own thread and hands one `MountBatch` per commit to the main thread. A browser page has one thread, so the web build drives the same engine step by step from the page's event loop (`nsh_engine::LocalEngine`):
 
@@ -40,7 +40,7 @@ requestAnimationFrame ──────────────┘             
 Published apps behave as desktop apps in desktop browsers and as phone apps in phone browsers:
 
 - **Wheels and touchpads** scroll the innermost scroll view along their axis that can still move (a vertical wheel scrolls a horizontal list when nothing vertical can), and stay on it until the scroll ends; wheel notches glide, paging and snapping views move one page per scroll. Ctrl + wheel and touchpad pinches pinch views with native pinch values instead of zooming the page. Dragging with the mouse does not scroll, as on the desktop platforms: mouse drags go to pans, the responder system and text selection. Scroll views report `onScrollDragStart` / `onScrollDragEnd`, `onMomentumStart` / `End` and `onScrollEnd` as on the desktop platforms.
-- **Keyboard**: Tab and Shift+Tab move between pressables and inputs (a focus ring and `focus:` styles show the keyboard focus); Return presses the focused pressable, Space presses it when released; arrows, Page Up / Page Down, Space, Home and End scroll the scroll view around the focus or under the mouse; Escape leaves a field, closes the dialog, then goes back. `keymap` shortcuts work in the browser, matched on the spot (`mod` is Command in Safari and Chrome on a Mac, Control elsewhere).
+- **Keyboard**: Tab and Shift+Tab move between pressables and inputs (the app's `focus:` styles show the keyboard focus); Return presses the focused pressable, Space presses it when released; arrows, Page Up / Page Down, Space, Home and End scroll the scroll view around the focus or under the mouse; Escape leaves a field, closes the dialog, then goes back. `keymap` shortcuts work in the browser, matched on the spot (`mod` is Command in Safari and Chrome on a Mac, Control elsewhere).
 - **Going back**: Escape, Alt+Left (Cmd+[ on a Mac) and the mouse's back button close the newest dialog or pop the innermost stack, as the Android back button does; `popOnBack` and `onBackPress` work as there. When the app is the whole page, every pushed page and open dialog is a browser history entry, so the browser's back button goes back in the app.
 - **Touch**: only scroll views pan; the page itself never scrolls, zooms or pulls to refresh under the app, and taps have no delay. In an iframe, swipes the app does not take scroll the embedding page. Drags on views with native pans, pinches and the responder system are the app's.
 - **Accessibility**: `role`, `accessibilityLabel`, `accessibilityHint`, `accessibilityState`, `accessibilityValue`, `accessibilityLiveRegion` and `accessibilityElementsHidden` become ARIA; `announce` speaks through a live region and `setAccessibilityFocus` moves the focus. Views under a dialog or alert are inert.
@@ -57,10 +57,10 @@ nsh run --target web               # the dev server's page; editing the Rust cod
 ```
 
 When `nsh.json` names the app's root component (`"root"`), the page is the app's Rust and NSH's page script, and
-nothing else: `nsh.wasm` holds the engine, the components and the app's crate with no QuickJS, the site has no
-`app.nshc` or `harden.nshc`, and the page mounts the root as soon as the runtime and the fonts are in. The whole Rust
+nothing else: `nsh.wasm` holds the engine, the components and the app's crate, the site has no
+`app.js`, and the page mounts the root as soon as the runtime and the fonts are in. The whole Rust
 gallery is 3.3 MB (1.06 MB gzipped, 0.75 MB with brotli), less than the runtime of TSX apps. Under its TSX entry
-(`nsh package App.tsx --target web`), the same app runs as TSX apps do, with QuickJS, and imports the crate's
+(`nsh package App.tsx --target web`), the same app runs as TSX apps do, on the browser's JavaScript engine, and imports the crate's
 components and modules.
 
 Either way the crate's assets (`assets!()`) are published with the app's, and its fonts load before the first frame.
@@ -148,7 +148,7 @@ page and files named after their content.
 | `index.html` | The app's page: its name as the title, the icons, the colors of its `appearance`, a loading indicator, and a message when the app cannot load or start |
 | `manifest.webmanifest` | The name, id, icons and colors browsers install the app with |
 | `nsh.<digest>.js` | The DOM runtime, minified (79 KB, 22.5 KB with brotli) |
-| `nsh.<digest>.wasm` | The Rust engine, layout and components, plus a Rust app’s own crate. TSX runs in browser JavaScript; packaging selects the lite or full runtime from the APIs the app imports. |
+| `nsh.<digest>.wasm` | The Rust engine, layout and components, plus a Rust app’s own crate. TSX runs in browser JavaScript; packaging links it with only the components and standard modules the app imports. |
 | `nsh-syntaxes.<digest>.bin` | The syntaxes code is highlighted with (bat's set: 0.92 MB, 0.8 MB with brotli), downloaded the first time a code block, an `Editor` or a `DiffView` shows code in a language |
 | `nsh-bindgen.<digest>.js` | The wasm-bindgen glue of an app whose crates call [browser APIs from Rust](#browser-apis-from-rust), minified |
 | `snippets.<digest>/<crate>-<hash>/…` | The JS of those crates that the glue imports (`inline_js`, `module = "/js/…"`), under the paths wasm-bindgen gives it |
@@ -161,6 +161,19 @@ page and files named after their content.
 `<digest>` is the start of the SHA-256 of the file's content: a file's name changes exactly when its content does, so a
 new release changes only `index.html` and the files that really changed. Everything uses relative URLs, so the site
 works from any directory of any host (`https://example.com/apps/counter/`).
+
+### Runtime size
+
+Packaging links each app its own `nsh.<digest>.wasm`, holding the engine and only the `nsh/base` components,
+standard modules and shaders the app imports. Measured with `nsh package --target web` (MB = 10^6 bytes, gzip
+level 9):
+
+| App | Uses | `nsh.<digest>.wasm` | gzip |
+|---|---|---|---|
+| `examples/counter` | The core components | 3.40 MB | 1.12 MB |
+| A `Shader` view | The core components and shaders | 4.34 MB | 1.42 MB |
+| `Editor`, `Plot` and `zlib` | The core components, two more parts of `nsh/base` and `zlib` | 7.02 MB | 2.32 MB |
+| `examples/gallery` | Every component, `zlib` and shaders | 11.22 MB | 3.56 MB |
 
 ### Deploy it
 
@@ -176,8 +189,8 @@ Serve `.wasm` as `application/wasm` (browsers then compile it while it downloads
 text and WebAssembly (gzip or brotli). `nsh package --target web --run` serves the site this way on
 `http://127.0.0.1:4173/`.
 
-An app published for the web runs like a packaged native app: as a release, a TSX app [hardened](./sandbox-and-capabilities.md)
-(no `eval`), with the capabilities its `nsh.json` declares. When they restrict `network`, the page also carries a
+An app published for the web runs like a packaged native app: as a release, with the capabilities its `nsh.json` declares
+([Sandbox and capabilities](./sandbox-and-capabilities.md)), a TSX app on the browser's JavaScript engine. When they restrict `network`, the page also carries a
 Content-Security-Policy `connect-src` with the declared hosts (and the page's own origin), so the browser itself
 refuses requests and redirect hops to any other host. An error that keeps it from starting is shown on the page;
 later errors go to the browser's console.
@@ -216,19 +229,20 @@ The output directory holds:
 
 | File | What it is |
 |---|---|
-| `gallery/nsh.<digest>.wasm` | The runtime of published apps (about 15.1 MB, 4.6 MB gzipped, 3.4 MB with brotli; built with the `web` profile), shared by the player and the gallery |
+| `gallery/nsh.<digest>.wasm` | The gallery's runtime, linked for it by `nsh package` (it uses every component and `zlib`: about 11.8 MB, 3.6 MB gzipped) |
 | `gallery/nsh-syntaxes.<digest>.bin` | The syntaxes the runtime highlights code with, fetched the first time a demo shows code in a language |
 | `nsh-playground.wasm` | The same plus NSH's TSX compiler, for the [playground](#the-playground) (about 8 MB, 2.4 MB gzipped) |
 | `gallery/nsh.<digest>.js` | The DOM runtime (minified): loads the wasm, applies batches, turns input into events |
-| `index.html` | A player page: runs `demos/<name>.nshc` for `#<name>` |
-| `demos/<name>.nshc` | Each demo compiled by `nsh build --release` |
+| `index.html` | A player page: runs `demos/<name>.js` for `#<name>` |
+| `nsh.wasm`, `nsh.js`, `browser/` | The runtime the player loads: the engine, the DOM runtime and the browser host's modules |
+| `demos/<name>.js` | Each demo compiled by `nsh build --release`: an ES module |
 | `gallery/` | The gallery app published with `nsh package --target web`, shown on the [Gallery](/gallery) page |
 
 Serve the directory with any static server (it needs the `application/wasm` MIME type for streaming compilation) and open `index.html#counter`.
 
 ## The playground
 
-The [Playground](/playground) edits and runs an app in the browser: the page compiles the TSX with NSH's own JSX compiler (built into `nsh-playground.wasm`, without rolldown) and runs it on every pause in typing. Every demo on this site has an **Edit in Playground** link, and **Share** puts the code in the link itself, so nothing is stored on a server.
+The [Playground](/playground) edits and runs an app in the browser: the page compiles the TSX with NSH's own JSX compiler (built into `nsh-playground.wasm`, without rolldown) and runs it on the browser's JavaScript engine on every pause in typing. Every demo on this site has an **Edit in Playground** link, and **Share** puts the code in the link itself, so nothing is stored on a server.
 
 A playground app is one module: it imports NSH's modules (`nsh` and `nsh/*`) but no other files or packages. `console.log` output and errors appear below the phone.
 
@@ -237,7 +251,10 @@ The compiler is also a Rust function, `nsh_bundler::compile_module(name, source,
 ## Embed it in a page
 
 A Rust app is embedded as its published site, in an [iframe](#embed-it-with-an-iframe). For TSX, `nsh.js` is an ES
-module. `createPlayer` loads the runtime into a container; `run` starts a bundle that `nsh build` writes: `bundle.nshc`, its bytecode, as bytes, or `bundle.js` as a string. The runtime `nsh package --target web` ships (`nsh.wasm`) has no JavaScript compiler and runs bytecode only; the development runtime (`nsh-dev.wasm` in the distribution) runs both:
+module. `createPlayer` loads the runtime into a container; `runModule(url)` starts a bundle that `nsh build` writes
+(`bundle.js`, an ES module) on the browser's JavaScript engine, in a realm of the app's own, replacing what ran. It
+returns a promise that resolves once the module has loaded and rejects with the error that stopped it, which the
+player also reports (`onError`):
 
 ```js
 import { createPlayer } from "./nsh.js";
@@ -250,16 +267,14 @@ const player = await createPlayer(document.querySelector("#phone"), {
   // history: false,        // pages and dialogs as browser history entries; by default only when the app is the page, not in an iframe
   // dialogs: "viewport",   // Dialog, Sheet and AlertDialog over the whole browser window; by default over the container
 });
-player.run(await (await fetch("./bundle.nshc")).arrayBuffer());
+await player.runModule(new URL("./bundle.js", location.href).href);
 ```
 
-`assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, `data` maps the files the runtime fetches when it first needs them to their URLs (`syntaxes`: `nsh-syntaxes.<digest>.bin`; by default `nsh-<name>.bin` next to `nsh.js`), and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.run(code, { release: true, capabilities })` runs a bundle as a release under the capabilities it declares (the default is development settings); with bytecode, a release also takes the hardening's bytecode (`harden`, the bytes of `harden.<digest>.nshc`). The page `nsh package --target web` writes uses all of them.
+`assets` (a map from `asset:/` paths to URLs) replaces `assetBase`, `readAsset(uri)` returns the bytes of an asset the engine needs at once (a font) or `null`, `data` maps the files the runtime fetches when it first needs them to their URLs (`syntaxes`: `nsh-syntaxes.<digest>.bin`; by default `nsh-<name>.bin` next to `nsh.js`), and `glue` is the URL of the wasm-bindgen glue of a runtime whose crates call [browser APIs from Rust](#browser-apis-from-rust) (`nsh-bindgen.<digest>.js`), which the player loads with the runtime; `player.runModule(url, { capabilities, appId })` runs the app under the capabilities it declares (its `capabilities.json`) and keeps its storage under its `nsh.json` id (without one, under the page's path). The page `nsh package --target web` writes uses all of them.
 
-`run(code, { chunks, chunkBase })` also takes where the chunks of a [split bundle](#split-bundles) are.
+`runModule(url, { chunks })` also takes where the chunks of a [split bundle](#split-bundles) are.
 
-A page that runs code it does not own, as an app embedding NSH does, gives it limits: `run(code, { limits: "memory=128MB,call=500ms" })` sets those the page names and keeps the [embedding defaults](./sandbox-and-capabilities.md#limits) for the rest (`limits: ""`: all of them). The engine runs on the page's main thread, so the call budget also keeps the page responsive. Without `limits` the app runs on its own, as a published one does.
-
-With `nsh-playground.wasm`, `player.runSource(tsx, name, options)` compiles TSX first, runs it with `run`'s options and returns the compile error, or `null`; `player.compile(tsx)` returns `{ code }` or `{ error }`. The website's playground runs its visitors' code with `{ limits: "" }`.
+`player.runSource(code, { name, sourceMap, capabilities, appId })` runs an ES module given as source text, with the same options. With `nsh-playground.wasm`, `player.compileAndRun(tsx, name, options)` compiles TSX first, runs it with `runSource`'s options and resolves to the compile error, or `null`; `player.compile(tsx)` returns `{ code }` or `{ error }`.
 
 The container's size is the app's window (`windowSize()`); resizing the container resizes the app. `player.setDark(true)` switches the appearance at run time, which apps observe through `colorScheme()` and `dark:` classes.
 
@@ -348,7 +363,7 @@ The module is copied as it is, so it imports other code by absolute URL. The app
 
 `platform.os` is `"web"`. What kind of device the browser is on decides how the app behaves, as `platform.idiom`:
 
-- `"desktop"`: a mouse (a fine pointer that hovers) and a container at least 600 points wide. `platform.select` picks `desktop` and `desktop={{…}}` props apply.
+- `"desktop"`: a mouse (a fine pointer that hovers) and a container at least 600 points wide. `platform.desktop` is `true`, `platform.select` picks `desktop` and `desktop={{…}}` props apply.
 - `"pad"`: a touch screen whose short side is at least 600 points; `"phone"` otherwise. These are mobile: `platform.select` picks `mobile`.
 
 The idiom is decided when the app starts and stays the same while it runs, as on every platform; a narrow desktop window is still a desktop, laid out for its `windowSize()`. `web={{…}}` props, `platform.select({ web })` and `web:` classes apply in browsers only; `ios={{…}}`, `native` and `ios:` do not apply there.
@@ -382,7 +397,7 @@ The page reports the rest of the environment, and keeps it current:
 ## Split bundles
 
 A TSX web app does not need to download all of its code before the first screen shows (a Rust app is one `nsh.wasm`,
-which the browser compiles while it downloads). `nsh package --target web` publishes TSX apps split, with each chunk as `chunks/<name>.<digest>.nshc` and the page mapping chunks to those files (a bundle run as bytecode loads its chunks as bytecode: `Screen.nshc` next to `Screen.js`). To split a bundle yourself, `nsh build --split` puts the modules that `import()` loads into chunks of their own, next to `bundle.js`:
+which the browser compiles while it downloads). `nsh package --target web` publishes TSX apps split, with each chunk as `<name>.<digest>.js` and the page mapping chunks to those files. To split a bundle yourself, `nsh build --split` puts the modules that `import()` loads into chunks of their own, next to `bundle.js`:
 
 ```sh
 nsh build --release --split -o site/app
@@ -391,10 +406,10 @@ nsh build --release --split -o site/app
 # detail.js        what two chunks share, when they do (made by the bundler)
 ```
 
-The first `import("./Screen")` downloads `Screen.js` and the chunks it imports, all at once, then evaluates them; later imports of it resolve at once. The page says where the chunks are: by default next to the page (`chunkBase`), or one URL per chunk, for files renamed with a content digest so a CDN can cache them forever:
+The first `import("./Screen")` downloads `Screen.js` and the chunks it imports, all at once, then evaluates them; later imports of it resolve at once. The page says where the chunks are: by default next to the bundle, or one URL per chunk, for files renamed with a content digest so a CDN can cache them forever:
 
 ```js
-player.run(code, {
+await player.runModule(entry, {
   chunks: { "Screen.js": "/app.3f2a9c.js", "detail.js": "/app.81bb07.js" },
 });
 ```
@@ -417,7 +432,7 @@ The browser decides these, and the web backend follows it:
 - **Platform services**: reading the clipboard (`Clipboard.readText`, also `hasText`) needs a secure context (HTTPS) and may ask the user. Images do not report `onProgress`.
 - **Text shaping details**: line breaking is a subset of UAX #14 (spaces, CJK, hyphens, and the line start and end rules of CJK punctuation: closing marks such as `。`, `，` and `」` stay off the start of a line, opening marks such as `（` and `「` off its end), with no hyphenation and no bidirectional reordering beyond the paragraph direction.
 
-The player and the dev server run apps with development settings (no hardening); published apps run hardened. Both use the default [limits](./sandbox-and-capabilities.md).
+The player and the dev server run apps with development settings; published apps run as releases. Both run a TSX app's code on the browser's JavaScript engine, in a realm of the app's own.
 
 ## See also
 

@@ -1,14 +1,13 @@
 ---
 title: Plot
-description: "nsh/base/plot 的 Plot 组件、它的图形 Line、Area、Bar、Grid、Pie 和 Arc 以及 PlotAxis：根据应用的数据行原生绘制图表，负责坐标轴的比例尺和标签、指针下的数据行或扇区和动效，没有自己的外观。"
-order: 20.9
+description: "nsh/base/plot 的 Plot 组件、它的图形 Line、Area、Bar、Grid、Pie、Arc、RadialLine、RadialGrid 和 Sankey，以及 PlotAxis 和 PlotLabel：根据应用的数据行原生绘制图表，负责坐标轴的比例尺和标签、数据点上的文字、指针下的数据行或扇区和动效，没有自己的外观。"
 group: base
 demo: el-plot
 ---
 
 # Plot
 
-Plot 是图表的框架：它持有要显示的数据行、x 轴和 y 轴的比例尺、指针在它上面的位置以及动效。它的图形负责绘制这些内容：`Line` 是穿过一个系列的折线，`Area` 是系列与基线之间的区域，`Bar` 是 band 比例尺条带里每行一根的柱子，`Grid` 是横跨图表的网格线，`Pie` 是各行所占份额的饼图（中间留空即为环形图），`Arc` 是两个角度之间的一段扇形；`PlotAxis` 用比例尺的刻度为一条边加上标签。每个图形都是一个铺满 plot 的画布，根据数据行原生绘制：应用设置数据行时只读取一次，之后在 Rust 中完成缩放、录制和绘制，所以一千个点的图表也不会为每个点运行 JS。指针同样在 Rust 中跟踪：悬停的十字线、圆点和提示框由平台的动画器移动和淡入淡出，应用只会在指针移到另一行时收到通知。外观由应用决定：图形使用 CSS 中 SVG 图形的绘制属性（`stroke-*`、`fill-*`），没有设置时使用 `currentColor`；area 和柱子可以在自己的形状内显示背景（渐变，`bg-linear-*`）；悬停部件（包括每个图形自己的圆点）以及坐标轴的标签、刻度线和轴线都由应用设置样式和内容。
+Plot 是图表的框架：它持有要显示的数据行、x 轴和 y 轴的比例尺、指针在它上面的位置以及动效。它的图形负责绘制这些内容：`Line` 是穿过一个系列的折线，`Area` 是系列与基线之间的区域，`Bar` 是 band 比例尺条带里每行一根的柱子，`Grid` 是横跨图表的网格线，`Pie` 是各行所占份额的饼图（中间留空即为环形图），`Arc` 是两个角度之间的一段扇形，`RadialLine` 是围绕中心的一条线，背后是 `RadialGrid` 的圆环和辐条（雷达图），`Sankey` 是各行之间的流向图；`PlotAxis` 用比例尺的刻度为一条边加上标签，`PlotLabel` 在比例尺的点上写文字。每个图形都是一个铺满 plot 的画布，根据数据行原生绘制：应用设置数据行时只读取一次，之后在 Rust 中完成缩放、录制和绘制，所以一千个点的图表也不会为每个点运行 JS。指针同样在 Rust 中跟踪：悬停的十字线、圆点和提示框由平台的动画器移动和淡入淡出，应用只会在指针移到另一行时收到通知。外观由应用决定：图形使用 CSS 中 SVG 图形的绘制属性（`stroke-*`、`fill-*`），没有设置时使用 `currentColor`；area 和柱子可以在自己的形状内显示背景（渐变，`bg-linear-*`）；悬停部件（包括每个图形自己的圆点）以及坐标轴的标签、刻度线和轴线都由应用设置样式和内容。
 
 ```rust tabs
 use nsh_base::{
@@ -71,7 +70,7 @@ function App() {
 mount(App);
 ```
 
-`Plot`、`Line`、`Area`、`Bar`、`Grid`、`Pie`、`Arc` 和 `PlotAxis` 来自 `nsh/base/plot`，这是 [`nsh/base`](../modules/nsh-base.md) 中单独的一个模块（Rust 中是 `nsh_base::plot`）。在 TypeScript 中，plot 的属性对数据行的类型是泛型的：字段名会按数据行做类型检查，行的函数会拿到行的类型。在 Rust 中，`plot()` 为每个属性提供一个 setter，数据行是 `Rows`（按键名存放的数字列），取值方式是 `RowAccessor`（键名，或以行序号为参数的函数），图形使用带类型的绘制方法（`.stroke_color(..)`、`.fill_color(..)`、`.stroke_width(..)`）。
+`Plot`、`Line`、`Area`、`Bar`、`Grid`、`Pie`、`Arc`、`RadialLine`、`RadialGrid`、`Sankey`、`PlotAxis` 和 `PlotLabel` 来自 `nsh/base/plot`，这是 [`nsh/base`](../modules/nsh-base.md) 中单独的一个模块（Rust 中是 `nsh_base::plot`）。在 TypeScript 中，plot 的属性对数据行的类型是泛型的：字段名会按数据行做类型检查，行的函数会拿到行的类型。在 Rust 中，`plot()` 为每个属性提供一个 setter，数据行是 `Rows`（按键名存放的数字列），取值方式是 `RowAccessor`（键名，或以行序号为参数的函数），图形使用带类型的绘制方法（`.stroke_color(..)`、`.fill_color(..)`、`.stroke_width(..)`）。
 
 ## Plot
 
@@ -83,21 +82,22 @@ mount(App);
 | `xScale` | `.x_scale(..)` | `Scale` | `{ type: "point" }` | x 轴如何放置各行：`point`（按顺序从左边缘到右边缘均匀分布；只有一行时放在中间）、带可选 `domain` 的 `linear`，或 `band`（每行一个条带，用于柱子；见 [Bar](#bar)）。y 轴为 `band` 时默认为 `linear`，用于横向柱子。`reverse: true` 让它从右边缘开始（[反向比例尺](#反向比例尺)）。 |
 | `yScale` | `.y_scale(..)` | `Scale` | `{ type: "linear" }` | y 轴如何放置数值：定义域的最小值在底边，最大值在顶边。没有 `domain` 时取各图形所绘制数值的范围。`band` 从顶边向下每行布置一个条带，用于横放的柱子。`reverse: true` 让它反过来：最小值在顶边，各行从底边向上排列（[反向比例尺](#反向比例尺)）。 |
 | `interactive` | `.interactive(..)` | `boolean` | `true` | plot 跟随指针和键盘：报告指针下的行并显示悬停部件；它也是 Tab 的一个停靠点，方向键移动悬停的行（[键盘](#键盘)）。为 `false` 时只绘制图形（例如列表中的迷你图），在它上面的点按交给周围的视图。plot 是否提供键盘操作，在创建时确定。 |
-| `motion` | `.motion(..)` | `PlotMotion` | 无 | 出现动效、悬停淡入淡出的时间，以及悬停跟随指针所用的弹簧（见下文）。 |
-| `appearGeneration` | `.appear_generation(..)` | `number` | 无 | 启用出现动效：plot 第一次显示时图形逐渐绘出，此值每次变化时再播放一次（换一支股票、换一个周期）。 |
+| `motion` | `.motion(..)` | `PlotMotion` | 无 | 出现动效、悬停淡入淡出的时间，以及按键移动悬停时所用的弹簧（见下文）。 |
+| `appearGeneration` | `.appear_generation(..)` | `number \| string` | 无 | 启用出现动效：plot 第一次显示时图形逐渐绘出，此值每次变化时再播放一次（换一支股票、换一个周期）。在 [`PlotAppearScope`](#plotappearscope) 里，已经在其中播放完的 generation 立即完整显示。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对图表读出的内容：图表显示了什么，以及值得注意的地方。 |
 | `accessibilityValue` | `.accessibility_value(..)` | `{ min?, max?, now?, text? }` | 无 | 屏幕阅读器读出的数值：应用对指针下那一行的描述。 |
 | `crossLineClass`、`crossLineStyle` | `.cross_line_class(..)`、`.cross_line_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 十字线：与 plot 等高的视图，以指针下的行为中心。在 band 比例尺上它位于该行的条带里，与条带等宽（band 在 y 轴时横跨 plot）。 |
-| `dotClass`、`dotStyle` | `.dot_class(..)`、`.dot_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 悬停圆点：每个 `Line` 和 `Area` 一个视图，以该图形在指针下那一行的点为中心。图形自己的 `hoverDotClass` / `hoverDotStyle` 会替换它们，用于该图形的圆点。 |
+| `dotClass`、`dotStyle` | `.dot_class(..)`、`.dot_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 悬停圆点：每个 `Line`、`Area` 和 `RadialLine` 一个视图，以该图形在指针下那一行的点为中心。图形自己的 `hoverDotClass` / `hoverDotStyle` 会替换它们，用于该图形的圆点。 |
 | `tooltipContent` | `.tooltip_content(..)` | `JSX.Element` | 无 | 应用的提示框，按 `tooltipPlacement` 放置，随十字线移动和淡入淡出。 |
 | `tooltipPlacement` | `.tooltip_placement(..)` | `"top" \| "pointer"` | `"top"` | 提示框的位置：在 plot 顶部、以十字线为中心；或在指针旁边，位于十字线朝 plot 中间的一侧，指针在上半部时在它下方，在下半部时在它上方。在顶部时，提示框留在 plot 的左右边缘之间（与顶边的距离由应用决定：放在 plot 下方的标签取 plot 的高度再多一些）；在指针旁边时，提示框留在 plot 内。用键盘时，提示框在该行第一个折线或区域的点旁边（柱状图在柱带中间，饼图在扇区中间）。 |
 | `tooltipOffset` | `.tooltip_offset(..)` | `number` | `0` | 提示框与定位依据之间的距离：`"top"` 时是顶边，`"pointer"` 时是十字线和指针。 |
+| `colorScale` | `.color_scale(..)` | `OrdinalScale` | 无 | 图形的 `color` 读出的类别所对应的颜色，同 d3 的 `scaleOrdinal`：`{ type: "ordinal", domain?, range, unknown? }`（见[按类别着色](#colors-by-category)）。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 图形，按顺序叠加绘制，以及应用放在它们上面的内容。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | plot 的尺寸和外观；图形会像 CSS 那样继承它的绘制属性。`focus:` / `focus-visible:` 类和 `focusStyle` 绘制它的焦点环。 |
 
 | 事件 | Rust | 参数 | 触发时机 |
 |---|---|---|---|
-| `onHoverChange` | `.on_hover_change(..)` | `{ index: number \| null }` | 指针移到另一行上：沿 x 轴（只有 y 轴有条带时沿 y 轴）离指针最近的那一行的序号，或指针下[饼图](#pie-and-arc)扇区所在行的序号；指针离开 plot（在饼图上为离开它的扇区）后为 `null`。 |
+| `onHoverChange` | `.on_hover_change(..)` | `{ index: number \| null }` | 指针移到另一行上：沿 x 轴（只有 y 轴有条带时沿 y 轴）离指针最近的那一行的序号，指针下[饼图](#pie-and-arc)扇区所在行的序号，或[径向线](#radialline-and-radialgrid)上角度离指针最近的那一行的序号；指针离开 plot（在饼图上为离开它的扇区，在径向线上为离开它的外半径）后为 `null`。 |
 
 `Scale` 是 `{ type: "point"; reverse? } | { type: "linear"; domain?: [number, number]; reverse? } | { type: "band"; paddingInner?; paddingOuter?; maxBandWidth?; bandCount?; groupPadding?; reverse? }`。`domain` 取两个值构成的范围，顺序不限；只有一个值的定义域会把它放在中间。`band` 比例尺的选项见 [Bar](#bar)。
 
@@ -135,6 +135,7 @@ plot 出现时，折线和区域从 x 比例尺起始的那条边逐渐绘出，
 | `Area` | `y0` | `number \| string \| (d, index) => number` | y 比例尺低端所在的边 | 它的底边：数字是 y 比例尺上的一条基线；字段名或函数为每一行给出自己的底值，area 由此成为一条带（一天的最低价到最高价、预测的区间）。没有它时，area 闭合到 y 比例尺最小值所在的边：通常是底边，反向比例尺上是顶边（从顶部垂下的区域）。任一边没有值的行会跳过。 |
 | `Grid` | `x` | `number[]` | 无 | 竖线的位置，取 x 比例尺上的值（`point` 比例尺上是行的序号）。 |
 | `Grid` | `y` | `number[]` | 无 | 横线的位置，取 y 比例尺上的值。 |
+| `Line`、`Area` | `color` | `string \| (d, index) => string` | 无 | 它的数据行的类别，颜色来自 plot 的 `colorScale`：第一个有类别的行决定 line 的 `stroke`（area 的 `fill`），在没有任何设置时使用（见[按类别着色](#colors-by-category)）。 |
 
 每个图形都铺满 plot，使用自己的 [SVG 绘制属性](../modules/style-reference.md#svg-绘制) 绘制；像 CSS 的继承一样，自己设置的值优先于 plot 上的值：
 
@@ -196,10 +197,11 @@ const sales = [
 | `stack` | `string` | 无 | 加入的堆叠：`stack` 相同的柱子按顺序堆叠（没有值的行不增加高度）。 |
 | `cornerRadii` | `number \| { topLeft?, topRight?, bottomRight?, bottomLeft? }` | `0` | 柱子每个角的半径；`{ topLeft: 4, topRight: 4 }` 让竖立的柱子顶端变圆。超过柱子一半的半径会缩小以适应柱子。 |
 | `stagger` | `number` | `0` | plot 出现时，柱子按行依次开始生长，开始时间分布在出现动效的这一比例内（0 到 0.95），每根柱子用剩下的时间长完；为 0 时一起生长。 |
-| `inactiveOpacity` | `number` | 无 | 指针在 plot 上时，指针下那一行以外的柱子的不透明度，让那一行突出：随悬停淡入淡出，并随悬停的滑动从一根柱子交给下一根。 |
-| `label` | `string \| (d, index) => string` | 无 | 每根柱子数值末端的文字：字段（它的数字），或返回应用格式化后文字的函数。 |
+| `inactiveOpacity` | `number` | 无 | 指针在 plot 上时，指针下那一行以外的柱子的不透明度，让那一行突出：随悬停淡入淡出，并随悬停从一根柱子交给下一根。 |
+| `label` | `string \| (d, index) => string` | 无 | 每根柱子数值末端的文字：字段（它的文字或数字），或返回应用格式化后文字的函数。 |
 | `labelClass`、`labelStyle` | `string`、`StyleProp<TextStyle>` | 无 | `label` 部件：以柱子为中心的文字，位于竖立柱子末端的上方（向下生长时在下方），横放柱子末端之后（向回生长时在之前）。它的内边距就是与柱子的距离。 |
 | `backgroundClass`、`backgroundStyle` | `string`、`StyleProp<ViewStyle>` | 无 | 它的背景：每根柱子的盒子，盒子的背景（`bg-linear-to-t from-… to-…`，从柱子底部到顶部）只在柱子内显示，位于 `fill` 之下。设置背景后，`fill` 没有设置时为 `none`。 |
+| `color` | `string \| (d, index) => string` | 无 | 每根柱子的类别，颜色来自 plot 的 `colorScale`：在没有任何设置时作为柱子的 `fill`（见[按类别着色](#colors-by-category)）。 |
 
 band 比例尺像 d3 的 `scaleBand` 一样，按顺序为 plot 的每一行布置一个条带：
 
@@ -212,7 +214,7 @@ band 比例尺像 d3 的 `scaleBand` 一样，按顺序为 plot 的每一行布�
 | `groupPadding` | `0` | 同一条带里并排的柱子之间的间隙，占每根柱子位置的比例。 |
 | `reverse` | `false` | 条带从另一条边开始排列：x 轴上第一行的条带在右侧，y 轴上在底部；同一条带里并排的柱子保持原来的顺序。 |
 
-柱子使用自己的 `fill` 着色（`fill-*`；像 CSS 那样从 plot 继承），没有设置时为 `currentColor`，没有悬停圆点。在 band 比例尺上，悬停会找到指针下的条带，plot 的十字线位于这个条带里、与条带等宽：`crossLineClass="w-full h-full bg-foreground/5"` 给条带上色，`w-px` 则在条带中间保留一条线。plot 没有设置定义域时，柱子的数值和 `base` 构成数值比例尺的定义域。plot 出现时，每根柱子从它所在堆叠的 `base` 长出；动效、变淡和滑动都在平台的动画器上运行，指针从不让柱子重绘。
+柱子使用自己的 `fill` 着色（`fill-*`；像 CSS 那样从 plot 继承），没有设置时为 `currentColor`（设置 `color` 时为它的类别的颜色），没有悬停圆点。在 band 比例尺上，悬停会找到指针下的条带，plot 的十字线位于这个条带里、与条带等宽：`crossLineClass="w-full h-full bg-foreground/5"` 给条带上色，`w-px` 则在条带中间保留一条线。plot 没有设置定义域时，柱子的数值和 `base` 构成数值比例尺的定义域。plot 出现时，每根柱子从它所在堆叠的 `base` 长出；动效、变淡和滑动都在平台的动画器上运行，指针从不让柱子重绘。
 
 <a id="pie-and-arc"></a>
 
@@ -309,12 +311,13 @@ fn seats(seats: Vec<f64>) -> impl IntoElement {
 | `Pie` | `sliceStyle` | `.slice_style(..)` | `StyleProp<ViewStyle>` | 无 | 所有扇区的样式，优先于它们的类（`fill`、`stroke`、`strokeWidth`）。 |
 | `Pie` | `hoverLift` | `.hover_lift(..)` | `number` | `0` | 指针下的扇区比其他扇区大出的距离，单位为点：按 plot 的 `pointer` 弹簧变化，随悬停淡入淡出。 |
 | `Pie` | `hoverDim` | `.hover_dim(..)` | `number`（0 到 1） | `0` | 有扇区位于指针下时，其他扇区变淡的程度，即不透明度降低的比例，随悬停淡入淡出。 |
+| `Pie` | `color` | `.color(..)` | `keyof T \| (d: T, index: number) => string` | 无 | 每个扇区的类别，颜色来自 plot 的 `colorScale`：在没有任何设置时作为扇区的 `fill`（见[按类别着色](#colors-by-category)）。 |
 | `Pie` | `label` | `.label(..)` | `string \| (d: T, index: number) => string` | 无 | 每个扇区旁边的文字：一个字段（取其数值），或返回应用格式化文字的函数。文字为空的行、窄于半度的扇区没有标签。 |
 | `Pie` | `labelClass`、`labelStyle` | `.label_class(..)`、`.label_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | `label` 部件：圆环外、引导线末端处的文字，在末端处垂直居中；在饼图右半边时位于末端之后，左半边时位于末端之前。它的内边距就是与引导线末端的距离。 |
 | `Pie` | `labelGap` | `.label_gap(..)` | `number` | `15` | 标签在外缘之外的距离，单位为点。 |
 | `Pie` | `labelLineClass`、`labelLineStyle` | `.label_line_class(..)`、`.label_line_style(..)` | `string \| (d: T, index: number) => string`、`StyleProp<ViewStyle>` | 无 | `labelLine` 部件：每个标签的引导线，从扇区中线处的外缘向外到标签所在的半径，再横向连到文字。它的 `stroke`（没有设置时为 `currentColor`）、`strokeWidth` 和 `strokeDasharray`，所有引导线相同，或扇区所在行的函数；设置样式后才显示。 |
 
-扇区和 arc 用 `fill` 填充（没有设置时为 `currentColor`），用 `stroke` 描边（没有设置时不描边）；像 CSS 的继承一样，自己设置的值优先于饼图和 plot 上的值：使用界面背景色的描边（`stroke-card stroke-2`）同样可以在扇区之间切出间隙。它们的数值不计入 plot 的比例尺。饼图的扇区只在数据行、数值、角度、半径或 plot 的尺寸变化时重绘；指针只通过动画器推动抬起和变淡。
+扇区和 arc 用 `fill` 填充（没有设置时为 `currentColor`，设置 `color` 的扇区为它的类别的颜色），用 `stroke` 描边（没有设置时不描边）；像 CSS 的继承一样，自己设置的值优先于饼图和 plot 上的值：使用界面背景色的描边（`stroke-card stroke-2`）同样可以在扇区之间切出间隙。它们的数值不计入 plot 的比例尺。饼图的扇区只在数据行、数值、角度、半径或 plot 的尺寸变化时重绘；指针只通过动画器推动抬起和变淡。
 
 饼图的数据行在坐标轴上没有位置，所以带饼图的 plot 通常把提示框放在指针旁边（`tooltipPlacement="pointer"`）：十字线和提示框跟随指针，没有悬停圆点。环形图中间的内容是应用自己叠放在 plot 上的元素（悬停扇区的数值或总数），图例也是，每个色块使用对应扇区的颜色。
 
@@ -331,6 +334,234 @@ fn seats(seats: Vec<f64>) -> impl IntoElement {
   labelLineClass="stroke-border"
 />
 ```
+
+<a id="colors-by-category"></a>
+
+## 按类别着色
+
+plot 的 `colorScale` 为类别分配颜色，同 d3 的 `scaleOrdinal`；图形的 `color` 给出每一行的类别：字段（它的文字或数字），或行的函数。`domain` 中的类别按顺序取 `range` 中的颜色；定义域比值域长时，值域从第一个颜色重新开始。定义域之外的类别取 `unknown`；没有设置时，它在第一次被图形遇到时加入定义域（图形按顺序，每个图形的行按顺序），取下一个颜色，所以完全没有 `domain` 时，各类别按数据行带来它们的顺序取色。颜色由应用决定：CSS 颜色，包括主题的 token。
+
+```tsx
+import { Pie, Plot } from "nsh/base/plot";
+import { token } from "nsh";
+
+const regions = [
+  { name: "北美", revenue: 482 },
+  { name: "欧洲、中东和非洲", revenue: 312 },
+  { name: "亚太", revenue: 268 },
+];
+
+<Plot data={regions} colorScale={{ type: "ordinal", range: [token("chart-1"), token("chart-2"), token("chart-3")] }} class="size-44">
+  <Pie value="revenue" color="name" innerRadius="62%" />
+</Plot>
+```
+
+扇区和柱子取自己所在行的颜色；`Line` 和 `Area` 各是一个系列，取第一行的颜色，所以使用自己数据行（`data`）的折线就是这些行的类别的颜色，同一个比例尺让一个类别在饼图、柱子和折线上保持同一种颜色。这个颜色在没有任何设置时作为图形的 `fill`（折线的 `stroke`），取代 `currentColor`：应用的类和样式优先，包括部件的（`sliceClass`、`sliceStyle`）、图形自己的以及它从 plot 继承的，所以 `sliceClass={(d) => (d.name === "其他" ? "fill-muted" : "")}` 能让一个扇区与众不同，其余扇区仍由比例尺着色。有 `background` 部件时，柱子和区域的 `fill` 保持为 `none`。
+
+| `OrdinalScale` | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `type` | `"ordinal"` | （必填） | 比例尺的种类。 |
+| `domain` | `string[]` | 无 | 类别，按顺序排列。重复出现的类别保留第一次的位置。 |
+| `range` | `string[]` | （必填） | 颜色，按顺序排列（CSS 颜色）；第 `i` 个类别取第 `i % range.length` 个颜色。 |
+| `unknown` | `string` | 无 | 定义域之外每个类别的颜色；没有设置时，每个类别取下一个颜色。 |
+
+<a id="radialline-and-radialgrid"></a>
+
+## RadialLine 和 RadialGrid
+
+`RadialLine` 围绕 plot 的中心绘制一个系列：雷达图的多边形，或沿表盘的一条线。每个有值的行是一个点，位于该行的角度上，离中心的距离由 plot 的 y 比例尺根据它的值决定，从 `innerRadius`（定义域的最小值）到 `outerRadius`（定义域的最大值）。没有 `angle` 时，各行按顺序从 12 点钟方向顺时针均匀地绕一圈排列，所以六行就是一个六边形；`closed` 把最后一个点连回第一个点。它描出各点之间的线，并把区域填充到 `innerRadius`（默认是中心），所以一个图形就是雷达图的轮廓和它的淡色填充。`RadialGrid` 在它后面绘制雷达图的网格：`rings` 是 y 比例尺上各个值处的圆环（穿过各行角度的多边形，或 `circular` 的圆），`spokes` 是通向每一行的辐条。在径向线上，plot 报告角度离指针最近、且在该线外半径以内的那一行，每条线的悬停圆点位于它在这一行的点上。
+
+```tsx
+import { signal, Text, View } from "nsh";
+import { Plot, RadialGrid, RadialLine } from "nsh/base/plot";
+
+type Metric = { name: string; ours: number; theirs: number };
+
+export function Compare(props: { metrics: Metric[] }) {
+  const hovered = signal<number | null>(null);
+  const shown = () => (hovered() == null ? undefined : props.metrics[hovered()!]);
+  return (
+    <View class="items-center gap-3 rounded-xl border border-border bg-card p-4">
+      <Text class="text-sm tabular-nums text-muted-foreground">
+        {shown() ? `${shown()!.name}：我们 ${shown()!.ours}，对手 ${shown()!.theirs}` : "我们与对手"}
+      </Text>
+      <Plot
+        data={props.metrics}
+        yScale={{ type: "linear", domain: [0, 100] }}
+        accessibilityLabel="我们与对手在六项指标上的对比"
+        accessibilityValue={{ text: shown() && `${shown()!.name}：我们 ${shown()!.ours}，对手 ${shown()!.theirs}` }}
+        appearGeneration={1}
+        motion={{ appear: { duration: 700, easing: "easeOut" }, update: { duration: 400, easing: "easeInOut" }, enter: { duration: 120 }, exit: { duration: 160 }, pointer: { stiffness: 380, damping: 34 } }}
+        onHoverChange={({ index }) => hovered.set(index)}
+        class="size-56"
+      >
+        <RadialGrid rings={[25, 50, 75, 100]} spokes outerRadius="80%" class="stroke-border" />
+        <RadialLine radius="theirs" closed outerRadius="80%" class="fill-chart-2/15 stroke-chart-2" hoverDotClass="size-2 rounded-full border-2 border-card bg-chart-2" />
+        <RadialLine radius="ours" closed outerRadius="80%" class="fill-chart-1/25 stroke-chart-1 stroke-2" hoverDotClass="size-2.5 rounded-full border-2 border-card bg-chart-1" />
+        {/* 每项指标的名称放在外缘之外、该行的角度上，朝远离中心的方向展开。 */}
+        {props.metrics.map((m, i) => {
+          const angle = (2 * Math.PI * i) / props.metrics.length;
+          const away = (v: number) => (v > 0.01 ? "flex-start" : v < -0.01 ? "flex-end" : "center");
+          const align = (v: number) => (v > 0.01 ? "left" : v < -0.01 ? "right" : "center");
+          return (
+            <View
+              class="absolute size-0"
+              style={{
+                left: `${50 + 44 * Math.sin(angle)}%`,
+                top: `${50 - 44 * Math.cos(angle)}%`,
+                alignItems: away(Math.sin(angle)),
+                justifyContent: away(-Math.cos(angle)),
+                pointerEvents: "none",
+              }}
+            >
+              <Text class="w-24 text-xs text-muted-foreground" style={{ textAlign: align(Math.sin(angle)) }}>{m.name}</Text>
+            </View>
+          );
+        })}
+      </Plot>
+    </View>
+  );
+}
+```
+
+| 图形 | 属性 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|---|
+| `RadialLine` | `radius` | `.radius(..)` | `keyof T \| (d: T, index: number) => number` | plot 的 `y` | 决定每一行离中心多远的取值：y 比例尺上的值，定义域最小值在 `innerRadius`，最大值在 `outerRadius`。没有值的行跳过。 |
+| `RadialLine` | `angle` | `.angle(..)` | `keyof T \| (d: T, index: number) => number` | 各行均匀绕一圈 | 每一行在中心周围的位置：从 12 点钟方向顺时针的弧度。 |
+| `RadialLine`、`RadialGrid` | `startAngle`、`endAngle` | `.start_angle(..)`、`.end_angle(..)` | `number`（弧度） | `0`、`2 * Math.PI` | 没有 `angle` 时各行的位置：从 `startAngle` 开始均匀排列。绕一整圈时相邻两行相隔一圈的 `1 / 行数`，最后一行在第一行之前一步；只占一圈的一部分时，第一行在 `startAngle`，最后一行在 `endAngle`。 |
+| `RadialLine`、`RadialGrid` | `innerRadius`、`outerRadius` | `.inner_radius(..)`、`.outer_radius(..)` | ``number \| `${number}%` `` | `0`、`"100%"` | y 定义域最小值和最大值所在的半径：点数，或 plot 能容纳的最大圆（其较短边的一半）的百分比，与饼图的半径相同。线的区域填充到 `innerRadius`；网格的辐条在两者之间。 |
+| `RadialLine` | `curve` | `.curve(..)` | `"linear" \| "natural" \| "stepAfter"` | `"linear"` | 点与点之间如何连接：直线段、平滑曲线（闭合时是平滑的环），或阶梯。 |
+| `RadialLine` | `closed` | `.closed(..)` | `boolean` | `false` | 从最后一个点继续连回第一个点：雷达图的多边形。不闭合时，它的区域收拢到中心（或沿内缘回到起点）。 |
+| `RadialLine` | `dot`、`dotClass`、`dotStyle` | `.dot(..)`、`.dot_class(..)`、`.dot_style(..)` | `boolean`、`string`、`StyleProp<ViewStyle>` | `false` | 在每个点上显示圆点：以点为中心的视图，尺寸、背景和边框由应用决定。圆点随线一起长出和移动。 |
+| `RadialLine` | `backgroundClass`、`backgroundStyle` | `.background_class(..)`、`.background_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 它的背景：包围外圆的盒子，盒子的背景（`bg-*`、渐变）只在它的区域内显示，位于 `fill` 之下，与 area 的背景相同。 |
+| `RadialLine` | `hoverDotClass`、`hoverDotStyle` | `.hover_dot_class(..)`、`.hover_dot_style(..)` | `string`、`StyleProp<ViewStyle>` | plot 的 `dotClass`、`dotStyle` | 它的悬停圆点，位于它在指针下那一行的点上，与指针在同一帧移动；按键切换行时按 plot 的 `pointer` 弹簧滑到下一行；`hidden` 表示不显示。 |
+| `RadialGrid` | `rings` | `.rings(..)` | `number[]` | 无 | 圆环的位置，取 y 比例尺上的值：每个圆环离中心的距离与径向线对这个值的距离相同。 |
+| `RadialGrid` | `spokes` | `.spokes(..)` | `boolean` | `false` | 在每一行的角度上，从 `innerRadius` 到 `outerRadius` 画一条线。 |
+| `RadialGrid` | `circular` | `.circular(..)` | `boolean` | `false` | 圆环画成圆（只占一圈的一部分时是圆弧）。默认是穿过各行角度的多边形，plot 少于三行时是圆。 |
+
+径向线用 `stroke`、`strokeWidth` 和 `strokeDasharray` 描边（没有设置时为 `currentColor`，宽 1，实线），用 `fill` 填充区域（没有设置时不填充）；径向网格的描边与网格相同。它们的绘制属性从 plot 继承。plot 没有设置定义域时，线的数值连同 0 构成 y 比例尺的定义域，所以全为正值的雷达图从中心长出；网格的圆环不计入。数值变化时希望圆环和雷达图的刻度保持不动，就为 plot 指定 y `domain`。
+
+雷达图周围的标签是应用自己叠放在 plot 上的元素，就像环形图中间的内容一样。没有 `angle` 时，`n` 行中的第 `i` 行位于从 12 点钟方向起的 `a = 2π·i / n`，所以在正方形的 plot 里，放在 `left: 50% + r·sin(a)`、`top: 50% − r·cos(a)` 的无尺寸盒子（`r` 是 plot 边长的百分比，比外半径所占比例的一半稍大）标出外缘之外的位置，名称从这里朝远离中心的方向展开：右半边向右，左半边向左，顶部向上，底部向下，如上例。
+
+```rust
+use nsh_base::plot::{plot, radial_grid, radial_line};
+use nsh_core::{element::{RowAccessor, Rows}, prelude::*};
+
+fn compare(ours: Vec<f64>, theirs: Vec<f64>) -> impl IntoElement {
+    let rows = Rows::from_columns(ours.len(), [("ours".into(), ours), ("theirs".into(), theirs)]);
+    plot()
+        .data(rows)
+        .accessibility_label("我们与对手")
+        .w(px(224.0))
+        .h(px(224.0))
+        .child(radial_grid().rings(vec![25.0, 50.0, 75.0, 100.0]).spokes(true))
+        .child(radial_line().radius(RowAccessor::key("theirs")).closed(true))
+        .child(radial_line().radius(RowAccessor::key("ours")).closed(true))
+}
+```
+
+## Sankey
+
+`Sankey` 绘制 plot 各行之间的流向：每一行是一个节点，`links` 列出它们之间的流，`{ source, target, value }`，前两项是两行在 plot 的 `data` 中的序号。它按 d3-sankey 的方式在 plot 的尺寸内布局：节点按列排列（`nodeAlign`），每个节点的高度取流入和流出中较大的一方，同一列的节点相隔 `nodePadding`，再经过 `iterations` 轮松弛向各自的流靠拢；每条 link 是一条流带，从源节点的右边缘连到目标节点的左边缘，两端的宽度各是它在那一侧所占的份额，所以即使节点的流入和流出不相等，它的两侧也都被流带铺满。每一列在 plot 中垂直居中；连续几列都只有一个等高节点时，这些列会交错错开一点，让它们之间的流带弯曲起来。`valueScale="sqrt"` 按数值的平方根决定尺寸，避免一条特别大的流把小的流压得看不见。
+
+每个节点和每条流带都是一个独立的画布，即 `node` 和 `link` 部件，所以各自可以用自己的类着色：`nodeClass` 可以是所有节点共用的类，也可以是节点所在行的函数；`linkClass` 可以是所有流带共用的类，也可以是 link 的函数。`linkBackground` 部件在每条流带内显示背景，背景框从源节点延伸到目标节点：用 link 的函数可以让每条流带显示从源节点颜色到目标节点颜色的渐变。流带画在节点下面，两者都随 plot 的出场动画从起始边缘画入。
+
+在 sankey 上，plot 报告指针下的节点（`onHoverChange` 报告节点所在的行；在流带上则没有），提示框跟随指针，不与该节点相连的流带按 `hoverDim` 变淡，由平台的动画器按 plot 的 `motion` 推动。方向键按行的顺序在节点之间移动，提示框位于节点中点旁边。`nodeLabel` 为每个节点标上名称，`valueLabel` 给出它的数值，两者都设置时数值在上、名称在下：第一列的节点标在左边，最后一列的标在右边，中间各列的居中标在节点上方，与 `gpui-component` 的图表一致；节点旁边的标签保持在 plot 的上下边缘之内，超出 plot 边缘的标签位于应用在它周围留出的空间（外边距）里。`nodeLabel` 部件的内边距就是它与节点的间距，它的类决定文字样式（`max-w-20 truncate` 截断过长的名称）；标签随出场动画淡入。应用改变流时，每个节点和流带都按 plot 的 `motion.update` 从旧位置移动到新位置，标签随之移动：新出现的节点从中点长出，新出现的 link 从最小宽度展开，消失的立即移除；过渡途中再次改变时，从当前绘制的位置继续。link 按源节点和目标节点区分，所以调整 `links` 的顺序不会产生移动。
+
+```tsx
+import { signal } from "nsh";
+import { Plot, Sankey } from "nsh/base/plot";
+
+type Step = { name: string };
+
+const steps: Step[] = [{ name: "Visits" }, { name: "Sign-ups" }, { name: "Bounced" }, { name: "Trials" }, { name: "Paid" }, { name: "Churned" }];
+const flows = [
+  { source: 0, target: 1, value: 4200 },
+  { source: 0, target: 2, value: 5800 },
+  { source: 1, target: 3, value: 2600 },
+  { source: 3, target: 4, value: 1100 },
+  { source: 3, target: 5, value: 1500 },
+];
+// 每一步的颜色：节点的填充色，以及从它出发、到它为止的流带渐变两端。
+const FILLS = ["fill-chart-1", "fill-chart-2", "fill-muted", "fill-chart-3", "fill-chart-4", "fill-muted"];
+const FROM = ["from-chart-1/40", "from-chart-2/40", "from-muted/40", "from-chart-3/40", "from-chart-4/40", "from-muted/40"];
+const TO = ["to-chart-1/40", "to-chart-2/40", "to-muted/40", "to-chart-3/40", "to-chart-4/40", "to-muted/40"];
+
+export function Funnel() {
+  const hovered = signal<number | null>(null);
+  return (
+    <Plot
+      data={steps}
+      accessibilityLabel="Visits to paid: 10,000 visits, 1,100 paid"
+      accessibilityValue={{ text: hovered() == null ? undefined : steps[hovered()!].name }}
+      onHoverChange={({ index }) => hovered.set(index)}
+      appearGeneration={1}
+      motion={{ appear: { duration: 900, easing: "easeOut" }, update: { duration: 500 }, enter: { duration: 120 }, exit: { duration: 160 } }}
+      class="mx-20 h-64"
+    >
+      <Sankey
+        links={flows}
+        nodeWidth={8}
+        nodePadding={16}
+        nodeCornerRadius={2}
+        nodeClass={(_, i) => FILLS[i]}
+        linkBackgroundClass={(link) => `bg-linear-to-r ${FROM[link.source]} ${TO[link.target]}`}
+        hoverDim={0.7}
+        nodeLabel={(d: Step) => d.name}
+        valueLabel={(_: Step, value: number) => value.toLocaleString("en-US")}
+        nodeLabelClass="px-2 py-1 text-xs text-muted-foreground"
+        valueLabelClass="font-medium text-foreground"
+      />
+    </Plot>
+  );
+}
+```
+
+```rust
+use nsh_base::plot::{RowClass, SankeyLinkClass, SankeyLinks, plot, sankey};
+use nsh_core::{element::Rows, prelude::*};
+
+fn funnel() -> impl IntoElement {
+    plot()
+        .data(Rows::from_columns(4, []))
+        .accessibility_label("Visits to paid")
+        .h(px(256.0))
+        .child(
+            sankey()
+                .links(SankeyLinks::new([(0, 1, 4200.0), (1, 2, 2600.0), (2, 3, 1100.0)]))
+                .node_width(px(8.0))
+                .node_class(RowClass::from_fn(|i| format!("fill-chart-{}", i + 1).into()))
+                .link_class(SankeyLinkClass::from("fill-foreground/10")),
+        )
+}
+```
+
+| 属性 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `links` | `.links(..)` | `SankeyLink[]`（`{ source: number; target: number; value: number }`） | 必填 | 各条流：从 `source` 行流向 `target` 行（它们在 plot 的 `data` 中的序号），`value` 是流量。数值不是数字或小于零的 link 不承载流量，也不画流带。 |
+| `nodeWidth` | `.node_width(..)` | `number` | `24` | 每个节点的宽度，单位为点。 |
+| `nodePadding` | `.node_padding(..)` | `number` | `8` | 同一列节点之间的间距，单位为点；列太挤时会变小。 |
+| `nodeAlign` | `.node_align(..)` | `"justify" \| "left" \| "right" \| "center"` | `"justify"` | 每个节点放在哪一列，同 d3-sankey：按它离第一列的深度（`"left"`），按它的流所允许的最右位置（`"right"`），按深度但只发出流的节点紧挨它的目标（`"center"`），或按深度但只接收流的节点放在最后一列（`"justify"`）。 |
+| `iterations` | `.iterations(..)` | `number` | `6` | 让节点向各自的流靠拢的松弛轮数。 |
+| `valueScale` | `.value_scale(..)` | `"linear" \| "sqrt"` | `"linear"` | 高度和宽度与数值成正比，或与数值的平方根成正比。 |
+| `minLinkWidth` | `.min_link_width(..)` | `number` | `1` | 流带的最小宽度，单位为点，让很小的流也看得见。 |
+| `nodeCornerRadius` | `.node_corner_radius(..)` | `number` | `0` | 每个节点圆角的半径，单位为点。 |
+| `nodeClass` | `.node_class(..)` | `string \| (d: T, index: number) => string` | 无 | 每个节点的类（`fill-*`、`stroke-*`）：所有节点相同，或节点所在行及其序号的函数；数据行或函数变化时，每行调用一次。 |
+| `nodeStyle` | `.node_style(..)` | `StyleProp<ViewStyle>` | 无 | 所有节点的样式，优先于它们的类。 |
+| `linkClass` | `.link_class(..)` | `string \| (link: SankeyLink, index: number) => string` | 无 | 每条流带的类：所有流带相同，或 link 及其在 `links` 中序号的函数。 |
+| `linkStyle` | `.link_style(..)` | `StyleProp<ViewStyle>` | 无 | 所有流带的样式，优先于它们的类。 |
+| `linkBackgroundClass` | `.link_background_class(..)` | `string \| (link: SankeyLink, index: number) => string` | 无 | 每条流带背景的类（`bg-*`，渐变：`bg-linear-to-r from-… to-…`），显示在流带内，背景框从源节点延伸到目标节点，位于流带的 `fill` 之下。设置了背景时，流带的 `fill` 在没有设置时为 `none`。 |
+| `linkBackgroundStyle` | `.link_background_style(..)` | `StyleProp<ViewStyle>` | 无 | 所有流带背景的样式，优先于它们的类。 |
+| `hoverDim` | `.hover_dim(..)` | `number`（0 到 1） | `0` | 有节点位于指针下时，不与它相连的流带变淡的程度，即不透明度降低的比例，按 plot 的 `pointer` 弹簧变化，随悬停淡入淡出。 |
+| `nodeLabel` | `.node_label(..)` | `keyof T \| (d: T, index: number) => string` | 无 | 每个节点旁的名称：字段名，或节点所在行及其序号的函数。 |
+| `valueLabel` | `.value_label(..)` | `(d: T, value: number, index: number) => string` | 无 | 每个节点旁、名称上方的数值：节点所在行和流入、流出中较大一方（按 links 的原始数值，与 `valueScale` 无关）的函数。 |
+| `nodeLabelClass` | `.node_label_class(..)` | `string` | 无 | 每个标签的类，即 `nodeLabel` 部件：内边距是它与节点的间距，文字样式作用于两行文字。 |
+| `nodeLabelStyle` | `.node_label_style(..)` | `StyleProp<TextStyle>` | 无 | 每个标签的样式，优先于它的类。 |
+| `valueLabelClass` | `.value_label_class(..)` | `string` | 无 | 数值那一行的类，即 `valueLabel` 部件，优先于标签的类。 |
+| `valueLabelStyle` | `.value_label_style(..)` | `StyleProp<TextStyle>` | 无 | 数值那一行的样式，优先于它的类。 |
+
+节点和流带用 `fill` 填充（没有设置时为 `currentColor`），用 `stroke` 描边（没有设置时不描边）；像 CSS 的继承一样，自己设置的值优先于 sankey 和 plot 上的值。没有任何流经过的节点高 1 点。只有 links、选项或 plot 的尺寸变化时才会重新布局，指针和出场动画都不会触发布局；plot 的尺寸变化不会产生移动。构成环的 links，或指向 plot 中不存在的行的 links，什么也不画，并记录一条警告。它的数值不计入 plot 的比例尺。
+
 
 ## PlotAxis
 
@@ -377,23 +608,104 @@ const rows = [
 
 `format` 在刻度或函数变化时，于下一轮对每个刻度调用一次，绘制和跟随指针时从不调用：请保持它是纯函数（同一个数值得到同一段文字）。没有它时，刻度按 d3 的写法显示：`1,500`、`0.25`、`−2`。在 Rust 中，`plot_axis()` 创建坐标轴，`format` 是 `TickFormat::from_fn(|value, index| ..)`。坐标轴不接收指针，屏幕阅读器读出的是 plot 而不是它的标签。
 
+## PlotLabel
+
+`PlotLabel` 在 plot 的若干点上写文字：峰值上方的说明、折线最后一个点旁的价格标签、网格线末端的注释。它的每个 `texts` 都用 plot 比例尺上的值指定自己的点，与图形相同：`point` 或 `band` 比例尺上是行的序号（band 比例尺上是该行条带的中点），`linear` 比例尺上是数值。文字的上边缘位于这个点上，`align` 让文字从这个点开始、以它为中心或在它这里结束。文字由 plot 的布局摆放，所以会跟随 plot 的尺寸；它们随比例尺的 domain 一起平滑过渡（`motion.update`），并随 appear 淡入。
+
+```tsx
+import { Area, Line, Plot, PlotLabel } from "nsh/base/plot";
+
+const rows = [
+  { day: "Mon", visitors: 1820 },
+  { day: "Tue", visitors: 2140 },
+  { day: "Wed", visitors: 1960 },
+  { day: "Thu", visitors: 2480 },
+  { day: "Fri", visitors: 2310 },
+];
+const [peak, last] = [3, rows.length - 1];
+
+<Plot data={rows} y="visitors" yScale={{ type: "linear", domain: [0, 3000] }} class="mr-12 h-40">
+  <Area class="fill-chart-1/20" />
+  <Line class="stroke-chart-1 stroke-2" />
+  {/* 峰值上方写出它的数值，最后一个点右侧放一个垂直居中的标签。 */}
+  <PlotLabel
+    class="text-xs tabular-nums text-muted-foreground"
+    texts={[
+      { text: `High ${rows[peak].visitors}`, x: peak, y: rows[peak].visitors, align: "center", class: "-translate-y-full pb-1" },
+      { text: `${rows[last].visitors}`, x: last, y: rows[last].visitors, class: "-translate-y-1/2 ml-2 rounded bg-chart-1 px-1.5 text-white" },
+    ]}
+  />
+</Plot>
+```
+
+| 属性 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `texts` | `.texts(..)` | `PlotText[]` | `[]` | 要写的文字，每段位于自己的点上。 |
+
+每段文字是一个 `PlotText`：
+
+| 字段 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `text` | `string` | | 文字内容。 |
+| `x` | `number` | | 沿 x 轴的位置：x 比例尺上的值，`point` 或 `band` 比例尺上是行的序号（`0.5` 位于前两行正中间）。 |
+| `y` | `number` | | 上边缘沿 y 轴的位置：y 比例尺上的值。 |
+| `align` | `"left" \| "center" \| "right"` | `"left"` | 文字沿 x 方向相对于点的位置：从点开始、以点为中心，或在点处结束。 |
+| `class`、`style` | `string`、`StyleProp<TextStyle>` | 无 | 这段文字自己的类名和样式，叠加在它从 label 继承的样式之上：它的盒子（标签的背景和内边距）以及它与点的距离。 |
+
+外观由应用决定：label 的 `class` 给所有文字提供它们继承的文字样式（字体、字号、颜色），每段文字自己的 `class` 和 `style` 只作用于它自己。用 `-translate-y-full` 把文字放到点的上方，它的内边距就是它与点的间距（`pb-1`）；折线最后一个点旁的标签位于应用在那一侧留出的外边距里（`mr-12`），与坐标轴的标签相同。在 Rust 中，`plot_label()` 创建 label，每段文字是 `PlotText::new(text, x, y)`，配合 `.align(PlotTextAlign::Center)`、`.class(..)` 和 `.style(..)`。指针穿过这些文字作用到 plot 上，屏幕阅读器读出的是 plot，由它的 `accessibilityLabel` 说明这些文字标出的内容。
+
 ## 动效
 
 动效由应用决定，默认没有：一切立即显示。`motion` 使用 [`nsh`](../modules/nsh.md#animation) 的时间参数（`{ duration, easing, delay }` 和 `{ stiffness, damping, mass }`）：
 
 | 键 | 类型 | 作用 |
 |---|---|---|
-| `appear` | timing | 有 `appearGeneration` 时图形逐渐绘出：折线和区域从起始边缘绘出，柱子从 `base` 长出（柱子设置 `stagger` 时依次长出）；饼图和 arc 的圆环从起点顺时针扫出。 |
-| `update` | timing | 应用改变图形时，图形过渡到新形状：饼图和 arc 的半径，比如 donut 的空洞张开和合拢；它们的角度，比如仪表或扇区扫到新的数值（同 d3 的 `arcTween`：过渡的是角度而不是轮廓；新出现的扇区从前一个扇区的结束处展开；过渡途中再次改变时，从当前绘制的位置继续）；以及线性比例尺的 domain（应用给的 `domain`，或随数据行到来而变化的图形数值范围），从旧 domain 平滑过渡到新 domain，图形、网格线和 `PlotAxis` 一起移动。 |
+| `appear` | timing | 有 `appearGeneration` 时图形逐渐绘出：折线和区域从起始边缘绘出，柱子从 `base` 长出（柱子设置 `stagger` 时依次长出）；饼图和 arc 的圆环从起点顺时针扫出；径向线从内半径长出，圆点随之一起；sankey 的节点和流带从起始边缘画入，标签随之淡入。 |
+| `update` | timing | 应用改变图形时，图形过渡到新形状：饼图和 arc 的半径，比如 donut 的空洞张开和合拢；它们的角度，比如仪表或扇区扫到新的数值（同 d3 的 `arcTween`：过渡的是角度而不是轮廓；新出现的扇区从前一个扇区的结束处展开；过渡途中再次改变时，从当前绘制的位置继续）；径向线的点过渡到新的数值、角度和半径（新出现的行从内半径长出），径向网格的圆环随之移动；以及线性比例尺的 domain（应用给的 `domain`，或随数据行到来而变化的图形数值范围），从旧 domain 平滑过渡到新 domain，图形、网格线、`PlotAxis` 和 `PlotLabel` 一起移动；以及 sankey 的节点、流带和标签，从旧的流的布局移动到新的布局，过渡途中再次改变时从当前绘制的位置继续。 |
 | `enter` | timing | 指针移到 plot 上时，悬停部件淡入。 |
 | `exit` | timing | 指针离开后，悬停部件淡出。 |
-| `pointer` | spring | 指针在 plot 上移动时，悬停部件从一行滑到下一行；饼图的扇区也按它抬起。 |
+| `pointer` | spring | 按键或屏幕阅读器切换悬停的行时，悬停部件从一行滑到下一行；饼图的扇区也按它抬起。 |
 
-动效在平台的动画器上运行，不需要每帧运行 JS；对偏好减少动态效果的用户立即完成。列表为回到视野的行重新创建 plot 时，图形会再绘出一次；可以把行的键名作为它的 `appearGeneration`。
+悬停部件与指针在同一帧移动：指针移动时，十字线、圆点和提示框立即落在指针下的那一行，紧跟手的移动，它们的淡入淡出（`enter`、`exit`）仍然带有动画。
+
+动效在平台的动画器上运行，不需要每帧运行 JS；对偏好减少动态效果的用户立即完成。列表为回到视野的行重新创建 plot 时，图形会再绘出一次，除非包住列表的 [`PlotAppearScope`](#plotappearscope) 已经见过它的出现动效播放完。
 
 domain 的过渡与 d3 过渡比例尺 domain 的方式相同：每个数值都由过渡中的比例尺定位，所以图形保持各自的形状，网格线和悬停部件随之移动，柱子保持圆角，和新 domain 一起到来的数据行也随其他部分一起移动。实时图表不时按数据行重新拟合 y 比例尺（留出一些余量，两次拟合之间网格保持不动），设置 `update` 时间参数后，每次重新拟合都会平滑过渡。plot 尺寸变化时，图形立即采用新尺寸。
 
 这是 plot 自己的动效，用来设置图表里动的部分（图形的裁剪区域和悬停部件）的时间参数。视图的入场、离场和强调效果使用 [`createMotion`](../modules/nsh.md#createmotion) 的预设和关键帧，应用仍然可以把它们用在 plot 的视图或周围的元素上。
+
+## PlotAppearScope
+
+列表在行每次回到视野时都会重新创建该行的 plot，所以带出现动效的迷你图在列表滚回来时会再绘出一次。用 `PlotAppearScope` 包住列表，它会记住在其中已经播放完的出现动效：在它里面重新创建的 plot，如果它的 `appearGeneration` 已经在这里播放完，就立即完整显示图形。plot 按它的 generation 记住，所以每一行的 plot 要有自己的 generation：行的键名，加上应当让它重播的内容（`` `${symbol} ${period}` ``）。
+
+```tsx
+import { List } from "nsh";
+import { Line, Plot, PlotAppearScope } from "nsh/base/plot";
+
+<PlotAppearScope id={watchlist().id} class="flex-1">
+  <List each={watchlist().rows} keyExtractor={(row) => row.symbol} estimatedItemSize={48} class="flex-1">
+    {(row) => (
+      <Plot
+        data={row().closes}
+        y="close"
+        interactive={false}
+        appearGeneration={`${row().symbol} ${period()}`}
+        motion={{ appear: { duration: 400, easing: "easeOut" } }}
+        class="h-8 w-24"
+      >
+        <Line class="stroke-chart-1 stroke-[1.5]" />
+      </Plot>
+    )}
+  </List>
+</PlotAppearScope>
+```
+
+| 属性 | Rust | 类型 | 默认值 | 说明 |
+|---|---|---|---|---|
+| `id` | `.id(..)` | `number \| string` | 无 | scope 为什么内容记忆：它变化时，scope 忘掉记住的内容，其中的 plot 在原处重新绘出。按内容命名，比如一个自选列表或一段对话；没有它时，scope 在显示期间一直记住。 |
+| `children` | `.child(..)` | `JSX.Element` | 无 | 它包含的内容：列表，或任何随显示和移除重新创建其中 plot 的内容。 |
+
+新的 generation 仍然会让 plot 绘出；出现动效还没播放完就被移除的 plot，也会从头再绘出一次。plot 播放完一个新的 generation 后，scope 会忘掉它之前的那个，所以切回之前的周期时 plot 会再绘出一次。记忆随 scope 一起消失：不再显示的 scope，或者 `id` 变化的 scope，其中的 plot 都会重新绘出；plot 在包住它的最内层 scope 中记忆。scope 的外观由应用决定：`class` 和 `style` 像对任何视图一样为它布局（包住铺满屏幕的列表时用 `flex-1`）。在 Rust 中，用 `plot_appear_scope()` 创建。
 
 ## 键盘
 
@@ -401,7 +713,7 @@ domain 的过渡与 d3 过渡比例尺 domain 的方式相同：每个数值都�
 
 | 按键 | 作用 |
 |---|---|
-| 右方向键、左方向键 | 移动到屏幕上那一侧的行：下一行或上一行，在第一行位于右侧的反向 x 比例尺上则反过来（饼图按行的顺序移动到各扇区）；没有悬停的行时，右方向键从最左端的行开始，左方向键从最右端的行开始（饼图上是第一个和最后一个扇区）。 |
+| 右方向键、左方向键 | 移动到屏幕上那一侧的行：下一行或上一行，在第一行位于右侧的反向 x 比例尺上则反过来（饼图按行的顺序移动到各扇区，sankey 移动到各节点）；没有悬停的行时，右方向键从最左端的行开始，左方向键从最右端的行开始（饼图上是第一个和最后一个扇区）。 |
 | Home、End | 移动到第一行或最后一行。 |
 | Escape | 清除悬停。 |
 
@@ -535,9 +847,9 @@ export function SalesChart(props: { rows: Sale[]; stacked: boolean }) {
 
 ## 无障碍
 
-- plot 对屏幕阅读器是一个元素，角色为图像，读出应用的 `accessibilityLabel`；图形、坐标轴的标签和悬停部件是它的组成部分，自己不读出任何内容。在标签中说明图表显示了什么以及值得注意的地方（范围、最高值），并用 `accessibilityValue` 给出指针下那一行的描述，屏幕阅读器就会随之读出数值。
+- plot 对屏幕阅读器是一个元素，角色为图像，读出应用的 `accessibilityLabel`；图形、坐标轴的标签、`PlotLabel` 和悬停部件是它的组成部分，自己不读出任何内容。在标签中说明图表显示了什么以及值得注意的地方（范围、最高值），并用 `accessibilityValue` 给出指针下那一行的描述，屏幕阅读器就会随之读出数值。
 - 在有指针的平台上（桌面、网页、配触控板的 iPad），指针下的行通过 `onHoverChange` 报告。触摸屏没有悬停：触摸用户需要的数值请用应用自己的元素显示；数字很重要时，再用文字或列表提供数据行。
-- 在饼图上，报告的行是指针下扇区所在的行：用 `accessibilityValue` 给出它的名称、数值和占比（`"团队版，340 个席位，34.0%"`），并在标签中说明总数和最大的份额。
+- 在饼图上，报告的行是指针下扇区所在的行：用 `accessibilityValue` 给出它的名称、数值和占比（`"团队版，340 个席位，34.0%"`），并在标签中说明总数和最大的份额。在雷达图上，报告的是离指针最近的那一项指标：给出指标的名称和每个系列在这一项的数值。
 - 可交互的 plot 是键盘焦点的一个停靠点，方向键移动悬停的行（[键盘](#键盘)）；它还向屏幕阅读器提供 `increment` 和 `decrement`，用于逐行浏览（VoiceOver 把它读作可调节）。`interactive={false}` 的 plot 两者都没有；无论哪种，plot 都不接收点按。
 
 关于标签和角色的一般说明，见 [无障碍](../docs/accessibility.md)。
@@ -548,4 +860,5 @@ export function SalesChart(props: { rows: Sale[]; stacked: boolean }) {
 - 出现动效用平台动画器推动的值裁剪折线和区域、让柱子长出；柱子在悬停行以外变淡，是动画器根据悬停位置算出的不透明度；悬停部件是由动画器移动和淡入淡出的视图，动画器还根据 plot 和提示框的尺寸把提示框留在 plot 内。
 - area 的背景画在它自己的画布里，裁剪到 area 的形状，使用的渐变与平台为视图的 `bg-linear-*` 绘制的相同；它的类名变化（外观、`dark:`）只会重新发送绘图，不需要重新录制。
 - 饼图的每个扇区画在自己的画布里；指针下的扇区在 Rust 中根据扇区的角度和半径找出，它的抬起是一个半径、其他扇区的变淡是一个不透明度，都由动画器推动；出现动效的扫出也以同样方式推动扇区的角度，所以两者都不需要重新录制绘图。
+- 径向线指针下的行在 Rust 中根据各点的角度找出；它的悬停圆点是由动画器摆放在指针下那一行的视图（按键切换时按 `pointer` 弹簧滑动）；出现或过渡到新数值时，各点是由动画器从原来位置推动的数，所以每次变化只录制一次。
 - 坐标轴的标签、刻度线和轴线是平台自己的文字和视图，由 Rust 中的布局根据 plot 的尺寸和比例尺摆放：plot 尺寸变化时它们随图形一起移动，定义域变化时标签会重新写出。

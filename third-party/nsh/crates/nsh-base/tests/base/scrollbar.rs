@@ -16,7 +16,7 @@ use nsh_base::{
     set_scrollbar_theme,
 };
 use nsh_core::{
-    MountItem, NodeId, Size, Transform,
+    MountItem, NodeId, PointerEvents, Size, Transform,
     animation::{AnimationOp, AnimationProp, Driver},
     element::Root,
     geometry::point,
@@ -93,6 +93,8 @@ struct Shown {
     scrolls: Vec<bool>,
     /// Whether a view that moved also had a transition.
     moved_with_transition: bool,
+    /// The touches the bar last mounted with.
+    pointer: Option<PointerEvents>,
 }
 
 #[derive(Clone, Default)]
@@ -105,6 +107,11 @@ impl Seen {
         let bar = seen.bar.expect("the bar is mounted");
         let node = seen.opacity.get(&bar).expect("the bar's opacity is bound");
         seen.values.get(node).copied().unwrap_or(0.0) > 0.0
+    }
+
+    /// The touches the bar last mounted with.
+    fn pointer(&self) -> Option<PointerEvents> {
+        self.0.lock().unwrap().pointer
     }
 
     /// The fades of the bar's opacity so far, taken.
@@ -158,6 +165,7 @@ fn start_with(mode: ScrollbarMode, motion: ScrollbarMotion, content: f32) -> (He
                     if props.accessibility.label.as_deref() == Some("Bar") =>
                 {
                     seen.bar = Some(*id);
+                    seen.pointer = Some(props.pointer_events);
                 }
                 MountItem::AnimationBindings { id, bindings } => {
                     for (prop, node) in bindings {
@@ -236,6 +244,19 @@ fn the_thumb_follows_the_target_scrolled_elsewhere() {
     // 16 points move the content 80.
     app.drag("label:Bar", point(px(0.0), px(16.0))).unwrap();
     app.wait_for("text:Offset 480").unwrap();
+}
+
+/// A hidden bar takes no touches anywhere in it: the bar is `none`, not
+/// `box-none` over views of its own inside that would take them (its
+/// thumb); shown, it takes them.
+#[test]
+fn a_hidden_bar_takes_no_touches_anywhere_in_it() {
+    let (mut app, seen) = start(ScrollbarMode::Scrolling, 1000.0);
+    assert!(!seen.shown());
+    assert_eq!(seen.pointer(), Some(PointerEvents::None));
+    app.scroll("id:content", px(100.0)).unwrap();
+    app.wait_for("text:Offset 100").unwrap();
+    assert_eq!(seen.pointer(), Some(PointerEvents::Auto));
 }
 
 #[test]

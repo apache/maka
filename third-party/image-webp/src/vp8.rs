@@ -20,6 +20,26 @@ use crate::yuv;
 use super::vp8_arithmetic_decoder::ArithmeticDecoder;
 use super::{loop_filter, transform};
 
+// Grow from bytes actually present rather than an untrusted partition length.
+// The caller's source-size budget then bounds even truncated malformed streams.
+fn read_sized_partition(
+    reader: &mut impl Read,
+    size: usize,
+) -> Result<Vec<[u8; 4]>, DecodingError> {
+    let mut bytes = Vec::new();
+    reader.take(size as u64).read_to_end(&mut bytes)?;
+    if bytes.len() != size {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated VP8 partition",
+        )
+        .into());
+    }
+    let mut chunks = vec![[0; 4]; size.div_ceil(4)];
+    chunks.as_mut_slice().as_flattened_mut()[..size].copy_from_slice(&bytes);
+    Ok(chunks)
+}
+
 const MAX_SEGMENTS: usize = 4;
 const NUM_DCT_TOKENS: usize = 12;
 
@@ -1037,9 +1057,7 @@ impl<R: Read> Vp8Decoder<R> {
                     .expect("Reading from &[u8] can't fail and the chunk is complete");
 
                 let size = size as usize;
-                let mut buf = vec![[0; 4]; size.div_ceil(4)];
-                let bytes: &mut [u8] = buf.as_mut_slice().as_flattened_mut();
-                self.r.read_exact(&mut bytes[..size])?;
+                let buf = read_sized_partition(&mut self.r, size)?;
                 self.partitions[i].init(buf, size)?;
             }
         }
@@ -1225,9 +1243,7 @@ impl<R: Read> Vp8Decoder<R> {
         }
 
         let size = first_partition_size as usize;
-        let mut buf = vec![[0; 4]; size.div_ceil(4)];
-        let bytes: &mut [u8] = buf.as_mut_slice().as_flattened_mut();
-        self.r.read_exact(&mut bytes[..size])?;
+        let buf = read_sized_partition(&mut self.r, size)?;
 
         // initialise binary decoder
         self.b.init(buf, size)?;

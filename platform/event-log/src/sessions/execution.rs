@@ -55,9 +55,9 @@ pub(crate) async fn has_active_invocation(
     Ok(sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM (
             SELECT invocation_id FROM event_log INDEXED BY catalog_message_facts
-            WHERE invocation_id IS NOT NULL AND event_json IS NOT NULL
+            WHERE invocation_id IS NOT NULL AND event_header IS NOT NULL
             AND kind IN ('invocation_opened', 'model_completed') AND kind = 'invocation_opened'
-            AND json_extract(event_json, '$.invocation.session_id') = ?
+            AND json_extract(event_header, '$.invocation.session_id') = ?
             ORDER BY sequence DESC LIMIT 1
          ) AS opening
          WHERE NOT EXISTS(SELECT 1 FROM imported_invocations i
@@ -76,12 +76,12 @@ pub(super) async fn read(
     id: &str,
 ) -> Result<Option<SessionExecution>, StoreError> {
     let opening = sqlx::query(
-        "SELECT invocation_id, json_extract(event_json, '$.invocation.turn_id'),
-                catalog_time(json_extract(event_json, '$.recorded_at'))
+        "SELECT invocation_id, json_extract(event_header, '$.invocation.turn_id'),
+                catalog_time(json_extract(event_header, '$.recorded_at'))
          FROM event_log INDEXED BY catalog_message_facts
          WHERE invocation_id IS NOT NULL
          AND kind IN ('invocation_opened', 'model_completed') AND kind = 'invocation_opened'
-         AND json_extract(event_json, '$.invocation.session_id') = ?
+         AND json_extract(event_header, '$.invocation.session_id') = ?
          AND NOT EXISTS(SELECT 1 FROM imported_invocations i WHERE i.invocation_id=event_log.invocation_id)
          ORDER BY sequence DESC LIMIT 1",
     )
@@ -95,9 +95,9 @@ pub(super) async fn read(
     let turn_id = opening.try_get(1)?;
     let opened_at = number(&opening, 2)?;
     let terminal = sqlx::query(
-        "SELECT json_extract(event_json, '$.fact.outcome.kind'),
-                catalog_time(json_extract(event_json, '$.recorded_at')),
-                json_extract(event_json, '$.fact.outcome.outcome.kind') FROM event_log
+        "SELECT json_extract(event_header, '$.fact.outcome.kind'),
+                catalog_time(json_extract(event_header, '$.recorded_at')),
+                json_extract(event_header, '$.fact.outcome.outcome.kind') FROM event_log
                 INDEXED BY invocation_boundary
          WHERE invocation_id = ? AND kind IN ('invocation_opened', 'invocation_ended')
          AND kind = 'invocation_ended' ORDER BY sequence DESC LIMIT 1",

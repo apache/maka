@@ -335,7 +335,7 @@ expect Fruit Fig
 expect Fruit Kiwi
 expect Not checked
 tap id:check
-expect same true functions true context true gradient true path true
+expect functions true context true gradient true path true
 covers [nsh] Image
 covers [nsh] Video
 covers [nsh] WebView
@@ -403,6 +403,7 @@ tap id:case-core-error-boundary
 expect Around the boundary
 expect Risky ok
 expect Outer caught fallback of binding
+expect Rest caught binding
 tap id:break
 expect Caught binding
 absent Risky ok

@@ -19,13 +19,10 @@
 
 //! Native intake snapshots files and images; upload observations contain only metadata.
 
-use super::{EDITOR, Scope, ScopedHost, execute};
+use super::{EDITOR, Owner, Scope, ScopedHost, execute};
 use maka_app_client::Client;
 use maka_capabilities::call::ReadResource;
-use maka_ui_support::{
-    budget::Kind,
-    file::{FileSnapshot, read_selected},
-};
+use maka_ui_support::file::{FileSnapshot, read_selected};
 use nsh_base::{Button, ButtonEvent, ButtonProps, input};
 use nsh_core::prelude::*;
 use nsh_core::{
@@ -36,6 +33,115 @@ use std::{rc::Rc, sync::Arc};
 use tokio::sync::{Mutex, mpsc, watch};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
+
+/// An immutable local selection that has not been uploaded to a session yet.
+#[class]
+pub struct StagedFile {
+    id: Uuid,
+    owner: Arc<Owner>,
+    snapshot: Arc<FileSnapshot>,
+}
+
+#[class]
+pub struct StagedClipboard {
+    owner: Arc<Owner>,
+    text: Option<String>,
+    files: Vec<Arc<FileSnapshot>>,
+}
+
+#[class]
+impl StagedClipboard {
+    #[getter]
+    pub fn text(&self) -> Option<String> {
+        self.text.clone()
+    }
+
+    pub fn files(&self) -> Vec<Instance<StagedFile>> {
+        self.files
+            .iter()
+            .cloned()
+            .map(|file| staged_file(self.owner.clone(), file))
+            .collect()
+    }
+}
+
+#[class]
+impl StagedFile {
+    #[getter]
+    pub fn id(&self) -> String {
+        self.id.to_string()
+    }
+
+    pub fn metadata(&self) -> JsonValue {
+        self.snapshot.metadata()
+    }
+}
+
+pub(super) async fn stage_files(
+    owner: Arc<Owner>,
+    files: Vec<String>,
+) -> Result<Vec<Arc<FileSnapshot>>, String> {
+    execute(owner.clone(), async move {
+        tokio::task::spawn_blocking(move || {
+            crate::attachment_paths::resolve(&files)?
+                .into_iter()
+                .map(|path| read_selected(&path).map_err(|error| error.to_string()))
+                .collect()
+        })
+        .await
+        .map_err(|error| format!("Selected file worker failed: {error}"))?
+    })
+    .await
+}
+
+pub(super) fn staged_file(owner: Arc<Owner>, snapshot: Arc<FileSnapshot>) -> Instance<StagedFile> {
+    Instance::new(StagedFile {
+        id: Uuid::new_v4(),
+        owner,
+        snapshot,
+    })
+}
+
+pub(super) async fn stage_clipboard(owner: Arc<Owner>) -> Result<StagedClipboard, String> {
+    let selected = execute(owner.clone(), async move {
+        tokio::task::spawn_blocking(crate::clipboard::read)
+            .await
+            .map_err(|error| format!("Clipboard worker failed: {error}"))?
+    })
+    .await?;
+    match selected {
+        crate::clipboard::Selection::Files(files) => Ok(StagedClipboard {
+            owner: owner.clone(),
+            text: None,
+            files: stage_files(owner, files).await?,
+        }),
+        crate::clipboard::Selection::Image(file) => Ok(StagedClipboard {
+            owner,
+            text: None,
+            files: vec![file],
+        }),
+        crate::clipboard::Selection::Text(text) => {
+            if let Some(files) = nsh_core::platform::clipboard::files_from_text(&text) {
+                Ok(StagedClipboard {
+                    owner: owner.clone(),
+                    text: None,
+                    files: stage_files(owner, files).await?,
+                })
+            } else {
+                Ok(StagedClipboard {
+                    owner,
+                    text: Some(text),
+                    files: vec![],
+                })
+            }
+        }
+        crate::clipboard::Selection::Empty => Ok(StagedClipboard {
+            owner,
+            text: None,
+            files: vec![],
+        }),
+    }
+}
 
 /// A subscription to this Client's journal invalidations, not another Host call.
 #[class]
@@ -278,6 +384,38 @@ enum Selection {
 }
 
 impl UploadIntake {
+    pub(super) fn staged(scope: Arc<Scope>, file: Instance<StagedFile>) -> Result<Self, String> {
+        let snapshot = file
+            .with(|file| Arc::ptr_eq(&file.owner, &scope.owner).then(|| file.snapshot.clone()))
+            .ok_or("Selected file belongs to a different client")?;
+        let (sender, receiver) = mpsc::unbounded_channel();
+        let closed = CancellationToken::new();
+        let updates = Updates {
+            sender,
+            closed: closed.clone(),
+        };
+        let failed = updates.clone();
+        let id = Uuid::new_v4();
+        let name = snapshot.metadata()["name"]
+            .as_str()
+            .map(clean_name)
+            .unwrap_or_else(|| "Selected file".into());
+        let worker_name = name.clone();
+        let owner = scope.owner.clone();
+        let admitted = owner.spawn(async move {
+            match scope.client.local(&scope.owner).await {
+                Ok(client) => settle(scope, client, snapshot, id, &worker_name, &updates).await,
+                Err(error) => updates.emit(status(id, "failed", &worker_name, Some(&error))),
+            }
+        });
+        if let Err(error) = admitted {
+            failed.emit(status(id, "failed", &name, Some(&error)));
+        }
+        Ok(Self {
+            updates: Arc::new(Mutex::new(receiver)),
+            closed,
+        })
+    }
     pub(super) fn files(scope: Arc<Scope>, files: Vec<String>) -> Self {
         Self::begin(scope, Selection::Files(files))
     }
@@ -371,16 +509,11 @@ async fn intake(
     clipboard_id: Uuid,
 ) -> Result<(), String> {
     let client = scope.client.local(&scope.owner).await?;
-    let budget = scope.owner.budget.clone();
-    let _job = budget
-        .reserve(Kind::Job, 1)
-        .map_err(|error| error.to_string())?;
     let selected = match selection {
         Selection::Files(files) => crate::clipboard::Selection::Files(files),
         Selection::Clipboard => {
-            let budget = budget.clone();
             tokio::task::spawn_blocking(move || -> Result<crate::clipboard::Selection, String> {
-                match crate::clipboard::read(&budget)? {
+                match crate::clipboard::read()? {
                     crate::clipboard::Selection::Text(text) => Ok(
                         match nsh_core::platform::clipboard::files_from_text(&text) {
                             Some(files) => crate::clipboard::Selection::Files(files),
@@ -391,7 +524,7 @@ async fn intake(
                 }
             })
             .await
-            .map_err(|_| "Clipboard worker failed")??
+            .map_err(|error| format!("Clipboard worker failed: {error}"))??
         }
     };
     match selected {
@@ -419,17 +552,16 @@ async fn upload_files(scope: Arc<Scope>, client: Client, files: Vec<String>, upd
         let id = Uuid::new_v4();
         let name = display_name(&selected);
         updates.emit(status(id, "reading", &name, None));
-        let budget = scope.owner.budget.clone();
         let captured = tokio::task::spawn_blocking(move || {
             let paths = crate::attachment_paths::resolve(&[selected])?;
             let path = paths
                 .into_iter()
                 .next()
                 .ok_or("Selected file is unavailable")?;
-            read_selected(&path, &budget).map_err(|error| error.to_string())
+            read_selected(&path).map_err(|error| error.to_string())
         })
         .await
-        .map_err(|_| "Selected file worker failed".to_owned())
+        .map_err(|error| format!("Selected file worker failed: {error}"))
         .and_then(|result| result);
         match captured {
             Ok(snapshot) => {

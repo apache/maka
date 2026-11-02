@@ -1,7 +1,6 @@
 ---
 title: TextView
 description: "The TextView component: Markdown, HTML or a document of blocks shown with native text and views, styled part by part, for AI chat replies, articles and help pages."
-order: 26
 group: base
 demo: text-view
 ---
@@ -243,6 +242,7 @@ Some nodes are several parts, which apply in order: a level 2 heading is `headin
 | `listItemContent` | `ListItemContent` | The column of an item's blocks. |
 | `codeBlock` | `CodeBlock` | Code blocks: a bordered, rounded box of the code, with the header over it. |
 | `codeBlockHeader` | `CodeBlockHeader` | The row of a code block's actions (`codeBlockActions`), floating over its top right corner. |
+| `codeBlockLanguage` | `CodeBlockLanguage` | The language a code block names (```` ```rust ````), at the start of its header; empty when it names none. |
 | `codeBlockScroll` | `CodeBlockScroll` | The horizontal scroll view around a code block's code. |
 | `codeBlockCode` | `CodeBlockCode` | The code of a code block (monospace, as written). |
 | `code` | `Code` | Code in text (monospace, on a rounded background). |

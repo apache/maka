@@ -16,14 +16,14 @@
 <div id="app"></div>
 <div id="status">Loading…</div>
 <script type="module">
-  // Runs website demo `#<name>` (demos/<name>.nshc, compiled by `nsh build`:
-  // the site's runtime runs bytecode only).
+  // Runs website demo `#<name>` (demos/<name>.js, an ES module compiled by
+  // `nsh build`) on the browser's JavaScript engine.
   // `?theme=dark|light` overrides the system appearance.
   //
   // `?playground`: loads the runtime with the TSX compiler and runs the
   // source the embedding page posts: `{ type: "run", source }`. It posts
   // back `{ type: "ready" }` once loaded, `{ type: "compiled", error }`
-  // after each run (`error` null when it compiled), and `{ type:
+  // after each run (`error` null when it compiled and started), and `{ type:
   // "runtime-error", message }` / `{ type: "log", level, message }` while
   // the app runs.
   // `cargo xtask web` writes the website gallery's runtime file names
@@ -55,23 +55,24 @@
   let loading;
   const player = () => (loading ??= createPlayer(document.getElementById("app"), options).then((p) => (window.player = p)));
 
+  // Runs are asynchronous (the module loads in the app's realm): only the
+  // latest one reports, an earlier one a newer run replaced rejects.
+  let runs = 0;
+
   async function start() {
     const name = decodeURIComponent(location.hash.slice(1)) || "counter";
+    const run = ++runs;
     status.textContent = "Loading…";
     status.style.display = "";
     try {
-      const [p, code] = await Promise.all([
-        player(),
-        fetch(`demos/${encodeURIComponent(name)}.nshc`).then((r) => {
-          if (!r.ok) throw new Error(`no demo named “${name}”`);
-          return r.arrayBuffer();
-        }),
-      ]);
+      const p = await player();
+      if (run !== runs) return;
       status.style.display = "none";
-      // A demo built split loads its chunks from next to it.
-      p.run(code, { chunkBase: new URL("demos/", location.href).href });
+      await p.runModule(new URL(`demos/${encodeURIComponent(name)}.js`, location.href).href);
     } catch (err) {
+      if (run !== runs) return;
       status.textContent = String(err.message ?? err);
+      status.style.display = "";
     }
   }
 
@@ -84,11 +85,16 @@
       window.player.setDark(t === "dark");
     }
     if (playground && data.type === "run" && typeof data.source === "string") {
+      const run = ++runs;
       const p = await player();
       status.style.display = "none";
-      // The page runs code its visitors write, on its main thread: with the
-      // limits of an embedded app, a loop that never ends is cut off.
-      post({ type: "compiled", error: p.runSource(data.source, data.name ?? "App.tsx", { limits: "" }) });
+      try {
+        const error = await p.compileAndRun(data.source, data.name ?? "App.tsx");
+        if (run === runs) post({ type: "compiled", error });
+      } catch {
+        // It compiled and failed while it loaded: the player reported it
+        // (`onError`, a "runtime-error"), or a newer run replaced it.
+      }
     }
   });
 

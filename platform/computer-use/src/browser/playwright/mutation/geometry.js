@@ -19,7 +19,8 @@
 
 function frameGeometry(request) {
   if (!this.isConnected) throw new Error('Frame is not connected');
-  this.scrollIntoView({ ...request.alignment, behavior: 'instant' });
+  if (request.alignment !== null)
+    this.scrollIntoView({ ...request.alignment, behavior: 'instant' });
   const view = this.ownerDocument.defaultView;
   const style = view.getComputedStyle(this);
   const bounds = this.getBoundingClientRect();

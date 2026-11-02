@@ -1,6 +1,9 @@
 //! The OS the platform reports decides `platform` and which platform-only
 //! props (`ios={{…}}`, `android={{…}}`, `desktop={{…}}`, `web={{…}}`)
 //! apply; on the web, the idiom decides between mobile and desktop.
+//! `platform.desktop`, the `desktop` idiom, `select`'s `desktop` and
+//! `desktop={{…}}` all follow the one definition of desktop
+//! (`Environment::desktop`), whatever idiom the platform set.
 
 use std::time::Duration;
 
@@ -21,7 +24,7 @@ mount(
       desktop={{ accessibilityLabel: "desktop" }}
       web={{ accessibilityHint: "web" }}
     >
-      <Text>{`${platform.os} ${platform.idiom === "desktop"} ${platform.select({ ios: "i", mobile: "m", desktop: "d" })} ${platform.select({ native: "n", default: "-" })}`}</Text>
+      <Text>{`${platform.os} ${platform.idiom} ${platform.desktop} ${platform.catalyst} ${platform.select({ ios: "i", mobile: "m", desktop: "d" })} ${platform.select({ native: "n", default: "-" })}`}</Text>
     </View>
   ),
 );
@@ -85,6 +88,7 @@ fn start(
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -223,14 +227,46 @@ fn platform_props_and_select_follow_the_os() {
             "{os:?} {idiom:?}"
         );
     };
-    frame(Os::Ios, Idiom::Phone, "ios false i n", &["ios"]);
-    frame(Os::Android, Idiom::Phone, "android false m n", &["android"]);
-    frame(Os::MacOs, Idiom::Desktop, "macos true d n", &["desktop"]);
+    frame(Os::Ios, Idiom::Phone, "ios phone false false i n", &["ios"]);
+    frame(
+        Os::Android,
+        Idiom::Phone,
+        "android phone false false m n",
+        &["android"],
+    );
+    frame(
+        Os::MacOs,
+        Idiom::Desktop,
+        "macos desktop true false d n",
+        &["desktop"],
+    );
+    // A desktop OS is desktop whatever idiom it was given.
+    frame(
+        Os::Linux,
+        Idiom::Phone,
+        "linux desktop true false d n",
+        &["desktop"],
+    );
+    // UIKit's Mac idiom (Mac Catalyst) is mobile: the iOS backend. This
+    // build is not Catalyst's, so `catalyst` is false.
+    frame(Os::Ios, Idiom::Mac, "ios mac false false i n", &["ios"]);
+    // No mobile OS reports "desktop".
+    frame(
+        Os::Ios,
+        Idiom::Desktop,
+        "ios phone false false i n",
+        &["ios"],
+    );
     // `native` is not the web, as in React Native.
-    frame(Os::Web, Idiom::Phone, "web false m -", &["web"]);
-    frame(Os::Web, Idiom::Pad, "web false m -", &["web"]);
+    frame(Os::Web, Idiom::Phone, "web phone false false m -", &["web"]);
+    frame(Os::Web, Idiom::Pad, "web pad false false m -", &["web"]);
     // A desktop browser behaves as a desktop.
-    frame(Os::Web, Idiom::Desktop, "web true d -", &["desktop", "web"]);
+    frame(
+        Os::Web,
+        Idiom::Desktop,
+        "web desktop true false d -",
+        &["desktop", "web"],
+    );
 }
 
 #[test]

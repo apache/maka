@@ -5,7 +5,7 @@ import { windowSize } from "nsh";
 import { alpha, Badge, Button, Caption, colors, DemoPage, Figure, finish, hint, isDark, Meter, mono, Press, radius, Section, Segmented, Toggle as Switch, type Tone, toneColor, toneTint } from "../ui";
 
 /** A pointer's desktop: compact controls and no keyboard to scroll above. */
-const desk = platform.idiom === "desktop";
+const desk = platform.desktop;
 
 const tones: Tone[] = ["accent", "info", "warn", "up", "danger"];
 

@@ -1,7 +1,6 @@
 ---
 title: Tabs
-description: "Tab and Tabs: the tabs of a tab list and the list. Each tab owns presses, keyboard activation, the disabled state and its role and selected state for screen readers; the list is the set; the look, the value and the content each tab shows are the app's."
-order: 20.6
+description: "Tab and Tabs: the tabs of a tab list and the list. Each tab owns presses, keyboard activation, the disabled state and its role and selected state for screen readers; the list is the set, with an indicator that follows the selected tab natively; the look, the value and the content each tab shows are the app's."
 group: base
 demo: el-tabs
 ---
@@ -11,9 +10,11 @@ demo: el-tabs
 Tabs switch between the sections of one place: the overview and the activity of a project, the views of a document.
 Each `Tab` owns the behavior of one tab: presses, keyboard activation, the disabled state, and the tab role and its
 selected state for screen readers. A `Tabs` around them is the tab list, which screen readers announce as one set. The
-look is the app's: a tab has no colors, sizes, indicator or label of its own. Its children are the app's label, and
+look is the app's: a tab has no colors, sizes or label of its own. Its children are the app's label, and
 `selected:` classes on the tab, or `group-selected:` classes on what is inside it, follow its state. The content of
-each section is the app's too: it shows the one its value names, next to the list.
+each section is the app's too: it shows the one its value names, next to the list. The list's indicator, an
+underline or a pill the app styles, sits on the selected tab and travels to the next one natively
+([Indicator](#indicator)).
 
 ```rust tabs
 use nsh_base::{tab, tabs, theme};
@@ -29,7 +30,6 @@ fn sections() -> impl IntoElement {
             .rounded(move || theme().radius)
             .px_3()
             .py_2()
-            .selected_style(|s| s.bg(move || theme().background))
             .child(text(label).text_sm().text_color(move || {
                 if selected() { theme().foreground } else { theme().muted_foreground }
             }))
@@ -44,6 +44,12 @@ fn sections() -> impl IntoElement {
                 .p_1()
                 .rounded(move || theme().radius)
                 .bg(move || theme().muted)
+                .indicator_style(|s| {
+                    s.top_1()
+                        .bottom_1()
+                        .rounded(move || theme().radius)
+                        .bg(move || theme().background)
+                })
                 .child(item("overview", "Overview"))
                 .child(item("activity", "Activity")),
         )
@@ -67,14 +73,17 @@ function App() {
     <Tab
       selected={section() === value}
       onPress={() => section.set(value)}
-      class="group rounded-(--radius) px-3 py-2 selected:bg-background"
+      class="group rounded-(--radius) px-3 py-2"
     >
       <Text class="text-sm text-muted-foreground group-selected:text-foreground">{label}</Text>
     </Tab>
   );
   return (
     <View class="gap-4">
-      <Tabs class="flex-row self-start gap-1 rounded-(--radius-lg) bg-muted p-1">
+      <Tabs
+        class="flex-row self-start gap-1 rounded-(--radius-lg) bg-muted p-1"
+        indicatorClass="inset-y-1 rounded-(--radius) bg-background"
+      >
         {item("overview", "Overview")}
         {item("activity", "Activity")}
       </Tabs>
@@ -93,9 +102,10 @@ mount(App);
 `Tab` and `Tabs` come from [`nsh/base`](../modules/nsh-base.md), the `nsh-base` crate in Rust. The value is the
 app's: the list holds none. Each tab is told whether it is selected; a press reports `onPress`, the app sets its value
 and shows that section, and every tab shows the `selected` the app passes back. The list's corners and the tabs' are
-concentric: the list's padding (`p-1`) is the difference between `radius.lg` and `radius`. In Rust, `tab()` and
-`tabs()` make them, with a setter per prop (`.selected(..)`), a listener per event (`.on_press(..)`), the typed style
-methods and `.child(..)` for their content.
+concentric: the list's padding (`p-1`) is the difference between `radius.lg` and `radius`. The selected tab's fill is
+the list's indicator (`indicatorClass`, inside that padding: `inset-y-1`), which springs to the tab the app selects. In
+Rust, `tab()` and `tabs()` make them, with a setter per prop (`.selected(..)`), a listener per event (`.on_press(..)`),
+the typed style methods and `.child(..)` for their content.
 
 ## Props
 
@@ -115,6 +125,8 @@ methods and `.child(..)` for their content.
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
+| `indicatorClass` | `.indicator_class(..)` | `string` | none | The Tailwind classes of the indicator on the selected tab: its look and its place across the list (`bottom-0 h-0.5` for an underline in a row, `inset-y-1` for a pill). Along the list it spans the selected tab, inside its own margins on that axis. With `indicatorClass` or `indicatorStyle` the list has an indicator. |
+| `indicatorStyle` | `.indicator_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style of the indicator, over `indicatorClass`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The tabs of the list, and whatever the app lays out between them. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The list's layout and look: a column by default, `flex-row` for a row. |
 
@@ -132,12 +144,41 @@ A disabled tab reports nothing.
 | Part | Inside | Styled with | States |
 |---|---|---|---|
 | The list | | `Tabs`' `class`, `style` | |
+| The indicator | the list, behind the tabs | `indicatorClass`, `indicatorStyle` | on the selected tab |
 | The tab | the list | `Tab`'s `class`, `style` | `selected:`, `disabled:`, `active:`, `hover:`, `focus:` (or `selectedStyle`, `disabledStyle`, ...) |
 | The label | the tab | its own elements (`children`) | `group-selected:`, `group-disabled:` and the other `group-*:` variants with `group` on the tab's `class` |
 | The section's content | next to the list | the app's elements | the app's value |
 
 Show the selected tab through its own surface: a fill, a stronger label, a heavier weight (see
 [Design guides](../docs/design-guides.md#interaction-states)).
+
+## Indicator
+
+An underline under the selected tab, a pill behind it or a segmented control's raised segment is the list's
+indicator: a view the app styles with `indicatorClass` and `indicatorStyle`, drawn behind the tabs and absolutely
+positioned in the list. Native Shell places it on the selected tab after each layout. Along the list (a row's width,
+a column's height) it spans that tab, inside the indicator's own margins on that axis (`mx-3` for an underline
+shorter than its tab); across the list its classes place it:
+
+```tsx
+// An underline at the bottom of a row of tabs.
+<Tabs class="flex-row gap-4 border-b border-border" indicatorClass="bottom-0 h-0.5 bg-foreground">
+  {item("overview", "Overview")}
+  {item("activity", "Activity")}
+</Tabs>
+
+// A pill behind the selected tab, inside the list's padding.
+<Tabs class="flex-row self-start gap-1 rounded-(--radius-lg) bg-muted p-1" indicatorClass="inset-y-1 rounded-(--radius) bg-background shadow-sm">
+  {item("overview", "Overview")}
+  {item("activity", "Activity")}
+</Tabs>
+```
+
+When the app selects another tab, the indicator springs there natively, as GPUI Kit's tab bar indicator does; with
+reduced motion it moves at once. While no tab is selected it is hidden; while several are, it is on the first. A
+resize or a change of a tab's width moves it in the same frame as the tabs. The
+indicator needs no layout events and no code of the app's: the selected tab is the one whose `selected` is true. In a
+list that scrolls, the scroll view goes around the `Tabs`, and the indicator scrolls with the tabs.
 
 ## Disabled
 
@@ -164,6 +205,7 @@ A disabled tab takes no presses, and screen readers announce it as dimmed. Its `
 - `disabled` is announced as the platform announces it (VoiceOver, TalkBack, UI Automation, the browser's accessibility
   tree).
 - On macOS and the web the list is one stop of the keyboard focus, and the arrow keys move between its tabs (below).
+- The indicator is hidden from screen readers and takes no focus: the tabs alone are the list's elements.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.
 
@@ -189,4 +231,5 @@ class. `focus:` styles show where the focus is. A `Tab` outside a `Tabs` is a st
 - iOS, Android and Mac Catalyst: a press is a tap that ends on the tab, its label included.
 - Desktops (macOS, Windows, Linux, GPUI) and the web: a press is a click. On macOS and the web, Space and Return also
   press the tab that has the keyboard focus, and the arrow keys, Home and End move it ([Keyboard](#keyboard)).
-- Every platform draws what the app styles: the tabs, the selected one's surface and the sections' content.
+- Every platform draws what the app styles: the tabs, the selected one's surface, the indicator and the sections'
+  content. The indicator's travel is a native layout animation on every platform.

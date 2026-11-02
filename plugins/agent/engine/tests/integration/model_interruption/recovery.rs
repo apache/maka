@@ -236,7 +236,7 @@ async fn send_and_idle_faults_recover_the_original_request_but_opaque_effects_an
                 result.unwrap();
                 assert_eq!(attempts.len(), 2);
                 assert_eq!(attempts[0], attempts[1], "no accepted progress preserves the frozen source");
-                assert!(prefix.events.iter().any(|event| matches!(&event.event.fact, Fact::ModelCompleted { output, .. } if output.parts.iter().filter_map(|part| match part { maka_agent_facts::model::ModelPart::Text { text_kind: maka_agent_facts::model::TextKind::Text, text, .. } => Some(text.as_str()), _ => None }).collect::<Vec<_>>() == ["recovered answer"])));
+                assert!(prefix.events.iter().any(|event| matches!(&event.event.fact, Fact::ModelCompleted { output, .. } if crate::support::model_records::parts(output, &prefix.events).filter_map(|part| match part { maka_agent_facts::model::ModelPart::Text { text_kind: maka_agent_facts::model::TextKind::Text, text, .. } => Some(text.chunks().collect::<String>()), _ => None }).collect::<Vec<_>>() == ["recovered answer"])));
                 assert!(matches!(&prefix.events.last().unwrap().event.fact, Fact::InvocationEnded { outcome: InvocationOutcome::Completed }));
             } else {
                 assert!(result.is_err());

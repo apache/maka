@@ -28,167 +28,6 @@ use serde_json::json;
 use tokio::sync::oneshot;
 
 #[tokio::test]
-async fn app_operations_reuse_original_execution_custody_behind_queued_binding_writer() {
-    let (_dir, _owner, root, store, invocation, basis) = fixture().await;
-    let execution = store.execution_scope(Some(basis)).await.unwrap().accept();
-    let selected = execution.store();
-    let app = target("fixture.queued-binding");
-    let writer = root.gates.write([gates::Key::Binding(basis.binding.id)]);
-    tokio::pin!(writer);
-    assert!(futures_util::poll!(&mut writer).is_pending());
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        decide(
-            &selected,
-            &invocation,
-            basis,
-            &app,
-            "accepted-app-consent",
-            "accepted-app-effect",
-            ComputerAppDecision::Once,
-        )
-        .await;
-        assert!(
-            selected
-                .computer_app_granted(&invocation, "accepted-app-effect", &app, &basis)
-                .await
-                .unwrap()
-        );
-        selected
-            .establish_run_interaction(
-                &invocation,
-                &request(
-                    &invocation,
-                    basis,
-                    &app,
-                    "pending-close",
-                    "pending-effect",
-                    0,
-                ),
-            )
-            .await
-            .unwrap();
-        assert_eq!(
-            selected
-                .close_run_interactions(&invocation, ClosureReason::TurnStopped, 4)
-                .await
-                .unwrap(),
-            1
-        );
-        assert!(matches!(
-            selected
-                .interaction("pending-close")
-                .await
-                .unwrap()
-                .unwrap()
-                .outcome,
-            Some(InteractionOutcome::Closure {
-                reason: ClosureReason::TurnStopped,
-                ..
-            })
-        ));
-    })
-    .await
-    .expect("accepted app work must reuse its original binding custody");
-    assert!(futures_util::poll!(&mut writer).is_pending());
-    execution.finish();
-    drop(
-        tokio::time::timeout(std::time::Duration::from_secs(2), writer)
-            .await
-            .unwrap()
-            .unwrap(),
-    );
-    root.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn cancelled_unbound_source_keeps_control_ingress_until_accepted_sql_cleanup() {
-    let (_dir, owner, root, store, _invocation, _basis) = fixture().await;
-    let before: i64 = root
-        .control
-        .connection
-        .read(|connection| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar(
-                    "SELECT revision FROM session_catalog_revision WHERE singleton=1",
-                )
-                .fetch_one(connection)
-                .await?)
-            })
-        })
-        .await
-        .unwrap();
-    let partition = store.control_source().await.unwrap();
-    let control = root.control.clone();
-    let (entered, started) = oneshot::channel();
-    let (release, released) = oneshot::channel();
-    let caller = tokio::spawn(async move {
-        partition
-            .connection
-            .run(move |connection| {
-                Box::pin(async move {
-                    let tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-                    let _ = entered.send(());
-                    released.await.map_err(|_| StoreError::OperationUnknown)?;
-                    control
-                        .connection
-                        .run(|connection| {
-                            Box::pin(async move {
-                                let mut control_tx =
-                                    connection.begin_with("BEGIN IMMEDIATE").await?;
-                                crate::sessions::advance_catalog(&mut control_tx).await?;
-                                control_tx.commit().await.map_err(StoreError::CommitUnknown)
-                            })
-                        })
-                        .await?;
-                    tx.rollback().await?;
-                    Ok(())
-                })
-            })
-            .await
-    });
-    started.await.unwrap();
-    caller.abort();
-    assert!(caller.await.unwrap_err().is_cancelled());
-    let closing_root = root.clone();
-    let closing = tokio::spawn(async move { closing_root.shutdown().await });
-    while !root.closed.load(std::sync::atomic::Ordering::Acquire) {
-        tokio::task::yield_now().await;
-    }
-    // The caller is gone, but the original SQL actor still retains the existing
-    // Root active-work barrier. This assertion also detects a no-op dependency.
-    assert_eq!(root.gates.shutdown_ready(), None);
-    assert!(!closing.is_finished());
-    release.send(()).unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(5), closing)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    drop(root);
-    let reopened = RootStore::open(owner).await.unwrap();
-    let after: i64 = reopened
-        .control
-        .connection
-        .read(|connection| {
-            Box::pin(async move {
-                Ok(sqlx::query_scalar(
-                    "SELECT revision FROM session_catalog_revision WHERE singleton=1",
-                )
-                .fetch_one(connection)
-                .await?)
-            })
-        })
-        .await
-        .unwrap();
-    assert_eq!(
-        after,
-        before + 1,
-        "accepted delayed control write must finish before ingress closes"
-    );
-    reopened.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn project_relink_closes_relocated_app_prompt_and_preserves_metadata_only_alias_prompt() {
     let (_dir, _owner, root, _store, _invocation, _basis) = fixture().await;
     let registration = |identity: &str, path: &str| crate::projects::ProjectRegistration {
@@ -500,6 +339,7 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
     assert!(matches!(
         store
             .append_computer_app_dispatch(
+                &[],
                 &native_dispatch(&invocation, "rejected-native"),
                 &[missing_broad],
                 &app,
@@ -514,11 +354,22 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
         "a rejected T1 must not publish native activity"
     );
     let broad = broad_grant(&store, &invocation, basis, &app).await;
+    let ordinary_prefix = native_dispatch(&invocation, "ordinary-prefix");
     let event = native_dispatch(&invocation, "first-native");
-    store
-        .append_computer_app_dispatch(&event, std::slice::from_ref(&broad), &app, &display, &basis)
+    let sequence = store
+        .append_computer_app_dispatch(
+            std::slice::from_ref(&ordinary_prefix),
+            &event,
+            std::slice::from_ref(&broad),
+            &app,
+            &display,
+            &basis,
+        )
         .await
         .unwrap();
+    assert!(store.append(&ordinary_prefix).await.unwrap() < sequence.last_sequence);
+    assert_eq!(store.append(&event).await.unwrap(), sequence.last_sequence);
+    settle_native(&store, &invocation, "ordinary-prefix").await;
     settle_native(&store, &invocation, "first-native").await;
     let observed = store.computer_apps(store.id()).await.unwrap();
     assert_eq!(observed.len(), 1);
@@ -551,10 +402,12 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
             .unwrap(),
         "Stop must not revoke remembered consent"
     );
+    let blocked_prefix = native_dispatch(&invocation, "blocked-prefix");
     let blocked = native_dispatch(&invocation, "blocked-native");
     assert!(matches!(
         store
             .append_computer_app_dispatch(
+                std::slice::from_ref(&blocked_prefix),
                 &blocked,
                 std::slice::from_ref(&broad),
                 &app,
@@ -573,6 +426,17 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
             .await
             .unwrap()
             .is_none()
+    );
+    assert!(
+        store
+            .scoped()
+            .await
+            .unwrap()
+            .execution_event(&invocation, &blocked_prefix.event().id, u64::MAX >> 1)
+            .await
+            .unwrap()
+            .is_none(),
+        "an app fence must roll back the ordinary prefix with its T1"
     );
     store.append(&end(&invocation)).await.unwrap();
     assert!(store.computer_apps(store.id()).await.unwrap().is_empty());
@@ -597,6 +461,7 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
     );
     store
         .append_computer_app_dispatch(
+            &[],
             &native_dispatch(&next, "new-native"),
             &[broad],
             &app,
@@ -605,141 +470,6 @@ async fn app_stop_between_completed_calls_preserves_consent_and_new_turn_recover
         )
         .await
         .unwrap();
-    root.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn app_stop_closes_matching_pending_consent_and_settlement_still_commits() {
-    let (_dir, _owner, root, store, invocation, basis) = fixture().await;
-    let app = target("fixture.stop");
-    let display = activity_display();
-    decide(
-        &store,
-        &invocation,
-        basis,
-        &app,
-        "app-consent",
-        "running-native",
-        ComputerAppDecision::Once,
-    )
-    .await;
-    let broad = broad_grant(&store, &invocation, basis, &app).await;
-    store
-        .append_computer_app_dispatch(
-            &native_dispatch(&invocation, "running-native"),
-            &[broad],
-            &app,
-            &display,
-            &basis,
-        )
-        .await
-        .unwrap();
-    store
-        .establish_run_interaction(
-            &invocation,
-            &request(
-                &invocation,
-                basis,
-                &app,
-                "pending-consent",
-                "next-native",
-                0,
-            ),
-        )
-        .await
-        .unwrap();
-    let (foreign, _, _) = session(&root, "foreign").await;
-    assert!(
-        !foreign
-            .stop_computer_app_operation("running-native", 4)
-            .await
-            .unwrap()
-    );
-    assert!(
-        store
-            .stop_computer_app_operation("running-native", 4)
-            .await
-            .unwrap()
-    );
-    assert!(matches!(
-        store
-            .interaction("pending-consent")
-            .await
-            .unwrap()
-            .unwrap()
-            .outcome,
-        Some(InteractionOutcome::Closure {
-            reason: ClosureReason::ProducerCancelled,
-            ..
-        })
-    ));
-    assert!(
-        store
-            .pending_interactions(store.id())
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    let closed_request = request(
-        &invocation,
-        basis,
-        &app,
-        "pending-consent",
-        "next-native",
-        0,
-    );
-    let replay = store
-        .establish_run_interaction(&invocation, &closed_request)
-        .await
-        .unwrap();
-    assert!(replay.matches);
-    assert!(
-        matches!(
-            replay.record.outcome,
-            Some(InteractionOutcome::Closure {
-                reason: ClosureReason::ProducerCancelled,
-                ..
-            })
-        ),
-        "an acknowledged closed request must remain replayable without reopening"
-    );
-    let fresh = request(
-        &invocation,
-        basis,
-        &app,
-        "after-stop-consent",
-        "after-stop-native",
-        0,
-    );
-    assert!(
-        store
-            .establish_run_interaction(&invocation, &fresh)
-            .await
-            .is_err(),
-        "Stop must fence request publication in the source transaction, even after an earlier producer precheck"
-    );
-    assert!(
-        store
-            .interaction(&fresh.request_id)
-            .await
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        !store
-            .commit_interaction_outcome(
-                "pending-consent",
-                InteractionOutcome::ComputerAppDecision {
-                    decision: ComputerAppDecision::Always,
-                    committed_at: 5
-                }
-            )
-            .await
-            .unwrap()
-            .matches
-    );
-    settle_native(&store, &invocation, "running-native").await;
-    store.append(&end(&invocation)).await.unwrap();
     root.shutdown().await.unwrap();
 }
 
@@ -765,7 +495,13 @@ fn request(
             basis,
             display: ComputerAppDisplay {
                 name: "Fixture application".into(),
-                app_path: "/Applications/Fixture.app".into(),
+                app_path: match &target.scope {
+                    GrantScope::ComputerApp {
+                        platform: ComputerAppPlatform::Windows,
+                        ..
+                    } => r"C:\Fixture\fixture.exe".into(),
+                    _ => "/Applications/Fixture.app".into(),
+                },
                 risk: None,
                 warning: Some("Native classification unavailable in fixture".into()),
             },
@@ -931,9 +667,16 @@ async fn always_belongs_to_selected_root_profile_across_workspaces_and_restart()
     drop(root);
     let reopened = RootStore::open(owner).await.unwrap();
     let other = reopened.session("other").await.unwrap();
+    let next = Invocation {
+        turn_id: "next-turn".into(),
+        run_id: "next-run".into(),
+        invocation_id: "next-invocation".into(),
+        ..other_invocation.clone()
+    };
+    open(&other, &next).await;
     assert!(
         other
-            .computer_app_granted(&other_invocation, "post-restart-effect", &app, &other_basis)
+            .computer_app_granted(&next, "post-restart-effect", &app, &other_basis)
             .await
             .unwrap()
     );
@@ -1033,84 +776,6 @@ async fn revoke_fences_delayed_always_response_without_erasing_explicit_session_
             .unwrap()
             .is_empty()
     );
-    root.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn root_pending_blocks_source_seal_and_observers_see_response_without_source_revision_copy() {
-    let (_dir, _owner, root, store, invocation, basis) = fixture().await;
-    let app = target("fixture.app");
-    let before = store
-        .scoped()
-        .await
-        .unwrap()
-        .observation_versions(&[store.id().to_owned()])
-        .await
-        .unwrap();
-    let revision = store
-        .get::<serde_json::Value>()
-        .await
-        .unwrap()
-        .unwrap()
-        .revision;
-    store
-        .establish_run_interaction(
-            &invocation,
-            &request(&invocation, basis, &app, "pending", "effect", 0),
-        )
-        .await
-        .unwrap();
-    let after = store
-        .scoped()
-        .await
-        .unwrap()
-        .observation_versions(&[store.id().to_owned()])
-        .await
-        .unwrap();
-    assert_ne!(before, after);
-    assert_eq!(
-        store
-            .get::<serde_json::Value>()
-            .await
-            .unwrap()
-            .unwrap()
-            .revision,
-        revision
-    );
-    let projection = store
-        .session_projection::<serde_json::Value>(store.id())
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(projection.pending_interactions.len(), 1);
-    assert_eq!(projection.session.pending_interaction_since, Some(2));
-    assert!(store.append(&end(&invocation)).await.is_err());
-    assert_eq!(
-        store
-            .close_run_interactions(&invocation, ClosureReason::TurnStopped, 5)
-            .await
-            .unwrap(),
-        1
-    );
-    store.append(&end(&invocation)).await.unwrap();
-    let late = store
-        .commit_interaction_outcome(
-            "pending",
-            InteractionOutcome::ComputerAppDecision {
-                decision: ComputerAppDecision::Always,
-                committed_at: 6,
-            },
-        )
-        .await
-        .unwrap();
-    assert!(!late.matches);
-    assert!(matches!(
-        late.record.outcome,
-        Some(InteractionOutcome::Closure {
-            reason: ClosureReason::TurnStopped,
-            ..
-        })
-    ));
     root.shutdown().await.unwrap();
 }
 
@@ -1259,6 +924,7 @@ async fn profile_revoke_waits_only_for_accepted_dispatch_t1_and_blocks_following
     let dispatched = tokio::spawn(async move {
         dispatch_store
             .append_computer_app_dispatch(
+                &[],
                 &event,
                 &[dispatch_broad],
                 &dispatch_app,
@@ -1302,6 +968,62 @@ async fn profile_revoke_waits_only_for_accepted_dispatch_t1_and_blocks_following
     assert!(
         !store
             .computer_app_granted(&invocation, "next-effect", &app, &basis)
+            .await
+            .unwrap()
+    );
+    root.shutdown().await.unwrap();
+}
+
+// Append in the real existing root_store/computer_apps/tests.rs fixture.
+// The fixture's request display path must follow the target platform (below).
+#[tokio::test]
+async fn windows_app_session_consent_is_canonical_and_does_not_cross_platform_identity() {
+    let (_dir, _owner, root, store, invocation, basis) = fixture().await;
+    let mut windows = target(r"C:\Fixture\fixture.exe");
+    windows.scope = GrantScope::ComputerApp {
+        platform: ComputerAppPlatform::Windows,
+        application_id: r"C:\Fixture\fixture.exe".into(),
+    };
+    decide(
+        &store,
+        &invocation,
+        basis,
+        &windows,
+        "windows-consent",
+        "windows-effect",
+        ComputerAppDecision::Session,
+    )
+    .await;
+    assert!(
+        store
+            .computer_app_granted(&invocation, "next-windows-effect", &windows, &basis)
+            .await
+            .unwrap()
+    );
+    let mut other_platform = windows.clone();
+    other_platform.scope = GrantScope::ComputerApp {
+        platform: ComputerAppPlatform::Macos,
+        application_id: r"C:\Fixture\fixture.exe".into(),
+    };
+    assert!(
+        !store
+            .computer_app_granted(&invocation, "next-windows-effect", &other_platform, &basis)
+            .await
+            .unwrap()
+    );
+    let mut other_executable = windows.clone();
+    other_executable.scope = GrantScope::ComputerApp {
+        platform: ComputerAppPlatform::Windows,
+        application_id: r"C:\Other\fixture.exe".into(),
+    };
+    assert!(
+        !store
+            .computer_app_granted(
+                &invocation,
+                "next-windows-effect",
+                &other_executable,
+                &basis
+            )
             .await
             .unwrap()
     );

@@ -23,6 +23,7 @@ function App() {
         <Row label="platform.os" value={platform.os} />
         <Row label="platform.version" value={platform.version} />
         <Row label="platform.idiom" value={platform.idiom} />
+        <Row label="platform.desktop" value={String(platform.desktop)} />
         <Row label="Locale" value={new Intl.DateTimeFormat().resolvedOptions().locale} />
         <Row label="pixelRatio()" value={String(pixelRatio())} />
       </View>

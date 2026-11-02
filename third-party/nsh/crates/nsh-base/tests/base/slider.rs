@@ -5,9 +5,11 @@
 //! increment and decrement step it; a disabled slider takes none of it; the
 //! app owns a controlled value, and an uncontrolled slider keeps its own.
 
+use std::sync::{Arc, Mutex};
+
 use nsh_base::{SliderValue, slider};
 use nsh_core::{
-    EventKind, EventPayload, PayloadValue, Size,
+    EventKind, EventPayload, MountItem, PayloadValue, Size,
     element::Root,
     geometry::{Axis, point},
     platform::Os,
@@ -264,4 +266,75 @@ fn an_uncontrolled_slider_keeps_its_own_value() {
     app.press_key("tab").unwrap();
     app.press_key("right").unwrap();
     app.wait_for("text:Ends 60, 70, 75").unwrap();
+}
+
+/// What the thumb `Volume` was sent: where its frame starts along the
+/// track, and the values screen readers were given, in order.
+#[derive(Default)]
+struct Sent {
+    lefts: Vec<f32>,
+    said: Vec<Option<f32>>,
+}
+
+/// The harness of `props`, recording what its thumb is sent.
+fn start_watching(props: HarnessProps) -> (Headless, Arc<Mutex<Sent>>) {
+    let mut app = start(props);
+    let thumb = app
+        .screen()
+        .press_target("label:Volume")
+        .unwrap()
+        .expect("a thumb");
+    let sent = Arc::new(Mutex::new(Sent::default()));
+    let into = sent.clone();
+    app.observe(move |_, batch| {
+        let mut sent = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::Frame { id, frame } if *id == thumb => sent.lefts.push(frame.origin.x.0),
+                MountItem::ViewProps { id, props } if *id == thumb => sent
+                    .said
+                    .push(props.accessibility.value.as_ref().and_then(|v| v.now)),
+                _ => {}
+            }
+        }
+    });
+    (app, sent)
+}
+
+#[test]
+fn a_drag_moves_the_thumb_natively_before_the_app_answers() {
+    // An app that keeps 40: the thumb still follows the pointer during the
+    // drag (no wait for `onChange` to come back as `value`), and goes back
+    // to the app's value when the drag ends.
+    let mut props = controlled(40.0);
+    props.refusing = true;
+    let (mut app, sent) = start_watching(props);
+    // 40 points of 200 from 40%: 60%, 120 points along the indicator.
+    app.drag_and_hold("label:Volume", point(px(40.0), px(0.0)))
+        .unwrap();
+    app.wait_for("text:Changes 45, 50, 55, 60").unwrap();
+    assert_eq!(sent.lock().unwrap().lefts.last(), Some(&120.0));
+    assert!(app.shows("Value 40"));
+    app.drop_held().unwrap();
+    app.wait_for("text:Ends 60").unwrap();
+    assert_eq!(sent.lock().unwrap().lefts.last(), Some(&80.0));
+}
+
+#[test]
+fn screen_readers_hear_a_drags_value_at_its_end() {
+    let (mut app, sent) = start_watching(controlled(40.0));
+    app.drag_and_hold("label:Volume", point(px(40.0), px(0.0)))
+        .unwrap();
+    app.wait_for("text:Value 60").unwrap();
+    // No screen reader runs: the moves send the thumb no value.
+    assert!(
+        sent.lock()
+            .unwrap()
+            .said
+            .iter()
+            .all(|now| *now == Some(40.0)),
+    );
+    app.drop_held().unwrap();
+    app.wait_for("text:Ends 60").unwrap();
+    assert_eq!(sent.lock().unwrap().said.last(), Some(&Some(60.0)));
 }

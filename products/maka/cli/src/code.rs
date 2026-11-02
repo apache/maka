@@ -40,7 +40,6 @@ use maka_code_runtime::{
     CellAbort, CellContext, CellDiagnosticKind, CellLimits, CellResult, CellStore, ToolMetadata,
 };
 use maka_event_log::root::{RootNamespaces, RootOwner};
-use maka_event_log::root_store::RootStore;
 use maka_fs_tools::{MutationExecutor, ReadExecutor, ReadScope, WriteCoordinator, WriteScope};
 use maka_js_runtime::CodeExecutor;
 use maka_sandbox::{
@@ -132,8 +131,7 @@ pub(super) async fn run(args: Args) -> Result<(), maka_host_runtime::HostError> 
     } else {
         RootOwner::create(&args.root, &namespaces)?
     };
-    let root = Arc::new(RootStore::open(Arc::new(owner)).await?);
-    maka_host_runtime::recovery::recover(&root).await?;
+    let root = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
     let (mut sandbox, _) = maka_fs_tools::workspace::permissions::resolve(sandbox_mode, &cwd)?;
     if let Sandbox::Managed { filesystem, .. } = &mut sandbox {
         for path in [&args.root, &namespaces.ownership, &namespaces.control] {

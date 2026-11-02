@@ -1715,6 +1715,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "clipboard-rs"
+version = "0.3.5"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
+dependencies = [
+ "clipboard-win",
+ "image",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "objc2-ui-kit",
+ "windows 0.59.0",
+ "wl-clipboard-rs",
+ "x11rb",
+]
+
+[[package]]
 name = "clipboard-win"
 version = "5.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2422,7 +2438,7 @@ dependencies = [
 [[package]]
 name = "cua-cursor-motion"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "serde",
 ]
@@ -2430,7 +2446,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-contract"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "schemars 1.2.3",
  "serde",
@@ -2441,7 +2457,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-core"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2481,7 +2497,7 @@ dependencies = [
 [[package]]
 name = "cua-driver-sdk"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "async-trait",
  "core-foundation 0.10.1",
@@ -2510,7 +2526,7 @@ checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 [[package]]
 name = "cursor-overlay"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "anyhow",
  "cua-cursor-motion",
@@ -2986,6 +3002,7 @@ checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.2",
  "block2 0.6.2",
+ "libc",
  "objc2 0.6.5",
 ]
 
@@ -7210,6 +7227,7 @@ dependencies = [
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
+ "maka-event-log",
  "maka-host-runtime",
  "maka-plugin-core",
  "maka-sandbox",
@@ -7294,9 +7312,15 @@ name = "maka-agent-engine"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
+ "crc32fast",
  "fastrand",
  "futures-util",
+ "gif",
  "hex",
+ "image",
+ "image-webp",
+ "imagesize 0.15.0",
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
@@ -7305,8 +7329,11 @@ dependencies = [
  "maka-model",
  "maka-plugin-core",
  "maka-presentation",
+ "maka-provider-protocol",
  "maka-session-state",
  "maka-tools",
+ "miniz_oxide 0.9.1",
+ "png 0.18.1",
  "rusqlite",
  "serde",
  "serde_json",
@@ -7316,6 +7343,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "tracing",
  "uuid",
 ]
 
@@ -7324,16 +7352,20 @@ name = "maka-agent-facts"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
  "hex",
  "maka-plugin-core",
+ "maka-provider-protocol",
  "maka-sandbox",
  "regress",
+ "ropey",
  "ryu-js",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "thiserror 2.0.21",
+ "tokio",
  "tokio-util",
  "url",
  "uuid",
@@ -7344,6 +7376,7 @@ name = "maka-agent-native"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "cap-fs-ext",
  "cap-std",
  "futures-util",
  "hex",
@@ -7517,6 +7550,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-util",
+ "tracing",
  "uuid",
  "windows-sys 0.61.2",
 ]
@@ -7532,17 +7566,17 @@ dependencies = [
  "crossterm",
  "flate2",
  "futures-util",
+ "gpui-fast",
+ "gpui-fast-wgpu",
  "hex",
  "http-body-util",
  "hyper",
  "hyper-util",
- "image",
  "libc",
  "log",
  "maka-acp",
  "maka-agent-api",
  "maka-agent-facts",
- "maka-agent-native",
  "maka-agent-ports",
  "maka-app-client",
  "maka-capabilities",
@@ -7550,7 +7584,6 @@ dependencies = [
  "maka-computer-use",
  "maka-config",
  "maka-event-log",
- "maka-files-native",
  "maka-fs-tools",
  "maka-host-js",
  "maka-host-runtime",
@@ -7559,7 +7592,6 @@ dependencies = [
  "maka-plugin-core",
  "maka-process",
  "maka-product-native",
- "maka-providers",
  "maka-sandbox",
  "maka-schema",
  "maka-settings-native",
@@ -7567,18 +7599,17 @@ dependencies = [
  "maka-terminal-shell",
  "maka-transport",
  "maka-ui-build",
- "maka-ui-support",
  "maka-workbench",
  "maka-workspace-api",
  "nsh-base",
  "nsh-bundler",
  "nsh-core",
  "nsh-engine",
+ "nsh-gpui-terminal",
+ "nsh-platform-gpui",
  "nsh-platform-tui",
  "ratatui",
  "reqwest",
- "rusqlite",
- "schemars 1.2.3",
  "semver",
  "serde",
  "serde_json",
@@ -7628,12 +7659,13 @@ dependencies = [
  "maka-plugin-core",
  "maka-sandbox",
  "maka-workspace-api",
+ "maka-workspace-support",
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
  "tokio",
- "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "tracing",
  "url",
  "uuid",
 ]
@@ -7652,13 +7684,14 @@ dependencies = [
  "futures-util",
  "hex",
  "image",
+ "imagesize 0.15.0",
  "libc",
- "maka-agent-authority",
  "maka-agent-facts",
  "maka-capabilities",
  "maka-code-runtime",
- "maka-event-log",
  "maka-js-runtime",
+ "maka-plugin-core",
+ "markdown",
  "objc2 0.6.5",
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
@@ -7671,6 +7704,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
+ "sysinfo",
  "tempfile",
  "tiny-skia 0.11.4",
  "tiny-skia 0.12.0",
@@ -7719,6 +7753,7 @@ dependencies = [
  "maka-workbench",
  "nsh-engine",
  "nsh-platform-gpui",
+ "nsh-platform-macos",
  "nsh-platform-windows",
  "serde",
  "serde_json",
@@ -7740,6 +7775,7 @@ dependencies = [
  "maka-plugin-core",
  "maka-presentation",
  "maka-sandbox",
+ "postcard",
  "regex",
  "rusqlite",
  "schemars 1.2.3",
@@ -7853,7 +7889,6 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "uuid",
 ]
 
@@ -7986,6 +8021,7 @@ version = "0.2.0"
 dependencies = [
  "futures-util",
  "hex",
+ "jsonschema 0.60.1",
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
@@ -8072,6 +8108,7 @@ name = "maka-model"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
+ "bytes",
  "futures-util",
  "hyper",
  "jiff",
@@ -8090,6 +8127,7 @@ dependencies = [
  "tokio-rustls",
  "tokio-tungstenite 0.30.0",
  "tokio-util",
+ "tracing",
  "uuid",
 ]
 
@@ -8454,8 +8492,6 @@ dependencies = [
 name = "maka-skills"
 version = "0.2.0"
 dependencies = [
- "cap-fs-ext",
- "cap-std",
  "futures-util",
  "libc",
  "maka-agent-facts",
@@ -8493,27 +8529,30 @@ dependencies = [
  "cap-std",
  "futures-util",
  "jsonschema 0.60.1",
+ "libc",
  "maka-agent-api",
  "maka-agent-facts",
  "maka-capabilities",
+ "maka-config",
  "maka-event-log",
  "maka-fs-tools",
- "maka-host-js",
  "maka-host-runtime",
- "maka-packages",
+ "maka-network",
  "maka-plugin-core",
+ "maka-process",
  "maka-sandbox",
  "maka-skills",
  "maka-skills-api",
- "maka-ui-support",
  "maka-workspace-support",
- "schemars 1.2.3",
+ "percent-encoding",
  "serde",
  "serde_json",
  "tempfile",
  "tokio",
  "tokio-util",
+ "url",
  "uuid",
+ "which 8.0.6",
 ]
 
 [[package]]
@@ -8622,10 +8661,12 @@ dependencies = [
  "libc",
  "maka-capabilities",
  "maka-plugin-core",
+ "memmap2",
  "serde",
  "serde_json",
  "sha2 0.11.1",
  "sys-locale",
+ "tempfile",
  "thiserror 2.0.21",
 ]
 
@@ -8677,7 +8718,7 @@ name = "maka-workbench"
 version = "0.2.0"
 dependencies = [
  "base64 0.23.1",
- "clipboard-rs",
+ "clipboard-rs 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "clipboard-win",
  "image",
  "maka-agent-api",
@@ -8698,6 +8739,7 @@ dependencies = [
  "nsh-core",
  "nsh-engine",
  "nsh-js",
+ "nsh-testing",
  "open",
  "percent-encoding",
  "serde",
@@ -8706,6 +8748,7 @@ dependencies = [
  "tokio",
  "tokio-util",
  "url",
+ "usvg",
  "uuid",
 ]
 
@@ -9277,7 +9320,7 @@ checksum = "a5eb86a92577833b75522336f210c49d9ebd7dd55a44d80a92e68c668a75f27c"
 [[package]]
 name = "nom"
 version = "1.2.4"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 
 [[package]]
 name = "nom"
@@ -9362,6 +9405,7 @@ dependencies = [
 name = "nsh-base"
 version = "0.3.0"
 dependencies = [
+ "chrono",
  "html5ever 0.27.0",
  "imara-diff",
  "log",
@@ -9431,6 +9475,7 @@ dependencies = [
  "tokio-tungstenite 0.28.0",
  "unicode-linebreak",
  "unicode-segmentation",
+ "ureq",
  "url",
  "webpki-roots 1.0.11",
  "windows-sys 0.61.2",
@@ -9542,10 +9587,34 @@ dependencies = [
  "ttf-parser",
  "unicode-bidi",
  "unicode-linebreak",
- "ureq",
  "windows-sys 0.61.2",
  "x11rb",
  "zbus",
+]
+
+[[package]]
+name = "nsh-platform-macos"
+version = "0.3.0"
+dependencies = [
+ "block2 0.6.2",
+ "crossbeam-channel",
+ "dispatch2",
+ "libc",
+ "log",
+ "nsh-base",
+ "nsh-core",
+ "nsh-engine",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "objc2-image-io",
+ "objc2-io-kit",
+ "objc2-quartz-core 0.3.2",
+ "rustc-hash 2.1.3",
+ "serde_json",
 ]
 
 [[package]]
@@ -9592,12 +9661,22 @@ dependencies = [
  "rustc-hash 2.1.3",
  "serde_json",
  "ttf-parser",
- "ureq",
  "url",
  "webview2-com",
  "windows 0.62.2",
  "windows-core 0.62.2",
  "windows-numerics 0.3.1",
+]
+
+[[package]]
+name = "nsh-testing"
+version = "0.3.0"
+dependencies = [
+ "crossbeam-channel",
+ "log",
+ "nsh-core",
+ "nsh-engine",
+ "regex",
 ]
 
 [[package]]
@@ -10007,6 +10086,26 @@ dependencies = [
  "block2 0.6.2",
  "libc",
  "objc2 0.6.5",
+ "objc2-core-foundation",
+]
+
+[[package]]
+name = "objc2-image-io"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32b0446e98cf4a784cc7a0177715ff317eeaa8463841c616cfc78aa4f953c4ea"
+dependencies = [
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+]
+
+[[package]]
+name = "objc2-io-kit"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33fafba39597d6dc1fb709123dfa8289d39406734be322956a69f0931c73bb15"
+dependencies = [
+ "libc",
  "objc2-core-foundation",
 ]
 
@@ -11156,7 +11255,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 [[package]]
 name = "pip-preview"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "serde_json",
 ]
@@ -11217,7 +11316,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 [[package]]
 name = "platform-linux"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -11226,7 +11325,7 @@ dependencies = [
  "atspi-connection",
  "base64 0.22.1",
  "bitflags 2.13.2",
- "clipboard-rs",
+ "clipboard-rs 0.3.5 (git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761)",
  "crossbeam-channel",
  "cua-driver-contract",
  "cua-driver-core",
@@ -11264,13 +11363,13 @@ dependencies = [
 [[package]]
 name = "platform-macos"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
  "block2 0.5.1",
- "clipboard-rs",
+ "clipboard-rs 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "core-foundation 0.10.1",
  "core-graphics 0.24.0",
  "cua-driver-contract",
@@ -11304,12 +11403,12 @@ dependencies = [
 [[package]]
 name = "platform-windows"
 version = "0.38.0"
-source = "git+https://github.com/maka-agent/cua?rev=2b5c2fe1908b633389ec641ae6dd88e72fd40a28#2b5c2fe1908b633389ec641ae6dd88e72fd40a28"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
- "clipboard-rs",
+ "clipboard-rs 0.3.5 (registry+https://github.com/rust-lang/crates.io-index)",
  "cua-driver-contract",
  "cua-driver-core",
  "cursor-overlay",
@@ -17723,8 +17822,7 @@ dependencies = [
 [[package]]
 name = "zbus"
 version = "5.19.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5db4be7c075cb421e4b7ee645541604239bd243ba7c357511f4ff3a74b555907"
+source = "git+https://github.com/maka-agent/cua?rev=b97a7e7a97b1dabc669b7c362ba39691766df761#b97a7e7a97b1dabc669b7c362ba39691766df761"
 dependencies = [
  "async-broadcast",
  "async-executor",

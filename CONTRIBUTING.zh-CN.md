@@ -39,6 +39,8 @@ just check
 
 [产品指南](products/maka/README.zh-CN.md)说明 TypeScript 开发方式，[插件指南](plugins/README.zh-CN.md)介绍声明与组合。原生打包和 V8 要求见 [scripts/rust](scripts/rust/README.zh-CN.md)。[官网](website/README.md)使用独立的 manifest 和锁文件。
 
+`just` 与 CI 共用[套件定义和执行命令](scripts/ci.mjs)。通过 [CI 命令](scripts/rust/README.zh-CN.md#ci)查看受影响范围的计划或在本地复现套件。
+
 ## 代码与文档
 
 - 使用 `name.rs` 和同名 `name/` 目录组织子模块。单元测试与实现放在一起，集成测试位于 `tests/`。

@@ -35,10 +35,15 @@ async fn lock<'a>(
         tokio::select! {
             biased;
             ()=context.cancellation.cancelled()=>return Err(failed("Browser clipboard cancelled")),
-            ()=tokio::time::sleep_until(context.deadline)=>return Err(failed("Browser clipboard deadline exceeded")),
+            ()=context.clock.elapsed()=>return Err(failed("Browser clipboard deadline exceeded")),
             ()=store.wait_available()=>{},
         }
     }
+}
+
+pub(super) enum VirtualTextMode {
+    Locator { replace: bool },
+    Cua { rich: bool },
 }
 
 impl Tab {
@@ -49,6 +54,27 @@ impl Tab {
         replace: bool,
         context: &MutationContext<'_>,
     ) -> Result<(), ToolError> {
+        let items = ClipboardItems::text(value.to_owned());
+        self.locator_virtual_items(
+            selected,
+            &items,
+            VirtualTextMode::Locator { replace },
+            context,
+        )
+        .await
+    }
+
+    pub(super) async fn locator_virtual_items(
+        &mut self,
+        selected: &Selected,
+        items: &ClipboardItems,
+        mode: VirtualTextMode,
+        context: &MutationContext<'_>,
+    ) -> Result<(), ToolError> {
+        let (plain_text_only, replace, rich_text_fallback) = match mode {
+            VirtualTextMode::Locator { replace } => (true, replace, false),
+            VirtualTextMode::Cua { rich } => (!rich, false, rich),
+        };
         // The embedding Host supplies the same optional automatic page bridge
         // used by the explicit clipboard API. This admitted text command itself
         // owns its synchronous paste effect and never borrows the OS clipboard.
@@ -70,8 +96,9 @@ impl Tab {
         self.locator_clipboard_script(
             selected,
             json!({
-                "kind":"paste","items":ClipboardItems::text(value.to_owned()),
-                "plainTextOnly":true,"replaceInputValue":replace,"currentActiveElement":true,
+                "kind":"paste","items":items,
+                "plainTextOnly":plain_text_only,"replaceInputValue":replace,"currentActiveElement":true,
+                "richTextFallback":rich_text_fallback,
             }),
             None,
             context,

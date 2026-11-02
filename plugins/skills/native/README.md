@@ -21,6 +21,6 @@
 
 [简体中文](README.zh-CN.md)
 
-Provides the skill library as an ordinary Host service. `provide` registers the factory; discovery and parsing delegate to `maka-skills`. The service controls bounded reads, catalog revisions and publication receipts. Consumers use the exact reference and revision returned by discovery, and pass continuation objects back unchanged.
+Provides the skill library as an ordinary Host service. `sources` captures the standard home/workspace directories; `remote` discovers temporary Git or local directory snapshots; `management` installs, replaces and deletes complete skill directories. Files are the content authority. `registrations` stores only Maka-managed paths and provenance in the existing Root database; `preferences` stores enabled/pinned choices. Model reads use the exact references and revisions returned by discovery.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

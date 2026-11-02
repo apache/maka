@@ -15,7 +15,7 @@ beforeEach(async () => {
 async function until(done: () => boolean, ms = 10_000) {
   for (let t = 0; !done(); t += 100) {
     if (t >= ms) throw new Error(`not done in ${ms} ms: ${JSON.stringify(app.texts())}`);
-    await app.clock.runFor(100);
+    await app.clock!.runFor(100);
   }
 }
 

@@ -19,31 +19,22 @@
 
 use super::*;
 use maka_agent_facts::event::InvocationOutcome;
-use maka_agent_facts::language::Language;
 use maka_event_log::{
     message_admissions::{PendingExecution, PendingMessageAdmission},
     turns::InvocationState,
 };
 
-pub(super) fn identity(request: &maka_agent_ports::execution::Submit) -> Invocation {
-    let id = hex::encode(Sha256::digest(request.operation_id.as_bytes()));
-    Invocation {
-        session_id: request.session_id.clone(),
-        turn_id: format!("t_{id}"),
-        run_id: format!("r_{id}"),
-        invocation_id: format!("i_{id}"),
-    }
-}
 fn admission(
     goal: &maka_goal::goal::Goal<MessageBasis>,
 ) -> Result<PendingMessageAdmission, String> {
     let pending = goal.pending.as_ref().ok_or("goal_iteration_missing")?;
-    let invocation = identity(&pending.request);
+    let Pending::Dispatch { request, .. } = pending else {
+        return Err("goal_execution_already_admitted".into());
+    };
+    let invocation = pending.invocation();
     let mut basis = goal.arm.grant.clone();
-    basis.fingerprint = hex::encode(Sha256::digest(
-        serde_json::to_vec(&pending.request).map_err(reason)?,
-    ));
-    let message = pending.request.content.clone();
+    basis.fingerprint = hex::encode(Sha256::digest(serde_json::to_vec(request).map_err(reason)?));
+    let message = request.content.clone();
     Ok(PendingMessageAdmission {
         execution: PendingExecution {
             owner: String::new(),
@@ -51,7 +42,10 @@ fn admission(
         },
         source: RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
+                origin: Some(maka_agent_facts::message::MessageOrigin::Goal {
+                    goal_id: goal.id.to_string(),
+                    objective: goal.arm.objective.clone(),
+                }),
                 message_id: invocation.invocation_id.replacen("i_", "m_", 1),
                 submitted_content_digest: message.content_digest().map_err(reason)?,
                 content: message.clone(),
@@ -110,7 +104,9 @@ impl Owner {
             if self.stop.is_cancelled() {
                 break;
             }
-            self.tick_goal(saved).await?;
+            if let Err(error) = self.tick_goal(saved).await {
+                eprintln!("Goal: {error}");
+            }
         }
         let monitored = self.goals.repository.sessions().await.map_err(reason)?;
         // Publish while the same gate still excludes Goal mutations. Otherwise
@@ -124,7 +120,7 @@ impl Owner {
     async fn tick_goal(self: &Arc<Self>, mut saved: Saved<MessageBasis>) -> Result<(), String> {
         let session = saved.goal.session_id.clone();
         if let Some(pending) = &saved.goal.pending {
-            let original = identity(&pending.request);
+            let original = pending.invocation();
             let boundary = self
                 .store
                 .session(&session)
@@ -145,10 +141,7 @@ impl Owner {
                     .get(&session)
                     .filter(|control| control.invocation.turn_id == original.turn_id)
                 {
-                    if matches!(
-                        saved.goal.status,
-                        Status::Cancelled | Status::CancellationUnknown
-                    ) {
+                    if matches!(saved.goal.status, Status::Cancelled | Status::Paused) {
                         control.cancellation.cancel();
                     }
                     return Ok(());
@@ -159,7 +152,60 @@ impl Owner {
                         outcome: InvocationOutcome::HandoffPaused { .. },
                         ..
                     } => {
-                        saved.goal.handoff_paused();
+                        match saved.goal.status {
+                            Status::Cancelled | Status::Achieved => {
+                                self.store
+                                    .session(&session)
+                                    .await
+                                    .map_err(reason)?
+                                    .cancel_handoff(&boundary.invocation)
+                                    .await
+                                    .map_err(reason)?;
+                            }
+                            Status::Active => {
+                                match self
+                                    .resume_goal_handoff(
+                                        &boundary.invocation,
+                                        Arc::new(saved.goal.arm.grant.clone()),
+                                    )
+                                    .await
+                                {
+                                    Ok(()) => {}
+                                    Err(
+                                        error @ (RunError::InvalidInput(_)
+                                        | RunError::ReconciliationRequired(_)),
+                                    ) => {
+                                        let cancelled = self
+                                            .store
+                                            .session(&session)
+                                            .await
+                                            .map_err(reason)?
+                                            .cancel_handoff(&boundary.invocation)
+                                            .await
+                                            .map_err(reason)?;
+                                        if let InvocationState::Ended { outcome, .. } =
+                                            cancelled.state
+                                            && !matches!(
+                                                outcome,
+                                                InvocationOutcome::HandoffPaused { .. }
+                                            )
+                                        {
+                                            saved
+                                                .goal
+                                                .settled(outcome, self.goal_meter(&session).await);
+                                        }
+                                        tracing::info!(cause = %error, "Goal handoff is awaiting updated conversation settings");
+                                        saved.goal.pause_for_settings();
+                                        return self.goals.save(saved).await;
+                                    }
+                                    Err(error) => return Err(public_error(error)),
+                                }
+                            }
+                            _ => {}
+                        }
+                        // Keep the logical root pending until its current physical
+                        // successor settles and releases the normal execution control.
+                        return Ok(());
                     }
                     InvocationState::Ended { outcome, .. } => {
                         saved.goal.settled(outcome, self.goal_meter(&session).await);
@@ -167,6 +213,9 @@ impl Owner {
                     _ => return Ok(()),
                 }
                 return self.goals.save(saved).await;
+            }
+            if matches!(pending, Pending::Existing { .. }) {
+                return Ok(());
             }
             let mut request = admission(&saved.goal)?;
             request.execution.owner = self.prefix.clone();
@@ -195,12 +244,14 @@ impl Owner {
                 .map_err(|error| error.to_string())?
                 .message_admission(&session, message)
                 .await
-                .map_err(reason)?
-                .is_some();
-            if matches!(
-                saved.goal.status,
-                Status::Cancelled | Status::CancellationUnknown
-            ) {
+                .map_err(reason)?;
+            let accepted = if let Some(original) = accepted {
+                request = original;
+                true
+            } else {
+                false
+            };
+            if matches!(saved.goal.status, Status::Cancelled | Status::Achieved) {
                 if accepted {
                     // Its immutable queued input is rejected by the normal Agent
                     // preparation check, even after a restart. No sibling is stopped.
@@ -209,13 +260,6 @@ impl Owner {
                     // This same gate excludes all Goal dispatches; the SQL read
                     // observed no accepted original request after prior writes settled.
                     saved.goal.pending = None;
-                    saved.goal.status = Status::Cancelled;
-                    saved.goal.note = (match saved.goal.arm.language {
-                        Language::En => "Cancelled before execution admission",
-                        Language::ZhCn => "执行接纳前已取消",
-                        Language::ZhTw => "執行接納前已取消",
-                    })
-                    .into();
                     self.goals.save(saved).await?;
                 }
                 return Ok(());
@@ -225,15 +269,16 @@ impl Owner {
             }
             if !accepted {
                 if let Err(reason) = self.validate_background(&saved.goal.arm.grant).await {
-                    saved.goal.status = Status::Blocked;
-                    saved.goal.authority_blocked = true;
-                    saved.goal.note = reason;
+                    tracing::info!(cause = %reason, "Goal is awaiting updated conversation settings");
+                    saved.goal.pause_for_settings();
                     // No accepted execution exists and this gate excludes dispatch.
                     saved.goal.pending = None;
                     return self.goals.save(saved).await;
                 }
-                if !saved.goal.pending.as_ref().expect("pending").dispatched {
-                    saved.goal.pending.as_mut().expect("pending").dispatched = true;
+                if let Some(Pending::Dispatch { dispatched, .. }) = saved.goal.pending.as_mut()
+                    && !*dispatched
+                {
+                    *dispatched = true;
                     self.goals.save(saved.clone()).await?;
                 }
             }
@@ -244,17 +289,16 @@ impl Owner {
             return Ok(());
         }
         if let Err(reason) = self.validate_background(&saved.goal.arm.grant).await {
-            saved.goal.status = Status::Blocked;
-            saved.goal.authority_blocked = true;
-            saved.goal.note = reason;
+            tracing::info!(cause = %reason, "Goal is awaiting updated conversation settings");
+            saved.goal.pause_for_settings();
             return self.goals.save(saved).await;
         }
         if !self.goal_session_idle(&session).await? {
             return Ok(());
         }
         saved.goal.meter(self.goal_meter(&session).await?);
-        if saved.goal.status == Status::Active {
-            saved.goal.reserve().map_err(reason)?;
+        if saved.goal.status == Status::Active && !saved.goal.reserve().map_err(reason)? {
+            return Ok(());
         }
         self.goals.save(saved).await
     }

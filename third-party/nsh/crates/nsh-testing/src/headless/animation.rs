@@ -2,7 +2,9 @@
 //! their UI thread (nsh-core's `animation`, platform-free), run here frame by
 //! frame while anything animates, finished animations reported to the
 //! engine as a platform reports them. Nothing is drawn: the values only
-//! move, so what waits for an animation's end goes on.
+//! move, so what waits for an animation's end goes on. Animations that
+//! loop forever (a spinner) run in the background: their values move with
+//! the clock, and nothing waits for them.
 
 use std::time::Duration;
 
@@ -96,9 +98,11 @@ impl Animator {
         }
     }
 
-    /// Whether anything animates.
-    pub(crate) fn running(&self) -> bool {
-        self.next.is_some()
+    /// Whether an animation that ends by itself runs: what steps wait for
+    /// (and, on a manual clock, take frames at once for). Animations that
+    /// loop forever do not count: no step would end.
+    pub(crate) fn finishing(&self) -> bool {
+        self.next.is_some() && self.graph.finishing()
     }
 
     /// When the next frame is due, while anything animates.

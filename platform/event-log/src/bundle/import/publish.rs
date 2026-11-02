@@ -100,8 +100,7 @@ pub(super) async fn all(
             .await?;
     }
     materials(destination, staged, positions).await?;
-    crate::transcript::directory::index_imported_sessions(destination, &receipt.session_ids)
-        .await?;
+
     crate::bundle::accounting::validate(staged, destination).await
 }
 
@@ -139,10 +138,16 @@ async fn events(
 ) -> Result<(), StoreError> {
     let mut after = 0i64;
     loop {
-        let row: Option<(i64, String)> = sqlx::query_as(
-            "SELECT sequence,event_json FROM runtime_events WHERE sequence>? ORDER BY sequence LIMIT 1",
-        ).bind(after).fetch_optional(&mut *relocated).await?;
-        let Some((sequence, json)) = row else { break };
+        let row=sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT e.sequence,e.event_header,{columns} FROM runtime_events e {joins} WHERE e.sequence>? ORDER BY e.sequence LIMIT 1",
+            columns=crate::canonical::COLUMNS,joins=crate::canonical::JOINS,
+        ))).bind(after).fetch_optional(&mut *relocated).await?;
+        let Some(row) = row else {
+            break;
+        };
+        use sqlx::Row;
+        let sequence: i64 = row.try_get(0)?;
+        let json = crate::canonical::json(&row)?.into_owned();
         let event: RuntimeEvent = serde_json::from_str(&json)?;
         sqlx::query("INSERT INTO imported_invocations VALUES(?,?) ON CONFLICT DO NOTHING")
             .bind(&event.invocation.invocation_id)
@@ -334,11 +339,13 @@ async fn materials(
         else {
             unreachable!()
         };
-        sqlx::query("INSERT INTO session_history_artifacts VALUES(?,?,?,?)")
-            .bind(session)
-            .bind(source_session)
-            .bind(source_artifact)
-            .bind(artifact)
+        sqlx::query("INSERT INTO session_history_artifacts (session_id,source_session_id,source_artifact_id,artifact_id,lookup_digest,target_digest) VALUES(?,?,?,?,?,?)")
+            .bind(&session)
+            .bind(&source_session)
+            .bind(&source_artifact)
+            .bind(&artifact)
+            .bind(crate::artifacts::identity::history_lookup_digest(&session, &source_session, &source_artifact).as_slice())
+            .bind(crate::artifacts::identity::artifact_lookup_digest(&session, &artifact).as_slice())
             .execute(&mut *destination)
             .await?;
         after = number;

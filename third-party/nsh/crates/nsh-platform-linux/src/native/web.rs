@@ -334,6 +334,10 @@ fn decide_policy(web: &WebView, shared: &Rc<Shared>) -> glib::SignalHandlerId {
             shared.emit(EventKind::Error, || {
                 EventPayload::Map(vec![
                     ("message", PayloadValue::Str(message)),
+                    (
+                        "code",
+                        PayloadValue::Str(nsh_core::element::codes::ACCESS_DENIED.into()),
+                    ),
                     ("url", PayloadValue::Str(url)),
                 ])
             });

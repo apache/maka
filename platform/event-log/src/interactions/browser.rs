@@ -31,7 +31,7 @@ const BROWSER_ORIGIN_DECISION: &str = "SELECT request.request_id
     JOIN interaction_outcomes AS outcome ON outcome.request_id=request.request_id
     WHERE request.session_id=?
       AND json_extract(request.record_json,'$.request.kind')='client_capability'
-      AND json_extract(request.record_json,'$.request.target.capability') IN ('browser','browser_download')
+      AND json_extract(request.record_json,'$.request.target.capability') IN ('browser','browser_download','browser_upload')
       AND json_extract(request.record_json,'$.request.target.capability')=?
       AND json_extract(request.record_json,'$.request.target.scope.kind')='browser_origin'
       AND json_extract(request.record_json,'$.request.target.providerId')=?
@@ -65,6 +65,7 @@ impl EventLog {
         let capability = match target.capability {
             GrantCapability::Browser => "browser",
             GrantCapability::BrowserDownload => "browser_download",
+            GrantCapability::BrowserUpload => "browser_upload",
             _ => {
                 return Err(invalid("browser decision requires a browser origin target"));
             }

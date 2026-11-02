@@ -118,7 +118,8 @@ mod tests {
             r#"
             import process from 'process'; import {text} from 'nsh:rt';
             let denied = false;
-            try { process.spawn('not-granted'); } catch (e) { denied = e instanceof TypeError; }
+            // Headless runs are iOS: no processes there, before any grant.
+            try { process.spawn('not-granted'); } catch (e) { denied = e.code === 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM'; }
             text(JSON.stringify([process.dataDir, denied,
                 typeof process.exit, typeof process.env]));
         "#,
@@ -139,7 +140,7 @@ mod tests {
             import process from 'process'; import {text} from 'nsh:rt';
             const a=process.env,b=process.env;
             a.NSH_ONLY_LOCAL='modified';
-            let denied=false; try {process.exit();} catch(e) {denied=e instanceof TypeError&&String(e).includes('capabilities.process.exit');}
+            let denied=false; try {process.exit();} catch(e) {denied=e.code==='ERR_ACCESS_DENIED'&&e.permission==='process'&&e.resource==='exit';}
             text(JSON.stringify([a!==b,typeof process.env.NSH_ONLY_LOCAL,denied]));
         "#,
         )
@@ -157,7 +158,7 @@ mod tests {
         host.eval_source(
             r#"
             import process from 'process'; import {text} from 'nsh:rt';
-            let missing=false;try {process.exit(3);}catch(e){missing=String(e).includes('no exit request handler');}
+            let missing=false;try {process.exit(3);}catch(e){missing=e.code==='ERR_FEATURE_UNAVAILABLE_ON_PLATFORM';}
             text(JSON.stringify(missing));
         "#,
         )

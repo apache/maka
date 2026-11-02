@@ -5,7 +5,10 @@
 // `accessibilityActions`, `importantForAccessibility`, which decides
 // `accessible` and hides the descendants for `"no-hide-descendants"`, and
 // the `"listbox"` and `"option"` roles of a select's popup, the chosen
-// option `selected`. Its script checks each.
+// option `selected`, and the structural roles of `nsh/base`'s accordions,
+// toolbars, paginations, trees and checkable menu items (`"group"`,
+// `"region"`, `"navigation"`, `"tree"`, `"treeitem"`, `"menuitemcheckbox"`,
+// `"menuitemradio"`). Its script checks each.
 import { Text, View } from "nsh";
 
 function App() {
@@ -50,6 +53,14 @@ function App() {
           <Text>Banana</Text>
         </View>
       </View>
+      <View testID="role-group" role="group" style={{ height: 4 }} />
+      <View testID="role-region" role="region" style={{ height: 4 }} />
+      <View testID="role-navigation" role="navigation" style={{ height: 4 }} />
+      <View testID="role-tree" role="tree" style={{ height: 4 }}>
+        <View testID="role-treeitem" role="treeitem" accessibilityLevel={1} style={{ height: 4 }} />
+      </View>
+      <View testID="role-menuitemcheckbox" role="menuitemcheckbox" style={{ height: 4 }} />
+      <View testID="role-menuitemradio" role="menuitemradio" style={{ height: 4 }} />
       <View testID="plain" style={{ height: 20 }} />
     </View>
   );

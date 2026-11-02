@@ -52,7 +52,7 @@ export function Chat() {
 
   const messages = signal<Msg[]>([]);
   const model = signal<Model>("Swift");
-  const native = platform.idiom === "desktop" && platform.os !== "web";
+  const native = platform.desktop && platform.os !== "web";
   const provider = signal<Provider>("Codex");
   let cancelLocal: (() => void) | undefined;
   const draft = signal("");
@@ -760,7 +760,7 @@ export function Chat() {
               multiline
               // Return sends on desktops, as in chat apps there (Shift+Return
               // adds a line); phones keep return for line breaks.
-              submitBehavior={platform.idiom === "desktop" ? "submit" : "newline"}
+              submitBehavior={platform.desktop ? "submit" : "newline"}
               onSubmit={() => {
                 if (!streaming()) send();
               }}

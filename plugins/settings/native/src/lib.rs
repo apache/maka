@@ -18,6 +18,7 @@
  */
 
 //! Root-owned settings as an ordinary compiled capability, activated only by composition.
+mod catalog_models;
 mod connections;
 pub mod contract;
 mod credential;

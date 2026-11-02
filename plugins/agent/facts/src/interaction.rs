@@ -35,6 +35,10 @@ pub enum GrantCapability {
     Browser,
     /// File download consent for a browser origin, independent of page access.
     BrowserDownload,
+    /// Read the browser profile's browsing history, independent of page access.
+    BrowserHistory,
+    /// File upload consent for a browser origin, independent of reads and downloads.
+    BrowserUpload,
     ComputerUse,
     ComputerAudio,
     DesktopMcp,
@@ -45,6 +49,7 @@ pub enum GrantCapability {
 #[serde(rename_all = "snake_case")]
 pub enum ComputerAppPlatform {
     Macos,
+    Windows,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -98,6 +103,11 @@ pub enum ComputerAppDecision {
 pub enum GrantScope {
     BrowserOrigin {
         origin: String,
+    },
+    /// One selected browser profile generation; never an origin or app-wide grant.
+    BrowserProfile {
+        browser_id: String,
+        generation: String,
     },
     Capability {},
     McpTool {

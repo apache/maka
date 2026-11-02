@@ -1,0 +1,23 @@
+---
+import BaseLayout from '../layouts/BaseLayout.astro';
+import Nav from '../components/Nav.astro';
+import Apps from '../components/Apps.astro';
+import SiteFooter from '../components/SiteFooter.astro';
+import { getShowcaseApps } from '../lib/showcases';
+import { url } from '../lib/site';
+
+const apps = await getShowcaseApps();
+---
+
+<BaseLayout
+  lang="en"
+  title="App Stories"
+  description="Apps built with Native Shell: native UI on iOS, Android, macOS, Windows, Linux and the web, from file sharing and system monitoring to reading Markdown."
+  alternates={{ en: '/apps', 'zh-CN': '/zh-CN/apps' }}
+>
+  <Nav lang="en" currentPath={Astro.url.pathname} langHref={url('zh-CN/apps')} />
+  <main id="main">
+    <Apps apps={apps} lang="en" />
+  </main>
+  <SiteFooter lang="en" />
+</BaseLayout>

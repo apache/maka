@@ -121,6 +121,13 @@ impl UiAnimation {
         self.graph.is_animating()
     }
 
+    /// Whether the graph runs an animation that ends by itself (not one
+    /// looping forever, which no test step waits for).
+    #[cfg(feature = "dev")]
+    pub(crate) fn finishing(&self) -> bool {
+        self.graph.is_finishing()
+    }
+
     /// Scroll view `id` came to rest: the snapping values that follow its
     /// scroll value settle (the next frame request runs them).
     pub(crate) fn scroll_ended(&mut self, id: u32) {

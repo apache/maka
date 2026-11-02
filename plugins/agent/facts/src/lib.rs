@@ -40,6 +40,8 @@ pub mod interaction;
 pub mod language;
 pub mod message;
 pub mod model;
+pub mod model_retry;
+pub mod native_approval;
 pub mod oauth;
 pub mod pricing;
 pub mod provider;

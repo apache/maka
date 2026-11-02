@@ -19,11 +19,14 @@
 
 use serde::{Deserialize, Serialize};
 pub mod assembly;
+pub mod body;
 pub mod budget;
 pub mod error;
 pub mod prompt;
 pub mod prompt_source;
+pub mod recorded;
 pub mod request;
+pub mod retry_transport;
 mod tool_input;
 use serde_json::Value;
 pub use tool_input::ToolInput;
@@ -135,8 +138,8 @@ pub enum ModelPart {
     },
     Text {
         text_kind: TextKind,
-        text: String,
-        provider_options: Option<Value>,
+        text: body::TextBody,
+        provider_options: Option<std::sync::Arc<Value>>,
     },
     ToolCall {
         call: ModelToolCall,

@@ -149,20 +149,20 @@ fn invalid(message: &str) -> StoreError {
 }
 
 const RECORDS: &str = r#"SELECT json_object('sequence',sequence,'event_id',event_id,
- 'recorded_at',json_extract(event_json,'$.recorded_at'),
+ 'recorded_at',json_extract(event_header,'$.recorded_at'),
  'detail',json(CASE kind
-  WHEN 'title_failure' THEN json_object('kind','session_title','invocation',json_extract(event_json,'$.opening'),'cause',json_extract(event_json,'$.cause'))
-  WHEN 'model_interrupted' THEN json_object('kind','model_step','invocation',json_extract(event_json,'$.invocation'),
-    'stepId',json_extract(event_json,'$.fact.step_id'),'status',json_extract(event_json,'$.fact.status'),
-    'modelFailure',json_extract(event_json,'$.fact.model_failure'))
-  ELSE json_object('kind','execution','invocation',json_extract(event_json,'$.invocation'),
-    'reason',CASE WHEN json_extract(event_json,'$.fact.outcome.class') IN ('session_busy','continuation_changed','reconciliation_required','invalid_input','cancelled','model_incomplete','event_commit','event_store','model_timeout','model_http','model_adapter','model_provider','context_overflow','tool_execution','runtime_internal','cleanup_unconfirmed','executor','message_preparation_failed','host_interrupted','outcome_unknown') THEN json_extract(event_json,'$.fact.outcome.class') ELSE 'execution_failed' END,
-    'modelFailure',json_extract(event_json,'$.fact.outcome.model_failure')) END))
+  WHEN 'title_failure' THEN json_object('kind','session_title','invocation',json_extract(event_header,'$.opening'),'cause',json_extract(event_header,'$.cause'))
+  WHEN 'model_interrupted' THEN json_object('kind','model_step','invocation',json_extract(event_header,'$.invocation'),
+    'stepId',json_extract(event_header,'$.fact.step_id'),'status',json_extract(event_header,'$.fact.status'),
+    'modelFailure',json_extract(event_header,'$.fact.model_failure'))
+  ELSE json_object('kind','execution','invocation',json_extract(event_header,'$.invocation'),
+    'reason',CASE WHEN json_extract(event_header,'$.fact.outcome.class') IN ('session_busy','continuation_changed','reconciliation_required','invalid_input','cancelled','model_incomplete','event_commit','event_store','model_timeout','model_http','model_adapter','model_provider','context_overflow','tool_execution','runtime_internal','cleanup_unconfirmed','executor','message_preparation_failed','host_interrupted','outcome_unknown') THEN json_extract(event_header,'$.fact.outcome.class') ELSE 'execution_failed' END,
+    'modelFailure',json_extract(event_header,'$.fact.outcome.model_failure')) END))
 FROM event_log INDEXED BY diagnostic_session_sequence
-WHERE (kind='title_failure' OR (kind='invocation_ended' AND json_extract(event_json,'$.fact.outcome.kind')='failed') OR (kind='model_interrupted' AND json_extract(event_json,'$.fact.status')!='cancelled')) AND (CASE WHEN kind='title_failure' THEN json_extract(event_json,'$.opening.session_id') ELSE json_extract(event_json,'$.invocation.session_id') END)=?1 AND sequence<=min(?2,coalesce(?3-1,?2))
+WHERE (kind='title_failure' OR (kind='invocation_ended' AND json_extract(event_header,'$.fact.outcome.kind')='failed') OR (kind='model_interrupted' AND json_extract(event_header,'$.fact.status')!='cancelled')) AND (CASE WHEN kind='title_failure' THEN json_extract(event_header,'$.opening.session_id') ELSE json_extract(event_header,'$.invocation.session_id') END)=?1 AND sequence<=min(?2,coalesce(?3-1,?2))
 ORDER BY sequence DESC LIMIT ?4"#;
 const LATEST: &str = r#"SELECT sequence FROM event_log INDEXED BY diagnostic_session_sequence
-WHERE (kind='title_failure' OR (kind='invocation_ended' AND json_extract(event_json,'$.fact.outcome.kind')='failed') OR (kind='model_interrupted' AND json_extract(event_json,'$.fact.status')!='cancelled')) AND (CASE WHEN kind='title_failure' THEN json_extract(event_json,'$.opening.session_id') ELSE json_extract(event_json,'$.invocation.session_id') END)=?1 AND sequence<=?2
+WHERE (kind='title_failure' OR (kind='invocation_ended' AND json_extract(event_header,'$.fact.outcome.kind')='failed') OR (kind='model_interrupted' AND json_extract(event_header,'$.fact.status')!='cancelled')) AND (CASE WHEN kind='title_failure' THEN json_extract(event_header,'$.opening.session_id') ELSE json_extract(event_header,'$.invocation.session_id') END)=?1 AND sequence<=?2
 ORDER BY sequence DESC LIMIT 1"#;
 
 #[cfg(test)]

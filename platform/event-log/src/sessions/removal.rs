@@ -95,14 +95,27 @@ impl EventLog {
         self.validate_root()?;
         validate_id(session)?;
         let session = session.to_owned();
+        let commits = self.commits.session(&session);
         self.connection
             .run(move |connection| {
                 Box::pin(async move {
-                    let mut tx = connection.begin().await?;
-                    Ok(read(&mut tx, &session)
+                    let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
+                    if !read(&mut tx, &session)
                         .await?
                         .is_some_and(SessionRetirement::pending)
-                        && settled(&mut tx, &session).await?)
+                    {
+                        return Ok(false);
+                    }
+                    let terminal =
+                        crate::native_approvals::settle_retiring_waits(&mut tx, &session).await?;
+                    let ready = settled(&mut tx, &session).await?;
+                    if let Some(sequence) = terminal {
+                        tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                        commits.publish(sequence);
+                    } else {
+                        tx.rollback().await?;
+                    }
+                    Ok(ready)
                 })
             })
             .await
@@ -167,9 +180,13 @@ impl EventLog {
                     if actual != expected {
                         return Ok(SessionRemovalResult::RevisionConflict { expected, actual });
                     }
-                    plan::fence(&mut tx, &session, plan::Action::Remove).await?;
+                    let approval_revoked =
+                        plan::fence(&mut tx, &session, plan::Action::Remove).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
+                    if approval_revoked {
+                        commits.activations();
+                    }
                     Ok(SessionRemovalResult::Accepted(SessionRetirement::Removing))
                 })
             })
@@ -224,7 +241,6 @@ impl EventLog {
         validate_id(session)?;
         let session = session.to_owned();
         let commits = self.commits.session(&session);
-        let prepared = self.prepared_store()?.cleanup();
         let observations = self.connection.observations();
         self.connection
             .run(move |connection| {
@@ -236,12 +252,17 @@ impl EventLog {
                     if !state.pending() {
                         tx.rollback().await?;
                         if state == SessionRetirement::Removed {
-                            prepared.retire_owner(session.clone()).await?;
                             observations.purge_session(session).await?;
                         }
                         return Ok(state);
                     }
+                    let native_terminal =
+                        crate::native_approvals::settle_retiring_waits(&mut tx, &session).await?;
                     if !settled(&mut tx, &session).await? {
+                        if let Some(sequence) = native_terminal {
+                            tx.commit().await.map_err(StoreError::CommitUnknown)?;
+                            commits.publish(sequence);
+                        }
                         return Ok(state);
                     }
                     if state == SessionRetirement::Archiving {
@@ -253,22 +274,20 @@ impl EventLog {
                         .await?;
                         advance_catalog(&mut tx).await?;
                         tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                        commits.metadata();
+                        if let Some(sequence) = native_terminal {
+                            commits.publish(sequence);
+                        } else {
+                            commits.metadata();
+                        }
                         return Ok(SessionRetirement::Archived);
                     }
                     // Membership is retained proof, not a disposable UI projection:
                     // descendants may pin an archive whose writer inherited its target.
                     // Verifying that archive/checkpoint still needs the writer's cut.
-                    // The caller's physical-drain contract above releases this
-                    // owner's lazy prepared views. Other owners' copied metadata
-                    // and immutable shared payloads remain independently pinned.
-                    prepared.retire_owner(session.clone()).await?;
                     crate::context::semantic::gc::retire_owner(&mut tx, &session).await?;
                     for statement in [
                         "DELETE FROM session_history_artifacts WHERE session_id=?",
                         "DELETE FROM session_revision_sources WHERE session_id=?",
-                        "DELETE FROM transcript_directory WHERE session_id=?",
-                        "DELETE FROM transcript_failures WHERE session_id=?",
                         "DELETE FROM catalog_messages WHERE session_id=?",
                         "DELETE FROM session_read_state WHERE session_id=?",
                         "DELETE FROM artifacts WHERE session_id=?",
@@ -289,7 +308,12 @@ impl EventLog {
                         .await?;
                     advance_catalog(&mut tx).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
-                    commits.metadata();
+                    commits.material_released();
+                    if let Some(sequence) = native_terminal {
+                        commits.publish(sequence);
+                    } else {
+                        commits.metadata();
+                    }
                     observations.purge_session(session).await?;
                     Ok(SessionRetirement::Removed)
                 })
@@ -311,10 +335,10 @@ async fn settled(connection: &mut SqliteConnection, session: &str) -> Result<boo
          OR EXISTS(SELECT 1 FROM all_interaction_pending WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM message_admissions WHERE session_id=?1)
          OR EXISTS(SELECT 1 FROM event_log a WHERE a.kind='auxiliary_model_started'
-            AND json_extract(a.event_json,'$.source.kind')='session_title'
-            AND json_extract(a.event_json,'$.session_id')=?1
+            AND json_extract(a.event_header,'$.source.kind')='session_title'
+            AND json_extract(a.event_header,'$.session_id')=?1
             AND NOT EXISTS(SELECT 1 FROM event_log s WHERE s.kind='auxiliary_model_settled'
-                AND json_extract(s.event_json,'$.request_id')=a.event_id))",
+                AND json_extract(s.event_header,'$.request_id')=a.event_id))",
     )
     .bind(session)
     .fetch_one(connection)

@@ -1,7 +1,6 @@
 ---
 title: Resizable
 description: "ResizablePanelGroup and ResizablePanel: panels side by side or stacked, with a handle between each two that the user drags to share the room. The group owns the drag, the panels' limits, the resize cursor and the handles' role for screen readers; the sizes, the handles' look and the panels' content are the app's."
-order: 29.5
 group: base
 demo: el-resizable
 ---

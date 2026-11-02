@@ -30,7 +30,7 @@ use maka_agent_facts::artifact::Artifact;
 use maka_agent_facts::attachment::AttachmentRef;
 use maka_agent_facts::attachment::StorageRef;
 use maka_agent_facts::event::RuntimeEvent;
-use sqlx::SqliteConnection;
+use sqlx::{Row, SqliteConnection};
 
 pub(super) async fn validate(
     staged: &mut SqliteConnection,
@@ -96,28 +96,30 @@ pub(super) async fn validate(
         loop {
             // Bound each ownership branch before merging so every cursor step
             // sorts at most three candidates instead of the remaining history.
-            let row: Option<(i64, bool, bool, String)> = sqlx::query_as(
-                "SELECT sequence,revision,inherited,event_json FROM (
-                     SELECT e.sequence,0 AS revision,0 AS inherited,e.event_json FROM runtime_events e
-                     WHERE (e.event_json IS NOT NULL AND e.event_session=?1) AND e.sequence>?2
+            let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "SELECT selected.sequence,selected.revision,selected.inherited,e.event_header,{} FROM (SELECT sequence,revision,inherited FROM (
+                     SELECT e.sequence,0 AS revision,0 AS inherited FROM runtime_events e
+                     WHERE (e.event_header IS NOT NULL AND e.event_session=?1) AND e.sequence>?2
                      ORDER BY e.sequence LIMIT 1)
                  UNION ALL
-                 SELECT sequence,revision,inherited,event_json FROM (
-                     SELECT e.sequence,0 AS revision,1 AS inherited,e.event_json FROM session_history_members h
+                 SELECT sequence,revision,inherited FROM (
+                     SELECT e.sequence,0 AS revision,1 AS inherited FROM session_history_members h
                      JOIN runtime_events e ON e.sequence=h.sequence WHERE h.session_id=?1 AND h.sequence>?2
                      ORDER BY h.sequence LIMIT 1)
                  UNION ALL
-                 SELECT sequence,revision,inherited,event_json FROM (
-                     SELECT r.sequence,1 AS revision,1 AS inherited,e.event_json FROM session_revision_sources r
+                 SELECT sequence,revision,inherited FROM (
+                     SELECT r.sequence,1 AS revision,1 AS inherited FROM session_revision_sources r
                      JOIN runtime_events e ON e.sequence=r.sequence
                      WHERE r.session_id=?1 AND r.sequence>=?2 AND (r.sequence>?2 OR ?3=0)
                      ORDER BY r.sequence LIMIT 1)
-                 ORDER BY sequence,revision LIMIT 1"
-            ).bind(&session.id).bind(after.0).bind(after.1).fetch_optional(&mut *original).await?;
-            let Some((sequence, revision, inherited, json)) = row else {
-                break;
-            };
-            let event: RuntimeEvent = serde_json::from_str(&json)?;
+                 ORDER BY sequence,revision LIMIT 1) selected JOIN runtime_events e ON e.sequence=selected.sequence {}",
+                crate::canonical::COLUMNS, crate::canonical::JOINS
+            ))).bind(&session.id).bind(after.0).bind(after.1).fetch_optional(&mut *original).await?;
+            let Some(row) = row else { break };
+            let sequence: i64 = row.try_get("sequence")?;
+            let revision: bool = row.try_get("revision")?;
+            let inherited: bool = row.try_get("inherited")?;
+            let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
             let refs = if revision {
                 references::revision(&event)?
                     .into_iter()
@@ -162,12 +164,13 @@ async fn frozen_witness(
     }
     // A proof-only event's existence is insufficient. Membership belongs to the
     // exact artifact owner; a copied owner resolves only its validated mapping.
-    let row: Option<(bool, String)> = sqlx::query_as(
-        "SELECT inherited,event_json FROM session_history_events WHERE owner_session_id=? AND sequence=?",
-    ).bind(&artifact.session_id).bind(sequence as i64).fetch_optional(&mut *original).await?;
-    let (inherited, json) =
-        row.ok_or_else(|| invalid("bundle media witness is outside its owner history"))?;
-    let event: RuntimeEvent = serde_json::from_str(&json)?;
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.inherited,e.event_header,{} FROM session_history_events e {} WHERE e.owner_session_id=? AND e.sequence=?",
+        crate::canonical::COLUMNS, crate::canonical::JOINS
+    ))).bind(&artifact.session_id).bind(sequence as i64).fetch_optional(&mut *original).await?
+        .ok_or_else(|| invalid("bundle media witness is outside its owner history"))?;
+    let inherited: bool = row.try_get("inherited")?;
+    let event: RuntimeEvent = serde_json::from_str(&crate::canonical::json(&row)?)?;
     let Fact::ToolSettled {
         outcome:
             ToolOutcome::Succeeded {

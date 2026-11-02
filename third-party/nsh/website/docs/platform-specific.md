@@ -13,8 +13,16 @@ One NSH bundle runs on iOS, Android, macOS, Windows and Linux (and in Mac Cataly
 |---|---|---|
 | [Builder methods (`.ripple(..)`, `.input_accessory(..)`)](#platform-only-props) | [`ios={{…}}`, `android={{…}}`, `desktop={{…}}`, `web={{…}}`](#platform-only-props) | Props only one platform has. |
 | [`on_back_press`, `nsh_core::element::desktop`](#platform-modules) | [`nsh/mobile`, `nsh/desktop`](#platform-modules) | APIs only mobile platforms or only desktops have. |
-| [`os()`, `idiom()`, `is_desktop()`](#platformos-and-platformselect) | [`platform.os`, `platform.select`](#platformos-and-platformselect) | Choosing values or code per platform. |
+| [`os()`, `idiom()`, `is_desktop()`](#platformos-and-platformselect) | [`platform.os`, `platform.desktop`, `platform.select`](#platformos-and-platformselect) | Choosing values or code per platform. |
 | [`.when(os() == Os::Ios, ..)`](#platform-variants-in-tailwind) | [`ios:` / `android:` / `web:` classes](#platform-variants-in-tailwind) | Styles per platform. |
+
+## Desktop and mobile
+
+Graphical platforms are desktop or mobile, by one rule. Desktop is macOS, Windows, Linux, and browsers in the desktop idiom (a mouse and a wide window, [the web](./web.md)). Mobile is iOS, Android, and browsers in the phone or tablet idiom; Mac Catalyst runs the iOS backend, so it is mobile too, with `ios={{…}}` props. `desktop={{…}}` props, `platform.select({ desktop, mobile })` and `platform.desktop` follow this rule, as do `nsh/base`'s graphical components (a menu is a popup on desktops and a sheet on mobile) and, in Rust, `is_desktop()`.
+
+Terminals have `platform.desktop === false`; they select `terminal`, then the host OS, `native`, and `default`. `platform.idiom` describes the device, so a terminal on a desktop OS still reports `"desktop"`. Use `platform.isTerminal` to identify terminal presentation.
+
+`nsh/desktop`'s `isAvailable` identifies native desktop and terminal title and menu APIs. Gate graphical desktop layout, density and input on `platform.desktop`, and title and menu API calls on `isAvailable`.
 
 ## Platform-only props
 
@@ -90,11 +98,11 @@ What exists today:
 
 In TSX, `desktop={{…}}` and `web={{…}}` are accepted everywhere. The types (`IOSProps`, `AndroidProps`, `DesktopProps` and their per-element forms) tell your editor what each element takes.
 
-Something two or more platforms do is a top-level prop (in Rust a method of the same name), applied where it means something: `NavPage`'s `title`, `headerStyle`, `headerLargeTitle` and `headerBackTitle` set up the system header of iOS and Android, its `header` slot is the header of the desktops and the web, and `Dialog`'s `presentation` picks iOS's sheets. `AlertDialog.show`'s `closeOnBackdropPress`, `pagingEnabled`, `refreshing`, `hitSlop` and the rest work on every platform.
+What an element means on every platform is a top-level prop (in Rust a method of the same name), applied where it means something: `NavPage`'s `title`, `headerStyle`, `headerLargeTitle` and `headerBackTitle` set up the system header of iOS and Android, its `header` slot is the header of the desktops and the web, and `Dialog`'s `presentation` picks iOS's sheets. `AlertDialog.show`'s `closeOnBackdropPress`, `pagingEnabled`, `refreshing`, `hitSlop` and the rest work on every platform. A platform's own system feature goes in its object, and when several platforms have it, in each of theirs under the same name: `WebView`'s `allowsBackForwardNavigationGestures`, the system's swipes through the page history, is in `ios={{…}}` and `desktop={{…}}`.
 
 ## Platform modules
 
-In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`on_back_press`, `input_accessory_view`) and of `nsh_core::element::desktop` (`set_title_bar`, `title_bar`, `close_window`); elsewhere they do nothing. In TSX, `nsh/mobile` holds the APIs of iOS and Android (some of them one platform's), `nsh/desktop` those of the desktops. Both can be imported on every platform, so one bundle runs everywhere: on other platforms their functions return at once and their components take no room. Each exports `isAvailable`, which is `true` on its own platforms; `platform.os` tells them apart.
+In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`on_back_press`, `input_accessory_view`) and of `nsh_core::element::desktop` (the window: `set_title`, `set_title_bar`, `title_bar`, `minimize`, `toggle_maximize`, `toggle_full_screen`, `set_frame`, `set_level`, `order_front`, `close_window`; menus: `set_application_menu`, `popup_menu`); elsewhere they do nothing. In TSX, `nsh/mobile` holds the APIs of iOS and Android (some of them one platform's), `nsh/desktop` those of the desktops. Both can be imported on every platform, so one bundle runs everywhere: on other platforms their functions return at once and their components take no room. Each exports `isAvailable`, which is `true` on its own platforms; `platform.os` tells them apart.
 
 ### nsh/mobile
 
@@ -104,7 +112,7 @@ In Rust, the APIs only one platform has are functions of `nsh_core::prelude` (`o
 
 | Rust | TSX | Description |
 |---|---|---|
-| `on_back_press(listener)` | `BackHandler.onBackPress(listener)` | Listens to the back button after dialogs, before stacks; return `true` when handled. The listener goes with the component (or effect) that added it; in TSX the call also returns a function that stops it earlier. |
+| `on_back_press(listener)` | `BackHandler.on("press", listener)` | Listens to the back button after dialogs, before stacks; return `true` when handled. The listener goes with the component (or effect) that added it; in TSX the call also returns a function that stops it earlier. |
 | | `BackHandler.exitApp()` | Leaves the app. |
 
 ```rust tabs
@@ -131,7 +139,7 @@ import { BackHandler } from "nsh/mobile";
 function Player() {
   // Back leaves full screen before it leaves the page. The listener goes
   // with the component.
-  BackHandler.onBackPress(() => {
+  BackHandler.on("press", () => {
     if (!fullScreen()) return false;
     fullScreen.set(false);
     return true;
@@ -159,7 +167,7 @@ Rust apps draw their own title bars with `nsh_core::element::desktop` ([Building
 | `Window` | The window: `setTitle`, `setTitleBar({ style: "hidden" })` for a title bar of the app's own, `minimize`, `toggleMaximize`, `toggleFullScreen`, `close`. |
 | `titleBar` | The hidden title bar's height and the room the system's window controls take (reactive). |
 | `Menu` | `setApplicationMenu(items)` (the menu bar, with shortcuts) and `popup(items, at?)` (context menus). |
-| `isAvailable` | `true` on macOS, Windows and Linux. |
+| `isAvailable` | `true` where the window and menu APIs work: macOS, Windows and Linux. Desktop browsers have `platform.desktop` and keep the browser's window and menus. |
 
 See [nsh/desktop](../modules/nsh-desktop.md).
 
@@ -196,7 +204,7 @@ In an app embedded in a native one, the host app's view controller decides the s
 
 ## platform.os and platform.select
 
-`os()` in Rust and the `platform` constant from `nsh` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst`; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when the idiom is `"desktop"`). See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
+`os()` in Rust and the `platform` constant from `nsh` in TSX tell you where the app runs: `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web`, and `platform.os` `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"` (Mac Catalyst is `"ios"`, with `platform.catalyst` in either of its idioms; the [macOS backend](./macos.md) is `"macos"`, the [Linux backend](./linux.md) `"linux"` and the [Windows backend](./windows.md) `"windows"`, and their elements apply their `desktop` props; [browsers](./web.md) are `"web"`, and apply `desktop` props too when `platform.desktop` is `true`). See [Device and environment](./device-and-environment.md#the-platform) for the version, the idiom and the rest.
 
 ```rust tabs
 use nsh_core::{element::Os, prelude::*};
@@ -216,7 +224,7 @@ if (platform.os === "android") {
 
 ### platform.select
 
-In Rust a `match os()` chooses the value, with `is_desktop()` for the desktops. In TSX, `platform.select(spec)` returns the value for this platform. It looks for the OS's own key, then `mobile` (iOS, Android, phone and tablet browsers) or `desktop` (macOS, Windows, Linux, desktop browsers), then `native` (every platform but the web), then `default`:
+In Rust a `match os()` chooses the value, with `is_desktop()` for the desktops. In TSX, `platform.select(spec)` returns the value for this platform. It looks for the OS's own key, then `desktop` or `mobile` by [the rule above](#desktop-and-mobile) (`platform.desktop`), then `native` (every platform but the web), then `default`:
 
 Terminal surfaces report `platform.renderer === "terminal"` and `platform.isTerminal === true`, with the host OS in `platform.os`. They select `terminal`, then the host OS, then `native`, then `default`. Graphical desktop surfaces apply `desktop={{…}}` props.
 

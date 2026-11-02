@@ -203,7 +203,7 @@ export function Dock() {
   const wide = untracked(windowSize).width >= 600;
   const shown = signal<Record<string, boolean>>({ left: wide, bottom: wide });
   let area!: DockAreaRef;
-  const pointer = platform.idiom === "desktop";
+  const pointer = platform.desktop;
 
   return (
     <View class="flex-1 bg-background" style={{ padding: desktop() ? 24 : 16, gap: desktop() ? 16 : 12 }}>

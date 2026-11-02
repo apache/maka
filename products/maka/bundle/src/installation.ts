@@ -42,7 +42,7 @@ export function installation(
     result: 'json' | 'image' | 'computer' = 'json',
   ) =>
     tools.push({
-      import: service,
+      target: { kind: 'import', name: service },
       method,
       name,
       description,
@@ -159,8 +159,54 @@ export function installation(
       description +
         ' The maka-plugin-authoring skill documents the shared NSH UI contract. Mutation outcomes use the original operation receipt; an unknown result must be recovered, not retried as a new edit.',
     );
+  add(
+    'settings',
+    'models',
+    'ModelList',
+    'List selectable models from enabled connections, with exact model selections (connectionId, revision, modelId), supported thinking levels, defaults and limits. Search model IDs, labels and connection names with query, or filter by connectionId. Use selection as SessionSend/SessionResume model. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not a live provider health check.',
+  );
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
   add('skills', 'load', 'Skill', 'Read a selected skill and its resources.');
+  for (const [method, name, description] of [
+    ['list', 'SessionList', 'Find conversations by title, project and status.'],
+    [
+      'observe',
+      'SessionRead',
+      'Read a conversation, its current revision, model and execution state.',
+    ],
+    ['history', 'SessionHistory', 'Read a conversation history by cursor.'],
+    ['create', 'SessionCreate', 'Create a conversation in a selected workspace.'],
+    ['fork', 'SessionFork', 'Fork a conversation at a selected history position.'],
+    [
+      'metadata',
+      'SessionUpdate',
+      'Update a conversation title, labels or settings using its current revision.',
+    ],
+    [
+      'changeSession',
+      'SessionChange',
+      'Archive, restore or delete a conversation through its normal lifecycle.',
+    ],
+    [
+      'send',
+      'SessionSend',
+      'Send instructions or follow-up information to a conversation. Admission does not mean completion.',
+    ],
+    ['stop', 'SessionStop', 'Request that a conversation stop its current execution.'],
+    ['resume', 'SessionResume', 'Resume a conversation execution.'],
+    ['queue', 'SessionQueue', 'Read a conversation pending messages.'],
+    ['editQueue', 'SessionEditQueue', 'Edit or remove a queued conversation message.'],
+    ['work', 'SessionWork', 'Read the execution and progress of a conversation.'],
+    ['execution', 'SessionExecution', 'Read the outcome of an original conversation message.'],
+  ] as const)
+    tools.push({
+      target: { kind: 'export', name: 'agent' },
+      method,
+      name,
+      description,
+      result: 'json',
+      confirmation: 'preapproved',
+    });
   const agent: CompositionConfiguration['agent'] = {
     toolDiscovery: true,
     isolatedWorkspaces: true,
@@ -171,6 +217,8 @@ export function installation(
     recall: true,
     scheduledTasks: true,
     todo: true,
+    // Registers SendUser for the Bot Session only; nothing runs until the user opens the Bot.
+    bot: true,
     goals: true,
     plans: true,
     automaticTitles: true,

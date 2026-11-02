@@ -935,17 +935,29 @@ impl Host {
     pub async fn shutdown(&self) -> Result<()> {
         self.stop.cancel();
         let sessions: Vec<_> = self.sessions.lock().unwrap().values().cloned().collect();
+        let mut errors = Vec::new();
         for session in sessions {
-            session.peer.replace(vec![])?;
-            session.transport.close().await?;
+            if let Err(error) = session.peer.replace(vec![]) {
+                errors.push(error);
+            }
+            if let Err(error) = session.transport.close().await {
+                errors.push(error);
+            }
         }
-        self.application.shutdown().await?;
-        self.access
-            .shutdown()
-            .await
-            .map_err(|error| error.to_string())?;
-        self.store.drain().await;
+        if let Err(error) = self.application.shutdown().await {
+            errors.push(error);
+        }
+        if let Err(error) = self.access.shutdown().await {
+            errors.push(error.to_string());
+        }
+        if let Err(error) = self.store.shutdown().await {
+            errors.push(error.to_string());
+        }
         self.sessions.lock().unwrap().clear();
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
     }
 }

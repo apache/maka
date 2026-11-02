@@ -9,6 +9,10 @@
 import { BASE, REPO_URL, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, url, type Lang } from '../lib/site';
 import { hasPlayer } from '../lib/demo.js';
 import HeroField from './HeroField.astro';
+import Badge from './ui/Badge.astro';
+import Button from './ui/Button.astro';
+import TabsList from './ui/TabsList.astro';
+import TabsTrigger from './ui/TabsTrigger.astro';
 
 export interface Props { lang?: Lang }
 const { lang = 'en' } = Astro.props;
@@ -59,9 +63,9 @@ const copy = zh
         ['gauge', 'Retained Mode', '只更新变化的视图，120 FPS，静止时几乎不占 CPU'],
         ['spark', 'AI-Friendly', '一套模型、一个 nsh 命令行；发布后还能下发 AI 生成的签名界面'],
       ],
-      start: '阅读简介',
+      start: '快速开始',
       try: '在线试用',
-      gallery: '打开示例应用',
+      gallery: '示例',
       meta: [
         ['scale', '开源 · Apache-2.0'],
         ['building', '由长桥（Longbridge）构建'],
@@ -115,9 +119,9 @@ const copy = zh
         ['gauge', 'Retained views', 'only what changed is updated: 120 FPS, near-idle CPU at rest'],
         ['spark', 'AI-friendly', 'one app model, one nsh command line, and signed AI-generated UI delivered after release'],
       ],
-      start: 'Read the introduction',
-      try: 'Try the playground',
-      gallery: 'Open the gallery',
+      start: 'Get started',
+      try: 'Playground',
+      gallery: 'Gallery',
       meta: [
         ['scale', 'Open source · Apache-2.0'],
         ['building', 'Built at Longbridge'],
@@ -267,7 +271,7 @@ const snippets: Record<string, string> = {
     `${cm('# ios · android · macos · windows · linux · gpui · web')}`,
   ].join('\n'),
 };
-const heroSnippet = `nsh init my-app ${k('--template')} ${st('rust')}`;
+const heroSnippet = 'nsh init my-app';
 
 // The same counter in both languages, Rust first.
 const langs = [
@@ -358,9 +362,9 @@ const icon = (name: string, size = 16) =>
           {copy.points.map(([i, label, text]) => <li><Fragment set:html={icon(i, 16)} /><span><strong>{label}</strong>{text}</span></li>)}
         </ul>
         <div class="hero__actions">
-          <a href={link('docs')} class="btn btn--primary">{copy.start}<Fragment set:html={icon('arrow')} /></a>
-          <a href={link('gallery')} class="btn">{copy.gallery}</a>
-          <a href={link('playground')} class="btn">{copy.try}</a>
+          <Button size="lg" href={link('docs')}>{copy.start}<Fragment set:html={icon('arrow')} /></Button>
+          <Button size="lg" variant="secondary" href={link('gallery')}>{copy.gallery}</Button>
+          <Button size="lg" variant="secondary" href={link('playground')}>{copy.try}</Button>
         </div>
         <div class="hero__platforms">
           <span><Fragment set:html={icon('devices', 14)} />{copy.runsOn}</span>
@@ -389,7 +393,7 @@ const icon = (name: string, size = 16) =>
         </div>
         <figcaption class="legend">
           <span>{copy.demo.caption}</span>
-          <button type="button" class="legend__replay" data-replay>{copy.replay}</button>
+          <Button variant="link" size="sm" class="legend__replay" data-replay>{copy.replay}</Button>
         </figcaption>
       </figure>
     </div>
@@ -438,7 +442,7 @@ const icon = (name: string, size = 16) =>
           <article class={`cap cap--${c.id}`}>
             <h3><Fragment set:html={icon(c.icon)} />{c.title}</h3>
             <p>{c.body}</p>
-            <ul class="chips">{c.chips.map((x) => <li>{x}</li>)}</ul>
+            <ul class="chips">{c.chips.map((x) => <li><Badge variant="secondary">{x}</Badge></li>)}</ul>
             <div class={`mini mini--${c.id}`} aria-hidden="true">
               {c.id === 'layout' && (
                 <div class="mini-layout">
@@ -480,10 +484,12 @@ const icon = (name: string, size = 16) =>
         <a class="use__cta" href={link('docs/rust')}>{copy.langCta}<Fragment set:html={icon('arrow', 14)} /></a>
       </header>
       <div class="langs" data-langs>
-        <div class="langs__tabs" role="tablist">
-          {langs.map((l, i) => (
-            <button type="button" role="tab" id={`lang-tab-${l.id}`} aria-controls={`lang-panel-${l.id}`} aria-selected={i === 0 ? 'true' : 'false'} tabindex={i === 0 ? 0 : -1}>{l.label}</button>
-          ))}
+        <div class="langs__bar">
+          <TabsList class="langs__tabs" size="xs">
+            {langs.map((l, i) => (
+              <TabsTrigger id={`lang-tab-${l.id}`} aria-controls={`lang-panel-${l.id}`} selected={i === 0}>{l.label}</TabsTrigger>
+            ))}
+          </TabsList>
           <span class="langs__file" data-lang-file>{langs[0].file}</span>
         </div>
         {langs.map((l, i) => (
@@ -508,7 +514,7 @@ const icon = (name: string, size = 16) =>
           <article class={`cap cap--${c.id}`}>
             <h3><Fragment set:html={icon(c.icon)} />{c.title}</h3>
             <p>{c.body}</p>
-            <ul class="chips">{c.chips.map((x) => <li>{x}</li>)}</ul>
+            <ul class="chips">{c.chips.map((x) => <li><Badge variant="secondary">{x}</Badge></li>)}</ul>
             <div class={`mini mini--${c.id}`} aria-hidden="true">
               {c.id === 'fast' && (
                 <div class="mini-fast">
@@ -617,7 +623,7 @@ const icon = (name: string, size = 16) =>
       </div>
       <div>
         <p>{copy.principleBody}</p>
-        <a href={link('docs/getting-started')} class="btn btn--primary">{copy.principleCta}<Fragment set:html={icon('arrow')} /></a>
+        <Button size="lg" href={link('docs/getting-started')}>{copy.principleCta}<Fragment set:html={icon('arrow')} /></Button>
       </div>
     </div>
   </section>
@@ -691,18 +697,14 @@ const icon = (name: string, size = 16) =>
   .section-head p { margin: 1rem 0 0; color: var(--muted-foreground); font-size: 1.02rem; line-height: 1.6; }
 
   /* Buttons as in the gallery: dark raised secondary, light primary. */
-  .btn { display: inline-flex; align-items: center; gap: 0.5rem; height: 2.5rem; padding: 0 1.05rem; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--finish-raised-bg); box-shadow: var(--finish-raised); color: var(--foreground); font-size: 0.9rem; font-weight: 600; text-decoration: none; transition: border-color .15s, filter .15s; }
-  .btn:hover { border-color: var(--border-hover); filter: brightness(1.08); }
-  .btn--primary { border-color: transparent; background: var(--finish-primary-bg); box-shadow: var(--finish-primary); color: var(--brand-contrast); }
-  .btn--primary:hover { border-color: transparent; background: var(--finish-primary-hover-bg); filter: none; }
 
   /* Hero */
   .hero { overflow: hidden; }
   /* The accent's glow behind the device, as behind the app icon's mark. */
   .hero__inner { z-index: 1; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4rem; padding-top: 4.5rem; padding-bottom: 4.5rem; }
   .hero__copy { min-width: 0; max-width: 36rem; }
-  .eyebrow { display: inline-flex; align-items: center; gap: 0.5rem; padding: 0.3rem 0.7rem; border: 1px solid color-mix(in srgb, var(--citrus) 28%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--citrus) 9%, transparent); color: var(--citrus); font-size: 0.78rem; font-weight: 600; }
-  .eyebrow__dot { width: 6px; height: 6px; border-radius: 50%; background: var(--citrus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--citrus) 20%, transparent); }
+  .eyebrow { display: inline-flex; align-items: center; gap: 0.55rem; padding: 0.32rem 0.8rem 0.32rem 0.65rem; border: 1px solid var(--border); border-radius: 999px; background: color-mix(in srgb, var(--foreground) 3%, transparent); color: var(--muted-foreground); font-size: 0.78rem; font-weight: 500; line-height: 1.2; letter-spacing: 0.01em; }
+  .eyebrow__dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--citrus); box-shadow: 0 0 8px color-mix(in srgb, var(--citrus) 70%, transparent); }
   h1 { margin: 1.25rem 0 0; font-size: clamp(2.6rem, 5.2vw, 4.1rem); line-height: 1.02; letter-spacing: -0.045em; font-weight: 750; }
   html[lang^="zh"] h1 { letter-spacing: -0.01em; line-height: 1.16; font-size: clamp(1.9rem, 4.2vw, 2.9rem); }
   .hero__lead { margin: 1.25rem 0 0; color: var(--muted-foreground); font-size: 1.1rem; line-height: 1.6; }
@@ -711,7 +713,7 @@ const icon = (name: string, size = 16) =>
   .hero__platforms > span { display: flex; align-items: center; gap: 0.55rem; color: var(--muted-foreground); font-size: 0.85rem; }
   .hero__platforms > span :global(svg) { flex-shrink: 0; color: var(--faint); }
   .hero__platforms ul { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0; padding: 0; list-style: none; }
-  .hero__platforms li { padding: 0.25rem 0.65rem; border: 1px solid var(--border); border-radius: 999px; background: var(--finish-raised-bg); box-shadow: var(--finish-raised); font-size: 0.8rem; font-weight: 600; }
+  .hero__platforms li { display: inline-flex; align-items: center; height: 1.85rem; padding: 0 0.7rem; line-height: 1; border: 1px solid var(--border); border-radius: 999px; background: var(--finish-raised-bg); box-shadow: var(--finish-raised); font-size: 0.8rem; font-weight: 600; }
   .hero__points { display: grid; gap: 0.7rem; margin: 1.5rem 0 0; padding: 0; list-style: none; }
   .hero__points li { display: flex; align-items: flex-start; gap: 0.65rem; color: var(--muted-foreground); font-size: 0.93rem; line-height: 1.5; }
   .hero__points :global(svg) { flex-shrink: 0; margin-top: 0.15rem; color: var(--citrus); }
@@ -719,9 +721,13 @@ const icon = (name: string, size = 16) =>
   .hero__meta { display: flex; flex-wrap: wrap; column-gap: 1.25rem; row-gap: 0.45rem; margin: 1.25rem 0 0; padding: 0; list-style: none; color: var(--muted-foreground); font-size: 0.85rem; }
   .hero__meta li { display: flex; align-items: center; gap: 0.55rem; }
   .hero__meta :global(svg) { flex-shrink: 0; color: var(--faint); }
-  .hero__snippet { display: inline-flex; align-items: stretch; margin-top: 1.5rem; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--code-bg); box-shadow: var(--finish-inset); font: 0.78rem/1 var(--font-mono); overflow: hidden; max-width: 100%; }
-  .hero__snippet span { padding: 0.55rem 0.65rem; border-right: 1px solid var(--line); color: var(--faint); }
+  .hero__snippet { display: inline-flex; align-items: stretch; margin-top: 1.5rem; border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--code-bg); box-shadow: var(--finish-inset); font: 0.78rem/1 var(--font-mono); overflow: hidden; max-width: 100%; }
+  .hero__snippet span { padding: 0.55rem 0.65rem; border-right: 1px solid var(--border); color: var(--faint); }
   .hero__snippet code { padding: 0.55rem 0.75rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--code-fg); }
+  /* On the light page a raised white field, as the chips above it, its
+     label on the muted surface. */
+  :global(html.light) .hero__snippet { background: var(--card); box-shadow: var(--shadow-raise); }
+  :global(html.light) .hero__snippet span { background: var(--muted); color: var(--muted-foreground); }
 
   /* The live chat in a card frame of the site's design (the card finish),
      a slim bar with the file and a live badge, the app on an inset surface;
@@ -729,7 +735,7 @@ const icon = (name: string, size = 16) =>
   .stage { --w: 392px; margin: 0; display: flex; flex-direction: column; align-items: center; gap: 1.1rem; }
   .device {
     width: var(--w); padding: 0 8px 8px; border: 1px solid var(--border); border-radius: 20px;
-    background: var(--card) var(--finish-card-bg); box-shadow: var(--finish-card), var(--shadow-window);
+    background: var(--card) var(--finish-card-bg); box-shadow: var(--finish-card);
   }
   .device__bar { display: flex; align-items: center; gap: 8px; height: 40px; margin: 0 -8px; padding: 0 14px; border-radius: 20px 20px 0 0; background: linear-gradient(180deg, color-mix(in srgb, var(--foreground) 3%, transparent), transparent); }
   .device__tile { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--accent-border); border-radius: 7px; background: var(--finish-accent-bg); box-shadow: var(--finish-accent); color: var(--on-citrus); }
@@ -745,7 +751,6 @@ const icon = (name: string, size = 16) =>
   .device__pending { display: grid; place-items: center; height: 100%; margin: 0; padding: 2rem; color: var(--muted-foreground); font-size: 0.85rem; text-align: center; }
 
   .legend { display: grid; gap: 8px; justify-items: start; max-width: var(--w); font-size: 0.8rem; line-height: 1.5; color: var(--muted-foreground); }
-  .legend__replay { padding: 0; border: 0; background: none; color: var(--foreground); font: inherit; font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--brand-line); }
 
   /* Capability grid: hairline cells, one diagram box each. */
   .caps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem; }
@@ -754,7 +759,7 @@ const icon = (name: string, size = 16) =>
   .cap h3 :global(svg) { flex-shrink: 0; color: var(--citrus); }
   .cap p { margin: 0.6rem 0 0; color: var(--muted-foreground); font-size: 0.9rem; line-height: 1.6; }
   .chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 1rem 0 1.25rem; padding: 0; list-style: none; }
-  .chips li { padding: 0.15rem 0.5rem; border: 1px solid var(--border); border-radius: 6px; background: var(--raised); color: var(--muted-foreground); font: 0.7rem/1.4 var(--font-mono); }
+  .chips :global([data-slot="badge"]) { font: 0.7rem/1.4 var(--font-mono); }
   .mini { margin-top: auto; height: 104px; padding: 14px 16px; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--inset); box-shadow: var(--finish-inset); overflow: hidden; }
 
   .mini-code { position: relative; display: grid; gap: 7px; padding-top: 22px; }
@@ -805,9 +810,7 @@ const icon = (name: string, size = 16) =>
   .langs-band { display: grid; grid-template-columns: minmax(0, 22rem) minmax(0, 1fr); gap: 3rem; align-items: start; }
   .langs-band .use__cta { padding-top: 1.25rem; }
   .langs { min-width: 0; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--code-bg); box-shadow: var(--finish-inset); overflow: hidden; }
-  .langs__tabs { display: flex; align-items: center; gap: 0.25rem; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); }
-  .langs__tabs button { padding: 0.35rem 0.75rem; border: 1px solid transparent; border-radius: 6px; background: none; color: var(--muted-foreground); font: 600 0.78rem/1 var(--font-mono); cursor: pointer; }
-  .langs__tabs button[aria-selected="true"] { border-color: var(--border); background: var(--finish-raised-bg); box-shadow: var(--finish-raised); color: var(--foreground); }
+  .langs__bar { display: flex; align-items: center; gap: 0.75rem; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); }
   .langs__file { margin-left: auto; padding-right: 0.4rem; color: var(--faint); font: 0.72rem/1 var(--font-mono); }
   .langs__code { margin: 0; padding: 1rem 1.1rem; font: 0.78rem/1.65 var(--font-mono); color: var(--code-fg); overflow-x: auto; white-space: pre; }
   /* Three uses */

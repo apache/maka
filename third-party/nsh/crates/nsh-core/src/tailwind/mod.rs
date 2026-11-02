@@ -71,6 +71,18 @@ pub mod state {
     /// `accessibilityState.expanded`, which `Popover` and `Menu` set on
     /// their trigger. Set by the core, never reported by the platform.
     pub const EXPANDED: u16 = 256;
+    /// The view is a toggle button that is on (`aria-pressed:`): its
+    /// `accessibilityState.pressed` is `true` (not mixed). Not
+    /// [`PRESSED`], a press in progress (`active:`). Set by the core,
+    /// never reported by the platform.
+    pub const ARIA_PRESSED: u16 = 512;
+    /// The view is busy (`aria-busy:`): its `accessibilityState.busy`.
+    /// Set by the core, never reported by the platform.
+    pub const BUSY: u16 = 1024;
+    /// The states the core sets from the accessibility state, which the
+    /// platforms never report.
+    pub(crate) const ACCESSIBILITY: u16 =
+        SELECTED | CHECKED | INDETERMINATE | EXPANDED | ARIA_PRESSED | BUSY;
 }
 
 /// The view's place among its siblings (`first:`, `odd:`, ...).
@@ -384,10 +396,15 @@ pub(crate) mod rank {
     pub(crate) const ACTIVE: Key = Key::new(37);
     pub(crate) const ENABLED: Key = Key::new(38);
     pub(crate) const DISABLED: Key = Key::new(39);
-    /// Tailwind's `aria-*` variants come after the pseudo-classes.
-    pub(crate) const EXPANDED: Key = Key::new(40);
-    pub(crate) const MOTION_SAFE: Key = Key::new(41);
-    pub(crate) const MOTION_REDUCE: Key = Key::new(42);
+    /// Tailwind's `aria-*` variants come after the pseudo-classes, in the
+    /// order of their names.
+    pub(crate) const ARIA_BUSY: Key = Key::new(40);
+    pub(crate) const ARIA_CHECKED: Key = Key::new(41);
+    pub(crate) const EXPANDED: Key = Key::new(42);
+    pub(crate) const ARIA_PRESSED: Key = Key::new(43);
+    pub(crate) const ARIA_SELECTED: Key = Key::new(44);
+    pub(crate) const MOTION_SAFE: Key = Key::new(45);
+    pub(crate) const MOTION_REDUCE: Key = Key::new(46);
     /// `max-*` breakpoints, widest first.
     pub(crate) const MAX: u16 = 50;
     /// Breakpoints and `min-*`, narrowest first.
@@ -781,12 +798,7 @@ impl ClassList {
 
     fn add(&mut self, rule: Rule) {
         self.deps |= rule.cond.deps();
-        self.tracked |= rule.cond.states
-            & !(state::DISABLED
-                | state::SELECTED
-                | state::CHECKED
-                | state::INDETERMINATE
-                | state::EXPANDED);
+        self.tracked |= rule.cond.states & !(state::DISABLED | state::ACCESSIBILITY);
         if rule.cond.states & state::FOCUS_WITHIN != 0 {
             self.tracked |= state::FOCUS_WITHIN;
         }
@@ -1128,9 +1140,25 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
             states(cond, DISABLED);
             rank::DISABLED
         }
+        "aria-busy" => {
+            states(cond, BUSY);
+            rank::ARIA_BUSY
+        }
+        "aria-checked" => {
+            states(cond, CHECKED);
+            rank::ARIA_CHECKED
+        }
         "aria-expanded" => {
             states(cond, EXPANDED);
             rank::EXPANDED
+        }
+        "aria-pressed" => {
+            states(cond, ARIA_PRESSED);
+            rank::ARIA_PRESSED
+        }
+        "aria-selected" => {
+            states(cond, SELECTED);
+            rank::ARIA_SELECTED
         }
         "motion-safe" => {
             cond.reduce_motion = Some(false);
@@ -1189,7 +1217,11 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
                     "selected" => (SELECTED, rank::SELECTED),
                     "checked" => (CHECKED, rank::CHECKED),
                     "indeterminate" => (INDETERMINATE, rank::INDETERMINATE),
+                    "aria-busy" => (BUSY, rank::ARIA_BUSY),
+                    "aria-checked" => (CHECKED, rank::ARIA_CHECKED),
                     "aria-expanded" => (EXPANDED, rank::EXPANDED),
+                    "aria-pressed" => (ARIA_PRESSED, rank::ARIA_PRESSED),
+                    "aria-selected" => (SELECTED, rank::ARIA_SELECTED),
                     _ => return None,
                 };
                 let entry = cond.group.get_or_insert_with(|| (name.into(), 0));

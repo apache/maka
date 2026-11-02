@@ -320,7 +320,7 @@ versions and other platforms. The glass follows the view's size and rounded corn
 
 - `outlineWidth`, `outlineColor`, `outlineStyle`, `outlineOffset` (`.outline(..)`, `.outline_color(..)`, `.outline_dashed()`, `.outline_offset(..)`): a line outside the border that takes no space (negative offsets draw inside). `outlineStyle: "none"` (or `"hidden"`, `.outline_none()`) hides the outline whatever its width, as in CSS.
 - `opacity` (`.opacity(n)`): 0 to 1, applied to the view and its children.
-- `visibility: "hidden"`: the view is not drawn but keeps its space, and screen readers skip it and its subtree, as in a browser. `display: "none"` (`.hidden()`) removes it from layout.
+- `visibility: "hidden"` (`.invisible()` in Rust): the view is not drawn but keeps its space, and screen readers skip it and its subtree, as in a browser. `display: "none"` (`.hidden()`) removes it from layout.
 - `zIndex` (`.z_index(n)`): the order among siblings, also the native stacking order (stable for equal values).
 - `cursor` (`.cursor(..)`, `.cursor_pointer()`): the pointer shape over the view, for pointers and desktops.
 

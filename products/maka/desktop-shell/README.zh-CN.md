@@ -42,8 +42,12 @@ just build
 
 `--root` 可选，指定业务 Host Root，默认使用 `~/.maka/application/host`。启动器把缺失的 Root 初始化为标准只读业务 Host，或重开其已保存的部署；随后对照已连接 Host 的端点、来源和 epoch 校验发现信息，并把 `MAKA_HOST_ROOT`、`MAKA_HOST_ENDPOINT` 和 `MAKA_HOST_EPOCH` 传给 shell，同时用 `MAKA_LAUNCHER` 传入启动器自身的路径。shell 以与终端 shell 相同的方式接入该 Host，并把客户端数据保存在该 Root 下。
 
+从访达、程序坞或文件管理器直接打开时，shell 拿不到这些变量。它会运行所在目录里的 `maka desktop`（macOS 上是 `Maka.app` 旁边，其他平台是 shell 旁边），然后退出；由这个启动器为默认 Root 打开窗口。
+
 关闭窗口、应用菜单的退出项和退出快捷键都会关闭窗口；shell 随后与 Host 断开并退出。启动器同样只断开连接，因此 Host 会完成已接受的工作，在没有客户端后停止。取消启动器只会停止它启动的 shell。
 
 窗口会在上次关闭时所在的显示器上打开，位置、大小以及全屏或最大化状态都与当时相同；这些记录在 Root 的 `clients/desktop-window.json` 里。那个显示器已断开时，窗口在主显示器上居中打开；窗口顶边留在显示器上的部分不够拖动时，窗口在那个显示器上居中打开。
 
 窗口打开期间如果 Host 停止（崩溃，或在仍有客户端时被强制退役），shell 会在几秒内察觉，连接该 Root 的下一个 Host（没有运行中的 Host 时像 `maka desktop` 一样经由启动器启动），并在同一个窗口里重新加载工作台。工作台从头开始，与打开桌面时相同；停止的 Host 正在执行的那一轮显示为已停止。连上下一个 Host 之前，窗口保留原来的工作台，其中的操作都会失败；shell 按逐步拉长的间隔重试，最长 30 秒。只有当它打开的那个 Root 仍在原路径时才会重连：被移走或删除的 Root 不会被重新初始化。
+
+在 macOS 上，把 `MAKA_APPKIT` 设为非空值后，工作台改用 NSH 的 AppKit 后端运行，而不是 GPUI。这个后端仍在实验阶段，也不是默认后端。它把窗口框架保存在应用的 defaults 里，而不是 `clients/desktop-window.json`，也不保存全屏状态。Host 停止后，窗口保留原来的工作台，不会重连。需要重载界面的插件改动会被拒绝，也不发送系统通知。

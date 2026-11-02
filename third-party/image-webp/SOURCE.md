@@ -39,3 +39,9 @@ The raw VP8 API without a container retains its intrinsic-dimension behavior;
 container callers use the supplied-dimension path. Native image admission still
 limits encoded bytes, outer dimensions/pixels, aggregate allocations and actual
 concurrent jobs. The image crate's `max_alloc` is not claimed as an allocator sandbox.
+
+The local image-view decoder also propagates its existing memory allowance into
+VP8L and alpha Huffman groups, checking table allocations before building them.
+VP8 partition buffers grow only from encoded bytes actually read, and animated
+canvas allocation uses checked pixel arithmetic. These checks keep request image
+preparation accounting effective for compressed inputs and truncated partitions.

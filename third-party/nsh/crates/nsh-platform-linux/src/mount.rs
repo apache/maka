@@ -215,6 +215,10 @@ impl Mounter {
                     ViewKind::Stack => crate::navigation::stack_resized(surface, view),
                     ViewKind::Scroll => crate::scroll::resized(surface, view),
                     ViewKind::Canvas => view.changed(),
+                    ViewKind::Image => {
+                        crate::shader::resized(view);
+                        crate::image::resized(surface, view);
+                    }
                     _ => crate::shader::resized(view),
                 }
             }
@@ -233,7 +237,11 @@ impl Mounter {
                 content,
             } => {
                 if let Some(view) = self.get(*id) {
+                    let old = view.state().text.as_ref().map(|t| t.text.clone());
                     crate::text::set(view, text, layout, *content);
+                    if let Some(old) = old {
+                        crate::transition::text_changed(surface, view, &old, text);
+                    }
                     crate::selectable_view::touched(surface, view);
                     crate::access::text_changed(view);
                 }

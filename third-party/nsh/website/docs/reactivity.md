@@ -489,7 +489,7 @@ function ProfileCard(props: { user: User | undefined }) {
 }
 ```
 
-A failure goes to the nearest boundary above where it happened, and one in a fallback to the boundary above that. Without a boundary, the failure is reported as an uncaught error (the development error overlay, the log). In TSX, a `fallback` that takes no arguments is shown as it is: `fallback={<Text>Unavailable</Text>}`.
+A failure goes to the nearest boundary above where it happened, and one in a fallback to the boundary above that. Without a boundary, the failure is reported as an uncaught error (the development error overlay, the log). In TSX, a `fallback` element is shown as it is (`fallback={<Text>Unavailable</Text>}`), and a function is called with the error and `reset`, whatever parameters it declares.
 
 ## What runs, and when
 

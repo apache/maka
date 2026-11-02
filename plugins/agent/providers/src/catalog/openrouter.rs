@@ -77,6 +77,10 @@ pub(crate) fn model(row: &Value) -> Result<ModelInfo, String> {
     }
     let mut model = ModelInfo {
         id: id.into(),
+        image_input: super::models_dev::image_input(
+            row,
+            row.pointer("/architecture/input_modalities"),
+        )?,
         display_name: text(row.get("name"))?,
         description: text(row.get("description"))?,
         context_window: token_limit(row.get("context_length"))

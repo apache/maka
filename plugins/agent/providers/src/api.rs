@@ -28,6 +28,7 @@ use maka_agent_ports::provider::Definition;
 use maka_agent_ports::provider::Descriptor;
 use maka_agent_ports::provider::Error;
 use maka_agent_ports::provider::Model;
+use maka_agent_ports::provider::Policy;
 use maka_agent_ports::provider::Provider;
 use maka_agent_ports::provider::Resolve;
 use serde::{Deserialize, Serialize};
@@ -154,38 +155,50 @@ struct Selection<'a> {
 
 impl ApiProvider {
     fn definition(&self) -> Result<Definition, String> {
+        let policy = self
+            .facts
+            .policy
+            .get_or_init(|| self.compile_policy())
+            .clone()?;
+        Ok(Definition::new(policy, Arc::new(self.clone())))
+    }
+
+    fn compile_policy(&self) -> Result<Arc<Policy>, String> {
         let authentication =
             authentication::methods(self.facts.auth_kind).map_err(|error| error.to_string())?;
-        Definition::new(
-            Descriptor {
-                label: match self.id {
-                    "openai-compatible" => "Chat Completions".into(),
-                    "openai-responses-compatible" => "Responses".into(),
-                    "anthropic-compatible" => "Anthropic Messages".into(),
-                    _ => self.facts.label.clone(),
-                },
-                custom_endpoint: self.facts.base_url.is_empty(),
-                configuration_schema: serde_json::to_value(schemars::schema_for!(Configuration))
-                    .map_err(|error| error.to_string())?,
-                configuration_defaults: if self.facts.base_url.is_empty() {
-                    json!({})
-                } else {
-                    json!({"baseUrl":self.facts.base_url})
-                },
-                authentication,
-                anonymous: matches!(
-                    self.facts.auth_kind,
-                    AuthKind::None | AuthKind::OptionalApiKey
-                ),
-                discovery: true,
+        Policy::new(Descriptor {
+            label: match self.id {
+                "openai-compatible" => "Chat Completions".into(),
+                "openai-responses-compatible" => "Responses".into(),
+                "anthropic-compatible" => "Anthropic Messages".into(),
+                _ => self.facts.label.clone(),
             },
-            Arc::new(self.clone()),
-        )
+            custom_endpoint: self.facts.base_url.is_empty(),
+            configuration_schema: serde_json::to_value(schemars::schema_for!(Configuration))
+                .map_err(|error| error.to_string())?,
+            configuration_defaults: if self.facts.base_url.is_empty() {
+                json!({})
+            } else {
+                json!({"baseUrl":self.facts.base_url})
+            },
+            authentication,
+            anonymous: matches!(
+                self.facts.auth_kind,
+                AuthKind::None | AuthKind::OptionalApiKey
+            ),
+            discovery: true,
+        })
+        .map(Arc::new)
         .map_err(|error| error.to_string())
     }
 
     fn model_metadata(&self, model: ModelInfo, overrides: Option<&ModelOverride>) -> ModelMetadata {
-        let reported = metadata::enrich(&self.snapshot, self.id, model);
+        let reported = metadata::enrich(
+            &self.snapshot,
+            self.id,
+            model,
+            overrides.and_then(|value| value.catalog_model.as_ref()),
+        );
         let info =
             overrides.map_or_else(|| reported.clone(), |overrides| overrides.apply(&reported));
         let thinking_levels = overrides
@@ -205,10 +218,21 @@ impl ApiProvider {
     fn prepare(&self, request: Resolve) -> Result<Model, Error> {
         let configuration = Configuration::read(&request.connection)?;
         let ModelMetadata {
-            info,
+            mut info,
             thinking_levels,
             default_thinking_level,
         } = self.model_metadata(request.model, request.overrides.as_ref());
+        // Public route limits describe the provider endpoint, not a model name
+        // served by an arbitrary user-selected gateway.
+        let canonical_endpoint =
+            maka_agent_facts::configuration::validation::normalize_base_url(&self.facts.base_url)
+                .ok();
+        if canonical_endpoint.as_deref() != Some(configuration.base_url.as_str()) {
+            info.image_input = request
+                .overrides
+                .as_ref()
+                .and_then(|overrides| overrides.image_input.clone());
+        }
         let selection = Selection {
             provider: self.id,
             connection: &request.connection,

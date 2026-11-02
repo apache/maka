@@ -421,7 +421,7 @@ unsafe extern "C" fn call_task(
 }
 
 /// A function starting its task in the JS call (`Later`): what the start
-/// throws throws.
+/// refuses rejects, as every call returning a promise.
 unsafe extern "C" fn call_start(
     cx: *mut JsContext,
     this: JsValue,
@@ -438,7 +438,7 @@ unsafe extern "C" fn call_start(
             crate::web::js::Args::new(argc, argv),
         )
     };
-    crate::classes::start(cx, this, args, |host| start(host).map(RustCall::Task))
+    crate::classes::send(cx, this, args, true, |host| start(host).map(RustCall::Task))
 }
 
 /// A module's object: its functions.
@@ -511,7 +511,7 @@ pub(crate) fn runtime_module(cx: *mut JsContext, specifier: &str, module: &str) 
 }
 
 /// Puts the functions of module `module` of the runtime registry
-/// `specifier` on `obj` (`Image.getSize` on `nsh/image`'s component).
+/// `specifier` on `obj` (`Image.getSize` on `nsh`'s `Image`).
 pub(crate) fn add_runtime_functions(
     cx: *mut JsContext,
     obj: JsValue,

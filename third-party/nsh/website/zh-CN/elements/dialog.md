@@ -1,7 +1,6 @@
 ---
 title: Dialog
 description: Dialog 组件：在所有内容之上的模态界面，用于全屏流程、sheet 和由应用设定样式的对话框。
-order: 21
 group: base
 demo: el-dialog
 ---

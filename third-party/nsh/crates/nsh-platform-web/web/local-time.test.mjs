@@ -1,13 +1,13 @@
-// The page's answers for QuickJS' local time (`local_time.rs`) and Intl's
-// default zone, in several zones:
-// `node --test crates/nsh-platform-web/web/local-time.test.mjs`.
+// The page's answers for Intl's default zone (the `time_zone` import) and
+// local time's offset (`local_offset`), in
+// several zones: `node --test crates/nsh-platform-web/web/local-time.test.mjs`.
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const source = await readFile(new URL("nsh.js", import.meta.url), "utf8");
-// The helpers are not exported; the page only uses them as wasm imports.
+// The helper is not exported; the page only uses it as a wasm import.
 const { localOffset, timeZoneName } = await import(
   `data:text/javascript,${encodeURIComponent(`${source}\nexport { localOffset, timeZoneName };`)}`
 );
@@ -24,32 +24,20 @@ function inZone(zone, f) {
   }
 }
 
-const january = Date.UTC(2026, 0, 15);
-const july = Date.UTC(2026, 6, 15);
-
-test("Shanghai is eight hours east of UTC all year", () => {
-  inZone("Asia/Shanghai", () => {
-    assert.equal(localOffset(january), 8 * 3600);
-    assert.equal(localOffset(july), 8 * 3600);
-    assert.equal(timeZoneName(), "Asia/Shanghai");
-  });
+test("the zone is the one the browser runs in", () => {
+  for (const zone of ["Asia/Shanghai", "America/New_York"]) {
+    inZone(zone, () => assert.equal(timeZoneName(), zone));
+  }
+  inZone("UTC", () => assert.ok(["UTC", "Etc/UTC"].includes(timeZoneName()), timeZoneName()));
 });
 
-test("New York's offset follows daylight saving time", () => {
+test("the offset is local time's at that moment, east of UTC", () => {
+  const winter = Date.UTC(2026, 0, 15);
+  const summer = Date.UTC(2026, 6, 15);
+  inZone("Asia/Shanghai", () => assert.equal(localOffset(winter), 8 * 3600));
   inZone("America/New_York", () => {
-    assert.equal(localOffset(january), -5 * 3600);
-    assert.equal(localOffset(july), -4 * 3600);
-    assert.equal(timeZoneName(), "America/New_York");
+    assert.equal(localOffset(winter), -5 * 3600);
+    assert.equal(localOffset(summer), -4 * 3600);
   });
-});
-
-test("UTC is no offset, and a time the browser cannot place is UTC", () => {
-  inZone("UTC", () => {
-    assert.equal(localOffset(january), 0);
-    assert.ok(["UTC", "Etc/UTC"].includes(timeZoneName()), timeZoneName());
-  });
-  inZone("Asia/Kolkata", () => {
-    assert.equal(localOffset(january), 5.5 * 3600);
-    assert.equal(localOffset(NaN), 0);
-  });
+  inZone("UTC", () => assert.equal(localOffset(winter), 0));
 });

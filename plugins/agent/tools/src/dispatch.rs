@@ -24,15 +24,20 @@ use std::sync::{
 };
 
 use crate::CodeExecutor;
-use maka_agent_facts::event::EventSink;
 use maka_agent_facts::event::Invocation;
+use maka_agent_facts::event::{EventSink, EventWrite};
 use maka_agent_facts::language::Language;
 use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolRejection;
 use maka_agent_facts::tools::ToolError;
-use maka_agent_facts::tools::ToolJournal;
+use maka_agent_facts::tools::{ApprovalContinuation, ToolContinuation, ToolFuture, ToolJournal};
 use serde_json::Value;
+use std::{
+    future::Future,
+    pin::Pin,
+    task::{Context, Poll},
+};
 use tokio_util::sync::CancellationToken;
 
 use crate::availability::{Availability, LoadedTools, SEARCH};
@@ -133,6 +138,75 @@ impl RunTools {
         self.request(current)
     }
 
+    /// Bind fresh custody while retaining the original request's advertised schemas.
+    /// The full bound catalog is checked before Direct selects its explicit names.
+    pub async fn capture_frozen(
+        &self,
+        cwd: &str,
+        composition: &maka_agent_facts::composition::RequestComposition,
+        cancellation: CancellationToken,
+    ) -> Result<RequestTools<'_>, ToolError> {
+        self.code.check()?;
+        let current = self
+            .availability
+            .capture(
+                self.model.clone(),
+                self.journal.invocation().clone(),
+                self.journal.execution_custody(),
+                cwd.into(),
+                cancellation,
+            )
+            .await?;
+        if current.digest() != composition.tool_catalog_digest {
+            return Err(ToolError::Failed(
+                "frozen request tool catalog changed".into(),
+            ));
+        }
+        let mut request = self.request_selected(current, &std::collections::BTreeSet::new());
+        let definitions = if self.mode == ToolMode::Direct {
+            let names: std::collections::BTreeSet<_> = composition
+                .tools
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect();
+            let full = request.availability.all();
+            let all = full.names();
+            let excluded: Vec<_> = all
+                .iter()
+                .filter(|name| !names.contains(name.as_str()))
+                .map(String::as_str)
+                .collect();
+            request.catalog = full.excluding(&excluded);
+            let mut expected: Vec<_> = request.catalog.shared_definitions().collect();
+            expected.extend(request.availability.definition().map(Arc::new));
+            if expected != composition.tools {
+                return Err(ToolError::Failed(
+                    "frozen request tool schemas changed".into(),
+                ));
+            }
+            expected
+        } else {
+            let mut exec = cell::definition(self.cells.language());
+            let Some(original) = composition.tools.first() else {
+                return Err(ToolError::Failed(
+                    "frozen Code Mode schemas are missing".into(),
+                ));
+            };
+            // The old loaded selection is already rendered in this description.
+            exec.description = original.description.clone();
+            let expected: Vec<_> = std::iter::once(Arc::new(exec))
+                .chain(std::iter::once(Arc::new(cell::wait_definition())))
+                .chain(request.direct.shared_definitions())
+                .collect();
+            if expected != composition.tools {
+                return Err(ToolError::Failed("frozen Code Mode schemas changed".into()));
+            }
+            expected
+        };
+        request.frozen_definitions = Some(definitions.into());
+        Ok(request)
+    }
+
     fn request(&self, current: Availability) -> Result<RequestTools<'_>, ToolError> {
         let active = current.checkpoint()?.loaded;
         Ok(self.request_selected(current, &active))
@@ -141,7 +215,7 @@ impl RunTools {
     pub fn replay_selected(
         &self,
         active: &std::collections::BTreeSet<String>,
-    ) -> Vec<ToolDefinition> {
+    ) -> Vec<Arc<ToolDefinition>> {
         self.request_selected(self.availability.clone(), active)
             .definitions()
     }
@@ -164,6 +238,7 @@ impl RunTools {
         };
         let described = availability.select(active);
         RequestTools {
+            frozen_definitions: None,
             finished: Arc::new(AtomicBool::new(false)),
             digest,
             direct,
@@ -183,6 +258,7 @@ impl RunTools {
 /// Search settlement affects future captures, never this request or its retries.
 #[derive(Clone)]
 pub struct RequestTools<'a> {
+    frozen_definitions: Option<Arc<[Arc<ToolDefinition>]>>,
     finished: Arc<AtomicBool>,
     digest: String,
     direct: ToolCatalog,
@@ -202,20 +278,24 @@ impl<'a> RequestTools<'a> {
         &self.digest
     }
 
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
+    pub fn definitions(&self) -> Vec<Arc<ToolDefinition>> {
+        if let Some(definitions) = &self.frozen_definitions {
+            return definitions.to_vec();
+        }
         if self.run.mode == ToolMode::CodeMode {
             let mut exec = cell::definition(self.run.cells.language());
-            let definitions: Vec<_> = self.described.definitions().cloned().collect();
             exec.description.push('\n');
-            exec.description
-                .push_str(&cell::declarations(&definitions, self.run.cells.language()));
-            std::iter::once(exec)
-                .chain(std::iter::once(cell::wait_definition()))
-                .chain(self.direct.definitions().cloned())
+            exec.description.push_str(&cell::declarations(
+                self.described.definitions(),
+                self.run.cells.language(),
+            ));
+            std::iter::once(Arc::new(exec))
+                .chain(std::iter::once(Arc::new(cell::wait_definition())))
+                .chain(self.direct.shared_definitions())
                 .collect()
         } else {
-            let mut definitions: Vec<_> = self.catalog.definitions().cloned().collect();
-            definitions.extend(self.availability.definition());
+            let mut definitions: Vec<_> = self.catalog.shared_definitions().collect();
+            definitions.extend(self.availability.definition().map(Arc::new));
             definitions
         }
     }
@@ -263,25 +343,16 @@ impl<'a> StepTools<'a> {
         self.request.finished()
     }
 
-    pub async fn invoke(
-        &mut self,
-        call: &ModelToolCall,
-        cancellation: CancellationToken,
-    ) -> Result<Value, ToolError> {
-        self.dispatch(call.clone(), cancellation).await
-    }
-
-    /// Admission happens in arrival order before any concurrent future runs.
-    pub fn dispatch(
+    /// Admit synchronously in call arrival order; preparation can then run concurrently.
+    pub fn prepare(
         &mut self,
         call: ModelToolCall,
         cancellation: CancellationToken,
-    ) -> BoxFuture<'a, Result<Value, ToolError>> {
+    ) -> BoxFuture<'a, Result<PreparedCall<'a>, ToolError>> {
         let request = self.request.clone();
         let run = request.run;
         let operation_id = format!("{}:{}", self.step_id, call.id);
         let identity = ToolCallIdentity::provider(self.step_id.clone(), call.id.clone());
-        let finished = request.finished.clone();
         let catalog = if run.mode == ToolMode::CodeMode {
             &request.direct
         } else {
@@ -365,37 +436,172 @@ impl<'a> StepTools<'a> {
                 Ok((effect, input.clone()))
             }
             .await;
-            let (effect, input) = match preparation {
-                Ok(effect) => effect,
-                Err(reason) => {
-                    return run
-                        .journal
-                        .reject(
+            Ok(PreparedCall {
+                request,
+                operation_id,
+                identity,
+                call,
+                cancellation,
+                preparation,
+            })
+        })
+    }
+}
+
+/// A prepared call owns no model prefix; the original writer chooses publication.
+pub struct PreparedCall<'a> {
+    request: RequestTools<'a>,
+    operation_id: String,
+    identity: ToolCallIdentity,
+    call: ModelToolCall,
+    cancellation: CancellationToken,
+    preparation: Result<(PreparedEffect, Value), ToolRejection>,
+}
+
+/// The writer installs the prefix receipt before polling the one-shot completion.
+pub struct PublishedCall {
+    pub prefix_sequences: Vec<u64>,
+    pub completion: CallContinuation,
+}
+
+pub enum CallContinuation {
+    Executing(ToolFuture<Value>),
+    Approval(PendingCall),
+}
+
+impl CallContinuation {
+    pub fn into_future(self) -> ToolFuture<Value> {
+        Box::pin(self)
+    }
+}
+
+impl Future for CallContinuation {
+    type Output = Result<Value, ToolError>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        loop {
+            match this {
+                Self::Executing(future) => return future.as_mut().poll(cx),
+                Self::Approval(pending) => match Pin::new(pending).poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(future) => *this = Self::Executing(future),
+                },
+            }
+        }
+    }
+}
+
+struct CallSettlement {
+    finish_turn: bool,
+    finished: Arc<AtomicBool>,
+    availability: Availability,
+    name: String,
+}
+
+impl CallSettlement {
+    fn complete(self, execution: ToolFuture<Value>) -> ToolFuture<Value> {
+        Box::pin(async move {
+            let result = execution.await?;
+            if self.finish_turn {
+                self.finished.store(true, Ordering::Release);
+            }
+            self.availability.settled(&self.name, &result)?;
+            Ok(result)
+        })
+    }
+}
+
+pub struct PendingCall {
+    approval: Box<ApprovalContinuation<Value>>,
+    settlement: Option<CallSettlement>,
+}
+
+impl PendingCall {
+    pub fn pending(&self) -> &maka_agent_facts::native_approval::NativeApprovalPending {
+        self.approval.pending()
+    }
+}
+
+impl Future for PendingCall {
+    type Output = ToolFuture<Value>;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let this = self.get_mut();
+        match Pin::new(this.approval.as_mut()).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(execution) => Poll::Ready(
+                this.settlement
+                    .take()
+                    .expect("pending call settles once")
+                    .complete(execution),
+            ),
+        }
+    }
+}
+
+impl<'a> PreparedCall<'a> {
+    pub fn publish(self, prefix: &[EventWrite]) -> BoxFuture<'a, Result<PublishedCall, ToolError>> {
+        let prefix = prefix.to_vec();
+        Box::pin(async move {
+            let Self {
+                request,
+                operation_id,
+                identity,
+                call,
+                cancellation,
+                preparation,
+            } = self;
+            let journal = &request.run.journal;
+            let published = match preparation {
+                Ok((effect, input)) => {
+                    journal
+                        .publish_prepared_call(
                             operation_id,
                             identity,
                             call.name.clone(),
-                            call.input.clone(),
+                            input,
+                            prefix,
+                            cancellation,
+                            effect,
+                        )
+                        .await?
+                }
+                Err(reason) => {
+                    journal
+                        .publish_rejection(
+                            operation_id,
+                            identity,
+                            call.name.clone(),
+                            call.input,
+                            prefix,
                             reason,
                         )
-                        .await;
+                        .await?
                 }
             };
-            let result = run
-                .journal
-                .invoke_prepared_call(
-                    operation_id,
-                    identity,
-                    call.name.clone(),
-                    input,
-                    cancellation,
-                    effect,
-                )
-                .await?;
-            if catalog.semantics(&call.name) == Ok(ToolSemantics::FinishTurn) {
-                finished.store(true, Ordering::Release);
-            }
-            request.availability.settled(&call.name, &result)?;
-            Ok(result)
+            let catalog = if request.run.mode == ToolMode::CodeMode {
+                &request.direct
+            } else {
+                &request.catalog
+            };
+            let settlement = CallSettlement {
+                finish_turn: catalog.semantics(&call.name) == Ok(ToolSemantics::FinishTurn),
+                finished: request.finished.clone(),
+                availability: request.availability.clone(),
+                name: call.name,
+            };
+            let completion = match published.completion {
+                ToolContinuation::Executing(execution) => {
+                    CallContinuation::Executing(settlement.complete(execution))
+                }
+                ToolContinuation::Approval(approval) => CallContinuation::Approval(PendingCall {
+                    approval,
+                    settlement: Some(settlement),
+                }),
+            };
+            Ok(PublishedCall {
+                prefix_sequences: published.prefix_sequences,
+                completion,
+            })
         })
     }
 }

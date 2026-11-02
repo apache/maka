@@ -80,6 +80,14 @@ impl Fixture {
     }
 
     async fn open_with_lifecycle(lifecycle: &str) -> Self {
+        Self::open_adapter("org.apache.maka.inventory_fixture", lifecycle).await
+    }
+
+    async fn open_adapter(adapter: &str, lifecycle: &str) -> Self {
+        Self::open_preparation(adapter, lifecycle, "unknown").await
+    }
+
+    async fn open_preparation(adapter: &str, lifecycle: &str, preparation: &str) -> Self {
         // Canonical /tmp remains short on supported Unix hosts and avoids a
         // symlink component (notably /tmp -> /private/tmp on macOS).
         let directory = tempfile::Builder::new()
@@ -92,7 +100,6 @@ impl Fixture {
         let socket = private.join(format!("{generation}.sock"));
         let listener = UnixListener::bind(&socket).unwrap();
         std::fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
-        let adapter = "org.apache.maka.inventory_fixture";
         let identity = json!({
             "adapter":adapter,
             "extensionId":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -101,6 +108,7 @@ impl Fixture {
             "hostPid":std::process::id(),
             "capabilities":{
                 "attachmentPreparation":"metadata_only",
+                "sessionPreparation":preparation,
                 "userTabsOrder":"provider",
                 "headerScope":"session",
                 "createdPresentationOwner":"provider",
@@ -152,6 +160,33 @@ impl Fixture {
             server,
             _directory: directory,
         }
+    }
+
+    async fn connect_again(&self) -> (ExtensionBrowserProvider, UnixStream) {
+        let private = std::fs::canonicalize(self._directory.path()).unwrap();
+        let generation = &self.extension.identity().generation;
+        let descriptor = private.join(format!("{generation}.json"));
+        let value: Value = serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+        let socket = private.join(format!("{generation}.sock"));
+        std::fs::remove_file(&socket).unwrap();
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, Permissions::from_mode(0o600)).unwrap();
+        let endpoint =
+            ValidatedExtensionEndpoint::load(&descriptor, &self.extension.identity().adapter)
+                .unwrap();
+        let accept = async {
+            let (mut server, _) = listener.accept().await.unwrap();
+            let hello = read_frame(&mut server).await;
+            assert_eq!(hello["kind"], "hello");
+            write_frame(&mut server, json!({
+                "kind":"welcome","protocol":1,"generation":generation,"identity":value["identity"]
+            })).await;
+            server
+        };
+        let (provider, server) =
+            bounded(async { tokio::join!(ExtensionBrowserProvider::connect(endpoint), accept) })
+                .await;
+        (provider.unwrap(), server)
     }
 
     fn provider(&self) -> Provider {
@@ -234,10 +269,10 @@ async fn same_unpolled_scope_survives_real_reconcile_then_seal_rejects_without_i
                 .is_empty()
         );
     }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
+    let drain =
+        host.lock()
+            .await
+            .seal_extension_controls(owner, Some("inventory-turn"), None, None);
     bounded(drain.wait()).await.unwrap();
     assert!(matches!(bounded(unpolled).await.map_err(|error| *error),
         Err(ExtensionProviderError::Refused { kind, .. }) if kind == "retiring_scope"));
@@ -303,10 +338,10 @@ async fn empty_inventory_ack_creates_finish_obligation_until_actual_finish_ack()
             "inventory ACK must not become Acquired"
         );
     }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
+    let drain =
+        host.lock()
+            .await
+            .seal_extension_controls(owner, Some("inventory-turn"), None, None);
     bounded(drain.wait()).await.unwrap();
     let finish = async {
         host.lock()
@@ -449,8 +484,8 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
             vec![8123]
         );
         assert_eq!(ledger.tabs[&identity].extension_sequence, Some(sequence));
-        // Removing required provenance must fail closed, not reconstruct an
-        // acquisition from a receipt token, metadata, or a guessed current epoch.
+        // Logical metadata candidates survive without a physical acquisition;
+        // the retained insertion order does not mint an operation or epoch.
         ledger
             .tabs
             .get_mut(&identity)
@@ -460,422 +495,12 @@ async fn created_ack_keeps_candidate_provenance_after_actual_call_context_gc() {
             .unwrap()
             .creation_operation = None;
         assert!(ledger.acquisition(owner, &identity).is_none());
-        assert!(
-            ledger
-                .metadata_candidates(owner, &browser, &[])
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            ledger.metadata_candidates(owner, &browser, &[]).unwrap(),
+            vec![8123]
         );
         assert_eq!(ledger.tabs[&identity].extension_sequence, Some(sequence));
     }
-    fixture.assert_no_frame_and_close().await;
-}
-
-#[tokio::test]
-async fn two_dropped_inventory_observers_supply_real_wakes_to_actual_host_finish() {
-    let mut fixture = Fixture::open().await;
-    let provider = fixture.provider();
-    let owner = uuid::Uuid::new_v4();
-    let browser = browser(&provider);
-    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-    bounded(register(&host, owner, &provider)).await.unwrap();
-    let mut events = fixture.extension.subscribe_events();
-    let epoch = crate::desktop::NativeEpochId::new();
-    let (first, second) = {
-        let mut ledger = host.lock().await;
-        let first = ledger
-            .extension_context(
-                owner,
-                &provider,
-                context_operation("inventory-turn"),
-                epoch,
-                CallTarget::SessionInventory,
-                true,
-            )
-            .unwrap();
-        let second = ledger
-            .extension_context(
-                owner,
-                &provider,
-                context_operation("inventory-turn"),
-                epoch,
-                CallTarget::SessionInventory,
-                true,
-            )
-            .unwrap();
-        (first, second)
-    };
-    let first_operation = first.context.clone();
-    let second_operation = second.context.clone();
-    let first_observer =
-        tokio::spawn(async move { first.dispatch(first.control.list_session_tabs(&[])).await });
-    let first = bounded(read_frame(&mut fixture.server)).await;
-    let first_id = first["request"]["id"].as_u64().unwrap();
-    assert_eq!(first["request"]["method"], "inventory");
-    assert_eq!(first["request"]["sessionOnly"], true);
-    let second_observer =
-        tokio::spawn(async move { second.dispatch(second.control.list_session_tabs(&[])).await });
-    let second = bounded(read_frame(&mut fixture.server)).await;
-    let second_id = second["request"]["id"].as_u64().unwrap();
-    assert_ne!(first_id, second_id);
-    assert_eq!(second["request"]["method"], "inventory");
-    assert_eq!(second["request"]["sessionOnly"], true);
-    first_observer.abort();
-    second_observer.abort();
-    assert!(bounded(first_observer).await.unwrap_err().is_cancelled());
-    assert!(bounded(second_observer).await.unwrap_err().is_cancelled());
-    let pending = bounded(fixture.extension.pending_operations())
-        .await
-        .unwrap();
-    assert_eq!(pending.len(), 2);
-    assert!(pending.iter().all(|entry| entry.outcome.is_none()));
-    assert!(pending.iter().any(
-        |entry| entry.id == first_id && entry.host_operation.as_ref() == Some(&first_operation)
-    ));
-    assert!(
-        pending.iter().any(|entry| entry.id == second_id
-            && entry.host_operation.as_ref() == Some(&second_operation))
-    );
-    let drain = {
-        let mut ledger = host.lock().await;
-        assert!(
-            bounded(ledger.reconcile_provider(owner, &provider))
-                .await
-                .unwrap()
-        );
-        assert!(matches!(
-            ledger.extension[&(owner, browser.clone())]
-                .finish_phases
-                .get("inventory-turn"),
-            Some(FinishPhase::Required)
-        ));
-        ledger.seal_extension_controls(owner, Some("inventory-turn"), None)
-    };
-    bounded(drain.wait()).await.unwrap();
-    let (started, start) = tokio::sync::oneshot::channel();
-    let finishing_host = host.clone();
-    let finishing = tokio::spawn(async move {
-        let mut ledger = finishing_host.lock().await;
-        started.send(()).unwrap();
-        ledger.finish(owner, Some("inventory-turn")).await
-    });
-    bounded(start).await.unwrap();
-    result(
-        &mut fixture.server,
-        first_id,
-        json!({"tabs":[],"sessionOnly":true}),
-    )
-    .await;
-    assert!(matches!(
-        bounded(events.recv()).await.unwrap(),
-        ExtensionProviderEvent::PendingOperationsChanged
-    ));
-    let pending = bounded(fixture.extension.pending_operations())
-        .await
-        .unwrap();
-    assert_eq!(pending.len(), 1);
-    assert_eq!(pending[0].id, second_id);
-    assert_eq!(pending[0].host_operation.as_ref(), Some(&second_operation));
-    assert!(
-        pending[0].outcome.is_none(),
-        "first real wake does not complete the second call"
-    );
-    // This is an actor-state assertion, not a scheduling claim that finish()
-    // has already consumed the first wake: its internal snapshot has no public
-    // causal ACK. No timer, try_read, or poll count is used to invent that fact.
-    result(
-        &mut fixture.server,
-        second_id,
-        json!({"tabs":[],"sessionOnly":true}),
-    )
-    .await;
-    assert!(matches!(
-        bounded(events.recv()).await.unwrap(),
-        ExtensionProviderEvent::PendingOperationsChanged
-    ));
-    let finish = bounded(read_frame(&mut fixture.server)).await;
-    assert_eq!(finish["request"]["method"], "finishTurn");
-    assert_eq!(
-        finish["wireContext"],
-        json!({
-            "hostSessionId":owner.to_string(),"hostTurnId":"inventory-turn"
-        })
-    );
-    result(
-        &mut fixture.server,
-        finish["request"]["id"].as_u64().unwrap(),
-        json!({}),
-    )
-    .await;
-    assert!(bounded(finishing).await.unwrap().unwrap().is_empty());
-    {
-        let ledger = bounded(host.lock()).await;
-        let state = &ledger.extension[&(owner, browser)];
-        assert!(state.current_turn.is_none());
-        assert!(state.retiring_turn.is_none());
-        assert!(
-            state
-                .calls
-                .values()
-                .all(|call| !call.activation.load(Ordering::SeqCst))
-        );
-        assert!(
-            ledger.tabs.is_empty(),
-            "observation and logical ACK mint no claim"
-        );
-    }
-    fixture.assert_no_frame_and_close().await;
-}
-
-#[tokio::test]
-async fn completed_pre_registration_refusal_creates_no_finish_or_ipc() {
-    let mut fixture = Fixture::open().await;
-    let provider = fixture.provider();
-    let owner = uuid::Uuid::new_v4();
-    let browser = browser(&provider);
-    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-    bounded(register(&host, owner, &provider)).await.unwrap();
-    let call = scope(&mut *host.lock().await, owner, &provider);
-    // This fixture supports inventory, not provider-session preparation. The
-    // actual Core capability check rejects before logical request registration.
-    assert!(matches!(
-        bounded(call.dispatch(call.control.prepare_session_tab(17))).await.map_err(|error| *error),
-        Err(ExtensionProviderError::NotDispatched { kind, message, details: None, .. })
-            if kind == "unsupported"
-                && message == "selected provider delegates this operation to a different scope or owner"
-    ));
-    {
-        let mut ledger = host.lock().await;
-        assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
-                .await
-                .unwrap()
-        );
-        let state = &ledger.extension[&(owner, browser.clone())];
-        let retained = &state.calls[&call.context.operation_id];
-        assert_eq!(
-            retained.registration.as_ref().unwrap().registration.count(),
-            0
-        );
-        assert!(!retained.requires_finish());
-        assert!(state.finish_phases.is_empty());
-        assert!(ledger.tabs.is_empty());
-    }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
-    bounded(drain.wait()).await.unwrap();
-    assert!(
-        bounded(host.lock().await.finish(owner, Some("inventory-turn")))
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    fixture.assert_no_frame_and_close().await;
-}
-
-#[tokio::test]
-async fn registered_refusal_with_the_same_error_still_requires_actual_finish() {
-    let mut fixture = Fixture::open().await;
-    let provider = fixture.provider();
-    let owner = uuid::Uuid::new_v4();
-    let browser = browser(&provider);
-    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-    bounded(register(&host, owner, &provider)).await.unwrap();
-    let call = scope(&mut *host.lock().await, owner, &provider);
-    let reply = async {
-        let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "inventory");
-        write_frame(&mut fixture.server, json!({
-            "kind":"controlEvent", "event":{"kind":"reply","data":{
-                "id":frame["request"]["id"],
-                "outcome":{"kind":"connectorRejected","data":{
-                    "kind":"unsupported",
-                    "message":"selected provider delegates this operation to a different scope or owner",
-                    "details":null
-                }}
-            }}
-        })).await;
-    };
-    let (rows, ()) =
-        bounded(async { tokio::join!(call.dispatch(call.control.list_session_tabs(&[])), reply) })
-            .await;
-    assert!(
-        matches!(rows.map_err(|error| *error), Err(ExtensionProviderError::Refused {kind, message, details: None})
-        if kind == "unsupported" && message == "selected provider delegates this operation to a different scope or owner")
-    );
-    {
-        let mut ledger = host.lock().await;
-        assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
-                .await
-                .unwrap()
-        );
-        let state = &ledger.extension[&(owner, browser.clone())];
-        assert_eq!(
-            state.calls[&call.context.operation_id]
-                .registration
-                .as_ref()
-                .unwrap()
-                .registration
-                .count(),
-            1
-        );
-        assert!(matches!(
-            state.finish_phases.get("inventory-turn"),
-            Some(FinishPhase::Required)
-        ));
-        assert!(
-            ledger.tabs.is_empty(),
-            "registration is not acquisition or activation success"
-        );
-    }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
-    bounded(drain.wait()).await.unwrap();
-    let finish = async {
-        host.lock()
-            .await
-            .finish(owner, Some("inventory-turn"))
-            .await
-    };
-    let reply = async {
-        let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "finishTurn");
-        result(
-            &mut fixture.server,
-            frame["request"]["id"].as_u64().unwrap(),
-            json!({}),
-        )
-        .await;
-    };
-    let (finished, ()) = bounded(async { tokio::join!(finish, reply) }).await;
-    assert!(finished.unwrap().is_empty());
-    {
-        let ledger = host.lock().await;
-        let state = &ledger.extension[&(owner, browser)];
-        assert!(!state.calls[&call.context.operation_id].requires_finish());
-        assert!(state.current_turn.is_none());
-    }
-    fixture.assert_no_frame_and_close().await;
-}
-
-#[tokio::test]
-async fn reused_call_view_keeps_pending_registration_across_local_refusal() {
-    let mut fixture = Fixture::open().await;
-    let provider = fixture.provider();
-    let owner = uuid::Uuid::new_v4();
-    let browser = browser(&provider);
-    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-    bounded(register(&host, owner, &provider)).await.unwrap();
-    let first = scope(&mut *host.lock().await, owner, &provider);
-    let second = host
-        .lock()
-        .await
-        .extension_context(
-            owner,
-            &provider,
-            first.context.clone(),
-            first.epoch,
-            CallTarget::SessionInventory,
-            true,
-        )
-        .unwrap();
-    let (seen, received) = tokio::sync::oneshot::channel();
-    let (release, released) = tokio::sync::oneshot::channel();
-    let reply = async {
-        let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "inventory");
-        seen.send(()).unwrap();
-        released.await.unwrap();
-        result(
-            &mut fixture.server,
-            frame["request"]["id"].as_u64().unwrap(),
-            json!({"tabs":[],"sessionOnly":true}),
-        )
-        .await;
-    };
-    let during = async {
-        received.await.unwrap();
-        assert!(
-            matches!(first.dispatch(first.control.prepare_session_tab(17)).await.map_err(|error| *error),
-            Err(ExtensionProviderError::NotDispatched {kind,..}) if kind == "unsupported")
-        );
-        {
-            let mut ledger = host.lock().await;
-            assert!(
-                bounded(ledger.reconcile_provider(owner, &provider))
-                    .await
-                    .unwrap()
-            );
-            let state = &ledger.extension[&(owner, browser.clone())];
-            let call = &state.calls[&first.context.operation_id];
-            assert_eq!(
-                call.registration.as_ref().unwrap().registration.count(),
-                1,
-                "the reused scope must update the same original registration observation"
-            );
-            assert!(call.requires_finish());
-            assert!(
-                !call.controls.is_idle(),
-                "the original accepted inventory is still pending"
-            );
-            assert!(matches!(
-                state.finish_phases.get("inventory-turn"),
-                Some(FinishPhase::Required)
-            ));
-        }
-        release.send(()).unwrap();
-    };
-    let (rows, (), ()) = bounded(async {
-        tokio::join!(
-            second.dispatch(second.control.list_session_tabs(&[])),
-            reply,
-            during
-        )
-    })
-    .await;
-    assert!(rows.unwrap().is_empty());
-    assert!(
-        matches!(first.dispatch(first.control.prepare_session_tab(17)).await.map_err(|error| *error),
-        Err(ExtensionProviderError::NotDispatched {kind,..}) if kind == "unsupported")
-    );
-    {
-        let mut ledger = host.lock().await;
-        bounded(ledger.reconcile_provider(owner, &provider))
-            .await
-            .unwrap();
-        assert!(
-            ledger.extension[&(owner, browser)].calls[&first.context.operation_id]
-                .requires_finish()
-        );
-    }
-    let drain = host
-        .lock()
-        .await
-        .seal_extension_controls(owner, Some("inventory-turn"), None);
-    bounded(drain.wait()).await.unwrap();
-    let finish = async {
-        host.lock()
-            .await
-            .finish(owner, Some("inventory-turn"))
-            .await
-    };
-    let reply = async {
-        let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "finishTurn");
-        result(
-            &mut fixture.server,
-            frame["request"]["id"].as_u64().unwrap(),
-            json!({}),
-        )
-        .await;
-    };
-    let (finished, ()) = bounded(async { tokio::join!(finish, reply) }).await;
-    assert!(finished.unwrap().is_empty());
     fixture.assert_no_frame_and_close().await;
 }
 
@@ -918,93 +543,623 @@ async fn closed_transport_registers_before_zero_byte_failure_and_keeps_finish_de
 }
 
 #[tokio::test]
-async fn created_cleanup_after_finish_ack_does_not_register_another_finish() {
+async fn parked_page_rebinds_through_a_fresh_connection_without_changing_its_origin() {
+    let mut fixture = Fixture::open().await;
+    let previous = fixture.provider();
+    let current = fixture.provider();
+    assert!(
+        previous != current,
+        "separate connection wrappers must differ"
+    );
+    assert_eq!(browser(&previous), browser(&current));
+    let owner = uuid::Uuid::new_v4();
+    let identity = browser(&current).tab("17");
+    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+    register(&host, owner, &current).await.unwrap();
+    {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(
+                owner,
+                &previous,
+                "previous-turn",
+                "17",
+                Origin::AgentCreated,
+            )
+            .unwrap();
+        let lease = ledger.tabs.get_mut(&identity).unwrap();
+        lease.disposition = Disposition::Parked;
+        lease.retention = Retention::Handoff;
+        lease.extension = Some(ClaimState {
+            revoked: true,
+            released: true,
+            ..Default::default()
+        });
+        let operation = context_operation("resume-turn");
+        let epoch = crate::desktop::NativeEpochId::new();
+        let call = ledger
+            .extension_context(
+                owner,
+                &current,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap();
+        assert!(
+            ledger
+                .begin_handoff_transfer(owner, &current, &operation, epoch, "17")
+                .unwrap()
+        );
+        assert!(
+            ledger.tabs[&identity].creator.provider == previous,
+            "reservation alone must not transfer custody"
+        );
+        let request = crate::BrowserSessionPreparation {
+            native_owner: owner,
+            native_epoch: epoch.to_string(),
+            browser_id: current.id().into(),
+            generation: current.extension().unwrap().identity().generation.clone(),
+            turn_id: operation.turn_id.clone(),
+            operation_id: operation.operation_id.clone(),
+            target: crate::BrowserPreparationTarget::ReservedTab {
+                tab_id: "17".into(),
+            },
+        };
+        ledger
+            .extension_preparation_current(&call, &request)
+            .unwrap();
+        // Exercise Main's literal provider result boundary, without claiming
+        // that this peer performed Chrome effects or granted page authority.
+        ledger
+            .apply_user_preparation(
+                owner,
+                &current,
+                &identity.browser,
+                Some("17".into()),
+                PreparedOperation::Acquired { operation, epoch },
+                serde_json::from_value(json!({"id":17})).unwrap(),
+            )
+            .unwrap();
+        let lease = &ledger.tabs[&identity];
+        assert!(lease.creator.provider == current);
+        assert!(matches!(lease.origin, Origin::AgentCreated));
+        assert!(matches!(lease.retention, Retention::Unmarked));
+        assert!(matches!(lease.disposition, Disposition::Live));
+        assert!(lease.handoff_transfer.is_none());
+        ledger.extension.clear();
+    }
+    fixture.assert_no_frame_and_close().await;
+}
+
+#[tokio::test]
+async fn retained_chatgpt_page_keeps_origin_when_a_new_native_generation_claims_it() {
+    for same_page in [true, false] {
+        let mut previous = Fixture::open_adapter("com.openai.codexextension", "provider").await;
+        let mut current = Fixture::open_adapter("com.openai.codexextension", "provider").await;
+        let old_provider = previous.provider();
+        let provider = current.provider();
+        let owner = uuid::Uuid::new_v4();
+        let old_identity = browser(&old_provider).tab("17");
+        let identity = browser(&provider).tab("17");
+        assert_ne!(old_identity.browser, identity.browser);
+        let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+        register(&host, owner, &old_provider).await.unwrap();
+        let call = host
+            .lock()
+            .await
+            .extension_context(
+                owner,
+                &old_provider,
+                context_operation("create-turn"),
+                crate::desktop::NativeEpochId::new(),
+                CallTarget::Tab {
+                    origin: Origin::AgentCreated,
+                    tab: None,
+                },
+                true,
+            )
+            .unwrap();
+        let source = async {
+            let frame = read_frame(&mut previous.server).await;
+            assert_eq!(frame["request"]["method"], "createTab");
+            result(&mut previous.server, frame["request"]["id"].as_u64().unwrap(),
+            json!({"creation":"actual-peer-creation","tab":{"id":17,"providerTabId":"[\"chrome-session\",\"17\"]"}})).await;
+        };
+        let (created, ()) =
+            bounded(async { tokio::join!(call.dispatch(call.control.create_tab(None)), source) })
+                .await;
+        assert_eq!(created.unwrap().tab.id, 17);
+        {
+            let mut ledger = host.lock().await;
+            ledger
+                .reconcile_provider(owner, &old_provider)
+                .await
+                .unwrap();
+            let lease = ledger.tabs.get_mut(&old_identity).unwrap();
+            assert_eq!(
+                lease.provider_tab_id.as_deref(),
+                Some("[\"chrome-session\",\"17\"]"),
+                "actual Created ACK must capture the source page identity"
+            );
+            lease.disposition = Disposition::Parked;
+            lease.retention = Retention::Handoff;
+            lease.extension = Some(ClaimState {
+                revoked: true,
+                released: true,
+                ..Default::default()
+            });
+            ledger.extension.clear();
+        }
+        register(&host, owner, &provider).await.unwrap();
+        {
+            let mut ledger = host.lock().await;
+            ledger
+                .extension_reserve(owner, &provider, "resume-turn", "17", Origin::UserClaimed)
+                .unwrap();
+            let operation = context_operation("resume-turn");
+            let epoch = crate::desktop::NativeEpochId::new();
+            ledger
+                .extension_context(
+                    owner,
+                    &provider,
+                    operation.clone(),
+                    epoch,
+                    CallTarget::Tab {
+                        origin: Origin::UserClaimed,
+                        tab: Some("17".into()),
+                    },
+                    true,
+                )
+                .unwrap();
+            ledger
+            .apply_user_preparation(
+                owner,
+                &provider,
+                &identity.browser,
+                Some("17".into()),
+                PreparedOperation::Acquired { operation, epoch },
+                serde_json::from_value(
+                    json!({"id":17,"providerTabId": if same_page { "[\"chrome-session\",\"17\"]" } else { "[\"different-browser-session\",\"17\"]" }}),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+            if same_page {
+                assert!(
+                    matches!(ledger.tabs[&identity].origin, Origin::AgentCreated),
+                    "actual stable page identity preserves the original creator"
+                );
+                assert!(!ledger.tabs.contains_key(&old_identity));
+                assert_eq!(ledger.tabs.len(), 1);
+            } else {
+                assert!(
+                    matches!(ledger.tabs[&identity].origin, Origin::UserClaimed),
+                    "reused raw tab ID from another browser session must not inherit origin"
+                );
+                assert!(ledger.tabs.contains_key(&old_identity));
+                assert_eq!(ledger.tabs.len(), 2);
+            }
+            assert!(matches!(
+                ledger.tabs[&identity].retention,
+                Retention::Unmarked
+            ));
+            ledger.extension.clear();
+        }
+        previous.assert_no_frame_and_close().await;
+        current.assert_no_frame_and_close().await;
+    }
+}
+
+#[tokio::test]
+async fn revoked_tab_retires_its_old_claim_and_can_be_explicitly_claimed_again() {
     let mut fixture = Fixture::open().await;
     let provider = fixture.provider();
     let owner = uuid::Uuid::new_v4();
-    let browser = browser(&provider);
+    let identity = browser(&provider).tab("17");
     let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
-    bounded(register(&host, owner, &provider)).await.unwrap();
-    let call = host
+    register(&host, owner, &provider).await.unwrap();
+    let epoch = crate::desktop::NativeEpochId::new();
+    let operation = context_operation("recover-turn");
+    let call = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(owner, &provider, "recover-turn", "17", Origin::AgentCreated)
+            .unwrap();
+        ledger
+            .extension_context(
+                owner,
+                &provider,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let attach = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "attach");
+        result(
+            &mut fixture.server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"claim":"original-claim","tabId":17,"targetId":"target-17"}),
+        )
+        .await;
+    };
+    let (attached, ()) =
+        bounded(async { tokio::join!(call.dispatch(call.control.attach_tab(17)), attach) }).await;
+    attached.unwrap();
+    host.lock()
+        .await
+        .reconcile_provider(owner, &provider)
+        .await
+        .unwrap();
+    write_frame(&mut fixture.server, json!({"kind":"controlEvent","event":{"kind":"claimUnavailable","data":{"claim":"original-claim","reason":"fixture route revoked"}}})).await;
+    bounded(async {
+        loop {
+            if host.lock().await.tabs[&identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .revoked
+            {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    {
+        let mut ledger = host.lock().await;
+        assert!(
+            matches!(ledger.extension_reserve(owner, &provider, "recover-turn", "17", Origin::UserClaimed),
+            Err(ToolError::Failed(message)) if message.contains("explicitly claim"))
+        );
+        let state = ledger.tabs[&identity].extension.as_ref().unwrap();
+        assert!(
+            state.unknown.is_none(),
+            "route loss must not invent an unknown Chrome effect"
+        );
+        assert_eq!(
+            state.cleanup_revocation.as_deref(),
+            Some("fixture route revoked")
+        );
+    }
+    let retirement = host
         .lock()
         .await
         .extension_context(
             owner,
             &provider,
-            context_operation("created-turn"),
-            crate::desktop::NativeEpochId::new(),
-            CallTarget::Tab {
-                origin: Origin::AgentCreated,
-                tab: None,
-            },
-            true,
+            context_operation("recover-turn"),
+            epoch,
+            CallTarget::Retirement,
+            false,
         )
         .unwrap();
-    let reply = async {
-        let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "createTab");
+    let retire = async {
+        drain_extension_cleanup(&host, owner, None, None, Some(&identity)).await?;
+        host.lock()
+            .await
+            .park_extension_tab(owner, &provider, &identity, &retirement)
+            .await
+    };
+    let peer = async {
+        let fence = read_frame(&mut fixture.server).await;
+        assert_eq!(fence["request"]["method"], "fenceCdp");
+        host.lock()
+            .await
+            .extension_reserve(owner, &provider, "recover-turn", "18", Origin::UserClaimed)
+            .expect("another page remains usable while the original drain waits");
+        result(&mut fixture.server, fence["request"]["id"].as_u64().unwrap(),
+            json!({"claim":"original-claim","generation":fixture.extension.identity().generation,"fenced":true,"pending":[]})).await;
+        let detach = read_frame(&mut fixture.server).await;
+        assert_eq!(detach["request"]["method"], "detach");
+        assert_eq!(detach["request"]["claim"], "original-claim");
         result(
             &mut fixture.server,
-            frame["request"]["id"].as_u64().unwrap(),
-            json!({
-                "creation":"finish-created-receipt",
-                "tab":{"id":8123,"windowId":7,"url":"about:blank","active":false}
-            }),
+            detach["request"]["id"].as_u64().unwrap(),
+            json!({"detached":true,"proof":"detach_ack"}),
         )
         .await;
+        let retired = read_frame(&mut fixture.server).await;
+        assert_eq!(retired["request"]["method"], "retireClaim");
+        result(
+            &mut fixture.server,
+            retired["request"]["id"].as_u64().unwrap(),
+            json!({"retired":true,"claim":"original-claim"}),
+        )
+        .await;
+        Ok::<(), ToolError>(())
     };
-    let (created, ()) =
-        bounded(async { tokio::join!(call.dispatch(call.control.create_tab(None)), reply) }).await;
-    assert_eq!(created.unwrap().tab.id, 8123);
-    {
-        let mut ledger = host.lock().await;
-        assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
-                .await
-                .unwrap()
-        );
-        assert!(ledger.acquisition(owner, &browser.tab("8123")).is_some());
-    }
-    let drain = host
-        .lock()
+    bounded(async { tokio::try_join!(retire, peer) })
         .await
-        .seal_extension_controls(owner, Some("created-turn"), None);
-    bounded(drain.wait()).await.unwrap();
-    let finish = async { host.lock().await.finish(owner, Some("created-turn")).await };
-    let reply = async {
+        .unwrap();
+    let operation = context_operation("recover-turn");
+    let replacement = {
+        let mut ledger = host.lock().await;
+        assert!(!ledger.extension[&(owner, identity.browser.clone())].owner_parked);
+        assert!(
+            ledger
+                .begin_handoff_transfer(owner, &provider, &operation, epoch, "17")
+                .unwrap()
+        );
+        ledger
+            .extension_context(
+                owner,
+                &provider,
+                operation.clone(),
+                epoch,
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let attach = async {
         let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "finishTurn");
+        assert_eq!(frame["request"]["method"], "attach");
         result(
             &mut fixture.server,
             frame["request"]["id"].as_u64().unwrap(),
-            json!({}),
+            json!({"claim":"replacement-claim","tabId":17,"targetId":"target-17"}),
         )
         .await;
-        // The original adapter observes removal after logical Finish. This is
-        // the same retirement, not a new Agent session request or another close.
-        let frame = read_frame(&mut fixture.server).await;
-        assert_eq!(frame["request"]["method"], "stopCreatedTab");
-        assert_eq!(frame["request"]["creation"], "finish-created-receipt");
-        assert_eq!(frame["request"]["tabId"], 8123);
-        result(&mut fixture.server, frame["request"]["id"].as_u64().unwrap(), json!({
-            "creation":"finish-created-receipt", "tabId":8123,
-            "closed":true,"proof":"tab_absent","observationRequestId":"actual-removal-observation"
-        })).await;
     };
-    let (closed, ()) = bounded(async { tokio::join!(finish, reply) }).await;
-    assert_eq!(closed.unwrap(), vec![browser.tab("8123")]);
+    let (attached, ()) = bounded(async {
+        tokio::join!(
+            replacement.dispatch(replacement.control.attach_tab(17)),
+            attach
+        )
+    })
+    .await;
+    attached.unwrap();
     {
         let mut ledger = host.lock().await;
-        assert!(
-            !bounded(ledger.reconcile_provider(owner, &provider))
-                .await
+        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger
+            .apply_user_preparation(
+                owner,
+                &provider,
+                &identity.browser,
+                Some("17".into()),
+                PreparedOperation::Acquired { operation, epoch },
+                serde_json::from_value(json!({"id":17})).unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            ledger.tabs[&identity].disposition,
+            Disposition::Live
+        ));
+        assert!(matches!(
+            ledger.tabs[&identity].origin,
+            Origin::AgentCreated
+        ));
+        assert_eq!(
+            ledger.tabs[&identity]
+                .extension
+                .as_ref()
                 .unwrap()
+                .claim
+                .as_ref()
+                .unwrap()
+                .claim_id(),
+            "replacement-claim"
         );
-        let state = &ledger.extension[&(owner, browser)];
-        assert!(state.finish_phases.is_empty());
-        assert!(state.current_turn.is_none());
-        assert!(state.calls.values().all(|call| !call.requires_finish()));
-        assert!(ledger.tabs.is_empty());
+        assert!(matches!(
+            ledger.tabs[&identity.browser.tab("18")].disposition,
+            Disposition::Live
+        ));
+        ledger.reconcile_provider(owner, &provider).await.unwrap();
+        ledger.extension.clear();
     }
+    fixture.assert_no_frame_and_close().await;
+}
+
+#[tokio::test]
+async fn reconnect_to_the_same_native_host_recovers_inventory_and_claim_without_losing_old_custody()
+{
+    let mut fixture =
+        Fixture::open_preparation("com.openai.codexextension", "provider", "provider_session")
+            .await;
+    let previous = fixture.provider();
+    let owner = uuid::Uuid::new_v4();
+    let old_identity = browser(&previous).tab("17");
+    let host = Arc::new(tokio::sync::Mutex::new(Host::default()));
+    register(&host, owner, &previous).await.unwrap();
+    let old_call = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_reserve(
+                owner,
+                &previous,
+                "inventory-turn",
+                "17",
+                Origin::UserClaimed,
+            )
+            .unwrap();
+        let call = scope(&mut ledger, owner, &previous);
+        ledger
+            .tabs
+            .get_mut(&old_identity)
+            .unwrap()
+            .extension
+            .as_mut()
+            .unwrap()
+            .user_preparation = UserPreparation::Pending(call.context.clone());
+        call
+    };
+    let disconnect = async {
+        let frame = read_frame(&mut fixture.server).await;
+        assert_eq!(frame["request"]["method"], "prepareUserTab");
+        assert_eq!(frame["request"]["takeover"], true);
+        fixture.server.shutdown().await.unwrap();
+    };
+    let (failed, ()) = bounded(async {
+        tokio::join!(
+            async {
+                let result = old_call.dispatch(old_call.control.take_over_session_tab(17)).await;
+                assert!(matches!(&result, Err(error) if matches!(**error, ExtensionProviderError::OutcomeUnknown { .. })), "expected a dispatched transport failure: {result:?}");
+                result
+            },
+            disconnect
+        )
+    })
+    .await;
+    let error = failed.unwrap_err();
+    assert!(matches!(
+        *error,
+        ExtensionProviderError::OutcomeUnknown { .. }
+    ));
+    host.lock()
+        .await
+        .extension_preparation_failed(&old_identity, &old_call.context, false, &error);
+    assert!(fixture.extension.is_closed());
+    let (extension, mut server) = fixture.connect_again().await;
+    let current = Provider::Extension {
+        id: previous.id().into(),
+        connection: Arc::new(extension.clone()),
+    };
+    let identity = browser(&current).tab("17");
+    assert_ne!(identity, old_identity);
+    assert_eq!(extension.identity(), fixture.extension.identity());
+    register(&host, owner, &current).await.unwrap();
+    let call = scope(&mut *host.lock().await, owner, &current);
+    let respond = async {
+        let frame = read_frame(&mut server).await;
+        assert_eq!(frame["request"]["method"], "inventory");
+        result(
+            &mut server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"tabs":[{"id":17,"title":"Inbox"}],"sessionOnly":true}),
+        )
+        .await;
+    };
+    let (inventory, ()) = bounded(async {
+        tokio::join!(
+            call.dispatch(call.control.list_session_tabs(&[17])),
+            respond
+        )
+    })
+    .await;
+    assert_eq!(inventory.unwrap()[0].id, 17);
+    {
+        let mut ledger = host.lock().await;
+        ledger.reconcile_provider(owner, &current).await.unwrap();
+        assert!(ledger.visible(&identity, owner));
+        ledger
+            .extension_reserve(owner, &current, "inventory-turn", "17", Origin::UserClaimed)
+            .unwrap();
+        assert!(matches!(
+            ledger.tabs[&old_identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .user_preparation,
+            UserPreparation::Unknown(_)
+        ));
+        assert!(matches!(
+            ledger.tabs[&identity]
+                .extension
+                .as_ref()
+                .unwrap()
+                .user_preparation,
+            UserPreparation::NotAttempted
+        ));
+        ledger.extension_preparation_failed(&old_identity, &old_call.context, false, &error);
+        assert!(
+            matches!(
+                ledger.tabs[&identity]
+                    .extension
+                    .as_ref()
+                    .unwrap()
+                    .user_preparation,
+                UserPreparation::NotAttempted
+            ),
+            "late old failure must not poison the new claim"
+        );
+    }
+    let claim = {
+        let mut ledger = host.lock().await;
+        ledger
+            .extension_context(
+                owner,
+                &current,
+                context_operation("inventory-turn"),
+                crate::desktop::NativeEpochId::new(),
+                CallTarget::Tab {
+                    origin: Origin::UserClaimed,
+                    tab: Some("17".into()),
+                },
+                true,
+            )
+            .unwrap()
+    };
+    let respond = async {
+        let frame = read_frame(&mut server).await;
+        assert_eq!(frame["request"]["method"], "prepareUserTab");
+        assert_eq!(frame["request"]["takeover"], true);
+        result(
+            &mut server,
+            frame["request"]["id"].as_u64().unwrap(),
+            json!({"sessionOnly":true,"tab":{"id":17,"title":"Inbox"}}),
+        )
+        .await;
+    };
+    let (prepared, ()) = bounded(async {
+        tokio::join!(
+            claim.dispatch(claim.control.take_over_session_tab(17)),
+            respond
+        )
+    })
+    .await;
+    assert_eq!(prepared.unwrap().tab.id, 17);
+    let mut ledger = host.lock().await;
+    ledger.reconcile_provider(owner, &current).await.unwrap();
+    assert!(ledger.acquisition(owner, &identity).is_some());
+    assert!(matches!(
+        ledger.tabs[&old_identity]
+            .extension
+            .as_ref()
+            .unwrap()
+            .user_preparation,
+        UserPreparation::Unknown(_)
+    ));
+    ledger.extension.clear();
+    drop(ledger);
+    extension.close().await;
+}
+
+#[tokio::test]
+async fn separate_live_connections_cannot_bypass_physical_tab_ownership() {
+    let mut fixture = Fixture::open().await;
+    let previous = fixture.provider();
+    let (extension, _server) = fixture.connect_again().await;
+    let current = Provider::Extension {
+        id: previous.id().into(),
+        connection: Arc::new(extension.clone()),
+    };
+    let owner = uuid::Uuid::new_v4();
+    let foreign = uuid::Uuid::new_v4();
+    let identity = browser(&current).tab("17");
+    let mut ledger = Host::default();
+    ledger
+        .extension_reserve(owner, &previous, "old", "17", Origin::UserClaimed)
+        .unwrap();
+    assert!(!ledger.visible(&identity, foreign));
+    assert!(
+        matches!(ledger.extension_reserve(foreign, &current, "new", "17", Origin::UserClaimed), Err(ToolError::Failed(reason)) if reason == "tab_owned_by_another_session")
+    );
+    extension.close().await;
     fixture.assert_no_frame_and_close().await;
 }

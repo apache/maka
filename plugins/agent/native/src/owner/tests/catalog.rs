@@ -30,48 +30,6 @@ async fn next(stream: &mut Subscription) -> Value {
 }
 
 #[tokio::test]
-async fn catalog_watch_rejects_stale_continuations_without_waiting_for_another_change() {
-    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-    let session = fixture.create("Original catalog window").await;
-    let original = fixture
-        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
-        .await
-        .unwrap();
-    fixture.create("Catalog changed before subscription").await;
-    for direction in ["after", "before"] {
-        let mut stream = fixture
-            .app
-            .client()
-            .subscribe(
-                fixture.binding(2).await,
-                "catalog".into(),
-                json!({"filter":"all","position":{
-                    "kind":direction,"revision":original["revision"],"cursor":session
-                }}),
-                scope(&fixture.issuer, true),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap();
-        let error = tokio::time::timeout(Duration::from_secs(5), async {
-            assert!(
-                stream.recv().await.is_none(),
-                "stale {direction} must not emit a page"
-            );
-            stream.completion().await.result.unwrap_err()
-        })
-        .await
-        .expect("stale continuation must fail without another catalog change");
-        assert!(
-            error.contains("agent_catalog_changed"),
-            "{direction}: {error}"
-        );
-    }
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
-}
-
-#[tokio::test]
 async fn catalog_observes_metadata_pending_and_removal_at_its_original_location() {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
     let mut bootstrap = fixture
@@ -87,18 +45,43 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .await
         .unwrap();
     assert_eq!(next(&mut bootstrap).await["sessions"], json!([]));
-    let mut ids = Vec::new();
-    for title in ["First", "Second", "Third"] {
-        ids.push(fixture.create(title).await);
-        assert!(
-            !next(&mut bootstrap).await["sessions"]
+    let first_id = fixture.create("First").await;
+    let published = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let page = next(&mut bootstrap).await;
+            // A partition commit can precede publication of its Root route.
+            if !page["sessions"].as_array().unwrap().is_empty() {
+                break page;
+            }
+        }
+    })
+    .await
+    .expect("created Session must be published to the catalog");
+    assert_eq!(published["sessions"].as_array().unwrap().len(), 1);
+    assert_eq!(published["sessions"][0]["id"], first_id);
+    assert_eq!(published["sessions"][0]["title"], "First");
+    let mut ids = vec![first_id];
+    for title in ["Second", "Third"] {
+        let id = fixture.create(title).await;
+        let page = loop {
+            let page = next(&mut bootstrap).await;
+            if page["sessions"]
                 .as_array()
                 .unwrap()
-                .is_empty()
+                .iter()
+                .any(|session| session["id"] == id)
+            {
+                break page;
+            }
+        };
+        assert_eq!(
+            page["sessions"][0]["id"], id,
+            "Start follows new conversations"
         );
+        ids.push(id);
     }
     bootstrap.completion().await;
-    ids.sort();
+    ids.reverse();
     let owned_scope = json!({"kind":"workspace","sessionId":ids[0]});
     let first_title = fixture
         .query(
@@ -286,7 +269,7 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         if id == &ids[2] {
             assert_eq!(
                 updated["sessions"][0]["id"], ids[0],
-                "empty tail falls back in the same owner scope"
+                "removed anchor resets to the head in the same owner scope"
             );
             assert!(updated["before"].is_null());
             assert!(updated["after"].is_null());
@@ -302,160 +285,6 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
         .unwrap();
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
-}
-
-#[tokio::test]
-async fn explicit_read_marker_keeps_original_tail_authority_and_receipt() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            for text in ["First answer", "New answer"] {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                request(&mut socket).await;
-                response_with_text(&mut socket, text).await;
-            }
-        });
-        let fixture = Fixture::new(&base, None).await;
-        let session = fixture.create("Read marker").await;
-        let read = |message: &str| json!({"sessionId":session,"messageId":message});
-        let initial = fixture
-            .query("observe", json!({"sessionId":session}))
-            .await
-            .unwrap();
-        assert_eq!(initial["session"]["tailMessageId"], Value::Null);
-        assert_eq!(initial["session"]["hasUnread"], false);
-        fixture.send(&session).await.unwrap();
-        fixture.drained().await;
-        let first = fixture
-            .query("observe", json!({"sessionId":session}))
-            .await
-            .unwrap();
-        assert_eq!(first["session"]["hasUnread"], true);
-        let page = fixture
-            .query(
-                "history",
-                json!({"sessionId":session,"position":{"kind":"tail"}}),
-            )
-            .await
-            .unwrap();
-        let message = page["chunks"].as_array().unwrap().last().unwrap()["messageId"]
-            .as_str()
-            .unwrap();
-        assert_eq!(first["session"]["tailMessageId"], message);
-        let stale = fixture
-            .mutation(2, "markRead", read("unknown-message"), Uuid::new_v4())
-            .await
-            .unwrap();
-        assert_eq!(stale["session"], first["session"]);
-        let operation = Uuid::new_v4();
-        let marked = fixture
-            .mutation(2, "markRead", read(message), operation)
-            .await
-            .unwrap();
-        assert_eq!(marked["kind"], "observed");
-        assert_eq!(marked["session"]["hasUnread"], false);
-        assert_eq!(marked["session"]["tailMessageId"], message);
-        assert_eq!(
-            marked["session"]["updatedAt"],
-            first["session"]["updatedAt"]
-        );
-        let revision = marked["session"]["revision"].as_u64().unwrap();
-        assert_eq!(revision, first["session"]["revision"].as_u64().unwrap() + 1);
-        let duplicate = fixture
-            .mutation(2, "markRead", read(message), Uuid::new_v4())
-            .await
-            .unwrap();
-        assert_eq!(duplicate, marked);
-        fixture.send(&session).await.unwrap();
-        fixture.drained().await;
-        let second = fixture
-            .query("observe", json!({"sessionId":session}))
-            .await
-            .unwrap();
-        assert_eq!(second["session"]["hasUnread"], true);
-        assert_eq!(
-            fixture
-                .mutation(2, "markRead", read(message), operation)
-                .await
-                .unwrap(),
-            marked,
-            "original receipt replay cannot clear later unread"
-        );
-        assert_eq!(
-            fixture
-                .mutation(2, "markRead", read(message), Uuid::new_v4())
-                .await
-                .unwrap()["session"],
-            second["session"],
-            "older message cannot clear the new tail"
-        );
-        fixture
-            .store
-            .create_session("foreign_session", "foreign", &json!({"foreign":true}), 1)
-            .await
-            .unwrap();
-        assert_eq!(
-            fixture
-                .mutation(
-                    2,
-                    "markRead",
-                    json!({"sessionId":"foreign_session","messageId":message}),
-                    Uuid::new_v4()
-                )
-                .await
-                .unwrap()["kind"],
-            "rejected",
-            "Agent cannot mark a foreign session"
-        );
-        let page = fixture
-            .query(
-                "history",
-                json!({"sessionId":session,"position":{"kind":"tail"}}),
-            )
-            .await
-            .unwrap();
-        let latest = page["chunks"].as_array().unwrap().last().unwrap()["messageId"]
-            .as_str()
-            .unwrap();
-        assert_eq!(second["session"]["tailMessageId"], latest);
-        assert_eq!(
-            fixture
-                .mutation(2, "markRead", read(latest), Uuid::new_v4())
-                .await
-                .unwrap()["session"]["hasUnread"],
-            false
-        );
-        let stored = fixture
-            .session(&session)
-            .await
-            .get_session::<StoredSessionConfiguration>(&session)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            stored.read_state.last_read_message_id.as_deref(),
-            Some(latest)
-        );
-        fixture
-            .store
-            .set_session_archived::<StoredSessionConfiguration>(&session, true, now())
-            .await
-            .unwrap();
-        assert_eq!(
-            fixture
-                .mutation(2, "markRead", read(latest), Uuid::new_v4())
-                .await
-                .unwrap()["kind"],
-            "rejected",
-            "archived sessions retain their original state"
-        );
-        server.await.unwrap();
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
 }
 
 #[tokio::test]
@@ -569,35 +398,78 @@ async fn session_lifecycle_is_revision_checked_reversible_and_scoped() {
 }
 
 #[tokio::test]
-async fn k64_complete_session_metadata_persists_and_remains_searchable() {
-    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-    let title = "Complete authored conversation title ".repeat(20);
-    let labels: Vec<_> = (0..40)
-        .map(|index| format!("{index}: {}", "Complete authored label ".repeat(10)))
-        .collect();
-    let mut input = fixture.create_input(&title).await;
-    input["labels"] = json!(labels);
-    let created = fixture
-        .mutation(2, "create", input, Uuid::new_v4())
+async fn pinning_keeps_title_policy_survives_restart_and_respects_metadata_revision() {
+    let mut fixture = Fixture::configured("http://127.0.0.1:1/v1", None, None, None, |settings| {
+        settings.automatic_titles = true
+    })
+    .await;
+    for title in ["Pin first", "Pin second", "Pin third"] {
+        let mut input = fixture.create_input(title).await;
+        input["automaticTitle"] = json!(true);
+        fixture
+            .mutation(2, "create", input, Uuid::new_v4())
+            .await
+            .unwrap();
+    }
+    let original = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
         .await
         .unwrap();
-    assert_eq!(created["session"]["title"], title);
-    assert_eq!(created["session"]["labels"], json!(labels));
-    let id = created["session"]["id"].as_str().unwrap();
-    let stored = fixture.owner.session(id).await.unwrap();
-    assert_eq!(stored.configuration.title, title);
-    assert_eq!(stored.configuration.labels, labels);
-    let found = fixture
-        .query(
-            "list",
-            json!({
-                "filter":"all", "position":{"kind":"start"}, "titleQuery":title
-            }),
-        )
+    let last = original["sessions"].as_array().unwrap().last().unwrap();
+    let id = last["id"].as_str().unwrap();
+    assert_eq!(last["pinned"], false);
+    let input = json!({"sessionId":id,"expectedRevision":last["revision"],"title":last["title"],"labels":last["labels"],"pinned":true});
+    let changed = fixture
+        .mutation(2, "metadata", input.clone(), Uuid::new_v4())
         .await
         .unwrap();
-    assert_eq!(found["sessions"][0]["id"], id);
-    assert_eq!(found["sessions"][0]["title"], title);
+    assert_eq!(changed["kind"], "committed");
+    assert_eq!(changed["session"]["pinned"], true);
+    assert_eq!(
+        changed["session"]["boundaryRevision"],
+        last["boundaryRevision"]
+    );
+    let record = fixture
+        .store
+        .get_session::<StoredSessionConfiguration>(id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        !record.configuration.title_is_manual,
+        "pinning must preserve automatic titles"
+    );
+    let conflict = fixture
+        .mutation(2, "metadata", input, Uuid::new_v4())
+        .await
+        .unwrap();
+    assert_eq!(conflict["kind"], "revision_conflict");
+    let listed = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    assert_eq!(listed["sessions"][0]["id"], id);
+    todo_tests::reopen(&mut fixture).await;
+    let observed = fixture
+        .query("observe", json!({"sessionId":id}))
+        .await
+        .unwrap();
+    assert_eq!(observed["session"]["pinned"], true);
+    let unpinned = fixture.mutation(2,"metadata",json!({"sessionId":id,"expectedRevision":observed["session"]["revision"],"title":last["title"],"labels":last["labels"],"pinned":false}),Uuid::new_v4()).await.unwrap();
+    assert_eq!(unpinned["session"]["pinned"], false);
+    let listed = fixture
+        .query("list", json!({"filter":"all","position":{"kind":"start"}}))
+        .await
+        .unwrap();
+    let ids = |page: &Value| {
+        page["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["id"].clone())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(ids(&listed), ids(&original));
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }

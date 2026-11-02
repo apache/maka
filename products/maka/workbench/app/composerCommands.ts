@@ -28,3 +28,11 @@ export type CommandEntry = {
 };
 
 export type ComposerCommand = CommandEntry & { trigger: string };
+
+export function matchComposerCommand<T extends ComposerCommand>(commands: T[], text: string) {
+  const match = /^\s*\/([^\s]+)(?:\s+([\s\S]*))?$/u.exec(text);
+  if (!match || match[1].startsWith('skill:')) return null;
+  const found = commands.find((entry) => entry.trigger === match[1]);
+  const argument = match[2]?.trim() ?? '';
+  return found && (!argument || found.takesArgument) ? { found, argument } : null;
+}

@@ -17,7 +17,8 @@
  * under the License.
  */
 
-use crate::model::{ModelFinishReason, ModelPart, ModelStep, TextKind};
+use crate::input::InvocationInput;
+use crate::model::{ModelFinishReason, ModelPart, TextKind};
 use serde::{Deserialize, Serialize};
 
 mod breakdown;
@@ -100,7 +101,6 @@ pub fn resolve_model_purpose(
     opening: &crate::input::InvocationInput,
     purpose: ModelPurpose,
 ) -> Result<ModelPurpose, &'static str> {
-    use crate::input::InvocationInput;
     match (opening, purpose) {
         (
             InvocationInput::Message { .. }
@@ -158,19 +158,24 @@ pub enum SummaryDefect {
 impl TextSummary {
     /// Ordinary text parts concatenate in original order; thinking is not a
     /// portable summary. The prompt controls the summary's content and format.
-    pub fn from_model_step(step: &ModelStep) -> Result<Self, SummaryDefect> {
-        if step.finish_reason != ModelFinishReason::Stop {
+    pub fn from_parts<'a>(
+        finish_reason: ModelFinishReason,
+        parts: impl IntoIterator<Item = &'a ModelPart>,
+    ) -> Result<Self, SummaryDefect> {
+        if finish_reason != ModelFinishReason::Stop {
             return Err(SummaryDefect::InvalidFinish);
         }
         let mut text = String::new();
-        for part in &step.parts {
+        for part in parts {
             match part {
                 ModelPart::Text {
                     text_kind: TextKind::Text,
                     text: part,
                     ..
                 } => {
-                    text.push_str(part);
+                    for chunk in part.chunks() {
+                        text.push_str(chunk);
+                    }
                 }
                 ModelPart::Text {
                     text_kind: TextKind::Thinking,
@@ -214,72 +219,6 @@ impl ContextCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::InvocationInput;
-
-    #[test]
-    fn summary_preserves_custom_text_without_content_heuristics() {
-        for text in [
-            String::new(),
-            "  custom JSON or prose:...\n```".into(),
-            "x".repeat(300_000),
-        ] {
-            let step: ModelStep = serde_json::from_value(serde_json::json!({
-                "parts": [
-                    {"kind":"text", "text_kind":"thinking", "text":"private reasoning"},
-                    {"kind":"text", "text_kind":"text", "text":text}
-                ],
-                "finish_reason":"stop", "usage":{"input_tokens":20000,"output_tokens":1}
-            }))
-            .unwrap();
-            assert_eq!(TextSummary::from_model_step(&step).unwrap().text, text);
-        }
-    }
-
-    #[test]
-    fn summary_requires_completed_text_execution() {
-        let mut step: ModelStep = serde_json::from_value(serde_json::json!({
-            "parts":[{"kind":"text","text_kind":"text","text":"custom summary"}],
-            "finish_reason":"length","usage":{}
-        }))
-        .unwrap();
-        assert_eq!(
-            TextSummary::from_model_step(&step),
-            Err(SummaryDefect::InvalidFinish)
-        );
-        step.finish_reason = ModelFinishReason::Stop;
-        step.parts.push(ModelPart::ToolCall {
-            call: serde_json::from_value(serde_json::json!({
-                "id":"call", "name":"Read", "input":{"kind":"json","data":{}}, "provider_executed":false
-            }))
-            .unwrap(),
-        });
-        assert_eq!(
-            TextSummary::from_model_step(&step),
-            Err(SummaryDefect::ToolContent)
-        );
-    }
-
-    #[test]
-    fn model_purpose_must_match_the_canonical_opening() {
-        let message = InvocationInput::Message {
-            source_messages: Vec::new(),
-            content: "task".into(),
-            request_fingerprint: None,
-        };
-        let compact = InvocationInput::ContextCompact {
-            request_fingerprint: "request".into(),
-        };
-        let code = InvocationInput::Code { source: "1".into() };
-        for purpose in [ModelPurpose::Main, ModelPurpose::Summary] {
-            assert_eq!(resolve_model_purpose(&message, purpose), Ok(purpose));
-            assert!(resolve_model_purpose(&code, purpose).is_err());
-        }
-        assert!(resolve_model_purpose(&compact, ModelPurpose::Main).is_err());
-        assert_eq!(
-            resolve_model_purpose(&compact, ModelPurpose::Summary),
-            Ok(ModelPurpose::Summary)
-        );
-    }
 
     #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {

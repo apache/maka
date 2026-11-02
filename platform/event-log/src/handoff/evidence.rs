@@ -39,7 +39,7 @@ pub(crate) async fn validate(
         if let InvocationInput::Handoff { claim, pause } = input {
             let source = &claim.source.invocation;
             let (opening, terminal): (String, String) = sqlx::query_as(
-                "SELECT o.event_json, t.event_json FROM runtime_events o JOIN runtime_events t
+                "SELECT o.event_header, t.event_header FROM runtime_events o JOIN runtime_events t
                  ON t.invocation_id=o.invocation_id AND t.kind='invocation_ended'
                  WHERE o.invocation_id=? AND o.kind='invocation_opened'",
             )
@@ -72,7 +72,7 @@ pub(crate) async fn validate(
         return Err(invalid("handoff source is already sealed"));
     }
     let opening: String = sqlx::query_scalar(
-        "SELECT event_json FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
+        "SELECT event_header FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
     )
     .bind(&event.invocation.invocation_id)
     .fetch_one(&mut *tx)
@@ -153,8 +153,8 @@ pub(crate) async fn validate(
     crate::context::read::validate_handoff_context(tx, &opening).await?;
     let occupied: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE kind='invocation_opened'
-         AND (invocation_id=?1 OR json_extract(event_json,'$.invocation.run_id')=?2
-           OR json_extract(event_json,'$.fact.input.claim.id')=?3))",
+         AND (invocation_id=?1 OR json_extract(event_header,'$.invocation.run_id')=?2
+           OR json_extract(event_header,'$.fact.input.claim.id')=?3))",
     )
     .bind(&pause.intent.successor_invocation_id)
     .bind(&pause.intent.successor_run_id)

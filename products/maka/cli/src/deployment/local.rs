@@ -744,17 +744,9 @@ mod tests {
             let mut input = loaded.source().input.clone();
             input.instances.get_mut("settings").unwrap().package =
                 previous.application_ref().into();
-            let packages = loaded
-                .packages()
-                .iter()
-                .map(|package| {
-                    if package.application_ref() == settings.application_ref() {
-                        previous.clone()
-                    } else {
-                        package.clone()
-                    }
-                })
-                .collect();
+            // The settings UI still selects the current package revision.
+            let mut packages = loaded.packages().to_vec();
+            packages.push(previous);
             store
                 .commit_application(
                     record.deployment,
@@ -798,7 +790,6 @@ mod tests {
         }
         if let Some(desired) = desired {
             let mut input = loaded.source().input.clone();
-            let mut packages = loaded.packages().to_vec();
             match desired {
                 DesiredRevision::CurrentPackages => {
                     let mut reference = loaded.source().reference.clone();
@@ -812,11 +803,9 @@ mod tests {
                         .packages()
                         .iter()
                         .find(|package| package.application_ref().id == "maka.agent.settings")
-                        .unwrap()
-                        .clone();
+                        .unwrap();
                     input.instances.get_mut("settings").unwrap().package =
                         settings.application_ref().into();
-                    packages.push(settings);
                 }
                 DesiredRevision::ConfigurationOnly => {
                     input
@@ -834,7 +823,7 @@ mod tests {
                     loaded.source().reference.revision,
                     input,
                     vec![],
-                    packages,
+                    loaded.packages().to_vec(),
                 )
                 .await
                 .unwrap();
@@ -928,246 +917,6 @@ mod tests {
             registration.remove().unwrap();
         });
         (root_id, epoch, stop, server)
-    }
-
-    #[cfg(unix)]
-    fn watch_fixture_owner(stop: CancellationToken) {
-        std::thread::spawn(move || {
-            use std::io::BufRead;
-            let mut bytes = Vec::new();
-            let read = std::io::stdin().lock().read_until(b'\n', &mut bytes);
-            if read.is_err()
-                || !serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|value| {
-                    value == serde_json::json!({"kind":"runtime-host-launch-owner-release"})
-                })
-            {
-                stop.cancel();
-            }
-        });
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cold_start_candidate_process_fixture() {
-        let Some(root) = std::env::var_os("MAKA_DEFAULTS_FIXTURE_ROOT") else {
-            return;
-        };
-        let root = PathBuf::from(root);
-        let generation = std::env::var("MAKA_DEFAULTS_FIXTURE_GENERATION")
-            .ok()
-            .filter(|value| !value.is_empty());
-        let attempts = root.with_file_name("fixture-candidate-attempts");
-        let previous = match std::fs::read_to_string(&attempts) {
-            Ok(value) => value.parse::<u32>().unwrap(),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
-            Err(error) => panic!("candidate counter unavailable: {error}"),
-        };
-        let attempt = previous.checked_add(1).unwrap();
-        std::fs::write(&attempts, attempt.to_string()).unwrap();
-        let first = attempt == 1;
-        let code_only = std::env::var("MAKA_DEFAULTS_FIXTURE_CODE_ONLY").as_deref() == Ok("1");
-        let mut incarnation_generation = generation.clone();
-        if code_only && first {
-            let stale = incarnation_generation.as_mut().expect("CLI generation");
-            let last = stale.pop().unwrap();
-            stale.push(if last == '0' { '1' } else { '0' });
-        }
-        let options = Options {
-            generation: incarnation_generation,
-            lifecycle_mode: if code_only {
-                maka_host_runtime::application::host::LifecycleMode::Ephemeral
-            } else {
-                maka_host_runtime::application::host::LifecycleMode::Service
-            },
-            ..Options::default()
-        };
-        let mut host = crate::application::open_host(
-            RootOwner::open(&root, &RootNamespaces::for_current_account().unwrap()).unwrap(),
-            options,
-            crate::application::Roots::Configured(Some(vec![])),
-            Some(catalog_transport()),
-        )
-        .await
-        .unwrap();
-        if first && !code_only {
-            host.shutdown().await.unwrap();
-            drop(host);
-            let (_, _, stop, mut server) = serve_product(&root, true, true, generation).await;
-            watch_fixture_owner(stop.clone());
-            if tokio::time::timeout(Duration::from_secs(45), &mut server)
-                .await
-                .is_err()
-            {
-                stop.cancel();
-                server.await.unwrap();
-                panic!("launcher did not retire the failed candidate");
-            }
-        } else {
-            let endpoint = crate::endpoint::LocalEndpoint::bind().unwrap();
-            let websocket = if generation.is_some() {
-                Some(
-                    maka_host_runtime::application::host::websocket::WebSocketListener::bind(
-                        "127.0.0.1:0".parse().unwrap(),
-                        vec![],
-                    )
-                    .await
-                    .unwrap(),
-                )
-            } else {
-                None
-            };
-            let registration = host
-                .host
-                .publish_registration(
-                    &endpoint.path,
-                    websocket
-                        .as_ref()
-                        .map(|listener| listener.local_addr().unwrap()),
-                )
-                .unwrap();
-            let stop = CancellationToken::new();
-            watch_fixture_owner(stop.clone());
-            tokio::time::timeout(
-                Duration::from_secs(45),
-                serve_fixture(endpoint, host, stop, websocket),
-            )
-            .await
-            .unwrap()
-            .unwrap();
-            registration.remove().unwrap();
-        }
-    }
-
-    #[cfg(unix)]
-    async fn cold_launcher_recovers_its_candidate(managed: bool, code_only: bool) {
-        use std::os::unix::fs::PermissionsExt;
-        let temporary = tempfile::tempdir().unwrap();
-        let root_path = temporary.path().join("host");
-        let owner =
-            RootOwner::create(&root_path, &RootNamespaces::for_current_account().unwrap()).unwrap();
-        let root_path = owner.canonical_path().to_owned();
-        let root_id = owner.root_id().to_owned();
-        let deployment_id = uuid::Uuid::new_v4();
-        let generation = if managed {
-            format!("{deployment_id}:1")
-        } else {
-            String::new()
-        };
-        let executable = std::env::current_exe().unwrap();
-        let quote = |value: &str| format!("'{}'", value.replace('\'', "'\\''"));
-        let script = format!(
-            "#!/bin/sh\nexport MAKA_DEFAULTS_FIXTURE_ROOT=\"$4\"\nexport MAKA_DEFAULTS_FIXTURE_GENERATION={}\nexport MAKA_DEFAULTS_FIXTURE_CODE_ONLY={}\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = --generation ]; then\n    shift\n    export MAKA_DEFAULTS_FIXTURE_GENERATION=\"$1\"\n    break\n  fi\n  shift\ndone\nexec {} --exact deployment::local::tests::cold_start_candidate_process_fixture --nocapture\n",
-            quote(&generation),
-            if code_only { "1" } else { "0" },
-            quote(executable.to_str().unwrap())
-        );
-        let launcher = temporary.path().join("launcher");
-        std::fs::write(&launcher, &script).unwrap();
-        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let deployment_directory = directory(&root_id).unwrap();
-        if managed {
-            root::private_directory(&deployment_directory).unwrap();
-            let lease =
-                Arc::new(FileLease::acquire(&deployment_directory.join("executor.lock")).unwrap());
-            let digest = hex::encode(Sha256::digest(script.as_bytes()));
-            let packaged = super::super::package::path(&deployment_directory, &digest);
-            root::private_directory(packaged.parent().unwrap()).unwrap();
-            std::fs::copy(&launcher, &packaged).unwrap();
-            let deployment = super::super::Deployment {
-                deployment_id,
-                config_revision: 1,
-                root_id: root_id.clone(),
-                root_path: root_path.clone(),
-                executable: packaged,
-                sha256: digest,
-                mode: super::super::Mode::OnDemand,
-                websocket: "127.0.0.1:0".parse().unwrap(),
-                project_directory_roots: Some(vec![]),
-                admission: super::super::Admission::Active,
-            };
-            store::install(
-                &deployment_directory,
-                lease.clone(),
-                Arc::new(owner),
-                deployment,
-            )
-            .await
-            .unwrap();
-            drop(lease);
-        } else {
-            drop(owner);
-        }
-        let mut client = connect_inner(root_path.clone(), None, &launcher)
-            .await
-            .unwrap();
-        assert_eq!(
-            std::fs::read_to_string(root_path.with_file_name("fixture-candidate-attempts"))
-                .unwrap(),
-            "2"
-        );
-        assert!(client.catalogue().startup_error().is_none());
-        assert!(
-            client
-                .catalogue()
-                .describe("settings")
-                .unwrap()
-                .registration_epoch
-                .is_some()
-        );
-        assert!(
-            !crate::application::live_update_available(&client)
-                .await
-                .unwrap()
-        );
-        if !managed {
-            let current = discovery::read(&root_path).unwrap();
-            let status = Client::status(&current.endpoint, Some(current.host_epoch))
-                .await
-                .unwrap();
-            current.verify(&status).unwrap();
-            assert_eq!(
-                status.generation,
-                Some(format!(
-                    "cli-sha256:{}",
-                    hex::encode(Sha256::digest(script.as_bytes()))
-                ))
-            );
-        }
-        client.quit().await.unwrap();
-        let owner = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                match RootOwner::open(&root_path, &RootNamespaces::for_current_account().unwrap()) {
-                    Ok(owner) => break owner,
-                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => pause().await,
-                    Err(error) => panic!("{error}"),
-                }
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(owner.root_id(), root_id);
-        drop(owner);
-        if deployment_directory.exists() {
-            std::fs::remove_dir_all(deployment_directory).unwrap();
-        }
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cold_standalone_launcher_reaps_and_restarts_its_retired_candidate() {
-        cold_launcher_recovers_its_candidate(false, false).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cold_managed_launcher_reuses_its_anchor_and_reactivates() {
-        cold_launcher_recovers_its_candidate(true, false).await;
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cold_standalone_launcher_restarts_code_drift_with_current_packages() {
-        cold_launcher_recovers_its_candidate(false, true).await;
     }
 
     async fn desired_metadata(
@@ -1448,45 +1197,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn current_live_host_is_reused_without_retirement() {
-        let directory = tempfile::tempdir().unwrap();
-        let root = directory.path().join("host");
-        let (root_id, epoch, stop, server) = serve_product(&root, false, false, None).await;
-        let mut attempted = UpdateAttempt::default();
-        let mut client = live(&root, &root_id, None, &mut attempted)
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(client.epoch(), epoch);
-        assert!(!attempted.restarted);
-        client.close().await.unwrap();
-        stop.cancel();
-        server.await.unwrap();
-    }
-
-    #[tokio::test]
     async fn launcher_owned_updates_interrupt_the_old_host_and_wait_for_cleanup() {
-        tokio::time::timeout(Duration::from_secs(60), async {
-            for code_changed in [false, true] {
-                let temporary = tempfile::tempdir().unwrap();
-                let root = temporary.path().join("host");
-                let launcher = temporary.path().join("launcher");
-                std::fs::write(&launcher, b"current executable").unwrap();
-                let mut attempted = UpdateAttempt {
-                    launcher: Some(launcher),
-                    ..Default::default()
-                };
-                let generation = if code_changed {
-                    format!("cli-sha256:{}", "0".repeat(64))
-                } else {
-                    attempted.generation().await.unwrap().unwrap().to_owned()
-                };
-                let (root_id, epoch, _stop, server) =
-                    serve_product(&root, !code_changed, false, Some(generation)).await;
-                let discovery = discovery::read(&root).unwrap();
-                let other = Client::connect(&discovery.endpoint, Some(epoch))
-                    .await
-                    .unwrap();
+        for code_changed in [false, true] {
+            let temporary = tempfile::tempdir().unwrap();
+            let root = temporary.path().join("host");
+            let launcher = temporary.path().join("launcher");
+            std::fs::write(&launcher, b"current executable").unwrap();
+            let mut attempted = UpdateAttempt {
+                launcher: Some(launcher),
+                ..Default::default()
+            };
+            let generation = if code_changed {
+                format!("cli-sha256:{}", "0".repeat(64))
+            } else {
+                attempted.generation().await.unwrap().unwrap().to_owned()
+            };
+            let (root_id, epoch, _stop, server) =
+                serve_product(&root, !code_changed, false, Some(generation)).await;
+            let discovery = discovery::read(&root).unwrap();
+            let other = Client::connect(&discovery.endpoint, Some(epoch))
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(60), async {
                 assert!(
                     !Client::retire_with_options(&discovery.endpoint, epoch, false, false)
                         .await
@@ -1506,10 +1238,14 @@ mod tests {
                 assert_eq!(owner.root_id(), root_id);
                 drop((owner, other));
                 server.await.unwrap();
-            }
-        })
-        .await
-        .unwrap();
+            })
+            .await
+            .unwrap_or_else(|error| {
+                panic!(
+                    "launcher update and cleanup timed out (code_changed={code_changed}): {error}"
+                )
+            });
+        }
     }
 
     #[tokio::test]

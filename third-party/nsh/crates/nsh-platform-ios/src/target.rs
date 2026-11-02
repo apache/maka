@@ -154,6 +154,11 @@ define_class!(
             self.with_mounter(|m| m.shader_frame());
         }
 
+        #[unsafe(method(textColorFrame:))]
+        fn text_color_frame(&self, _link: &CADisplayLink) {
+            self.with_mounter(|m| m.text_color_frame());
+        }
+
         #[unsafe(method(handleEditingChanged:))]
         fn handle_editing_changed(&self, field: &UITextField) {
             // Read now: a deferred call must report this edit's text.

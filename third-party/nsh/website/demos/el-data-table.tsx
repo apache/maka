@@ -53,7 +53,7 @@ function App() {
           </>
         }
       >
-        <View style={{ height: wide() ? 360 : 320, ...ui().card, borderRadius: 14, overflow: "hidden" }}>
+        <View style={{ height: wide() ? 360 : 320 }}>
           <DataTable
             columns={columns.map((column) => ({ ...column, fitPadding: dataTableFitPadding }))}
             classes={dataTableClasses}

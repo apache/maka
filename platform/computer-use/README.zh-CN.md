@@ -39,6 +39,8 @@ const app = await cua.getApp("Calculator");
 
 `desktop` 默认为 `auto`：WSL 中选择 Windows 主机，其他环境选择本地桌面。`local` 在 WSL 中选择 Linux，`windows` 要求 Windows helper。原生分发通过经过验证的缓存准备匹配版本的 helper。此模式需要 WSL 互操作及交互式 Windows 桌面。
 
+macOS 的 `MAKA_COMPUTER_USE_ALWAYS_SIMULATE_CLICK` 接受 `true` 或 `false`（默认）：raw 元素点击在适用时优先使用 `AXPick`/`AXPress`，否则发送鼠标事件；`true` 强制普通元素使用鼠标事件。菜单栏快捷路径不受此设置影响。
+
 浏览器提供方包括使用已有 profile 的显式 CDP 连接，以及已连接的 Extension 浏览器提供方。先用 `cua.listBrowsers()` 获取完整 ID，再用 `cua.getBrowser({id})` 选择。精确 provider ID 优先；没有精确匹配时，才用 `maka` 和 `chatgpt` 短名选择唯一的当前 Extension 端点；存在多个端点时须使用完整 ID。direct CDP profile 保留配置的 ID。缺少提供方不会重启浏览器或开启远程调试；仍可通过 `getApp` 操作原生浏览器窗口。
 
 配置 Maka 或 ChatGPT Extension 提供方时，须在 Google Chrome 所在操作系统、以同一用户运行启用 `native-desktop` 的 Maka。安装命令注册 Chrome 的当前用户扩展宿主，不经 WSL Windows 桥转发。Linux 和 macOS 下，Chrome 的默认用户配置目录须已存在。注册还会在选定 Maka 可执行文件旁写入安装元数据，这些位置需要可写。
@@ -63,15 +65,31 @@ maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_
 
 这些命令为同一个可执行文件选择不同的注册方式。扩展宿主安装拒绝覆盖冲突注册，重新导出扩展时也拒绝覆盖修改过的源码。安装命令不安装扩展、不修改浏览器策略，也不授予站点访问权限。Maka 使用 `maka browser uninstall --provider maka`，ChatGPT 使用 `maka browser uninstall --provider chatgpt`，移除匹配的 扩展宿主注册；此操作不卸载扩展或删除导出源码。
 
+Maka 会自动发现 Chrome 或 Chromium 中已安装的 ChatGPT 扩展及其原生宿主，使用时按需接管，无需执行配置命令；两者均存在时优先选择 Chrome。若需要明确选择扩展或改用 Chromium：
+
+```sh
+maka browser install --provider chatgpt --extension-id ACTUAL_CHATGPT_EXTENSION_ID --on-demand
+```
+
+默认选择 Google Chrome；追加 `--browser chromium` 可选择 Chromium 的原生消息注册位置。每个可执行文件的连接配置对应一种浏览器，两者的恢复记录和使用计数独立。在 Linux 上，按需接管遵循 `XDG_CONFIG_HOME`。
+
+接管和归还都会重新连接扩展宿主；原宿主中正在执行的浏览器操作不会跨连接继续。
+
+安装时保留原注册。浏览器发现会列出已配置的连接器，但不会接管；选择或使用时才取得共享租约。正常轮次清理、Session 关闭及 `await browser.release()` 会归还当前 Session 的租约，最后一个使用者归还后恢复原宿主。长时间运行的 Agent 应在休眠前主动归还浏览器。`maka browser restore` 可恢复遗留注册；仍在运行的监督进程会持有注册锁。
+
+发现过程只读，不改动浏览器注册。独立的 Maka 连接扩展和显式永久连接仍然可用。既没有已安装的 ChatGPT 连接，也没有配置提供方时，`cua.listBrowsers()` 返回空列表。
+
 Extension 提供方通过 `browser.user` 提供用户标签页发现和取得入口。[API 说明](src/api.zh-CN.md)涵盖其权限规则、`tab.ax` 门面、Playwright、剪贴板和下载。Host 的 `browserPreparation` 默认为 `popup: false`、`requestHeaders: []`；非空 headers 也会启用有效的 popup 采用与 relay。这些设置不授予站点访问权限，也不证明 ChatGPT 页面 hooks 已关闭，详见[类型化配置](../../plugins/workspace/api/src/computer.rs)。
 
-导出的 Maka 源码也是定制 Chrome 连接扩展的入口。自定义浏览器对象 API 从 [facade.js](src/facade.js)、[protocol.rs](src/protocol.rs) 中的类型化命令及 [browser.rs](src/browser.rs) 派发入手，保留 Host 授权和资源所有权。这是源码开发入口，不是动态浏览器协议插件注册接口。ChatGPT 和原版 OpenCLI 按实际能力尽力兼容，注册任意扩展 ID 不会增加其协议支持。原版 OpenCLI 当前缺少浏览器会话所需的接口；没有精确 provider ID 或扩展实例选择时，`cua.getBrowser({id: "opencli"})` 会在创建或认领标签页前选择唯一可用的已有提供方，没有匹配或匹配多个时拒绝选择。精确 ID 和已有句柄始终固定到原连接，无需安装修改版 OpenCLI 扩展。安装及浏览器操作仍须使用匹配的 Maka CLI/Host 构建在各目标平台进行集成验证；仅发现连接不能证明操作行为。
+定制 Maka 连接扩展可从 [facade.js](src/facade.js)、[protocol.rs](src/protocol.rs) 中的类型化命令及 [browser.rs](src/browser.rs) 派发入手。ChatGPT 和原版 OpenCLI 按实际能力尽力兼容。OpenCLI 可在创建或认领标签页前回退到唯一可用的提供方；精确 ID 和已有句柄仍绑定原提供方。
 
 录制计算机输出音频需要 Host 显式配置 `audio: true`，默认关闭。启用后提供 `cua.computer.start_audio_recording`、`stop_audio_recording` 和 `nodeRepl.emitAudio`；仅录制输出音频，不选择麦克风。macOS 还需要单独的音频 Session 授权。重置和 Session 清理会丢弃其录音。
 
 ## 原生与 WSL 开发构建
 
 CLI 默认启用 Cargo feature `native-desktop`，包含 Linux、macOS 或 Windows 的本地驱动及游标渲染器。原生依赖在 macOS 上需要 Xcode Command Line Tools，在 Linux 上需要 X11 开发库。
+
+数字传输测试启用 `serde_json/arbitrary_precision`，与完整产品的依赖图保持一致。小数经过带标签枚举的缓冲后，需要通过 `protocol::deserialize_numbers` 恢复数字，再解析为具体类型；嵌套命令、原生辅助进程的请求与回包都适用。
 
 `just run` 在 WSL 中自动关闭该 feature，保留 Windows 桥接且无需编译 Linux 桌面驱动。可将 `MAKA_CUA_BUILD_MODE` 设置为 `auto`（默认）、`native` 或 `bridge`，显式选择开发构建。例如 `MAKA_CUA_BUILD_MODE=native just run` 会在 WSL 中编入 Linux 驱动。运行时仍由 `desktop` 配置选择目标；桥接构建拒绝 `local`，`auto` 需要在 WSL 中才能选择 Windows。
 
@@ -83,8 +101,16 @@ MAKA_CUA_WINDOWS_EXECUTABLE=/mnt/c/path/to/maka.exe just run
 
 直接使用 `cargo run -p maka-cli` 保留原生默认值。直接构建桥接版本可用 `cargo run --locked -p maka-cli --no-default-features -- ...`。Cargo 会合并所选包的 feature，若同时选择的其他包启用了 `native-desktop`，便会恢复原生依赖。`just build` 和发布打包保留完整原生产品；Linux 桌面 shell 自身仍需要 Linux GUI 开发库。
 
+要运行可选的保留页面实机验证，先执行 `cargo build -p maka-computer-use --features native-desktop --example desktop-host` 和 `cargo test -p maka-computer-native --features maka-computer-use/native-desktop --lib real_host_retained_browser_pages_survive_handoff --no-run`。在 macOS 或 Linux 上保持官方扩展及其原宿主已连接，将 Cargo 输出的测试可执行文件路径传给脚本：
+
+```sh
+python3 scripts/rust/browser-handoff-smoke.py --host target/debug/examples/desktop-host --test-binary /path/printed/by/cargo --extension-id ACTUAL_CHATGPT_EXTENSION_ID
+```
+
+脚本经过真实 Host 授权和副作用托管，只创建空白测试页，验证跨宿主重连的页面保留及注册信息的精确恢复，并为调试测试设置所需的较大线程栈。也可追加 `--browser chromium` 验证该注册位置。
+
 ## 生命周期
 
-临时标签页由创建它的 Session 持有，并归当前使用它的 Turn 管理，Turn 完成时关闭；其他 Session 无法列出或取得这些标签页。重置清除本 Session 的绑定并关闭其临时标签页，保留用户应用和原有标签页。导航、窗口变化和新观察可能使原输入目标失效。取消或超时后需要重置，结果不确定的动作不会自动重放。关闭流程等待已接受的原生工作完成清理。
+临时标签页由所属 Session 持有。Turn 结束时，未标记保留的标签页关闭；`markDeliverable()` 为用户保留标签页，`markHandoff()` 则保留至后续 Turn。重新使用保留的标签页需要当前授权。重置和断开连接会请求清理，并保留标签页标记。导航和窗口变化可能使观察失效。结果不确定的输入不会自动重放。
 
-输入与捕获行为应在目标桌面验证；REPL 单元测试不能证明原生焦点或无障碍行为。
+原生 Computer Use 需要交互式桌面，Linux 原生方法需要 X11。Windows 中提供截图 ID 时使用图像坐标，省略 ID 时使用窗口逻辑视口。浏览器上传支持已授权的普通文件，不支持目录上传或子框架文件选择器。浏览器宿主退出时仍被选择的文件不会自动回收。

@@ -1,5 +1,19 @@
+// A module given as source text, as a blob URL; its source map inline, so
+// DevTools maps it.
+function moduleURL(code, name, sourceMap) {
+  let source = String(code);
+  if (name) source += `\n//# sourceURL=${name}`;
+  if (sourceMap) {
+    const bytes = new TextEncoder().encode(sourceMap);
+    let binary = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    source += `\n//# sourceMappingURL=data:application/json;base64,${btoa(binary)}`;
+  }
+  return URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
+}
+
 export function createBrowserHost(player) {
-  let current;
+  let current, pageRealmUsed = false;
   return {
     bind(wasm) {
       return Object.fromEntries(Object.entries(wasm).map(([name, value]) => [name,
@@ -14,12 +28,13 @@ export function createBrowserHost(player) {
       if (!current) throw new Error("the browser host was not initialized");
       return current.imports.value(...args);
     } },
-    async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {} } = {}) {
+    // `owned`: blob URLs that go with the app.
+    async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {} } = {}, owned = []) {
       if (current?.stopping) throw new Error("cannot start an app during disposal");
       const [width, height] = player.reset();
       let values;
       let running = true, modules, components, animation, lists, host, frame, rejectLoad;
-      const urls = [];
+      const urls = [...owned];
       const active = () => running;
       const call = (op, args) => {
         if (!active()) throw new Error("the app was disposed");
@@ -31,6 +46,9 @@ export function createBrowserHost(player) {
       const app = current = {
         values: null,
         imports: null,
+        hot: null,
+        // The realm's `import()` (the realm compiles no code otherwise).
+        importModule: null,
         stopping: false,
         stop() {
           if (!running || app.stopping) return;
@@ -52,11 +70,24 @@ export function createBrowserHost(player) {
         frame.hidden = true;
         frame.setAttribute("aria-hidden", "true");
         player.container.append(frame);
-        const realm = frame.contentWindow;
-        const doc = realm.document;
-        const baseElement = doc.createElement("base");
-        baseElement.href = document.baseURI;
-        doc.head.append(baseElement);
+        let realm = frame.contentWindow, doc;
+        try { doc = realm.document; } catch {
+          // A page with an opaque origin (a `sandbox` without
+          // `allow-same-origin`) cannot reach its own frames, so the app
+          // runs in the page's realm. A document keeps the modules and the
+          // import map it loaded, so that realm runs one app.
+          if (pageRealmUsed) throw new Error("this page has an opaque origin and runs one app; reload it to run another");
+          pageRealmUsed = true;
+          frame.remove();
+          frame = null;
+          realm = window;
+          doc = document;
+        }
+        if (frame) {
+          const baseElement = doc.createElement("base");
+          baseElement.href = document.baseURI;
+          doc.head.append(baseElement);
+        }
         // Construct the facade in the app realm, so Error, Promise, Buffer,
         // typed arrays and class identities use the same intrinsics as its code.
         const scope = await new Promise((resolve, reject) => {
@@ -73,7 +104,7 @@ export function createBrowserHost(player) {
         delete realm.__nsh_browser_bootstrap;
         const { Values, createReactive, createModules, createDom, createComponents, createGestures,
           createCanvas, createAnimation, createNavigation, createKeymap, createEnvironment,
-          createHost, createStandard, createResource, createLists, configureAPIs } = scope;
+          createHost, createStandard, createResource, createLists, configureAPIs, createHot } = scope;
         values = new Values();
         values.trace = () => player.wasm.nsh_browser_trace();
         values.report = report;
@@ -82,6 +113,8 @@ export function createBrowserHost(player) {
         player.wasm.nsh_browser_initialize();
         const reactive = createReactive(call, active, values);
         const dom = createDom(call, values, reactive, active, requestPump);
+        const hot = app.hot = createHot(reactive, report);
+        dom.setHot(hot);
         const env = createEnvironment(reactive, call, dom);
         const gestures = createGestures(call, values, reactive, dom, active, requestPump);
         dom.setTouches(gestures);
@@ -114,6 +147,9 @@ export function createBrowserHost(player) {
           if (delay === -2) throw new Error("browser engine startup failed");
           return delay;
         }, true);
+        // The engine's clock and a test session's network, in the realm's
+        // place before any of the app's code runs (`testing.js`).
+        scope.installTesting(realm, call, { active, wake: requestPump, network: !!player.testing });
         lists = createLists(call, values, reactive, dom, active, requestPump);
         dom.rt.list = lists.render;
         components = createComponents(call, values, reactive, dom);
@@ -123,7 +159,7 @@ export function createBrowserHost(player) {
         const nsh = modules.exports.get("nsh") ?? {};
         const canvas = createCanvas(call, reactive, dom, active, requestPump);
         Object.assign(nsh, animation.api, canvas, { PanResponder: gestures.PanResponder });
-        Object.assign(nsh, reactive, env.api, { List: lists.render, mount: dom.mount, resource: createResource(call, reactive, active, requestPump), keymap: createKeymap(call, reactive, dom, env.api.platform, requestPump) });
+        Object.assign(nsh, reactive, env.api, { List: lists.render, mount: dom.mount, resource: createResource(call, reactive, active, requestPump), keymap: createKeymap(call, reactive, dom, env.api.platform, requestPump, hot) });
         host = createHost(call, reactive, dom, env, active, nsh.host);
         nsh.host = host.host;
         configureAPIs(nsh, modules, dom, active, env);
@@ -138,19 +174,26 @@ export function createBrowserHost(player) {
         namespaces.set("nsh/ios", { ...mobile, isAvailable: false });
         namespaces.set("nsh", nsh);
         namespaces.set("nsh:rt", dom.rt);
-        namespaces.set("nsh/list", { List: lists.render });
+        // Development bundles import it for `__nsh_hot`, the global their
+        // modules and update scripts call.
+        namespaces.set("nsh:hot", { get hot() {
+          if (!Object.hasOwn(realm, "__nsh_hot")) Object.defineProperty(realm, "__nsh_hot", { value: hot.hot, configurable: true });
+          return hot.hot;
+        } });
         namespaces.set("nsh/device", Object.fromEntries(["windowSize", "colorScheme", "setColorScheme", "fontScale", "pixelRatio", "locale", "platform"].map(name => [name, nsh[name]])));
         namespaces.set("nsh/accessibility", { reduceMotion: nsh.reduceMotion, screenReaderEnabled: nsh.screenReaderEnabled });
-        for (const [specifier, name] of [["nsh/image", "Image"], ["nsh/webview", "WebView"], ["nsh/video", "Video"], ["nsh/host", "host"]]) namespaces.set(specifier, { [name]: nsh[name] });
+        namespaces.set("nsh/host", { host: nsh.host });
         namespaces.set("nsh/native", { nativeComponent: nsh.nativeComponent, nativeModule: nsh.nativeModule });
         namespaces.set("nsh/keymap", { keymap: nsh.keymap });
         namespaces.set("nsh/animated", animation.api);
-        namespaces.set("nsh/canvas", canvas);
         namespaces.set("nsh/gesture", { PanResponder: gestures.PanResponder });
         const map = { ...moduleMap };
         const entryURL = new URL(entry, document.baseURI);
-        map[new URL("bundle.js", entryURL).href] = entryURL.href;
-        for (const [id, url] of Object.entries(chunks)) map[new URL(id, entryURL).href] = new URL(url, document.baseURI).href;
+        // Chunks are named relative to the entry; one given as source (a
+        // blob) has them relative to the page.
+        const chunkBase = entryURL.protocol === "blob:" ? new URL(document.baseURI) : entryURL;
+        if (chunkBase === entryURL) map[new URL("bundle.js", entryURL).href] = entryURL.href;
+        for (const [id, url] of Object.entries(chunks)) map[new URL(id, chunkBase).href] = new URL(url, document.baseURI).href;
         for (const [specifier, namespace] of namespaces) {
           const declarations = Object.keys(namespace).map((name, index) => {
             if (name === "default") return `export default host.get(${JSON.stringify(specifier)})["default"];`;
@@ -168,7 +211,8 @@ export function createBrowserHost(player) {
         const finished = new Promise((resolve, reject) => {
           rejectLoad = reject;
           Object.defineProperty(realm, "__nsh_browser_realm", { value: Object.freeze({
-            entry: new URL(entry, document.baseURI).href, modules: namespaces,
+            entry: entryURL.href, base: chunkBase.href, modules: namespaces,
+            setImporter: load => { app.importModule = load; },
             live: active, prepareChunk: id => player.options.prepareChunk?.(id), ready: resolve, failed: reject,
           }) });
         });
@@ -189,6 +233,27 @@ export function createBrowserHost(player) {
         app.stop();
         if (current === app) current = null;
         throw error;
+      }
+    },
+    /** Runs an ES module given as source text (`run`'s options, `name` and `sourceMap`). */
+    runSource(code, { name = "", sourceMap = "", ...options } = {}) {
+      const url = moduleURL(code, name, sourceMap);
+      return this.run(url, options, [url]);
+    },
+    /**
+     * Applies a hot update script to the running development bundle;
+     * whether it was applied in place (false: run the new bundle).
+     */
+    async hotUpdate(code, name, sourceMap) {
+      const app = current;
+      if (!app?.hot?.started || !app.importModule || app.stopping) return false;
+      const url = moduleURL(code, name, sourceMap);
+      try {
+        const applied = await app.hot.apply(() => app.importModule(url));
+        return applied && current === app && !app.stopping;
+      } finally {
+        URL.revokeObjectURL(url);
+        if (current === app && !app.stopping) player.requestPump();
       }
     },
     stop() {

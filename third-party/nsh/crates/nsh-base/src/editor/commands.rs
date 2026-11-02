@@ -572,7 +572,7 @@ impl Editing<'_> {
             primary,
         } = plan;
         let mut order: Vec<usize> = (0..edits.len()).collect();
-        order.sort_by_key(|&i| (edits[i].0.start, edits[i].0.end));
+        crate::sort::sort_by_key(&mut order, |&i| (edits[i].0.start, edits[i].0.end));
         let mut merged: Vec<(Range<usize>, String)> = Vec::with_capacity(edits.len());
         // Each edit's merged edit and the bytes of the merged text before its own.
         let mut at = vec![(0, 0); edits.len()];

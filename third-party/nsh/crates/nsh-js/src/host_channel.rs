@@ -14,6 +14,14 @@
 //! checked here: names ([`check_name`]), the depth and size of data
 //! (`protocol::to_json`), the calls waiting at once
 //! ([`MAX_PENDING_CALLS`]) and the events kept ([`HostInbox`]).
+//!
+//! A call never throws: what fails rejects it, with the `code`s of
+//! `nsh_core::host_channel`'s errors (`ERR_ACCESS_DENIED` for a name
+//! `capabilities.host` does not grant, `ETIMEDOUT`, `ERR_NSH_QUOTA_EXCEEDED`
+//! past [`MAX_PENDING_CALLS`], `ERR_NSH_HOST_ERROR` for the embedding app's
+//! own error); wrong arguments reject with a `TypeError` or `RangeError`.
+//! `post` is synchronous: it throws for a wrong or refused name, and a
+//! post without an embedding app is dropped without a word.
 
 use std::{
     cell::{Cell, RefCell},
@@ -24,6 +32,7 @@ use std::{
 
 use nsh_core::{
     JsonValue,
+    element::{IntoThrown, JsError},
     host_channel::{HostBridge, HostInbox, MAX_PENDING_CALLS, check_name},
 };
 use rquickjs::qjs;
@@ -110,12 +119,14 @@ fn from_json(cx: Ctx, json: &JsonValue) -> V {
     V::own(cx, crate::host::json_to_js(cx, json))
 }
 
-/// A new `Error(message)`.
-fn error(cx: Ctx, message: &str) -> R<V> {
-    let global = js::global(cx);
-    let class = js::get(cx, global.raw(), "Error")?;
-    let message = js::string(cx, message)?;
-    js::construct(cx, class.raw(), &[message.raw()])
+/// The JS error of `error`: its class, message and `code` / ... fields.
+fn error(cx: Ctx, error: JsError) -> V {
+    crate::classes::error_value(cx, &error.into_thrown())
+}
+
+/// Throws `e`.
+fn throw(cx: Ctx, e: JsError) -> Throw {
+    js::throw(cx, error(cx, e))
 }
 
 /// Whether a native SDK channel is configured alongside the platform.
@@ -145,19 +156,12 @@ pub(crate) fn extend(cx: Ctx, host: Raw) -> Raw {
             let native_on = js::function(cx, c"on", on, 2)?;
             let arguments = [args.get(0), args.get(1)];
             let native_off = js::call(cx, native_on.raw(), UNDEFINED, &arguments)?;
-            let platform_sub = js::call(cx, captures[0].raw(), UNDEFINED, &arguments)?;
-            let platform_off = js::get(cx, platform_sub.raw(), "remove")?;
-            let off = closure(
-                cx,
-                vec![native_off, platform_sub, platform_off],
-                |cx, values, _| {
-                    js::call(cx, values[0].raw(), UNDEFINED, &[])?;
-                    js::call(cx, values[2].raw(), values[1].raw(), &[])?;
-                    Ok(V::undefined())
-                },
-            )?;
-            // Keep main's subscription form and the SDK's cleanup function.
-            js::define(cx, off.raw(), "remove", off.clone_ref(), true)?;
+            let platform_off = js::call(cx, captures[0].raw(), UNDEFINED, &arguments)?;
+            let off = closure(cx, vec![native_off, platform_off], |cx, values, _| {
+                js::call(cx, values[0].raw(), UNDEFINED, &[])?;
+                js::call(cx, values[1].raw(), UNDEFINED, &[])?;
+                Ok(V::undefined())
+            })?;
             crate::keymap::undo_with_owner(cx, &off);
             Ok(off)
         })?;
@@ -238,8 +242,10 @@ fn start_call(cx: Ctx, args: Args<'_>) -> R<V> {
         }
     };
     if !timeout.is_finite() || timeout < 0.0 {
-        let e = error(cx, &format!("nsh/host: invalid timeout {timeout}"))?;
-        return Err(js::throw(cx, e));
+        return Err(js::range_error(
+            cx,
+            &format!("nsh/host: invalid timeout {timeout}"),
+        ));
     }
     let deadline = (timeout != 0.0)
         .then(|| {
@@ -251,20 +257,17 @@ fn start_call(cx: Ctx, args: Args<'_>) -> R<V> {
     let data = to_json(cx, args.get(1))?;
     let state = channel(cx);
     if state.calls.borrow().len() >= MAX_PENDING_CALLS {
-        return Err(js::range_error(
-            cx,
-            &format!(
-                "host.call(\"{name}\"): {MAX_PENDING_CALLS} calls already wait for the embedding app's answers"
-            ),
-        ));
+        return Err(throw(cx, nsh_core::host_channel::too_many_calls(&name)));
     }
     let deferred = Deferred::new(cx)?;
     let promise = deferred.promise.clone_ref();
     let id = state.next_call.get() + 1;
     state.next_call.set(id);
     let started = match bridge(cx) {
-        Some(bridge) => bridge.call(id, &name, data),
-        None => Err("nsh/host: this platform has no host".to_owned()),
+        Some(bridge) => bridge
+            .call(id, &name, data)
+            .map_err(|message| nsh_core::host_channel::host_error(&message)),
+        None => Err(nsh_core::host_channel::no_host()),
     };
     match started {
         Ok(()) => {
@@ -278,8 +281,8 @@ fn start_call(cx: Ctx, args: Args<'_>) -> R<V> {
                 },
             );
         }
-        Err(message) => {
-            let e = error(cx, &message)?;
+        Err(e) => {
+            let e = error(cx, e);
             deferred.reject(cx, e.raw());
         }
     }
@@ -287,30 +290,15 @@ fn start_call(cx: Ctx, args: Args<'_>) -> R<V> {
 }
 
 /// Native SDK calls and posts obey the same names and grants as the
-/// platform's `Command::HostCall`, before crossing into host code.
+/// platform's `Command::HostCall`, before crossing into host code: a wrong
+/// name throws a `TypeError`, a refused one `ERR_ACCESS_DENIED`.
 fn check_call(cx: Ctx, name: &str) -> R<()> {
-    let message = if !nsh_core::access::valid_host_name(name) {
-        Some(format!(
-            "nsh/host: invalid function name {name:?} ({})",
-            nsh_core::access::HOST_NAME_CHARS
-        ))
-    } else if !crate::dom::shared(cx)
-        .system_access
-        .borrow()
-        .allows_host(name)
-    {
-        Some(format!(
-            "nsh/host: `{name}` is not granted: add it to capabilities.host in nsh.json"
-        ))
-    } else {
-        None
-    };
-    if let Some(message) = message {
-        log::warn!(target: "js", "{message}");
-        let e = error(cx, &message)?;
-        return Err(js::throw(cx, e));
-    }
-    Ok(())
+    let checked =
+        nsh_core::host_channel::check_call(&crate::dom::shared(cx).system_access.borrow(), name);
+    checked.map_err(|e| {
+        log::warn!(target: "js", "{}", e.message());
+        throw(cx, e)
+    })
 }
 
 /// Earliest native SDK reply deadline, using the app's clock.
@@ -331,17 +319,12 @@ pub(crate) fn expire(cx: Ctx, now: nsh_core::time::Instant) {
         .iter()
         .filter(|(_, call)| call.deadline.is_some_and(|at| at <= now))
         .map(|(&id, call)| {
-            (
-                id,
-                format!(
-                    "nsh/host: {} timed out after {} ms",
-                    call.name, call.timeout
-                ),
-            )
+            let timeout = Duration::try_from_secs_f64(call.timeout / 1000.0).unwrap_or_default();
+            (id, nsh_core::host_channel::timed_out(&call.name, timeout))
         })
         .collect();
-    for (id, message) in expired {
-        settle(cx, id, Err(message));
+    for (id, error) in expired {
+        finish(cx, id, Err(error));
     }
 }
 
@@ -420,8 +403,18 @@ pub(crate) fn deliver(cx: Ctx, name: &str, data: JsonValue) {
     }
 }
 
-/// Settles call `id` with the embedding app's answer (or why it failed).
+/// Settles call `id` with the embedding app's answer, or its error
+/// message (`ERR_NSH_HOST_ERROR`).
 pub(crate) fn settle(cx: Ctx, id: u64, result: Result<JsonValue, String>) {
+    finish(
+        cx,
+        id,
+        result.map_err(|message| nsh_core::host_channel::host_error(&message)),
+    );
+}
+
+/// Settles call `id` with `result`.
+fn finish(cx: Ctx, id: u64, result: Result<JsonValue, JsError>) {
     let Some(call) = channel(cx).calls.borrow_mut().remove(&id) else {
         return;
     };
@@ -431,13 +424,10 @@ pub(crate) fn settle(cx: Ctx, id: u64, result: Result<JsonValue, String>) {
             let value = from_json(cx, &value);
             deferred.resolve(cx, value.raw());
         }
-        Err(message) => match error(cx, &message) {
-            Ok(e) => deferred.reject(cx, e.raw()),
-            Err(Throw) => {
-                let e = js::take_exception(cx);
-                deferred.reject(cx, e.raw());
-            }
-        },
+        Err(e) => {
+            let e = error(cx, e);
+            deferred.reject(cx, e.raw());
+        }
     }
 }
 
@@ -455,14 +445,8 @@ export type HostParams = { readonly [key: string]: HostValue };
 export interface HostEvents {
   /** Whether the platform or native SDK has a configured host. */
   available(): boolean;
-  /** Listens until the subscription is removed. */
-  on(event: string, listener: (payload: unknown) => void): { remove(): void };
-}
-
-/** A cleanup function with the platform subscription's remove method. */
-export interface HostSubscription {
-  (): void;
-  remove(): void;
+  /** Listens until the returned function is called. */
+  on(event: string, listener: (payload: unknown) => void): () => void;
 }
 
 export interface Host {
@@ -479,15 +463,24 @@ export interface Host {
    * after the first listener is added, once the code adding it ran. Returns
    * a function that stops listening; a listener added while a component
    * renders stops with the component. */
-  on<T = HostValue>(name: string, listener: (data: T) => void): HostSubscription;
+  on<T = HostValue>(name: string, listener: (data: T) => void): () => void;
   /** Calls the embedding app's handler of `name` with `data`: the promise
    * resolves with its answer, or rejects with an `Error` with the message the
-   * handler gave, or at once when the embedding app handles no `name`. At
-   * most 1024 calls wait for answers at once; one more rejects with a
-   * `RangeError`. */
+   * handler gave and `code` `"ERR_NSH_HOST_ERROR"`, also at once when the
+   * embedding app handles no `name`. It rejects with `code`
+   * `"ERR_ACCESS_DENIED"` (`permission` `"host"`, `resource` the name) when
+   * `capabilities.host` does not grant `name`, `"ETIMEDOUT"` once
+   * `options.timeout` milliseconds passed (30000 unless set; 0 waits as long
+   * as the host takes), `"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"` on a platform
+   * without a host, and `"ERR_NSH_QUOTA_EXCEEDED"` while 1024 calls wait
+   * for answers already; with a `TypeError` for a wrong name and a
+   * `RangeError` for a negative timeout. It never throws. */
   call<T = HostValue>(name: string, data?: unknown, options?: { timeout?: number }): Promise<T>;
   /** Hands `data` to the embedding app's handler of `name`, without an
-   * answer; it is dropped when the embedding app handles no `name`. */
+   * answer; it is dropped when the embedding app handles no `name` or there
+   * is no embedding app. Throws a `TypeError` for a wrong name and an `Error`
+   * with `code` `"ERR_ACCESS_DENIED"` when `capabilities.host` does not
+   * grant `name`. */
   post(name: string, data?: unknown): void;
 }
 "#;
@@ -582,14 +575,17 @@ host.post("seen", {{ a: 1 }});
             r#"{REPORT}
 report(host.params.conversation + " " + host.params.user.id);
 host.call("profile", {{ id: 7, skip: undefined }}).then((v) => report("profile " + v.name));
-host.call("save", [1, 2]).catch((e) => report("save " + e.message));
-host.call("missing").catch((e) => report("missing " + e.message));
+host.call("save", [1, 2]).catch((e) => report("save " + e.code + " " + e.message));
+host.call("missing").catch((e) => report("missing " + e.code + " " + e.message));
 host.post("seen", "home");
 "#
         ))
         .unwrap();
         host.run_jobs();
-        assert_eq!(reported(&host), ["c-1 7", "missing no such handler"]);
+        assert_eq!(
+            reported(&host),
+            ["c-1 7", "missing ERR_NSH_HOST_ERROR no such handler"]
+        );
         let calls = bridge.calls.borrow().clone();
         assert_eq!(calls.len(), 2);
         assert_eq!(calls[0].1, "profile");
@@ -602,7 +598,10 @@ host.post("seen", "home");
         // A second answer, or one for no call, is ignored.
         host.host_reply(calls[0].0, Ok(json!(null)));
         host.host_reply(999, Ok(json!(null)));
-        assert_eq!(reported(&host), ["save disk full", "profile Ada"]);
+        assert_eq!(
+            reported(&host),
+            ["save ERR_NSH_HOST_ERROR disk full", "profile Ada"]
+        );
         assert_eq!(pending_calls(&host), 0);
     }
 
@@ -670,15 +669,23 @@ globalThis.listenAgain = () => host.on("open", (data) => report("next " + data))
         host.eval_source(&format!(
             r#"{REPORT}
 report(host.available());
-host.call("profile").catch(e => report(e.message));
-try {{ host.post("profile"); }} catch (e) {{ report(e.message); }}
+const denied = e => [e.name, e.code, e.permission, e.resource].join(" ");
+host.call("profile").catch(e => report(denied(e)));
+try {{ host.post("profile"); }} catch (e) {{ report(denied(e)); }}
+host.call("a b").catch(e => report(e.name));
 "#
         ))
         .unwrap();
         host.run_jobs();
-        let seen = reported(&host);
-        assert_eq!(seen[0], "true");
-        assert!(seen[1..].iter().all(|s| s.contains("capabilities.host")));
+        assert_eq!(
+            reported(&host),
+            [
+                "true",
+                "Error ERR_ACCESS_DENIED host profile",
+                "Error ERR_ACCESS_DENIED host profile",
+                "TypeError",
+            ]
+        );
         assert!(bridge.calls.borrow().is_empty());
         assert!(bridge.posts.borrow().is_empty());
     }
@@ -691,14 +698,17 @@ try {{ host.post("profile"); }} catch (e) {{ report(e.message); }}
         host.set_host_bridge(bridge.clone());
         host.eval_source(&format!(
             r#"{REPORT}
-host.call("slow", null, {{ timeout: 20 }}).then(report, e => report(e.message));
+host.call("slow", null, {{ timeout: 20 }}).then(report, e => report(e.code));
+host.call("bad", null, {{ timeout: -1 }}).catch(e => report(e.name));
 host.call("wait", null, {{ timeout: 0 }}).then(report);
 "#
         ))
         .unwrap();
+        host.run_jobs();
+        assert_eq!(reported(&host), ["RangeError"]);
         assert!(host.next_timer().is_some());
         host.run_timers(nsh_core::time::now() + std::time::Duration::from_millis(50));
-        assert_eq!(reported(&host), ["nsh/host: slow timed out after 20 ms"]);
+        assert_eq!(reported(&host), ["ETIMEDOUT"]);
         assert_eq!(pending_calls(&host), 1);
         let calls = bridge.calls.borrow();
         host.host_reply(calls[0].0, Ok(json!("too late")));
@@ -723,7 +733,8 @@ let deep = 0;
 for (let i = 0; i < 100; i++) deep = [deep];
 report(fails(() => host.post("deep", deep)));
 for (let i = 0; i < {max}; i++) host.call("wait");
-host.call("wait").catch((e) => report(e.name));
+host.call("wait").catch((e) => report(e.name + " " + e.code));
+report(fails(() => host.call(1).catch(() => {{}})));
 "#,
             max = nsh_core::host_channel::MAX_PENDING_CALLS
         ))
@@ -737,7 +748,8 @@ host.call("wait").catch((e) => report(e.name));
                 "TypeError",
                 "TypeError",
                 "RangeError",
-                "RangeError"
+                "no",
+                "Error ERR_NSH_QUOTA_EXCEEDED"
             ]
         );
         assert_eq!(

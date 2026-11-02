@@ -1,12 +1,21 @@
-//! `websocket`: an explicit WebSocket client (`WebSocket.connect(url)`),
-//! allowed by the HTTP grants a GET of its URL needs
+//! `websocket`'s native connections: `connect(url)`, allowed by the HTTP
+//! grants a GET of its URL needs
 //! ([`crate::access::Access::allows_websocket`]). Calls check their URL,
-//! options, grant and limits in the JS call (a `TypeError` or `RangeError`
-//! there); the handshake is a task of the core, and each connection's
-//! socket is driven by a task of its own on the engine's tokio runtime,
-//! which answers pings and keeps up to eight unread messages.
+//! options, grant and limits in the JS call and reject at once (the codes
+//! are the parent module's); the handshake is a task of the core, and each
+//! connection's socket is driven by a task of its own on the engine's tokio
+//! runtime. The task answers pings and keeps what arrives until it is read;
+//! while 8 messages or 8 MiB wait unread it does not poll the socket, so
+//! TCP's flow control holds the peer back (and pings wait) until the app
+//! reads.
 
-use std::{cell::Cell, collections::VecDeque, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::sync::{mpsc, oneshot};
@@ -14,31 +23,32 @@ use tokio_tungstenite::tungstenite::{
     Message,
     client::IntoClientRequest,
     http::{HeaderName, HeaderValue},
-    protocol::WebSocketConfig,
+    protocol::{CloseFrame, WebSocketConfig},
 };
 
 use super::{
-    super::{MAX_WEBSOCKETS, WEBSOCKETS},
-    ConnectOptions, Data,
+    CloseStatus, ConnectOptions, Data, busy, closed, denied, exceeded, slot, timed_out, too_long,
 };
-use crate::element::{Held, JsError, Later, Spawned, System, spawn};
+use crate::element::{Held, JsError, Later, Spawned, System, io_code, spawn};
 
 /// The largest message one write sends or one read returns.
 const LIMIT: usize = 8 * 1024 * 1024;
 /// How long resolving, connecting with the handshake, a write and closing
 /// may take.
 const TIMEOUT: Duration = Duration::from_secs(30);
-/// Messages received while no read waits; one more closes the connection.
+/// Unread messages at which the socket is no longer polled.
 const UNREAD: usize = 8;
-/// Bytes of messages received while no read waits; more closes the
-/// connection. Native memory the heap limit does not cover.
+/// Bytes of unread messages at which the socket is no longer polled; with
+/// the message that crossed it, less than twice this is kept. Native
+/// memory the heap limit does not cover.
 const UNREAD_BYTES: usize = LIMIT;
 /// Bytes of writes not sent yet, per connection (the global `WebSocket`'s
-/// `bufferedAmount` limit); a write past it throws.
+/// `bufferedAmount` limit); a write past it rejects.
 const PENDING_WRITES: usize = LIMIT;
+/// The close code of a close frame without one (RFC 6455 7.1.5).
+const NO_STATUS: u16 = 1005;
 
-/// WebSocket client connections to the hosts the HTTP grants allow (native
-/// hosts only: on the web, importing this module throws).
+/// WebSocket client connections to the hosts the HTTP grants allow.
 pub(super) struct WebSocket;
 
 impl WebSocket {
@@ -48,12 +58,12 @@ impl WebSocket {
         url: String,
         options: Option<ConnectOptions>,
         sys: System,
-    ) -> Result<impl Future<Output = Result<WebSocketConnection, String>>, JsError> {
+    ) -> Result<impl Future<Output = Result<WebSocketConnection, JsError>>, JsError> {
         let parsed = url::Url::parse(&url)
             .map_err(|error| JsError::Type(format!("invalid WebSocket URL: {error}")))?;
         if !matches!(parsed.scheme(), "ws" | "wss") {
             return Err(JsError::Type(
-                "WebSocket.connect(url) expects a ws:// or wss:// URL".into(),
+                "connect(url) expects a ws:// or wss:// URL".into(),
             ));
         }
         // As the global `WebSocket`: the handshake would drop them silently.
@@ -62,7 +72,7 @@ impl WebSocket {
             || parsed.password().is_some()
         {
             return Err(JsError::Type(
-                "WebSocket.connect(url) expects a URL without credentials or fragment".into(),
+                "connect(url) expects a URL without credentials or fragment".into(),
             ));
         }
         let host = parsed
@@ -74,15 +84,10 @@ impl WebSocket {
         })?;
         // Checked on the parsed URL, which is the one the handshake uses.
         if !sys.access.allows_websocket(parsed.as_str()) {
-            return Err(JsError::Type(format!(
-                "network access to `{host}` is not granted; add it to capabilities.network.hosts or a GET rule in capabilities.network.http"
-            )));
+            return Err(denied(parsed.as_str()));
         }
-        let held = sys.quotas.take(WEBSOCKETS, MAX_WEBSOCKETS).ok_or_else(|| {
-            JsError::Range(format!(
-                "At most {MAX_WEBSOCKETS} concurrent WebSockets are allowed per VM"
-            ))
-        })?;
+        sys.check_connection(parsed.as_str())?;
+        let held = slot(&sys)?;
         let headers = options
             .map(|o| o.headers)
             .unwrap_or_default()
@@ -99,12 +104,12 @@ impl WebSocket {
     }
 }
 
-type Reply<T> = oneshot::Sender<Result<T, String>>;
+type Reply<T> = oneshot::Sender<Result<T, JsError>>;
 
 enum Command {
-    Read(Reply<Message>),
+    Read(Reply<Option<Message>>),
     Write(Message, Reply<()>),
-    Close(Reply<()>),
+    Close(CloseStatus, Reply<()>),
 }
 
 /// An open WebSocket connection: one read, up to eight commands and 8 MiB
@@ -114,6 +119,8 @@ pub(super) struct WebSocketConnection {
     reading: Rc<Cell<bool>>,
     /// Bytes of writes not sent yet.
     pending: Rc<Cell<usize>>,
+    /// How the connection closed, once it ended; the driver sets it.
+    status: Rc<RefCell<Option<CloseStatus>>>,
     /// The task driving the socket; dropping it closes the connection.
     _driver: Spawned<()>,
 }
@@ -128,13 +135,11 @@ impl WebSocketConnection {
         };
         let length = message.len();
         if length > LIMIT {
-            return Err(JsError::Range(format!(
-                "WebSocket write exceeded the {LIMIT} byte limit"
-            )));
+            return Err(too_long(length));
         }
         let queued = self.pending.get() + length;
         if queued > PENDING_WRITES {
-            return Err(JsError::Range(format!(
+            return Err(exceeded(format!(
                 "WebSocket writes waiting to be sent exceeded the {PENDING_WRITES} byte limit"
             )));
         }
@@ -154,12 +159,11 @@ impl WebSocketConnection {
         }))
     }
 
-    /// The next message: a string for text, a Uint8Array for bytes.
-    pub(super) fn read(&self) -> Result<Later<Data>, JsError> {
+    /// The next message: a string for text, a Uint8Array for bytes; `null`
+    /// once the connection closed cleanly and every message was read.
+    pub(super) fn read(&self) -> Result<Later<Option<Data>>, JsError> {
         if self.reading.replace(true) {
-            return Err(JsError::Type(
-                "WebSocket.read() already has an outstanding read".into(),
-            ));
+            return Err(busy());
         }
         struct Reading(Rc<Cell<bool>>);
         impl Drop for Reading {
@@ -172,18 +176,28 @@ impl WebSocketConnection {
         let message = enqueue(&self.commands, Command::Read(send), receive);
         Ok(Later::new(async move {
             let _reading = reading;
-            Ok::<_, String>(match message.await? {
+            Ok::<_, JsError>(message.await?.map(|message| match message {
                 Message::Text(text) => Data::Text(text.as_str().to_owned()),
                 Message::Binary(bytes) => Data::Bytes(bytes.to_vec()),
                 _ => unreachable!("the driver returns data messages only"),
-            })
+            }))
         }))
     }
 
-    /// Sends a close frame and ends the connection.
-    pub(super) fn close(&self) -> Later<()> {
+    /// Sends a close frame with `frame`'s code and reason and waits for the
+    /// peer's reply.
+    pub(super) fn close(&self, frame: CloseStatus) -> Later<()> {
         let (send, receive) = oneshot::channel();
-        Later::new(enqueue(&self.commands, Command::Close(send), receive))
+        Later::new(enqueue(
+            &self.commands,
+            Command::Close(frame, send),
+            receive,
+        ))
+    }
+
+    /// How the connection closed, once it did.
+    pub(super) fn status(&self) -> Option<CloseStatus> {
+        self.status.borrow().clone()
     }
 }
 
@@ -192,19 +206,41 @@ impl WebSocketConnection {
 fn enqueue<T: 'static>(
     commands: &mpsc::Sender<Command>,
     command: Command,
-    reply: oneshot::Receiver<Result<T, String>>,
-) -> impl Future<Output = Result<T, String>> + 'static {
+    reply: oneshot::Receiver<Result<T, JsError>>,
+) -> impl Future<Output = Result<T, JsError>> + 'static {
     let queued = commands.try_send(command).map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => {
-            "WebSocket command queue is full; wait for an outstanding operation".to_owned()
-        }
-        mpsc::error::TrySendError::Closed(_) => "WebSocket connection is closed".to_owned(),
+        mpsc::error::TrySendError::Full(_) => exceeded(
+            "WebSocket command queue is full; wait for an outstanding operation".to_owned(),
+        ),
+        mpsc::error::TrySendError::Closed(_) => closed("WebSocket connection is closed"),
     });
     async move {
         queued?;
         reply
             .await
-            .map_err(|_| "WebSocket connection is closed".to_owned())?
+            .map_err(|_| closed("WebSocket connection is closed"))?
+    }
+}
+
+/// A failure of the socket or the protocol, `context` first in its
+/// message: the OS's code for an I/O error (`ERR_SOCKET_CLOSED` for one
+/// without), `ERR_SOCKET_CLOSED` for a closed connection, `EMSGSIZE` for a message past the limit, `EPROTO`
+/// (and the HTTP `status` of a refused handshake) for the rest.
+fn failure(context: &str, error: tokio_tungstenite::tungstenite::Error) -> JsError {
+    use tokio_tungstenite::tungstenite::Error as E;
+    let message = format!("{context}: {error}");
+    match error {
+        E::Io(ref io) => match io_code(io) {
+            Some(code) => JsError::Error(message).with_code(code),
+            None => closed(message),
+        },
+        E::ConnectionClosed | E::AlreadyClosed => closed(message),
+        E::Capacity(_) => JsError::Error(message).with_code("EMSGSIZE"),
+        E::WriteBufferFull(_) => exceeded(message),
+        E::Http(ref response) => JsError::Error(message)
+            .with_code("EPROTO")
+            .with("status", response.status().as_u16()),
+        _ => JsError::Error(message).with_code("EPROTO"),
     }
 }
 
@@ -218,11 +254,11 @@ async fn open(
     port: u16,
     headers: Vec<(HeaderName, HeaderValue)>,
     held: Held,
-) -> Result<WebSocketConnection, String> {
+) -> Result<WebSocketConnection, JsError> {
     let mut request = url
         .as_str()
         .into_client_request()
-        .map_err(|error| format!("WebSocket handshake failed: {error}"))?;
+        .map_err(|error| failure("WebSocket handshake failed", error))?;
     request.headers_mut().extend(headers);
     request
         .headers_mut()
@@ -239,28 +275,44 @@ async fn open(
     let addresses =
         tokio::time::timeout_at(deadline, tokio::net::lookup_host((host.as_str(), port)))
             .await
-            .map_err(|_| format!("WebSocket connection failed: resolving {operation} timed out"))?
+            .map_err(|_| {
+                timed_out(&format!(
+                    "WebSocket connection failed: resolving {operation}"
+                ))
+            })?
+            // A failed lookup names no OS error: Node calls it ENOTFOUND.
             .map_err(|error| {
-                format!("WebSocket connection failed: resolving {operation} failed: {error}")
+                JsError::Error(format!(
+                    "WebSocket connection failed: resolving {operation} failed: {error}"
+                ))
+                .with_code("ENOTFOUND")
             })?;
     let mut connected = None;
-    let mut last_error = "host resolved to no addresses".to_owned();
+    let mut last_error = None;
     for address in addresses {
         match tokio::time::timeout_at(deadline, tokio::net::TcpStream::connect(address)).await {
             Ok(Ok(stream)) => {
                 connected = Some(stream);
                 break;
             }
-            Ok(Err(error)) => last_error = error.to_string(),
+            Ok(Err(error)) => last_error = Some(error),
             Err(_) => {
-                return Err(format!(
-                    "WebSocket connection failed: connecting to {operation} timed out"
-                ));
+                return Err(timed_out(&format!(
+                    "WebSocket connection failed: connecting to {operation}"
+                )));
             }
         }
     }
     let stream = connected.ok_or_else(|| {
-        format!("WebSocket connection failed: connecting to {operation} failed: {last_error}")
+        let message = format!(
+            "WebSocket connection failed: connecting to {operation} failed: {}",
+            last_error
+                .as_ref()
+                .map(|error| error.to_string())
+                .unwrap_or_else(|| "host resolved to no addresses".into())
+        );
+        let code = last_error.as_ref().and_then(io_code).unwrap_or("ENOTFOUND");
+        JsError::Error(message).with_code(code)
     })?;
     let connector = if url.scheme() == "wss" {
         Some(tokio_tungstenite::Connector::Rustls(
@@ -274,121 +326,175 @@ async fn open(
         tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector),
     )
     .await
-    .map_err(|_| "WebSocket handshake timed out".to_owned())?
-    .map_err(|error| format!("WebSocket handshake failed: {error}"))?;
+    .map_err(|_| timed_out("WebSocket handshake"))?
+    .map_err(|error| failure("WebSocket handshake failed", error))?;
     let (commands, receiver) = mpsc::channel(UNREAD);
-    let driver = spawn(drive(socket, receiver, held));
+    let status = Rc::<RefCell<Option<CloseStatus>>>::default();
+    let driver = spawn(drive(socket, receiver, held, status.clone()));
     Ok(WebSocketConnection {
         commands,
         reading: Rc::default(),
         pending: Rc::default(),
+        status,
         _driver: driver,
     })
 }
 
 /// Respect the embedding host's provider; otherwise ring is local to this
 /// connection. Selecting a fallback must not configure the host's other TLS clients.
-fn tls_config() -> Result<rustls::ClientConfig, String> {
+fn tls_config() -> Result<rustls::ClientConfig, JsError> {
     let provider = rustls::crypto::CryptoProvider::get_default()
         .cloned()
         .unwrap_or_else(|| Arc::new(rustls::crypto::ring::default_provider()));
     let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
-        .map_err(|error| format!("WebSocket TLS configuration failed: {error}"))
+        .map_err(|error| JsError::Error(format!("WebSocket TLS configuration failed: {error}")))
         .map(|builder| builder.with_root_certificates(roots).with_no_client_auth())
 }
 
+/// What a close frame says: its code and reason, 1005 for a frame
+/// without a code.
+fn received(frame: Option<CloseFrame>) -> CloseStatus {
+    frame.map_or(
+        CloseStatus {
+            code: NO_STATUS,
+            reason: String::new(),
+        },
+        |frame| CloseStatus {
+            code: frame.code.into(),
+            reason: frame.reason.as_str().to_owned(),
+        },
+    )
+}
+
+/// The close handshake the app starts: its close frame, then the peer's
+/// reply, which tells how the connection closed (1006 when the peer ended
+/// it without one). What arrives before the reply is dropped: the app
+/// reads no more.
+async fn handshake(socket: &mut Socket, frame: CloseStatus) -> Result<CloseStatus, JsError> {
+    let frame = CloseFrame {
+        code: frame.code.into(),
+        reason: frame.reason.into(),
+    };
+    socket
+        .close(Some(frame))
+        .await
+        .map_err(|error| failure("WebSocket close failed", error))?;
+    loop {
+        match socket.next().await {
+            Some(Ok(Message::Close(frame))) => return Ok(received(frame)),
+            Some(Ok(_)) => {}
+            Some(Err(_)) | None => return Ok(CloseStatus::abnormal()),
+        }
+    }
+}
+
 /// Runs the connection's commands and keeps what arrives until it is read.
-/// Once the peer ends the connection, the messages that came before are
-/// still read, in order, before the reason it ended; the VM's place for
-/// the connection is given back then.
-async fn drive(mut socket: Socket, mut commands: mpsc::Receiver<Command>, held: Held) {
+/// While [`UNREAD`] messages or [`UNREAD_BYTES`] wait, the socket is not
+/// polled: TCP holds the peer back until a read takes one. Once the
+/// connection ends, the messages that came before are still read, in
+/// order; then a clean close reads `null` and a failure rejects with why it
+/// ended. The VM's place for the connection is given back then.
+async fn drive(
+    mut socket: Socket,
+    mut commands: mpsc::Receiver<Command>,
+    held: Held,
+    status: Rc<RefCell<Option<CloseStatus>>>,
+) {
     let mut messages: VecDeque<Message> = VecDeque::new();
     let mut unread = 0;
-    let mut read: Option<Reply<Message>> = None;
-    let error = loop {
+    let mut read: Option<Reply<Option<Message>>> = None;
+    // How it ended, and the error reads reject with (none for a clean close).
+    let (ended, error) = loop {
+        let room = messages.len() < UNREAD && unread < UNREAD_BYTES;
         tokio::select! {
             biased;
             command = commands.recv() => match command {
                 None => {
                     messages.clear();
-                    break "WebSocket connection is closed".to_owned();
+                    break (CloseStatus::abnormal(), Some(closed("WebSocket connection is closed")));
                 }
                 Some(Command::Read(reply)) => match messages.pop_front() {
                     Some(message) => {
                         unread -= message.len();
-                        let _ = reply.send(Ok(message));
+                        let _ = reply.send(Ok(Some(message)));
                     }
                     None => read = Some(reply),
                 },
                 Some(Command::Write(message, reply)) => {
                     let result = tokio::time::timeout(TIMEOUT, socket.send(message))
                         .await
-                        .map_err(|_| "WebSocket write timed out".to_owned())
-                        .and_then(|result| result.map_err(|error| format!("WebSocket write failed: {error}")));
+                        .map_err(|_| timed_out("WebSocket write"))
+                        .and_then(|result| result.map_err(|error| failure("WebSocket write failed", error)));
                     let failure = result.as_ref().err().cloned();
                     let _ = reply.send(result);
                     if let Some(error) = failure {
-                        break error;
+                        break (CloseStatus::abnormal(), Some(error));
                     }
                 }
-                Some(Command::Close(reply)) => {
-                    let result = tokio::time::timeout(TIMEOUT, socket.close(None))
-                        .await
-                        .map_err(|_| "WebSocket close timed out".to_owned())
-                        .and_then(|result| result.map_err(|error| format!("WebSocket close failed: {error}")));
-                    let _ = reply.send(result);
+                Some(Command::Close(frame, reply)) => {
                     // Closed by the app: what was not read goes with it.
                     messages.clear();
-                    break "WebSocket connection is closed".to_owned();
+                    let result = tokio::time::timeout(TIMEOUT, handshake(&mut socket, frame))
+                        .await
+                        .map_err(|_| timed_out("WebSocket close"))
+                        .and_then(|result| result);
+                    let ended = result.as_ref().map_or_else(|_| CloseStatus::abnormal(), Clone::clone);
+                    // Set before the reply: `closeCode` is there once
+                    // `close()` resolves.
+                    *status.borrow_mut() = Some(ended.clone());
+                    let _ = reply.send(result.map(drop));
+                    break (ended, None);
                 }
             },
-            incoming = socket.next() => match incoming {
+            incoming = socket.next(), if room => match incoming {
                 Some(Ok(message @ (Message::Text(_) | Message::Binary(_)))) => {
                     if let Some(reply) = read.take() {
-                        let _ = reply.send(Ok(message));
-                    } else if messages.len() < UNREAD && unread + message.len() <= UNREAD_BYTES {
+                        let _ = reply.send(Ok(Some(message)));
+                    } else {
                         unread += message.len();
                         messages.push_back(message);
-                    } else {
-                        // The app reads slower than the peer sends: closing
-                        // bounds the memory instead of buffering without end.
-                        let _ = tokio::time::timeout(TIMEOUT, socket.close(None)).await;
-                        break format!(
-                            "WebSocket closed: more than {UNREAD} messages or {UNREAD_BYTES} bytes arrived unread"
-                        );
                     }
                 }
                 Some(Ok(Message::Ping(_))) => {
                     if let Err(error) = socket.flush().await {
-                        break format!("WebSocket pong failed: {error}");
+                        break (CloseStatus::abnormal(), Some(failure("WebSocket pong failed", error)));
                     }
                 }
-                Some(Ok(Message::Close(_))) => {
+                Some(Ok(Message::Close(frame))) => {
+                    // Sends the reply tungstenite queued.
                     let _ = socket.flush().await;
-                    break "WebSocket closed by peer".to_owned();
+                    break (received(frame), None);
                 }
                 Some(Ok(_)) => {}
-                Some(Err(error)) => break format!("WebSocket read failed: {error}"),
-                None => break "WebSocket connection is closed".to_owned(),
+                Some(Err(error)) => break (CloseStatus::abnormal(), Some(failure("WebSocket read failed", error))),
+                None => break (
+                    CloseStatus::abnormal(),
+                    Some(closed("WebSocket connection ended without a close handshake")),
+                ),
             }
         }
     };
+    *status.borrow_mut() = Some(ended);
+    let next = |messages: &mut VecDeque<Message>| match messages.pop_front() {
+        Some(message) => Ok(Some(message)),
+        None => error.clone().map_or(Ok(None), Err),
+    };
     if let Some(reply) = read {
-        let _ = reply.send(Err(error.clone()));
+        let _ = reply.send(next(&mut messages));
     }
     drop(socket);
     drop(held);
     while let Some(command) = commands.recv().await {
         match command {
             Command::Read(reply) => {
-                let _ = reply.send(messages.pop_front().ok_or_else(|| error.clone()));
+                let _ = reply.send(next(&mut messages));
             }
             Command::Write(_, reply) => {
-                let _ = reply.send(Err("WebSocket connection is closed".to_owned()));
+                let _ = reply.send(Err(closed("WebSocket connection is closed")));
             }
-            Command::Close(reply) => {
+            Command::Close(_, reply) => {
                 messages.clear();
                 let _ = reply.send(Ok(()));
             }
@@ -441,7 +547,7 @@ mod tests {
                 .unwrap()
                 .await;
             assert!(
-                matches!(result, Err(ref error) if error.contains("WebSocket handshake failed"))
+                matches!(result, Err(ref error) if error.message().contains("WebSocket handshake failed"))
             );
             peer.join().unwrap();
             assert!(

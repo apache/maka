@@ -26,6 +26,7 @@ use maka_event_log::EventLog;
 use maka_mcp::{Connection, ServerConfiguration};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
@@ -75,6 +76,7 @@ async fn journal(connection: Connection, name: &str, input: Value) -> Value {
             ToolCallIdentity::standalone("call".into()),
             name.clone(),
             input,
+            None,
             CancellationToken::new(),
             move |cancel| Box::pin(async move { connection.call(name, argument, cancel).await }),
         )
@@ -90,12 +92,73 @@ fn records(path: &Path) -> Vec<Value> {
         .map(|line| serde_json::from_str(line).unwrap())
         .collect()
 }
+
+async fn wait_for_method(record: &Path, method: &str) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            poll.tick().await;
+            match std::fs::read_to_string(record) {
+                Ok(contents) => {
+                    if contents.lines().any(|line| {
+                        serde_json::from_str::<Value>(line)
+                            .is_ok_and(|event| event["method"] == method)
+                    }) {
+                        return;
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("cannot read MCP fixture record: {error}"),
+            }
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("MCP fixture did not receive {method}"));
+}
+
+async fn http_server(mode: &str, record: &Path) -> (tokio::process::Child, String) {
+    let server = tokio::process::Command::new(which::which("node").unwrap())
+        .arg(fixture())
+        .arg(mode)
+        .arg(record)
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+    let url = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        loop {
+            poll.tick().await;
+            match std::fs::read_to_string(record.with_extension("url")) {
+                Ok(url) => return url,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => panic!("cannot read MCP fixture endpoint: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("MCP HTTP fixture publishes its listening address");
+    (server, url)
+}
+
+#[cfg(unix)]
+fn child_gone(record: &Path) -> bool {
+    let pid = records(record)[0]["pid"].as_i64().unwrap() as i32;
+    // SAFETY: signal zero only probes the child PID and sends no signal.
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return false;
+    }
+    assert_eq!(
+        std::io::Error::last_os_error().raw_os_error(),
+        Some(libc::ESRCH),
+        "MCP child probe must confirm absence"
+    );
+    true
+}
+
 #[cfg(unix)]
 fn assert_gone(record: &Path) {
-    let pid = records(record)[0]["pid"].as_i64().unwrap() as i32;
-    assert_eq!(
-        unsafe { libc::kill(pid, 0) },
-        -1,
+    assert!(
+        child_gone(record),
         "MCP child must be reaped before close returns"
     );
 }
@@ -104,12 +167,25 @@ async fn stdio_pages_preserve_result_envelopes_media_and_explicit_tool_selection
     let dir = tempfile::tempdir().unwrap();
     let record = dir.path().join("record");
     let mut config = config("normal", &record);
-    config.tools = Some(vec!["echo".into(), "error".into(), "media".into()]);
+    config.tools = Some(vec![
+        "echo".into(),
+        "error".into(),
+        "media".into(),
+        "change".into(),
+    ]);
     config.read_only_tools = vec!["echo".into()];
     let connection = Connection::connect(config, Default::default())
         .await
         .unwrap();
-    assert_eq!(connection.tools().len(), 3);
+    assert_eq!(
+        connection
+            .tools()
+            .iter()
+            .map(|tool| tool.remote_name.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["echo", "error", "media", "change"]),
+        "selection includes the tool returned on the second discovery page"
+    );
     assert!(
         connection
             .tools()
@@ -149,36 +225,13 @@ async fn stdio_pages_preserve_result_envelopes_media_and_explicit_tool_selection
     connection.close().await.unwrap();
     #[cfg(unix)]
     assert_gone(&record);
-    assert_eq!(
-        records(&record)
-            .iter()
-            .filter(|event| event["method"] == "tools/list")
-            .count(),
-        2
-    );
 }
 #[tokio::test]
 async fn streamable_http_uses_configured_headers_and_normal_tool_calls() {
     for mode in ["http", "http-sse"] {
         let dir = tempfile::tempdir().unwrap();
         let record = dir.path().join("record");
-        let mut server = tokio::process::Command::new(which::which("node").unwrap())
-            .arg(fixture())
-            .arg(mode)
-            .arg(&record)
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let url = tokio::time::timeout(Duration::from_secs(3), async {
-            loop {
-                if let Ok(url) = std::fs::read_to_string(record.with_extension("url")) {
-                    break url;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        let (mut server, url) = http_server(mode, &record).await;
         let config=serde_json::from_value(json!({"name":"http","transport":{"type":"streamable_http","url":url,"headers":{"authorization":"Bearer fixture"}}})).unwrap();
         let connection = Connection::connect(config, Default::default())
             .await
@@ -199,24 +252,44 @@ async fn streamable_http_uses_configured_headers_and_normal_tool_calls() {
 }
 
 #[tokio::test]
-async fn startup_timeout_and_dropped_startup_reap_the_process() {
-    for dropped in [false, true] {
-        let dir = tempfile::tempdir().unwrap();
-        let record = dir.path().join("record");
-        let mut config = config("startup-hang", &record);
-        config.startup_timeout_ms = 250;
-        let task = tokio::spawn(Connection::connect(config, Default::default()));
-        if dropped {
-            tokio::time::sleep(Duration::from_millis(150)).await;
-            task.abort();
-            let _ = task.await;
-            tokio::time::sleep(Duration::from_millis(250)).await;
-        } else {
-            assert!(task.await.unwrap().is_err());
+async fn startup_timeout_reaps_the_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("record");
+    let mut config = config("startup-hang", &record);
+    config.startup_timeout_ms = 1000;
+    assert!(
+        Connection::connect(config, Default::default())
+            .await
+            .is_err()
+    );
+    #[cfg(unix)]
+    assert_gone(&record);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn dropped_startup_reaps_the_process() {
+    let dir = tempfile::tempdir().unwrap();
+    let record = dir.path().join("record");
+    let mut config = config("startup-hang", &record);
+    config.startup_timeout_ms = 300_000;
+    let task = tokio::spawn(Connection::connect(config, Default::default()));
+    wait_for_method(&record, "initialize").await;
+    task.abort();
+    assert!(
+        task.await
+            .err()
+            .expect("startup observer was aborted")
+            .is_cancelled()
+    );
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        while !child_gone(&record) {
+            poll.tick().await;
         }
-        #[cfg(unix)]
-        assert_gone(&record);
-    }
+    })
+    .await
+    .expect("dropped startup still owns and reaps its child");
 }
 #[tokio::test]
 async fn cancellation_without_response_evidence_and_catalog_changes_retire_names() {
@@ -231,7 +304,7 @@ async fn cancellation_without_response_evidence_and_catalog_changes_retire_names
         let token = cancel.clone();
         async move { c.call("hang".into(), json!({}), token).await }
     });
-    tokio::time::sleep(Duration::from_millis(80)).await;
+    wait_for_method(&record, "tools/call").await;
     cancel.cancel();
     let observed = observer.await.unwrap();
     assert!(
@@ -254,8 +327,14 @@ async fn cancellation_without_response_evidence_and_catalog_changes_retire_names
         .await
         .unwrap();
     journal(connection.clone(), "change", json!({})).await;
-    tokio::time::sleep(Duration::from_millis(30)).await;
-    assert!(!connection.available());
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let mut poll = tokio::time::interval(Duration::from_millis(10));
+        while connection.available() {
+            poll.tick().await;
+        }
+    })
+    .await
+    .expect("tools/list_changed retires the captured catalog");
     assert!(
         connection
             .call("echo".into(), json!({}), CancellationToken::new())
@@ -340,23 +419,7 @@ async fn http_preserves_large_json_chunked_and_sse_results() {
     for mode in ["http-large-json", "http-large-chunked", "http-large-sse"] {
         let dir = tempfile::tempdir().unwrap();
         let record = dir.path().join("record");
-        let mut server = tokio::process::Command::new(which::which("node").unwrap())
-            .arg(fixture())
-            .arg(mode)
-            .arg(&record)
-            .kill_on_drop(true)
-            .spawn()
-            .unwrap();
-        let url = tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Ok(url) = std::fs::read_to_string(record.with_extension("url")) {
-                    break url;
-                }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .unwrap();
+        let (mut server, url) = http_server(mode, &record).await;
         let config = serde_json::from_value(json!({"name":"large","startupTimeoutMs":5000,"transport":{"type":"streamable_http","url":url}})).unwrap();
         let connection = Connection::connect(config, Default::default())
             .await
@@ -432,13 +495,7 @@ async fn explicit_startup_cancellation_returns_confirmed_child_cleanup() {
         Default::default(),
         token.clone(),
     ));
-    tokio::time::timeout(Duration::from_secs(5), async {
-        while !record.exists() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .unwrap();
+    wait_for_method(&record, "initialize").await;
     token.cancel();
     let error = tokio::time::timeout(Duration::from_secs(5), startup)
         .await

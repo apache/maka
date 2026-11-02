@@ -20,12 +20,11 @@
 // The window around the workbench on a graphical desktop: the headers along
 // the top edge are its title bar, and the application menu holds the
 // workbench's commands. Terminals keep their own title and menus.
-import { effect } from 'nsh';
-import { platform } from 'nsh';
+import { effect, platform } from 'nsh';
 import { isAvailable, Menu, titleBar, Window } from 'nsh/desktop';
 import { tr } from './locale';
 
-export const ownTitleBar = isAvailable && platform.idiom === 'desktop' && !platform.isTerminal;
+export const ownTitleBar = isAvailable && platform.desktop;
 /** The headers' height, which the system's window controls are centered in. */
 export const TITLE_BAR_HEIGHT = 48;
 
@@ -56,9 +55,12 @@ export interface MenuActions {
   chooseWorkspace(): void;
   sessions(): void;
   search(): void;
+  find(): void;
   commands(): void;
   models(): void;
   latest(): void;
+  nextSession(): void;
+  previousSession(): void;
   settings(): void;
   sidebarShown(): boolean;
   toggleSidebar(): void;
@@ -115,7 +117,8 @@ export function applicationMenu(actions: MenuActions) {
           { role: 'paste' },
           { role: 'selectAll' },
           { type: 'separator' },
-          { label: `${tr('Search conversations')}…`, shortcut: 'mod+f', onSelect: actions.search },
+          { label: `${tr('Find in conversation')}…`, shortcut: 'mod+f', onSelect: actions.find },
+          { label: `${tr('Search conversations')}…`, shortcut: 'mod+o', onSelect: actions.search },
         ],
       },
       {
@@ -151,7 +154,21 @@ export function applicationMenu(actions: MenuActions) {
       },
       {
         label: tr('Window'),
-        submenu: [{ role: 'minimize' }, { role: 'zoom' }],
+        submenu: [
+          { role: 'minimize' },
+          { role: 'zoom' },
+          { type: 'separator' },
+          {
+            label: tr('Previous conversation'),
+            shortcut: 'mod+shift+[',
+            onSelect: actions.previousSession,
+          },
+          {
+            label: tr('Next conversation'),
+            shortcut: 'mod+shift+]',
+            onSelect: actions.nextSession,
+          },
+        ],
       },
     ]);
   });

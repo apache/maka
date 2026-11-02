@@ -142,3 +142,65 @@ test('a link stays in its run, drawn in its text\'s bidi order', { skip: !chromi
     assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
+
+test('a text of one color transitions it on its element, from the color on screen', { skip: !chromium }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'nsh-text-color-'));
+  try {
+    const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
+    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { setTextColor };').toString('base64');
+    await writeFile(join(dir, 'index.html'), `<!doctype html><meta charset="utf-8">
+    <style>.t { transition-property: color; transition-duration: 1000ms; transition-timing-function: linear; }</style>
+    <body><script type="module">
+      import { setTextColor } from '${module}';
+      try {
+        const el = document.createElement('div');
+        el.className = 't';
+        // A run as op_t makes it: its class has no color of its own.
+        const run = document.createElement('span');
+        run.textContent = 'Tab';
+        el.append(run);
+        document.body.append(el);
+        const rgb = () => getComputedStyle(run).color.match(/[\\d.]+/g).slice(0, 3).map(Number);
+        const near = (want, what) => {
+          const got = rgb();
+          if (got.some((v, i) => Math.abs(v - want[i]) > 1)) throw Error(what + ': ' + got + ' != ' + want);
+        };
+        const transition = () => el.getAnimations().filter((a) => a.transitionProperty === 'color');
+        // The first color: at once.
+        setTextColor(el, 'rgb(255, 0, 0)');
+        near([255, 0, 0], 'first color');
+        if (transition().length) throw Error('the first color transitioned');
+        // A new one: half-way after half the duration, in the run made before.
+        setTextColor(el, 'rgb(0, 0, 255)');
+        let [a] = transition();
+        if (!a) throw Error('no transition of color');
+        a.pause();
+        a.currentTime = 500;
+        near([128, 0, 128], 'half-way');
+        // A run made again mid-way inherits the color on screen.
+        const again = document.createElement('span');
+        again.textContent = 'Tab';
+        run.replaceWith(again);
+        if (getComputedStyle(again).color !== getComputedStyle(el).color) throw Error('a new run did not inherit');
+        el.replaceChildren(run);
+        // Back to red mid-way: from where it is.
+        setTextColor(el, 'rgb(255, 0, 0)');
+        [a] = transition();
+        a.pause();
+        a.currentTime = 0;
+        near([128, 0, 128], 'reversed');
+        // Several colors (the runs carry theirs), then one: at once.
+        setTextColor(el, null);
+        setTextColor(el, 'rgb(0, 128, 0)');
+        if (transition().length) throw Error('a color after several transitioned');
+        near([0, 128, 0], 'after several');
+        document.body.dataset.result = 'passed';
+      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
+    </script>`);
+    const html = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
+      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
+    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});

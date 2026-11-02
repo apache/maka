@@ -10,7 +10,7 @@ import { join, normalize } from 'node:path';
 
 const DIST = join(import.meta.dir, '..', 'dist');
 const PLAYER = join(DIST, 'play', 'index.html');
-const DEMO = join(DIST, 'play', 'demos', 'mod-storage.nshc');
+const DEMO = join(DIST, 'play', 'demos', 'mod-storage.js');
 
 function findChrome(): string | null {
   if (process.env.CHROME) return process.env.CHROME;

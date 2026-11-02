@@ -308,6 +308,14 @@ struct Ctl {
     /// The indicator's frame in the track.
     rail: Stored<Bounds<Points>>,
     drag: Stored<Option<Drag>>,
+    /// The drag's value, shown from its first move to its end: the thumb
+    /// and the range follow the pointer in the same frame, natively,
+    /// rather than after `onChange` has gone through the app and come back
+    /// as `value` (pointer-driven motion, `docs/dev/animation.md`). At the
+    /// end the app's value shows: the events reach the app in order, so it
+    /// has answered every move's change by then, and an app that kept
+    /// another value (or held the drag's) shows it.
+    pending: Signal<Option<SliderValue>>,
     cx: Scope<SliderEvent>,
 }
 
@@ -322,9 +330,13 @@ impl Ctl {
         )
     }
 
-    /// The value shown (tracked).
+    /// The value shown (tracked): a drag's, else the app's, else its own.
     fn shown(self) -> SliderValue {
-        let raw = self.controlled.get().unwrap_or_else(|| self.own.get());
+        let raw = self
+            .pending
+            .get()
+            .or_else(|| self.controlled.get())
+            .unwrap_or_else(|| self.own.get());
         raw.held(&self.range())
     }
 
@@ -472,6 +484,8 @@ impl Ctl {
         drag.value = next;
         self.drag.replace(Some(drag));
         if changed {
+            // Shown at once, natively: no wait for the app's `value`.
+            self.pending.set(Some(next));
             self.request(next);
         }
     }
@@ -482,6 +496,9 @@ impl Ctl {
             && drag.moved
         {
             self.cx.emit(SliderEvent::ChangeEnd(drag.value));
+        }
+        if self.pending.get_untracked().is_some() {
+            self.pending.set(None);
         }
     }
 
@@ -530,8 +547,12 @@ pub fn Slider(props: SliderProps, cx: Scope<SliderEvent>) -> impl IntoElement {
         axis: props.axis.get_untracked(),
         rail: stored(Bounds::default()),
         drag: stored(None),
+        pending: signal(None),
         cx,
     };
+    // While a drag moves the thumbs and no screen reader runs, the value
+    // screen readers get waits for the drag's end: no props item per move.
+    let quiet = computed(move || ctl.pending.with(Option::is_some) && !screen_reader());
     let disabled = props.disabled;
     let focused = signal(None::<Thumb>);
     bind_while(
@@ -555,6 +576,7 @@ pub fn Slider(props: SliderProps, cx: Scope<SliderEvent>) -> impl IntoElement {
             name: name.into(),
             label: None,
         };
+        let said = stored(None::<AccessibilityValue>);
         view()
             .absolute()
             .map(|v| match ctl.axis {
@@ -574,7 +596,16 @@ pub fn Slider(props: SliderProps, cx: Scope<SliderEvent>) -> impl IntoElement {
             .accessible(true)
             .role(AccessibilityRole::Adjustable)
             .optional_label(label)
-            .accessibility_value(move || Some(ctl.accessibility_value(which)))
+            .accessibility_value(move || {
+                if quiet.get()
+                    && let Some(value) = said.get()
+                {
+                    return Some(value);
+                }
+                let value = ctl.accessibility_value(which);
+                said.replace(Some(value.clone()));
+                Some(value)
+            })
             .accessibility_actions(vec![action("increment"), action("decrement")])
             .on_accessibility_action(move |name: &str| match name {
                 "increment" => ctl.nudge(which, Nudge::Up),

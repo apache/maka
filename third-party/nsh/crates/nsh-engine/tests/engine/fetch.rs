@@ -124,6 +124,7 @@ fn fetch_round_trips_through_the_platform_network() {
         trace: false,
         network: Some(network),
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -202,7 +203,10 @@ impl Network for RedirectNetwork {
 const CHECKED_APP: &str = r#"
 import { mount, signal, Text } from "nsh";
 const text = signal("loading");
-const outcome = (p) => p.then((r) => r.text().then((t) => `${t}${r.redirected ? " (redirected)" : ""}`), (e) => e.message);
+const outcome = (p) => p.then(
+  (r) => r.text().then((t) => `${t}${r.redirected ? " (redirected)" : ""}`),
+  (e) => `${e.name} ${e.code} ${e.permission} ${e.resource}: ${e.message}`,
+);
 Promise.all([
   outcome(fetch("https://evil.io/")),
   outcome(fetch("https://api.example.com/hop/https://api.example.com/final")),
@@ -237,6 +241,7 @@ fn fetch_stays_within_the_capabilities() {
         trace: false,
         network: Some(Arc::new(RedirectNetwork { seen: seen.clone() })),
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -262,13 +267,17 @@ fn fetch_stays_within_the_capabilities() {
     );
     let result = texts(&rx.recv_timeout(Duration::from_secs(5)).unwrap()).join("");
     let parts: Vec<&str> = result.split(" | ").collect();
+    // Refused requests and redirects reject as every failed fetch, with a
+    // `TypeError`, and say what was refused.
     assert!(
-        parts[0].contains("`evil.io` to capabilities.network"),
+        parts[0].starts_with("TypeError ERR_ACCESS_DENIED network https://evil.io/: ")
+            && parts[0].contains("`evil.io` to capabilities.network"),
         "{result}"
     );
     assert_eq!(parts[1], "ok (redirected)");
     assert!(
-        parts[2].contains("https://evil.io/steal is not granted"),
+        parts[2].starts_with("TypeError ERR_ACCESS_DENIED network https://evil.io/steal: ")
+            && parts[2].contains("https://evil.io/steal is not granted"),
         "{result}"
     );
     // evil.io was never contacted.
@@ -309,6 +318,7 @@ fn rust_components_fetch_through_the_platform_network() {
         trace: false,
         network: Some(network),
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,

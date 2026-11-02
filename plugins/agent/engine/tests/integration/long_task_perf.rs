@@ -32,7 +32,7 @@ use maka_agent_facts::{
     context::ModelPurpose,
     event::{EventWrite, Fact, InvocationOutcome, LogScope, RuntimeEvent},
     input::InvocationInput,
-    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind, assembly::StepBuilder},
+    model::{ModelEvent, ModelFinishReason, ModelUsage, TextKind},
     tool_call::ToolCallIdentity,
     tool_output::ToolOutput,
 };
@@ -53,7 +53,7 @@ fn setting(name: &str, default: usize) -> usize {
 }
 
 // Tool turns follow stale_pruning; ordinary turns persist validated streamed text.
-// Batch each closed turn, keeping fixture setup out of the measured interval.
+// Commit actual body receipts before the closed turn; setup stays outside measurement.
 async fn seed(
     log: &SessionFixture,
     range: std::ops::Range<usize>,
@@ -92,6 +92,10 @@ async fn seed(
                 },
             },
             Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture {
+                    publication_watermark: 0,
+                    prior_unknown: false,
+                },
                 item_acceptance: tool_count == 0,
                 purpose: ModelPurpose::Main,
                 context: None,
@@ -111,80 +115,61 @@ async fn seed(
         ] {
             writes.push(EventWrite::plain(RuntimeEvent::new(invocation.clone(), fact)).unwrap());
         }
-        let output: maka_agent_facts::model::ModelStep = if tool_count > 0 {
-            serde_json::from_value(
-                json!({"parts": calls, "finish_reason":"tool-calls", "usage":{}}),
-            )
-            .unwrap()
+        let mut writer =
+            crate::support::model_records::writer(invocation.clone(), &step, tool_count == 0);
+        let observations = if tool_count > 0 {
+            let parts: Vec<maka_agent_facts::model::ModelPart> =
+                serde_json::from_value(json!(calls)).unwrap();
+            let mut events: Vec<_> = parts
+                .into_iter()
+                .map(|part| match part {
+                    maka_agent_facts::model::ModelPart::ToolCall { call } => {
+                        ModelEvent::ToolCall(call)
+                    }
+                    _ => unreachable!("fixture contains tool calls"),
+                })
+                .collect();
+            events.push(ModelEvent::Finished {
+                reason: ModelFinishReason::ToolCalls,
+                usage: ModelUsage::default(),
+                provider_options: None,
+            });
+            events
         } else {
-            let mut observations = vec![ModelEvent::PartStarted {
+            let mut events = vec![ModelEvent::PartStarted {
                 id: "text".into(),
                 text_kind: TextKind::Text,
                 provider_options: None,
             }];
             for _ in 0..13 {
-                observations.push(ModelEvent::PartDelta {
+                events.push(ModelEvent::PartDelta {
                     id: "text".into(),
                     text: "durable conversation text. ".into(),
                     provider_options: None,
                 });
             }
-            observations.push(ModelEvent::PartFinished {
+            events.push(ModelEvent::PartFinished {
                 id: "text".into(),
                 provider_options: None,
             });
-            observations.push(ModelEvent::Finished {
+            events.push(ModelEvent::Finished {
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,
             });
-            let mut builder = StepBuilder::for_step(&step).unwrap();
-            for event in observations {
-                builder.push(event.clone()).unwrap();
-                writes.push(
-                    EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::ModelObserved {
-                            step_id: step.clone(),
-                            event,
-                        },
-                    ))
-                    .unwrap(),
-                );
-            }
-            builder.finish().unwrap()
+            events
         };
-        if tool_count > 0 {
-            for part in &output.parts {
-                let maka_agent_facts::model::ModelPart::ToolCall { call } = part else {
-                    unreachable!()
-                };
-                writes.push(
-                    EventWrite::plain(RuntimeEvent::new(
-                        invocation.clone(),
-                        Fact::ModelObserved {
-                            step_id: step.clone(),
-                            event: ModelEvent::ToolCall(call.clone()),
-                        },
-                    ))
-                    .unwrap(),
-                );
-            }
-            writes.push(
-                EventWrite::plain(RuntimeEvent::new(
-                    invocation.clone(),
-                    Fact::ModelObserved {
-                        step_id: step.clone(),
-                        event: ModelEvent::Finished {
-                            reason: ModelFinishReason::ToolCalls,
-                            usage: ModelUsage::default(),
-                            provider_options: None,
-                        },
-                    },
-                ))
-                .unwrap(),
-            );
-        }
+        writes.extend(crate::support::model_records::observations(
+            &mut writer,
+            observations,
+        ));
+        let sequences = log.append_batch(&writes).await.unwrap();
+        crate::support::model_records::receipts(&mut writer, &writes, &sequences);
+        event_count += writes.len();
+        writes.clear();
+        let completed = writer.completed().unwrap();
+        assert_eq!(completed.local_call_ids().len(), tool_count);
+        let output = completed.completion();
         writes.push(
             EventWrite::plain(RuntimeEvent::new(
                 invocation.clone(),
@@ -233,14 +218,6 @@ async fn seed(
             ))
             .unwrap(),
         );
-        assert_eq!(
-            writes.len(),
-            if tool_count == 0 {
-                20
-            } else {
-                5 + 3 * tool_count
-            }
-        );
         event_count += writes.len();
         tool_results += tool_count;
         log.append_batch(&writes).await.unwrap();
@@ -274,6 +251,9 @@ async fn compact(worker: &maka_agent_engine::Engine, log: &SessionFixture, throu
     .await
     .expect("compact timed out")
     .expect("compact failed");
+    let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
+        panic!("compact fixture unexpectedly parked")
+    };
     server.await.unwrap();
     let through = *log.subscribe_commits().borrow();
     let page = log
@@ -535,6 +515,9 @@ async fn engine_long_history() {
             .expect("engine Run timed out")
             .expect("engine Run failed");
             let completion_ms = started.elapsed().as_secs_f64() * 1000.0;
+            let maka_agent_engine::ActivationExit::Terminal(invocation) = invocation else {
+                panic!("measured terminal fixture unexpectedly parked")
+            };
             println!(
                 "{}",
                 json!({"phase":"measure_done", "history_turns":turns, "repetition":repetition})

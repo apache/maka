@@ -1,7 +1,6 @@
 ---
 title: NavStack
 description: "Native navigation stacks: NavStack, NavPage and createNavStack, pushing and popping pages, header slots, leaving a page and how each platform shows a stack."
-order: 22
 group: base
 demo: ui-navigation
 ---

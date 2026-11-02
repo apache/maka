@@ -41,6 +41,7 @@ fn reference(record: &ProjectRecord) -> ProjectRef {
 }
 fn stored(error: StoreError) -> Result<ProjectResult, String> {
     match error {
+        StoreError::SessionBusy => Ok(ProjectResult::Busy),
         StoreError::Project(ProjectError::Changed) => Ok(ProjectResult::Changed),
         StoreError::Project(_) => Ok(ProjectResult::Unavailable),
         _ => Err("agent_project_commit_unknown".into()),
@@ -233,6 +234,30 @@ impl Owner {
         Ok(result)
     }
 
+    pub(crate) async fn select_workspace(
+        self: &Arc<Self>,
+        selection: DirectorySelection,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<Option<Workspace>, String> {
+        self.resource_work(scope, move |owner, _scope| {
+            Box::pin(async move {
+                let root = owner
+                    .store
+                    .owned_root()
+                    .map_err(|error| error.to_string())?;
+                workspace::initialize(
+                    &owner.workspace_roots,
+                    selection,
+                    &owner.managed_worktrees,
+                    root.canonical_path(),
+                    root.control_directory(),
+                )
+                .await
+            })
+        })
+        .await
+    }
+
     pub(super) async fn create_project_workspace(
         &self,
         selection: DirectorySelection,
@@ -422,11 +447,10 @@ impl Owner {
                         .project_id
                         .is_some_and(|id| ids.contains(&id.to_string()))
                 };
-                if !runs.quarantined.is_empty()
-                    || runs
-                        .controls
-                        .values()
-                        .any(|control| affected(&control.basis.workspace))
+                if runs
+                    .controls
+                    .values()
+                    .any(|control| affected(&control.basis.workspace))
                 {
                     return Ok(ProjectResult::Busy);
                 }

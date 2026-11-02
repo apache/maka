@@ -1,7 +1,7 @@
 ---
 title: List
 description: "The virtualized, recycling list: rows, columns, sticky headers, inverted chat lists, viewability and scrolling to items."
-order: 7
+order: 50
 group: primitives
 demo: el-list
 ---

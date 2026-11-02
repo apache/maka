@@ -39,7 +39,7 @@ const inputStyle = (disabled?: boolean) => ({
   backgroundColor: C.background,
   color: disabled ? C.muted : C.text,
   paddingHorizontal: 12,
-  paddingVertical: compact() ? 4 : 8,
+  paddingVertical: 4,
   ...inputTextStyle,
 });
 
@@ -71,6 +71,7 @@ export function SettingsField(
     hint?: string;
     masked?: boolean;
     multiline?: boolean;
+    error?: string;
   },
 ) {
   return (
@@ -89,13 +90,17 @@ export function SettingsField(
         autoCorrect={false}
         style={{
           ...inputStyle(props.disabled),
+          ...(props.error ? { borderColor: C.danger } : {}),
           placeholderColor: C.muted,
-          height: props.multiline ? undefined : compact() ? 32 : 40,
-          minHeight: compact() ? 32 : 40,
+          height: props.multiline ? undefined : 32,
+          minHeight: props.multiline && !compact() ? 96 : 32,
           maxHeight: props.multiline ? windowSize().height / 2 : undefined,
         }}
         focusStyle={{ borderColor: C.accent }}
       />
+      <If when={props.error}>
+        <Text style={{ color: C.danger, fontSize: 12, lineHeight: 16 }}>{props.error}</Text>
+      </If>
       <If when={props.hint}>
         <Text style={{ color: C.muted, fontSize: 12, lineHeight: 16 }}>{props.hint}</Text>
       </If>

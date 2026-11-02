@@ -1,8 +1,9 @@
 // The Menus demo on a phone (headless runs are touch screens): a menu bar
 // whose menus are sheets, submenus three levels deep in place of their
-// items, checkable items and a choice of one that keep the menu open,
+// items, checkable settings that keep the menu open and choices of one that
+// close it (or keep a submenu open), a row's checkable item,
 // undo and redo following what was done, row menus that change the list,
-// a scrolling menu, a menu the app opens.
+// a scrolling menu, a menu the app opens, a command whose toast reports it.
 import { beforeEach, expect, open, test } from "nsh/test";
 import type { App } from "nsh/test";
 
@@ -42,14 +43,45 @@ test("undo and redo follow what was done", async () => {
   await app.waitFor("Done: Save");
 });
 
-test("checkable items and a choice of one keep the menu open", async () => {
+test("settings are checkable items that keep the menu open", async () => {
   await app.press("View");
-  await app.press("Status bar");
-  await app.press("Large");
-  await app.waitFor("Sidebar on · status bar on · zoom Large");
-  expect(app.texts()).toContain("Medium");
+  await app.waitFor("Show sidebar");
+  expect(app.count("role:menuitemcheckbox")).toBe(2);
+  expect(app.count("role:menuitemradio")).toBe(3);
+  await app.press("Show minimap");
+  await app.waitFor("Sidebar on · minimap on · by Name · zoom Medium");
+  await app.press("Show sidebar");
+  await app.waitFor("Sidebar off · minimap on · by Name · zoom Medium");
+  expect(app.texts()).toContain("Show sidebar");
   await app.back();
-  expect(app.texts()).not.toContain("Medium");
+  expect(app.texts()).not.toContain("Show sidebar");
+});
+
+test("a choice of one closes the menu and reorders the preview", async () => {
+  await app.press("View");
+  await app.press("Size");
+  await app.waitFor("Sidebar on · minimap off · by Size · zoom Medium");
+  expect(app.texts()).not.toContain("Show sidebar");
+  // The largest file first.
+  const files = app.texts().filter((t) => ["main.rs", "Cargo.toml", "README.md", "lib.rs"].includes(t));
+  expect(files[0]).toBe("lib.rs");
+});
+
+test("a choice of one in a submenu keeps it open", async () => {
+  await app.press("View");
+  await app.press("Zoom");
+  await app.waitFor("Large");
+  await app.press("Large");
+  await app.waitFor("Sidebar on · minimap off · by Name · zoom Large");
+  expect(app.texts()).toContain("Medium");
+});
+
+test("a row's context menu has a checkable item that closes it", async () => {
+  await app.longPress("Notes.txt");
+  await app.waitFor("Starred");
+  expect(app.count("role:menuitemcheckbox[Starred]")).toBe(1);
+  await app.press("Starred");
+  expect(app.texts()).not.toContain("Duplicate");
 });
 
 test("a row's menu changes the list", async () => {
@@ -80,4 +112,12 @@ test("a long menu scrolls, and the app opens a menu itself", async () => {
   await app.waitFor("Sync now");
   await app.press("Sync now");
   await app.waitFor("ran Sync now");
+});
+
+test("a command that takes a while shows a toast that becomes its result", async () => {
+  await app.press("Open the commands");
+  await app.press("Sync now");
+  await app.waitFor("Syncing…");
+  await app.wait(1300);
+  await app.waitFor("Up to date");
 });

@@ -1,0 +1,295 @@
+/* ====================================================================
+   Controls: the site's component layer, after shadcn/ui.
+
+   Every control the site shows is one of these, made by the Astro
+   components in `src/components/ui/` (or, where HTML is written as a
+   string, the same markup: `src/lib/demo.js`, `src/lib/remark-code-tabs.js`,
+   the scripts that add buttons). As shadcn/ui's components do, an element
+   names its part with `data-slot` and its look with `data-variant` and
+   `data-size`; state is ARIA (`aria-pressed`, `aria-checked`,
+   `aria-selected`, `aria-expanded`), so the scripts that switch a control
+   only set the attribute. The rules below are shadcn/ui's class lists
+   (new-york, Tailwind 4), applied to those selectors, with shadcn's tokens
+   mapped onto the site's (`@theme inline` below) and the surfaces given
+   the gallery's finishes (`examples/nsh-gallery-ui/finishes.json`):
+   a raised control, its hover and pressed states, the citrus primary
+   (`light`), sunken fields and tracks, menus.
+
+   The rules are unlayered on purpose: page styles are too, and a control
+   inside documentation content (`.doc-content a`) keeps its own look.
+   ==================================================================== */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--foreground);
+  --color-primary: var(--nsh-gallery-primary);
+  --color-primary-foreground: var(--nsh-gallery-primary-foreground);
+  --color-secondary: var(--nsh-gallery-raised);
+  --color-secondary-foreground: var(--foreground);
+  --color-muted: var(--nsh-gallery-muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--nsh-gallery-accent);
+  --color-accent-foreground: var(--foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--nsh-gallery-input);
+  --color-ring: var(--ring);
+  --color-field: var(--nsh-gallery-field);
+  --color-track: var(--nsh-gallery-track);
+  --color-faint: var(--faint);
+  --color-citrus: var(--citrus);
+
+  /* shadcn derives its radii from `--radius`; the gallery's control radius is that. */
+  --radius-sm: calc(var(--nsh-gallery-radius-control) - 2px);
+  --radius-md: var(--nsh-gallery-radius-control);
+  --radius-lg: calc(var(--nsh-gallery-radius-control) + 2px);
+  --radius-xl: var(--nsh-gallery-radius-card);
+}
+
+/* The finishes as utilities, so a variant names its surface as it names a colour. */
+@utility finish-raised {
+  border-color: var(--nsh-gallery-finish-raised-border-color);
+  background-color: var(--nsh-gallery-finish-raised-background-color);
+  background-image: var(--nsh-gallery-finish-raised-background-image);
+  @apply shadow-(--nsh-gallery-finish-raised-box-shadow);
+}
+@utility finish-hover {
+  border-color: var(--nsh-gallery-finish-hover-border-color);
+  background-color: var(--nsh-gallery-finish-hover-background-color);
+  background-image: var(--nsh-gallery-finish-hover-background-image);
+  @apply shadow-(--nsh-gallery-finish-hover-box-shadow);
+}
+@utility finish-pressed {
+  border-color: var(--nsh-gallery-finish-pressed-border-color);
+  background-color: var(--nsh-gallery-finish-pressed-background-color);
+  background-image: var(--nsh-gallery-finish-pressed-background-image);
+  /* A pointer's press only shades and shrinks it (`[data-slot="button"]`),
+     the primary's as well; an inner shadow would sink it too far. */
+  @apply shadow-(--nsh-gallery-finish-raised-box-shadow);
+}
+@utility finish-primary {
+  border-color: var(--nsh-gallery-finish-light-border-color);
+  background-color: var(--nsh-gallery-finish-light-background-color);
+  background-image: var(--nsh-gallery-finish-light-background-image);
+  @apply shadow-(--nsh-gallery-finish-light-box-shadow);
+}
+/* Flat on the surface it sits on: the site's fields are never sunken wells. */
+@utility finish-field {
+  border-color: var(--nsh-gallery-input);
+  background-color: var(--nsh-gallery-card);
+  background-image: none;
+  box-shadow: none;
+}
+@utility finish-track {
+  border-color: var(--nsh-gallery-finish-track-border-color);
+  background-color: var(--nsh-gallery-track);
+  background-image: none;
+  @apply shadow-(--nsh-gallery-finish-track-box-shadow);
+}
+@utility finish-menu {
+  border-color: var(--nsh-gallery-finish-menu-border-color);
+  background-color: var(--nsh-gallery-finish-menu-background-color);
+  @apply shadow-(--nsh-gallery-finish-menu-box-shadow);
+}
+@utility finish-chip {
+  @apply shadow-(--nsh-gallery-finish-chip-box-shadow);
+}
+/* shadcn's focus ring: the border takes the ring colour, a soft 3px halo outside. */
+@utility focus-ring {
+  @apply outline-none focus-visible:outline-none focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/50;
+}
+
+/* --------------------------------------------------------------------
+   Button: `default` (the citrus primary), `secondary` (raised),
+   `outline`, `ghost`, `destructive`, `link`; sizes `xs`, `sm`, `default`,
+   `lg`, `icon-xs`, `icon-sm`, `icon`, `icon-lg`. An <a> or a <button>.
+   -------------------------------------------------------------------- */
+
+[data-slot="button"] {
+  @apply inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-transparent text-sm font-medium whitespace-nowrap no-underline transition-[color,background-color,border-color,box-shadow,opacity,scale] duration-150 select-none active:scale-[0.97] focus-ring disabled:pointer-events-none disabled:opacity-50 aria-disabled:pointer-events-none aria-disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4;
+  font-family: inherit;
+  line-height: 1;
+  color: var(--foreground);
+}
+
+[data-slot="button"][data-variant="default"] {
+  @apply finish-primary text-primary-foreground hover:text-primary-foreground active:opacity-90;
+  &:hover { background-image: linear-gradient(rgb(255 255 255 / 10%), rgb(255 255 255 / 10%)), var(--nsh-gallery-finish-light-background-image); }
+}
+[data-slot="button"][data-variant="secondary"] {
+  @apply finish-raised text-secondary-foreground hover:finish-hover active:finish-pressed;
+}
+[data-slot="button"][data-variant="outline"] {
+  @apply border-input bg-transparent hover:bg-accent/60 hover:text-accent-foreground active:bg-accent;
+}
+[data-slot="button"][data-variant="ghost"] {
+  @apply text-muted-foreground hover:bg-accent/60 hover:text-accent-foreground active:bg-accent aria-expanded:bg-accent aria-expanded:text-accent-foreground;
+}
+[data-slot="button"][data-variant="destructive"] {
+  @apply finish-raised text-destructive hover:bg-destructive/15 focus-visible:ring-destructive/30;
+  border-color: color-mix(in srgb, var(--destructive) 32%, transparent);
+  background-image: none;
+}
+[data-slot="button"][data-variant="link"] {
+  @apply h-auto px-0 text-foreground underline-offset-4 hover:underline;
+  text-decoration-color: var(--brand-line);
+}
+
+[data-slot="button"]:is([data-size="default"], :not([data-size])) { @apply h-9 px-4 has-[>svg]:px-3; }
+[data-slot="button"][data-size="sm"] { @apply h-8 gap-1.5 px-3 text-[0.8125rem] has-[>svg]:px-2.5; }
+[data-slot="button"][data-size="xs"] { @apply h-7 gap-1 rounded-sm px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3.5; }
+[data-slot="button"][data-size="lg"] { @apply h-10 px-5 text-[0.9375rem] has-[>svg]:px-4; }
+[data-slot="button"][data-size="icon"] { @apply size-9; }
+[data-slot="button"][data-size="icon-sm"] { @apply size-8; }
+[data-slot="button"][data-size="icon-xs"] { @apply size-7 [&_svg:not([class*='size-'])]:size-3.5; }
+[data-slot="button"][data-size="icon-lg"] { @apply size-10; }
+[data-slot="button"][data-variant="link"][data-size] { @apply h-auto px-0; }
+
+/* A row of buttons joined into one control (shadcn's ButtonGroup). */
+[data-slot="button-group"] {
+  @apply flex w-fit items-stretch;
+  & > [data-slot="button"] { @apply rounded-none focus-visible:z-10; }
+  & > [data-slot="button"]:first-child { @apply rounded-l-md; }
+  & > [data-slot="button"]:last-child { @apply rounded-r-md; }
+  & > [data-slot="button"]:not(:first-child) { @apply border-l-0; }
+}
+
+/* --------------------------------------------------------------------
+   Input, alone or in an input group with an icon (shadcn's InputGroup).
+   -------------------------------------------------------------------- */
+
+[data-slot="input"] {
+  @apply h-9 w-full min-w-0 rounded-md border finish-field px-3 py-1 text-sm text-foreground transition-[color,box-shadow,border-color] focus-ring placeholder:text-faint selection:bg-primary selection:text-primary-foreground disabled:pointer-events-none disabled:cursor-not-allowed disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-destructive/20 hover:not-focus-visible:border-[color-mix(in_srgb,var(--nsh-gallery-input)_70%,var(--foreground))];
+  font-family: inherit;
+  &[data-size="sm"] { @apply h-8 text-[0.8125rem]; }
+  /* The browser's clear button; the input group has room for the app's own. */
+  &::-webkit-search-cancel-button { @apply cursor-pointer; }
+}
+
+[data-slot="input-group"] {
+  @apply relative flex w-full min-w-0 items-center;
+  & > [data-slot="input"] { @apply pl-8; }
+  & > [data-slot="input-group-addon"] { @apply pointer-events-none absolute left-3 flex items-center text-muted-foreground [&>svg:not([class*='size-'])]:size-3.5; }
+}
+
+/* A label above a field. */
+[data-slot="label"] {
+  @apply flex items-center gap-2 text-xs leading-none font-medium text-foreground select-none;
+}
+
+/* --------------------------------------------------------------------
+   Select: a trigger like an input and a listbox popup (`ui/Select.astro`,
+   driven by `lib/ui/select.ts`).
+   -------------------------------------------------------------------- */
+
+[data-slot="select"] { @apply relative inline-flex min-w-0; }
+
+[data-slot="select-trigger"] {
+  @apply flex h-9 w-full min-w-0 cursor-pointer items-center justify-between gap-2 rounded-md border finish-field px-3 py-2 text-sm whitespace-nowrap text-foreground transition-[color,box-shadow,border-color] focus-ring disabled:cursor-not-allowed disabled:opacity-50 aria-expanded:border-ring aria-expanded:ring-[3px] aria-expanded:ring-ring/50 hover:not-focus-visible:border-[color-mix(in_srgb,var(--nsh-gallery-input)_70%,var(--foreground))];
+  font-family: inherit;
+  &[data-size="sm"] { @apply h-8 text-[0.8125rem]; }
+  & > svg { @apply size-4 shrink-0 text-muted-foreground opacity-80 transition-transform duration-150; }
+  &[aria-expanded="true"] > svg { @apply rotate-180; }
+}
+[data-slot="select-value"] { @apply truncate text-left; }
+
+[data-slot="select-content"] {
+  @apply absolute top-[calc(100%+4px)] left-0 z-50 max-h-72 min-w-[max(8rem,100%)] overflow-x-hidden overflow-y-auto rounded-md border finish-menu p-1 text-popover-foreground outline-none focus-visible:outline-none;
+  &[hidden] { @apply hidden; }
+  &[data-side="top"] { @apply top-auto bottom-[calc(100%+4px)]; }
+  @media (prefers-reduced-motion: no-preference) {
+    animation: ui-pop-in 120ms ease-out;
+  }
+}
+[data-slot="select-item"] {
+  @apply relative flex w-full cursor-default items-center gap-2 rounded-sm py-1.5 pr-8 pl-2 text-sm whitespace-nowrap text-foreground outline-none select-none data-[highlighted]:bg-accent data-[highlighted]:text-accent-foreground aria-disabled:pointer-events-none aria-disabled:opacity-50;
+}
+[data-slot="select-item-indicator"] {
+  @apply absolute right-2 flex size-3.5 items-center justify-center text-citrus invisible [[aria-selected=true]>&]:visible [&>svg]:size-3.5;
+}
+
+@keyframes ui-pop-in {
+  from { opacity: 0; transform: translateY(-2px) scale(0.98); }
+}
+
+/* --------------------------------------------------------------------
+   Badge: `default`, `secondary`, `outline`, `destructive`.
+   -------------------------------------------------------------------- */
+
+[data-slot="badge"] {
+  @apply inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-md border px-2 py-0.5 text-xs font-medium whitespace-nowrap no-underline focus-ring [&>svg]:pointer-events-none [&>svg]:size-3;
+  &:is([data-variant="default"], :not([data-variant])) { @apply border-transparent bg-primary text-primary-foreground; }
+  &[data-variant="secondary"] { @apply finish-chip border-[color-mix(in_srgb,var(--foreground)_10%,transparent)] bg-muted text-muted-foreground; }
+  &[data-variant="outline"] { @apply border-border text-muted-foreground; }
+  &[data-variant="destructive"] { @apply border-transparent bg-destructive/15 text-destructive; }
+}
+
+/* --------------------------------------------------------------------
+   Toggle and ToggleGroup: a two-state button (`aria-pressed`), or one of
+   a group (`role="radio"`, `aria-checked`). Variants `default`, `outline`
+   and, for a group, `segmented` (the look of tabs: a sunken track, the
+   choice a raised thumb); sizes `default`, `sm`, `xs`, `lg`.
+   -------------------------------------------------------------------- */
+
+:is([data-slot="toggle"], [data-slot="toggle-group-item"]) {
+  @apply inline-flex shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-transparent bg-transparent text-sm font-medium whitespace-nowrap text-muted-foreground transition-[color,background-color,border-color,box-shadow] duration-150 focus-ring hover:bg-accent/60 hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4;
+  font-family: inherit;
+  line-height: 1;
+  &:is([aria-pressed="true"], [aria-checked="true"], [data-state="on"]) { @apply finish-raised text-foreground; }
+  &:is([data-variant="outline"], [data-slot="toggle-group"][data-variant="outline"] > *) { @apply border-input; }
+  &:is([data-variant="outline"], [data-slot="toggle-group"][data-variant="outline"] > *):is([aria-pressed="true"], [aria-checked="true"], [data-state="on"]) { @apply finish-raised; }
+}
+:is([data-slot="toggle"], [data-slot="toggle-group-item"]):is([data-size="default"], :not([data-size])) { @apply h-9 min-w-9 px-2.5; }
+:is([data-slot="toggle"], [data-slot="toggle-group-item"])[data-size="sm"],
+[data-slot="toggle-group"][data-size="sm"] > [data-slot="toggle-group-item"] { @apply h-8 min-w-8 px-2 text-[0.8125rem]; }
+:is([data-slot="toggle"], [data-slot="toggle-group-item"])[data-size="xs"],
+[data-slot="toggle-group"][data-size="xs"] > [data-slot="toggle-group-item"] { @apply h-7 min-w-7 gap-1.5 px-2 text-xs; }
+:is([data-slot="toggle"], [data-slot="toggle-group-item"])[data-size="lg"],
+[data-slot="toggle-group"][data-size="lg"] > [data-slot="toggle-group-item"] { @apply h-10 min-w-10 px-3; }
+
+[data-slot="toggle-group"] {
+  @apply flex w-fit flex-wrap items-center;
+  gap: var(--gap, 0px);
+  /* Joined items (no spacing), as shadcn's group. */
+  &:not([data-variant="segmented"])[data-spacing="0"] > [data-slot="toggle-group-item"] {
+    @apply rounded-none first:rounded-l-md last:rounded-r-md;
+  }
+  &:not([data-variant="segmented"])[data-spacing="0"][data-variant="outline"] > [data-slot="toggle-group-item"]:not(:first-child) { @apply border-l-0; }
+}
+
+/* A count after a label (the filter chips' "3"), quiet as the gallery's Segmented. */
+[data-slot="toggle-count"] { @apply text-xs font-normal text-faint tabular-nums; }
+:is([aria-pressed="true"], [aria-checked="true"], [aria-selected="true"]) > [data-slot="toggle-count"] { @apply text-muted-foreground; }
+
+/* --------------------------------------------------------------------
+   Tabs, and a segmented ToggleGroup: a sunken track, the selected item a
+   raised thumb (the gallery's `Segmented`). Sizes `default`, `sm`, `xs`.
+   -------------------------------------------------------------------- */
+
+:is([data-slot="tabs-list"], [data-slot="toggle-group"][data-variant="segmented"]) {
+  @apply inline-flex h-9 w-fit flex-nowrap items-center justify-center gap-0.5 rounded-lg border finish-track p-0.5 text-muted-foreground;
+  &[data-size="sm"] { @apply h-8; }
+  &[data-size="xs"] { @apply h-7; }
+}
+:is([data-slot="tabs-trigger"], [data-slot="toggle-group"][data-variant="segmented"] > [data-slot="toggle-group-item"]) {
+  @apply inline-flex h-full min-w-0 flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-md border border-transparent bg-transparent px-2.5 text-sm font-medium whitespace-nowrap text-muted-foreground transition-[color,background-color,border-color,box-shadow] duration-150 focus-ring hover:bg-transparent hover:text-foreground disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5;
+  font-family: inherit;
+  line-height: 1;
+  &:is([aria-selected="true"], [aria-checked="true"], [aria-pressed="true"], [data-state="active"], [data-state="on"]) { @apply finish-raised text-foreground; }
+  /* An icon alone is a square. */
+  &:has(> svg:only-child) { @apply aspect-square flex-none px-0; }
+}
+:is([data-slot="tabs-list"], [data-slot="toggle-group"][data-variant="segmented"])[data-size="sm"] > * { @apply px-2.5 text-[0.8125rem]; }
+:is([data-slot="tabs-list"], [data-slot="toggle-group"][data-variant="segmented"])[data-size="xs"] > * { @apply rounded-[5px] px-2 text-xs; }
+
+/* --------------------------------------------------------------------
+   Kbd: a key, raised.
+   -------------------------------------------------------------------- */
+
+[data-slot="kbd"] {
+  @apply pointer-events-none inline-flex h-5 w-fit min-w-5 items-center justify-center gap-1 rounded-sm border finish-raised px-1 font-mono text-[0.6875rem] font-medium text-muted-foreground select-none;
+}

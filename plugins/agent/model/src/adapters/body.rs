@@ -18,7 +18,11 @@
  */
 
 //! Replayable provider body encoding with pull-driven bounded JSON output.
-use super::{chat_completions::Projector, media, prompt};
+use super::{
+    chat_completions::Projector,
+    http_header::{ArrayKey, Header, Prefix},
+    media, prompt,
+};
 use crate::{
     ModelError,
     prompt::{Message, PreparedWire, Prompt, PromptCursor, WireFormat},
@@ -86,16 +90,16 @@ pub(super) async fn validate(
 }
 
 pub(super) fn chat(
-    fields: Value,
+    fields: Header,
     source: Prompt,
     options: PromptOptions,
     language: Language,
 ) -> http::RequestBody {
     if let Some(wire) = source.wire(WireFormat::ChatCompletions) {
-        return prepared(fields, wire.clone(), "messages");
+        return prepared(fields, wire.clone(), ArrayKey::Messages);
     }
     struct State {
-        fields: Option<std::iter::Peekable<JsonChunks>>,
+        fields: Option<Prefix>,
         messages: ChatMessages,
         options: PromptOptions,
         pending: VecDeque<Value>,
@@ -104,7 +108,7 @@ pub(super) fn chat(
         finished: bool,
     }
     let state = State {
-        fields: Some(JsonChunks::new(fields).peekable()),
+        fields: Some(fields.open(ArrayKey::Messages)),
         messages: ChatMessages::new(&source, language),
         options,
         pending: VecDeque::new(),
@@ -117,19 +121,11 @@ pub(super) fn chat(
             if state.finished {
                 return Ok(None);
             }
-            if let Some(fields) = &mut state.fields
-                && let Some(mut bytes) = fields.next()
-            {
-                if fields.peek().is_none() {
-                    let closing = bytes.pop();
-                    debug_assert_eq!(closing, Some(b'}'));
-                    if bytes != b"{" {
-                        bytes.push(b',');
-                    }
-                    bytes.extend_from_slice(b"\"messages\":[");
-                    state.fields = None;
+            if let Some(fields) = &mut state.fields {
+                if let Some(bytes) = fields.next() {
+                    return Ok(Some((bytes, state)));
                 }
-                return Ok(Some((http::Bytes::from(bytes), state)));
+                state.fields = None;
             }
 
             if let Some(current) = &mut state.current {
@@ -172,22 +168,20 @@ pub(super) fn chat(
 }
 
 /// Ordinary persisted history passes through without constructing Message or Value.
-pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> http::RequestBody {
+pub(super) fn prepared(fields: Header, wire: PreparedWire, key: ArrayKey) -> http::RequestBody {
     struct State {
-        fields: Option<std::iter::Peekable<JsonChunks>>,
+        fields: Option<Prefix>,
         cursor: Box<dyn crate::prompt::WireCursor>,
-        pending: Option<Vec<u8>>,
+        pending: Option<http::Bytes>,
         first: bool,
         finished: bool,
-        key: &'static str,
     }
     let state = State {
-        fields: Some(JsonChunks::new(fields).peekable()),
+        fields: Some(fields.open(key)),
         cursor: wire.open(0),
         pending: None,
         first: true,
         finished: false,
-        key,
     };
     http::RequestBody::stream(futures_util::stream::try_unfold(
         state,
@@ -197,26 +191,13 @@ pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> 
                     return Ok(None);
                 }
                 if let Some(bytes) = state.pending.take() {
-                    return Ok(Some((http::Bytes::from(bytes), state)));
+                    return Ok(Some((bytes, state)));
                 }
-                if let Some(fields) = &mut state.fields
-                    && let Some(mut bytes) = fields.next()
-                {
-                    if fields.peek().is_none() {
-                        let closing = bytes.pop();
-                        debug_assert_eq!(closing, Some(b'}'));
-                        if bytes != b"{" {
-                            bytes.push(b',');
-                        }
-                        bytes.extend_from_slice(
-                            serde_json::to_string(state.key)
-                                .expect("static array key")
-                                .as_bytes(),
-                        );
-                        bytes.extend_from_slice(b":[");
-                        state.fields = None;
+                if let Some(fields) = &mut state.fields {
+                    if let Some(bytes) = fields.next() {
+                        return Ok(Some((bytes, state)));
                     }
-                    return Ok(Some((http::Bytes::from(bytes), state)));
+                    state.fields = None;
                 }
 
                 match state
@@ -236,7 +217,7 @@ pub(super) fn prepared(fields: Value, wire: PreparedWire, key: &'static str) -> 
                             }
                             state.first = false;
                         }
-                        return Ok(Some((http::Bytes::from(chunk.bytes), state)));
+                        return Ok(Some((chunk.bytes, state)));
                     }
                     None => {
                         state.finished = true;
@@ -317,13 +298,16 @@ mod tests {
             Default::default(),
         );
         let mut stream = chat(
-            serde_json::json!({"model":"test"}),
+            Header::freeze(serde_json::json!({"model":"test"})).await,
             source,
             options(),
             Language::En,
         )
         .into_stream();
-        let head = stream.next().await.unwrap().unwrap();
+        let mut head = Vec::new();
+        while !head.ends_with(b"\"messages\":[") {
+            head.extend_from_slice(&stream.next().await.unwrap().unwrap());
+        }
         assert_eq!(&head[..], b"{\"model\":\"test\",\"messages\":[");
         assert_eq!(read.load(Ordering::SeqCst), 0);
         let first = stream.next().await.unwrap().unwrap();
@@ -337,31 +321,83 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn independent_replays_encode_identical_json() {
-        let source = Prompt::from_messages(vec![
-            Message::user("quote \" 中文\n"),
-            Message::user("second"),
-        ]);
-        let mut results = Vec::new();
-        for _ in 0..2 {
-            let mut stream = chat(
-                serde_json::json!({"model":"test"}),
-                source.clone(),
-                options(),
-                Language::En,
-            )
-            .into_stream();
-            let mut bytes = Vec::new();
-            while let Some(chunk) = stream.next().await {
-                bytes.extend_from_slice(&chunk.unwrap());
-            }
-            results.push(bytes);
+    async fn partial_upload_settlement_waits_for_external_source_chunk() {
+        use crate::prompt::{WireChunk, WireCursor, WireSource};
+        use futures_util::FutureExt;
+        use tokio_util::sync::CancellationToken;
+        struct Owned {
+            dropped: Arc<AtomicUsize>,
         }
-        assert_eq!(results[0], results[1]);
-        let decoded: Value = serde_json::from_slice(&results[0]).unwrap();
-        assert_eq!(decoded["messages"].as_array().unwrap().len(), 2);
-        assert_eq!(decoded["messages"][0]["content"], "quote \" 中文\n");
+        impl AsRef<[u8]> for Owned {
+            fn as_ref(&self) -> &[u8] {
+                b"{\"role\":\"user\",\"content\":\"held\"}"
+            }
+        }
+        impl Drop for Owned {
+            fn drop(&mut self) {
+                self.dropped.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        struct Source(Arc<AtomicUsize>);
+        struct Item(Option<Arc<AtomicUsize>>);
+        impl WireSource for Source {
+            fn open(&self, _: usize) -> Box<dyn WireCursor> {
+                Box::new(Item(Some(self.0.clone())))
+            }
+        }
+        impl WireCursor for Item {
+            fn next(&mut self) -> maka_agent_facts::model::prompt_source::NextWire<'_> {
+                Box::pin(async move {
+                    Ok(self.0.take().map(|dropped| WireChunk {
+                        bytes: http::Bytes::from_owner(Owned { dropped }),
+                        item_start: true,
+                        item_end: true,
+                        message_index: 0,
+                        metadata: None,
+                    }))
+                })
+            }
+        }
+        let dropped = Arc::new(AtomicUsize::new(0));
+        let input = prepared(
+            Header::freeze(serde_json::json!({"model":"fixture"})).await,
+            PreparedWire {
+                format: WireFormat::ChatCompletions,
+                codec: "fixture".into(),
+                identity: "fixture".into(),
+                source: Arc::new(Source(dropped.clone())),
+            },
+            ArrayKey::Messages,
+        );
+        let stop = CancellationToken::new();
+        let (mut upload, mut receipt) = http::upload::track(input, stop.clone());
+        let held_header = upload.next().await.unwrap().unwrap();
+        let held_source = loop {
+            let chunk = upload.next().await.unwrap().unwrap();
+            if chunk.as_ref().starts_with(b"{\"role\"") {
+                break chunk;
+            }
+        };
+        stop.cancel();
+        drop(upload);
+        let mut settled = Box::pin(receipt.finish());
+        assert!(settled.as_mut().now_or_never().is_none());
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        drop(held_source);
+        assert_eq!(
+            dropped.load(Ordering::SeqCst),
+            1,
+            "header bytes must not retain source custody"
+        );
+        assert!(
+            settled.as_mut().now_or_never().is_none(),
+            "an external header slice is still in flight"
+        );
+        drop(held_header);
+        let audit = settled.await.unwrap();
+        assert_eq!(audit["bodyComplete"], false);
     }
+
     #[tokio::test]
     async fn direct_and_prepared_uploads_emit_complete_json_in_all_build_profiles() {
         use crate::prompt::{WireChunk, WireCursor, WireSource};
@@ -378,7 +414,8 @@ mod tests {
                             bytes: serde_json::to_vec(&serde_json::json!({
                                 "role": "user", "content": text
                             }))
-                            .unwrap(),
+                            .unwrap()
+                            .into(),
                             item_start: true,
                             item_end: true,
                             message_index,
@@ -409,8 +446,17 @@ mod tests {
                 source: Arc::new(Source),
             };
             for body in [
-                chat(fields.clone(), source, options(), Language::En),
-                prepared(fields.clone(), wire, "messages"),
+                chat(
+                    Header::freeze(fields.clone()).await,
+                    source,
+                    options(),
+                    Language::En,
+                ),
+                prepared(
+                    Header::freeze(fields.clone()).await,
+                    wire,
+                    ArrayKey::Messages,
+                ),
             ] {
                 let mut stream = body.into_stream();
                 let mut bytes = Vec::new();
@@ -422,7 +468,7 @@ mod tests {
                     {"role": "user", "content": "first"},
                     {"role": "user", "content": "second"}
                 ]);
-                assert_eq!(serde_json::from_slice::<Value>(&bytes).unwrap(), expected);
+                assert_eq!(bytes, serde_json::to_vec(&expected).unwrap());
             }
         }
     }

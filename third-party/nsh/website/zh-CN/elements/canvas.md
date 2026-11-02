@@ -1,7 +1,7 @@
 ---
 title: Canvas
 description: Canvas 元素：用 2D 上下文自定义绘制，并在原生侧回放。
-order: 8
+order: 60
 group: primitives
 demo: el-canvas
 ---

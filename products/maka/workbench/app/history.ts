@@ -23,6 +23,7 @@ import type {
   HistoryCompaction,
   HistoryModel,
   HistoryTurnTiming,
+  MessageOrigin,
 } from '../../../../packages/plugin-sdk/src/index.js';
 
 export type Position = { sourceSequence: number; itemIndex: number };
@@ -39,10 +40,13 @@ export type Row = {
   text: string;
   position?: Position;
   fragments?: Fragment[];
+  prefix?: boolean;
   totalBytes?: number;
   tool?: any;
   attachments?: AgentHistoryAttachment[];
   hasReferences?: boolean;
+  /** The Host's attribution of a message it generated; absent when the user wrote it. */
+  origin?: MessageOrigin;
   turnId?: string;
   timestamp?: number;
   timing?: HistoryTurnTiming;
@@ -54,6 +58,8 @@ export type Row = {
   stepId?: string;
   sequence?: number;
   startSequence?: number;
+  modelPart?: { stepId: string; ordinal: number };
+  preview?: { stepOrder: number; ordinal: number; revision: number };
   closedAt?: number | null;
 };
 
@@ -73,10 +79,18 @@ export function openingUserMessage(
   return null;
 }
 
+/** Whether the user wrote this message, rather than the Host generating it (a Plan execution, WorkHub). */
+export function userAuthored(row: Row): boolean {
+  return row.origin === undefined;
+}
+
 /** Whether replaying the displayed text retains all material in the original user input. */
 export function canRegenerateFromText(row: Row): boolean {
   return (
-    row.attachments !== undefined && row.attachments.length === 0 && row.hasReferences === false
+    userAuthored(row) &&
+    row.attachments !== undefined &&
+    row.attachments.length === 0 &&
+    row.hasReferences === false
   );
 }
 
@@ -104,10 +118,9 @@ export function messageBytes(text: string): number {
   return length;
 }
 
-// A live part starts at its original opening. A history window may instead
-// contain only a tail or separated fragments, without Markdown's opening context.
-export function hasCompletePrefix(row: Row): boolean {
-  if (!row.fragments) return row.startSequence !== undefined && row.sequence !== undefined;
+// History windows can contain tails or gaps; previews are assembled from byte zero.
+export function hasTextPrefix(row: Row): boolean {
+  if (!row.fragments) return row.prefix === true;
   let offset = 0;
   for (const fragment of row.fragments) {
     if (fragment.offset !== offset) return false;
@@ -122,8 +135,10 @@ export function historyMetadata(chunk: any, through: number, previous?: Row) {
     attachments:
       chunk.offset === 0 ? (chunk.attachments ?? []) : (previous?.attachments ?? chunk.attachments),
     hasReferences: chunk.offset === 0 ? (chunk.hasReferences ?? false) : previous?.hasReferences,
+    origin: chunk.origin ?? previous?.origin,
     timing: chunk.timing,
     model: chunk.model,
+    modelPart: chunk.modelPart,
     finalOutput: chunk.finalOutput,
     compaction: chunk.compaction,
     tool: chunk.tool,
@@ -183,7 +198,7 @@ export function mergeChunks(rows: Row[], chunks: any[], older = false, through =
       turnId: chunk.turnId,
       timestamp: chunk.timestamp,
       ...((previous?.metadataThrough ?? -1) > through
-        ? historyMetadata(previous, previous!.metadataThrough!)
+        ? historyMetadata(previous, previous!.metadataThrough!, previous)
         : historyMetadata(chunk, through, previous)),
       position: chunk.position,
       field: chunk.field,

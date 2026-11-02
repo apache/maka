@@ -25,6 +25,7 @@ use crate::{EventLog, StoreError, sequence_number};
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::Chunk;
 use maka_agent_ports::session::history::Cursor;
+use maka_agent_ports::session::history::ModelPartIdentity;
 use maka_agent_ports::session::history::Page;
 use maka_agent_ports::session::history::Position;
 use maka_agent_ports::session::history::Role;
@@ -126,7 +127,7 @@ impl EventLog {
             .observe(move |connection| {
                 super::bodycache::run(connection, move |tx| {
                     Box::pin(async move {
-                        super::directory::check_read(tx, &session, fence).await?;
+                        super::directory::ensure(tx, &session, fence).await?;
                         crate::connection::worker_query(tx, move |worker| {
                             Box::pin(async move {
                                 read_page(
@@ -490,7 +491,22 @@ async fn read_page(
                 } else {
                     (None, false)
                 };
+                let part: Option<(String, i64)> = sqlx::query_as(
+                    "SELECT p.step_id, p.ordinal FROM model_part_records p
+                     WHERE p.owner_session_id = (SELECT event_session FROM runtime_events WHERE sequence = ?1)
+                       AND p.message_id = ?2 AND p.ordinal IS NOT NULL AND p.source_sequence <= ?3",
+                ).bind(sql_number(locator.source_sequence)?).bind(&row.message).bind(through_sql)
+                    .fetch_optional(&mut *tx).await?;
+                let model_part = part
+                    .map(|(step_id, ordinal)| {
+                        Ok::<_, StoreError>(ModelPartIdentity {
+                            step_id,
+                            ordinal: sequence_number(ordinal)?,
+                        })
+                    })
+                    .transpose()?;
                 let chunk = Chunk {
+                    model_part,
                     has_references,
                     field,
                     timing,
@@ -901,13 +917,7 @@ mod tests {
     #[tokio::test]
     async fn conversation_retains_trace_parents_and_hides_transport_helpers() {
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = crate::schema::fixture(|_, name| {
-            name.starts_with("transcript_directory")
-                || name.starts_with("transcript_failures")
-                || name.starts_with("directory_")
-        });
-        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
-            .execute(&mut db)
+        crate::transcript::bodycache::initialize(&mut db)
             .await
             .unwrap();
         let rows = [
@@ -921,7 +931,7 @@ mod tests {
         ];
         for (i, mut value) in rows.into_iter().enumerate() {
             value["ts"] = json!(1);
-            sqlx::query("INSERT INTO transcript_directory (session_id,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError')")
+            sqlx::query("INSERT INTO transcript_directory (session_id,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result')")
                 .bind((i+1) as i64).bind((i+1).to_string()).bind(serde_json::to_vec(&value).unwrap())
                 .execute(&mut db)
                 .await
@@ -1009,20 +1019,14 @@ mod tests {
         }
 
         let mut db = SqliteConnection::connect(":memory:").await.unwrap();
-        let schema = crate::schema::fixture(|_, name| {
-            name.starts_with("transcript_directory")
-                || name.starts_with("transcript_failures")
-                || name.starts_with("directory_")
-        });
-        sqlx::raw_sql(sqlx::AssertSqlSafe(schema.as_str()))
-            .execute(&mut db)
+        crate::transcript::bodycache::initialize(&mut db)
             .await
             .unwrap();
         let mut measurements = Vec::new();
         for (first, last) in [(1_i64, 64_i64), (65, 4096)] {
             // Use the production directory schema/indexes. Setup is outside the
             // handler; count only the real neighbor function, not a SQL copy.
-            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0 FROM n")
+            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1 FROM n")
                 .bind(first)
                 .bind(last)
                 .execute(&mut db)

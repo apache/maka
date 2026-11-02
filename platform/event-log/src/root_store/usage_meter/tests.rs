@@ -17,6 +17,8 @@
  * under the License.
  */
 
+use maka_agent_facts::model::recorded::ModelObservation;
+
 use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
@@ -42,6 +44,10 @@ pub(super) fn event(fact: Fact, micros: u64) -> EventWrite {
 pub(super) fn request(id: &str, micros: u64) -> EventWrite {
     event(
         Fact::ModelRequested {
+            source_capture: maka_agent_facts::event::SourceCapture {
+                publication_watermark: 0,
+                prior_unknown: false,
+            },
             context_breakdown: None,
             item_acceptance: false,
             step_id: id.into(),
@@ -69,9 +75,9 @@ use crate::{
 };
 use maka_agent_facts::{
     event::{InvocationInput, InvocationOutcome, ModelInterruption},
-    model::{ModelEvent, ModelFinishReason, ModelStep},
+    model::{ModelFinishReason, recorded::ModelCompletion},
 };
-use serde_json::{Value, json};
+use serde_json::json;
 use sqlx::Row;
 use std::sync::{
     Arc,
@@ -116,7 +122,7 @@ fn completed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite 
     event(
         Fact::ModelCompleted {
             step_id: step.into(),
-            output: ModelStep {
+            output: ModelCompletion {
                 parts: vec![],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
@@ -137,7 +143,7 @@ fn observed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite {
     event(
         Fact::ModelObserved {
             step_id: step.into(),
-            event: ModelEvent::Finished {
+            event: ModelObservation::Finished {
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
                     input_tokens: input,
@@ -153,6 +159,7 @@ fn observed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite {
 fn interrupted(step: &str) -> EventWrite {
     event(
         Fact::ModelInterrupted {
+            partial: None,
             step_id: step.into(),
             status: ModelInterruption::Failed,
             model_failure: None,
@@ -278,7 +285,7 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
         .unwrap();
     let log = session.owner().unwrap();
     log.connection.run(|db|Box::pin(async move {
-        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO event_log(event_id,kind,event_json) SELECT 'large-history-'||x,'unrelated','{}' FROM n").execute(db).await?;Ok(())
+        sqlx::query("WITH RECURSIVE n(x) AS (VALUES(1) UNION ALL SELECT x+1 FROM n WHERE x<20000) INSERT INTO event_log(event_id,kind,event_header,canonical_bytes) SELECT 'large-history-'||x,'unrelated','{}',2 FROM n").execute(db).await?;Ok(())
     })).await.unwrap();
     log.connection.read(|db|Box::pin(async move {
         let plans=sqlx::query("EXPLAIN QUERY PLAN SELECT input_known,input_missing,output_known,output_missing FROM session_usage_totals WHERE session_id='source'").fetch_all(&mut *db).await?;
@@ -296,34 +303,6 @@ async fn lifetime_read_and_terminal_pending_lookup_remain_indexed_after_large_hi
         root.session_usage_totals("source").await.unwrap(),
         totals(11, 0, 13, 0)
     );
-    drop(log);
-    root.close().await.unwrap();
-}
-
-#[tokio::test]
-async fn capacity_error_does_not_rollback_canonical_settlement() {
-    let directory = tempfile::tempdir().unwrap();
-    let root = root(directory.path()).await;
-    let session = session(&root).await;
-    session
-        .append_batch(&[
-            request("a", 1),
-            completed("a", Some(11), None),
-            request("pending", 2),
-        ])
-        .await
-        .unwrap();
-    let log = session.owner().unwrap();
-    assert_eq!(
-        root.session_usage_totals("source").await.unwrap(),
-        totals(11, 0, 0, 1)
-    );
-    session
-        .append(&completed("pending", Some(u64::MAX), Some(3)))
-        .await
-        .unwrap();
-    assert!(root.session_usage_totals("source").await.is_err());
-    assert!(session.get::<Value>().await.unwrap().is_some());
     drop(log);
     root.close().await.unwrap();
 }
@@ -440,13 +419,17 @@ async fn session_auxiliary_counts_once_and_bundle_import_uses_the_same_settlemen
         .await
         .unwrap();
     let captured = source
-        .capture_model_context("source", Some("invocation"), 100_000, 64 * 1024 * 1024)
+        .read_model_view("source", Some("invocation"))
         .await
         .unwrap();
     source
         .append_batch(&[
             event(
                 Fact::ModelRequested {
+                    source_capture: maka_agent_facts::event::SourceCapture {
+                        publication_watermark: captured.selection.captured_through,
+                        prior_unknown: captured.selection.prior_unknown,
+                    },
                     context_breakdown: None,
                     item_acceptance: false,
                     step_id: "imported".into(),

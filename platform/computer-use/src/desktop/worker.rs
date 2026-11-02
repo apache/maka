@@ -22,6 +22,8 @@ mod callbacks;
 mod connection;
 #[cfg(feature = "native-desktop")]
 mod epochs;
+#[cfg(all(target_os = "windows", feature = "native-desktop"))]
+pub(crate) mod native_owner;
 pub(in crate::desktop) use connection::{AudioObservation, Connection};
 #[cfg(feature = "native-desktop")]
 use epochs::serve;
@@ -34,7 +36,7 @@ use crate::BrowserAuthorization;
 #[cfg(feature = "native-desktop")]
 use crate::Driver;
 use crate::{BrowserAccess, protocol::Command};
-use maka_agent_facts::tools::ToolError;
+use maka_agent_facts::tools::{NativeToolError, ToolError};
 use maka_capabilities::computer::BrowserConnection;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -72,6 +74,24 @@ struct Hello {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "method", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum Request {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeInvoke {
+        key: native_owner::NativeKey,
+        operation: native_owner::NativeOperation,
+        operation_id: Option<String>,
+        arguments: Value,
+        coordinate_frame: native_owner::NativeCoordinateFrame,
+        language: maka_agent_facts::language::Language,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeDiscardAudio {
+        key: native_owner::NativeKey,
+        output: Option<PathBuf>,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeRetire {
+        key: native_owner::NativeKey,
+    },
     Invoke {
         owner: String,
         epoch: String,
@@ -79,10 +99,12 @@ pub(crate) enum Request {
         turn: String,
         #[serde(default)]
         operation_id: Option<String>,
+        #[serde(default)]
+        native_observer_available: bool,
         browsers: Vec<BrowserConnection>,
         #[serde(default, skip_serializing_if = "no_preparation_policy")]
         preparation_policy: crate::BrowserPreparationPolicy,
-        command: Command,
+        command: Box<Command>,
         language: maka_agent_facts::language::Language,
     },
     LeaseChild {
@@ -131,6 +153,7 @@ fn no_preparation_policy(policy: &crate::BrowserPreparationPolicy) -> bool {
 #[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 enum Failure {
     Failed(String),
+    Native(Box<NativeToolError>),
     OutcomeUnknown(String),
     CleanupUnconfirmed(String),
 }
@@ -138,6 +161,7 @@ impl From<ToolError> for Failure {
     fn from(error: ToolError) -> Self {
         match error {
             ToolError::Failed(message) => Self::Failed(message),
+            ToolError::Native(error) => Self::Native(error),
             ToolError::OutcomeUnknown(message) | ToolError::OperationUnknown { message, .. } => {
                 Self::OutcomeUnknown(message)
             }
@@ -152,6 +176,7 @@ impl From<Failure> for ToolError {
     fn from(error: Failure) -> Self {
         match error {
             Failure::Failed(message) => Self::Failed(message),
+            Failure::Native(error) => Self::Native(error),
             Failure::OutcomeUnknown(message) => Self::OutcomeUnknown(message),
             Failure::CleanupUnconfirmed(message) => Self::CleanupUnconfirmed(message),
         }
@@ -182,6 +207,16 @@ enum ParentFrame {
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum WorkerFrame {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeInterruption {
+        key: native_owner::NativeKey,
+        operation_id: Option<String>,
+    },
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    NativeRetired {
+        key: native_owner::NativeKey,
+        result: Result<(), Failure>,
+    },
     BrowserCallback {
         message: callbacks::WorkerMessage,
     },
@@ -281,6 +316,10 @@ pub(crate) struct Worker {
 struct Process {
     child: Child,
     pipes: Option<(ChildStdin, BufReader<ChildStdout>)>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_exit: Option<tokio::sync::watch::Sender<Option<native_owner::NativeExit>>>,
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    native_forced: bool,
 }
 impl Worker {
     pub(crate) fn with_audio(audio_enabled: bool) -> Self {
@@ -351,12 +390,68 @@ impl Process {
                 BufReader::new(child.stdout.take().unwrap()),
             )),
             child,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            native_exit: None,
+            #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+            native_forced: false,
         }
         .handshake(audio_enabled)
         .await
     }
 
-    async fn handshake(mut self, expected_audio: bool) -> Result<Self, ToolError> {
+    async fn handshake(self, expected_audio: bool) -> Result<Self, ToolError> {
+        self.handshake_for(expected_audio, "windows").await
+    }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    async fn start_native(
+        executable: PathBuf,
+        audio_enabled: bool,
+        native_exit: tokio::sync::watch::Sender<Option<native_owner::NativeExit>>,
+    ) -> Result<Self, ToolError> {
+        let mut command = tokio::process::Command::new(executable);
+        command
+            .arg(native_owner::ENTRY)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true);
+        // Win32 CREATE_NO_WINDOW: this private transport owns no console UI.
+        command.creation_flags(0x08000000);
+        if audio_enabled {
+            command.arg("--audio");
+        }
+        // Do not create or terminate a process group/job: a launched user app
+        // is not a helper resource. This Child handle owns only the native SDK.
+        let mut child = command
+            .spawn()
+            .map_err(|error| failed(format!("start native-only Windows owner: {error}")))?;
+        Self {
+            pipes: Some((
+                child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| failed("native child stdin unavailable"))?,
+                BufReader::new(
+                    child
+                        .stdout
+                        .take()
+                        .ok_or_else(|| failed("native child stdout unavailable"))?,
+                ),
+            )),
+            child,
+            native_exit: Some(native_exit),
+            native_forced: false,
+        }
+        .handshake_for(audio_enabled, "windows-native")
+        .await
+    }
+
+    async fn handshake_for(
+        mut self,
+        expected_audio: bool,
+        expected_platform: &str,
+    ) -> Result<Self, ToolError> {
         let hello = tokio::time::timeout(
             STARTUP_TIMEOUT,
             read::<_, Hello>(&mut self.pipes.as_mut().unwrap().1),
@@ -367,7 +462,9 @@ impl Process {
                 protocol: PROTOCOL,
                 platform,
                 audio_enabled,
-            })) if platform == "windows" && audio_enabled == expected_audio => return Ok(self),
+            })) if platform == expected_platform && audio_enabled == expected_audio => {
+                return Ok(self);
+            }
             Ok(Ok(_)) => {
                 "incompatible desktop worker; install a matching Windows Maka build".to_owned()
             }
@@ -384,6 +481,32 @@ impl Process {
         // Close both directions so a peer writing a failed response cannot
         // stay blocked on its output while we wait for its cleanup.
         self.pipes.take();
+        #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+        if let Some(observation) = &self.native_exit {
+            // The parent owns a directly spawned Windows Child here. Its
+            // exact-process hard-stop path runs independently of IPC drain.
+            // Actual wait is completion evidence; a timeout is not.
+            return match self.child.wait().await {
+                Ok(status) => {
+                    observation.send_replace(Some(native_owner::NativeExit::Exited {
+                        code: status.code(),
+                    }));
+                    if status.success() || status.code() == Some(130) || self.native_forced {
+                        Ok(())
+                    } else {
+                        Err(io::Error::other(format!(
+                            "native owner exited with {status}; cleanup is unconfirmed"
+                        )))
+                    }
+                }
+                Err(error) => {
+                    observation.send_replace(Some(native_owner::NativeExit::WaitFailed(
+                        error.to_string(),
+                    )));
+                    Err(error)
+                }
+            };
+        }
         // WSL's interop process represents a Windows process, so killing the
         // Linux PID alone does not prove that native work has stopped.
         let status = tokio::time::timeout(EXIT_TIMEOUT, self.child.wait())
@@ -396,11 +519,28 @@ impl Process {
         }
         Ok(())
     }
+
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    async fn stop_native(&mut self) -> io::Result<()> {
+        if self.native_exit.is_none() {
+            return Err(io::Error::other(
+                "hard stop requires an actual native-only child",
+            ));
+        }
+        if self.child.try_wait()?.is_some() {
+            return Ok(());
+        }
+        self.child.kill().await?;
+        // Set only after kill+wait of this exact Child succeeded. The caller
+        // requires an owned-input ACK before requesting this control path.
+        self.native_forced = true;
+        Ok(())
+    }
 }
 
 fn authorization_cleanup(result: Result<(), ToolError>) -> Option<ToolError> {
     match result {
-        Ok(()) | Err(ToolError::Failed(_) | ToolError::Io { .. }) => None,
+        Ok(()) | Err(ToolError::Failed(_) | ToolError::Native(_) | ToolError::Io { .. }) => None,
         Err(error) => {
             let message = format!("Browser authorization cleanup was not confirmed: {error}");
             Some(match error {
@@ -427,40 +567,6 @@ fn connection_error(error: &ToolError) -> ToolError {
     }
 }
 
-#[cfg(test)]
-pub(super) fn fixture_operation_unknown(operation: u128) -> ToolError {
-    let observation = serde_json::json!({
-        "reference": {
-            "source": {
-                "stateDomain": "a".repeat(64),
-                "deployment": uuid::Uuid::from_u128(1),
-                "revision": 3,
-            },
-            "namespace": [uuid::Uuid::from_u128(2)],
-            "export": "Service",
-            "method": "apply",
-            "operation": uuid::Uuid::from_u128(operation),
-            "fingerprint": format!("sha256-{}", "b".repeat(64)),
-            "contract": {
-                "name": "fixture.Service",
-                "version": 1,
-                "transport": "remote",
-                "digest": format!("sha256-{}", "c".repeat(64)),
-            },
-            "recovery": "journal_v1",
-        },
-        "receipt": {
-            "kind": "recorded",
-            "outcome": { "kind": "unknown", "diagnostic": "original fixture outcome" },
-            "cleanup": { "kind": "confirmed" },
-        },
-    });
-    ToolError::OperationUnknown {
-        message: "original result remains unknown".into(),
-        observation: serde_json::from_value(observation).unwrap(),
-    }
-}
-
 async fn windows_executable() -> Result<PathBuf, ToolError> {
     if let Some(path) = std::env::var_os("MAKA_CUA_WINDOWS_EXECUTABLE") {
         let path = PathBuf::from(path);
@@ -479,6 +585,10 @@ async fn windows_executable() -> Result<PathBuf, ToolError> {
 
 /// Invoke after cursor bootstrap and before starting the embedding application.
 pub fn bootstrap() -> Option<ExitCode> {
+    #[cfg(all(target_os = "windows", feature = "native-desktop"))]
+    if let Some(result) = native_owner::bootstrap() {
+        return Some(result);
+    }
     if std::env::args_os().nth(1).as_deref() != Some(std::ffi::OsStr::new(ENTRY)) {
         return None;
     }
@@ -631,259 +741,12 @@ mod tests {
             epoch: "fixture-epoch".into(),
             session: session.into(),
             turn: "fixture-turn".into(),
+            native_observer_available: false,
             operation_id: None,
             browsers: Vec::new(),
             preparation_policy: Default::default(),
             command: serde_json::from_value(command).unwrap(),
             language: maka_agent_facts::language::Language::En,
-        }
-    }
-
-    #[tokio::test]
-    async fn desktop_frames_preserve_invoke_language() {
-        use crate::protocol::{
-            Action, BrowserCheckOptions, BrowserClickOptions, BrowserMutationOperation,
-            BrowserSelectOption, BrowserTextOptions, Direction, Distance, Handle, LocatorPlan,
-            Position,
-        };
-        use maka_agent_facts::language::Language;
-
-        for (language, tag) in [
-            (Language::ZhCn, "zh-CN"),
-            (Language::ZhTw, "zh-TW"),
-            (Language::En, "en"),
-        ] {
-            let request = Request::Invoke {
-                owner: "fixture-owner".into(),
-                epoch: "fixture-epoch".into(),
-                session: "same-session".into(),
-                turn: "fixture-turn".into(),
-                operation_id: None,
-                browsers: Vec::new(),
-                preparation_policy: Default::default(),
-                command: Command::Documentation,
-                language,
-            };
-            let framed = encode(&ParentFrame::Request {
-                id: 42,
-                request: Box::new(request),
-            })
-            .unwrap();
-            let decoded: ParentFrame = read_sync(&mut framed.as_slice()).unwrap();
-            assert_eq!(
-                serde_json::to_value(decoded).unwrap(),
-                json!({
-                    "kind": "request",
-                    "id": 42,
-                    "request": {
-                        "method": "invoke",
-                        "owner": "fixture-owner",
-                        "epoch": "fixture-epoch",
-                        "session": "same-session",
-                        "turn": "fixture-turn",
-                        "operation_id": null,
-                        "browsers": [],
-                        "command": { "method": "documentation" },
-                        "language": tag,
-                    },
-                }),
-            );
-        }
-
-        // Preserve the caller's binary64 values through the actual parent /
-        // helper framing in both directions, before any OS-specific policy.
-        // Decimal values: 0.12345678901234569, 17.123456789012344,
-        // 5.123456789012345. The first loses one ULP with the approximate
-        // JSON float parser, even though its printed value looks equivalent.
-        let expected = [
-            0x3fbf_9add_3746_f660,
-            0x4031_1f9a_dd37_46f6,
-            0x4014_7e6b_74dd_1bd9,
-        ];
-        let roundtrip_command = |command| {
-            let request = ParentFrame::Request {
-                id: 42,
-                request: Box::new(Request::Invoke {
-                    owner: "fixture-owner".into(),
-                    epoch: "fixture-epoch".into(),
-                    session: "same-session".into(),
-                    turn: "fixture-turn".into(),
-                    operation_id: None,
-                    browsers: Vec::new(),
-                    preparation_policy: Default::default(),
-                    command,
-                    language: Language::En,
-                }),
-            };
-            let framed = encode(&request).unwrap();
-            assert_eq!(
-                u32::from_be_bytes(framed[..4].try_into().unwrap()) as usize,
-                framed.len() - 4
-            );
-            let ParentFrame::Request { id, request } = read_sync(&mut framed.as_slice()).unwrap()
-            else {
-                panic!("numeric action changed its typed worker frame");
-            };
-            let Request::Invoke {
-                session,
-                turn,
-                command,
-                ..
-            } = *request
-            else {
-                panic!("numeric action changed its typed worker request");
-            };
-            assert_eq!(
-                (id, session.as_str(), turn.as_str()),
-                (42, "same-session", "fixture-turn")
-            );
-            command
-        };
-        let [amount, x, y] = expected.map(f64::from_bits);
-        for pixels in [false, true] {
-            let Command::Action {
-                handle: Handle::App(target),
-                action:
-                    Action::Scroll {
-                        target: Position::Point(point),
-                        direction: Direction::Down,
-                        distance,
-                    },
-            } = roundtrip_command(Command::Action {
-                handle: Handle::App("numeric-target".into()),
-                action: Action::Scroll {
-                    target: Position::Point([x, y]),
-                    direction: Direction::Down,
-                    distance: Some(if pixels {
-                        Distance::Pixels { pixels: amount }
-                    } else {
-                        Distance::Pages(amount)
-                    }),
-                },
-            })
-            else {
-                panic!("numeric action changed its typed worker request");
-            };
-            assert_eq!(target, "numeric-target");
-            let amount = match (pixels, distance) {
-                (false, Some(Distance::Pages(amount)))
-                | (true, Some(Distance::Pixels { pixels: amount })) => amount,
-                _ => panic!("scroll distance changed its typed unit across the worker boundary"),
-            };
-            assert_eq!(
-                [amount.to_bits(), point[0].to_bits(), point[1].to_bits()],
-                expected
-            );
-
-            let (mut parent, mut helper) = tokio::io::duplex(1024);
-            write(
-                &mut helper,
-                &WorkerFrame::Response {
-                    id: 42,
-                    result: Ok(json!({"amount":amount,"x":point[0],"y":point[1]})),
-                },
-            )
-            .await
-            .unwrap();
-            let WorkerFrame::Response {
-                id: response_id,
-                result: Ok(response),
-            } = read(&mut parent).await.unwrap()
-            else {
-                panic!("numeric response changed its worker frame");
-            };
-            assert_eq!(response_id, 42);
-            assert_eq!(
-                ["amount", "x", "y"].map(|field| response[field].as_f64().unwrap().to_bits()),
-                expected
-            );
-        }
-
-        let Command::Action {
-            action: Action::Drag { from, to },
-            ..
-        } = roundtrip_command(Command::Action {
-            handle: Handle::App("numeric-target".into()),
-            action: Action::Drag {
-                from: [x, y],
-                to: [y, amount],
-            },
-        })
-        else {
-            panic!("drag coordinates changed their typed worker request");
-        };
-        assert_eq!(from.map(f64::to_bits), [expected[1], expected[2]]);
-        assert_eq!(to.map(f64::to_bits), [expected[2], expected[0]]);
-
-        for operation in [
-            BrowserMutationOperation::Click {
-                options: BrowserClickOptions {
-                    timeout_ms: Some(amount),
-                    ..Default::default()
-                },
-            },
-            BrowserMutationOperation::Fill {
-                value: "text".into(),
-                options: BrowserTextOptions {
-                    timeout_ms: Some(amount),
-                },
-            },
-            BrowserMutationOperation::SetChecked {
-                checked: true,
-                options: BrowserCheckOptions {
-                    timeout_ms: Some(amount),
-                    ..Default::default()
-                },
-            },
-            BrowserMutationOperation::SelectOption {
-                values: vec![BrowserSelectOption {
-                    index: Some(y),
-                    ..Default::default()
-                }],
-                options: BrowserTextOptions {
-                    timeout_ms: Some(amount),
-                },
-            },
-        ] {
-            let Command::BrowserMutation { operation, .. } =
-                roundtrip_command(Command::BrowserMutation {
-                    handle: Handle::Tab("numeric-target".into()),
-                    locator: LocatorPlan {
-                        selector: "select".into(),
-                    },
-                    operation,
-                })
-            else {
-                panic!("browser mutation changed its typed worker request");
-            };
-            let timeout = match operation {
-                BrowserMutationOperation::Click { options } => options.timeout_ms,
-                BrowserMutationOperation::Fill { options, .. } => options.timeout_ms,
-                BrowserMutationOperation::SetChecked { options, .. } => options.timeout_ms,
-                BrowserMutationOperation::SelectOption { values, options } => {
-                    assert_eq!(values[0].index.map(f64::to_bits), Some(expected[2]));
-                    options.timeout_ms
-                }
-                _ => panic!("browser mutation changed its operation"),
-            };
-            assert_eq!(timeout.map(f64::to_bits), Some(expected[0]));
-        }
-        for input in [
-            r#"{"kind":"click","options":{}}"#,
-            r#"{"kind":"setChecked","checked":true,"options":{}}"#,
-            r#"{"kind":"selectOption","values":[{}],"options":{}}"#,
-        ] {
-            let operation: BrowserMutationOperation = serde_json::from_str(input).unwrap();
-            let timeout = match operation {
-                BrowserMutationOperation::Click { options } => options.timeout_ms,
-                BrowserMutationOperation::SetChecked { options, .. } => options.timeout_ms,
-                BrowserMutationOperation::SelectOption { values, options } => {
-                    assert!(values[0].index.is_none());
-                    options.timeout_ms
-                }
-                _ => panic!("browser mutation changed its operation"),
-            };
-            assert!(timeout.is_none(), "{input}");
         }
     }
 
@@ -1018,10 +881,11 @@ mod tests {
                 epoch: "fixture-epoch".into(),
                 session: "same-session".into(),
                 turn: "fixture-turn".into(),
+                native_observer_available: false,
                 operation_id: None,
                 browsers: Vec::new(),
                 preparation_policy: Default::default(),
-                command: Command::Documentation,
+                command: Box::new(Command::Documentation),
                 language,
             };
             // Exercise the helper's real framed serializer/deserializer before

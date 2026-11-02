@@ -40,8 +40,11 @@ fn finish(host: &Host) {
 }
 #[test]
 fn websocket_denies_network_before_connecting() {
+    // As a browser's refused connection: no throw, then `error` and `close`.
     let host = host(false);
-    host.eval_source("let denied = false; try { new WebSocket('ws://127.0.0.1:9/'); } catch (e) { denied = /capability denied/.test(String(e)); } if (!denied) throw Error('network access escaped');").unwrap();
+    host.eval_source("globalThis.events = []; const ws = new WebSocket('ws://127.0.0.1:9/'); ws.onerror = (e) => events.push(e.type, /capabilities.network/.test(e.message)); ws.onclose = (e) => { events.push(e.code, e.wasClean, ws.readyState); globalThis.wsDone = true; };").unwrap();
+    finish(&host);
+    host.eval_source("if (JSON.stringify(events) !== '[\"error\",true,1006,false,3]') throw Error(JSON.stringify(events));").unwrap();
 }
 #[test]
 // Tungstenite fixes the callback error type to an HTTP response.

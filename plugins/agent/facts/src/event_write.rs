@@ -25,7 +25,8 @@ use std::{sync::Arc, time::SystemTime};
 /// One checked transaction submission: successful facts cannot omit their bytes.
 #[derive(Clone, Debug)]
 pub struct EventWrite {
-    composition: Option<Arc<crate::composition::FrozenComposition>>,
+    retry_consumption: Option<crate::model_retry::ModelRetryConsumption>,
+    composition: Option<crate::composition::CompositionEvidence>,
     quote: Option<crate::pricing::Quote>,
     event: Arc<RuntimeEvent>,
     raw_payload: Option<Arc<[u8]>>,
@@ -61,13 +62,57 @@ impl ProjectionArtifactWrite {
 }
 
 impl EventWrite {
+    /// Carry exact retry ownership into the request's atomic append.
+    pub fn with_model_retry_consumption(
+        mut self,
+        evidence: crate::model_retry::ModelRetryConsumption,
+    ) -> Result<Self, CommitError> {
+        if !matches!(self.event.fact, Fact::ModelRequested { .. })
+            || evidence.checkpoint_id.is_empty()
+        {
+            return Err(CommitError::Rejected(
+                "retry consumption requires a model request and checkpoint identity".into(),
+            ));
+        }
+        self.retry_consumption = Some(evidence);
+        Ok(self)
+    }
+
+    pub fn model_retry_consumption(&self) -> Option<&crate::model_retry::ModelRetryConsumption> {
+        self.retry_consumption.as_ref()
+    }
+
     pub fn plain(event: RuntimeEvent) -> Result<Self, CommitError> {
         match &event.fact {
             Fact::ModelCompleted { output, .. } => {
                 let mut ids = std::collections::HashSet::new();
-                for call in output.tool_calls() {
-                    if !ids.insert(call.id.as_str()) {
-                        return Err(CommitError::Rejected("duplicate tool call".into()));
+                let mut ordinals = std::collections::HashSet::new();
+                for part in &output.parts {
+                    let ordinal = match part {
+                        crate::model::recorded::CompletionPart::Own(record) => {
+                            if record.message_id.is_empty() {
+                                return Err(CommitError::Rejected(
+                                    "empty model message identity".into(),
+                                ));
+                            }
+                            if let crate::model::ModelPart::ToolCall { call } = record.part.as_ref()
+                                && !ids.insert(call.id.as_str())
+                            {
+                                return Err(CommitError::Rejected("duplicate tool call".into()));
+                            }
+                            record.ordinal
+                        }
+                        crate::model::recorded::CompletionPart::Ref(reference) => {
+                            if reference.event_id.is_empty() {
+                                return Err(CommitError::Rejected(
+                                    "empty model part reference".into(),
+                                ));
+                            }
+                            reference.ordinal
+                        }
+                    };
+                    if !ordinals.insert(ordinal) {
+                        return Err(CommitError::Rejected("duplicate model part ordinal".into()));
                     }
                 }
             }
@@ -226,6 +271,7 @@ impl EventWrite {
             ));
         }
         Ok(Self {
+            retry_consumption: None,
             composition: None,
             quote: None,
             event: Arc::new(event),
@@ -254,6 +300,7 @@ impl EventWrite {
         };
         Ok((
             Self {
+                retry_consumption: None,
                 composition: None,
                 quote: None,
                 event: Arc::new(RuntimeEvent {
@@ -289,18 +336,18 @@ impl EventWrite {
     }
     pub fn with_composition(
         mut self,
-        composition: Arc<crate::composition::FrozenComposition>,
+        composition: impl Into<crate::composition::CompositionEvidence>,
     ) -> Result<Self, CommitError> {
         if !matches!(self.event.fact, Fact::ModelRequested { .. }) {
             return Err(CommitError::Rejected(
                 "request composition requires a model request".into(),
             ));
         }
-        self.composition = Some(composition);
+        self.composition = Some(composition.into());
         Ok(self)
     }
-    pub fn composition(&self) -> Option<&crate::composition::FrozenComposition> {
-        self.composition.as_deref()
+    pub fn composition(&self) -> Option<&crate::composition::CompositionEvidence> {
+        self.composition.as_ref()
     }
     pub fn with_quote(mut self, quote: crate::pricing::Quote) -> Result<Self, CommitError> {
         let Fact::ModelRequested { model_id, .. } = &self.event.fact else {
@@ -322,83 +369,5 @@ impl EventWrite {
     }
     pub fn projection_artifacts(&self) -> &[ProjectionArtifactWrite] {
         &self.projection_artifacts
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::{ModelFinishReason, ModelPart, ModelStep, ModelToolCall};
-    use serde_json::json;
-
-    fn call(id: &str, name: &str, provider_executed: bool) -> ModelPart {
-        ModelPart::ToolCall {
-            call: ModelToolCall {
-                id: id.into(),
-                name: name.into(),
-                input: json!({"path":"file"}).into(),
-                provider_options: None,
-                provider_executed,
-            },
-        }
-    }
-
-    fn completion(parts: Vec<ModelPart>) -> RuntimeEvent {
-        RuntimeEvent::new(
-            Invocation {
-                session_id: "session".into(),
-                turn_id: "turn".into(),
-                run_id: "run".into(),
-                invocation_id: "invocation".into(),
-            },
-            Fact::ModelCompleted {
-                step_id: "step".into(),
-                output: ModelStep {
-                    parts,
-                    finish_reason: ModelFinishReason::ToolCalls,
-                    usage: Default::default(),
-                    provider_options: None,
-                    response_id: None,
-                    model: None,
-                    timestamp: None,
-                },
-            },
-        )
-    }
-
-    #[test]
-    fn completion_rejects_duplicate_tool_call_ids_before_submission() {
-        for (first_provider, second_provider, second_name) in [
-            (false, false, "Read"),
-            (false, false, "DifferentTool"),
-            (true, false, "Read"),
-            (false, true, "Read"),
-        ] {
-            let event = completion(vec![
-                call("same-id", "Read", first_provider),
-                call("same-id", second_name, second_provider),
-            ]);
-            assert!(
-                matches!(EventWrite::plain(event), Err(CommitError::Rejected(_))),
-                "duplicate ID formed a submission: {first_provider}/{second_provider}/{second_name}"
-            );
-        }
-    }
-
-    #[test]
-    fn completion_accepts_provider_result_id_reuse_with_distinct_local_call() {
-        let event = completion(vec![
-            call("provider-call", "Read", true),
-            ModelPart::ToolResult {
-                id: "provider-call".into(),
-                name: "Read".into(),
-                output: json!({"content":"provider result"}),
-                is_error: false,
-                provider_options: None,
-            },
-            call("local-call", "Read", false),
-        ]);
-        let submitted = EventWrite::plain(event.clone()).unwrap();
-        assert_eq!(submitted.into_event(), event);
     }
 }

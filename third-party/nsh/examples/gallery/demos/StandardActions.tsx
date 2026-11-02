@@ -114,7 +114,7 @@ export function StandardActions() {
     return <Action name="Request host exit" detail="process.exit(0) · Gallery keeps this demo open by denying exit requests" action={async () => {
       try { process.exit(0); }
       catch (error) {
-        if (!(error instanceof TypeError) || !error.message.includes("process.exit() is not granted")) throw error;
+        if (!(error instanceof Error) || !("code" in error) || error.code !== "ERR_ACCESS_DENIED") throw error;
         return "Exit request blocked by Gallery policy. You can continue exploring.";
       }
       return "Exit requested from the host";

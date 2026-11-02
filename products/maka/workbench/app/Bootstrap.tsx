@@ -23,8 +23,12 @@ import { createPlugins } from './plugins/registry';
 import { PluginInstances, renderContribution } from './plugins/RuntimeView';
 import { errorText, renderText } from './text';
 import { tr } from './locale';
+import { initializeAppearance } from './appearance';
+import { C } from './ui';
+import { LoadingState } from './Loading';
 
 function Bootstrap() {
+  initializeAppearance();
   const plugins = createPlugins();
   return (
     <View style={{ flex: 1, minHeight: 0 }}>
@@ -42,23 +46,27 @@ function Bootstrap() {
             gap: 12,
             padding: 16,
             justifyContent: 'center',
-            backgroundColor: '#171717',
+            alignItems: 'center',
+            backgroundColor: C.background,
           }}
         >
-          <Text style={{ fontSize: 14, lineHeight: 20, color: '#e5e7eb' }}>
-            {plugins.runtime.updateError() !== null
-              ? renderText(errorText(plugins.runtime.updateError()))
-              : plugins.runtime.ready()
-                ? tr('This deployment has no root UI selected.')
-                : tr('Loading…')}
-          </Text>
+          <If when={plugins.runtime.updateError() === null && !plugins.runtime.ready()}>
+            <LoadingState />
+          </If>
+          <If when={plugins.runtime.updateError() !== null || plugins.runtime.ready()}>
+            <Text style={{ fontSize: 14, lineHeight: 20, color: C.secondary }}>
+              {plugins.runtime.updateError() !== null
+                ? renderText(errorText(plugins.runtime.updateError()))
+                : tr('This deployment has no root UI selected.')}
+            </Text>
+          </If>
           <If when={plugins.runtime.updateError() !== null}>
             <Button
               accessibilityLabel={tr('Retry')}
               onPress={plugins.runtime.retryUpdates}
               style={{ padding: 8 }}
             >
-              <Text style={{ color: '#60a5fa' }}>{tr('Retry')}</Text>
+              <Text style={{ color: C.accent }}>{tr('Retry')}</Text>
             </Button>
           </If>
         </View>

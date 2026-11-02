@@ -187,38 +187,39 @@ impl Client {
     }
     /// Open inert custody for one exact captured endpoint. A caller retains this
     /// Call through errors; reconnection never retries an unconfirmed mutation.
-    pub async fn call(
+    pub fn call(
         &self,
         endpoint: &str,
         method: String,
         input: Value,
         resources: Attachments,
-    ) -> Result<LocalCall> {
-        if self.peer.is_some() {
-            return Err("UI peer calls require the original checked caller and journal".into());
-        }
-        let selection = self.connected.catalogue.select(endpoint)?;
-        let consumer = self
-            .connected
-            .consumers
-            .get(endpoint)
-            .ok_or("Host endpoint missing")?
-            .clone();
-        let (reader, output) = tokio::io::split(self.open_call_channel().await?);
-        Ok(Call::new(
-            reader,
-            output,
-            selection,
-            Source {
+    ) -> futures_util::future::BoxFuture<'static, Result<LocalCall>> {
+        let captured: Result<_> = (|| {
+            if self.peer.is_some() {
+                return Err("UI peer calls require the original checked caller and journal".into());
+            }
+            let selection = self.connected.catalogue.select(endpoint)?;
+            let consumer = self
+                .connected
+                .consumers
+                .get(endpoint)
+                .ok_or("Host endpoint missing")?
+                .clone();
+            let source = Source {
                 deployment: self.connected.source.clone(),
                 consumer,
                 mount: self.connected.session,
                 request: Uuid::new_v4(),
-            },
-            method,
-            input,
-            resources,
-        ))
+            };
+            Ok((self.call_channel_opener()?, selection, source))
+        })();
+        Box::pin(async move {
+            let (opener, selection, source) = captured?;
+            let (reader, output) = tokio::io::split(opener.open().await?);
+            Ok(Call::new(
+                reader, output, selection, source, method, input, resources,
+            ))
+        })
     }
     /// Establish only the authenticated session channel. The native adapter retains
     /// its original checked Source, Call and caller-side RecordedIntent.

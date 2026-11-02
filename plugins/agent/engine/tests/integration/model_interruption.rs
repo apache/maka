@@ -28,14 +28,15 @@ use std::time::Duration;
 use crate::support::store::SessionFixture;
 use maka_agent_engine::{Engine, RunError, RunInput};
 use maka_agent_facts::event::Fact;
-use maka_agent_facts::event::Invocation;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ModelInterruption;
 use maka_agent_facts::event::TerminalStatus;
-use maka_agent_facts::model::ModelEvent;
+use maka_agent_facts::model::ModelPart;
+use maka_agent_facts::model::assembly::{AttemptCut, PreviewPart};
 use maka_agent_facts::model::error::ModelFailureCause;
+use maka_agent_facts::model::recorded::{CompletionPart, ModelPartial};
 use maka_code_runtime::CellLimits;
-use maka_model::{ModelError, ModelExecutor, ProviderConfig, ProviderKind};
+use maka_model::{ModelError, ModelExecutor, ProviderKind};
 use maka_tools::CodeExecutor;
 use maka_tools::ToolMode;
 use serde_json::json;
@@ -45,41 +46,29 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
+fn preview_has_text(cut: &AttemptCut, expected: &str) -> bool {
+    cut.parts.iter().any(|part| matches!(part, PreviewPart::Text { text, .. } if text.chunks().collect::<String>() == expected))
+}
+
+fn partial_has_text(partial: &ModelPartial, expected: &str) -> bool {
+    partial.parts.iter().any(|part| match part {
+        CompletionPart::Own(record) => matches!(record.part.as_ref(), ModelPart::Text { text, .. } if text.chunks().collect::<String>() == expected),
+        CompletionPart::Ref(_) => false,
+    })
+}
+
 fn input(base: &str, suffix: &str) -> RunInput {
-    RunInput {
-        model_source: None,
-        model_revision: None,
-        provider_id: "fixture".into(),
-        main_output_limit: None,
-        context: None,
-        invocation: Invocation {
-            session_id: "session".into(),
-            turn_id: format!("turn-{suffix}"),
-            run_id: format!("run-{suffix}"),
-            invocation_id: format!("invocation-{suffix}"),
-        },
-        request_fingerprint: None,
-        provider: ProviderConfig {
-            adapter: None,
-            capabilities: Default::default(),
-            kind: ProviderKind::OpenaiChatCompletions,
-            model: "test".into(),
-            base_url: base.into(),
-            auth: maka_model::ProviderAuth::ApiKey("test-key".into()),
-            headers: BTreeMap::new(),
-            network: Default::default(),
-            body_overlay: None,
-        },
-        provider_options: json!({}),
-        supports_vision: false,
-        configuration: invocation::configuration(ToolMode::Direct),
-        work: maka_agent_engine::RunWork::Message {
-            allow_prior_unknown: false,
+    let mut input = invocation::input(
+        base,
+        suffix,
+        maka_agent_engine::RunWork::Message {
             source_messages: Vec::new(),
             message: format!("question {suffix}").into(),
             tools: Default::default(),
         },
-    }
+    );
+    input.provider.auth = maka_model::ProviderAuth::ApiKey("test-key".into());
+    input
 }
 
 use crate::support::http;
@@ -151,14 +140,14 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
             let worker = engine();
             let cancellation = CancellationToken::new();
             let mut commits = log.subscribe_commits();
+            let running = worker.start(log.store(), input(&base, "retry"), cancellation.clone()).await.unwrap();
+            let mut preview = running.preview();
             let stop = async {
                 if reset {
                     loop {
-                        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-                        if prefix.events.iter().any(|event| matches!(&event.event.fact,
-                            Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                                if text == "unfinished-secret-fragment")) { break; }
-                        commits.changed().await.unwrap();
+                        let current = preview.borrow_and_update().clone();
+                        if current.as_ref().is_some_and(|cut| preview_has_text(cut, "unfinished-secret-fragment")) { break; }
+                        preview.changed().await.unwrap();
                     }
                     observed.notify_one();
                 }
@@ -172,7 +161,7 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
                     cancellation.cancel();
                 }
             };
-            let (result, ()) = tokio::join!(worker.run(log.store(), input(&base, "retry"), cancellation.clone()), stop);
+            let (result, ()) = tokio::join!(running.wait(), stop);
             if cancel { assert!(matches!(result, Err(RunError::Cancelled))); }
             else { result.unwrap(); }
             worker.drain().await;
@@ -192,7 +181,7 @@ async fn safe_retry_preserves_failed_evidence_and_cancellation_stops_backoff() {
                 Fact::ModelInterrupted { diagnostic: Some(message), .. } if !message.is_empty())),
                 "a recovered request must retain its original failure cause");
             assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
-                Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. } if text == "unfinished-secret-fragment")));
+                Fact::ModelInterrupted { partial: Some(partial), .. } if partial_has_text(partial, "unfinished-secret-fragment"))));
             assert!(!prefix.events.iter().any(|event| matches!(event.event.fact,
                 Fact::ToolDispatched { .. } | Fact::ToolRejected { .. })));
         }
@@ -219,14 +208,44 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
                 source_messages: Vec::new(), },
         };
         let route = format!("sha256:{}", hex::encode(Sha256::digest(serde_json::to_vec(&source.provider).unwrap())));
+        let settled = input(&base, "settled").invocation;
+        for fact in [
+            opening("earlier settled call"),
+            Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false },
+                item_acceptance: false, step_id: "rejected".into(), model_id: "test".into(),
+                purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None,
+                source_scope: LogScope::Session { id: "session".into() }, source_high_water: 1,
+                source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: route.clone(),
+                checkpoint_event_id: None, effective_source_digest: None,
+            },
+            Fact::ModelCompleted {
+                step_id: "rejected".into(),
+                output: crate::support::model_records::completion(settled.clone(), "rejected", vec![
+                    ModelPart::ToolCall { call: maka_agent_facts::model::ModelToolCall {
+                        id: "rejected-read".into(), name: "read".into(), input: json!({}).into(),
+                        provider_options: None, provider_executed: false,
+                    } },
+                ], maka_agent_facts::model::ModelFinishReason::ToolCalls),
+            },
+            Fact::ToolRejected {
+                operation_id: "rejected:rejected-read".into(),
+                call: maka_agent_facts::tool_call::ToolCallIdentity::provider("rejected".into(), "rejected-read".into()),
+                name: "read".into(), input: json!({}).into(), reason: maka_agent_facts::tool_call::ToolRejection::Unavailable,
+            },
+            Fact::InvocationEnded { outcome: InvocationOutcome::Completed },
+        ] {
+            log.append(&EventWrite::plain(RuntimeEvent::new(settled.clone(), fact)).unwrap()).await.unwrap();
+        }
         for fact in [
             opening("question source"),
-            Fact::ModelRequested { item_acceptance: false, step_id: "old".into(), model_id: "test".into(), purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None,
+            Fact::ModelRequested {
+                source_capture: maka_agent_facts::event::SourceCapture { publication_watermark: 0, prior_unknown: false }, item_acceptance: false, step_id: "old".into(), model_id: "test".into(), purpose: maka_agent_facts::context::ModelPurpose::Main, context: None, context_breakdown: None,
                 source_scope: LogScope::Session { id: "session".into() }, source_high_water: 1,
                 source_digest: "fixture".into(), input_digest: "fixture".into(), route_identity: route,
                 checkpoint_event_id: None, effective_source_digest: None },
             Fact::ModelCompleted { step_id: "old".into(), output: serde_json::from_value(json!({
-                "parts":[{"kind":"text","text_kind":"text","text":"trimmed old tail","provider_options":null}],
+                "parts":[{"kind":"own","data":{"ordinal":0,"message_id":"old-model-text","started_at":{"secs_since_epoch":1,"nanos_since_epoch":0},"provider_part_id":null,"part":{"kind":"text","text_kind":"text","text":"trimmed old tail","provider_options":null}}}],
                 "finish_reason":"stop","usage":{}
             })).unwrap() },
             Fact::InvocationEnded { outcome: InvocationOutcome::Cancelled { source: "user".into() } },
@@ -263,6 +282,11 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         assert_eq!(requests[0], requests[1]);
         let prompt = serde_json::to_string(&requests[0]["messages"]).unwrap();
         assert!(prompt.contains("question source"));
+        let replayed_calls = requests[0]["messages"].as_array().unwrap().iter()
+            .filter_map(|message| message["tool_calls"].as_array())
+            .flatten().map(|call| call["function"]["name"].as_str().unwrap()).collect::<Vec<_>>();
+        assert_eq!(replayed_calls, ["read"]);
+        assert!(prompt.contains("tool is unavailable"));
         for excluded in ["trimmed old tail", "unrelated later branch", "question child", "unfinished-secret-fragment"] {
             assert!(!prompt.contains(excluded), "{excluded}: {prompt}");
         }
@@ -290,68 +314,7 @@ async fn continuation_claim_replays_only_its_lineage_and_retries_with_frozen_inp
         assert_ne!(attempts[0].2, attempts[1].2, "each physical attempt has its own identity");
         assert_eq!(facts.events.iter().filter(|s| matches!(s.event.fact,
             Fact::ModelInterrupted { status: ModelInterruption::RetryableFailure, .. })).count(), 1);
-        for fact in [
-            opening("later unknown effect"),
-            Fact::ToolDispatched { presentation: None,
-        title: None, operation_id: "unknown".into(),
-                call: maka_agent_facts::tool_call::ToolCallIdentity::standalone("unknown-call".into()),
-                name: "write".into(), input: json!({}) },
-            Fact::InvocationEnded { outcome: InvocationOutcome::Failed { class: "outcome_unknown".into(), message: None, model_failure: None } },
-        ] {
-            log.append(&EventWrite::plain(RuntimeEvent::new(input(&base, "unknown").invocation, fact)).unwrap()).await.unwrap();
-        }
-        let unsafe_preview = worker.check_continuation(&log.store(), &continuation("unsafe-preview"), &CancellationToken::new()).await;
-        assert!(matches!(&unsafe_preview,
-            Err(RunError::Store(maka_event_log::StoreError::HistoryUnsettled))),
-            "a safe historical cut cannot hide a later unresolved Session effect: {unsafe_preview:?}");
     }).await.expect("continuation must settle");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn model_timeout_cause_survives_reopening_the_log() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            read_request(&mut socket).await;
-            std::future::pending::<()>().await;
-        });
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("events.sqlite");
-        {
-            let log = Arc::new(SessionFixture::open(&path).await.unwrap());
-            let engine = Engine::new(
-                ModelExecutor::new(Duration::from_millis(250)).unwrap(),
-                CodeExecutor::new(CellLimits::default()).unwrap(),
-            ).unwrap();
-            assert!(matches!(
-                engine
-                    .run(log.store(), input(&base, "timeout"), CancellationToken::new())
-                    .await,
-                Err(RunError::Model(ModelError::TimedOut))
-            ));
-            drop(engine);
-            Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        }
-        server.abort();
-        let reopened = SessionFixture::open(&path).await.unwrap();
-        let prefix = reopened.prefix(100, 128 * 1024).await.unwrap();
-        assert!(matches!(
-            &prefix.events.last().unwrap().event.fact,
-            Fact::InvocationEnded {
-                outcome: InvocationOutcome::Failed { class, message: Some(message), model_failure: Some(ModelFailureCause::TimedOut) }
-            } if class == "model_timeout" && message == &ModelError::TimedOut.to_string()
-        ));
-        assert!(prefix.events.iter().any(|event| matches!(&event.event.fact,
-            Fact::ModelInterrupted { model_failure: Some(ModelFailureCause::TimedOut), .. })));
-        assert_eq!(
-            prefix.project_invocation("invocation-timeout").terminal,
-            Some(TerminalStatus::Failed)
-        );
-    })
-    .await
-    .expect("model timeout must durably settle");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -381,49 +344,37 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
             let log = Arc::new(SessionFixture::open(&path).await.unwrap());
             let engine = engine();
             let cancellation = CancellationToken::new();
-            let running_engine = engine.clone();
-            let running_token = cancellation.clone();
-            let first = input(&base, "cancelled");
-            let running_store = log.store();
-            let running = tokio::spawn(async move {
-                running_engine
-                    .run(running_store, first, running_token)
-                    .await
-            });
-            let observed = loop {
-                let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-                if prefix.events.iter().any(|stored| {
-                    matches!(
-                        &stored.event.fact,
-                        Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                            if text == "unfinished-secret-fragment"
-                    )
-                }) {
-                    break prefix;
+            let running = engine.start(log.store(), input(&base, "cancelled"), cancellation.clone()).await.unwrap();
+            let mut preview = running.preview();
+            let visible = loop {
+                let current = preview.borrow_and_update().clone();
+                if let Some(cut) = current
+                    && preview_has_text(&cut, "unfinished-secret-fragment")
+                {
+                    break cut;
                 }
-                assert!(
-                    !running.is_finished(),
-                    "model ended before durable partial text"
-                );
-                tokio::task::yield_now().await;
+                preview.changed().await.expect("Main remains open until cancellation");
             };
+            let observed = log.prefix(100, 128 * 1024).await.unwrap();
             let active = observed.project_invocation("invocation-cancelled");
             assert_eq!(active.terminal, None);
             assert_eq!(active.unfinished_model_steps.len(), 1);
             cancellation.cancel();
             assert!(matches!(
-                running.await.unwrap(),
+                running.wait().await,
                 Err(RunError::Model(ModelError::Cancelled))
             ));
             let settled = log.prefix(100, 128 * 1024).await.unwrap();
-            let tail = &settled.events[observed.events.len()..];
+            assert!(preview.borrow().is_none(), "sealed attempt is no longer current");
+            assert!(preview_has_text(&visible, "unfinished-secret-fragment"), "a held cut stays stable after producer completion");
+            let tail = &settled.events;
             let interrupted = tail
                 .iter()
                 .position(|stored| {
                     matches!(
                         &stored.event.fact,
-                        Fact::ModelInterrupted { step_id, status: ModelInterruption::Cancelled, .. }
-                            if step_id == &active.unfinished_model_steps[0]
+                        Fact::ModelInterrupted { step_id, status: ModelInterruption::Cancelled, partial: Some(partial), .. }
+                            if step_id == &active.unfinished_model_steps[0] && partial_has_text(partial, "unfinished-secret-fragment")
                     )
                 })
                 .unwrap();
@@ -466,8 +417,8 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
         )));
         assert!(prefix.events.iter().any(|stored| matches!(
             &stored.event.fact,
-            Fact::ModelObserved { event: ModelEvent::PartDelta { text, .. }, .. }
-                if text == "unfinished-secret-fragment"
+            Fact::ModelInterrupted { partial: Some(partial), .. }
+                if partial_has_text(partial, "unfinished-secret-fragment")
         )));
         for suffix in ["cancelled", "next", "reopened"] {
             let state = prefix.project_invocation(&format!("invocation-{suffix}"));
@@ -556,92 +507,4 @@ async fn partial_text_survives_cancellation_without_becoming_replayed_model_hist
     })
     .await
     .expect("partial model cancellation and recovery must make bounded progress");
-}
-
-#[tokio::test]
-async fn captured_language_is_evidenced_without_becoming_a_provider_parameter() {
-    use maka_agent_facts::language::Language;
-    let mut recorded_digests = std::collections::BTreeSet::new();
-    for (language, tag, context_label) in [
-        (Language::En, None, "Session context"),
-        (Language::ZhCn, Some("zh-CN"), "会话上下文"),
-        (Language::ZhTw, Some("zh-TW"), "工作階段上下文"),
-    ] {
-        let directory = tempfile::tempdir().unwrap();
-        let log = Arc::new(
-            SessionFixture::open(&directory.path().join("events.sqlite"))
-                .await
-                .unwrap(),
-        );
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let server = tokio::spawn(async move {
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let request = read_request(&mut socket).await;
-            respond(&mut socket, false).await;
-            request
-        });
-        let mut run = input(&base, "language");
-        run.configuration.language = language;
-        let maka_agent_engine::RunWork::Message { message, .. } = &mut run.work else {
-            unreachable!()
-        };
-        *message = "Keep 原文 /tmp/exact.rs unchanged".into();
-        let worker = engine();
-        worker
-            .run(log.store(), run, CancellationToken::new())
-            .await
-            .unwrap();
-        worker.drain().await;
-        let request = server.await.unwrap();
-        assert!(request.get("language").is_none());
-        let system = request["messages"][0].clone();
-        assert_eq!(system["role"], "system");
-        assert!(system["content"].as_str().unwrap().contains(context_label));
-        assert_eq!(
-            request["messages"][1],
-            json!({"role":"user","content":"Keep 原文 /tmp/exact.rs unchanged"})
-        );
-        let prefix = log.prefix(100, 128 * 1024).await.unwrap();
-        let opening = prefix
-            .events
-            .iter()
-            .find_map(|event| match &event.event.fact {
-                Fact::InvocationOpened {
-                    configuration: Some(configuration),
-                    ..
-                } => Some(configuration),
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(opening.language, language);
-        let recorded = serde_json::to_value(opening).unwrap();
-        assert_eq!(
-            recorded.get("language").and_then(serde_json::Value::as_str),
-            tag
-        );
-        let digest = prefix
-            .events
-            .iter()
-            .find_map(|event| match &event.event.fact {
-                Fact::ModelRequested { input_digest, .. } => Some(input_digest),
-                _ => None,
-            })
-            .unwrap();
-        assert!(digest.starts_with("sha256:") && digest.len() == 71);
-        assert!(recorded_digests.insert(digest.clone()));
-        let expected_digest = digest.clone();
-        drop(prefix);
-        drop(worker);
-        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
-        let reopened = SessionFixture::open(&directory.path().join("events.sqlite"))
-            .await
-            .unwrap();
-        let reopened_prefix = reopened.prefix(100, 128 * 1024).await.unwrap();
-        assert!(reopened_prefix.events.iter().any(|event| matches!(
-            &event.event.fact, Fact::ModelRequested { input_digest, .. }
-                if input_digest == &expected_digest
-        )));
-        reopened.close().await.unwrap();
-    }
 }

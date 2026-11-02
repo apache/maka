@@ -69,7 +69,6 @@ pub use crate::{
     error::JsError,
     host::{ErrorHandler, Host, HostOptions, TextMeasurer},
     net::{FetchEvent, FetchOp, HttpBody, HttpHead, HttpRequest, NetworkQueue, RequestId},
-    sandbox::compile_harden,
 };
 
 /// The names native module `specifier` exports, if it is one: nsh's own

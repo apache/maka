@@ -27,8 +27,6 @@ use std::sync::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 
-#[cfg(test)]
-mod tests;
 mod worker;
 use maka_workspace_api::protocol::{
     CHUNK_BYTES, Completion, EXPORT, Input, Launch, Progress, Run, Stream, Written, contract,

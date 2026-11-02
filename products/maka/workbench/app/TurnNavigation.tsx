@@ -284,7 +284,11 @@ export function TurnNavigation(props: {
   );
 }
 
-export function ReturnToLatest(props: { visible: boolean; activate(): void }) {
+/**
+ * `paused`: the view is already at the end but stopped following live output
+ * (an expanded tool is being read), so the button resumes rather than descends.
+ */
+export function ReturnToLatest(props: { visible: boolean; paused?: boolean; activate(): void }) {
   return (
     <If when={props.visible}>
       <View
@@ -300,7 +304,7 @@ export function ReturnToLatest(props: { visible: boolean; activate(): void }) {
         ]}
       >
         <Button
-          accessibilityLabel={tr('Return to latest')}
+          accessibilityLabel={props.paused ? tr('Resume following') : tr('Return to latest')}
           onPress={props.activate}
           style={{
             ...controlStyle,
@@ -312,8 +316,12 @@ export function ReturnToLatest(props: { visible: boolean; activate(): void }) {
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.accent }}
         >
-          <Icon name="latest" color={C.secondary} />
-          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Latest')}</Text>
+          <If when={!props.paused}>
+            <Icon name="latest" color={C.secondary} />
+          </If>
+          <Text style={{ ...captionTextStyle, color: C.text }}>
+            {props.paused ? tr('Resume following') : tr('Latest')}
+          </Text>
         </Button>
       </View>
     </If>

@@ -1,5 +1,5 @@
 //! A UI set of the tests' own (`test/ui`): small components that exercise
-//! the machinery of Rust components (slots, children placed one by one,
+//! the machinery of Rust components (slots and how their content lays out, children placed one by one,
 //! virtualized `items`, `#[prop(lazy)]` children, `#[methods]` refs, events,
 //! inputs) as an app's crate would, with no UI set of nsh's.
 
@@ -18,6 +18,7 @@ pub(crate) fn registry() -> Registry {
         .register::<Button>()
         .register::<Card>()
         .register::<Disclosure>()
+        .register::<Field>()
         .register::<Group>()
         .register::<ListView>()
         .register::<Stepper>()
@@ -181,6 +182,32 @@ pub(crate) fn Disclosure(props: DisclosureProps) -> impl IntoElement {
             })
             .on_press(move |_: &()| open.update(|o| *o = !*o))
     }))
+}
+
+// --- Field: a slot placed as it is, in a row -------------------------------
+
+/// A label the app passes before a control of fixed size, in a row.
+#[derive(Debug, Clone, PartialEq, Props)]
+pub(crate) struct FieldProps {
+    /// Before the control.
+    pub(crate) label: Prop<Option<Slot>>,
+    /// After the control, in a padded box of the view's.
+    pub(crate) hint: Prop<Option<Slot>>,
+}
+
+/// A row 300 × 40 ([`FieldProps`]): the label placed as it is, then a
+/// 50 × 20 control, then the hint in a padded box. The app's element in
+/// the label's slot lays out as an item of the row.
+#[component]
+pub(crate) fn Field(props: FieldProps) -> impl IntoElement {
+    view()
+        .flex_row()
+        .items_center()
+        .w(px(300.0))
+        .h(px(40.0))
+        .child(props.label.place(|label| label))
+        .child(view().w(px(50.0)).h(px(20.0)))
+        .child(props.hint.place(|hint| hint.px_2()))
 }
 
 // --- Group: children placed one by one --------------------------------------

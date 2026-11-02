@@ -11,11 +11,27 @@
 //! | `view:<id>` | the view with that node id (as `--trace` prints it) |
 //! | anything else | a test id, else a label, else a text, as written |
 //!
-//! A regex is JavaScript's: its flags `i`, `m`, `s` and `u` apply, `g` and
-//! `y` mean nothing for a match.
+//! A part that starts with a lowercase word and a colon (`[a-z][a-z0-9-]*:`)
+//! names a prefix, and one not in `PREFIXES` is an error rather than a
+//! text: a prefix added later then never changes what a selector that
+//! parses today means. A text, label or test id that starts so is written
+//! with its prefix, which takes the rest as written (`text:tapped: solo`,
+//! `id:row:2`).
+//!
+//! A regex is written in the syntax of Rust's `regex` crate, which shares
+//! JavaScript's classes, groups, anchors and quantifiers and matches in
+//! linear time, without look-around or backreferences: a selector is a
+//! string the driver matches against the screen on its own thread (a real
+//! host's agent on the device), away from the test file's JS engine. Its
+//! flags `i`, `m` and `s` apply; `u`, `g`, `y` and `d` mean nothing for a
+//! match.
 
 use nsh_core::NodeId;
 use regex::Regex;
+
+/// The prefixes a selector's part may start with, in the order errors list
+/// them.
+const PREFIXES: &[&str] = &["id", "label", "role", "text", "view"];
 
 /// A parsed selector: its parts, in order, and how it was written.
 #[derive(Debug, Clone)]
@@ -153,9 +169,24 @@ impl Matcher {
                 v.parse()
                     .map_err(|e| format!("`{whole}`: not a view id: {e}"))?,
             ),
+            Some((word, _)) if is_prefix_word(word) => {
+                return Err(format!(
+                    "`{whole}`: unknown selector prefix `{word}:`; known: {}. `text:{s}` matches \
+                     it as a text",
+                    PREFIXES.join(", ")
+                ));
+            }
             _ => Self::Any(s.to_owned()),
         })
     }
+}
+
+/// Whether `word`, before a part's first colon, has a prefix's shape: a
+/// lowercase ASCII letter, then lowercase letters, digits and `-`.
+fn is_prefix_word(word: &str) -> bool {
+    let mut chars = word.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 impl std::fmt::Display for Selector {
@@ -182,7 +213,13 @@ mod tests {
         );
         assert!(matches!(matcher("text:+1"), Matcher::Text(TextMatch::Exact(v)) if v == "+1"));
         assert!(matches!(matcher("view:20"), Matcher::View(20)));
-        assert!(matches!(matcher("a:b"), Matcher::Any(v) if v == "a:b"));
+        assert!(matches!(matcher("Total: 5"), Matcher::Any(v) if v == "Total: 5"));
+        assert!(matches!(matcher("12:30"), Matcher::Any(v) if v == "12:30"));
+        assert!(matches!(matcher("a b: c"), Matcher::Any(v) if v == "a b: c"));
+        assert!(
+            matches!(matcher("text:tapped: solo"), Matcher::Text(TextMatch::Exact(v)) if v == "tapped: solo")
+        );
+        assert!(matches!(matcher("id:row:2"), Matcher::TestId(v) if v == "row:2"));
         assert!(matches!(
             matcher("role:button[Save]"),
             Matcher::Role { role, name: Some(TextMatch::Exact(name)) } if role == "button" && name == "Save"
@@ -208,6 +245,28 @@ mod tests {
             Selector::parse("text:/a/x")
                 .unwrap_err()
                 .contains("not a regex flag")
+        );
+    }
+
+    #[test]
+    fn unknown_prefixes_are_errors() {
+        assert_eq!(
+            Selector::parse("tapped: solo").unwrap_err(),
+            "`tapped: solo`: unknown selector prefix `tapped:`; known: id, label, role, text, view. \
+             `text:tapped: solo` matches it as a text"
+        );
+        for s in ["a:b", "test-id:save", "x2:y", "https://example.com"] {
+            assert!(
+                Selector::parse(s)
+                    .unwrap_err()
+                    .contains("unknown selector prefix"),
+                "{s}"
+            );
+        }
+        let err = Selector::parse("id:card >> placeholder:Search").unwrap_err();
+        assert!(
+            err.contains("unknown selector prefix `placeholder:`"),
+            "{err}"
         );
     }
 }

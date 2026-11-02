@@ -160,7 +160,7 @@ pub(super) async fn validate(
     )
     .await?;
     let previous_effective: Option<(i64, Option<String>)> = sqlx::query_as(
-        "SELECT sequence,json_extract(event_json,'$.fact.effective_source_digest') FROM runtime_events
+        "SELECT sequence,json_extract(event_header,'$.fact.effective_source_digest') FROM runtime_events
          WHERE sequence = ?",
     ).bind(first_summary).fetch_optional(&mut *connection).await?;
     if let Some((sequence, expected)) = previous_effective {
@@ -178,9 +178,9 @@ pub(super) async fn validate(
         .await?;
     }
     let first: Option<(String, String, i64, String, Option<String>)> = sqlx::query_as(
-        "SELECT json_extract(event_json, '$.fact.model_id'), json_extract(event_json, '$.fact.route_identity'),
-         json_extract(event_json, '$.fact.source_high_water'), json_extract(event_json, '$.fact.source_digest'),
-         json_extract(event_json, '$.fact.checkpoint_event_id') FROM runtime_events
+        "SELECT json_extract(event_header, '$.fact.model_id'), json_extract(event_header, '$.fact.route_identity'),
+         json_extract(event_header, '$.fact.source_high_water'), json_extract(event_header, '$.fact.source_digest'),
+         json_extract(event_header, '$.fact.checkpoint_event_id') FROM runtime_events
          WHERE sequence = ?",
     ).bind(first_summary).fetch_optional(&mut *connection).await?;
     if first.is_some_and(|(m, r, h, d, p)| {

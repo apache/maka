@@ -160,6 +160,7 @@ pub(crate) fn install(
             cancel_press(&s, &e.modifiers);
         }
         if button == 0 && crate::input::window_drag(&s, x, y) {
+            #[cfg(not(windows))]
             window.start_window_move();
             return;
         }

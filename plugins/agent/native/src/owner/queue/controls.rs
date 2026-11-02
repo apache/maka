@@ -128,16 +128,18 @@ impl Owner {
         operation: &maka_plugin_core::operation::RecoveryRef,
         parent: &maka_capabilities::call::Scope,
     ) -> Result<QueueMutationResult, String> {
-        let runs = self.runs.lock().await;
+        let admission = self.runs.session(&input.session_id).await;
+        let runs = admission.state().await;
         let rejected = |reason| Ok(QueueMutationResult::Rejected { reason });
-        if runs.closing
-            || runs
-                .controls
-                .get(&input.session_id)
-                .is_some_and(|run| run.failure.is_some())
-        {
+        if runs.closing {
             return rejected(QueueRejection::Closed);
         }
+        let promotion = if matches!(&input.edit, QueueAction::Promote { .. }) {
+            runs.controls.get(&input.session_id).cloned()
+        } else {
+            None
+        };
+        drop(runs);
         let queue = self.pending_queue(&input.session_id).await?;
         if queue.revision != input.expected_revision {
             return Ok(QueueMutationResult::RevisionConflict {
@@ -206,6 +208,7 @@ impl Owner {
                             vec![]
                         } else {
                             self.selected_tools(
+                                &input.session_id,
                                 &basis,
                                 false,
                                 basis.model.as_ref().and_then(|model| model.editing_tools),
@@ -230,7 +233,7 @@ impl Owner {
             }
             QueueAction::Reorder { message_ids } => QueueEdit::Reorder { message_ids },
             QueueAction::Promote { message_id } => {
-                let Some(control) = runs.controls.get(&input.session_id) else {
+                let Some(control) = promotion.as_ref() else {
                     return rejected(QueueRejection::NotRunning);
                 };
                 let basis: MessageBasis = serde_json::from_value(

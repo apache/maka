@@ -43,8 +43,8 @@ use nsh_core::{
 };
 
 use crate::{
-    listbox::{self, Hooks, Listbox, Move, Parts, Query, Row},
-    popup::{OpenChangeReason, OpenState},
+    listbox::{self, Hooks, Listbox, Move, Parts, Query, Shown},
+    popup::{DropdownFrame, OpenChangeReason, OpenState},
 };
 
 /// An item of a [`Select`]'s or a `Combobox`'s list.
@@ -460,17 +460,17 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
             }
             let how = opening.replace(Opening::Press);
             let chosen = value.get_untracked();
-            lb.opened(|rows: &[Row], items: &[SelectItem]| {
+            lb.opened(|shown: &Shown, items: &[SelectItem]| {
                 let chosen = chosen.and_then(|v| {
                     items
                         .iter()
                         .position(|i| i.value == v && !i.disabled)
-                        .filter(|&i| listbox::row_of(rows, i).is_some())
+                        .filter(|&i| shown.row_of(i).is_some())
                 });
                 chosen.or_else(|| match how {
                     Opening::Press => None,
-                    Opening::Down => listbox::step(rows, items, None, Move::First),
-                    Opening::Up => listbox::step(rows, items, None, Move::Last),
+                    Opening::Down => shown.step(None, Move::First),
+                    Opening::Up => shown.step(None, Move::Last),
                 })
             });
         });
@@ -478,7 +478,7 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
     lb.bind_keys(move || open.get(), choose.clone());
 
     // The trigger's keys while it has the keyboard focus and the list is
-    // closed: open it, or choose by typeahead.
+    // closed: open it.
     {
         let change = change.clone();
         effect(move || {
@@ -505,30 +505,37 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
                     },
                 );
             }
-            for c in ('a'..='z').chain('0'..='9') {
-                on_key_with(
-                    &c.to_string(),
-                    KeyOptions {
-                        when: When::NotEditing,
-                        repeat: false,
-                    },
-                    move |_| {
-                        let from = value.get_untracked().and_then(|v| {
-                            props
-                                .items
-                                .with_untracked(|items| items.iter().position(|i| i.value == v))
-                        });
-                        let Some(next) = lb.typed(c, from).and_then(choosable) else {
-                            return;
-                        };
-                        if value.choose(Some(next.clone())) {
-                            cx.emit(SelectEvent::Change(Some(next)));
-                        }
-                    },
-                );
-            }
         });
     }
+    // Typeahead: on the focused trigger it chooses, in the open list
+    // without a search field it highlights. One binding for both, so
+    // opening and closing the list binds nothing again.
+    listbox::bind_typeahead(
+        move || {
+            if open.get() {
+                !props.searchable.get()
+            } else {
+                focused.get() && !props.disabled.get()
+            }
+        },
+        Rc::new(move |c| {
+            if open.get_untracked() {
+                lb.type_ahead(c);
+                return;
+            }
+            let from = value.get_untracked().and_then(|v| {
+                props
+                    .items
+                    .with_untracked(|items| items.iter().position(|i| i.value == v))
+            });
+            let Some(next) = lb.typed(c, from).and_then(choosable) else {
+                return;
+            };
+            if value.choose(Some(next.clone())) {
+                cx.emit(SelectEvent::Change(Some(next)));
+            }
+        }),
+    );
 
     let hooks = Hooks {
         open: Rc::new(move || open.get()),
@@ -551,14 +558,16 @@ pub fn Select(props: SelectProps, cx: Scope<SelectEvent>) -> impl IntoElement {
         }),
     };
     let parts = Parts {
-        placement: props.placement,
-        align: props.align,
-        offset: props.offset,
-        margin: props.margin,
-        popup_class: props.popup_class,
-        popup_style: props.popup_style,
-        backdrop_class: props.backdrop_class,
-        backdrop_style: props.backdrop_style,
+        frame: DropdownFrame {
+            placement: props.placement,
+            align: props.align,
+            offset: props.offset,
+            margin: props.margin,
+            popup_class: props.popup_class,
+            popup_style: props.popup_style,
+            backdrop_class: props.backdrop_class,
+            backdrop_style: props.backdrop_style,
+        },
         list_class: props.list_class,
         list_style: props.list_style,
         item_class: props.item_class,

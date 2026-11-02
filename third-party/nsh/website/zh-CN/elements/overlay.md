@@ -1,7 +1,7 @@
 ---
 title: Overlay
 description: Overlay 元素：显示在屏幕最上层的内容，不受父元素裁剪，可以作为固定定位的盒子布局，也可以相对锚点放置并跟随锚点，同时报告外部按压和 Escape。
-order: 10.5
+order: 100
 group: primitives
 demo: el-overlay
 ---

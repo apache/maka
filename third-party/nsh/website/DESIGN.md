@@ -108,6 +108,28 @@ The values below are the dark theme's.
   a plain `#f3f3ef` square. The graphite app icon is the gallery's, not
   the site's.
 
+## Controls
+
+Every control is a component of `src/components/ui/`, after shadcn/ui:
+`Button` (variants `default` — the citrus primary —, `secondary` — raised —,
+`outline`, `ghost`, `destructive`, `link`; sizes `xs`, `sm`, `default`, `lg`
+and the square `icon-*`), `ButtonGroup`, `Input` (with an `icon` slot, an
+input group), `Label`, `Select` (a trigger like an input and a listbox popup,
+driven by `src/lib/ui/select.ts`), `Badge`, `Toggle`, `ToggleGroup` /
+`ToggleGroupItem` (variant `segmented` for switches between views, `outline`
+with `spacing` for filter chips, `count` for a quiet number), `TabsList` /
+`TabsTrigger`. As shadcn's components do, they mark their parts with
+`data-slot` and their look with `data-variant` / `data-size`, and their state
+is ARIA (`aria-pressed`, `aria-checked`, `aria-selected`, `aria-expanded`):
+the look is one file, `src/styles/ui.css`, shadcn's class lists applied to
+those selectors, with shadcn's tokens (`primary`, `secondary`, `accent`,
+`muted`, `border`, `input`, `ring`, ...) mapped onto the gallery's theme and
+the surfaces given its finishes (raised, hover, pressed, the citrus `light`,
+field, track, menu). HTML written as a string (`src/lib/demo.js`,
+`src/lib/remark-code-tabs.js`, buttons a script adds) uses the same
+attributes. A page never styles a control itself: it places it (margins,
+widths) and picks a variant; a new kind of control is a new component.
+
 ## Typography
 
 The platform font (SF Pro, Segoe UI, Roboto; PingFang / Noto Sans SC for
@@ -148,16 +170,29 @@ motion only, 620ms `cubic-bezier(.16, 1, .3, 1)`. The copied chat imports
 `./clipboard`, a no-op, because this runtime has no `Clipboard` yet;
 the playground lists every demo but this one (it compiles single files).
 
-Behind the hero, `HeroField.astro` draws the dot grid on a 2D canvas, mostly
-dark and quiet: every dot has a seeded size, brightness and twinkle, and a
-slowly drifting value-noise field decides where the grid shimmers. Near the
-pointer (or the last touch) a few dots light up more than their
-neighbours inside a noise-perturbed reach that trails the pointer a little,
-over a small faint halo (140 px, peak alpha 0.06); the field is faint over
-the copy. It pauses off
-screen and in hidden tabs, draws one static frame with reduced motion,
-never takes pointer events, and costs about 0.2 ms a frame (`?fieldperf`
-logs it).
+Behind the hero, `HeroField.astro` draws the night sky from inside a galaxy
+with a fragment shader (WebGL, two passes: the clouds' field into a texture
+of a texel every 11 px, then the sky per pixel, sampling it). The hero's sky
+darkens toward the night, fading out along its bottom into the page. The
+nebula takes the site's own colors, slate blue and grey by region and teal in
+a few clouds, the primary's green tinting them and lighting their ridged
+wisps, which lie in belts as Jupiter's clouds do; darker reaches open here
+and there. Its light opens between the copy and the device from the first
+frame, dims behind the device, and is softly capped. The stars are crisp
+round discs (gravity bends the space they sit in, never their shape) in the
+blue, teal, red, orange and violet besides white, most faint and a few bright, the
+brightest, white or blue-white, with long diffraction spikes; some wear a tilted ring, some have
+companions orbiting them. They crowd where the clouds are, with a fine grain
+of star dust, gather in clusters and leave voids; they drift slowly, nearer
+ones faster, and now and then a meteor crosses. Presses act
+on gravity: a held press is a small mass that bends the starlight toward
+it; released, it sends a gentle wave that carries the stars outward as it
+passes before they settle back, and turns their drift to a new heading. The
+sky shows across the hero, about half as strong behind the copy, every mask
+a smooth gradient. The colors are the `--hero-*` tokens. It moves all the
+time, pauses off screen and in hidden tabs, draws one still frame and takes
+no presses with reduced motion, never takes pointer events itself, and
+draws nothing without WebGL (`?fieldperf` logs its frame time).
 
 ## Demo frames
 

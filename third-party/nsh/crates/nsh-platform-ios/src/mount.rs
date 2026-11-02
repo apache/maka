@@ -627,6 +627,8 @@ pub(crate) struct Mounter {
     fps: Option<std::rc::Rc<crate::fps::Fps>>,
     /// Shader views and the GPU device they render with.
     shaders: crate::shader::Shaders,
+    /// Texts whose color transitions.
+    text_colors: crate::interaction::TextColors,
     mtm: MainThreadMarker,
 }
 
@@ -683,6 +685,7 @@ impl Mounter {
             disappearing: Default::default(),
             frame_link: crate::animation::frame_link(&target_for_link),
             shaders: crate::shader::Shaders::new(&target_for_link),
+            text_colors: crate::interaction::TextColors::new(&target_for_link),
             hosts: Default::default(),
             dirty_stacks: Vec::new(),
             bottom_bar_dirty: false,
@@ -883,10 +886,11 @@ impl Mounter {
         true
     }
 
-    /// Whether a native animation runs.
+    /// Whether a native animation runs that ends by itself (not one
+    /// looping forever, which no test step waits for).
     #[cfg(feature = "dev")]
     pub(crate) fn animating(&self) -> bool {
-        self.animator.animating()
+        self.animator.finishing()
     }
 
     #[inline]
@@ -1213,14 +1217,21 @@ impl Mounter {
                 layout,
                 content,
             } => {
-                if let Some(Slot {
+                // The views alone: the texts' transitions are borrowed too.
+                if let Some(Some(Slot {
                     native: Native::Text(view),
                     events,
+                    style,
                     ..
-                }) = self.slot(id)
+                })) = self.views.get(id as usize)
                 {
                     let links = !text.links.is_empty() || view.has_links();
                     let events = *events;
+                    if let Some(old) = view.text() {
+                        // Its color moves to the new one over the
+                        // transition, drawn over the new lines.
+                        self.text_colors.text_changed(view, &old, &text, style);
+                    }
                     view.set_layout(text, layout, content);
                     // Pressable spans need the block's press recognizer.
                     if links {
@@ -2373,7 +2384,9 @@ impl Mounter {
     }
 
     /// A JS responder took the touches on `id`: with `block`, the scroll
-    /// views around it stop scrolling until it lets go.
+    /// views around it stop scrolling until it lets go, and the presses of
+    /// the views around it end without a press (the finger is the
+    /// responder's: a drag of a selection handle is no tap on the text).
     fn set_js_responder(&mut self, id: NodeId, block: bool) {
         self.clear_js_responder();
         if !block {
@@ -2382,6 +2395,14 @@ impl Mounter {
         let Some(s) = self.slot(id) else { return };
         let mut current = s.native.view().superview();
         while let Some(v) = current {
+            for recognizer in v.gestureRecognizers().iter().flat_map(|r| r.iter()) {
+                if recognizer.downcast_ref::<PressRecognizer>().is_some() && recognizer.isEnabled()
+                {
+                    // Turning a recognizer off cancels its gesture.
+                    recognizer.setEnabled(false);
+                    recognizer.setEnabled(true);
+                }
+            }
             if let Some(scroll) = v.downcast_ref::<UIScrollView>() {
                 let pan = scroll.panGestureRecognizer();
                 if pan.isEnabled() {
@@ -3809,13 +3830,23 @@ impl Mounter {
                     .map(objc2_foundation::NSString::from_str);
                 view.setAccessibilityLabel(label.as_deref(), mtm);
                 view.setAccessibilityElementsHidden(props.accessibility.hidden, mtm);
+                // An input that is no target lets touches through to the
+                // views below it (an editor's hidden input at its caret,
+                // over the selection's handles); it stays able to become
+                // the first responder and take typed text.
+                if matches!(s.native, Native::Input(_)) {
+                    view.setUserInteractionEnabled(!matches!(
+                        props.pointer_events,
+                        nsh_core::PointerEvents::None | nsh_core::PointerEvents::BoxNone
+                    ));
+                }
             }
         }
         // After the props: the texts below read whether they are in an area.
         match (area, was_area) {
             (Some(view), false) => self.areas.push((
                 id,
-                crate::selectable_view::AreaResponder::attach(&view, mtm),
+                crate::selectable_view::AreaResponder::attach(&view, mtm, self.control.clone()),
             )),
             (None, true) => {
                 if let Some(i) = self.areas.iter().position(|(a, _)| *a == id) {
@@ -4186,6 +4217,11 @@ impl Mounter {
     /// The shaders' display link fired.
     pub(crate) fn shader_frame(&mut self) {
         self.shaders.frame();
+    }
+
+    /// The display link of texts whose color transitions fired.
+    pub(crate) fn text_color_frame(&mut self) {
+        self.text_colors.frame();
     }
 
     /// Shader view `id` follows its frame and corners.

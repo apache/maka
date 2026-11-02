@@ -29,8 +29,8 @@ use nsh_core::{
 
 use crate::{
     SelectGroup, SelectItem, SelectItemState,
-    listbox::{self, Footer, Hooks, Listbox, Move, Parts, Query, Row},
-    popup::{OpenChangeReason, OpenState},
+    listbox::{self, Footer, Hooks, Listbox, Move, Parts, Query, Shown},
+    popup::{DropdownFrame, OpenChangeReason, OpenState},
 };
 
 /// The props of [`Combobox`].
@@ -356,21 +356,23 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
             }
             let how = opening.replace(Opening::Press);
             let selected = value.get_untracked();
-            lb.opened(|rows: &[Row], items: &[SelectItem]| {
+            lb.opened(|shown: &Shown, items: &[SelectItem]| {
                 let first = items.iter().enumerate().position(|(at, i)| {
-                    !i.disabled
-                        && selected.contains(&i.value)
-                        && listbox::row_of(rows, at).is_some()
+                    !i.disabled && selected.contains(&i.value) && shown.row_of(at).is_some()
                 });
                 first.or_else(|| match how {
                     Opening::Press => None,
-                    Opening::Down => listbox::step(rows, items, None, Move::First),
-                    Opening::Up => listbox::step(rows, items, None, Move::Last),
+                    Opening::Down => shown.step(None, Move::First),
+                    Opening::Up => shown.step(None, Move::Last),
                 })
             });
         });
     });
     lb.bind_keys(move || open.get(), choose.clone());
+    listbox::bind_typeahead(
+        move || open.get() && !lb.searchable.get(),
+        Rc::new(move |c| lb.type_ahead(c)),
+    );
     // Cmd+Return (Ctrl+Return off Apple's): the value as it is, and close
     // (`gpui-base`'s secondary `Confirm`).
     {
@@ -442,14 +444,16 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         }),
     };
     let parts = Parts {
-        placement: props.placement,
-        align: props.align,
-        offset: props.offset,
-        margin: props.margin,
-        popup_class: props.popup_class,
-        popup_style: props.popup_style,
-        backdrop_class: props.backdrop_class,
-        backdrop_style: props.backdrop_style,
+        frame: DropdownFrame {
+            placement: props.placement,
+            align: props.align,
+            offset: props.offset,
+            margin: props.margin,
+            popup_class: props.popup_class,
+            popup_style: props.popup_style,
+            backdrop_class: props.backdrop_class,
+            backdrop_style: props.backdrop_style,
+        },
         list_class: props.list_class,
         list_style: props.list_style,
         item_class: props.item_class,

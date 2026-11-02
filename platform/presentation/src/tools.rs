@@ -23,7 +23,6 @@ use crate::{Content, Message, ProjectionError, ToolContent};
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
 use maka_agent_facts::model::ModelPart;
-use maka_agent_facts::model::ModelStep;
 use maka_agent_facts::model::ToolInput;
 use maka_agent_facts::tool_call::ToolCallIdentity;
 use maka_agent_facts::tool_call::ToolOrigin;
@@ -41,45 +40,13 @@ fn display_input(input: &ToolInput) -> serde_json::Value {
 }
 
 impl Tools {
-    pub fn accept(
-        &mut self,
-        event: &RuntimeEvent,
-        ts: u64,
-        step: &str,
-        output: &ModelStep,
-        text: Vec<Message>,
-    ) -> Result<Vec<Message>, ProjectionError> {
-        let anchor = text.last().map(|message| message.id.clone());
-        let mut text = text.into_iter();
-        let mut rows = Vec::new();
-        for (index, part) in output.parts.iter().enumerate() {
-            if matches!(part, ModelPart::Text { .. }) {
-                rows.push(
-                    text.next()
-                        .ok_or(ProjectionError::Invalid("missing accepted text"))?,
-                );
-            } else {
-                rows.extend(self.accept_item(
-                    event,
-                    ts,
-                    step,
-                    index,
-                    part,
-                    anchor.as_deref(),
-                    output.model.as_deref().unwrap_or_default(),
-                )?);
-            }
-        }
-        Ok(rows)
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub fn accept_item(
         &mut self,
         event: &RuntimeEvent,
         ts: u64,
         step: &str,
-        index: usize,
+        message_id: &str,
         part: &ModelPart,
         anchor: Option<&str>,
         model: &str,
@@ -98,7 +65,7 @@ impl Tools {
                 rows.push(message(
                     event,
                     ts,
-                    format!("{}:source:{index}", event.id),
+                    message_id.to_owned(),
                     Content::Assistant {
                         imported: false,
                         text,
@@ -128,7 +95,7 @@ impl Tools {
                 rows.push(message(
                     event,
                     ts,
-                    tool_message_id(&event.invocation.invocation_id, &operation),
+                    message_id.to_owned(),
                     Content::ToolCall {
                         tool_name: call.name.clone(),
                         args: display_input(&call.input),
@@ -158,7 +125,7 @@ impl Tools {
                     event,
                     ts,
                     &operation,
-                    maka_agent_facts::tool_call::provider_result_id(&event.id, index),
+                    message_id.to_owned(),
                     *is_error,
                     ToolContent::Json {
                         value: output.clone(),

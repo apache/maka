@@ -34,7 +34,7 @@ if (mode === 'environment')
     },
   });
 const pending = new Map();
-const tools = ['echo', 'error', 'media', 'slow', 'hang', 'change'].map((name) => ({
+const tools = ['echo', 'error', 'media', 'hang', 'change'].map((name) => ({
   name,
   description: `Fixture ${name}`,
   inputSchema:
@@ -95,10 +95,6 @@ function receive(message, send) {
       pending.set(message.id, reply);
       return;
     }
-    if (name === 'slow') {
-      setTimeout(() => reply({ content: [{ type: 'text', text: 'slow' }] }), 150);
-      return;
-    }
     if (name === 'change') send({ jsonrpc: '2.0', method: 'notifications/tools/list_changed' });
     reply({
       content:
@@ -117,7 +113,17 @@ function receive(message, send) {
                 mimeType: 'text/plain',
               },
             ]
-          : [{ type: 'text', text: mode === 'stdio-large' ? 'x'.repeat(16 * 1024 * 1024 + 1) : name === 'error' ? 'business failed' : JSON.stringify(args) }],
+          : [
+              {
+                type: 'text',
+                text:
+                  mode === 'stdio-large'
+                    ? 'x'.repeat(16 * 1024 * 1024 + 1)
+                    : name === 'error'
+                      ? 'business failed'
+                      : JSON.stringify(args),
+              },
+            ],
       structuredContent: args,
       isError: name === 'error',
       _meta: { fixture: true },

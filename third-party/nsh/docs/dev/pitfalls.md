@@ -20,9 +20,9 @@ Things that were found the hard way. Read the section of the area you change bef
 - **Nodes are released by GC, not by Remove.** A memo may keep removed nodes and insert them again, so `Remove` only detaches;
   `Release` (queued by the node's finalizer) frees the node and its native view.
 - **`nsh_js::BUNDLE_NAME` (`bundle.js`)** is the module name of every bundle and is how stacks are matched for symbolication; `BYTECODE_VERSION`
-  names the QuickJS-NG release and revision, `BC_VERSION` and the byte order, never the binding. Native and
-  browser targets use `quickjs-jit` (the browser uses its interpreter and pregenerated bindings) and must build
-  the same QuickJS-NG, as the web runtime loads what the native CLI compiles. Tests hold it to the linked release, the bytecode's format byte and the `-sys` versions
+  names the QuickJS-NG release and revision, `BC_VERSION` and the byte order, never the binding. The native
+  targets use `quickjs-jit` and must build the same QuickJS-NG as the CLI that compiles their bytecode (the web
+  runs no QuickJS). Tests hold it to the linked release, the bytecode's format byte and the `-sys` versions
   in `Cargo.lock` (`ENGINES`): update them together when upgrading either.
 - **Encoded operations' codes** (`ANIMATION_*`, `CV_*`) come from `nsh_core::js` (`protocol.rs`, `canvas.rs`): never write a code's value
   by hand in `nsh-js`.
@@ -58,9 +58,13 @@ Things that were found the hard way. Read the section of the area you change bef
   tall was 78 pixels while a child as tall was 79, so a scroll view cut the child's last row of pixels off; and a text measured
   21⅓ points (56 pixels) laid out at 22 (58), the 2 pixels below its last line. Text measurements are rounded up to a device
   pixel (`MeasureCache` holds the ratio and drops its sizes when the ratio changes, which lays everything out again); at one
-  pixel per point this is Taffy's rounding to the bit. Android's `lineHeight` is a whole number of pixels, rounded to the
+  pixel per point this is Taffy's rounding, but for a value within a 64th of a half, which rounds up. Android's `lineHeight` is a whole number of pixels, rounded to the
   nearest as a TextView's dp line height is (`ExactLineHeight`): rounded up, 21 points at 2.625 were 56 pixels, a third of
-  a point per line taller than the design.
+  a point per line taller than the design. Sizes and offsets are counted in whole pixels before they become points
+  (`pixel`, `span`): `round(to) - round(from)` in points differs in its last bits with where the edges are, and a 28 point
+  row at 2.625 (73.5 pixels) has every other edge on a half pixel, which an `f32`'s hair rounds either way. As a scroll
+  moved DataTable's body a pixel, every frame in it was sent again (460–1000 mount items a frame on a Pixel 10 Pro instead
+  of 3); a half pixel is snapped first, so it always rounds up.
 - **The core keeps its own layout tree** (`core/layout_tree.rs`: Taffy's algorithms over the core's nodes through Taffy's low-level
   traits, as `TaffyTree` runs them, call for call). `TaffyTree::mark_dirty` stops at the first node whose cache is already empty, taking
   its ancestors for dirty too; nodes of a `display: none` subtree and absolutely positioned ones always have empty caches while the nodes
@@ -125,6 +129,12 @@ Things that were found the hard way. Read the section of the area you change bef
   f64"); integers decode either way. A new float field in a message takes the same attribute.
 
 ## iOS, UIKit and Mac Catalyst
+
+- **An input's `pointerEvents` is UIKit's, not `NshView`'s**: inputs are a plain container around a text view, with no
+  `hitTest:` of NSH's, so `none` / `box-none` turn the container's user interaction off (`set_view_props`); it can still
+  become the first responder and take typed text. Without it a hidden input (the `Editor`'s sink at its caret) takes
+  the touches of whatever lies under it. A JS responder that blocks also cancels the `PressRecognizer`s of the views
+  around it (`set_js_responder`): they keep tracking a finger a descendant took, and its lift was a press on them.
 
 - **Retained navigation tabs hide the stack's container or an ancestor, not the navigation controller's view**:
   check the entire ancestor chain before a stack updates a shared system tab bar, including from transition
@@ -264,8 +274,18 @@ Things that were found the hard way. Read the section of the area you change bef
   line, so a hit past its end is snapped to the line's end (`TextLayouts.hitTest`, upstream); `getSelectionPath` adds
   margin rectangles when a range ends at a wrapped line's end, so range boxes come from the run's carets
   (`TextLayouts.rangeRects`), not from the path.
+- **Android, view properties set every frame**: `setAlpha`, `setTranslationX`, `setScaleX`, `setRotation` and the like
+  return early on an unchanged value, `setCameraDistance` does not: it invalidates the view on every call. Animated
+  values and transitions write a view's whole transform each frame, so `Mounter.setPerspective` sets it only when it
+  moves (it was a fifth of the UI thread's time on the gallery's Animations demo).
+- **Android, shadows moved by fractions of a pixel**: Skia caches a shadow's blurred mask keyed on the subpixel part
+  of its position, so a view moved by a fractional offset each frame blurs its shadows again every frame (on the GPU,
+  each into a new render target, slow on PowerVR). `StackBox`'s push / pop slides move by whole pixels; going back to
+  the gallery's index ran at about half the frame rate before (#519).
 - **Android, JNI event maps intern their keys from a fixed list** (`Java_com_longbridge_nsh_Native_eventMap`): a new payload key must be
   added there or it is dropped silently.
+- **Android, inputs' `pointerEvents`**: `InputBox` is a `FrameLayout`, not a `Box`: it keeps `pointerEvents` itself and
+  refuses touches in `dispatchTouchEvent` for `none` / `box-none`, and `TouchTracker.deepest` reads it as a `Box`'s.
 - **Android, inputs**: `EditText` reconfiguration (input type, filters, single line) sets the same text again and fires
   `afterTextChanged`: only text that differs from the last known one counts as an edit, or JS values are rejected as stale.
   Soft keyboards edit through the input connection (`KeyConnection`: composing text, commits, deletes), hardware keys arrive

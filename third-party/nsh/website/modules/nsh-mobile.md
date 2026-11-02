@@ -236,7 +236,7 @@ On Android; on iOS its listeners are kept and never called, and `exitApp()` retu
 
 ```ts
 const BackHandler: {
-  onBackPress(listener: () => boolean | void): () => void;
+  on(event: "press", listener: () => boolean | void): () => void;
   exitApp(): void;
 };
 ```
@@ -245,7 +245,7 @@ The system back button and back gesture. Dialogs handle the back press first (a 
 
 | Member | Rust | Description |
 |---|---|---|
-| `onBackPress(listener)` | `on_back_press(listener)` | `listener` returns `true` when it handled the press. Returns a function that stops listening; a listener added while a component renders (or an effect runs) stops with it, in Rust and TSX alike. |
+| `on("press", listener)` | `on_back_press(listener)` | `listener` returns `true` when it handled the press. Returns a function that stops listening; a listener added while a component renders (or an effect runs) stops with it, in Rust and TSX alike. |
 | `exitApp()` | the listener returns `false` | Leaves the app. A Rust listener that returns `false` lets the press go on, so the stack goes back or the app exits. |
 
 ```rust tabs
@@ -279,7 +279,7 @@ import { AlertDialog } from "nsh/base";
 function Editor() {
   const dirty = signal(false);
   // Stops listening when Editor goes.
-  BackHandler.onBackPress(() => {
+  BackHandler.on("press", () => {
     if (!dirty()) return false; // let the app go back or exit
     AlertDialog.show({
       title: "Discard changes?",

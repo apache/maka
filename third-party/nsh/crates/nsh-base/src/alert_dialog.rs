@@ -91,9 +91,9 @@ pub enum AlertDialogPresentation {
 impl AlertDialog {
     /// Shows the dialog and resolves with `{ action }`: the chosen
     /// action's `id`, or `null` when it closed without an action. Rejects
-    /// without actions.
-    pub async fn show(options: AlertDialogOptions) -> Result<AlertDialogResult, String> {
-        options.show().await
+    /// with a `TypeError` without actions (a bug of the app's).
+    pub async fn show(options: AlertDialogOptions) -> Result<AlertDialogResult, JsError> {
+        options.show().await.map_err(JsError::Type)
     }
 }
 

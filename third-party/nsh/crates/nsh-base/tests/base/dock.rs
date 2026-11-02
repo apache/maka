@@ -231,6 +231,15 @@ fn Workspace(props: WorkspaceProps) -> impl IntoElement {
                 ))
                 .child(button("unzoom", Box::new(|a| a.toggle_zoom(None))))
                 .child(button(
+                    "select-tab-9",
+                    Box::new(|a| {
+                        if let Some(group) = a.group_of("a".into()) {
+                            a.select_tab(group, 9);
+                        }
+                    }),
+                ))
+                .child(button("remove-x", Box::new(|a| a.remove_panel("x".into()))))
+                .child(button(
                     "remove-all",
                     Box::new(|a| {
                         for panel in ["a", "b", "c"] {
@@ -396,6 +405,19 @@ fn a_dock_opens_and_closes_and_keeps_its_panels() {
     app.wait_for("Layout h([*a b]:400 [*c]) left [*files] open 200")
         .unwrap();
     app.wait_for("Panel files").unwrap();
+}
+
+/// A method naming a tab or panel the layout does not have runs at the
+/// commit, so it cannot throw: it leaves the layout as it is (and logs).
+#[test]
+fn a_method_naming_what_the_layout_lacks_changes_nothing() {
+    let mut app = start(two_groups(), 1000.0);
+    app.press("id:select-tab-9").unwrap();
+    app.press("id:remove-x").unwrap();
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    assert!(app.shows("Layout h([*a b]:400 [*c])"));
+    assert!(app.shows("Removed none"));
+    assert!(app.shows("Panel a"));
 }
 
 #[test]

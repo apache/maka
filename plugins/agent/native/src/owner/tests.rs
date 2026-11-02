@@ -17,134 +17,80 @@
  * under the License.
  */
 
-#[path = "tests/http.rs"]
 mod http_fixture;
+mod memory_release;
 
-#[path = "tests/plan.rs"]
 mod plan_tests;
 
-#[path = "tests/goal.rs"]
 mod goal_tests;
 
-#[path = "tests/recap.rs"]
 mod recap_tests;
 
-#[path = "tests/title.rs"]
 mod title_tests;
 
-#[path = "tests/todo.rs"]
 mod todo_tests;
 
-#[path = "tests/computer_controls.rs"]
+mod bot_tests;
+
 mod computer_controls;
 
-#[path = "tests/request_capture.rs"]
-mod request_capture;
-#[path = "tests/service_tools.rs"]
 mod service_tools;
-#[path = "tests/skill_preparation.rs"]
+mod session_tools;
 mod skill_preparation;
-#[path = "tests/skills.rs"]
 mod skills;
 
-#[path = "tests/attachments.rs"]
 mod attachments;
 
-#[path = "tests/fork.rs"]
 mod fork;
 
-#[path = "tests/files.rs"]
 mod files;
 
-#[path = "tests/file_browsing.rs"]
 mod file_browsing;
-#[path = "tests/file_reconciliation.rs"]
-mod file_reconciliation;
 
-#[path = "tests/health.rs"]
 mod health;
-#[path = "tests/processes.rs"]
 mod processes;
 
-#[path = "tests/protocol_processes.rs"]
 mod protocol_processes;
 
-#[path = "tests/terminal.rs"]
 mod terminal;
 
-#[path = "tests/interactions.rs"]
 mod interactions;
 
-#[path = "tests/catalog.rs"]
 mod catalog;
 
-#[path = "tests/session_availability.rs"]
 mod session_availability;
 
-#[path = "tests/history_search.rs"]
-mod history_search;
-
-#[path = "tests/compaction.rs"]
 mod compaction;
 
-#[path = "tests/metrics.rs"]
 mod metrics;
 
-#[path = "tests/execution.rs"]
 mod execution;
-#[path = "tests/executor.rs"]
 mod executor;
 
-#[path = "tests/prompt_language.rs"]
 mod prompt_language;
-#[path = "tests/session_context.rs"]
 mod session_context;
-#[path = "tests/tool_schemas.rs"]
-mod tool_schemas;
-#[path = "tests/workhub.rs"]
 mod workhub;
 
-#[path = "tests/scale.rs"]
-#[cfg(unix)]
-mod scale;
-
-#[path = "tests/queue.rs"]
 mod queue;
 
-#[path = "tests/large_messages.rs"]
-mod large_messages;
-
-#[path = "tests/mcp.rs"]
 mod mcp;
-#[path = "tests/selection.rs"]
 mod selection;
 
-#[path = "tests/git.rs"]
 mod git;
-#[path = "tests/jev.rs"]
 mod jev_tests;
-#[path = "tests/web.rs"]
 mod web_tests;
 
-#[path = "tests/worktrees.rs"]
 mod worktrees;
 
-#[path = "tests/settings.rs"]
 mod settings;
 
-#[path = "tests/images.rs"]
 mod images;
 
-#[path = "tests/imports.rs"]
 mod imports;
-#[path = "tests/projects.rs"]
 mod projects;
-#[path = "tests/recall.rs"]
 mod recall_tests;
-#[path = "tests/scheduler.rs"]
 mod scheduler_tests;
 
-#[path = "tests/workspaces.rs"]
 mod workspaces;
 
 use super::*;
@@ -230,8 +176,8 @@ fn scope(issuer: &Issuer, grant: bool) -> Scope {
 fn id(value: u128) -> InstanceId {
     InstanceId(vec![Uuid::from_u128(value)])
 }
-fn package(provider: bool) -> Package {
-    let entry = EntryDeclaration {
+fn entry(provider: bool) -> EntryDeclaration {
+    EntryDeclaration {
         implementation: if provider {
             Implementation::Native {
                 implementation: IMPLEMENTATION.into(),
@@ -250,13 +196,29 @@ fn package(provider: bool) -> Package {
         imports: if provider {
             BTreeMap::new()
         } else {
-            BTreeMap::from([(
-                EXPORT.into(),
-                Import {
-                    contract: contract(),
-                    cardinality: Cardinality::One,
-                },
-            )])
+            BTreeMap::from([
+                (
+                    EXPORT.into(),
+                    Import {
+                        contract: contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+                (
+                    "receipts".into(),
+                    Import {
+                        contract: maka_plugin_core::operation::receipt_reader_contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+                (
+                    "settings".into(),
+                    Import {
+                        contract: maka_settings_native::contract::contract(),
+                        cardinality: Cardinality::One,
+                    },
+                ),
+            ])
         },
         exports: if provider {
             BTreeMap::from([(
@@ -269,14 +231,26 @@ fn package(provider: bool) -> Package {
         } else {
             BTreeMap::new()
         },
-    };
+    }
+}
+
+fn package(provider: bool) -> Package {
+    application_package(if provider { "agent" } else { "consumer" }, entry(provider))
+}
+
+fn application_package(name: &str, entry: EntryDeclaration) -> Package {
+    let javascript = matches!(entry.implementation, Implementation::JavaScript { .. });
     let declaration = Declaration {
         host: Some(entry),
         ui: None,
         composition: None,
     };
-    let mut files = BTreeMap::from([(MANIFEST_FILE.into(), serde_json::to_vec(&json!({"schemaVersion":1,"id":if provider {"agent"} else {"consumer"},"application":declaration})).unwrap())]);
-    if !provider {
+    let mut files = BTreeMap::from([(
+        MANIFEST_FILE.into(),
+        serde_json::to_vec(&json!({"schemaVersion":1,"id":name,"application":declaration}))
+            .unwrap(),
+    )]);
+    if javascript {
         files.insert(
             "host.mjs".into(),
             b"export function activate() { return {}; }".to_vec(),
@@ -285,173 +259,79 @@ fn package(provider: bool) -> Package {
     Package::new(files).unwrap()
 }
 fn input(settings: &Configuration) -> (Input, Vec<Package>) {
-    let provider = package(true);
-    let consumer = package(false);
-    let node = |key: u128, provider_node: bool| Node {
-        key: Uuid::from_u128(key),
-        package: if provider_node {
-            provider.application_ref()
-        } else {
-            consumer.application_ref()
-        }
-        .into(),
-        use_package: PackageUse::Host,
-        configuration: if provider_node {
-            NodeConfiguration {
-                values: serde_json::to_value(settings)
-                    .unwrap()
-                    .as_object()
-                    .unwrap()
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect(),
-                parameters: BTreeMap::new(),
-            }
-        } else {
-            NodeConfiguration::default()
-        },
-        parameters: NodeConfiguration::default(),
-        disabled: false,
-        overrides: vec![],
-        bindings: if provider_node {
-            BTreeMap::new()
-        } else {
-            BTreeMap::from([(
-                EXPORT.into(),
-                vec![Target::Instance {
-                    path: vec!["provider".into()],
-                    export: EXPORT.into(),
-                }],
-            )])
-        },
-    };
-    let receipt_contract = maka_plugin_core::operation::receipt_reader_contract();
+    application_input(settings, package(true), package(false))
+}
+fn application_input(
+    settings: &Configuration,
+    provider: Package,
+    consumer: Package,
+) -> (Input, Vec<Package>) {
     let receipts = Package::new(BTreeMap::from([(
         MANIFEST_FILE.into(),
-        serde_json::to_vec(&json!({
-            "schemaVersion":1,"id":"receipts","application":{"host":{
-                "implementation":{"kind":"native","implementation":"maka.operations.receipts"},
-                "configuration":{"type":"object","additionalProperties":false},"imports":{},
-                "exports":{"Receipts":{"contract":receipt_contract,"availability":"required"}}
-            }}
-        }))
-        .unwrap(),
-    )]))
-    .unwrap();
-    let receipt_node = Node {
-        key: Uuid::from_u128(4),
-        package: receipts.application_ref().into(),
+        serde_json::to_vec(&json!({"schemaVersion":1,"id":"receipts","application":{"host":{
+            "implementation":{"kind":"native","implementation":"maka.operations.receipts"},
+            "configuration":{"type":"object","additionalProperties":false},"imports":{},
+            "exports":{"Receipts":{"contract":maka_plugin_core::operation::receipt_reader_contract(),"availability":"required"}}
+        }}})).unwrap(),
+    )])).unwrap();
+    let settings_package = Package::new(BTreeMap::from([(
+        MANIFEST_FILE.into(),
+        serde_json::to_vec(&json!({"schemaVersion":1,"id":"settings","application":{"host":{
+            "implementation":{"kind":"native","implementation":maka_settings_native::IMPLEMENTATION},
+            "configuration":{"type":"object","properties":{},"additionalProperties":false},"imports":{},
+            "exports":{(maka_settings_native::EXPORT):{"contract":maka_settings_native::contract::contract(),"availability":"required"}}
+        }}})).unwrap(),
+    )])).unwrap();
+    let node = |key, package: &Package| Node {
+        key: Uuid::from_u128(key),
+        package: package.application_ref().into(),
         use_package: PackageUse::Host,
         configuration: Default::default(),
         parameters: Default::default(),
-        bindings: BTreeMap::new(),
         disabled: false,
         overrides: vec![],
+        bindings: Default::default(),
     };
-    let mut input = Input {
+    let caller = |key| Node {
+        bindings: [
+            (EXPORT, "provider", EXPORT),
+            ("receipts", "receipts", "Receipts"),
+            ("settings", "settings", maka_settings_native::EXPORT),
+        ]
+        .into_iter()
+        .map(|(import, path, export)| {
+            (
+                import.into(),
+                vec![Target::Instance {
+                    path: vec![path.into()],
+                    export: export.into(),
+                }],
+            )
+        })
+        .collect(),
+        ..node(key, &consumer)
+    };
+    let input = Input {
         ui: None,
         instances: BTreeMap::from([
-            ("provider".into(), node(1, true)),
-            ("a".into(), node(2, false)),
-            ("b".into(), node(3, false)),
+            (
+                "provider".into(),
+                Node {
+                    configuration: NodeConfiguration {
+                        values: serde_json::from_value(serde_json::to_value(settings).unwrap())
+                            .unwrap(),
+                        parameters: Default::default(),
+                    },
+                    ..node(1, &provider)
+                },
+            ),
+            ("a".into(), caller(2)),
+            ("b".into(), caller(3)),
+            ("receipts".into(), node(4, &receipts)),
+            ("settings".into(), node(5, &settings_package)),
         ]),
     };
-    input.instances.insert("receipts".into(), receipt_node);
-    for name in ["a", "b"] {
-        input.instances.get_mut(name).unwrap().bindings.insert(
-            "receipts".into(),
-            vec![Target::Instance {
-                path: vec!["receipts".into()],
-                export: "Receipts".into(),
-            }],
-        );
-    }
-    // Both consumers declare recovery independently of their execution import.
-    let mut files = consumer.files().clone();
-    let mut manifest = consumer.manifest().clone();
-    let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application.host.as_mut().unwrap().imports.insert(
-        "receipts".into(),
-        Import {
-            contract: receipt_contract,
-            cardinality: Cardinality::One,
-        },
-    );
-    files.insert(MANIFEST_FILE.into(), {
-        manifest.application =
-            Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
-        serde_json::to_vec(&manifest).unwrap()
-    });
-    let consumer = Package::new(files).unwrap();
-    for name in ["a", "b"] {
-        input.instances.get_mut(name).unwrap().package = consumer.application_ref().into();
-    }
-    let settings = {
-        let mut manifest = provider.manifest().clone();
-        let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-        manifest.id = "settings".into();
-        let entry = manifest_application.host.as_mut().unwrap();
-        entry.implementation = Implementation::Native {
-            implementation: maka_settings_native::IMPLEMENTATION.into(),
-        };
-        entry.configuration =
-            json!({"type":"object","properties":{},"additionalProperties":false}).into();
-        entry.exports = BTreeMap::from([(
-            maka_settings_native::EXPORT.into(),
-            Export {
-                contract: maka_settings_native::contract::contract(),
-                availability: Availability::Required,
-            },
-        )]);
-        Package::new(BTreeMap::from([(MANIFEST_FILE.into(), {
-            manifest.application = Some(
-                maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap(),
-            );
-            serde_json::to_vec(&manifest).unwrap()
-        })]))
-        .unwrap()
-    };
-    let mut files = consumer.files().clone();
-    let mut manifest = consumer.manifest().clone();
-    let mut manifest_application = manifest.application.as_ref().unwrap().declaration().clone();
-    manifest_application.host.as_mut().unwrap().imports.insert(
-        "settings".into(),
-        Import {
-            contract: maka_settings_native::contract::contract(),
-            cardinality: Cardinality::One,
-        },
-    );
-    files.insert(MANIFEST_FILE.into(), {
-        manifest.application =
-            Some(maka_plugin_core::package::CheckedDeclaration::new(manifest_application).unwrap());
-        serde_json::to_vec(&manifest).unwrap()
-    });
-    let consumer = Package::new(files).unwrap();
-    input.instances.insert(
-        "settings".into(),
-        Node {
-            key: Uuid::from_u128(5),
-            package: settings.application_ref().into(),
-            use_package: PackageUse::Host,
-            configuration: NodeConfiguration::default(),
-            parameters: NodeConfiguration::default(),
-            disabled: false,
-            overrides: vec![],
-            bindings: BTreeMap::new(),
-        },
-    );
-    for name in ["a", "b"] {
-        let node = input.instances.get_mut(name).unwrap();
-        node.package = consumer.application_ref().into();
-        node.bindings.insert(
-            "settings".into(),
-            vec![Target::Instance {
-                path: vec!["settings".into()],
-                export: maka_settings_native::EXPORT.into(),
-            }],
-        );
-    }
-    (input, vec![provider, consumer, receipts, settings])
+    (input, vec![provider, consumer, receipts, settings_package])
 }
 // The default dispatcher is thread-local: hold the guard through current-thread
 // fixture shutdown so actual producer tasks remain inside the capture.
@@ -478,6 +358,14 @@ fn bundled_catalog() -> Arc<maka_providers::catalog::Catalog> {
     Arc::new(maka_providers::catalog::Catalog::new(
         maka_providers::catalog::Snapshot::bundled().unwrap(),
     ))
+}
+
+type FixtureCapture =
+    Arc<StdMutex<Option<(Arc<Owner>, maka_host_runtime::application::NativeServices)>>>;
+
+enum FixtureApplication {
+    Agent,
+    Workhub(workhub::Setup),
 }
 
 struct Fixture {
@@ -533,42 +421,6 @@ impl Fixture {
         matching.into_iter().next().unwrap()
     }
 
-    async fn facts_after_failed_shutdown(
-        &self,
-        session: &str,
-    ) -> Vec<maka_agent_facts::event::Fact> {
-        // Root admission is closed after uncertain physical cleanup. Inspect
-        // only the original durable evidence, without admitting another job.
-        assert!(self.store.shutdown().await.is_err());
-        let database = rusqlite::Connection::open_with_flags(
-            self.session_database(session),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )
-        .unwrap();
-        let (count, bytes): (i64, i64) = database.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(length(CAST(event_json AS BLOB))),0) FROM runtime_events WHERE event_session=?",
-            [session], |row| Ok((row.get(0)?, row.get(1)?)),
-        ).unwrap();
-        assert!(
-            count <= 256 && bytes <= 4 * 1024 * 1024,
-            "fixture evidence exceeds original prefix bounds"
-        );
-        let mut statement = database
-            .prepare(
-                "SELECT event_json FROM runtime_events WHERE event_session=? ORDER BY sequence",
-            )
-            .unwrap();
-        statement
-            .query_map([session], |row| row.get::<_, String>(0))
-            .unwrap()
-            .map(|row| {
-                serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&row.unwrap())
-                    .unwrap()
-                    .fact
-            })
-            .collect()
-    }
-
     fn session_database(&self, id: &str) -> std::path::PathBuf {
         let control = rusqlite::Connection::open_with_flags(
             self.root.join(maka_event_log::root::ROOT_DATABASE),
@@ -615,15 +467,7 @@ impl Fixture {
     }
 
     async fn new(base: &str, model: Option<ModelExecutor>) -> Self {
-        Self::with_peer(base, model, None).await
-    }
-    async fn with_peer(
-        base: &str,
-
-        model: Option<ModelExecutor>,
-        peer: Option<Arc<maka_transport::transport::PeerPolicy>>,
-    ) -> Self {
-        Self::with_services(base, model, peer, None).await
+        Self::configured_provider(base, model, None, None, |_| {}, "openai-compatible").await
     }
     async fn with_services(
         base: &str,
@@ -632,7 +476,7 @@ impl Fixture {
         peer: Option<Arc<maka_transport::transport::PeerPolicy>>,
         tooling: Option<service_tools::Setup>,
     ) -> Self {
-        Self::configured(base, model, peer, tooling, |_| {}).await
+        Self::configured_provider(base, model, peer, tooling, |_| {}, "openai-compatible").await
     }
     async fn configured(
         base: &str,
@@ -651,6 +495,45 @@ impl Fixture {
         tooling: Option<service_tools::Setup>,
         configure: impl FnOnce(&mut Configuration),
         provider_name: &str,
+    ) -> Self {
+        Self::configured_application(
+            base,
+            model,
+            peer,
+            tooling,
+            configure,
+            provider_name,
+            FixtureApplication::Agent,
+        )
+        .await
+    }
+    async fn workhub(base: &str, setup: workhub::Setup) -> Self {
+        Self::workhub_configured(base, setup, |_| {}).await
+    }
+    async fn workhub_configured(
+        base: &str,
+        setup: workhub::Setup,
+        configure: impl FnOnce(&mut Configuration),
+    ) -> Self {
+        Self::configured_application(
+            base,
+            None,
+            None,
+            None,
+            configure,
+            "openai-compatible",
+            FixtureApplication::Workhub(setup),
+        )
+        .await
+    }
+    async fn configured_application(
+        base: &str,
+        model: Option<ModelExecutor>,
+        peer: Option<Arc<maka_transport::transport::PeerPolicy>>,
+        tooling: Option<service_tools::Setup>,
+        configure: impl FnOnce(&mut Configuration),
+        provider_name: &str,
+        application: FixtureApplication,
     ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("root");
@@ -722,6 +605,7 @@ impl Fixture {
             goals: false,
             plans: false,
             todo: false,
+            bot: false,
             automatic_titles: false,
             recaps: false,
             recall: false,
@@ -753,7 +637,10 @@ impl Fixture {
         if let Some(tooling) = &tooling {
             settings.tools = tooling.selections();
         }
-        let (mut input, mut packages) = input(&settings);
+        let (mut input, mut packages) = match &application {
+            FixtureApplication::Agent => input(&settings),
+            FixtureApplication::Workhub(setup) => setup.composition(&settings),
+        };
         if let Some(tooling) = &tooling {
             tooling.install(&mut input, &mut packages);
         }
@@ -762,61 +649,85 @@ impl Fixture {
             .commit_application(deployment, 0, input, vec![], packages)
             .await
             .unwrap();
-        let captured = Arc::new(StdMutex::new(None));
-        let capture = captured.clone();
-        let replacement = Arc::new(StdMutex::new(model));
+        let captured: FixtureCapture = Arc::new(StdMutex::new(None));
         let mut native = NativeRegistry::default();
         let catalog = bundled_catalog();
         maka_settings_native::provide(&mut native, catalog.clone()).unwrap();
         if let Some(tooling) = &tooling {
             tooling.provide(&mut native);
         }
-        // Actual Host NativeContext and original NativeOwner; only the model
-        // implementation is controlled in failure tests, never Root/admission.
-        native
-            .insert(
-                IMPLEMENTATION.into(),
-                Arc::new(move |context, configuration| {
-                    let capture = capture.clone();
-                    let catalog = catalog.clone();
-                    let replacement = replacement.lock().unwrap().take();
-                    Box::pin(async move {
-                        let services = context.services();
-                        let mut owner = Owner::open(context, configuration, catalog).await.unwrap();
-                        if let Some(model) = replacement {
-                            Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
-                                model,
-                                maka_tools::CodeExecutor::new(Default::default()).unwrap(),
-                            )
-                            .unwrap();
-                        }
-                        *capture.lock().unwrap() = Some((owner.clone(), services));
-                        let service = Arc::new(Agent(owner));
-                        NativeActivation {
-                            owner: service.clone(),
-                            exports: Ok(BTreeMap::from([(
-                                EXPORT.into(),
-                                maka_plugin_core::runtime::Published {
-                                    contract: contract(),
-                                    value: service
-                                        as Arc<dyn maka_host_runtime::application::Handler>,
-                                },
-                            )])),
-                        }
-                    })
-                }),
-            )
-            .unwrap();
-        let (issuer, policy): (Issuer, Arc<dyn Policy>) = match peer {
-            Some(peer) => (peer.issuer(), peer),
-            None => {
-                let native = tooling.as_ref().map(service_tools::Setup::policy);
-                let issuer = native
-                    .as_ref()
-                    .map(|policy| policy.issuer())
-                    .unwrap_or_default();
-                (issuer.clone(), Arc::new(Grant(issuer, native)))
+        match &application {
+            FixtureApplication::Workhub(setup) => setup.provide(&mut native, captured.clone()),
+            FixtureApplication::Agent => {
+                let capture = captured.clone();
+                let replacement = Arc::new(StdMutex::new(model));
+                // Actual Host NativeContext and original NativeOwner; only the model
+                // implementation is controlled in failure tests, never Root/admission.
+                native
+                    .insert(
+                        IMPLEMENTATION.into(),
+                        Arc::new(move |context, configuration| {
+                            let capture = capture.clone();
+                            let catalog = catalog.clone();
+                            let replacement = replacement.lock().unwrap().take();
+                            Box::pin(async move {
+                                let services = context.services();
+                                let mut owner =
+                                    Owner::open(context, configuration, catalog).await.unwrap();
+                                if let Some(model) = replacement {
+                                    Arc::get_mut(&mut owner).unwrap().engine = Engine::new(
+                                        model,
+                                        maka_tools::CodeExecutor::new(Default::default()).unwrap(),
+                                    )
+                                    .unwrap();
+                                }
+                                *capture.lock().unwrap() = Some((owner.clone(), services));
+                                let service = Arc::new(Agent(owner));
+                                NativeActivation {
+                                    owner: service.clone(),
+                                    exports: Ok(BTreeMap::from([(
+                                        EXPORT.into(),
+                                        maka_plugin_core::runtime::Published {
+                                            contract: contract(),
+                                            value: service
+                                                as Arc<dyn maka_host_runtime::application::Handler>,
+                                        },
+                                    )])),
+                                }
+                            })
+                        }),
+                    )
+                    .unwrap();
             }
+        }
+        let (issuer, policy): (Issuer, Arc<dyn Policy>) = match &application {
+            FixtureApplication::Workhub(setup) => {
+                let issuer = Issuer::default();
+                (
+                    issuer.clone(),
+                    Arc::new(Grant(issuer, Some(setup.policy()))),
+                )
+            }
+            FixtureApplication::Agent => match peer {
+                Some(peer) => (peer.issuer(), peer),
+                None => {
+                    let native = tooling.as_ref().map(service_tools::Setup::policy).or_else(|| {
+                        let methods = settings.tools.iter().filter(|tool|
+                            matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Export { name } if name == EXPORT)
+                        ).map(|tool| tool.method.clone()).collect::<std::collections::BTreeSet<_>>();
+                        (!methods.is_empty()).then(|| Arc::new(maka_transport::transport::PeerPolicy::with_native_grants(vec![
+                            maka_transport::transport::NativeGrant {
+                                origin: id(1), consumer: id(1), provider: id(1), export: EXPORT.into(), methods, recovery: true,
+                            }
+                        ]).unwrap()))
+                    });
+                    let issuer = native
+                        .as_ref()
+                        .map(|policy| policy.issuer())
+                        .unwrap_or_default();
+                    (issuer.clone(), Arc::new(Grant(issuer, native)))
+                }
+            },
         };
         let app = Application::start_from_store(
             store.clone(),
@@ -961,8 +872,10 @@ impl Fixture {
         completion.result
     }
     async fn drained(&self) {
-        while !self.owner.workers.is_empty() {
-            tokio::task::yield_now().await;
+        let closed = self.owner.workers.close();
+        self.owner.workers.wait().await;
+        if closed && !self.owner.stop.is_cancelled() {
+            self.owner.workers.reopen();
         }
     }
 }
@@ -993,172 +906,6 @@ async fn response_with_thinking(socket: &mut TcpStream, text: &str, thinking: Op
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
 }
 
-#[tokio::test]
-async fn canonical_history_is_bounded_utf8_and_keeps_its_original_fence() {
-    tokio::time::timeout(Duration::from_secs(30), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}/v1", listener.local_addr().unwrap());
-        let reply = "中文👩🏽‍💻\u{1}".repeat(700);
-        let response_text = reply.clone();
-        let server = tokio::spawn(async move {
-            for turn in 0..2 {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                request(&mut socket).await;
-                let text = if turn == 0 { &response_text } else { "Later response" };
-                let delta = json!({"id":"history","choices":[{"index":0,"delta":{"content":text},"finish_reason":null}]});
-                let body = format!("data: {delta}\n\ndata: {{\"id\":\"history\",\"choices\":[{{\"index\":0,\"delta\":{{}},\"finish_reason\":\"stop\"}}]}}\n\ndata: [DONE]\n\n");
-                socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
-            }
-        });
-        let fixture = Fixture::new(&base, None).await;
-        let session = fixture.create("History").await;
-        let message = format!("{}中文", "\u{0}".repeat(9000));
-        fixture.mutation(2, "send", json!({"sessionId":session,"message":message,"model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
-        fixture.drained().await;
-        let mut input = json!({"sessionId":session,"position":{"kind":"start"}});
-        let mut user = String::new();
-        let mut assistant = String::new();
-        let mut fence = None;
-        let mut later = false;
-        let mut finished = false;
-        for _ in 0..128 {
-            let page = fixture.query("history", input.clone()).await.unwrap();
-            assert!(serde_json::to_vec(&page).unwrap().len() < 64 * 1024);
-            assert!(!page.to_string().contains("private-fixture-key"));
-            let through = page["through"].as_u64().unwrap();
-            assert_eq!(*fence.get_or_insert(through), through);
-            input["through"] = json!(through);
-            assert_eq!(page["kind"], "ready");
-            let chunks = page["chunks"].as_array().unwrap();
-            assert!(chunks.len() <= 2);
-            assert!(chunks.iter().map(|chunk| chunk["text"].as_str().unwrap().len()).sum::<usize>() <= 32 * 1024);
-            for chunk in chunks {
-                let text = chunk["text"].as_str().unwrap();
-                assert!(text.len() <= 32 * 1024);
-                match chunk["role"].as_str().unwrap() {
-                    "user" => user.push_str(text),
-                    "assistant" => assistant.push_str(text),
-                    role => panic!("unexpected conversation role {role}"),
-                }
-                assert!(chunk.get("attachments").is_none());
-            }
-            if !later {
-                fixture.send(&session).await.unwrap();
-                fixture.drained().await;
-                later = true;
-            }
-            if page["after"].is_null() { finished = true; break; }
-            input["position"] = json!({"kind":"after","cursor":page["after"]});
-        }
-        assert!(finished);
-        assert_eq!(user, message);
-        assert_eq!(assistant, reply);
-        let event_fence = fence.unwrap();
-        let mut input = json!({"sessionId":session,"position":{"kind":"event","sequence":event_fence + 1}});
-        let mut newer_fence = None;
-        let mut newer_user = String::new();
-        let mut newer_assistant = String::new();
-        let mut finished = false;
-        for _ in 0..128 {
-            let page = fixture.query("history", input.clone()).await.unwrap();
-            let through = page["through"].as_u64().unwrap();
-            assert_eq!(*newer_fence.get_or_insert(through), through);
-            input["through"] = json!(through);
-            assert_eq!(page["kind"], "ready");
-            for chunk in page["chunks"].as_array().unwrap() {
-                assert!(chunk["position"]["sourceSequence"].as_u64().unwrap() > event_fence);
-                match chunk["role"].as_str().unwrap() {
-                    "user" => newer_user.push_str(chunk["text"].as_str().unwrap()),
-                    "assistant" => newer_assistant.push_str(chunk["text"].as_str().unwrap()),
-                    role => panic!("unexpected conversation role {role}"),
-                }
-            }
-            if page["after"].is_null() { finished = true; break; }
-            input["position"] = json!({"kind":"after","cursor":page["after"]});
-        }
-        assert!(finished);
-        assert_eq!(newer_user, "Hello");
-        assert_eq!(newer_assistant, "Later response");
-        let search = |through| json!({"sessionId":session,"through":through,"after":null,"query":"Later response","caseSensitive":true,"wholeWord":false,"includeInternal":false});
-        let original_search = fixture.query("search", search(event_fence)).await.unwrap();
-        assert_eq!(original_search["matches"], json!([]));
-        let current_search = fixture.query("search", search(newer_fence.unwrap())).await.unwrap();
-        assert_eq!(current_search["matches"].as_array().unwrap().len(), 1);
-        let match_position = current_search["matches"][0]["position"].clone();
-        let located = fixture.query("history", json!({"sessionId":session,"through":newer_fence.unwrap(),"position":{"kind":"row","position":match_position,"field":"body"}})).await.unwrap();
-        assert_eq!(located["chunks"][0]["text"], "Later response");
-        let tail = fixture.query("history", json!({"sessionId":session,"through":event_fence,"position":{"kind":"tail"}})).await.unwrap();
-        let cursor = tail["before"].clone();
-        assert!(cursor.is_object());
-        for kind in ["before", "after"] {
-            assert!(fixture.query("history", json!({"sessionId":session,"position":{"kind":kind,"cursor":cursor}})).await.is_err(), "cursor navigation must carry its captured fence");
-        }
-        let mut reverse_input = json!({"sessionId":session,"through":event_fence,"position":{"kind":"tail"}});
-        let (mut reverse_user, mut reverse_assistant) = (String::new(), String::new());
-        let mut reverse_done = false;
-        for _ in 0..128 {
-            let page = fixture.query("history", reverse_input.clone()).await.unwrap();
-            assert_eq!(page["through"], event_fence);
-            assert!(serde_json::to_vec(&page).unwrap().len() < 64 * 1024);
-            assert_eq!(page["kind"], "ready");
-            for chunk in page["chunks"].as_array().unwrap().iter().rev() {
-                let text = chunk["text"].as_str().unwrap();
-                match chunk["role"].as_str().unwrap() {
-                    "user" => reverse_user.insert_str(0, text),
-                    "assistant" => reverse_assistant.insert_str(0, text),
-                    role => panic!("unexpected role {role}"),
-                }
-            }
-            if page["before"].is_null() { reverse_done = true; break; }
-            reverse_input["position"] = json!({"kind":"before","cursor":page["before"]});
-        }
-        assert!(reverse_done);
-        assert_eq!(reverse_user, message);
-        assert_eq!(reverse_assistant, reply);
-        // Sampled navigation uses the same canonical rows and immutable fence.
-        let empty = fixture.query("historyLandmarks", json!({"sessionId":session,"through":0})).await.unwrap();
-        assert_eq!(empty, json!({"through":0,"landmarks":[]}));
-        let landmarks = fixture.query("historyLandmarks", json!({"sessionId":session,"through":event_fence})).await.unwrap();
-        assert_eq!(landmarks["through"], event_fence);
-        assert!(serde_json::to_vec(&landmarks).unwrap().len() <= 64 * 1024);
-        let original_landmarks = landmarks["landmarks"].as_array().unwrap();
-        assert_eq!(original_landmarks.len(), 1);
-        let start = fixture.query("history", json!({"sessionId":session,"through":event_fence,"position":{"kind":"start"}})).await.unwrap();
-        assert_eq!(original_landmarks[0]["turnId"], start["chunks"][0]["turnId"]);
-        assert_eq!(original_landmarks[0]["position"], start["chunks"][0]["position"]);
-        assert_eq!(original_landmarks[0]["label"], "\0".repeat(96));
-        let current = fixture.query("historyLandmarks", json!({"sessionId":session,"through":newer_fence.unwrap()})).await.unwrap();
-        assert_eq!(current["through"], newer_fence.unwrap());
-        assert!(serde_json::to_vec(&current).unwrap().len() <= 64 * 1024);
-        let current_landmarks = current["landmarks"].as_array().unwrap();
-        assert_eq!(current_landmarks.len(), 2);
-        assert_eq!(current_landmarks[0], original_landmarks[0]);
-        let raw = fixture.session(&session).await.session_events(&session, 0, newer_fence.unwrap(), 512, 1024 * 1024).await.unwrap();
-        assert!(raw.next_after.is_none());
-        let endings = raw.events.iter().filter(|stored| matches!(&stored.event.fact, maka_agent_facts::event::Fact::InvocationEnded {outcome:maka_agent_facts::event::InvocationOutcome::Completed})).collect::<Vec<_>>();
-        assert_eq!(endings.len(), 2);
-        // Successful settlement adds a raw turn_state row that conversation
-        // pages omit; the returned bound must retain that canonical endpoint.
-        for (landmark, ending) in current_landmarks.iter().zip(endings) {
-            assert_eq!(landmark["turnId"], ending.event.invocation.turn_id);
-            assert_eq!(landmark["lastPosition"], json!({"sourceSequence":ending.sequence,"itemIndex":0}));
-        }
-        assert_eq!(current_landmarks[1]["label"], "Hello");
-        assert_eq!(current_landmarks[1]["turnId"], located["chunks"][0]["turnId"]);
-        assert!(current_landmarks[1]["position"]["sourceSequence"].as_u64().unwrap() > event_fence);
-        let anchored = fixture.query("history", json!({"sessionId":session,"through":newer_fence.unwrap(),"position":{"kind":"row","position":current_landmarks[1]["position"],"field":"body"}})).await.unwrap();
-        assert_eq!(anchored["chunks"][0]["text"], "Hello");
-        assert_eq!(anchored["chunks"][0]["turnId"], current_landmarks[1]["turnId"]);
-        let future = fixture.through(&session).await + 1;
-        assert!(fixture.query("historyLandmarks", json!({"sessionId":session,"through":future})).await.is_err());
-        assert!(fixture.query("historyLandmarks", json!({"sessionId":"foreign_session","through":event_fence})).await.is_err());
-        assert!(fixture.query("history", json!({"sessionId":session,"position":{"kind":"after","cursor":{"position":{"sourceSequence":0,"itemIndex":0},"offset":0}}})).await.is_err());
-        assert!(fixture.query("history", json!({"sessionId":"foreign_session","position":{"kind":"start"}})).await.is_err());
-        server.await.unwrap();
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-    }).await.unwrap();
-}
 #[tokio::test]
 async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() {
     tokio::time::timeout(Duration::from_secs(30),async {
@@ -1222,7 +969,12 @@ async fn actual_http_runs_overlap_and_observer_loss_does_not_cancel_execution() 
         assert!(completed["through"].as_u64().unwrap() >= active["through"].as_u64().unwrap());
         let observation = fixture.session(&first).await.session_projection::<Value>(&first).await.unwrap().unwrap();
         let events = fixture.session(&first).await.session_stream_events(&first,0,observation.through_sequence,32,64*1024).await.unwrap();
-        assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::PartDelta{text,..} if text=="Elegant response")));
+        assert!(events.events.iter().any(|event| matches!(&event.fact,maka_event_log::observation::StreamFact::StepEnded { completed: true, .. })));
+        let history = fixture.query("history", json!({"sessionId":first,"through":observation.through_sequence,"position":{"kind":"start"}})).await.unwrap();
+        let response: String = history["chunks"].as_array().unwrap().iter()
+            .filter(|chunk| chunk["role"] == "assistant")
+            .map(|chunk| chunk["text"].as_str().unwrap()).collect();
+        assert_eq!(response, "Elegant response");
         let prefix = fixture.prefix(&first, 128, 1024*1024).await;
         let model_request = prefix.events.iter().find(|row| row.event.invocation.session_id == first && matches!(row.event.fact, maka_agent_facts::event::Fact::ModelRequested { .. })).unwrap();
         let composition = fixture.session(&first).await.request_composition(&first, &model_request.event.id).await.unwrap().unwrap();
@@ -1281,21 +1033,6 @@ async fn original_operation_conflicts_and_private_namespace_never_cross_sessions
                 .await
                 .unwrap_err()
                 .contains("agent_session_unavailable")
-        );
-        assert!(
-            fixture
-                .app
-                .client()
-                .prepare_mutation(
-                    fixture.binding(2).await,
-                    "send".into(),
-                    json!({"sessionId":first["id"],"message":"Unauthorized","model":fixture.selection().await}),
-                    scope(&fixture.issuer, false),
-                    Uuid::new_v4(),
-                    Attachments::new().into(),
-                )
-                .await
-                .is_err()
         );
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
@@ -1439,7 +1176,6 @@ async fn cleanup_case(panic: bool) {
     let fixture = Fixture::new("http://127.0.0.1:1/v1", Some(model)).await;
 
     let session = fixture.create("Physical lifetime").await;
-    let physical_session = fixture.session(&session).await;
 
     *fault.database.lock().unwrap() = Some(fixture.session_database(&session));
     fixture.send(&session).await.unwrap();
@@ -1482,26 +1218,25 @@ async fn cleanup_case(panic: bool) {
     fixture.drained().await;
 
     if let Some(reference) = reference {
-        // Test the original admission gate after terminal persistence failed.
-        assert!(
-            fixture
-                .owner
-                .send(
-                    Send {
-                        session_id: session.clone(),
-                        message: "after failed cleanup".into(),
-                        model: selection,
-                        thinking_level: None,
-                        attachments: vec![]
-                    },
-                    &reference,
-                    &scope(&fixture.issuer, true)
-                )
-                .await
-                .err()
-                .unwrap()
-                .contains("agent_cleanup_unconfirmed")
-        );
+        // The damaged partition can still reject writes, but physical cleanup
+        // must not create a permanent admission ban on this session.
+        let error = fixture
+            .owner
+            .send(
+                Send {
+                    session_id: session.clone(),
+                    message: "after failed cleanup".into(),
+                    model: selection,
+                    thinking_level: None,
+                    attachments: vec![],
+                },
+                &reference,
+                &scope(&fixture.issuer, true),
+            )
+            .await
+            .err()
+            .unwrap();
+        assert!(!error.contains("agent_cleanup_unconfirmed"), "{error}");
         let raw = rusqlite::Connection::open_with_flags(
             fixture.session_database(&session),
             rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
@@ -1517,24 +1252,21 @@ async fn cleanup_case(panic: bool) {
         assert_eq!(pending, 1);
     }
     assert_eq!(
-        fixture.owner.runs.lock().await.quarantined.len(),
+        fixture.owner.runs.lock().await.retained_cleanup.len(),
         usize::from(panic)
     );
-    assert_eq!(
-        fixture.owner.runs.lock().await.closing,
-        !panic,
-        "completion uncertainty quarantines only the session; advancing after SQL failure closes the owner"
+    assert!(
+        !fixture.owner.runs.lock().await.closing,
+        "one failed invocation must not close the Agent owner"
     );
-    assert_eq!(fixture.owner.stop.is_cancelled(), !panic);
+    assert!(!fixture.owner.stop.is_cancelled());
 
-    if panic {
-        assert!(matches!(
-            physical_session.execution_scope(None).await,
-            Err(maka_event_log::StoreError::ConnectionClosed)
-        ));
-    }
-    drop(physical_session);
-    let close = fixture.app.shutdown().await;
+    let close = loop {
+        match fixture.app.shutdown_if_idle().await {
+            Ok(false) => tokio::task::yield_now().await,
+            result => break result,
+        }
+    };
 
     assert_eq!(close.is_err(), panic);
     fixture.config.shutdown().await.unwrap();
@@ -1576,10 +1308,10 @@ async fn cleanup_case(panic: bool) {
         (
             "queue_cleanup_unconfirmed",
             "cleanup_unconfirmed",
-            "session_quarantined",
+            "resources_retained",
         )
     } else {
-        ("queue_advance_failed", "store_sqlx", "owner_closing")
+        ("queue_advance_failed", "store_sqlx", "operation_failed")
     };
     let event = log
         .lines()
@@ -1614,7 +1346,7 @@ async fn cleanup_case(panic: bool) {
     }
 }
 #[tokio::test]
-async fn model_panic_and_terminal_sql_failure_quarantine_execution_and_keep_root() {
+async fn model_panic_and_terminal_sql_failure_keep_the_owner_open_and_retain_original_custody() {
     tokio::time::timeout(Duration::from_secs(20), cleanup_case(true))
         .await
         .unwrap();
@@ -1624,383 +1356,6 @@ async fn ordinary_model_and_terminal_sql_failures_preserve_confirmed_physical_cl
     tokio::time::timeout(Duration::from_secs(20), cleanup_case(false))
         .await
         .unwrap();
-}
-
-#[tokio::test]
-async fn public_availability_resumes_stable_sessions_and_separates_deployments() {
-    tokio::time::timeout(Duration::from_secs(20), async {
-        let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-        let session = fixture.create("Stable conversation").await;
-        let deployment = fixture.app.source().unwrap().deployment;
-        fixture.app.shutdown().await.unwrap();
-        let mut native = NativeRegistry::default();
-        maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
-        crate::owner::tests::provide_all(&mut native).unwrap();
-        let resumed = Application::start_from_store(
-            fixture.store.clone(),
-            deployment,
-            native,
-            fixture.issuer.clone(),
-            Arc::new(Grant(fixture.issuer.clone(), None)),
-            Some(maka_host_js::factory(Default::default())),
-        )
-        .await
-        .unwrap();
-        resumed.ready().await.unwrap();
-        let client = resumed.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), EXPORT.into())
-            .await
-            .unwrap()
-            .remove(0);
-        let listed = client
-            .start(
-                binding.clone(),
-                "list".into(),
-                json!({"filter":"all","position":{"kind":"start"}}),
-                scope(&fixture.issuer, true),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap()
-            .result()
-            .await
-            .unwrap();
-        assert_eq!(listed["sessions"][0]["id"], session);
-        let other_deployment = Uuid::new_v4();
-        let (input, packages) = input(&fixture.owner.settings);
-        fixture
-            .store
-            .commit_application(other_deployment, 0, input, vec![], packages)
-            .await
-            .unwrap();
-        let mut native = NativeRegistry::default();
-        maka_settings_native::provide(&mut native, crate::owner::tests::bundled_catalog()).unwrap();
-        crate::owner::tests::provide_all(&mut native).unwrap();
-        let other = Application::start_from_store(
-            fixture.store.clone(),
-            other_deployment,
-            native,
-            fixture.issuer.clone(),
-            Arc::new(Grant(fixture.issuer.clone(), None)),
-            Some(maka_host_js::factory(Default::default())),
-        )
-        .await
-        .unwrap();
-        other.ready().await.unwrap();
-        let client = other.client();
-        let binding = client
-            .bind(client.activation(&id(2)).unwrap(), EXPORT.into())
-            .await
-            .unwrap()
-            .remove(0);
-        let listed = client
-            .start(
-                binding.clone(),
-                "list".into(),
-                json!({"filter":"all","position":{"kind":"start"}}),
-                scope(&fixture.issuer, true),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap()
-            .result()
-            .await
-            .unwrap();
-        assert!(listed["sessions"].as_array().unwrap().is_empty());
-        let mut foreign = client
-            .subscribe(
-                binding,
-                "watch".into(),
-                json!({"sessionId":session,"after":0}),
-                scope(&fixture.issuer, true),
-                Attachments::new().into(),
-            )
-            .await
-            .unwrap();
-        assert!(foreign.recv().await.is_none());
-        assert!(
-            foreign
-                .completion()
-                .await
-                .result
-                .unwrap_err()
-                .contains("agent_session_unavailable")
-        );
-        other.shutdown().await.unwrap();
-        resumed.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
-
-async fn disabled_connection() {
-    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
-    let session = fixture.create("Bound model").await;
-    let catalog = fixture.config.catalog().await.unwrap();
-    let row = &catalog.connections[0];
-    let expected: ConnectionVersionBasis =
-        serde_json::from_value(json!({"connectionId":row.connection_id,"revision":row.revision}))
-            .unwrap();
-    let updated = fixture
-        .config
-        .update_connection(UpdateCatalogConnectionInput {
-            expected,
-            changes: ConnectionCatalogEntryUpdate {
-                name: Some(row.name.clone()),
-                configuration: Some(row.configuration.clone()),
-                enabled: Some(false),
-                enabled_model_ids: Some(row.enabled_model_ids.clone()),
-                model_overrides: Patch::Keep,
-                request_body_overlay: Patch::Keep,
-            },
-        })
-        .await
-        .unwrap();
-    assert!(matches!(updated, CatalogMutationResult::Committed { .. }));
-    let revision = fixture.config.catalog().await.unwrap().revision;
-    let alternative = serde_json::from_value(json!({"expectedCatalogRevision":revision,"connection":{"slug":"available","name":"Available","provider":row.provider,"configuration":row.configuration,"enabled":true,"enabledModelIds":["fixture-model"]}})).unwrap();
-    assert!(matches!(
-        fixture.config.create_connection(alternative).await.unwrap(),
-        CatalogMutationResult::Committed { .. }
-    ));
-    let alternative_row = fixture
-        .config
-        .catalog()
-        .await
-        .unwrap()
-        .connections
-        .into_iter()
-        .find(|row| row.slug == "available")
-        .unwrap();
-    let maka_config::oauth::enrollment::LoginPreparation::Ready(ticket) = fixture
-        .config
-        .prepare_oauth_login(maka_agent_facts::oauth::LoginStart {
-            expected_credential: None,
-            attempt_id: Uuid::new_v4().to_string(),
-            target: maka_agent_facts::oauth::Target::Existing {
-                expected: ConnectionCredentialTarget {
-                    connection_id: alternative_row.connection_id.clone(),
-                    revision: alternative_row.revision,
-                    slug: alternative_row.slug,
-                    provider: alternative_row.provider,
-                    configuration: alternative_row.configuration.clone(),
-                },
-                configuration: alternative_row.configuration,
-            },
-            authentication: maka_agent_facts::provider::AuthenticationInput {
-                method: "api-key".into(),
-                input: json!({"apiKey":"private-alternative-key"}),
-            },
-        })
-        .await
-        .unwrap()
-    else {
-        panic!("alternative login preparation");
-    };
-    assert!(ticket.claim().await.unwrap());
-    assert!(matches!(
-        ticket
-            .complete(
-                maka_agent_facts::provider::Credential {
-                    secret: "private-alternative-key".into(),
-                    refresh_at: None
-                },
-                2
-            )
-            .await
-            .unwrap(),
-        maka_config::oauth::enrollment::LoginCompletion::Committed(_)
-    ));
-    let result = fixture
-        .config
-        .set_default_target(SetDefaultConnectionTargetInput {
-            expected_catalog_revision: fixture.config.catalog().await.unwrap().revision,
-            target: Some(ConnectionTarget {
-                connection_id: alternative_row.connection_id,
-                model_id: "fixture-model".into(),
-            }),
-        })
-        .await
-        .unwrap();
-    assert!(matches!(result, CatalogMutationResult::Committed { .. }));
-    let error = fixture.send(&session).await.unwrap_err();
-    assert!(error.contains("agent_execution_unavailable"));
-    assert!(!error.contains("private-fixture-key") && !error.contains("private-alternative-key"));
-    let observation = fixture
-        .session(&session)
-        .await
-        .session_projection::<Value>(&session)
-        .await
-        .unwrap()
-        .unwrap();
-    assert!(observation.root_turn.is_none());
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
-}
-#[tokio::test]
-async fn disabled_selected_connection_does_not_use_an_authenticated_default_or_open_a_run() {
-    tokio::time::timeout(Duration::from_secs(20), disabled_connection())
-        .await
-        .unwrap();
-}
-
-#[tokio::test]
-async fn tool_source_uses_original_agent_grant_and_frozen_canonical_fields() {
-    use maka_agent_facts::import::Content;
-    use maka_agent_facts::import::Record;
-    use maka_agent_facts::import::Source;
-    use maka_capabilities::storage::Namespace;
-    use maka_event_log::sessions::PluginSession;
-    use maka_plugin_core::scope::Scope as StorageScope;
-    let fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
-    let seed = fixture.create("Tool source").await;
-    let configuration = fixture
-        .session(&seed)
-        .await
-        .get::<StoredSessionConfiguration>()
-        .await
-        .unwrap()
-        .unwrap()
-        .configuration;
-    let session = format!("{}{}", fixture.owner.prefix, Uuid::new_v4().simple());
-    let plugin = PluginSession {
-        session_id: session.clone(),
-        creator: Namespace::new("tool.source.fixture", StorageScope::Profile).unwrap(),
-        fingerprint: "tool-source-import".into(),
-        managed: false,
-        authority_session_id: None,
-    };
-
-    let input = json!({"count":42,"flag":false,"text":"中😀\0".repeat(2000)});
-    let records = [
-        Content::User {
-            text: "Inspect tools".into(),
-        },
-        Content::ToolCall {
-            call_id: "call".into(),
-            name: "Count".into(),
-            input: Some(input.clone()),
-        },
-        Content::ToolResult {
-            call_id: "call".into(),
-            output: json!(null),
-            is_error: false,
-        },
-    ]
-    .into_iter()
-    .enumerate()
-    .map(|(i, content)| Record {
-        source_message_id: format!("m{i}"),
-        source_turn_id: "turn".into(),
-        timestamp: Some(1),
-        content,
-    })
-    .collect();
-    fixture
-        .store
-        .import_session(
-            &plugin,
-            &Source {
-                adapter: "fixture".into(),
-                session_id: "foreign".into(),
-            },
-            &configuration,
-            records,
-            1,
-        )
-        .await
-        .unwrap();
-
-    let fence = fixture.through(&session).await;
-    let history = loop {
-        let value = fixture
-            .query(
-                "history",
-                json!({"sessionId":session,"through":fence,"position":{"kind":"start"}}),
-            )
-            .await
-            .unwrap();
-        if value["kind"] == "ready" {
-            break value;
-        }
-    };
-    let sequence = history["chunks"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|chunk| chunk["role"] == "tool_call")
-        .unwrap()["position"]
-        .clone();
-    let mut position = json!({"kind":"start"});
-    let mut complete = String::new();
-    loop {
-        let page = fixture.query("source", json!({"sessionId":session,"through":fence,"source":{"kind":"row","position":sequence},"field":"arguments","position":position})).await.unwrap();
-        assert!(serde_json::to_vec(&page).unwrap().len() <= 64 * 1024);
-        assert_eq!(page["kind"], "ready");
-        assert_eq!(page["through"], fence);
-        let source = &page["source"];
-        assert_eq!(source["format"], "json");
-        assert_eq!(source["tool"]["call"]["name"], "Count");
-        let text = source["text"].as_str().unwrap();
-        assert!(text.len() <= 8192);
-        complete.push_str(text);
-        let end = source["offset"].as_u64().unwrap() + text.len() as u64;
-        if end == source["totalBytes"].as_u64().unwrap() {
-            break;
-        }
-        position = json!({"kind":"after","offset":end});
-    }
-    assert_eq!(serde_json::from_str::<Value>(&complete).unwrap(), input);
-    let mut literal = String::new();
-    let mut offset = 0;
-    loop {
-        let page = fixture
-            .query(
-                "source",
-                json!({"sessionId":session,"through":fence,
-            "source":{"kind":"row","position":sequence},"field":"arguments","path":["text"],
-            "position":{"kind":"after","offset":offset}}),
-            )
-            .await
-            .unwrap();
-        let source = &page["source"];
-        assert_eq!(source["path"], json!(["text"]));
-        assert_eq!(source["format"], "text");
-        assert_eq!(source["offset"], offset);
-        literal.push_str(source["text"].as_str().unwrap());
-        offset = literal.len();
-        if offset as u64 == source["totalBytes"].as_u64().unwrap() {
-            break;
-        }
-    }
-    assert_eq!(literal, input["text"].as_str().unwrap());
-    let request = json!({"sessionId":session,"through":fence,"source":{"kind":"row","position":sequence},"field":"arguments","path":["text"],"position":{"kind":"start"}});
-    for (key, value) in [
-        ("sessionId", json!("foreign_session")),
-        ("through", json!(fence + 1)),
-        ("through", json!(0)),
-        ("field", json!("result")),
-    ] {
-        let mut invalid = request.clone();
-        invalid[key] = value;
-        assert!(fixture.query("source", invalid).await.is_err());
-    }
-    let denied = fixture
-        .app
-        .client()
-        .start(
-            fixture.binding(2).await,
-            "source".into(),
-            request,
-            scope(&fixture.issuer, false),
-            Attachments::new().into(),
-        )
-        .await;
-    assert!(denied.is_err());
-    fixture.app.shutdown().await.unwrap();
-    fixture.config.shutdown().await.unwrap();
 }
 
 fn catalog_interaction(

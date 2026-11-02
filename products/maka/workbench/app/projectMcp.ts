@@ -21,7 +21,7 @@ import { cleanup, signal } from 'nsh';
 import type { ServiceMethods } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Control } from '../../../../plugins/agent/conversations/ui/Conversation';
 import type { Host } from './host';
-import { createText, errorText, message } from './text';
+import { createTransientText, createText, errorText, message } from './text';
 
 type AgentMcpView = ServiceMethods['agent']['projectMcp']['output'];
 type AgentMcpTrustResult = ServiceMethods['agent']['trustProjectMcp']['output'];
@@ -32,7 +32,7 @@ export function createProjectMcp(host: Host, sessionId: string, control: Control
   const proposal = signal<Configuration | null>(null);
   const pending = signal(false);
   const error = createText();
-  const notice = createText();
+  const notice = createTransientText();
   let alive = true;
   cleanup(() => {
     alive = false;

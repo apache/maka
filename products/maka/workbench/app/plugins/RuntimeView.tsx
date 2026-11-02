@@ -19,12 +19,13 @@
 
 import { ErrorBoundary, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
+import { LoadingState } from '../Loading';
+import { C } from '../ui';
 import { tr } from '../locale';
 import { errorText, renderText } from '../text';
 const bodyTextStyle = { fontSize: 14, lineHeight: 20 };
 const captionTextStyle = { fontSize: 13, lineHeight: 18 };
 const controlStyle = { padding: 8, borderRadius: 6 };
-const C = { danger: '#f87171', accent: '#60a5fa', muted: '#9ca3af' };
 import type { Contribution, Plugins } from './registry';
 import type {
   UiContributionRef,
@@ -126,7 +127,7 @@ function RuntimeView(props: ViewProps) {
           entry.state().kind === 'loaded'
         }
       >
-        <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Loading…')}</Text>
+        <LoadingState />
       </If>
       <Each
         of={(() => {

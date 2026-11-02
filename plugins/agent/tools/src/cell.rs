@@ -20,7 +20,10 @@
 mod declarations;
 mod session;
 pub(crate) use session::Cells;
-pub(super) fn declarations(definitions: &[ToolDefinition], language: CodeLanguage) -> String {
+pub(super) fn declarations<'a>(
+    definitions: impl IntoIterator<Item = &'a ToolDefinition>,
+    language: CodeLanguage,
+) -> String {
     match language {
         CodeLanguage::JavaScript => declarations::render(definitions),
         CodeLanguage::Python => declarations::python(definitions),
@@ -262,7 +265,7 @@ impl ToolExecutor for NestedTools {
                 Ok(effect) => effect,
                 Err(reason) => {
                     return journal
-                        .reject(operation_id, call, name, input.into(), reason)
+                        .reject(operation_id, call, name, input.into(), None, reason)
                         .await;
                 }
             };
@@ -272,6 +275,7 @@ impl ToolExecutor for NestedTools {
                     call,
                     name.clone(),
                     input,
+                    None,
                     cancellation,
                     effect,
                 )

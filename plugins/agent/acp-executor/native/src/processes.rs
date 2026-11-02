@@ -69,7 +69,13 @@ struct Done {
 }
 impl Processes {
     pub fn is_idle(&self) -> bool {
-        self.entries.lock().unwrap().is_empty() && self.workers.is_idle()
+        !self.workers.has_pending()
+            && self
+                .entries
+                .lock()
+                .unwrap()
+                .values()
+                .all(|entry| entry.running.done.borrow().is_some())
     }
     pub fn new(calls: Arc<calls::Calls>, configuration: Configuration) -> Self {
         Self {
@@ -146,9 +152,6 @@ impl process::Processes for Processes {
                         .as_ref()
                         .is_none_or(|d| d.cleanup.is_err())
                 });
-                if entries.len() >= 32 {
-                    return Err(Error::Invalid("ACP process capacity reached".into()));
-                }
             }
             let principal = match &origin.scope().identity {
                 Identity::Agent { invocation, .. } => Principal::Session {

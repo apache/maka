@@ -19,7 +19,7 @@
 
 # Source headers
 
-First-party source files carry the ASF header. The audit recognizes the header inside the file type's comment syntax and permits a preceding shebang. Third-party source keeps its original attribution.
+First-party source files carry the ASF header. The audit recognizes the header inside the file type's comment syntax and permits a preceding shebang; SQL accepts block and `--` comments with horizontal spacing differences in the license lines, preserves recognized headers byte for byte, and uses block comments for new headers. Third-party source keeps its original attribution.
 
 ```sh
 node scripts/asf-license-headers.mjs check

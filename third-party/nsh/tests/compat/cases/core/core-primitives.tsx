@@ -1,35 +1,19 @@
 // A case of the API's test suite (docs/dev/compatibility.md): every
 // primitive imported from `nsh` (`Image`, `List`, `Canvas` and its classes,
-// `WebView`, `Video`), each laid out where its style puts it, and the same
-// values the modules that exported them first (`nsh`, `nsh`,
-// `nsh`, `nsh`, `nsh`) still export. Its script checks
-// each.
+// `WebView`, `Video`), each laid out where its style puts it, `Image`
+// carrying its functions and the canvas's classes the values its context
+// is made of. Its script checks each.
 import { Canvas, CanvasGradient, CanvasRenderingContext2D, Image, List, Path2D, Text, Video, View, WebView, signal } from "nsh";
-import * as oldCanvas from "nsh";
-import * as oldImage from "nsh";
-import * as oldList from "nsh";
-import * as oldVideo from "nsh";
-import * as oldWebView from "nsh";
 
 function App() {
   let kept: CanvasRenderingContext2D | undefined;
   let gradient: CanvasGradient | undefined;
   const square = new Path2D("M0 0 h50 v50 h-50 Z");
   const report = signal("Not checked");
-  const same =
-    Image === oldImage.Image &&
-    List === oldList.List &&
-    Canvas === oldCanvas.Canvas &&
-    Path2D === oldCanvas.Path2D &&
-    CanvasGradient === oldCanvas.CanvasGradient &&
-    CanvasRenderingContext2D === oldCanvas.CanvasRenderingContext2D &&
-    WebView === oldWebView.WebView &&
-    Video === oldVideo.Video;
   const check = () => {
     const cx = kept!;
     report.set(
       [
-        `same ${same}`,
         `functions ${typeof Image.getSize === "function" && typeof Image.prefetch === "function"}`,
         `context ${cx instanceof CanvasRenderingContext2D}`,
         `gradient ${gradient instanceof CanvasGradient}`,

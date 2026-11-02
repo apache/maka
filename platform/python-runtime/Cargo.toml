@@ -16,6 +16,7 @@
 # under the License.
 
 [package]
+autotests = false
 name = "maka-python-runtime"
 version.workspace = true
 edition.workspace = true
@@ -25,6 +26,7 @@ publish.workspace = true
 [[bin]]
 name = "maka-python-worker"
 path = "src/main.rs"
+test = false
 
 [dependencies]
 maka-agent-facts.workspace = true
@@ -44,3 +46,7 @@ maka-session-state.workspace = true
 maka-tools.workspace = true
 maka-event-log.workspace = true
 tempfile.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

@@ -20,6 +20,9 @@
 //! Same-transaction semantic projection. Only a classified reducer failure can
 //! leave a canonical fact committed with an unavailable projection; SQL/IO and
 //! serialization errors always propagate to the existing transaction boundary.
+use super::source::{
+    CanonicalModelPartSpan, CanonicalToolProjectionSpan, SemanticPayloadSource, locate_model_parts,
+};
 use crate::StoreError;
 use futures_util::FutureExt;
 use maka_agent_facts::{
@@ -27,12 +30,15 @@ use maka_agent_facts::{
     history::{
         RowPosition,
         semantic::{
-            self, Fragment, Frontier, Payload, PendingNotification, SemanticKind, SemanticRow,
+            self, Fragment, FragmentSource, Frontier, Payload, PendingNotification, SemanticKind,
+            SemanticRow,
         },
     },
+    tool_output::DurableToolProjection,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use sqlx::sqlite::SqliteWorkerConnection;
+use std::collections::BTreeMap;
 use std::io::Write;
 
 const PIECE_BYTES: usize = 32 * 1024;
@@ -101,31 +107,93 @@ impl Write for Pieces<'_, '_> {
 async fn fragment(
     db: &mut SqliteWorkerConnection<'_>,
     fragment: &Fragment,
+    canonical: Option<(&str, &DurableToolProjection)>,
+    model_parts: &BTreeMap<u64, CanonicalModelPartSpan>,
 ) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO context_semantic_fragments VALUES(?,?,?,?)")
+    let (source, normalized_projection) = match &fragment.source {
+        FragmentSource::Payload(_) => (SemanticPayloadSource::Pieces, None),
+        FragmentSource::CanonicalModelPart { ordinal } => {
+            if fragment.key.item_index != *ordinal {
+                return Err(invalid("canonical model ordinal differs from fragment"));
+            }
+            let span = *model_parts
+                .get(ordinal)
+                .ok_or_else(|| invalid("canonical model part lacks its typed source"))?;
+            (SemanticPayloadSource::CanonicalModelPart(span), None)
+        }
+        FragmentSource::CanonicalToolProjection => {
+            if fragment.key.item_index != 0 {
+                return Err(invalid(
+                    "canonical Tool projection has a nonzero fragment index",
+                ));
+            }
+            let (json, projection) = canonical
+                .ok_or_else(|| invalid("canonical Tool projection lacks its typed source"))?;
+            let span = CanonicalToolProjectionSpan::locate(fragment.key.source_sequence, json)?;
+            if span.matches_projection(json, projection)? {
+                (SemanticPayloadSource::CanonicalToolProjection(span), None)
+            } else {
+                (SemanticPayloadSource::Pieces, Some(projection))
+            }
+        }
+    };
+    let (storage_kind, offset, len) = match source {
+        SemanticPayloadSource::Pieces => ("pieces", None, None),
+        SemanticPayloadSource::CanonicalModelPart(span) => (
+            "canonical_model_part",
+            Some(span.offset()),
+            Some(span.len()),
+        ),
+        SemanticPayloadSource::CanonicalToolProjection(span) => (
+            "canonical_tool_projection",
+            Some(span.offset()),
+            Some(span.len()),
+        ),
+    };
+    #[derive(Serialize)]
+    enum BorrowedPayload<'a> {
+        Tool(&'a DurableToolProjection),
+    }
+    if matches!(source, SemanticPayloadSource::Pieces) {
+        let mut pieces = Pieces {
+            db,
+            key: fragment.key,
+            index: 0,
+            buffer: Vec::with_capacity(PIECE_BYTES),
+            failure: None,
+        };
+        let serialized = match (&fragment.source, normalized_projection) {
+            (FragmentSource::Payload(payload), _) => serde_json::to_writer(&mut pieces, payload),
+            (FragmentSource::CanonicalToolProjection, Some(projection)) => {
+                serde_json::to_writer(&mut pieces, &BorrowedPayload::Tool(projection))
+            }
+            (FragmentSource::CanonicalModelPart { .. }, _) => {
+                return Err(invalid("canonical model part cannot use extracted pieces"));
+            }
+            (FragmentSource::CanonicalToolProjection, None) => {
+                return Err(invalid("piece projection lacks its normalized value"));
+            }
+        };
+        if let Some(error) = pieces.failure.take() {
+            return Err(error);
+        }
+        serialized?;
+        let flushed = pieces.flush();
+        if let Some(error) = pieces.failure.take() {
+            return Err(error);
+        }
+        flushed?;
+    }
+    let (directory, payload_bytes) = super::directory::prepare_fragment(db, fragment.key, source)?;
+    sqlx::query("INSERT INTO context_semantic_fragments(source_sequence,source_index,storage_kind,byte_offset,byte_len,directory_bytes,payload_bytes) VALUES(?,?,?,?,?,?,?)")
         .bind(fragment.key.source_sequence as i64)
         .bind(fragment.key.item_index as i64)
-        .bind(fragment.part.source_sequence as i64)
-        .bind(fragment.part.item_index as i64)
-        .execute(&mut *db)
-        .await?;
-    let mut pieces = Pieces {
-        db,
-        key: fragment.key,
-        index: 0,
-        buffer: Vec::with_capacity(PIECE_BYTES),
-        failure: None,
-    };
-    let serialized = serde_json::to_writer(&mut pieces, &fragment.payload);
-    if let Some(error) = pieces.failure.take() {
-        return Err(error);
-    }
-    serialized?;
-    let flushed = pieces.flush();
-    if let Some(error) = pieces.failure {
-        return Err(error);
-    }
-    flushed?;
+        .bind(storage_kind)
+        .bind(offset)
+        .bind(len)
+        .bind(super::directory::codec::encode(&directory)?)
+        .bind(i64::try_from(payload_bytes).map_err(|_|invalid("payload length exceeds SQLite range"))?)
+        .execute(&mut *db).await?;
     Ok(())
 }
 
@@ -143,31 +211,6 @@ fn kind(row: &SemanticRow) -> &'static str {
 }
 fn archived(row: &SemanticRow) -> bool {
     matches!(row.kind, SemanticKind::ToolResult { archived: true, .. })
-}
-
-async fn change(
-    db: &mut SqliteWorkerConnection<'_>,
-    owner: &str,
-    row: &SemanticRow,
-    order: RowPosition,
-    revision_invocation: &str,
-    inherited: bool,
-    deleted: bool,
-) -> Result<(), StoreError> {
-    sqlx::query("INSERT INTO context_semantic_changes(owner_session_id,revision,source_sequence,source_index,order_sequence,order_index,invocation_id,revision_invocation,archived,inherited,deleted) VALUES(?,?,?,?,?,?,?,?,?,?,?)")
-        .bind(owner)
-        .bind(row.revision as i64)
-        .bind(row.id.source_sequence as i64)
-        .bind(row.id.item_index as i64)
-        .bind(order.source_sequence as i64)
-        .bind(order.item_index as i64)
-        .bind(&row.invocation.invocation_id)
-        .bind(revision_invocation)
-        .bind(archived(row))
-        .bind(inherited)
-        .bind(deleted)
-        .execute(&mut *db).await?;
-    Ok(())
 }
 
 async fn save_row(
@@ -213,36 +256,17 @@ async fn save_row_mode(
         visible,
         unknown_only,
     } = state;
-    let old:Option<(i64,i64,i64)>=sqlx::query_as("SELECT revision,order_sequence,order_index FROM context_semantic_rows WHERE owner_session_id=? AND source_sequence=? AND source_index=? ORDER BY revision DESC LIMIT 1")
+    let old:Option<i64>=sqlx::query_scalar("SELECT revision FROM context_semantic_rows WHERE owner_session_id=? AND source_sequence=? AND source_index=? ORDER BY revision DESC LIMIT 1")
         .bind(owner)
         .bind(row.id.source_sequence as i64)
         .bind(row.id.item_index as i64)
         .fetch_optional(&mut *db).await?;
-    if old.is_some_and(|old| old.0 == row.revision as i64) {
+    if old == Some(row.revision as i64) {
         return Ok(());
     }
-    if let Some((_, sequence, index)) = old
-        && (sequence, index)
-            != (
-                row.order.source_sequence as i64,
-                row.order.item_index as i64,
-            )
-    {
-        change(
-            db,
-            owner,
-            row,
-            RowPosition {
-                source_sequence: sequence as u64,
-                item_index: index as u64,
-            },
-            revision_invocation,
-            inherited,
-            true,
-        )
-        .await?;
-    }
-    sqlx::query("INSERT INTO context_semantic_rows VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+    let encoded_row = json(row)?;
+    let row_directory = super::directory::row(&encoded_row)?;
+    sqlx::query("INSERT INTO context_semantic_rows(owner_session_id,source_sequence,source_index,revision,order_sequence,order_index,invocation_id,revision_invocation,event_id,kind,archived,inherited,visible,unknown_only,row_json,directory_bytes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
         .bind(owner)
         .bind(row.id.source_sequence as i64)
         .bind(row.id.item_index as i64)
@@ -257,87 +281,16 @@ async fn save_row_mode(
         .bind(inherited)
         .bind(visible)
         .bind(unknown_only)
-        .bind(json(row)?)
+        .bind(encoded_row)
+        .bind(super::directory::codec::encode(&row_directory)?)
         .execute(&mut *db)
         .await?;
-    change(
-        db,
-        owner,
-        row,
-        row.order,
-        revision_invocation,
-        inherited,
-        !visible,
-    )
-    .await
+    Ok(())
 }
 
 // Match the existing copy-hydration metadata batch; this bounds intermediate
-// query rows without limiting the number of projected changes.
+// query rows without limiting the number of reopened notifications.
 const METADATA_PAGE_ROWS: i64 = 128;
-
-pub(super) const STABLE_CHANGES_SQL: &str = "SELECT r.source_sequence,r.source_index,r.revision,r.row_json,r.inherited
-    FROM context_semantic_rows r
-    WHERE r.owner_session_id=?1 AND r.invocation_id=?2 AND r.kind='assistant_part'
-      AND (r.source_sequence,r.source_index,r.revision)>(?3,?4,?5)
-      AND (r.source_sequence,r.source_index)<(?6,?7)
-      AND NOT EXISTS(SELECT 1 FROM context_semantic_rows n WHERE n.owner_session_id=r.owner_session_id
-          AND n.source_sequence=r.source_sequence AND n.source_index=r.source_index AND n.revision>r.revision)
-    ORDER BY r.source_sequence,r.source_index,r.revision LIMIT ?8";
-
-pub(super) async fn stable_changes(
-    db: &mut SqliteWorkerConnection<'_>,
-    stored: &StoredEvent,
-    previous: Option<RowPosition>,
-    next: RowPosition,
-) -> Result<(), StoreError> {
-    let previous = previous.unwrap_or(RowPosition {
-        source_sequence: 0,
-        item_index: 0,
-    });
-    if previous >= next {
-        return Ok(());
-    }
-    let owner = &stored.event.invocation.session_id;
-    // Revisions are nonnegative, so -1 includes the initial source position.
-    let mut cursor = (
-        previous.source_sequence as i64,
-        previous.item_index as i64,
-        -1,
-    );
-    loop {
-        let records: Vec<(i64, i64, i64, String, bool)> = sqlx::query_as(STABLE_CHANGES_SQL)
-            .bind(owner)
-            .bind(&stored.event.invocation.invocation_id)
-            .bind(cursor.0)
-            .bind(cursor.1)
-            .bind(cursor.2)
-            .bind(next.source_sequence as i64)
-            .bind(next.item_index as i64)
-            .bind(METADATA_PAGE_ROWS)
-            .fetch_all(&mut *db)
-            .await?;
-        if records.is_empty() {
-            break;
-        }
-        for (sequence, index, revision, json, inherited) in records {
-            cursor = (sequence, index, revision);
-            let mut row: SemanticRow = decode(&json)?;
-            row.revision = stored.sequence;
-            change(
-                db,
-                owner,
-                &row,
-                row.order,
-                &stored.event.invocation.invocation_id,
-                inherited,
-                false,
-            )
-            .await?;
-        }
-    }
-    Ok(())
-}
 
 async fn unknown_dispatch(
     db: &mut SqliteWorkerConnection<'_>,
@@ -568,9 +521,10 @@ async fn archive(
         db,
         &Fragment {
             key,
-            part: key,
-            payload: Payload::Tool(projection),
+            source: FragmentSource::Payload(Box::new(Payload::Tool(projection))),
         },
+        None,
+        &BTreeMap::new(),
     )
     .await?;
     *payload = key;
@@ -594,6 +548,7 @@ async fn archive(
 pub(crate) async fn record(
     db: &mut SqliteWorkerConnection<'_>,
     stored: &StoredEvent,
+    canonical_json: &str,
 ) -> Result<(), StoreError> {
     let sequence = stored.sequence as i64;
     let owner = &stored.event.invocation.session_id;
@@ -624,7 +579,6 @@ pub(crate) async fn record(
         Some(json) => decode(json)?,
         None => Frontier::default(),
     };
-    let previous_cut = frontier.stable_cut;
     let settled_dispatch = match &stored.event.fact {
         Fact::ToolSettled { operation_id, .. } => frontier
             .calls
@@ -640,8 +594,27 @@ pub(crate) async fn record(
             return Ok(());
         }
     };
+    let canonical_projection = match &stored.event.fact {
+        Fact::ToolSettled {
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection, ..
+                },
+            ..
+        } => Some((canonical_json, model_projection)),
+        _ => None,
+    };
+    let model_parts = if transition
+        .fragments
+        .iter()
+        .any(|fragment| matches!(fragment.source, FragmentSource::CanonicalModelPart { .. }))
+    {
+        locate_model_parts(stored.sequence, canonical_json)?
+    } else {
+        BTreeMap::new()
+    };
     for fragment_value in &transition.fragments {
-        fragment(db, fragment_value).await?;
+        fragment(db, fragment_value, canonical_projection, &model_parts).await?;
     }
     for (row, event_id, inherited) in hidden {
         save_row(
@@ -677,17 +650,6 @@ pub(crate) async fn record(
             .bind(sequence)
             .bind(cut.source_sequence as i64)
             .bind(cut.item_index as i64)
-            .execute(&mut *db)
-            .await?;
-        stable_changes(db, stored, previous_cut, cut).await?;
-    }
-    if let Some(checkpoint) = transition.checkpoint {
-        sqlx::query("INSERT INTO context_semantic_checkpoints VALUES(?,?,?,?,?)")
-            .bind(owner)
-            .bind(sequence)
-            .bind(&stored.event.id)
-            .bind(&stored.event.invocation.invocation_id)
-            .bind(json(&checkpoint)?)
             .execute(&mut *db)
             .await?;
     }

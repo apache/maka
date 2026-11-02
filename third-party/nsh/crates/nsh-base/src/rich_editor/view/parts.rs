@@ -60,7 +60,8 @@ pub struct RichEditorClasses {
     /// its node's classes), as `focusMode` picks them.
     #[prop(skip_none)]
     pub focused_node: Option<SharedString>,
-    /// What an input method is composing at the caret (underlined).
+    /// What an input method is composing, in the line at the caret, in its
+    /// block's typography (underlined).
     #[prop(skip_none)]
     pub composition: Option<SharedString>,
     /// A node a node selection holds (after its node's classes).

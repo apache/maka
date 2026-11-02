@@ -55,9 +55,9 @@ test("flip lays the card out right to left and back", async () => {
   const app = await open(".", { clock: {} });
   await app.press("label:Styles");
   await app.press("Flip");
-  await app.waitFor("direction: rtl");
+  await app.waitFor("text:direction: rtl");
   await app.press("Flip");
-  await app.waitFor("direction: ltr");
+  await app.waitFor("text:direction: ltr");
 });
 
 test("the Typed styles demo shows every card", async () => {

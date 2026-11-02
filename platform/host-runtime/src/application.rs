@@ -34,10 +34,11 @@ pub use caller::Caller;
 pub use context::Context;
 pub use native_context::{NativeContext, NativePersistence, NativeRequest, NativeServices};
 pub use resource_ingress::{
-    CallResources, RESOURCE_CHUNK_LIMIT, ResourceCapture, ResourceDescriptor,
+    CallResources, RESOURCE_CHUNK_LIMIT, ResourceCapture, ResourceCapturer, ResourceDescriptor,
 };
 mod requests;
 mod subscriptions;
+pub use maka_plugin_core::contract::ServiceTarget;
 pub use subscriptions::Subscription;
 
 use futures_util::future::BoxFuture;
@@ -448,6 +449,8 @@ pub struct Snapshot {
     pub initialization_failures: BTreeSet<InstanceId>,
     pub closing: bool,
     pub closed: bool,
+    /// All shutdown attempts completed; cleanup_error may still retain failed custody.
+    pub shutdown_complete: bool,
     pub cleanup_error: Option<String>,
     pub instances: Vec<Status>,
 }
@@ -814,6 +817,11 @@ impl Application {
             ..Default::default()
         });
         let stop = CancellationToken::new();
+        let preparation_resources =
+            maka_capabilities::model_preparation::ModelPreparationResources::new(
+                maka_capabilities::model_preparation::PreparationPolicy::default(),
+            )
+            .map_err(|error| error.to_string())?;
         let dispatch = Arc::new(Dispatch {
             commands,
             bytes: Arc::new(Semaphore::new(resource_ingress::INPUT_WINDOW)),
@@ -834,6 +842,7 @@ impl Application {
                 sources,
                 native,
                 issuer,
+                preparation_resources,
                 policy,
                 scripts,
                 updates,
@@ -886,11 +895,8 @@ impl Application {
         let mut updates = self.client.updates.clone();
         loop {
             let snapshot = updates.borrow().clone();
-            if let Some(error) = snapshot.cleanup_error {
-                return Err(error);
-            }
-            if snapshot.closed {
-                return Ok(());
+            if snapshot.shutdown_complete {
+                return snapshot.cleanup_error.map_or(Ok(()), Err);
             }
             updates
                 .changed()

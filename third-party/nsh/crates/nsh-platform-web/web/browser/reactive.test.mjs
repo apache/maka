@@ -25,6 +25,8 @@ async function fixture() {
   }
   imports.nsh_browser = { value: (...args) => bridge.value(...args) };
   const raw = (await WebAssembly.instantiate(module, imports)).exports;
+  // As `nsh.js` does: link every part, standard module and feature the runtime kept.
+  for (const name of Object.keys(raw)) if (/^nsh_(part|std|feature)_/.test(name)) raw[name]();
   const start = () => {
     const values = new Values();
     bridge = values.imports(() => raw.memory);
@@ -106,9 +108,13 @@ test("registry functions use Rust conversions and preserve error classes", { ski
     assert.equal(os.arch(), "wasm32");
     assert.equal(os.default, os);
     assert.equal(os.EOL, "\n");
-    assert.throws(() => os.homedir(), error => error instanceof Error && /home directory/.test(error.message));
+    assert.throws(() => os.homedir(), error => error instanceof Error && error.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM");
     const process = fixture.modules.exports.get("process");
-    assert.throws(() => process.run(42), TypeError);
+    // A function returning a promise never throws: a wrong argument rejects.
+    let thrown = false, run;
+    try { run = process.run(42); } catch { thrown = true; }
+    assert.equal(thrown, false);
+    await assert.rejects(run, TypeError);
     assert.equal(process.platform, os.platform());
   } finally { fixture.modules.dispose(); fixture.close(); }
 });
@@ -248,6 +254,25 @@ test("class cycles collect, escaped callbacks stay live, and old callbacks are i
 });
 
 
+test("a Rust stop function runs once and goes with its owner", { skip: !path }, async () => {
+  const f = await fixture();
+  const modules = f.modules();
+  const Box = modules.exports.get("test/browser").CallbackBox;
+  const stop = Box.listen(() => 1);
+  assert.equal(typeof stop, "function");
+  assert.equal(Box.listening(), 1);
+  stop();
+  stop();
+  assert.equal(Box.listening(), 0);
+  let dispose;
+  f.api.root(d => { dispose = d; Box.listen(() => 2); Box.listen(() => 3)(); });
+  assert.equal(Box.listening(), 1);
+  dispose();
+  assert.equal(Box.listening(), 0);
+  modules.dispose();
+  f.close();
+});
+
 test("active memo payloads survive accessor collection until their owner is disposed", { skip: !path || !global.gc }, async () => {
   const { api, close } = await fixture();
   let dispose, payload;
@@ -367,6 +392,30 @@ test("virtualized lists recycle owners and preserve the last item while data shr
   assert.equal(cleaned, 2);
   lists.bind(id, [[0, 0]]);
   assert.equal(rows.length, 2);
+  close();
+});
+
+test("list cells keep their items when items are inserted before them", { skip: !path }, async () => {
+  const { createLists } = await import("./list.js");
+  const { api, invoke, values, dom, close } = await fixture();
+  const lists = createLists(invoke, values, api, dom, () => true, () => {});
+  const data = api.signal([{ id: "a" }, { id: "b" }]);
+  const shown = [], indices = [];
+  let node, dispose;
+  api.root(stop => {
+    dispose = stop;
+    node = lists.render({ get each() { return data(); },
+      children(item, index) { indices.push(index); return () => { shown.push(item().id); return item().id; }; } });
+  });
+  const id = values.nodeIds.get(node);
+  lists.bind(id, [[0, 0], [1, 1]]);
+  assert.deepEqual(shown, ["a", "b"]);
+  data.set([{ id: "new" }, ...data()]);
+  assert.deepEqual(indices.map(index => index()), [1, 2]);
+  // The core's bindings after the splice move nothing more.
+  lists.bind(id, [[0, 1], [1, 2]]);
+  assert.deepEqual(shown, ["a", "b"]);
+  dispose();
   close();
 });
 
@@ -539,6 +588,25 @@ test("error boundaries deliver the first failure after a batch unwinds", { skip:
   dispose(); close();
 });
 
+test("a listener whose owner went runs unowned, as QuickJS runs it", { skip: !path }, async () => {
+  const { api, values, dom, close } = await fixture();
+  const heard = [];
+  let owner, node, dispose;
+  api.root(stop => {
+    dispose = stop;
+    owner = api.getOwner();
+    node = dom.rt.element("view");
+    dom.rt.prop(node, "onPress", payload => heard.push([payload, api.getOwner()]));
+  });
+  // The view outlives the owner it was made under (a popup leaving with
+  // its exit motion still reports its events).
+  dispose();
+  assert.equal(api.runWithOwner(owner, () => api.getOwner()), null);
+  assert.doesNotThrow(() => dom.event(values.nodeIds.get(node), "onPress", 1));
+  assert.deepEqual(heard, [[1, null]]);
+  close();
+});
+
 test("host events preserve order, owner cleanup and platform calls", { skip: !path }, async () => {
   const { createHost } = await import("./host.js");
   const { api, invoke, dom, close } = await fixture();
@@ -632,6 +700,36 @@ test("native file drops preserve URIs and optional page position", { skip: !path
   } finally { f.close(); }
 });
 
+test("merged props answer `in` from their sources, getters included", { skip: !path }, async () => {
+  const { dom, close } = await fixture();
+  const props = dom.rt.merge({ onPress() {} }, () => ({ style: {} }), { get children() { return "label"; } });
+  assert.ok("children" in props);
+  assert.ok("style" in props);
+  assert.ok(!("missing" in props));
+  assert.equal(props.children, "label");
+  close();
+});
+
+test("what a component's children read runs them alone, never the expression that made the component", { skip: !path }, async () => {
+  const { api, dom, close } = await fixture();
+  const seq = api.signal(0);
+  let made = 0, runs = 0, dispose;
+  // A component returning a fragment's dynamic child, and one returning an
+  // array holding a function.
+  const Fragment = () => { made++; return () => { runs++; return `seq ${seq()}`; }; };
+  const Items = () => { made++; return ["a", () => { runs++; return seq(); }]; };
+  api.root(stop => {
+    dispose = stop;
+    for (const Component of [Fragment, Items]) {
+      const kind = "message";
+      dom.rt.insert(dom.rt.element("view"), () => kind === "message" ? dom.rt.component(Component, {}) : null);
+    }
+  });
+  seq.set(1); seq.set(2);
+  assert.equal(made, 2);
+  assert.equal(runs, 6);
+  dispose(); close();
+});
 
 test("native video loads nest their size as the native JS host does", { skip: !path }, async () => {
   const f = await fixture();

@@ -38,6 +38,10 @@ pub(super) struct Registry {
 }
 
 impl Registry {
+    pub(super) async fn state(&self) -> MutexGuard<'_, Runs> {
+        self.state.lock().await
+    }
+
     pub(super) async fn lock(&self) -> Exclusive {
         let activity = self.activity.clone().write_owned().await;
         let state = self.state.clone().lock_owned().await;
@@ -57,27 +61,46 @@ impl Registry {
     }
 
     pub(super) async fn session(self: &Arc<Self>, id: &str) -> Session {
-        // Enter the lifecycle boundary before waiting for this Session, so a
-        // queued close cannot overtake already admitted Session work.
+        // Waiting for one Session must not retain a global lifecycle reader:
+        // an unrelated control writer must still be able to enter.
+        let ordered = self.ordered(id).await;
         let activity = self.activity.clone().read_owned().await;
-        let gate = {
-            let mut sessions = self.sessions.lock().unwrap();
-            let gate = sessions.get(id).and_then(Weak::upgrade).unwrap_or_else(|| {
-                Arc::new(Gate {
-                    registry: self.clone(),
-                    id: id.to_owned(),
-                    session: Arc::new(Mutex::new(())),
-                })
-            });
-            sessions.insert(id.to_owned(), Arc::downgrade(&gate));
-            gate
-        };
-        let session = gate.session.clone().lock_owned().await;
         Session {
-            _session: session,
+            ordered,
             _activity: activity,
+        }
+    }
+
+    /// Queue workers are already retained by Owner.workers. Their Session order
+    /// does not block lifecycle work for unrelated Sessions.
+    pub(super) async fn ordered(self: &Arc<Self>, id: &str) -> Ordered {
+        let gate = self.gate(id);
+        let session = gate.session.clone().lock_owned().await;
+        Ordered {
+            _session: session,
             gate,
         }
+    }
+
+    pub(super) fn try_ordered(self: &Arc<Self>, id: &str) -> Result<Ordered, TryLockError> {
+        let gate = self.gate(id);
+        let session = gate.session.clone().try_lock_owned()?;
+        Ok(Ordered {
+            _session: session,
+            gate,
+        })
+    }
+    fn gate(self: &Arc<Self>, id: &str) -> Arc<Gate> {
+        let mut sessions = self.sessions.lock().unwrap();
+        let gate = sessions.get(id).and_then(Weak::upgrade).unwrap_or_else(|| {
+            Arc::new(Gate {
+                registry: self.clone(),
+                id: id.to_owned(),
+                session: Arc::new(Mutex::new(())),
+            })
+        });
+        sessions.insert(id.to_owned(), Arc::downgrade(&gate));
+        gate
     }
 }
 
@@ -98,12 +121,21 @@ impl DerefMut for Exclusive {
 }
 
 pub(super) struct Session {
-    // Release the ordering mutex before dropping the last shared gate owner.
-    _session: OwnedMutexGuard<()>,
+    ordered: Ordered,
     _activity: OwnedRwLockReadGuard<()>,
-    gate: Arc<Gate>,
 }
 impl Session {
+    pub(super) async fn state(&self) -> MutexGuard<'_, Runs> {
+        self.ordered.state().await
+    }
+}
+
+pub(super) struct Ordered {
+    // Release the ordering mutex before dropping the last shared gate owner.
+    _session: OwnedMutexGuard<()>,
+    gate: Arc<Gate>,
+}
+impl Ordered {
     pub(super) async fn state(&self) -> MutexGuard<'_, Runs> {
         self.gate.registry.state.lock().await
     }
@@ -145,16 +177,15 @@ mod tests {
         let mut later = Box::pin(registry.session("c"));
         assert!(poll!(later.as_mut()).is_pending());
         drop(first);
-        let same = same.await;
+        assert!(poll!(same.as_mut()).is_pending());
         drop(other);
-        // The already waiting same-Session submission still precedes close.
-        assert!(poll!(closing.as_mut()).is_pending());
-        assert!(!same.state().await.closing);
-        drop(same);
         let mut close = closing.await;
         close.closing = true;
         assert!(poll!(later.as_mut()).is_pending());
         drop(close);
+        let same = same.await;
+        assert!(same.state().await.closing);
+        drop(same);
         let later = later.await;
         assert!(later.state().await.closing);
         drop(later);

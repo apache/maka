@@ -6,10 +6,10 @@ import { open, test } from "nsh/test";
 test("the arrows pick a candidate and return inserts it", async () => {
   const app = await open("./fixtures/mention.tsx");
   await app.type("id:msg", "hi @");
-  await app.waitFor("candidate: Alice");
+  await app.waitFor("text:candidate: Alice");
   await app.keyboard.press("down");
   await app.keyboard.press("down");
-  await app.waitFor("candidate: Carol");
+  await app.waitFor("text:candidate: Carol");
   await app.keyboard.press("enter");
   await app.waitFor("text: hi @Carol ");
 });

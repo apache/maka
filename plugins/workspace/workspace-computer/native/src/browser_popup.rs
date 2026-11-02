@@ -178,7 +178,9 @@ impl Authorization {
                 }
                 self.attachment.current_global(&owner).await?;
             }
-            BrowserAccess::Download { .. } => {
+            BrowserAccess::Download { .. }
+            | BrowserAccess::PageAssetDownload { .. }
+            | BrowserAccess::PageAssetFallbackFetch { .. } => {
                 return Err(failed("A popup lease does not authorize file transfer"));
             }
             BrowserAccess::Navigate { .. } => {

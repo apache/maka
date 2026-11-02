@@ -219,7 +219,7 @@ export function ResourcePane(props: { resources: Resources; docked: boolean }) {
         </Button>
       </View>
       <If when={resources.active() === 'terminals'}>
-        <Terminals model={resources.terminals} sessionId={resources.sessionId()!} />
+        <Terminals model={resources.terminals} />
       </If>
       <If when={resources.active() === 'files'}>
         <WorkspaceFiles model={resources.files} />

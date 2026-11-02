@@ -2,7 +2,7 @@
 // `AlertDialog.show` of `nsh/base`: it returns a promise, left pending
 // while the dialog shows (no user answers it headless) for an alert and an
 // action sheet with every option and action field set, and it rejects
-// without actions. Its script
+// with a TypeError without actions. Its script
 // checks each.
 import { Text, View, signal } from "nsh";
 import { AlertDialog, type AlertDialogResult, Button } from "nsh/base";
@@ -23,7 +23,7 @@ function App() {
     set(shown instanceof Promise ? "pending" : "no promise");
     shown.then(
       ({ action }) => set(`chose ${action}`),
-      (e) => set(`rejected ${String(e).includes("actions") ? "for actions" : e}`),
+      (e) => set(`rejected ${e instanceof TypeError ? "TypeError" : e}`),
     );
   };
   return (

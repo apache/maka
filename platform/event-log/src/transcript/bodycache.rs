@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Optional bodies for selected directory rows. This never repairs metadata.
+//! Observer-owned disposable read models and bounded optional row bodies.
 use super::read::sql_position;
 use crate::StoreError;
 use maka_agent_facts::history::RowPosition;
@@ -25,10 +25,10 @@ use sha2::{Digest, Sha256};
 use sqlx::sqlite::SqliteWorkerConnection;
 use sqlx::{Connection, QueryBuilder, Sqlite, SqliteConnection};
 
-// The ordinary retained database is at most 32 MiB. One active producer may
-// exceed that target so tiny fragment/sibling reads do not repeatedly emit it.
+// Retained row/text bodies target 32 MiB, independently of directory/FTS metadata.
+// One active producer may exceed the target to avoid repeated fragment emission.
 // This does not bound a complete operation's projection or live journal peak.
-const RETAINED_PAGES: i64 = 8192;
+const RETAINED_BYTES: i64 = 32 * 1024 * 1024;
 
 pub(crate) async fn initialize(db: &mut SqliteConnection) -> Result<(), StoreError> {
     sqlx::raw_sql(
@@ -62,12 +62,41 @@ pub(crate) async fn initialize(db: &mut SqliteConnection) -> Result<(), StoreErr
     )
     .execute(&mut *db)
     .await?;
+    sqlx::raw_sql(include_str!("read_cache.sql"))
+        .execute(&mut *db)
+        .await?;
+    sqlx::raw_sql(
+        "CREATE TEMP TABLE transcript_body_cache_bytes (
+            singleton INTEGER PRIMARY KEY CHECK(singleton=1), bytes INTEGER NOT NULL CHECK(bytes>=0)
+         );
+         INSERT INTO temp.transcript_body_cache_bytes VALUES(1,0);
+         CREATE TEMP TRIGGER transcript_rows_bytes_insert AFTER INSERT ON transcript_rows BEGIN
+            UPDATE transcript_body_cache_bytes SET bytes=bytes+new.total_bytes;
+         END;
+         CREATE TEMP TRIGGER transcript_rows_bytes_delete AFTER DELETE ON transcript_rows BEGIN
+            UPDATE transcript_body_cache_bytes SET bytes=bytes-old.total_bytes;
+         END;
+         CREATE TEMP TRIGGER transcript_rows_bytes_update AFTER UPDATE ON transcript_rows BEGIN
+            UPDATE transcript_body_cache_bytes SET bytes=bytes+new.total_bytes-old.total_bytes;
+         END;
+         CREATE TEMP TRIGGER transcript_text_bytes_insert AFTER INSERT ON transcript_text BEGIN
+            UPDATE transcript_body_cache_bytes SET bytes=bytes+length(new.body);
+         END;
+         CREATE TEMP TRIGGER transcript_text_bytes_delete AFTER DELETE ON transcript_text BEGIN
+            UPDATE transcript_body_cache_bytes SET bytes=bytes-length(old.body);
+         END;
+         CREATE TEMP TRIGGER transcript_text_bytes_update AFTER UPDATE ON transcript_text BEGIN
+            UPDATE transcript_body_cache_bytes SET bytes=bytes+length(new.body)-length(old.body);
+         END;",
+    )
+    .execute(&mut *db)
+    .await?;
     Ok(())
 }
 
 /// Keep every ensured row pinned until the original operation has consumed it,
 /// including final history boundaries. All work stays on the observation owner.
-pub(super) fn run<'c, T: Send + 'c>(
+pub(crate) fn run<'c, T: Send + 'c>(
     db: &'c mut SqliteConnection,
     read: impl for<'a> FnOnce(
         &'a mut SqliteConnection,
@@ -94,12 +123,17 @@ pub(super) fn run<'c, T: Send + 'c>(
                 }
                 Ok(value)
             }
-            Err(error) => {
-                // Preserve the canonical read failure. No maintenance follows an
-                // unsuccessful read or a rollback with an uncertain result.
-                let _ = tx.rollback().await;
-                Err(error)
-            }
+            Err(StoreError::TranscriptSource { cause, .. }) => match tx.commit().await {
+                Ok(()) => Err(*cause),
+                Err(transaction) => Err(StoreError::ReadCacheTransaction { cause, transaction }),
+            },
+            Err(error) => match tx.rollback().await {
+                Ok(()) => Err(error),
+                Err(transaction) => Err(StoreError::ReadCacheTransaction {
+                    cause: Box::new(error),
+                    transaction,
+                }),
+            },
         }
     })
 }
@@ -111,6 +145,10 @@ pub(crate) async fn purge(db: &mut SqliteConnection, session: &str) -> Result<()
         "transcript_rows",
         "transcript_sessions",
         "transcript_active_source",
+        "transcript_directory",
+        "transcript_failures",
+        "transcript_directory_progress",
+        "recall_progress",
     ] {
         let query = format!("DELETE FROM temp.{table} WHERE session_id=?");
         sqlx::query(sqlx::AssertSqlSafe(query.as_str()))
@@ -123,10 +161,11 @@ pub(crate) async fn purge(db: &mut SqliteConnection, session: &str) -> Result<()
 }
 
 async fn trim(db: &mut SqliteConnection) -> Result<(), StoreError> {
-    let pages: i64 = sqlx::query_scalar("PRAGMA temp.page_count")
-        .fetch_one(&mut *db)
-        .await?;
-    if pages <= RETAINED_PAGES {
+    let bytes: i64 =
+        sqlx::query_scalar("SELECT bytes FROM temp.transcript_body_cache_bytes WHERE singleton=1")
+            .fetch_one(&mut *db)
+            .await?;
+    if bytes <= RETAINED_BYTES {
         return Ok(());
     }
     let mut tx = db.begin().await?;
@@ -308,5 +347,4 @@ pub(super) async fn ensure_on_worker(
 }
 
 #[cfg(test)]
-#[path = "bodycache_tests.rs"]
 mod tests;

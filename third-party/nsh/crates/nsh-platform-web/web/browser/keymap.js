@@ -1,5 +1,7 @@
 // Rust parses shortcuts; the platform consumes matched keys synchronously.
-export function createKeymap(invoke, reactive, dom, platform, wake) {
+// At a module's top level, unbinding waits for hot module replacement to run
+// the module again (`hot.undoOnRerun`).
+export function createKeymap(invoke, reactive, dom, platform, wake, hot) {
   let next = 1, entries = [];
   const call = (op, args) => {
     try { const result = invoke(op, args); wake(); return result; }
@@ -34,8 +36,10 @@ export function createKeymap(invoke, reactive, dom, platform, wake) {
         if (removed) return;
         const remaining = entries.filter(entry => !added.includes(entry));
         send(remaining); entries = remaining; removed = true;
+        hot?.forgetUndo(unbind);
       };
       if (reactive.getOwner()) reactive.cleanup(unbind);
+      else hot?.undoOnRerun(unbind);
       return unbind;
     },
   };

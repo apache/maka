@@ -133,14 +133,14 @@ impl Owner {
             });
         }
         let rejected = |reason| Ok(CompactResult::Rejected { reason });
-        if runs.closing || self.stop.is_cancelled() || runs.quarantined.contains(&input.session_id)
-        {
+        if runs.closing || self.stop.is_cancelled() {
             return rejected(CompactRejection::Closed);
         }
         if session.archived {
             return rejected(CompactRejection::Archived);
         }
-        if runs.controls.contains_key(&input.session_id)
+        if runs.busy(&input.session_id)
+            || self.has_parked_invocation(&input.session_id).await?
             || !self
                 .store
                 .session(&input.session_id)
@@ -224,6 +224,7 @@ impl Owner {
         };
         let basis = MessageBasis {
             mcp_revision: None,
+            mcp_catalog: None,
             language,
             compaction_prompt: Some(prompt),
             graph: None,
@@ -243,6 +244,7 @@ impl Owner {
             tools: Arc::default(),
         };
         let run = RunInput {
+            native_activation_basis: None,
             invocation: invocation.clone(),
             model_source: Some(Arc::new(source)),
             model_revision: Some(prepared.revision),
@@ -272,9 +274,7 @@ impl Owner {
             Err(RunError::Busy) => return rejected(CompactRejection::Busy),
             Err(error) => {
                 if error.is_cleanup_unconfirmed() {
-                    runs.quarantined.insert(input.session_id.clone());
-                    runs.closing = true;
-                    self.stop.cancel();
+                    runs.retained_cleanup.insert(input.session_id.clone());
                 }
                 return Err(public_error(error));
             }
@@ -282,11 +282,13 @@ impl Owner {
         runs.controls.insert(
             input.session_id.clone(),
             Control {
+                #[cfg(test)]
+                handoff: running.handoff().cloned(),
+                preview: running.preview(),
                 compacting: true,
                 invocation: invocation.clone(),
-                basis,
+                basis: Arc::new(basis),
                 cancellation: running.cancellation(),
-                failure: None,
             },
         );
         self.workers.spawn(self.clone().drive(running));

@@ -146,6 +146,14 @@ pub(crate) enum Control {
     Group,
     /// `UIA_PaneControlTypeId` (scroll views).
     Pane,
+    /// A group that is a region landmark (ARIA's `region`).
+    Region,
+    /// A group that is a navigation landmark (ARIA's `navigation`).
+    Navigation,
+    /// `UIA_TreeControlTypeId`.
+    Tree,
+    /// `UIA_TreeItemControlTypeId`.
+    TreeItem,
 }
 
 impl Control {
@@ -175,6 +183,7 @@ impl Control {
                 | Control::TabItem
                 | Control::MenuItem
                 | Control::ListItem
+                | Control::TreeItem
         )
     }
 
@@ -203,6 +212,7 @@ impl Control {
                 | Control::Switch
                 | Control::TabItem
                 | Control::ListItem
+                | Control::TreeItem
         )
     }
 
@@ -285,7 +295,7 @@ pub(crate) fn control_for(a: &Accessibility, kind: ViewKind, pressable: bool) ->
         Role::Combobox => Control::ComboBox,
         Role::Menu => Control::Menu,
         Role::Menubar => Control::MenuBar,
-        Role::Menuitem => Control::MenuItem,
+        Role::Menuitem | Role::MenuItemCheckbox | Role::MenuItemRadio => Control::MenuItem,
         Role::Progressbar => Control::ProgressBar,
         Role::Radio => Control::RadioButton,
         Role::Radiogroup => Control::RadioGroup,
@@ -300,8 +310,20 @@ pub(crate) fn control_for(a: &Accessibility, kind: ViewKind, pressable: bool) ->
         Role::List | Role::Listbox => Control::List,
         Role::Option => Control::ListItem,
         Role::Grid | Role::Table => Control::Grid,
-        Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup => Control::Group,
+        Role::Row | Role::Cell | Role::ColumnHeader | Role::RowGroup | Role::Group => {
+            Control::Group
+        }
+        Role::Region => Control::Region,
+        Role::Navigation => Control::Navigation,
+        Role::Tree => Control::Tree,
+        Role::TreeItem => Control::TreeItem,
     })
+}
+
+/// The toggle state of `a` (the Toggle pattern's): a checkable element's
+/// checked state, else a toggle button's pressed state.
+pub(crate) fn toggled(a: &Accessibility) -> Option<Checked> {
+    a.state.checked.or(a.state.pressed)
 }
 
 /// How the view of `s` takes part in the tree (its own state only).
@@ -518,7 +540,7 @@ fn spec_of(s: &ViewState) -> Spec {
         help: help_of(a, control),
         disabled: a.state.disabled,
         selected: a.state.selected,
-        checked: a.state.checked,
+        checked: toggled(a),
         expanded: a.state.expanded,
         busy: a.state.busy,
         now: a.value.as_ref().and_then(|v| v.now),
@@ -1170,5 +1192,39 @@ mod tests {
         // Touch properties do not change what is exposed.
         v.state_mut().props.long_press_delay = Some(800.0);
         assert_eq!(spec_of(&v.state()), b);
+    }
+
+    /// The roles of gpui-base's structural components, and a button with
+    /// a pressed state: its toggle state is that state.
+    #[test]
+    fn structural_roles_and_toggle_buttons() {
+        let with_role = |role| Accessibility {
+            role,
+            ..Default::default()
+        };
+        for (role, control) in [
+            (Role::Group, Control::Group),
+            (Role::Region, Control::Region),
+            (Role::Navigation, Control::Navigation),
+            (Role::Tree, Control::Tree),
+            (Role::TreeItem, Control::TreeItem),
+            (Role::MenuItemCheckbox, Control::MenuItem),
+            (Role::MenuItemRadio, Control::MenuItem),
+        ] {
+            assert_eq!(
+                control_for(&with_role(role), ViewKind::View, false),
+                Some(control)
+            );
+        }
+        let toggle = Accessibility {
+            role: Role::Button,
+            state: AccessibilityState {
+                pressed: Some(Checked::True),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(toggled(&toggle), Some(Checked::True));
+        assert_eq!(toggled(&with_role(Role::Button)), None);
     }
 }

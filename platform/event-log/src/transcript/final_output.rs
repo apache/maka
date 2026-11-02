@@ -32,18 +32,18 @@ const TERMINAL: &str = "WITH latest AS (
 ) SELECT e.invocation_id, e.sequence FROM latest
 JOIN runtime_events e ON e.sequence = latest.source_sequence
 WHERE latest.state_status = 'completed' AND e.kind = 'invocation_ended'
-  AND json_extract(e.event_json, '$.fact.outcome.kind') = 'completed'
+  AND json_extract(e.event_header, '$.fact.outcome.kind') = 'completed'
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))";
 const REQUESTED: &str = "SELECT e.operation_id FROM runtime_events e
 WHERE e.invocation_id = ?2 AND e.kind = 'model_requested' AND e.sequence <= ?3
-  AND json_extract(e.event_json, '$.fact.purpose') = 'main'
+  AND json_extract(e.event_header, '$.fact.purpose') = 'main'
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))
 ORDER BY e.sequence DESC LIMIT 1";
 const COMPLETED: &str = "SELECT EXISTS(SELECT 1 FROM runtime_events e
 WHERE e.operation_id = ?3 AND e.kind = 'model_completed' AND e.invocation_id = ?2
-  AND e.sequence <= ?4 AND json_extract(e.event_json, '$.fact.step_id') = ?3
+  AND e.sequence <= ?4 AND json_extract(e.event_header, '$.fact.step_id') = ?3
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence)))";
 const EXECUTOR: &str = "SELECT e.sequence FROM runtime_events e

@@ -14,15 +14,18 @@ use crate::{EventPayload, PayloadValue};
 /// The largest image a clipboard read gives, in encoded bytes (48 MiB).
 /// Its `data:` URI (a third larger) becomes a JS string the VM's heap holds
 /// (256 MB for an embedded app), with whatever the app makes of it, such as
-/// a `Blob`; running out of heap stops the VM, so a larger image reads as
-/// none (`has` stays true).
+/// a `Blob`; running out of heap stops the VM, so a larger image is left
+/// out of the answer, which carries its size instead (`tooLarge`; `has`
+/// stays true): `Clipboard.readImage` rejects with
+/// `ERR_NSH_QUOTA_EXCEEDED`, the Rust API reads it as none.
 pub const MAX_IMAGE_BYTES: usize = 48 << 20;
 
-/// Whether `uri`, a clipboard image's `data:` URI, is within
-/// [`MAX_IMAGE_BYTES`] (the core checks what every backend answers).
-pub(crate) fn uri_within_limit(uri: &str) -> bool {
-    // `data:image/…;base64,` and the base64 of the bytes.
-    uri.len() <= 64 + MAX_IMAGE_BYTES.div_ceil(3) * 4
+/// The number of bytes base64 `data:` URI `uri` encodes, from its length
+/// (nothing is decoded).
+pub(crate) fn data_uri_len(uri: &str) -> usize {
+    let data = uri.split_once(',').map_or("", |(_, data)| data);
+    let padding = data.bytes().rev().take_while(|&b| b == b'=').count();
+    (data.len() / 4 * 3 + data.len() % 4 * 3 / 4).saturating_sub(padding)
 }
 
 /// An image read from the clipboard, as the platform found it.
@@ -56,30 +59,22 @@ impl<'a> Image<'a> {
 /// The answer to image read `id`: whether the clipboard holds an image and,
 /// unless only that was asked (`image` is `None` then), the image as a
 /// `data:` URI and its size. An image over [`MAX_IMAGE_BYTES`] is left
-/// out (and logged), unencoded.
+/// out, unencoded: `tooLarge` carries its size in bytes instead.
 pub fn image_answer(id: u32, has: bool, image: Option<Image<'_>>) -> EventPayload {
     let mut fields = vec![
         ("id", PayloadValue::Number(id as f64)),
         ("has", PayloadValue::Bool(has || image.is_some())),
     ];
-    let image = image.filter(|image| {
-        let fits = image.bytes.len() <= MAX_IMAGE_BYTES;
-        if !fits {
-            log::warn!(
-                target: "js",
-                "Clipboard.readImage: the clipboard's {}x{} image is {} MB, over the {} MB an app reads",
-                image.width,
-                image.height,
-                image.bytes.len() >> 20,
-                MAX_IMAGE_BYTES >> 20
-            );
+    match image {
+        Some(image) if image.bytes.len() > MAX_IMAGE_BYTES => {
+            fields.push(("tooLarge", PayloadValue::Number(image.bytes.len() as f64)));
         }
-        fits
-    });
-    if let Some(image) = image {
-        fields.push(("uri", PayloadValue::Str(data_uri(image.mime, image.bytes))));
-        fields.push(("width", PayloadValue::Number(image.width as f64)));
-        fields.push(("height", PayloadValue::Number(image.height as f64)));
+        Some(image) => {
+            fields.push(("uri", PayloadValue::Str(data_uri(image.mime, image.bytes))));
+            fields.push(("width", PayloadValue::Number(image.width as f64)));
+            fields.push(("height", PayloadValue::Number(image.height as f64)));
+        }
+        None => {}
     }
     EventPayload::Map(fields)
 }
@@ -317,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn images_over_the_limit_read_as_none() {
+    fn images_over_the_limit_answer_their_size() {
         let mut bytes = PNG.to_vec();
         bytes.resize(MAX_IMAGE_BYTES + 1, 0);
         let image = Image::sniff(&bytes).unwrap();
@@ -326,17 +321,29 @@ mod tests {
             EventPayload::Map(vec![
                 ("id", PayloadValue::Number(1.0)),
                 ("has", PayloadValue::Bool(true)),
+                (
+                    "tooLarge",
+                    PayloadValue::Number((MAX_IMAGE_BYTES + 1) as f64)
+                ),
             ])
         );
         bytes.truncate(MAX_IMAGE_BYTES);
         let EventPayload::Map(fields) = image_answer(1, true, Image::sniff(&bytes)) else {
             panic!()
         };
-        assert!(matches!(&fields[2], ("uri", PayloadValue::Str(u)) if uri_within_limit(u)));
-        assert!(!uri_within_limit(&data_uri(
-            "image/png",
-            &vec![0; MAX_IMAGE_BYTES + 64]
-        )));
+        assert!(
+            matches!(&fields[2], ("uri", PayloadValue::Str(u)) if data_uri_len(u) == MAX_IMAGE_BYTES)
+        );
+    }
+
+    #[test]
+    fn data_uri_lengths_count_the_bytes() {
+        for len in [0, 1, 2, 3, 4, 5, 100, 101, 102] {
+            assert_eq!(data_uri_len(&data_uri("image/png", &vec![7; len])), len);
+        }
+        // Without its padding.
+        assert_eq!(data_uri_len("data:text/plain;base64,aGk"), 2);
+        assert_eq!(data_uri_len("https://example.com/a.png"), 0);
     }
 
     #[test]
@@ -348,7 +355,7 @@ mod tests {
         assert_eq!(fields[0], ("id", PayloadValue::Number(4.0)));
         assert_eq!(fields[1], ("has", PayloadValue::Bool(true)));
         assert!(
-            matches!(&fields[2], ("uri", PayloadValue::Str(u)) if u.starts_with("data:image/png;base64,") && uri_within_limit(u))
+            matches!(&fields[2], ("uri", PayloadValue::Str(u)) if u.starts_with("data:image/png;base64,") && data_uri_len(u) == PNG.len())
         );
         assert_eq!(
             fields[3..],

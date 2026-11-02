@@ -1,5 +1,16 @@
 // Browser functions and values use Rust's shared reactive graph. A facade
 // belongs to one app instance; it never consults a process-global player.
+
+// Context -> its default ({ value }): hot module replacement keeps a
+// context's identity and gives it the default of the one made again.
+const contextDefaults = new WeakMap();
+
+/** Gives context `kept` the default of context `from`. */
+export function adoptContextDefault(kept, from) {
+  const target = contextDefaults.get(kept), source = contextDefaults.get(from);
+  if (target && source && target !== source) target.value = source.value;
+}
+
 export function createReactive(invoke, live, values) {
   const call = (op, ...args) => {
     if (!live()) throw new Error("the app was disposed");
@@ -66,8 +77,9 @@ export function createReactive(invoke, live, values) {
   const getOwner = () => call(110);
   const runWithOwner = (owner, fn) => call(111, owner, fn);
   const context = defaultValue => {
-    const key = {};
-    const read = () => call(112, key, defaultValue);
+    const key = {}, fallback = { value: defaultValue };
+    const read = () => call(112, key, fallback.value);
+    contextDefaults.set(read, fallback);
     read.Provider = props => {
       const parent = getOwner();
       return root(dispose => {
@@ -83,7 +95,9 @@ export function createReactive(invoke, live, values) {
     const memoize = value => typeof value === "function" ? computed(() => memoize(value())) : Array.isArray(value) ? value.map(memoize) : value;
     return computed(() => {
       const state = failed();
-      if (state) return untracked(() => typeof props.fallback === "function" && props.fallback.length ? props.fallback(state[0], () => failed.set(undefined)) : props.fallback);
+      // A function is called with the error and the reset whatever it
+      // declares (`(...args)` and defaults count none); an element shows.
+      if (state) return untracked(() => typeof props.fallback === "function" ? props.fallback(state[0], () => failed.set(undefined)) : props.fallback);
       return computed(() => {
         call(113, boundaryKey, failed);
         return untracked(() => memoize(props.children));

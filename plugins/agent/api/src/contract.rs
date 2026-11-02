@@ -18,70 +18,56 @@
  */
 
 use maka_agent_facts::execution::DirectoryIdentity;
+mod mcp_management;
 use maka_agent_facts::execution::WorkspaceIdentity;
 use maka_agent_facts::history::RowPosition;
 use maka_agent_ports::session::history::Cursor;
 use maka_agent_ports::session::history::Role;
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
+pub use mcp_management::*;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-#[path = "contract_mcp.rs"]
 mod mcp;
 pub use mcp::*;
-#[path = "contract_context.rs"]
 mod context;
 pub use context::*;
-#[path = "contract_files.rs"]
 mod files;
 pub use files::*;
-#[path = "contract_fork.rs"]
 mod fork;
 pub use fork::*;
-#[path = "contract_git.rs"]
 mod git;
 pub use git::*;
-#[path = "contract_goal.rs"]
 mod goal;
-#[path = "contract_imports.rs"]
 mod imports;
-#[path = "contract_plan.rs"]
 mod plan;
 pub use goal::*;
 pub use maka_agent_facts::execution::CollaborationMode;
 pub use plan::*;
-#[path = "contract_todo.rs"]
 mod todo;
 pub use todo::*;
-#[path = "contract_recap.rs"]
 mod recap;
 pub use recap::*;
-#[path = "contract_scheduler.rs"]
 mod scheduler;
 pub use scheduler::*;
-#[path = "contract_recall.rs"]
+mod bot;
+pub use bot::*;
 mod recall;
 pub use imports::*;
 pub use recall::*;
-#[path = "contract_projects.rs"]
 mod projects;
 pub use projects::*;
-#[path = "contract_execution.rs"]
 mod execution;
 pub use execution::*;
-#[path = "contract_compaction.rs"]
 mod compaction;
 pub use compaction::*;
 
-#[path = "contract_interactions.rs"]
 mod interaction;
 pub use interaction::*;
-#[path = "contract_computer_apps.rs"]
 mod computer_apps;
 pub use computer_apps::*;
-#[path = "contract_permissions.rs"]
 mod permissions;
 pub use maka_agent_facts::configuration::ModelSelection;
 pub use permissions::*;
@@ -108,7 +94,7 @@ pub struct Configuration {
     /// Enable model proposals and approved scheduled work for this Agent.
     #[serde(default)]
     pub scheduled_tasks: bool,
-    /// Enable explicitly approved, bounded Goal continuation.
+    /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
     /// Enable planning, reviewed approval and execution progress.
@@ -117,6 +103,10 @@ pub struct Configuration {
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
     pub todo: bool,
+    /// Enable the Bot mode: one persistent Session that reaches its user only
+    /// through `SendUser`, with a Host-owned outbox.
+    #[serde(default)]
+    pub bot: bool,
     /// Generate a bounded auxiliary title for automatically named conversations.
     #[serde(default)]
     pub automatic_titles: bool,
@@ -180,8 +170,7 @@ pub struct ServiceTool {
     pub name: String,
     #[schemars(length(min = 1))]
     pub description: String,
-    #[schemars(length(min = 1))]
-    pub import: String,
+    pub target: maka_plugin_core::contract::ServiceTarget,
     #[schemars(length(min = 1))]
     pub method: String,
 }
@@ -246,6 +235,9 @@ pub fn configuration_schema() -> Value {
 #[schemars(rename = "AgentList")]
 pub struct List {
     pub filter: SessionFilter,
+    /// Include archived conversations alongside active ones.
+    #[serde(default)]
+    pub include_archived: bool,
     pub position: SessionPosition,
     #[serde(default)]
     pub scope: SessionListScope,
@@ -266,6 +258,11 @@ pub enum SessionListScope {
     All,
     Project {
         project_id: uuid::Uuid,
+    },
+    /// Direct children of an owned session, across workspaces.
+    Children {
+        #[schemars(length(min = 1))]
+        session_id: String,
     },
     /// Resolve the exact workspace from an owned session, never a caller path.
     Workspace {
@@ -408,6 +405,9 @@ pub struct Workspace {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentMetadata")]
 pub struct Metadata {
+    /// Omission preserves the conversation's position in the catalog.
+    #[serde(default)]
+    pub pinned: Option<bool>,
     /// Changing collaboration is only allowed while the Session is idle.
     #[serde(default)]
     pub collaboration_mode: Option<CollaborationMode>,
@@ -721,6 +721,9 @@ pub struct DataSource {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSession")]
 pub struct Session {
+    /// Session that initiated creation, independent of fork ancestry and task ownership.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub parent_session_id: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<SessionBranch>")]
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -740,6 +743,7 @@ pub struct Session {
     pub revision: u64,
     pub updated_at: u64,
     pub archived: bool,
+    pub pinned: bool,
     pub has_unread: bool,
     /// Exact durable visible tail accepted by markRead; independent of preview clocks.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
@@ -791,6 +795,9 @@ pub enum SendResult {
         message_id: String,
         revision: u64,
     },
+    /// The caller may not send to this conversation: the Bot sends only to the
+    /// workers it created. Nothing was admitted.
+    NotYourWorker { session_id: String },
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -834,30 +841,14 @@ pub enum DeliveryFact {
         /// The model/executor completed; this says nothing about tool business success.
         completed: bool,
     },
-    PartStarted {
-        message_id: String,
+    PartCommitted {
         step_id: String,
-        part_id: String,
-        text_kind: ContentKind,
+        message_id: String,
+        ordinal: u64,
     },
     Delta {
         step_id: String,
         part_id: String,
-        text: String,
-    },
-    PartFinished {
-        step_id: String,
-        part_id: String,
-    },
-    /// Model input observations are display-only; they cannot authorize a tool effect.
-    ToolInputStarted {
-        tool_use_id: String,
-        step_id: String,
-        name: String,
-        provider_executed: bool,
-    },
-    ToolInputDelta {
-        tool_use_id: String,
         text: String,
     },
     /// Complete model input was observed, not authorization to execute it.
@@ -1056,6 +1047,9 @@ pub enum DeliveryPage {
         next_after: u64,
         events: Vec<Delivery>,
     },
+    Preview {
+        page: PreviewPage,
+    },
     Queue {
         queue: Queue,
     },
@@ -1064,6 +1058,66 @@ pub enum DeliveryPage {
     },
     ComputerApps {
         apps: ComputerApps,
+    },
+}
+
+/// Current display material, independent of the durable Events cursor.
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentPreviewPage")]
+pub enum PreviewPage {
+    Empty {
+        host_epoch: String,
+    },
+    Cut {
+        host_epoch: String,
+        invocation_id: String,
+        turn_id: String,
+        step_id: String,
+        revision: u64,
+        depends_on: u64,
+        first: bool,
+        last: bool,
+        parts: Vec<PreviewPart>,
+    },
+}
+
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentPreviewPart")]
+pub struct PreviewPart {
+    pub ordinal: Option<u64>,
+    pub message_id: String,
+    pub provider_part_id: Option<String>,
+    pub started_at: f64,
+    pub field: PreviewField,
+    /// UTF-8 byte offset into the body, independent of JavaScript string length.
+    pub offset: u64,
+    pub total_bytes: u64,
+    pub text: String,
+}
+
+#[derive(Serialize, JsonSchema, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentPreviewField")]
+pub enum PreviewField {
+    Text {
+        text_kind: ContentKind,
+    },
+    ToolInput {
+        tool_use_id: String,
+        name: String,
+        provider_executed: bool,
     },
 }
 
@@ -1196,6 +1250,8 @@ pub struct HistoryAttachment {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentHistoryChunk")]
 pub struct HistoryChunk {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_part: Option<maka_agent_ports::session::history::ModelPartIdentity>,
     /// The original user input has quotes, directory references or inline references.
     /// Present only on the first fragment; display text cannot reconstruct these references.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1278,6 +1334,9 @@ pub struct HistoryLandmark {
     pub last_position: RowPosition,
     #[schemars(length(max = 96))]
     pub label: String,
+    /// The Host's attribution of the Turn's opening message, when it generated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<maka_agent_facts::message::MessageOrigin>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -1616,6 +1675,18 @@ pub fn contract() -> Contract {
                     method::<ChecklistRead, Checklist>(MethodMode::Subscription),
                 ),
                 (
+                    "openBot".into(),
+                    method::<BotOpen, BotOpened>(MethodMode::Mutation),
+                ),
+                (
+                    "botOutbox".into(),
+                    method::<BotOutboxRead, BotOutbox>(MethodMode::Query),
+                ),
+                (
+                    "watchBotOutbox".into(),
+                    method::<BotOutboxRead, BotOutbox>(MethodMode::Subscription),
+                ),
+                (
                     "schedules".into(),
                     method::<ScheduleRead, Schedules>(MethodMode::Query),
                 ),
@@ -1663,9 +1734,15 @@ pub fn contract() -> Contract {
                     "project".into(),
                     method::<ProjectChange, ProjectResult>(MethodMode::Mutation),
                 ),
+                ("mcpConfigurations".into(), method::<McpConfigurations, McpConfigurationList>(MethodMode::Query)),
+                ("manageMcpServer".into(), method::<McpConfigurationChange, McpConfigurationResult>(MethodMode::Mutation)),
                 (
                     "directories".into(),
                     method::<Directories, DirectoryPage>(MethodMode::Query),
+                ),
+                (
+                    "selectWorkspace".into(),
+                    method::<DirectorySelection, Option<Workspace>>(MethodMode::Mutation),
                 ),
                 (
                     "observe".into(),
@@ -1805,6 +1882,7 @@ pub fn contract() -> Contract {
                     method::<ExecutionRead, ExecutionResult>(MethodMode::Query),
                 ),
                 ("work".into(), method::<WorkRead, Work>(MethodMode::Query)),
+                ("resumable".into(), method::<ResumableRead, Resumable>(MethodMode::Query)),
                 (
                     "compactionPrompt".into(),
                     method::<SessionRead, CompactionPrompt>(MethodMode::Query),

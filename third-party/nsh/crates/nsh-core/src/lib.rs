@@ -22,6 +22,7 @@ pub mod desktop;
 mod effects;
 pub mod element;
 mod fenwick;
+pub mod file_dialog;
 pub mod filesystem;
 pub mod geometry;
 mod grid;
@@ -96,10 +97,10 @@ pub use crate::{
         TouchPhase, TouchPoint, Viewability, WebSource,
     },
     props::{
-        Accessibility, AccessibilityActionDef, AccessibilityProp, AccessibilityRole,
-        AccessibilityState, AccessibilityValue, Checked, EdgeInsets, GestureValues,
-        LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition, LiveRegion, PanActivation,
-        PointerEvents, Ripple, ViewProps,
+        Accessibility, AccessibilityActionDef, AccessibilityCurrent, AccessibilityProp,
+        AccessibilityRole, AccessibilityState, AccessibilityValue, Checked, EdgeInsets,
+        GestureValues, LayoutAnimation, LayoutCurve, LayoutProperty, LayoutTransition, LiveRegion,
+        PanActivation, PointerEvents, Ripple, ViewProps,
     },
     style::{
         BorderStyle, Borders, Color, CornerRadii, DecorationStyle, EllipsizeMode, EnvVar,

@@ -131,6 +131,15 @@ message or a due timer (7, none between pastes).
   3.85 → 4.09 ms; first-frame totals were 127.3 → 124.5 ms. These noisy single runs establish unchanged
   engine work counts, not a speedup or a measurement of Java touch dispatch. Passive feedback reuses the root's
   touch tracker; observers are picked at finger-down and cancelled when a native gesture takes over.
+- Android, animated values (Pixel 10 Pro, 120 Hz, release-dev host, the gallery's Animations demo with its three loops,
+  `simpleperf stat` over 10 s, three runs each): the UI thread runs ~4.09 G instructions before setting the camera
+  distance only when it moves and ~2.99 G after (-27%), its CPU time ~2.22 → ~2.04 s; `Mounter.outputs` gets 1000+
+  values a frame there (ART allocates the array as a large object), every bound value of the page, moved or not.
+  RenderThread is unchanged (~18.2 G).
+- Android, going back (Pixel 10 Pro, 120 Hz, dev host, Text → the gallery's index with the back button, `gfxinfo
+  framestats` over the 300 ms slide, three runs each): 23 → 33 frames, mean frame time ~35 → ~13 ms, RenderThread
+  issue ~12 → ~5.5 ms a frame once the slides move by whole pixels; after a back gesture's release ~13–19 → ~4–5 ms.
+  The first frame still records the index again (it was `INVISIBLE`): 20–44 ms of UI-thread drawing.
 - Android emulator (arm64, release): rebinding one gallery row while scrolling ~0.3–0.4ms (JS ~60µs); text costs per new
   text: `PrecomputedText` ~120µs, measure ~50µs, final layout reused. First gallery frame 20–50ms (noisy on the emulator).
 
@@ -260,6 +269,24 @@ message or a due timer (7, none between pastes).
   `<If>`, a 3-row `<Each>`) on both: bundle 886 B JS / 1.7 KB bytecode vs 14 KB / 19.6 KB, eval ~95µs vs ~390µs, tap
   median ~5µs vs ~14µs in JS, commit ~15µs vs ~22µs. Scrolling a 1000-row `List` (avatar, two texts, a bound color)
   6000 pt: ~77µs vs ~150µs of JS per rebinding frame, commit ~205µs vs ~276µs.
+
+## The browser engine (published web apps)
+
+Headless Chromium over CDP, a published package (`nsh package --target web`), 2026-10-28:
+
+- A call from app code into the runtime (a signal read or set, an element made) outside a Wasm entry costs ~1µs
+  however many values the app holds: the weak tracing runs at most every 100ms after the call
+  (`values.js` `schedule`), not inside it. With a full trace per call it cost ~0.11ms at 1 700 retained values and
+  ~1.2ms at 14 400 (a chat of 165 messages of 20 signals each), and a message pushed every second froze the page.
+- The gallery's DataTable demo, quotes ticking every 33ms and no scroll, 10s: the rows are read a row per call
+  (`JsHost::primitives`, op 49), ~220 000 value calls in 3s instead of ~8.7 million (a cell took five), script
+  ~2.65s instead of ~3.86s, main thread ~4.7s instead of ~5.95s, garbage collection ~52ms instead of ~162ms.
+- The same demo scrolled, the frame rate unlimited (`--disable-frame-rate-limit`): the animator sends every bound
+  value with each batch (the gallery's sidebar: ~69 canvas slots, ~26 transforms, ~7 opacities), and `nsh.js` writes
+  and draws only those that changed, and draws a canvas again when its size changes, not when it moves. The wheel,
+  300 steps of 30pt: main thread ~3.8s instead of ~4.5s, median frame ~9.2ms instead of ~12.2ms; its scroll bar
+  dragged 150 steps: script ~4.3ms per batch instead of ~5.6ms.
+
 
 ## Terminal backend
 

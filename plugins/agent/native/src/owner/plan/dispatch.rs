@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use maka_agent_facts::event::InvocationOutcome;
+use maka_agent_facts::{event::InvocationOutcome, message::MessageOrigin};
 use maka_agent_ports::execution::{Receipt, Submit};
 use maka_assistant::plan::{Execution, Settlement};
 use maka_event_log::{
@@ -50,7 +50,10 @@ fn admission(
         },
         source: RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
+                origin: Some(MessageOrigin::Plan {
+                    execution_id: execution.id.clone(),
+                    title: execution.artifact.title.clone(),
+                }),
                 message_id: invocation.invocation_id.replacen("i_", "m_", 1),
                 submitted_content_digest: message.content_digest().map_err(reason)?,
                 content: message.clone(),

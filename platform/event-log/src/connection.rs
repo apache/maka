@@ -22,7 +22,7 @@ use std::{
     panic::AssertUnwindSafe,
     pin::Pin,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -45,7 +45,6 @@ use sqlx::{Connection, SqliteConnection, sqlite::SqliteConnectOptions};
 use tokio::sync::{Semaphore, mpsc, oneshot, watch};
 
 use crate::StoreError;
-use crate::context::prepared::{lifetime::PreparedCache, runtime::InFlight, store::PreparedStore};
 use tokio_util::sync::CancellationToken;
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
@@ -73,14 +72,6 @@ pub(crate) async fn worker_query<T: Send + 'static>(
 
 type Job = Box<
     dyn for<'c> FnOnce(&'c mut SqliteConnection, Result<(), StoreError>) -> BoxFuture<'c, ()>
-        + Send,
->;
-type PreparedJob = Box<
-    dyn for<'c> FnOnce(
-            &'c mut SqliteConnection,
-            Option<&'c mut InFlight>,
-            Result<(), StoreError>,
-        ) -> BoxFuture<'c, bool>
         + Send,
 >;
 // Returns whether the connection remains reusable after this accepted job.
@@ -112,9 +103,7 @@ struct ReadEnvelope {
 enum Command {
     Pinned(Box<Command>, Custody),
     Run(Job),
-    Prepared(PreparedJob),
     Write(crate::writeback::Request),
-    CollectPrepared,
     Shutdown,
 }
 
@@ -156,7 +145,6 @@ pub struct OwnedConnection {
     observations: Arc<Semaphore>,
     changes: watch::Receiver<()>,
     custody: Option<Custody>,
-    companion: Arc<OnceLock<PreparedStore>>,
 }
 
 /// Short writer observations can be sent from a reader without retaining a
@@ -270,54 +258,6 @@ impl WriterIngress {
             .map_err(|_| StoreError::ConnectionClosed)?;
         result.await.map_err(|_| StoreError::OperationUnknown)?
     }
-    pub(crate) async fn run_prepared<T: Send + 'static>(
-        &self,
-        operation: impl for<'c> FnOnce(
-            &'c mut SqliteConnection,
-            &'c mut InFlight,
-        ) -> BoxFuture<'c, Result<T, StoreError>>
-        + Send
-        + 'static,
-        admit: impl FnOnce() -> Result<Option<Custody>, StoreError> + Send,
-    ) -> Result<T, StoreError> {
-        let (reply, result) = oneshot::channel();
-        let failures = self.failures.clone();
-        let command = Command::Prepared(Box::new(move |connection, state, valid| {
-            Box::pin(async move {
-                let result = match (valid, state) {
-                    (Err(error), _) => Err(error),
-                    (Ok(()), Some(state)) => operation(connection, state).await,
-                    (Ok(()), None) => Err(StoreError::InvalidTransition(
-                        "prepared job requires the projection owner".into(),
-                    )),
-                };
-                let reusable = !matches!(
-                    &result,
-                    Err(StoreError::CommitUnknown(_) | StoreError::PreparedRollbackFailed { .. })
-                );
-                if result.is_err() {
-                    failures.fetch_add(1, Ordering::AcqRel);
-                }
-                let _ = reply.send(result);
-                reusable
-            })
-        }));
-        let permit = self
-            .jobs
-            .reserve()
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
-        let custody = match admit()? {
-            Some(additional) => Some(custody::combine(&self.custody, additional)),
-            None => self.custody.clone(),
-        };
-        let command = match custody {
-            Some(custody) => Command::Pinned(Box::new(command), custody),
-            None => command,
-        };
-        permit.send(command);
-        result.await.map_err(|_| StoreError::OperationUnknown)?
-    }
 }
 
 impl OwnedConnection {
@@ -339,7 +279,6 @@ impl OwnedConnection {
             observations: self.observations.clone(),
             changes: self.changes.clone(),
             custody: self.custody.clone(),
-            companion: self.companion.clone(),
         }
     }
 
@@ -347,16 +286,6 @@ impl OwnedConnection {
         let mut connection = self.cloned();
         connection.custody = Some(custody::combine(&self.custody, custody));
         connection
-    }
-
-    pub(crate) fn scope_custody(&self) -> Option<Custody> {
-        self.custody.clone()
-    }
-
-    pub(crate) fn install_prepared(&self, prepared: PreparedStore) -> Result<(), StoreError> {
-        self.companion
-            .set(prepared)
-            .map_err(|_| StoreError::InvalidTransition("projection owner already installed".into()))
     }
 
     pub(crate) fn observations(&self) -> ObservationIngress {
@@ -401,10 +330,10 @@ impl OwnedConnection {
         authority: ConnectionAuthority,
         initialize: for<'c> fn(&'c mut SqliteConnection) -> BoxFuture<'c, Result<(), StoreError>>,
     ) -> Result<Self, StoreError> {
-        Self::open_with_cache(options, authority, initialize, None, None).await
+        Self::open_with_control(options, authority, initialize, None).await
     }
 
-    pub(crate) async fn open_with_cache(
+    pub(crate) async fn open_with_control(
         options: SqliteConnectOptions,
         authority: ConnectionAuthority,
         initialize: impl for<'c> FnOnce(
@@ -412,10 +341,9 @@ impl OwnedConnection {
         ) -> BoxFuture<'c, Result<(), StoreError>>
         + Send
         + 'static,
-        prepared: Option<PreparedCache>,
         control: Option<ReadOnlyControl>,
     ) -> Result<Self, StoreError> {
-        Self::open_registered(options, authority, initialize, prepared, control, None).await
+        Self::open_registered(options, authority, initialize, control, None).await
     }
 
     pub(crate) async fn open_tracked(
@@ -428,15 +356,7 @@ impl OwnedConnection {
         + 'static,
         registration: crate::root_store::StageRegistration,
     ) -> Result<Self, StoreError> {
-        Self::open_registered(
-            options,
-            authority,
-            initialize,
-            None,
-            None,
-            Some(registration),
-        )
-        .await
+        Self::open_registered(options, authority, initialize, None, Some(registration)).await
     }
 
     async fn open_registered(
@@ -447,7 +367,6 @@ impl OwnedConnection {
         ) -> BoxFuture<'c, Result<(), StoreError>>
         + Send
         + 'static,
-        prepared: Option<PreparedCache>,
         control: Option<ReadOnlyControl>,
         mut registration: Option<crate::root_store::StageRegistration>,
     ) -> Result<Self, StoreError> {
@@ -458,18 +377,17 @@ impl OwnedConnection {
         let writer_stop = CancellationToken::new();
         let owner_stop = writer_stop.clone();
         let authority = Arc::new(authority);
-        let companion = Arc::new(OnceLock::<PreparedStore>::new());
-        let owner_companion = companion.clone();
         let (ready, startup) = oneshot::channel();
         let (completion, closed) = oneshot::channel();
         let (changed, changes) = watch::channel(());
         std::thread::Builder::new()
             .name("runtime-store-owner".into())
             .spawn(move || {
-                if let Some(registration) = &mut registration { registration.started(); }
+                if let Some(registration) = &mut registration {
+                    registration.started();
+                }
                 let retained = Arc::new(Retained::default());
                 let mut queued_drop_panicked = false;
-                let mut in_flight = prepared.as_ref().map(|_| InFlight::default());
                 let mut result = std::panic::catch_unwind(AssertUnwindSafe(|| {
                     let runtime = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -484,7 +402,6 @@ impl OwnedConnection {
                         reader_stop.clone(),
                         ReaderOptions {
                             connection: read_options,
-                            prepared: prepared.clone(),
                             control: control.clone(),
                         },
                         authority.clone(),
@@ -495,9 +412,6 @@ impl OwnedConnection {
                     let initialized = std::panic::catch_unwind(AssertUnwindSafe(|| {
                         runtime.block_on(async {
                             initialize(&mut connection).await?;
-                            if let Some(cache) = &prepared {
-                                cache.attach(&mut connection, true).await?;
-                            }
                             // Later initialization must not discard the TEMP view and
                             // silently expose the standalone main bindings table.
                             if let Some(control) = &control {
@@ -514,52 +428,30 @@ impl OwnedConnection {
                     // If open's waiter disappeared, close without accepting work.
                     let mut pending = None;
                     let mut closing = false;
-                    let mut companion_failure = None;
                     if ready.send(initialized).is_ok() && success {
-                        while let Some(command) =
-                            pending.take().or_else(|| {
-                                runtime.block_on(async {
-                                    if closing {
-                                        return receiver.recv().await;
-                                    }
-                                    // Stop admission without needing queue capacity or the
-                                    // caller's runtime. Accepted work still drains below.
-                                    tokio::select! {
-                                        biased;
-                                        () = owner_stop.cancelled() => Some(Command::Shutdown),
-                                        closed = async {
-                                            match owner_companion.get() {
-                                                Some(companion) => companion.close_receipt().await,
-                                                None => std::future::pending().await,
-                                            }
-                                        } => {
-                                            companion_failure = closed.err();
-                                            Some(Command::Shutdown)
-                                        },
-                                        command = async {
-                                            if let Some(cache) = &prepared {
-                                                let registry = cache.registry();
-                                                tokio::select! {
-                                                    command = receiver.recv() => command,
-                                                    () = registry.notified() => Some(Command::CollectPrepared),
-                                                }
-                                            } else { receiver.recv().await }
-                                        } => command,
-                                    }
+                        while let Some(command) = pending.take().or_else(|| {
+                            runtime.block_on(async {
+                                if closing {
+                                    return receiver.recv().await;
+                                }
+                                // Stop admission without needing queue capacity or the
+                                // caller's runtime. Accepted work still drains below.
+                                tokio::select! {
+                                    biased;
+                                    () = owner_stop.cancelled() => Some(Command::Shutdown),
+                                    command = receiver.recv() => command,
+                                }
                             })
-                            })
-                        {
+                        }) {
                             let command = command.retain(&retained);
-                            let maintenance = matches!(command, Command::CollectPrepared);
                             let executed =
                                 std::panic::catch_unwind(AssertUnwindSafe(|| match command {
-                                    Command::Pinned(..) => unreachable!("custody moved into actor slot"),
+                                    Command::Pinned(..) => {
+                                        unreachable!("custody moved into actor slot")
+                                    }
                                     Command::Run(job) => {
                                         runtime.block_on(job(&mut connection, validate()));
                                         true
-                                    }
-                                    Command::Prepared(job) => {
-                                        runtime.block_on(job(&mut connection, in_flight.as_mut(), validate()))
                                     }
                                     Command::Write(first) => {
                                         // Only the already queued adjacent prefix shares a commit.
@@ -568,9 +460,13 @@ impl OwnedConnection {
                                         while group.len() < 32 {
                                             match receiver.try_recv() {
                                                 Ok(command) if command.is_write() => {
-                                                    let Command::Write(request) = command.retain(&retained) else { unreachable!() };
+                                                    let Command::Write(request) =
+                                                        command.retain(&retained)
+                                                    else {
+                                                        unreachable!()
+                                                    };
                                                     group.push(request);
-                                                },
+                                                }
                                                 Ok(boundary) => {
                                                     pending = Some(boundary);
                                                     break;
@@ -584,29 +480,7 @@ impl OwnedConnection {
                                             &validate,
                                         ))
                                     }
-                                    Command::CollectPrepared => {
-                                        if let Some(cache) = &prepared {
-                                            match runtime.block_on(
-                                                crate::context::prepared::gc::maintain(
-                                                    &mut connection,
-                                                    &cache.registry(),
-                                                    in_flight.as_mut().expect("projection owner has frontier"),
-                                                ),
-                                            ) {
-                                                Ok(_) => true,
-                                                Err(error) => {
-                                                    eprintln!(
-                                                        "prepared cache maintenance failed: {error}"
-                                                    );
-                                                    false
-                                                }
-                                            }
-                                        } else {
-                                            true
-                                        }
-                                    }
                                     Command::Shutdown => {
-                                        if let Some(companion) = owner_companion.get() { companion.request_quiesce(); }
                                         closing = true;
                                         // Reject new sends, then drain every accepted job.
                                         receiver.close();
@@ -624,9 +498,7 @@ impl OwnedConnection {
                                 Ok(total) if total == last_changes => {}
                                 Ok(total) => {
                                     last_changes = total;
-                                    if !maintenance {
-                                        changed.send_replace(());
-                                    }
+                                    changed.send_replace(());
                                 }
                                 // Preserve the job's result and real close path. A
                                 // subscriber's canonical read will report any failure.
@@ -642,9 +514,6 @@ impl OwnedConnection {
                             retained.clear(0);
                         }
                     }
-                    if let Some(cache) = &prepared {
-                        cache.registry().close();
-                    }
                     // Readers can await writer replies. Close admission, then reject
                     // queued work, including sends holding an earlier capacity permit,
                     // before joining readers. None also accounts for those permits.
@@ -656,11 +525,6 @@ impl OwnedConnection {
                             std::panic::catch_unwind(AssertUnwindSafe(|| drop(command))).is_err();
                     }
                     let mut close_failures = Vec::new();
-                    if let Some(companion) = owner_companion.get()
-                        && let Err(error) = runtime.block_on(companion.quiesce())
-                    {
-                        close_failures.push(error.to_string());
-                    }
                     // Close read ingress independently, then drain every accepted read
                     // before releasing the writer's original authority.
                     reader_stop.cancel();
@@ -669,20 +533,17 @@ impl OwnedConnection {
                         .map_err(|error| error.to_string())
                         .and_then(|closed| closed.map_err(|error| error.to_string()))
                         .err();
-                    // A last read-only client cannot checkpoint WAL. Close the
-                    // projection's main readers before the canonical writer.
-                    if let Some(companion) = owner_companion.get()
-                        && let Err(error) = runtime.block_on(companion.shutdown())
-                    {
-                        close_failures.push(error.to_string());
-                    }
                     // Await real close before releasing authority, even after failure.
                     match runtime.block_on(connection.close()) {
                         Ok(()) => retained.clear(0),
                         Err(error) => close_failures.push(error.to_string()),
                     }
-                    close_failures.extend([reader_failure, companion_failure].into_iter().flatten());
-                    if close_failures.is_empty() { Ok(()) } else { Err(StoreError::CloseFailed(close_failures.join("; "))) }
+                    close_failures.extend(reader_failure);
+                    if close_failures.is_empty() {
+                        Ok(())
+                    } else {
+                        Err(StoreError::CloseFailed(close_failures.join("; ")))
+                    }
                 }))
                 .unwrap_or_else(|_| {
                     Err(StoreError::StartupCleanupFailed {
@@ -707,7 +568,6 @@ impl OwnedConnection {
                     registration.complete(result.is_ok());
                 }
                 if !cleanup_failed {
-                    drop(prepared);
                     drop(authority);
                     drop(retained);
                 }
@@ -742,7 +602,6 @@ impl OwnedConnection {
                 observations: Arc::new(Semaphore::new(1)),
                 changes,
                 custody: None,
-                companion,
             }),
             Ok(Err(error)) => {
                 drop(jobs);
@@ -790,27 +649,9 @@ impl OwnedConnection {
         self.writer().run(operation).await
     }
 
-    pub(crate) async fn run_prepared_pinned<T: Send + 'static>(
-        &self,
-        operation: impl for<'c> FnOnce(
-            &'c mut SqliteConnection,
-            &'c mut InFlight,
-        ) -> BoxFuture<'c, Result<T, StoreError>>
-        + Send
-        + 'static,
-        admit: impl FnOnce() -> Result<Custody, StoreError> + Send,
-    ) -> Result<T, StoreError> {
-        self.writer()
-            .run_prepared(operation, move || admit().map(Some))
-            .await
-    }
-
     /// Close public admission before awaiting any close receipt. Accepted writer
     /// cleanup retains observation ingress until the writer has drained.
     pub(crate) fn request_shutdown(&self) {
-        if let Some(companion) = self.companion.get() {
-            companion.request_quiesce();
-        }
         self.readers.close();
         self.observations.close();
         self.writer_stop.cancel();
@@ -843,34 +684,17 @@ impl OwnedConnection {
         self.read_job(ReaderRole::Read, operation, true).await
     }
 
-    pub(crate) async fn read_interruptible_pinned<T: Send + 'static>(
-        &self,
-        operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T, StoreError>>
-        + Send
-        + 'static,
-        admit: impl FnOnce() -> Result<Custody, StoreError> + Send,
-    ) -> Result<T, StoreError> {
-        let permit = self
-            .readers
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| StoreError::ConnectionClosed)?;
-        self.read_job_with_permit(&self.read_jobs, operation, true, permit, move || {
-            admit().map(Some)
-        })
-        .await
-    }
-
     /// Private observation state belongs to one physical reader. Its admission
     /// is independent of pure reads, so cache work cannot consume their capacity.
+    /// Disposable cache work may stop after caller loss; its rollback still drains
+    /// before this physical reader or its retained source custody can be reused.
     pub(crate) async fn observe<T: Send + 'static>(
         &self,
         operation: impl for<'c> FnOnce(&'c mut SqliteConnection) -> BoxFuture<'c, Result<T, StoreError>>
         + Send
         + 'static,
     ) -> Result<T, StoreError> {
-        self.read_job(ReaderRole::Observation, operation, false)
+        self.read_job(ReaderRole::Observation, operation, true)
             .await
     }
 
@@ -993,7 +817,6 @@ impl OwnedConnection {
 #[derive(Clone)]
 struct ReaderOptions {
     connection: SqliteConnectOptions,
-    prepared: Option<PreparedCache>,
     control: Option<ReadOnlyControl>,
 }
 
@@ -1067,16 +890,13 @@ async fn reader_worker(
         if let Some(custody) = custody {
             retained.hold(slot, custody);
         }
-        let mut valid = authority.validate();
+        let mut valid = if connection.is_none() {
+            authority.validate()
+        } else {
+            Ok(())
+        };
         if valid.is_ok() && connection.is_none() && matches!(&job, ReadJob::Execute(_)) {
-            match connect_reader(
-                &options.connection,
-                options.prepared.as_ref(),
-                options.control.as_ref(),
-                role,
-            )
-            .await
-            {
+            match connect_reader(&options.connection, options.control.as_ref(), role).await {
                 Ok(opened) => connection = Some(opened),
                 Err(error) => {
                     if matches!(error, StoreError::StartupCleanupFailed { .. }) {
@@ -1144,7 +964,6 @@ async fn close_reader(connection: SqliteConnection) -> Result<(), StoreError> {
 
 async fn connect_reader(
     options: &SqliteConnectOptions,
-    prepared: Option<&PreparedCache>,
     control: Option<&ReadOnlyControl>,
     role: ReaderRole,
 ) -> Result<SqliteConnection, StoreError> {
@@ -1154,11 +973,6 @@ async fn connect_reader(
     }
     if matches!(role, ReaderRole::Observation)
         && let Err(error) = crate::transcript::initialize_cache(&mut connection).await
-    {
-        return Err(close_startup(connection, error).await);
-    }
-    if let Some(cache) = prepared
-        && let Err(error) = cache.attach(&mut connection, false).await
     {
         return Err(close_startup(connection, error).await);
     }
@@ -1215,6 +1029,32 @@ mod tests {
         sync::{Arc, mpsc as blocking},
         time::Duration,
     };
+
+    #[tokio::test]
+    async fn long_lived_readers_do_not_install_startup_migration_functions() {
+        let directory = tempfile::tempdir().unwrap();
+        let options = SqliteConnectOptions::new()
+            .filename(directory.path().join("runtime.sqlite"))
+            .create_if_missing(true)
+            .foreign_keys(true);
+        let mut writer = connect_owned(&options).await.unwrap();
+        crate::schema::initialize_connection(&mut writer)
+            .await
+            .unwrap();
+        writer.close().await.unwrap();
+        for role in [ReaderRole::Read, ReaderRole::Observation] {
+            let mut reader = connect_reader(&options, None, role).await.unwrap();
+            let functions: i64 = sqlx::query_scalar(
+                "SELECT COUNT(*) FROM pragma_function_list
+                 WHERE name IN ('maka_directory_row','maka_directory_payload','maka_directory_child')",
+            ).fetch_one(&mut reader).await.unwrap();
+            assert_eq!(
+                functions, 0,
+                "readers must never retain migration-only functions"
+            );
+            close_reader(reader).await.unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn canonical_session_reads_bypass_a_blocked_writer() {
@@ -1355,130 +1195,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persistent_readers_reuse_connections_and_see_later_commits_after_panics() {
-        let directory = tempfile::tempdir().unwrap();
-        let lease = Arc::new(
-            crate::root::FileLease::acquire(&directory.path().join("writer.lock")).unwrap(),
-        );
-        let owner = Arc::new(OwnedConnection::open(
-            SqliteConnectOptions::new().filename(directory.path().join("reuse.sqlite")).create_if_missing(true),
-            ConnectionAuthority::Writer { lease, root: None },
-            |connection| Box::pin(async move {
-                sqlx::raw_sql("PRAGMA journal_mode=WAL; CREATE TABLE facts(value INTEGER); INSERT INTO facts VALUES(1);").execute(connection).await?;
-                Ok(())
-            }),
-        ).await.unwrap());
-        let entered = Arc::new(Semaphore::new(0));
-        let release = Arc::new(Semaphore::new(0));
-        let mut callers = Vec::new();
-        for role in [ReaderRole::Read, ReaderRole::Observation] {
-            let reader = owner.clone();
-            let entered = entered.clone();
-            let release = release.clone();
-            callers.push(tokio::spawn(async move {
-                reader
-                    .read_job(
-                        role,
-                        move |connection| {
-                            Box::pin(async move {
-                                sqlx::query("PRAGMA cache_size=-1234")
-                                    .execute(connection)
-                                    .await?;
-                                entered.add_permits(1);
-                                release.acquire().await.unwrap().forget();
-                                Ok(())
-                            })
-                        },
-                        false,
-                    )
-                    .await
-            }));
-        }
-        tokio::time::timeout(Duration::from_secs(5), entered.acquire_many(2))
-            .await
-            .unwrap()
-            .unwrap()
-            .forget();
-        release.add_permits(2);
-        for caller in callers {
-            caller.await.unwrap().unwrap();
-        }
-        owner
-            .run(|connection| {
-                Box::pin(async move {
-                    sqlx::query("INSERT INTO facts VALUES(2)")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
-            })
-            .await
-            .unwrap();
-        let (marker, count) = owner
-            .read(|connection| {
-                Box::pin(async move {
-                    let marker: i64 = sqlx::query_scalar("PRAGMA cache_size")
-                        .fetch_one(&mut *connection)
-                        .await?;
-                    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM facts")
-                        .fetch_one(connection)
-                        .await?;
-                    Ok((marker, count))
-                })
-            })
-            .await
-            .unwrap();
-        assert_eq!((marker, count), (-1234, 2));
-        assert!(matches!(
-            owner
-                .read::<()>(|_| Box::pin(async { panic!("reader operation unwound") }))
-                .await,
-            Err(StoreError::OperationUnknown)
-        ));
-        assert_eq!(
-            owner
-                .read(|connection| Box::pin(async move {
-                    Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM facts")
-                        .fetch_one(connection)
-                        .await?)
-                }))
-                .await
-                .unwrap(),
-            2
-        );
-        owner.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn failed_pragma_configuration_closes_the_established_worker_before_releasing_authority()
-    {
-        let directory = tempfile::tempdir().unwrap();
-        let database = directory.path().join("configured.sqlite");
-        let lock = directory.path().join("writer.lock");
-        let lease = Arc::new(crate::root::FileLease::acquire(&lock).unwrap());
-        let original = Arc::downgrade(&lease);
-        let result = OwnedConnection::open(
-            SqliteConnectOptions::new()
-                .filename(&database)
-                .create_if_missing(true)
-                .pragma("maka_invalid", "("),
-            ConnectionAuthority::Writer { lease, root: None },
-            |_| Box::pin(async { panic!("configuration must fail before initialization") }),
-        )
-        .await;
-        assert!(matches!(
-            result,
-            Err(StoreError::Sqlx(sqlx::Error::Database(_)))
-        ));
-        assert!(
-            database.exists(),
-            "the actual SQLite handle must have been established"
-        );
-        assert!(original.upgrade().is_none());
-        drop(crate::root::FileLease::acquire(&lock).unwrap());
-    }
-
-    #[tokio::test]
     async fn actual_reader_close_failure_fences_the_original_writer_and_root_authority() {
         struct PanickingDrop;
         impl Drop for PanickingDrop {
@@ -1570,98 +1286,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn read_snapshot_does_not_block_writes_and_shutdown_drains_abandoned_readers() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("snapshot.sqlite");
-        let lock = directory.path().join("writer.lock");
-        let lease = Arc::new(crate::root::FileLease::acquire(&lock).unwrap());
-        let contender = File::open(&lock).unwrap();
-        let owner = Arc::new(OwnedConnection::open(
-            SqliteConnectOptions::new().filename(&path).create_if_missing(true),
-            ConnectionAuthority::Writer { lease, root: None },
-            |connection| Box::pin(async move {
-                sqlx::raw_sql("PRAGMA journal_mode=WAL; CREATE TABLE facts(value INTEGER); INSERT INTO facts VALUES(1);")
-                    .execute(connection).await?;
-                Ok(())
-            }),
-        ).await.unwrap());
-        let (ready, opened) = oneshot::channel();
-        let (release, gate) = oneshot::channel();
-        let (finished, observed) = oneshot::channel();
-        let reader = owner.clone();
-        let caller = tokio::spawn(async move {
-            reader
-                .read(move |connection| {
-                    Box::pin(async move {
-                        let mut tx = connection.begin().await?;
-                        let first: i64 = sqlx::query_scalar("SELECT SUM(value) FROM facts")
-                            .fetch_one(&mut *tx)
-                            .await?;
-                        ready.send(()).unwrap();
-                        gate.await.unwrap();
-                        let second: i64 = sqlx::query_scalar("SELECT SUM(value) FROM facts")
-                            .fetch_one(&mut *tx)
-                            .await?;
-                        assert!(
-                            sqlx::query("INSERT INTO facts VALUES(99)")
-                                .execute(&mut *tx)
-                                .await
-                                .is_err(),
-                            "reader must not promote to a writer"
-                        );
-                        tx.rollback().await?;
-                        finished.send((first, second)).unwrap();
-                        Ok(())
-                    })
-                })
-                .await
-        });
-        tokio::time::timeout(Duration::from_secs(5), opened)
-            .await
-            .unwrap()
-            .unwrap();
-        tokio::time::timeout(
-            Duration::from_secs(5),
-            owner.run(|connection| {
-                Box::pin(async move {
-                    sqlx::query("INSERT INTO facts VALUES(2)")
-                        .execute(connection)
-                        .await?;
-                    Ok(())
-                })
-            }),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        caller.abort();
-        let _ = caller.await;
-        let closing = owner.clone();
-        let shutdown = tokio::spawn(async move { closing.shutdown().await });
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), owner.closed.clone())
-                .await
-                .is_err()
-        );
-        assert!(matches!(
-            contender.try_lock(),
-            Err(std::fs::TryLockError::WouldBlock)
-        ));
-        release.send(()).unwrap();
-        assert_eq!(observed.await.unwrap(), (1, 1));
-        tokio::time::timeout(Duration::from_secs(5), shutdown)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        contender.try_lock().unwrap();
-        assert!(matches!(
-            owner.read(|_| Box::pin(async { Ok(()) })).await,
-            Err(StoreError::ConnectionClosed)
-        ));
-    }
-
     #[test]
     fn dropped_caller_runtime_keeps_authority_until_real_commit_and_close() {
         let directory = tempfile::tempdir().unwrap();
@@ -1750,42 +1374,5 @@ mod tests {
             );
             connection.close().await.unwrap();
         });
-    }
-
-    #[tokio::test]
-    async fn shutdown_is_idempotent_while_handles_remain_alive() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("writer.lock");
-        let lease = Arc::new(crate::root::FileLease::acquire(&path).unwrap());
-        let contender = File::open(&path).unwrap();
-        let owner = Arc::new(
-            OwnedConnection::open(
-                SqliteConnectOptions::new().in_memory(true),
-                ConnectionAuthority::Writer { lease, root: None },
-                |_| Box::pin(async { Ok(()) }),
-            )
-            .await
-            .unwrap(),
-        );
-        let retained = owner.clone();
-        // Replacing the pathname must prevent the old worker from accepting new work.
-        std::fs::rename(&path, directory.path().join("displaced.lock")).unwrap();
-        let replacement = crate::root::FileLease::acquire(&path).unwrap();
-        assert!(matches!(
-            retained
-                .run::<()>(|_| Box::pin(async { panic!("replaced lease must reject work") }))
-                .await,
-            Err(StoreError::Io(_))
-        ));
-        drop(replacement);
-        let (first, second) = tokio::join!(owner.shutdown(), retained.shutdown());
-        first.unwrap();
-        second.unwrap();
-        retained.shutdown().await.unwrap();
-        contender.try_lock().unwrap();
-        assert!(matches!(
-            retained.run(|_| Box::pin(async { Ok(()) })).await,
-            Err(StoreError::ConnectionClosed)
-        ));
     }
 }

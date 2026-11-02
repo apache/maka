@@ -1,6 +1,6 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
 import { Combobox, type OpenChangeReason, type SelectGroup, type SelectItemState } from "nsh/base";
-import { button, desktop, Log, Panel, size, Split, tint, ui } from "./palette";
+import { button, CheckMark, desktop, Icon, Log, Panel, size, Split, tint, ui } from "./palette";
 
 // Two comboboxes in a card: labels for an issue, several picked in one go
 // from a searchable list with sections, a clear button and a footer; and
@@ -57,7 +57,7 @@ function Trigger(props: { title?: string; placeholder: string; open: boolean; cl
   });
   return (
     <View {...look}>
-      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().faint }}>
+      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().muted }}>
         {props.title ?? props.placeholder}
       </Text>
       {/* With a clear button over the end (`cleanable`), an empty lane as wide as the button in place of the chevron. */}
@@ -96,7 +96,11 @@ function Row(props: { item: SelectItemState }) {
       }}
     >
       <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: ui().text }}>{props.item.title}</Text>
-      <Text style={{ width: 12, fontSize: 12, textAlign: "right", color: ui().accent }}>{props.item.selected ? "✓" : ""}</Text>
+      <View style={{ width: 16 }}>
+        <If when={props.item.selected}>
+          <CheckMark size={16} tint={ui().accent} />
+        </If>
+      </View>
     </View>
   );
 }
@@ -181,7 +185,7 @@ function App() {
               clearButtonAccessibilityLabel="Clear the labels"
               clearButtonClass="absolute items-center justify-center rounded-full enabled:hover:opacity-70"
               clearButtonStyle={{ top: (size.control - 20) / 2, right: 10, width: 20, height: 20 }}
-              clearButton={<Text style={{ fontSize: 12, color: ui().muted }}>✕</Text>}
+              clearButton={<Icon name="close" size={14} tint={ui().muted} />}
               footerStyle={{ borderTopWidth: 1, borderColor: ui().border, marginTop: 4, paddingTop: 4 }}
               footer={
                 <View style={{ paddingHorizontal: 8, paddingVertical: 6 }}>

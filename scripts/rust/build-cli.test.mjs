@@ -26,7 +26,7 @@ import { lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs
 import { tmpdir } from 'node:os';
 import { PassThrough } from 'node:stream';
 import test from 'node:test';
-import { buildCli, rustTarget, stageDesktopBundle, workspaceVersion } from './build-cli.mjs';
+import { buildCli, rustTarget, stageDesktopBundle } from './build-cli.mjs';
 
 const manifest = [
   '[workspace]',
@@ -74,14 +74,30 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     const child = new EventEmitter();
     child.stdout = new PassThrough();
     queueMicrotask(() => {
-      if (exitCode === 0)
+      if (exitCode === 0) {
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'build-script-executed',
+            package_id: 'cli-source',
+            out_dir: join(dirname(executable), 'build/cli-source/out'),
+          }) + '\n',
+        );
+        child.stdout.write(
+          JSON.stringify({
+            reason: 'build-script-executed',
+            package_id: 'other-package',
+            out_dir: join(root, 'unrelated-output'),
+          }) + '\n',
+        );
         child.stdout.write(
           JSON.stringify({
             reason: 'compiler-artifact',
+            package_id: 'cli-source',
             target: { name: 'maka', kind: ['bin'] },
             executable,
           }) + '\n',
         );
+      }
       child.stdout.end();
       child.emit('exit', exitCode, null);
     });
@@ -109,7 +125,22 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     await mkdir(binaryDirectory, { recursive: true });
     await writeFile(join(binaryDirectory, 'maka-desktop-shell'), 'shell bytes');
     executable = join(binaryDirectory, triple.includes('-windows-') ? 'maka.exe' : 'maka');
-    const output = await buildCli({ release: true, target, timings: true, repositoryRoot: root });
+    const inputManifest = join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json');
+    await mkdir(dirname(inputManifest), { recursive: true });
+    await writeFile(inputManifest, JSON.stringify(['actual-input-for-' + triple]));
+    const { binary: output, bundleInputs } = await buildCli({
+      release: true,
+      target,
+      timings: true,
+      repositoryRoot: root,
+    });
+    assert.equal(
+      bundleInputs,
+      join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json'),
+    );
+    assert.deepEqual(JSON.parse(await readFile(bundleInputs, 'utf8')), [
+      'actual-input-for-' + triple,
+    ]);
     // The workbench is compiled into the shell: nothing is staged beside it.
     await assert.rejects(lstat(join(dirname(output), 'app')), { code: 'ENOENT' });
     if (macos) {
@@ -172,11 +203,13 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   await writeFile(join(development, 'maka-desktop-shell'), 'shell bytes');
   executable = join(development, process.platform === 'win32' ? 'maka.exe' : 'maka');
   assert.equal(
-    await buildCli({
-      repositoryRoot: root,
-      timings: true,
-      env: { ...process.env, MAKA_CUA_BUILD_MODE: 'native' },
-    }),
+    (
+      await buildCli({
+        repositoryRoot: root,
+        timings: true,
+        env: { ...process.env, MAKA_CUA_BUILD_MODE: 'native' },
+      })
+    ).binary,
     executable,
   );
   assert.deepEqual(invocation.args, [
@@ -199,12 +232,14 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   );
   executable = join(sourceRoot, 'target/aarch64-apple-darwin/release/maka');
   assert.equal(
-    await buildCli({
-      release: true,
-      target: 'aarch64-apple-darwin',
-      repositoryRoot: sourceRoot,
-      env: sourceEnv,
-    }),
+    (
+      await buildCli({
+        release: true,
+        target: 'aarch64-apple-darwin',
+        repositoryRoot: sourceRoot,
+        env: sourceEnv,
+      })
+    ).binary,
     join(sourceRoot, 'target/aarch64-apple-darwin/release/maka'),
   );
   assert.equal(invocation.options.cwd, sourceRoot);
@@ -236,10 +271,4 @@ test('a failed bundle staging keeps the previous Maka.app', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
-});
-
-test('the bundle version is the workspace package version', () => {
-  assert.equal(workspaceVersion(manifest), '1.2.3-beta.1');
-  assert.equal(workspaceVersion('[workspace.package]\nversion = "0.2.0"'), '0.2.0');
-  assert.throws(() => workspaceVersion('[package]\nversion = "0.2.0"\n'), /no \[workspace/);
 });

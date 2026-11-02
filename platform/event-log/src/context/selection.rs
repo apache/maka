@@ -138,7 +138,7 @@ impl Selection {
         let filter = Self::predicate(archive, lineage);
         format!(
             "(({target}.inherited = 1 AND {archive}.sequence = {target}.archive_sequence)
-            OR (json_extract({archive}.event_json,'$.invocation.session_id') = {target}.owner_session_id
+            OR (json_extract({archive}.event_header,'$.invocation.session_id') = {target}.owner_session_id
                 AND {archive}.sequence < {before} AND {filter}))"
         )
     }
@@ -157,7 +157,7 @@ impl Selection {
             sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
                 "SELECT MAX(
                     (SELECT COALESCE(MAX(e.sequence),0) FROM runtime_events e WHERE e.sequence <= ?1
-                     AND (e.event_json IS NOT NULL AND e.event_session=?2) AND {filter}),
+                     AND (e.event_header IS NOT NULL AND e.event_session=?2) AND {filter}),
                     (SELECT COALESCE(MAX(h.sequence),0) FROM session_history_members h
                      JOIN runtime_events e ON e.sequence=h.sequence
                      WHERE h.session_id=?2 AND h.sequence <= ?1 AND {filter}))"

@@ -4,7 +4,7 @@ import { expect, open, test } from "nsh/test";
 
 test("calls reach the page's host and come back", async () => {
   const app = await open("./App.tsx");
-  expect(app.shows("available: true")).toBe(true);
+  expect(app.shows("text:available: true")).toBe(true);
   await app.press("label:call");
   await app.waitFor('text:{"n":1}');
 });
@@ -12,6 +12,6 @@ test("calls reach the page's host and come back", async () => {
 test("events reach host.on, those sent before the app started too", async () => {
   const app = await open("./App.tsx");
   // `createHost` sent one before the app ran, then one a second.
-  await app.waitFor("ticks: 1");
-  await app.waitFor("ticks: 2");
+  await app.waitFor("text:ticks: 1");
+  await app.waitFor("text:ticks: 2");
 });

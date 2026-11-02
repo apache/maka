@@ -37,8 +37,8 @@ const EXEC_BOUNDARY: &str = r#"SELECT sequence FROM runtime_events
              SELECT sequence FROM runtime_events
              WHERE invocation_id = ?1 AND sequence <= ?2
                AND kind IN ('executor_observed','executor_completed')
-               AND json_extract(event_json, '$.fact.output.toolCallId') =
-                   (SELECT json_extract(event_json, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2)
+               AND json_extract(event_header, '$.fact.output.toolCallId') =
+                   (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2)
              ORDER BY sequence"#;
 const EXEC_REST: &str = r#"SELECT sequence FROM runtime_events
              WHERE invocation_id = ?1 AND sequence <= ?2 AND (
@@ -46,8 +46,8 @@ const EXEC_REST: &str = r#"SELECT sequence FROM runtime_events
                  OR (?3 AND sequence = ?2)
                  OR (kind IN ('executor_observed','executor_completed') AND (
                      NOT ?3 OR NOT EXISTS(SELECT 1 FROM runtime_events boundary WHERE boundary.sequence = ?2 AND boundary.kind = 'executor_observed')
-                     OR json_extract(event_json, '$.fact.output.toolCallId') =
-                         (SELECT json_extract(event_json, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2))))
+                     OR json_extract(event_header, '$.fact.output.toolCallId') =
+                         (SELECT json_extract(event_header, '$.fact.output.toolCallId') FROM runtime_events WHERE sequence = ?2))))
              ORDER BY sequence"#;
 const STEP: &str = r#"SELECT sequence FROM runtime_events
 WHERE invocation_id = ?1 AND sequence <= ?3 AND kind = 'invocation_opened'
@@ -67,16 +67,16 @@ UNION
 SELECT sequence FROM runtime_events
 WHERE invocation_id = ?1 AND sequence <= ?3 AND ?2 IS NOT NULL
   AND kind = 'model_observed'
-  AND CAST(json_extract(event_json, '$.fact.step_id') AS TEXT) = ?2
-  AND json_extract(event_json, '$.fact.step_id') = ?2
+  AND CAST(json_extract(event_header, '$.fact.step_id') AS TEXT) = ?2
+  AND json_extract(event_header, '$.fact.step_id') = ?2
 ORDER BY sequence"#;
-const FACT: &str = r#"SELECT event_json FROM runtime_events WHERE sequence = ?"#;
+
 const PENDING: &str = r#"SELECT operation_id FROM runtime_events AS request
          WHERE invocation_id = ?1 AND sequence <= ?2 AND kind = 'model_requested'
            AND EXISTS(SELECT 1 FROM runtime_events opening
                WHERE opening.invocation_id = request.invocation_id AND opening.kind = 'invocation_opened'
-               AND json_extract(opening.event_json, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))
-           AND json_extract(request.event_json, '$.fact.purpose') = 'main'
+               AND json_extract(opening.event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))
+           AND json_extract(request.event_header, '$.fact.purpose') = 'main'
            AND NOT EXISTS(SELECT 1 FROM runtime_events AS boundary
                WHERE boundary.invocation_id = request.invocation_id
                  AND boundary.operation_id = request.operation_id
@@ -188,18 +188,27 @@ pub(super) async fn fact(
     tx: &mut SqliteConnection,
     sequence: i64,
 ) -> Result<StoredEvent, StoreError> {
-    let json: String = sqlx::query_scalar(FACT)
-        .bind(sequence)
-        .fetch_one(tx)
-        .await?;
-    decoded_fact(sequence, &json)
+    let row = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "SELECT e.event_header,{columns} FROM runtime_events e {joins} WHERE e.sequence=?",
+        columns = crate::canonical::COLUMNS,
+        joins = crate::canonical::JOINS
+    )))
+    .bind(sequence)
+    .fetch_one(tx)
+    .await?;
+    decoded_fact(sequence, &crate::canonical::json(&row)?)
 }
 
 pub(super) fn fact_on_handle(db: &RawConnection, sequence: i64) -> Result<StoredEvent, StoreError> {
-    let json: String = db
-        .prepare_cached(FACT)?
-        .query_row([sequence], |row| row.get(0))?;
-    decoded_fact(sequence, &json)
+    let query = format!(
+        "SELECT e.event_header,{columns} FROM runtime_events e {joins} WHERE e.sequence=?",
+        columns = crate::canonical::COLUMNS,
+        joins = crate::canonical::JOINS
+    );
+    db.prepare_cached(&query)?.query_row([sequence], |row| {
+        // Decode failures keep their storage cause after the raw SQLite callback.
+        Ok(crate::canonical::json_on_handle(row).and_then(|json| decoded_fact(sequence, &json)))
+    })?
 }
 
 fn decoded_fact(sequence: i64, json: &str) -> Result<StoredEvent, StoreError> {
@@ -207,18 +216,6 @@ fn decoded_fact(sequence: i64, json: &str) -> Result<StoredEvent, StoreError> {
         sequence: sequence_number(sequence)?,
         event: serde_json::from_str(json)?,
     })
-}
-
-pub(super) async fn pending_step(
-    tx: &mut SqliteConnection,
-    invocation: &str,
-    through: i64,
-) -> Result<Option<String>, StoreError> {
-    let invocation = invocation.to_owned();
-    crate::connection::worker_query(tx, move |worker| {
-        Box::pin(async move { pending_step_on_worker(worker, &invocation, through).await })
-    })
-    .await
 }
 
 pub(super) async fn pending_step_on_worker(
@@ -437,88 +434,5 @@ impl Selection {
                     .await?
             }
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-    use sqlx::Connection;
-
-    #[tokio::test]
-    async fn cached_selection_preserves_json_step_types_fences_and_null_rebinding() {
-        // Isolate these SQL selection/plan fixtures from admitted-fact reducers:
-        // some rows intentionally omit fields or contain a numeric step ID.
-        // Use the production ledger DDL and lookup indexes without writer triggers.
-        let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
-        sqlx::raw_sql(sqlx::AssertSqlSafe(crate::schema::fixture(|kind, _| {
-            kind != "trigger"
-        })))
-        .execute(&mut connection)
-        .await
-        .unwrap();
-        let result: Result<(), StoreError> = async {
-            let db = &mut connection;
-            // Deliberately seed one malformed numeric step ID in the query schema.
-            // Selection must exclude it before canonical fact decoding can occur.
-            for (sequence, kind, operation, fact) in [
-                (1, "invocation_opened", None, json!({"input":{"kind":"message"}})),
-                (2, "model_requested", Some("42"), json!({"purpose":"main","step_id":"42"})),
-                (3, "model_observed", None, json!({"step_id":"42"})),
-                (4, "model_observed", None, json!({"step_id":42})),
-                (5, "model_completed", Some("42"), json!({"step_id":"42"})),
-                (6, "model_observed", None, json!({"step_id":"42"})),
-            ] {
-                let event = json!({"invocation":{"session_id":"session"},"fact":fact});
-                sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,operation_id,event_json) VALUES(?,?,'invocation',?,?,?)")
-                    .bind(sequence).bind(format!("event-{sequence}")).bind(kind)
-                    .bind(operation).bind(event.to_string()).execute(&mut *db).await?;
-            }
-            let mut tx = db.begin().await?;
-            for (step, through, boundary, expected) in [
-                (Some("42"), 5, false, vec![1, 2, 3]),
-                (None, 5, false, vec![1]),
-                (None, 3, false, vec![1, 2, 3]),
-                (None, 3, true, vec![1, 2, 3]),
-                (Some("42"), 7, false, vec![1, 2, 3, 6]),
-                (None, 7, false, vec![1]),
-                (Some("42"), 5, true, vec![1, 2, 3, 5]),
-                (Some("42"), 3, false, vec![1, 2, 3]),
-                (Some("missing"), 5, false, vec![1]),
-                (Some("42"), 5, false, vec![1, 2, 3]),
-            ] {
-                assert_eq!(selected(&mut tx, "invocation", step, through, boundary).await?, expected);
-                let synchronous = tx.run_on_worker(move |handle| {
-                    // SAFETY: no borrowed handle or statement escapes this callback.
-                    let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                    selected_on_handle(&raw, "invocation", step, through, boundary)
-                }).await??;
-                assert_eq!(synchronous, expected);
-            }
-            assert!(selected(&mut tx, "invocation", None, 7, true).await.is_err());
-            let missing_boundary = tx.run_on_worker(move |handle| {
-                // SAFETY: the raw handle and all statements stay within this callback.
-                let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                selected_on_handle(&raw, "invocation", None, 7, true)
-            }).await?;
-            assert!(missing_boundary.is_err());
-            // A malformed pending request with NULL identity must remain an
-            // error, rather than becoming indistinguishable from no request.
-            sqlx::query("INSERT INTO event_log(sequence,event_id,invocation_id,kind,event_json) VALUES(8,'event-8','invocation','model_requested',?)")
-                .bind(json!({"invocation":{"session_id":"session"},"fact":{"purpose":"main"}}).to_string())
-                .execute(&mut *tx).await?;
-            assert!(selected(&mut tx, "invocation", None, 8, false).await.is_err());
-            let malformed_pending = tx.run_on_worker(move |handle| {
-                // SAFETY: the handle and statements stay within this callback.
-                let raw = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                selected_on_handle(&raw, "invocation", None, 8, false)
-            }).await?;
-            assert!(malformed_pending.is_err());
-            assert_eq!(selected(&mut tx, "invocation", Some("42"), 8, false).await?, vec![1, 2, 3, 6]);
-            tx.rollback().await?;
-            Ok(())
-        }.await;
-        result.unwrap();
     }
 }

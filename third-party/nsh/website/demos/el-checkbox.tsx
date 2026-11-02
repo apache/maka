@@ -1,24 +1,31 @@
 import { mount, signal, Text, View } from "nsh";
 import { Checkbox } from "nsh/base";
-import { desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
+import { CheckMark, desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
 
-// The parts: geometry in classes (`disabled:` dims the row, following the
-// checkbox; `group-checked:` / `group-indeterminate:` show the mark of the
-// indicator's state), colors from the palette by the value the app owns;
-// the pointer's hover and the keyboard's focus ring from the palette too.
+// The parts: geometry and motion in classes (`disabled:` dims the row,
+// following the checkbox; `group-checked:` / `group-indeterminate:` fade in
+// the mark of the indicator's state, both kept mounted so each fades out
+// too, and a check turning into a dash crosses over), colors from the
+// palette by the value the app owns; the pointer's hover and the keyboard's
+// focus ring from the palette too. Nothing moves with reduced motion.
 const row = `flex-row items-center gap-3 ${desktop ? "px-3 py-2" : "px-4 py-3"} active:opacity-70 disabled:opacity-40`;
 const indicator = "group size-5 items-center justify-center rounded-md border transition-colors motion-reduce:transition-none";
 
 /** The indicator's surface: the accent while checked or indeterminate. */
 const box = (on: boolean) => (on ? ui().accentFill : { ...ui().inset, borderColor: ui().faint });
 
+/** A mark over the box, centered: hidden and a little smaller until its state's `group-*:` classes show it. */
+const layer = "absolute inset-0 items-center justify-center opacity-0 scale-75 transition duration-150 ease-out motion-reduce:transition-none";
+
 /** A check while checked, a dash while indeterminate. */
 const mark = () => (
   <>
-    <Text class="hidden text-xs font-bold group-checked:flex" style={{ color: ui().onAccent }}>
-      ✓
-    </Text>
-    <View class="hidden h-0.5 w-2.5 rounded-full group-indeterminate:flex" style={{ backgroundColor: ui().onAccent }} />
+    <View class={`${layer} group-checked:opacity-100 group-checked:scale-100`}>
+      <CheckMark size={14} weight={2.5} tint={ui().onAccent} />
+    </View>
+    <View class={`${layer} group-indeterminate:opacity-100 group-indeterminate:scale-100`}>
+      <View class="h-0.5 w-2.5 rounded-full" style={{ backgroundColor: ui().onAccent }} />
+    </View>
   </>
 );
 

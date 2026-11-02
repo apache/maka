@@ -11,10 +11,27 @@ use nsh_core::{
 /// Redirects followed at most (as browsers).
 const MAX_REDIRECTS: usize = 20;
 
-/// The message of a refused request.
-pub(crate) fn refused(method: &str, url: &str) -> String {
+/// A request (or a redirect's hop) the app's capabilities do not grant:
+/// JS's `fetch` rejects with a `TypeError` whose `code` is
+/// `ERR_ACCESS_DENIED`, `permission` `"network"` and `resource` the URL
+/// (`nsh_js::Host::fetch_refused`); a Rust task's fails with the message.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Refused {
+    /// Why, for people.
+    pub(crate) message: String,
+    /// The URL refused.
+    pub(crate) url: String,
+}
+
+/// The refusal of `method` `url`.
+pub(crate) fn refused(method: &str, url: &str) -> Refused {
     let host = nsh_core::access::parse_url(url).map_or_else(|| url.to_owned(), |u| u.host);
-    format!("fetch {method} {url} is not granted: add `{host}` to capabilities.network in nsh.json")
+    Refused {
+        message: format!(
+            "fetch {method} {url} is not granted: add `{host}` to capabilities.network in nsh.json"
+        ),
+        url: url.to_owned(),
+    }
 }
 
 /// A request the engine follows through its redirects.
@@ -33,6 +50,8 @@ pub(crate) enum Next {
     Done(HttpHead),
     /// The request fails.
     Fail(String),
+    /// The redirect leads where the app may not go.
+    Refused(Refused),
     /// Send this request next (checked against the capabilities).
     Hop(HttpRequest),
 }
@@ -75,7 +94,7 @@ pub(crate) fn next(access: &Access, followed: &mut Followed, mut response: HttpH
         return Next::Fail("cannot follow a redirect with a streamed request body".to_owned());
     }
     if !access.allows_http(&request.method, &url) {
-        return Next::Fail(refused(&request.method, &url));
+        return Next::Refused(refused(&request.method, &url));
     }
     request.url = url;
     followed.hops += 1;
@@ -151,11 +170,13 @@ mod tests {
         );
         assert!(!hop.follow_redirects && hop.body.is_empty() && hop.headers.is_empty());
         // Out of it: refused.
-        let Next::Fail(err) = next(&access, &mut followed, redirect(307, "https://evil.io/"))
+        let Next::Refused(refused) =
+            next(&access, &mut followed, redirect(307, "https://evil.io/"))
         else {
             panic!("expected a refusal")
         };
-        assert!(err.contains("`evil.io`"));
+        assert!(refused.message.contains("`evil.io`"));
+        assert_eq!(refused.url, "https://evil.io/");
         // A streamed body is not sent again.
         followed.request.body = HttpBody::Stream;
         followed.request.method = "PUT".into();

@@ -17,12 +17,17 @@ use syn::LitStr;
 /// image imports).
 const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "heic"];
 
+/// SVG images: their natural size is their root's `width` and `height`
+/// (else their `viewBox`'s), in points, at any density.
+const SVG_EXTENSIONS: &[&str] = &["svg"];
+
 /// File types registered as fonts.
 const FONT_EXTENSIONS: &[&str] = &["ttf", "otf"];
 
 /// What a file is, by its extension.
 enum Kind {
     Image,
+    Svg,
     Font,
     File,
 }
@@ -35,6 +40,8 @@ fn kind(path: &Path) -> Kind {
         .unwrap_or_default();
     if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
         Kind::Image
+    } else if SVG_EXTENSIONS.contains(&ext.as_str()) {
+        Kind::Svg
     } else if FONT_EXTENSIONS.contains(&ext.as_str()) {
         Kind::Font
     } else {
@@ -115,6 +122,92 @@ fn check_variant(file: &Path, points: (f64, f64), scale: f32) -> Result<(), Stri
         ));
     }
     Ok(())
+}
+
+/// The natural size in points of the SVG document `text`, as the core's
+/// `svg::size` reads it: the root's `width` and `height` (absolute units:
+/// `px`, `pt`, `pc`, `mm`, `cm`, `in`; a percentage of the `viewBox`), one
+/// alone taking the other from the `viewBox`'s aspect ratio, else the
+/// `viewBox`'s size.
+fn svg_size(text: &str) -> Result<(f64, f64), String> {
+    let start = text.find("<svg").ok_or("no <svg> element")?;
+    let rest = &text[start + 4..];
+    let tag = &rest[..rest.find('>').ok_or("an unterminated <svg> tag")?];
+    let attr = |name: &str| -> Option<&str> {
+        let mut at = 0;
+        while let Some(i) = tag[at..].find(name) {
+            let i = at + i;
+            at = i + name.len();
+            let before = tag[..i].chars().next_back();
+            if !before.is_some_and(char::is_whitespace) {
+                continue;
+            }
+            let after = tag[at..].trim_start();
+            let Some(after) = after.strip_prefix('=') else {
+                continue;
+            };
+            let after = after.trim_start();
+            let quote = after.chars().next().filter(|c| *c == '"' || *c == '\'')?;
+            let value = &after[1..];
+            return value.find(quote).map(|end| value[..end].trim());
+        }
+        None
+    };
+    let view_box = attr("viewBox").and_then(|v| {
+        let n: Vec<f64> = v
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|s| !s.is_empty())
+            .map(str::parse)
+            .collect::<Result<_, _>>()
+            .ok()?;
+        (n.len() == 4 && n[2] > 0.0 && n[3] > 0.0).then(|| (n[2], n[3]))
+    });
+    let length = |value: Option<&str>, of: Option<f64>| -> Result<Option<f64>, String> {
+        let Some(value) = value else { return Ok(None) };
+        if let Some(percent) = value.strip_suffix('%') {
+            let p: f64 = percent
+                .trim()
+                .parse()
+                .map_err(|_| format!("bad length `{value}`"))?;
+            return Ok(of.map(|of| of * p / 100.0));
+        }
+        let split = value
+            .find(|c: char| c.is_ascii_alphabetic())
+            .unwrap_or(value.len());
+        let (number, unit) = value.split_at(split);
+        let n: f64 = number
+            .trim()
+            .parse()
+            .map_err(|_| format!("bad length `{value}`"))?;
+        let scale = match unit {
+            "" | "px" => 1.0,
+            "pt" => 4.0 / 3.0,
+            "pc" => 16.0,
+            "mm" => 96.0 / 25.4,
+            "cm" => 96.0 / 2.54,
+            "in" => 96.0,
+            _ => {
+                return Err(format!(
+                    "length `{value}`: a size in em or ex depends on a font"
+                ));
+            }
+        };
+        Ok(Some(n * scale))
+    };
+    let width = length(attr("width"), view_box.map(|v| v.0))?;
+    let height = length(attr("height"), view_box.map(|v| v.1))?;
+    let size = match (width, height, view_box) {
+        (Some(w), Some(h), _) => (w, h),
+        (Some(w), None, Some((vw, vh))) => (w, w * vh / vw),
+        (None, Some(h), Some((vw, vh))) => (h * vw / vh, h),
+        (None, None, Some(v)) => v,
+        _ => return Err("no width and height or viewBox: its size is what it draws".into()),
+    };
+    if size.0 > 0.0 && size.1 > 0.0 {
+        Ok(size)
+    } else {
+        Err("an empty size".into())
+    }
 }
 
 /// The family name of a font file.
@@ -218,6 +311,25 @@ fn asset_in(dir: &Path, package: &str, lit: LitStr) -> syn::Result<TokenStream> 
                 }
             }}
         }
+        Kind::Svg => {
+            let text =
+                std::fs::read_to_string(&file).map_err(|e| syn::Error::new(span, e.to_string()))?;
+            let (w, h) = svg_size(&text).map_err(|e| {
+                syn::Error::new(span, format!("cannot read SVG {}: {e}", file.display()))
+            })?;
+            let (width, height) = (w as f32, h as f32);
+            quote! {{
+                const _: &[u8] = ::core::include_bytes!(#source);
+                #ui::ImageAsset {
+                    url: #uri,
+                    size: ::nsh_core::geometry::size(
+                        ::nsh_core::geometry::Points(#width),
+                        ::nsh_core::geometry::Points(#height),
+                    ),
+                    scales: &[],
+                }
+            }}
+        }
         Kind::Font => {
             let data = std::fs::read(&file).map_err(|e| syn::Error::new(span, e.to_string()))?;
             let family = font_family(&data).map_err(|e| {
@@ -276,7 +388,7 @@ fn assets_in(dir: &Path, package: &str, span: Span) -> syn::Result<TokenStream> 
         let uri = format!("asset:/@{package}/{path}");
         let source = source(file, span)?;
         let variant = match kind(file) {
-            Kind::Image => quote!(Image),
+            Kind::Image | Kind::Svg => quote!(Image),
             Kind::Font => quote!(Font),
             Kind::File => quote!(File),
         };
@@ -388,6 +500,45 @@ mod tests {
         assert!(
             license.contains("FileAsset{uri:\"asset:/@app/fonts/OFL.txt\"}"),
             "{license}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_svg_carries_its_size_in_points_at_any_density() {
+        let size = |text: &str| svg_size(text);
+        let svg = |attrs: &str| {
+            format!(
+                r#"<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg" {attrs}><path d="M0 0"/></svg>"#
+            )
+        };
+        assert_eq!(size(&svg(r#"width="48" height="24""#)), Ok((48.0, 24.0)));
+        assert_eq!(size(&svg(r#"viewBox="0 0 24 12""#)), Ok((24.0, 12.0)));
+        // One side alone keeps the viewBox's aspect ratio.
+        assert_eq!(
+            size(&svg(r#"width="48px" viewBox="0,0,24,12""#)),
+            Ok((48.0, 24.0))
+        );
+        assert_eq!(
+            size(&svg(r#"height='50%' viewBox="0 0 24 12""#)),
+            Ok((12.0, 6.0))
+        );
+        assert_eq!(size(&svg(r#"width="3pt" height="1in""#)), Ok((4.0, 96.0)));
+        // `stroke-width` is not `width`.
+        assert_eq!(
+            size(&svg(r#"stroke-width="2" viewBox="0 0 10 10""#)),
+            Ok((10.0, 10.0))
+        );
+        assert!(size(&svg("")).is_err(), "its size is what it draws");
+        assert!(size(&svg(r#"width="2em" height="2em""#)).is_err());
+        assert!(size("<html/>").is_err());
+        // The macro's image of it: a size, no variants.
+        let dir = crate_assets("svg");
+        std::fs::write(dir.join("icon@2x.svg"), svg(r#"viewBox="0 0 24 24""#)).unwrap();
+        let icon = code(asset_in(&dir, "app", lit("icon@2x.svg")).unwrap());
+        assert!(
+            icon.contains("Points(24f32)") && icon.contains("scales:&[]"),
+            "{icon}"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

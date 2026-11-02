@@ -97,9 +97,12 @@ export async function compileCli({
       }
     : env;
   const result = await cargoBuild(args, { cwd: repositoryRoot, env: buildEnv });
-  const binary = result.executables.get('maka');
+  const artifact = result.executables.get('maka');
+  const binary = artifact?.path;
   if (result.code === 0 && !result.signal && !binary)
     throw new Error('Cargo did not report the Maka executable');
+  if (result.code === 0 && !result.signal && !artifact.outDir)
+    throw new Error('Cargo did not report the Maka build output directory');
   if (result.code === 0 && !result.signal && desktop && triple.includes('-apple-darwin')) {
     const directory = dirname(binary);
     await stageDesktopBundle(
@@ -108,13 +111,18 @@ export async function compileCli({
       join(directory, 'Maka.app'),
     );
   }
-  return { code: result.code, signal: result.signal, binary };
+  return {
+    code: result.code,
+    signal: result.signal,
+    binary,
+    bundleInputs: artifact?.outDir && join(artifact.outDir, 'product', 'bundle-inputs.json'),
+  };
 }
 
 export async function buildCli(options = {}) {
-  const { code, signal, binary } = await compileCli(options);
+  const { code, signal, binary, bundleInputs } = await compileCli(options);
   if (code !== 0 || signal) throw new Error(`Maka build failed: ${signal ?? code}`);
-  return binary;
+  return { binary, bundleInputs };
 }
 
 /**
@@ -232,5 +240,5 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
       timings: { type: 'boolean' },
     },
   });
-  console.log(await buildCli(values));
+  console.log((await buildCli(values)).binary);
 }

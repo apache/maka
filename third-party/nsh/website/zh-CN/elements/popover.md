@@ -1,7 +1,6 @@
 ---
 title: Popover
 description: Popover 组件：锚定在触发元素上、显示在一切之上的内容，触发元素、外部按压、Escape 和返回键都会关闭它，样式由应用决定。
-order: 26
 group: base
 demo: el-popover
 ---
@@ -94,6 +93,26 @@ const open = signal(false);
 
 一组操作请使用 [Menu](./menu.md)，它在手机上会变成 sheet；面板请使用 [Sheet](./sheet.md)。
 
+<a id="entrance-and-exit"></a>
+
+## 出现与离开
+
+弹出框随你的过渡出现和离开。`popupStartingClass` 是弹出层第一帧的外观，`popupClass` 里的 `transition-*` 类把它过渡到自己的外观：这就是它的出现。`popupEndingClass` 是关闭后的外观：弹出框会保留下来、不再接受按压，直到这些过渡播放完毕才离开，随后触发 `onClose`。在离开途中再次打开时，它从当前状态回到自己的外观。`popupStartingStyle` 和 `popupEndingStyle` 以内联样式做同样的事。用户要求减少动态效果时，它立即出现、立即离开。
+
+```tsx
+<Popover
+  popupClass="rounded-lg bg-white p-3 shadow-lg transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 scale-95"
+  popupEndingClass="opacity-0 scale-95"
+  onPosition={({ placement }) => side.set(placement)}
+  trigger={<Text>Details</Text>}
+>
+  <OrderSummary />
+</Popover>
+```
+
+`onPosition({ placement, bounds, available })` 说明弹出层放在了哪里：它位于触发元素的哪一侧（`placement` 那一侧空间不够时是另一侧）、它的框以及那一侧的空间，方便箭头或出现动画指向触发元素。
+
 <a id="props"></a>
 
 ## 属性
@@ -110,6 +129,8 @@ const open = signal(false);
 | `closeOnPressOutside` | `.close_on_press_outside(..)` | `boolean` | `true` | 外部按压会关闭它。 |
 | `popupClass`、`popupStyle` | `popup_class`、`popup_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层（装着内容的盒子）的外观。 |
 | `anchor` | `.anchor(..)` | `ViewRef \| null` | 无 | 在别处渲染的锚点，其边界优先于触发元素。 |
+| `popupStartingClass`、`popupStartingStyle` | `popup_starting_class`、`popup_starting_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层第一帧的外观，叠加在它自己的外观之上：它的过渡从这里开始。 |
+| `popupEndingClass`、`popupEndingStyle` | `popup_ending_class`、`popup_ending_style` | `string`、`StyleProp<ViewStyle>` | 无 | 弹出层关闭后的外观，叠加在它自己的外观之上：过渡播放期间它会保留。 |
 | `trigger` | `.trigger(..)` | `JSX.Element` | 无 | 打开它的元素；它相对这个元素放置。弹出层打开时，它的 `aria-expanded:` 类和 `expandedStyle` 生效。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |
 
@@ -121,8 +142,9 @@ const open = signal(false);
 |---|---|---|
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | 它打开或关闭了，附带原因：`"triggerPress"`、`"pressOutside"` 或 `"cancel"`。 |
 | `onOpen` | `.on_open(\|\| ..)` | 它已显示。 |
-| `onClose` | `.on_close(\|\| ..)` | 它已消失，应用关闭它时也会触发。 |
+| `onClose` | `.on_close(\|\| ..)` | 它已消失（在离开过渡之后），应用关闭它时也会触发。 |
 | `onCancel` | `.on_cancel(\|\| ..)` | 用户尝试关闭它（Escape 或返回键、外部按压），无论它是否关闭。 |
+| `onPosition` | `.on_position(\|e\| ..)` | 弹出层已放置：`placement`（它所在的一侧）、`bounds`（它的框）、`available`（那一侧的空间）。 |
 
 <a id="accessibility"></a>
 

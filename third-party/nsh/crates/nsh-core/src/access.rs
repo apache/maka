@@ -933,6 +933,25 @@ fn without_verbatim_prefix(path: &str) -> Option<String> {
 
 // Resolve every existing ancestor, including symlinks. Missing tails are
 // permitted so creation receives the same boundary checks as reads.
+/// Why [`Access::authorize_file`] refused a path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum FileRefusal {
+    /// It names no file it can check: relative, with `..`, an unknown
+    /// anchor, or unreadable (why).
+    Invalid(String),
+    /// No grant of the capabilities covers it (why).
+    NotGranted(String),
+}
+
+impl std::fmt::Display for FileRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FileRefusal::Invalid(why) | FileRefusal::NotGranted(why) => f.write_str(why),
+        }
+    }
+}
+
 fn resolved_path(path: &Path) -> Result<PathBuf, String> {
     if !path.is_absolute() || path.components().any(|p| matches!(p, Component::ParentDir)) {
         return Err("filesystem paths must be absolute and contain no parent traversal".into());
@@ -1138,7 +1157,7 @@ impl Access {
         path: &Path,
         data_dir: &Path,
         write: bool,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<PathBuf, FileRefusal> {
         self.authorize_file_with_paths(path, data_dir, &TrustedPaths::default(), write)
     }
 
@@ -1149,13 +1168,15 @@ impl Access {
         data_dir: &Path,
         paths: &TrustedPaths,
         write: bool,
-    ) -> Result<PathBuf, String> {
+    ) -> Result<PathBuf, FileRefusal> {
         let requested = if let Some(text) = path.to_str().filter(|s| s.starts_with("${")) {
-            paths.resolve_root(text, data_dir)?
+            paths
+                .resolve_root(text, data_dir)
+                .map_err(FileRefusal::Invalid)?
         } else {
             path.to_owned()
         };
-        let resolved = resolved_path(&requested)?;
+        let resolved = resolved_path(&requested).map_err(FileRefusal::Invalid)?;
         let allowed = self.each(|c| {
             let roots = if write { &c.fs.write } else { &c.fs.read };
             roots.iter().any(|root| {
@@ -1168,10 +1189,10 @@ impl Access {
         if allowed {
             Ok(resolved)
         } else {
-            Err(format!(
+            Err(FileRefusal::NotGranted(format!(
                 "filesystem {} is not granted by capabilities.fs",
                 if write { "write" } else { "read" }
-            ))
+            )))
         }
     }
 

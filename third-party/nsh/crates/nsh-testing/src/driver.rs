@@ -58,6 +58,11 @@ pub(crate) trait Driver: Send {
     fn wait_for_within(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
     fn wait_for_gone(&mut self, selector: &str, timeout: Duration) -> Result<(), String>;
     fn next_change(&mut self, timeout: Duration) -> Result<(), String>;
+    /// What `waitUntil` waits for between looks on a manual clock: moves it
+    /// by a display frame (`timeout` at most) and applies what came; how
+    /// far it moved (zero on the system's clock, where it is
+    /// [`Driver::next_change`]).
+    fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String>;
     fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String>;
     fn set_color_scheme(&mut self, scheme: ColorScheme) -> Result<(), String>;
     fn run_for(&mut self, time: Duration) -> Result<(), String>;
@@ -175,6 +180,9 @@ impl Driver for Headless {
     fn next_change(&mut self, timeout: Duration) -> Result<(), String> {
         Headless::next_change(self, timeout)
     }
+    fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String> {
+        Headless::next_frame(self, timeout)
+    }
     fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String> {
         Headless::set_viewport(self, size)
     }
@@ -283,6 +291,9 @@ pub trait Host: Send {
 const STEP_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a host may take to move the app's clock and settle.
 const CLOCK_STEP_TIMEOUT: Duration = Duration::from_secs(90);
+/// A display frame, which a wait moves a manual clock by between two looks
+/// (the agent's frame).
+const FRAME: Duration = Duration::from_millis(16);
 
 /// An app on a real platform's host.
 pub(crate) struct Remote {
@@ -313,7 +324,9 @@ impl Remote {
             *self.step.lock().unwrap_or_else(|e| e.into_inner()) = name;
         }
         let timeout = match &step {
-            TestStep::Wait { ms } => STEP_TIMEOUT + Duration::from_millis(*ms),
+            TestStep::Wait { ms } | TestStep::WaitFor { timeout_ms: ms, .. } => {
+                STEP_TIMEOUT + Duration::from_millis(*ms)
+            }
             // The timers due on the way run meanwhile.
             TestStep::Clock { .. } => CLOCK_STEP_TIMEOUT,
             _ => STEP_TIMEOUT,
@@ -527,6 +540,15 @@ impl Driver for Remote {
         self.action(TestStep::NextChange {
             timeout_ms: ms(timeout),
         })
+    }
+    fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String> {
+        if !self.manual_clock {
+            return self.next_change(timeout).map(|()| Duration::ZERO);
+        }
+        // A whole millisecond at least: the wait's time runs out.
+        let by = ms(timeout.min(FRAME)).max(1);
+        self.action(TestStep::NextFrame { ms: by })?;
+        Ok(Duration::from_millis(by))
     }
     fn set_viewport(&mut self, size: Size<Points>) -> Result<(), String> {
         self.action(TestStep::SetViewport {

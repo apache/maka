@@ -50,3 +50,41 @@ pub fn configuration(tool_mode: ToolMode) -> InvocationConfiguration {
         thinking_level: None,
     }
 }
+
+pub fn input(
+    base: &str,
+    suffix: &str,
+    work: maka_agent_engine::RunWork,
+) -> maka_agent_engine::RunInput {
+    maka_agent_engine::RunInput {
+        model_source: None,
+        native_activation_basis: None,
+        model_revision: None,
+        provider_id: "fixture".into(),
+        main_output_limit: None,
+        context: None,
+        invocation: maka_agent_facts::event::Invocation {
+            session_id: "session".into(),
+            turn_id: format!("turn-{suffix}"),
+            run_id: format!("run-{suffix}"),
+            invocation_id: format!("invocation-{suffix}"),
+        },
+        request_fingerprint: None,
+        provider: maka_model::ProviderConfig {
+            image_input: None,
+            adapter: None,
+            capabilities: Default::default(),
+            kind: maka_model::ProviderKind::OpenaiChatCompletions,
+            model: "test".into(),
+            base_url: base.into(),
+            auth: maka_model::ProviderAuth::ApiKey("fixture".into()),
+            headers: Default::default(),
+            network: Default::default(),
+            body_overlay: None,
+        },
+        provider_options: serde_json::json!({}),
+        supports_vision: false,
+        configuration: configuration(ToolMode::Direct),
+        work,
+    }
+}

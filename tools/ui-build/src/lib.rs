@@ -218,21 +218,41 @@ fn matches_files(expected: &BTreeMap<PathBuf, String>) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
+
+    fn label(module: &Path) -> String {
+        let output = Command::new("node")
+            .args([
+                "--input-type=module",
+                "--eval",
+                "import { pathToFileURL } from 'node:url'; const ui = await import(pathToFileURL(process.argv[1])); console.log(ui.label);",
+            ])
+            .arg(module)
+            .output()
+            .expect("execute the compiled module with Node");
+        assert!(
+            output.status.success(),
+            "compiled module failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout).expect("UTF-8 module output")
+    }
 
     #[test]
     fn compilation_reuses_outputs_and_tracks_changed_removed_and_cleaned_inputs() {
         let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("package.json"),
+            r#"{"type":"module"}"#,
+        )
+        .unwrap();
         let entry = directory.path().join("entry.ts");
         let dependency = directory.path().join("label.ts");
         let output = directory.path().join("output");
         fs::write(&entry, "export { label } from './label';").unwrap();
         fs::write(&dependency, "export const label = 'original label';").unwrap();
         let compiled = compile_cached(&entry, &output, "compiler").unwrap();
-        assert!(
-            fs::read_to_string(&compiled.module)
-                .unwrap()
-                .contains("original label")
-        );
+        assert_eq!(label(&compiled.module), "original label\n");
         let unchanged = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1);
         fs::File::options()
             .write(true)
@@ -246,38 +266,22 @@ mod tests {
             unchanged
         );
 
-        fs::write(&dependency, "export const label = 'updated label';").unwrap();
+        fs::write(&dependency, "export const label = 'updated 中文 label';").unwrap();
         compile_cached(&entry, &output, "compiler").unwrap();
-        assert!(
-            fs::read_to_string(&compiled.module)
-                .unwrap()
-                .contains("updated label")
-        );
+        assert_eq!(label(&compiled.module), "updated 中文 label\n");
 
         fs::write(&entry, "export const label = 'inline label';").unwrap();
         fs::remove_file(dependency).unwrap();
         compile_cached(&entry, &output, "compiler").unwrap();
-        assert!(
-            fs::read_to_string(&compiled.module)
-                .unwrap()
-                .contains("inline label")
-        );
+        assert_eq!(label(&compiled.module), "inline label\n");
 
         fs::remove_file(&compiled.module).unwrap();
         compile_cached(&entry, &output, "compiler").unwrap();
-        assert!(
-            fs::read_to_string(&compiled.module)
-                .unwrap()
-                .contains("inline label")
-        );
+        assert_eq!(label(&compiled.module), "inline label\n");
         fs::remove_file(output.join("manifest.json")).unwrap();
         compile_cached(&entry, &output, "compiler").unwrap();
         let restored: CompiledUi =
             serde_json::from_slice(&fs::read(output.join("manifest.json")).unwrap()).unwrap();
-        assert!(
-            fs::read_to_string(restored.module)
-                .unwrap()
-                .contains("inline label")
-        );
+        assert_eq!(label(&restored.module), "inline label\n");
     }
 }

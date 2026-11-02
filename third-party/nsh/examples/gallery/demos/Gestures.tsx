@@ -1,6 +1,6 @@
 import { Canvas, cleanup, type GestureResponderEvent, Image, type MouseButton, platform, signal, Text, View } from "nsh";
 
-const pointer = platform.idiom === "desktop";
+const pointer = platform.desktop;
 import { Animated, createAnimatedValue, Easing } from "nsh";
 import { PanResponder } from "nsh";
 import { Icon, type IconName } from "../icons";

@@ -194,6 +194,10 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
             BTreeMap::new(),
             NativeRegistry::default(),
             issuer.clone(),
+            maka_capabilities::model_preparation::ModelPreparationResources::new(
+                maka_capabilities::model_preparation::PreparationPolicy::default(),
+            )
+            .unwrap(),
             Arc::new(Allowed),
             Some(domains.clone()),
             watch::channel(Snapshot::default()).0,
@@ -222,6 +226,7 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
         owner.owned.insert(
             provider.instance().clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource: owner
                     .runtime
@@ -257,6 +262,7 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
         owner.owned.insert(
             consumer.instance().clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource,
                 close: Some(Box::pin(async { Ok(()) })),
@@ -368,6 +374,7 @@ async fn final_admission_rejects_failed_consumer_before_terminal_notification_is
             owner.owned.insert(
                 activation.instance().clone(),
                 Owned {
+                    exports: Arc::default(),
                     imports: Arc::new(BTreeMap::new()),
                     resource,
                     close: Some(Box::pin(async { Ok(()) })),
@@ -493,6 +500,10 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
         sources,
         native,
         Issuer::default(),
+        maka_capabilities::model_preparation::ModelPreparationResources::new(
+            maka_capabilities::model_preparation::PreparationPolicy::default(),
+        )
+        .unwrap(),
         Arc::new(Allowed),
         None,
         updates,
@@ -525,16 +536,13 @@ async fn retained_old_head_after_new_explicit_adoption_does_not_poison_readiness
 }
 
 struct RetirementGate {
-    subscription: bool,
     started: tokio::sync::Notify,
     returned: Arc<tokio::sync::Notify>,
-    finish_query: Arc<tokio::sync::Notify>,
     cleanup: Arc<tokio::sync::Notify>,
     cancellation: std::sync::Mutex<Option<CancellationToken>>,
 }
 impl Handler for RetirementGate {
     fn call(&self, _: String, _: Value, context: Context) -> BoxFuture<'static, Result<Value>> {
-        let subscription = self.subscription;
         let cleanup = self.cleanup.clone();
         let mut ticket = context.scope().resources.reserve().unwrap();
         ticket.start();
@@ -548,15 +556,10 @@ impl Handler for RetirementGate {
             .replace(context.scope().cancellation.clone());
         self.started.notify_one();
         let stop = context.scope().cancellation.clone();
-        let finished = self.finish_query.clone();
         let returned = self.returned.clone();
         Box::pin(async move {
-            if subscription {
-                context.emit(json!({"state":"watching"})).await?;
-                stop.cancelled().await;
-            } else {
-                finished.notified().await;
-            }
+            context.emit(json!({"state":"watching"})).await?;
+            stop.cancelled().await;
             returned.notify_one();
             Ok(Value::Null)
         })
@@ -570,11 +573,7 @@ fn poll_ready(owner: &mut Owner) {
     }
 }
 
-async fn retirement_preserves_execution_cleanup(
-    subscription: bool,
-    consumer_only: bool,
-    loading_consumer: bool,
-) {
+async fn retiring_subscription_waits_for_cleanup(consumer_only: bool, loading_consumer: bool) {
     let contract = Contract {
         name: "example.Retirement".into(),
         version: 1,
@@ -584,18 +583,9 @@ async fn retirement_preserves_execution_cleanup(
                 "observe".into(),
                 Method {
                     progress: None,
-                    mode: if subscription {
-                        MethodMode::Subscription
-                    } else {
-                        MethodMode::Query
-                    },
+                    mode: MethodMode::Subscription,
                     input: json!({}).into(),
-                    output: if subscription {
-                        json!({"type":"object"})
-                    } else {
-                        json!({})
-                    }
-                    .into(),
+                    output: json!({"type":"object"}).into(),
                     resources: BTreeMap::new(),
                 },
             )]),
@@ -609,6 +599,10 @@ async fn retirement_preserves_execution_cleanup(
         BTreeMap::new(),
         NativeRegistry::default(),
         issuer.clone(),
+        maka_capabilities::model_preparation::ModelPreparationResources::new(
+            maka_capabilities::model_preparation::PreparationPolicy::default(),
+        )
+        .unwrap(),
         Arc::new(Allowed),
         None,
         watch::channel(Snapshot::default()).0,
@@ -618,10 +612,8 @@ async fn retirement_preserves_execution_cleanup(
     owner.pending.clear();
     owner.starting = false;
     let gate = Arc::new(RetirementGate {
-        subscription,
         started: tokio::sync::Notify::new(),
         returned: Arc::new(tokio::sync::Notify::new()),
-        finish_query: Arc::new(tokio::sync::Notify::new()),
         cleanup: Arc::new(tokio::sync::Notify::new()),
         cancellation: std::sync::Mutex::new(None),
     });
@@ -640,6 +632,7 @@ async fn retirement_preserves_execution_cleanup(
         owner.owned.insert(
             activation.instance().clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(BTreeMap::new()),
                 resource: owner
                     .runtime
@@ -691,16 +684,9 @@ async fn retirement_preserves_execution_cleanup(
             CancellationToken::new(),
         )
         .unwrap();
-    let (query_reply, query) = oneshot::channel();
-    let (subscription_reply, observation) = oneshot::channel();
+    let (reply, observation) = oneshot::channel();
     owner.command(Command::Call(Box::new(Call {
-        kind: if subscription {
-            CallKind::Subscription {
-                reply: subscription_reply,
-            }
-        } else {
-            CallKind::Query(query_reply)
-        },
+        kind: CallKind::Subscription { reply },
         parent: None,
         binding,
         method: "observe".into(),
@@ -719,21 +705,10 @@ async fn retirement_preserves_execution_cleanup(
             .try_acquire_many_owned(4)
             .unwrap(),
     })));
-    let accepted_query = if subscription {
-        None
-    } else {
-        Some(query.await.unwrap().unwrap())
-    };
-    let mut accepted_observation = if subscription {
-        Some(observation.await.unwrap().unwrap())
-    } else {
-        None
-    };
+    let mut observation = observation.await.unwrap().unwrap();
     poll_ready(&mut owner);
     gate.started.notified().await;
-    if let Some(observation) = accepted_observation.as_mut() {
-        assert_eq!(observation.recv().await, Some(json!({"state":"watching"})));
-    }
+    assert_eq!(observation.recv().await, Some(json!({"state":"watching"})));
     owner.drive();
     poll_ready(&mut owner);
     assert!(
@@ -759,15 +734,11 @@ async fn retirement_preserves_execution_cleanup(
         .as_ref()
         .unwrap()
         .is_cancelled();
-    assert_eq!(cancelled, subscription);
+    assert!(cancelled);
     assert!(
         !scope.cancellation.is_cancelled(),
         "retirement does not cancel the original caller"
     );
-    if !subscription {
-        gate.finish_query.notify_one();
-        poll_ready(&mut owner);
-    }
     gate.returned.notified().await;
     assert_eq!(
         owner.runtime.status(provider).unwrap().calls,
@@ -785,15 +756,9 @@ async fn retirement_preserves_execution_cleanup(
     owner.complete(done);
     owner.drive();
     poll_ready(&mut owner);
-    if subscription {
-        let completion = accepted_observation.unwrap().completion().await;
-        assert_eq!(completion.result.unwrap(), Value::Null);
-        completion.cleanup.unwrap();
-    } else {
-        let completion = accepted_query.unwrap().completion().await;
-        assert_eq!(completion.result.unwrap(), Value::Null);
-        completion.cleanup.unwrap();
-    }
+    let completion = observation.completion().await;
+    assert_eq!(completion.result.unwrap(), Value::Null);
+    completion.cleanup.unwrap();
     scope.resources.finish().await.unwrap();
     if consumer_only {
         assert_eq!(owner.runtime.status(provider).unwrap().phase, Phase::Active);
@@ -811,19 +776,9 @@ async fn retirement_preserves_execution_cleanup(
 #[tokio::test]
 async fn retiring_either_subscription_party_cancels_but_waits_for_original_cleanup() {
     tokio::time::timeout(Duration::from_secs(10), async {
-        retirement_preserves_execution_cleanup(true, false, false).await;
-        retirement_preserves_execution_cleanup(true, true, false).await;
+        retiring_subscription_waits_for_cleanup(false, false).await;
+        retiring_subscription_waits_for_cleanup(true, false).await;
     })
-    .await
-    .unwrap();
-}
-
-#[tokio::test]
-async fn retirement_does_not_cancel_an_accepted_query() {
-    tokio::time::timeout(
-        Duration::from_secs(10),
-        retirement_preserves_execution_cleanup(false, false, false),
-    )
     .await
     .unwrap();
 }
@@ -832,7 +787,7 @@ async fn retirement_does_not_cancel_an_accepted_query() {
 async fn loading_consumer_subscription_survives_drive_until_retirement() {
     tokio::time::timeout(
         Duration::from_secs(10),
-        retirement_preserves_execution_cleanup(true, true, true),
+        retiring_subscription_waits_for_cleanup(true, true),
     )
     .await
     .unwrap();

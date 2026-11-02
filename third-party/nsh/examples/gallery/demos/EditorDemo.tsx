@@ -136,7 +136,7 @@ const same = (a: EditorRange, b: EditorRange) =>
   a.start.line === b.start.line && a.start.column === b.start.column && a.end.line === b.end.line && a.end.column === b.end.column;
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 || word === "info" ? "" : "s"}`;
 
-const pointer = platform.idiom === "desktop";
+const pointer = platform.desktop;
 
 /** What the hover card shows. */
 interface HoverCard {

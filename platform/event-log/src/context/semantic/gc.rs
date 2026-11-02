@@ -29,10 +29,8 @@ pub(crate) async fn retire_owner(
 ) -> Result<(), StoreError> {
     for statement in [
         "DELETE FROM context_semantic_rows WHERE owner_session_id=?",
-        "DELETE FROM context_semantic_changes WHERE owner_session_id=?",
         "DELETE FROM context_semantic_cuts WHERE owner_session_id=?",
         "DELETE FROM context_semantic_frontiers WHERE session_id=?",
-        "DELETE FROM context_semantic_checkpoints WHERE session_id=?",
     ] {
         sqlx::query(statement)
             .bind(session)

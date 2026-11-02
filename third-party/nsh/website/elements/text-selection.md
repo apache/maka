@@ -1,7 +1,7 @@
 ---
 title: Text selection
 description: "Selectable views: one selection across the texts inside a view, across views, Text elements and TextViews, as a web page's texts select."
-order: 10.8
+order: 130
 group: primitives
 demo: el-text-selection
 ---

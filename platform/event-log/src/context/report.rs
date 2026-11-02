@@ -81,10 +81,10 @@ impl EventLog {
                         return Err(invalid("fence exceeds committed history"));
                     }
                     let row = sqlx::query(
-                        "SELECT sequence, event_json FROM runtime_events
-                         WHERE json_extract(event_json,'$.invocation.session_id')=?1
+                        "SELECT sequence, event_header FROM runtime_events
+                         WHERE json_extract(event_header,'$.invocation.session_id')=?1
                            AND kind='model_requested' AND sequence<=?2
-                           AND json_extract(event_json,'$.fact.purpose')='main'
+                           AND json_extract(event_header,'$.fact.purpose')='main'
                          ORDER BY sequence DESC LIMIT 1",
                     )
                     .bind(&session)
@@ -93,7 +93,7 @@ impl EventLog {
                     .await?;
                     let request = if let Some(row) = row {
                         let sequence = safe_number(sequence_number(row.try_get("sequence")?)?)?;
-                        let event: RuntimeEvent = serde_json::from_str(row.try_get("event_json")?)?;
+                        let event: RuntimeEvent = serde_json::from_str(row.try_get("event_header")?)?;
                         let Fact::ModelRequested {
                             step_id,
                             model_id,
@@ -112,11 +112,11 @@ impl EventLog {
                             breakdown.validate().map_err(invalid)?;
                         }
                         let terminal = sqlx::query(
-                            "SELECT kind, json_extract(event_json,'$.fact.output.usage.input_tokens') AS input_tokens
+                            "SELECT kind, json_extract(event_header,'$.fact.output.usage.input_tokens') AS input_tokens
                              FROM runtime_events WHERE invocation_id=?1 AND operation_id=?2
                                AND kind IN ('model_completed','model_interrupted')
                                AND sequence>?3 AND sequence<=?4
-                               AND json_extract(event_json,'$.invocation.session_id')=?5
+                               AND json_extract(event_header,'$.invocation.session_id')=?5
                              ORDER BY sequence LIMIT 1"
                         )
                         .bind(&event.invocation.invocation_id)

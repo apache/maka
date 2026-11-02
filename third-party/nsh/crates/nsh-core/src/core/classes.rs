@@ -58,6 +58,8 @@ pub(super) enum Part {
     Indeterminate,
     /// `expandedStyle`.
     Expanded,
+    /// `pressedStyle`.
+    Pressed,
     /// A page's `headerStyle` / `headerClass`.
     Header,
     /// A list's `contentClass`.
@@ -76,6 +78,7 @@ impl Part {
             Part::Checked => (state::CHECKED, rank::CHECKED),
             Part::Indeterminate => (state::INDETERMINATE, rank::INDETERMINATE),
             Part::Expanded => (state::EXPANDED, rank::EXPANDED),
+            Part::Pressed => (state::ARIA_PRESSED, rank::ARIA_PRESSED),
             _ => return None,
         })
     }
@@ -86,8 +89,8 @@ impl Part {
 pub(super) struct NodeParts {
     /// The classes as set, before the state styles are merged in.
     base: Option<std::rc::Rc<ClassList>>,
-    /// The state styles, by [`Part`] (the first eight).
-    states: [Option<std::rc::Rc<StylePatch>>; 8],
+    /// The state styles, by [`Part`] (the first nine).
+    states: [Option<std::rc::Rc<StylePatch>>; 9],
     /// The state styles as rules (none without any).
     state_rules: Option<std::rc::Rc<ClassList>>,
     /// The inline styles of the other parts.
@@ -96,8 +99,34 @@ pub(super) struct NodeParts {
     classes: Vec<(Part, std::rc::Rc<ClassList>)>,
 }
 
+/// The [`state`] bits an element is in by its accessibility state `s`:
+/// selected, checked (true), indeterminate (checked mixed), expanded,
+/// pressed (true: a toggle button that is on) and busy.
+pub(super) fn accessibility_states(s: &crate::AccessibilityState) -> u16 {
+    use crate::Checked;
+    let mut states = 0;
+    if s.selected {
+        states |= state::SELECTED;
+    }
+    match s.checked {
+        Some(Checked::True) => states |= state::CHECKED,
+        Some(Checked::Mixed) => states |= state::INDETERMINATE,
+        _ => {}
+    }
+    if s.expanded == Some(true) {
+        states |= state::EXPANDED;
+    }
+    if s.pressed == Some(Checked::True) {
+        states |= state::ARIA_PRESSED;
+    }
+    if s.busy {
+        states |= state::BUSY;
+    }
+    states
+}
+
 /// The state style parts, by their index in [`NodeParts::states`].
-const STATE_PARTS: [Part; 8] = [
+const STATE_PARTS: [Part; 9] = [
     Part::Active,
     Part::Hover,
     Part::Focus,
@@ -106,6 +135,7 @@ const STATE_PARTS: [Part; 8] = [
     Part::Checked,
     Part::Indeterminate,
     Part::Expanded,
+    Part::Pressed,
 ];
 
 impl<M: TextEngine> Core<M> {
@@ -272,61 +302,14 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// `selected` of `key`'s accessibility state: the `selected:` variant.
-    pub(super) fn set_selected(&mut self, key: Key, selected: bool) {
+    /// The states `key`'s accessibility state puts it in
+    /// ([`accessibility_states`]): the `selected:`, `checked:`,
+    /// `indeterminate:` and `aria-*:` variants.
+    pub(super) fn set_accessibility_states(&mut self, key: Key, states: u16) {
         let node = &mut self.nodes[key as usize];
-        let before = node.states;
-        if selected {
-            node.states |= state::SELECTED;
-        } else {
-            node.states &= !state::SELECTED;
-        }
-        if node.states != before {
-            self.states_changed(key);
-        }
-    }
-
-    /// `checked` of `key`'s accessibility state (true, not mixed): the
-    /// `checked:` variant.
-    pub(super) fn set_checked(&mut self, key: Key, checked: bool) {
-        let node = &mut self.nodes[key as usize];
-        let before = node.states;
-        if checked {
-            node.states |= state::CHECKED;
-        } else {
-            node.states &= !state::CHECKED;
-        }
-        if node.states != before {
-            self.states_changed(key);
-        }
-    }
-
-    /// `expanded` of `key`'s accessibility state: the `aria-expanded:`
-    /// variant (a `Popover`'s or `Menu`'s trigger while its popup is open).
-    pub(super) fn set_expanded(&mut self, key: Key, expanded: bool) {
-        let node = &mut self.nodes[key as usize];
-        let before = node.states;
-        if expanded {
-            node.states |= state::EXPANDED;
-        } else {
-            node.states &= !state::EXPANDED;
-        }
-        if node.states != before {
-            self.states_changed(key);
-        }
-    }
-
-    /// `checked` of `key`'s accessibility state is mixed: the
-    /// `indeterminate:` variant.
-    pub(super) fn set_indeterminate(&mut self, key: Key, indeterminate: bool) {
-        let node = &mut self.nodes[key as usize];
-        let before = node.states;
-        if indeterminate {
-            node.states |= state::INDETERMINATE;
-        } else {
-            node.states &= !state::INDETERMINATE;
-        }
-        if node.states != before {
+        let now = (node.states & !state::ACCESSIBILITY) | states;
+        if node.states != now {
+            node.states = now;
             self.states_changed(key);
         }
     }
@@ -663,6 +646,25 @@ impl<M: TextEngine> Core<M> {
         if had_groups || has_groups {
             self.restyle_subtree(key, deps::GROUP);
         }
+    }
+
+    /// How long the transitions of view `id` run, its delay included, with
+    /// its styles now (a component waiting for its exit,
+    /// [`crate::element::ElementRef::transition_time`]); zero for a view
+    /// with none, or gone.
+    pub(super) fn transition_time(&self, id: NodeId) -> std::time::Duration {
+        let Ok(key) = self.key(id) else {
+            return std::time::Duration::ZERO;
+        };
+        self.nodes[key as usize]
+            .view_style
+            .transition
+            .filter(|t| t.properties.0 != 0)
+            .map_or(std::time::Duration::ZERO, |t| {
+                std::time::Duration::from_secs_f32(
+                    (t.duration.max(0.0) + t.delay.max(0.0)) / 1000.0,
+                )
+            })
     }
 
     /// Replaces the theme: every class is resolved again.

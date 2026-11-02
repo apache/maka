@@ -80,6 +80,7 @@ pub enum Event {
     PartDelta {
         id: String,
         text: String,
+        summary_breaks: Option<Vec<usize>>,
     },
     PartFinished {
         id: String,
@@ -127,8 +128,7 @@ pub enum Error {
         retained_output_safe: bool,
     },
     Provider {
-        code: Option<String>,
-        message: String,
+        error: Box<crate::output::ProviderError>,
         observed_output: bool,
         replay_safe: bool,
         retained_output_safe: bool,
@@ -139,7 +139,11 @@ impl std::fmt::Display for Error {
         match self {
             Self::Invalid(message) => f.write_str(message),
             Self::Truncated { .. } => f.write_str("Responses stream ended without completion"),
-            Self::Provider { message, .. } => write!(f, "Responses provider failed: {message}"),
+            Self::Provider { error, .. } => write!(
+                f,
+                "Responses provider failed: {}",
+                error.message.as_deref().unwrap_or("provider error")
+            ),
         }
     }
 }

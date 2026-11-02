@@ -86,9 +86,9 @@ impl EventLog {
                         }
                         WorkOrigin::Invocation(invocation) => {
                             let opening: Option<String> = sqlx::query_scalar(
-                                "SELECT event_json
+                                "SELECT event_header
                          FROM runtime_events WHERE invocation_id = ?1 AND kind = 'invocation_opened'
-                         AND json_extract(event_json, '$.invocation.session_id') = ?2",
+                         AND json_extract(event_header, '$.invocation.session_id') = ?2",
                             )
                             .bind(invocation)
                             .bind(&session)
@@ -140,14 +140,28 @@ async fn observe(
             // Blob slicing preserves NUL and bounds bytes, not characters.
             let page: Option<(Vec<u8>, i64)> = sqlx::query_as(
                         "SELECT substr(CAST(text AS BLOB), ?2, 16388), length(CAST(text AS BLOB)) FROM (
-                            SELECT sequence, json_extract(event_json, '$.fact.text') AS text
+                            SELECT sequence, json_extract(event_header, '$.fact.text') AS text
                             FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_completed'
                             UNION ALL
                             SELECT event.sequence, (
-                                SELECT group_concat(json_extract(part.value, '$.text'), '')
-                                FROM json_each(event.event_json, '$.fact.output.parts') part
-                                WHERE json_extract(part.value, '$.kind') = 'text'
-                                  AND json_extract(part.value, '$.text_kind') = 'text'
+                                SELECT group_concat(json_extract(body, '$.text'), '') FROM (
+                                    SELECT CASE json_extract(part.value, '$.kind')
+                                        WHEN 'own' THEN json_extract(part.value, '$.data.part')
+                                        WHEN 'ref' THEN (
+                                            SELECT json_extract(original.event_header, '$.fact.event.data.part')
+                                            FROM runtime_events original
+                                            WHERE original.event_id = json_extract(part.value, '$.data.event_id')
+                                              AND original.invocation_id = event.invocation_id
+                                              AND original.sequence < event.sequence
+                                              AND original.kind = 'model_observed'
+                                              AND json_extract(original.event_header, '$.fact.step_id') = event.operation_id
+                                              AND json_extract(original.event_header, '$.fact.event.kind') = 'part'
+                                              AND json_extract(original.event_header, '$.fact.event.data.ordinal') = json_extract(part.value, '$.data.ordinal')
+                                        ) END AS body
+                                    FROM json_each(event.event_header, '$.fact.output.parts') part
+                                    ORDER BY CAST(part.key AS INTEGER)
+                                ) WHERE json_extract(body, '$.kind') = 'text'
+                                    AND json_extract(body, '$.text_kind') = 'text'
                             ) AS text
                             FROM runtime_events event WHERE invocation_id = ?1 AND kind = 'model_completed'
                         ) WHERE text IS NOT NULL AND trim(text) != ''

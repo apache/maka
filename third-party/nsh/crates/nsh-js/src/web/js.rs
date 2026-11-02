@@ -698,6 +698,27 @@ pub(crate) fn rejected_with_exception(cx: Ctx) -> R<V> {
     rejected(cx, e.raw())
 }
 
+/// `r`, what a native returning a promise made, as a promise: an exception
+/// (a wrong argument, an op past the limit) rejects it instead, as every
+/// call returning a promise does; an uncatchable one (an interrupt) stays
+/// thrown.
+pub(crate) fn rejecting(cx: Ctx, r: Raw) -> Raw {
+    // SAFETY: a check of a live value.
+    if !unsafe { qjs::JS_IsException(r) } {
+        return r;
+    }
+    let e = take_exception(cx);
+    // SAFETY: a check of a live value.
+    if unsafe { qjs::JS_IsUncatchableError(e.raw()) } {
+        let _ = throw(cx, e);
+        return qjs::JS_EXCEPTION;
+    }
+    match rejected(cx, e.raw()) {
+        Ok(p) => p.take(),
+        Err(Throw) => qjs::JS_EXCEPTION,
+    }
+}
+
 /// The result of `f` as a promise: its value, or rejected with what it
 /// threw.
 pub(crate) fn promise_of(cx: Ctx, f: impl FnOnce() -> R<V>) -> R<V> {

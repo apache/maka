@@ -393,6 +393,10 @@ impl WebItem {
                 item.emitter.emit(EventKind::Error, || {
                     EventPayload::Map(vec![
                         ("message", PayloadValue::Str(message)),
+                        (
+                            "code",
+                            PayloadValue::Str(nsh_core::element::codes::ACCESS_DENIED.into()),
+                        ),
                         ("url", PayloadValue::Str(url.clone())),
                     ])
                 });

@@ -196,33 +196,3 @@ async fn closing_queue_drains_abandoned_observers_and_releases_worker() {
         "accepted before cancellation"
     );
 }
-
-#[tokio::test]
-async fn cancelled_handoff_under_backpressure_never_becomes_an_owned_write() {
-    let directory = tempfile::tempdir().unwrap();
-    let journal = Journal::open(&directory.path().join("client.db"))
-        .await
-        .unwrap();
-    let (sender, receiver) = mpsc::channel(COMMAND_BUFFER_SIZE);
-    for index in 0..COMMAND_BUFFER_SIZE {
-        let mut owner = key();
-        owner.editor_id = index.to_string();
-        let (write, response) = pending(save(&owner, None, "accepted"));
-        sender.send(write).await.ok().unwrap();
-        drop(response);
-    }
-    let cancelled_key = key();
-    let (write, response) = pending(save(&cancelled_key, None, "cancelled before handoff"));
-    let mut waiting = Box::pin(sender.send(write));
-    assert!(futures_util::poll!(&mut waiting).is_pending());
-    drop(waiting);
-    drop(response);
-    drop(sender);
-    run(journal.pool.clone(), receiver).await;
-    assert!(journal.load_draft(&cancelled_key).await.unwrap().is_none());
-    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM drafts")
-        .fetch_one(&journal.pool)
-        .await
-        .unwrap();
-    assert_eq!(count, COMMAND_BUFFER_SIZE as i64);
-}

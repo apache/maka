@@ -20,7 +20,7 @@
 // The desktop window's notifications: a conversation in the list that stops
 // working, or starts waiting for the user, while the window is in the
 // background. Choosing one shows that conversation. Terminals have none.
-import { cleanup, effect, host as shell, untracked } from 'nsh';
+import { effect, host as shell, untracked } from 'nsh';
 import type { BrowserSession } from './browsing';
 import { ownTitleBar } from './chrome';
 import { tr } from './locale';
@@ -58,8 +58,7 @@ export function watchNotifications(props: {
         .catch(() => undefined);
     }
   });
-  const opened = shell.on('notification.open', (data: { tag?: unknown }) => {
+  shell.on('notification.open', (data: { tag?: unknown }) => {
     if (typeof data?.tag === 'string') props.open(data.tag);
   });
-  cleanup(() => opened.remove());
 }

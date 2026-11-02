@@ -233,6 +233,108 @@ export const contracts = {
           },
           resources: {},
         },
+        botOutbox: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutboxRead',
+            type: 'object',
+            properties: {
+              after: {
+                description:
+                  'Return messages with a sequence greater than this cursor, oldest first.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                type: ['string', 'null'],
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'through', 'messages'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
+              },
+            },
+          },
+          resources: {},
+        },
         catalog: {
           mode: 'subscription',
           input: {
@@ -242,6 +344,11 @@ export const contracts = {
             properties: {
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
+              },
+              includeArchived: {
+                description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
               },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
@@ -361,6 +468,22 @@ export const contracts = {
                     required: ['kind', 'projectId'],
                   },
                   {
+                    description: 'Direct children of an owned session, across workspaces.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'children',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
                     description:
                       'Resolve the exact workspace from an owned session, never a caller path.',
                     type: 'object',
@@ -414,6 +537,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -486,6 +614,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -500,6 +631,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -512,6 +644,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -847,11 +980,6 @@ export const contracts = {
                   objective: {
                     type: 'string',
                   },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
                   tokenBudget: {
                     type: ['integer', 'null'],
                     format: 'uint64',
@@ -865,7 +993,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'sessionId', 'objective', 'maxIterations', 'start', 'approval'],
+                required: ['kind', 'sessionId', 'objective', 'start', 'approval'],
               },
               {
                 type: 'object',
@@ -888,6 +1016,17 @@ export const contracts = {
                   },
                   action: {
                     $ref: '#/$defs/GoalControl',
+                  },
+                  budget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGoalBudget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    default: null,
                   },
                   approval: {
                     description:
@@ -1091,7 +1230,18 @@ export const contracts = {
               },
               GoalControl: {
                 type: 'string',
-                enum: ['pause', 'resume', 'cancel', 'complete'],
+                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget'],
+              },
+              AgentGoalBudget: {
+                type: 'object',
+                properties: {
+                  tokenBudget: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
             },
           },
@@ -1600,6 +1750,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -1672,6 +1827,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -1686,6 +1844,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -1698,6 +1857,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -2434,6 +2594,18 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -2451,6 +2623,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -2501,7 +2692,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -2946,6 +3137,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -3018,6 +3214,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -3032,6 +3231,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -3044,6 +3244,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -3653,6 +3854,11 @@ export const contracts = {
                       reason: {
                         $ref: '#/$defs/ProviderFailureReason',
                       },
+                      retry_at_unix_ms: {
+                        type: ['integer', 'null'],
+                        format: 'uint64',
+                        minimum: 0,
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'reason'],
@@ -3676,6 +3882,7 @@ export const contracts = {
                   'network',
                   'timed_out',
                   'rate_limit',
+                  'quota_exhausted',
                   'provider_unavailable',
                   'stream_truncated',
                 ],
@@ -4218,6 +4425,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'messageId', 'revision'],
+              },
+              {
+                description:
+                  'The caller may not send to this conversation: the Bot sends only to the\nworkers it created. Nothing was admitted.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_your_worker',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
               },
             ],
             $defs: {
@@ -4930,6 +5153,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -5002,6 +5230,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -5016,6 +5247,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -5028,6 +5260,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -5500,6 +5733,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -5572,6 +5810,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -5586,6 +5827,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -5598,6 +5840,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -6338,12 +6581,7 @@ export const contracts = {
                   },
                   iterations: {
                     type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
+                    format: 'uint64',
                     minimum: 0,
                   },
                   tokenBudget: {
@@ -6353,6 +6591,26 @@ export const contracts = {
                   },
                   consumed: {
                     $ref: '#/$defs/GoalMeter',
+                  },
+                  remainingTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  elapsedSeconds: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  retryAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                   pending: {
                     type: 'boolean',
@@ -6378,8 +6636,9 @@ export const contracts = {
                   'objective',
                   'status',
                   'iterations',
-                  'maxIterations',
                   'consumed',
+                  'elapsedSeconds',
+                  'createdAt',
                   'pending',
                   'note',
                 ],
@@ -6390,14 +6649,9 @@ export const contracts = {
                   'armed',
                   'active',
                   'paused',
-                  'waiting',
                   'achieved',
-                  'impossible',
                   'cancelled',
-                  'cancellation_unknown',
-                  'max_iterations',
                   'budget_limited',
-                  'budget_unknown',
                   'blocked',
                 ],
               },
@@ -6432,7 +6686,7 @@ export const contracts = {
               },
               GoalReportKind: {
                 type: 'string',
-                enum: ['progress', 'achieved', 'waiting', 'impossible'],
+                enum: ['progress', 'achieved', 'blocked', 'paused'],
               },
             },
           },
@@ -6857,6 +7111,16 @@ export const contracts = {
               AgentHistoryChunk: {
                 type: 'object',
                 properties: {
+                  modelPart: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ModelPartIdentity',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   hasReferences: {
                     description:
                       'The original user input has quotes, directory references or inline references.\nPresent only on the first fragment; display text cannot reconstruct these references.',
@@ -6973,6 +7237,21 @@ export const contracts = {
                   'tool',
                 ],
               },
+              ModelPartIdentity: {
+                type: 'object',
+                properties: {
+                  stepId: {
+                    type: 'string',
+                  },
+                  ordinal: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stepId', 'ordinal'],
+              },
               HistoryModel: {
                 description: 'Model identity recorded for the exact historical assistant step.',
                 oneOf: [
@@ -7018,6 +7297,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -7040,6 +7336,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -7388,6 +7718,18 @@ export const contracts = {
                     type: 'string',
                     maxLength: 96,
                   },
+                  origin: {
+                    description:
+                      "The Host's attribution of the Turn's opening message, when it generated it.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/MessageOrigin',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['turnId', 'position', 'lastPosition', 'label'],
@@ -7412,6 +7754,91 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sourceSequence', 'itemIndex'],
+              },
+              MessageOrigin: {
+                description:
+                  'Trusted producer attribution, preserved independently of editable content.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'taskId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
+                ],
               },
             },
           },
@@ -7888,6 +8315,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -7960,6 +8392,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -7974,6 +8409,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -7986,6 +8422,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -8943,6 +9380,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -9015,6 +9457,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -9029,6 +9474,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -9041,6 +9487,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -10038,6 +10485,18 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -10055,6 +10514,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -10105,7 +10583,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -10401,6 +10879,11 @@ export const contracts = {
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
+              includeArchived: {
+                description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
+              },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
               },
@@ -10519,6 +11002,22 @@ export const contracts = {
                     required: ['kind', 'projectId'],
                   },
                   {
+                    description: 'Direct children of an owned session, across workspaces.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'children',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
                     description:
                       'Resolve the exact workspace from an owned session, never a caller path.',
                     type: 'object',
@@ -10572,6 +11071,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -10644,6 +11148,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -10658,6 +11165,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -10670,6 +11178,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -11117,6 +11626,188 @@ export const contracts = {
           },
           resources: {},
         },
+        manageMcpServer: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurationChange',
+            type: 'object',
+            properties: {
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              location: {
+                $ref: '#/$defs/ConfigurationLocation',
+              },
+              name: {
+                type: 'string',
+              },
+              revision: {
+                type: 'string',
+              },
+              change: {
+                $ref: '#/$defs/AgentMcpServerChange',
+              },
+            },
+            additionalProperties: false,
+            required: ['location', 'name', 'revision', 'change'],
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+              },
+              ConfigurationLocation: {
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+              },
+              AgentMcpServerChange: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'save',
+                      },
+                      configuration: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'configuration'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'delete',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurationResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'saved',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+          },
+          resources: {},
+        },
         markRead: {
           mode: 'mutation',
           input: {
@@ -11173,6 +11864,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -11245,6 +11941,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -11259,6 +11958,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -11271,6 +11971,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -11601,6 +12302,166 @@ export const contracts = {
           },
           resources: {},
         },
+        mcpConfigurations: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurations',
+            type: 'object',
+            properties: {
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMcpConfigurationList',
+            type: 'object',
+            properties: {
+              locations: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentMcpConfigurationLocation',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['locations'],
+            $defs: {
+              AgentMcpConfigurationLocation: {
+                type: 'object',
+                properties: {
+                  location: {
+                    $ref: '#/$defs/ConfigurationLocation',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  servers: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentMcpConfigurationEntry',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['location', 'path', 'revision', 'servers'],
+              },
+              ConfigurationLocation: {
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+              },
+              AgentMcpConfigurationEntry: {
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  configuration: true,
+                  shadowedBy: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConfigurationLocation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'configuration'],
+              },
+            },
+          },
+          resources: {},
+        },
         metadata: {
           mode: 'mutation',
           input: {
@@ -11608,6 +12469,11 @@ export const contracts = {
             title: 'AgentMetadata',
             type: 'object',
             properties: {
+              pinned: {
+                description: "Omission preserves the conversation's position in the catalog.",
+                type: ['boolean', 'null'],
+                default: null,
+              },
               collaborationMode: {
                 description: 'Changing collaboration is only allowed while the Session is idle.',
                 anyOf: [
@@ -11753,6 +12619,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -11825,6 +12696,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -11839,6 +12713,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -11851,6 +12726,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -12270,6 +13146,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -12342,6 +13223,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -12356,6 +13240,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -12368,6 +13253,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -12796,6 +13682,198 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['toolUseId', 'startSequence'],
+              },
+            },
+          },
+          resources: {},
+        },
+        openBot: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOpen',
+            description: "Open this installation's Bot Session, creating it on first use.",
+            type: 'object',
+            properties: {
+              workspace: {
+                description:
+                  "Where the Bot Session is created on first use. Absent: the Host's first\nconfigured workspace root, so opening the Bot never needs another conversation.",
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspaceSelection',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              title: {
+                type: ['string', 'null'],
+                minLength: 1,
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              AgentWorkspaceSelection: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'isolated_git',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'project',
+                      },
+                      project: {
+                        $ref: '#/$defs/AgentProjectRef',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'project', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentDirectorySelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                ],
+              },
+              AgentDirectorySelection: {
+                type: 'object',
+                properties: {
+                  rootId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  segments: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['rootId', 'segments', 'directoryIdentity'],
+              },
+              AgentProjectRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOpened',
+            oneOf: [
+              {
+                description: '`created` is false when the existing Bot Session was returned.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'opened',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                  created: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId', 'created'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentBotRejection',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentBotRejection: {
+                oneOf: [
+                  {
+                    description: 'The Bot mode is not enabled for this Agent.',
+                    type: 'string',
+                    const: 'disabled',
+                  },
+                  {
+                    description: 'The Session could not be created; see the creation reason.',
+                    type: 'string',
+                    const: 'creation_rejected',
+                  },
+                  {
+                    description:
+                      'No workspace was given and the Host has no configured workspace root.',
+                    type: 'string',
+                    const: 'no_workspace',
+                  },
+                ],
               },
             },
           },
@@ -14346,6 +15424,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -14368,6 +15463,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -14860,6 +15989,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -14932,6 +16066,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -14946,6 +16083,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -14958,6 +16096,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -16479,6 +17618,18 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -16496,6 +17647,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -16546,7 +17716,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -16831,6 +18001,159 @@ export const contracts = {
               AgentInteractionRejection: {
                 type: 'string',
                 enum: ['closed', 'unavailable', 'invalid_answer', 'unsupported'],
+              },
+            },
+          },
+          resources: {},
+        },
+        resumable: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentResumableRead',
+            description:
+              'Observe the latest run using the model selected for a possible continuation.',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              model: {
+                $ref: '#/$defs/ModelSelection',
+              },
+              thinkingLevel: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ThinkingLevel',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'model'],
+            $defs: {
+              ModelSelection: {
+                description:
+                  'Exact public selection observed by a caller, checked once at run admission.',
+                type: 'object',
+                properties: {
+                  connectionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 1,
+                    maximum: 9007199254740991,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['connectionId', 'revision', 'modelId'],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentResumable',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  source: {
+                    $ref: '#/$defs/AgentExecution',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'source'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                  reason: {
+                    $ref: '#/$defs/AgentResumeParkReason',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'reason'],
+              },
+            ],
+            $defs: {
+              AgentExecution: {
+                description:
+                  'Canonical physical execution receipt, independent of the current Session tip.',
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                  },
+                  turnId: {
+                    type: 'string',
+                  },
+                  runId: {
+                    type: 'string',
+                  },
+                  invocationId: {
+                    type: 'string',
+                  },
+                  highWater: {
+                    description: 'Run-local event count, not the root-global transcript cursor.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  state: {
+                    $ref: '#/$defs/AgentExecutionState',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'turnId', 'runId', 'invocationId', 'highWater', 'state'],
+              },
+              AgentExecutionState: {
+                type: 'string',
+                enum: [
+                  'admitted',
+                  'running',
+                  'waiting',
+                  'paused',
+                  'completed',
+                  'failed',
+                  'cancelled',
+                ],
+              },
+              AgentResumeParkReason: {
+                type: 'string',
+                enum: [
+                  'closed',
+                  'archived',
+                  'busy',
+                  'source_missing',
+                  'source_changed',
+                  'source_not_resumable',
+                  'already_continued',
+                  'workspace_changed',
+                  'safety_check_failed',
+                ],
               },
             },
           },
@@ -18874,6 +20197,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -18946,6 +20274,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -18960,6 +20291,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -18972,6 +20304,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -19302,6 +20635,117 @@ export const contracts = {
           },
           resources: {},
         },
+        selectWorkspace: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentDirectorySelection',
+            type: 'object',
+            properties: {
+              rootId: {
+                type: 'string',
+                minLength: 1,
+              },
+              segments: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
+              },
+              directoryIdentity: {
+                type: 'string',
+                pattern: '^sha256:[a-f0-9]{64}$',
+              },
+            },
+            additionalProperties: false,
+            required: ['rootId', 'segments', 'directoryIdentity'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentWorkspace',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentWorkspace',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                properties: {
+                  worktree: {
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  projectId: {
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+              },
+            },
+          },
+          resources: {},
+        },
         send: {
           mode: 'mutation',
           input: {
@@ -19444,6 +20888,22 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'sessionId', 'messageId', 'revision'],
+              },
+              {
+                description:
+                  'The caller may not send to this conversation: the Bot sends only to the\nworkers it created. Nothing was admitted.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'not_your_worker',
+                  },
+                  sessionId: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'sessionId'],
               },
             ],
             $defs: {
@@ -19682,6 +21142,11 @@ export const contracts = {
               AgentSession: {
                 type: 'object',
                 properties: {
+                  parentSessionId: {
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                    type: ['string', 'null'],
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -19754,6 +21219,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -19768,6 +21236,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -19780,6 +21249,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -20748,6 +22218,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -20770,6 +22257,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -21487,6 +23008,20 @@ export const contracts = {
                 properties: {
                   kind: {
                     type: 'string',
+                    const: 'preview',
+                  },
+                  page: {
+                    $ref: '#/$defs/AgentPreviewPage',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'page'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
                     const: 'queue',
                   },
                   queue: {
@@ -21613,23 +23148,22 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'part_started',
-                      },
-                      messageId: {
-                        type: 'string',
+                        const: 'part_committed',
                       },
                       stepId: {
                         type: 'string',
                       },
-                      partId: {
+                      messageId: {
                         type: 'string',
                       },
-                      textKind: {
-                        $ref: '#/$defs/AgentContentKind',
+                      ordinal: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'messageId', 'stepId', 'partId', 'textKind'],
+                    required: ['kind', 'stepId', 'messageId', 'ordinal'],
                   },
                   {
                     type: 'object',
@@ -21650,65 +23184,6 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'stepId', 'partId', 'text'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'part_finished',
-                      },
-                      stepId: {
-                        type: 'string',
-                      },
-                      partId: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'stepId', 'partId'],
-                  },
-                  {
-                    description:
-                      'Model input observations are display-only; they cannot authorize a tool effect.',
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_started',
-                      },
-                      toolUseId: {
-                        type: 'string',
-                      },
-                      stepId: {
-                        type: 'string',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                      providerExecuted: {
-                        type: 'boolean',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'stepId', 'name', 'providerExecuted'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'tool_input_delta',
-                      },
-                      toolUseId: {
-                        type: 'string',
-                      },
-                      text: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'toolUseId', 'text'],
                   },
                   {
                     description:
@@ -21883,10 +23358,6 @@ export const contracts = {
                   },
                 ],
               },
-              AgentContentKind: {
-                type: 'string',
-                enum: ['text', 'thinking'],
-              },
               DisplayText: {
                 description:
                   'Presentation text is distinct from the stable identity used for navigation.',
@@ -21911,6 +23382,163 @@ export const contracts = {
                   'Recorded Host settlement for presentation; returned is not business success.\nForeign/provider results do not establish this Host evidence.',
                 type: 'string',
                 enum: ['returned', 'failed', 'unknown', 'rejected'],
+              },
+              AgentPreviewPage: {
+                description: 'Current display material, independent of the durable Events cursor.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'empty',
+                      },
+                      hostEpoch: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'hostEpoch'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'cut',
+                      },
+                      hostEpoch: {
+                        type: 'string',
+                      },
+                      invocationId: {
+                        type: 'string',
+                      },
+                      turnId: {
+                        type: 'string',
+                      },
+                      stepId: {
+                        type: 'string',
+                      },
+                      revision: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      dependsOn: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                      first: {
+                        type: 'boolean',
+                      },
+                      last: {
+                        type: 'boolean',
+                      },
+                      parts: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/AgentPreviewPart',
+                        },
+                      },
+                    },
+                    additionalProperties: false,
+                    required: [
+                      'kind',
+                      'hostEpoch',
+                      'invocationId',
+                      'turnId',
+                      'stepId',
+                      'revision',
+                      'dependsOn',
+                      'first',
+                      'last',
+                      'parts',
+                    ],
+                  },
+                ],
+              },
+              AgentPreviewPart: {
+                type: 'object',
+                properties: {
+                  ordinal: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    type: 'string',
+                  },
+                  providerPartId: {
+                    type: ['string', 'null'],
+                  },
+                  startedAt: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  field: {
+                    $ref: '#/$defs/AgentPreviewField',
+                  },
+                  offset: {
+                    description:
+                      'UTF-8 byte offset into the body, independent of JavaScript string length.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  totalBytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['messageId', 'startedAt', 'field', 'offset', 'totalBytes', 'text'],
+              },
+              AgentPreviewField: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'text',
+                      },
+                      textKind: {
+                        $ref: '#/$defs/AgentContentKind',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'textKind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'tool_input',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                      providerExecuted: {
+                        type: 'boolean',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'name', 'providerExecuted'],
+                  },
+                ],
+              },
+              AgentContentKind: {
+                type: 'string',
+                enum: ['text', 'thinking'],
               },
               AgentQueue: {
                 type: 'object',
@@ -21966,6 +23594,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -21988,6 +23633,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -22146,6 +23825,18 @@ export const contracts = {
                     type: 'string',
                     const: 'browser_download',
                   },
+                  {
+                    description:
+                      "Read the browser profile's browsing history, independent of page access.",
+                    type: 'string',
+                    const: 'browser_history',
+                  },
+                  {
+                    description:
+                      'File upload consent for a browser origin, independent of reads and downloads.',
+                    type: 'string',
+                    const: 'browser_upload',
+                  },
                 ],
               },
               GrantScope: {
@@ -22163,6 +23854,25 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'origin'],
+                  },
+                  {
+                    description:
+                      'One selected browser profile generation; never an origin or app-wide grant.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'browser_profile',
+                      },
+                      browserId: {
+                        type: 'string',
+                      },
+                      generation: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'browserId', 'generation'],
                   },
                   {
                     type: 'object',
@@ -22213,7 +23923,7 @@ export const contracts = {
               },
               ComputerAppPlatform: {
                 type: 'string',
-                enum: ['macos'],
+                enum: ['macos', 'windows'],
               },
               ComputerAppDisplay: {
                 type: 'object',
@@ -22244,6 +23954,108 @@ export const contracts = {
               ComputerAppRisk: {
                 type: 'string',
                 enum: ['low', 'high'],
+              },
+            },
+          },
+          resources: {},
+        },
+        watchBotOutbox: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutboxRead',
+            type: 'object',
+            properties: {
+              after: {
+                description:
+                  'Return messages with a sequence greater than this cursor, oldest first.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+                default: 0,
+              },
+              limit: {
+                description:
+                  'Most messages to return, at most 100. Zero reads only the head\n(`sessionId` and `through`).',
+                type: 'integer',
+                format: 'uint32',
+                minimum: 0,
+                maximum: 100,
+                default: 100,
+              },
+            },
+            additionalProperties: false,
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentBotOutbox',
+            type: 'object',
+            properties: {
+              enabled: {
+                type: 'boolean',
+              },
+              sessionId: {
+                type: ['string', 'null'],
+              },
+              through: {
+                description: 'Highest sequence recorded so far; 0 when empty.',
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              messages: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentBotMessage',
+                },
+                maxItems: 100,
+              },
+              nextAfter: {
+                description: 'Pass as `after` to read the next page; absent when caught up.',
+                type: ['integer', 'null'],
+                format: 'uint64',
+                minimum: 0,
+              },
+            },
+            additionalProperties: false,
+            required: ['enabled', 'through', 'messages'],
+            $defs: {
+              AgentBotMessage: {
+                description: 'One message the Bot deliberately sent to its user.',
+                type: 'object',
+                properties: {
+                  sequence: {
+                    description: 'Monotonic position in the outbox, starting at 1.',
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  messageId: {
+                    description: 'The model-chosen idempotency key of the `SendUser` call.',
+                    type: 'string',
+                  },
+                  index: {
+                    description: 'Position of this message within its `SendUser` call.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  text: {
+                    type: 'string',
+                  },
+                  at: {
+                    description: 'Milliseconds since the Unix epoch when the message was recorded.',
+                    type: 'integer',
+                    format: 'int64',
+                  },
+                  turnId: {
+                    description:
+                      "The Turn whose work sent this message, so clients can show it as that\nTurn's reply.",
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['sequence', 'messageId', 'index', 'text', 'at'],
               },
             },
           },
@@ -22523,12 +24335,7 @@ export const contracts = {
                   },
                   iterations: {
                     type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
+                    format: 'uint64',
                     minimum: 0,
                   },
                   tokenBudget: {
@@ -22538,6 +24345,26 @@ export const contracts = {
                   },
                   consumed: {
                     $ref: '#/$defs/GoalMeter',
+                  },
+                  remainingTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  elapsedSeconds: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  retryAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                   pending: {
                     type: 'boolean',
@@ -22563,8 +24390,9 @@ export const contracts = {
                   'objective',
                   'status',
                   'iterations',
-                  'maxIterations',
                   'consumed',
+                  'elapsedSeconds',
+                  'createdAt',
                   'pending',
                   'note',
                 ],
@@ -22575,14 +24403,9 @@ export const contracts = {
                   'armed',
                   'active',
                   'paused',
-                  'waiting',
                   'achieved',
-                  'impossible',
                   'cancelled',
-                  'cancellation_unknown',
-                  'max_iterations',
                   'budget_limited',
-                  'budget_unknown',
                   'blocked',
                 ],
               },
@@ -22617,7 +24440,7 @@ export const contracts = {
               },
               GoalReportKind: {
                 type: 'string',
-                enum: ['progress', 'achieved', 'waiting', 'impossible'],
+                enum: ['progress', 'achieved', 'blocked', 'paused'],
               },
             },
           },
@@ -24955,6 +26778,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  parentSessionId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -25027,6 +26855,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -25040,6 +26871,7 @@ export const contracts = {
                   },
                 },
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -25052,6 +26884,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -26487,6 +28320,11 @@ export const contracts = {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  parentSessionId: {
+                    type: ['string', 'null'],
+                    description:
+                      'Session that initiated creation, independent of fork ancestry and task ownership.',
+                  },
                   branch: {
                     anyOf: [
                       {
@@ -26559,6 +28397,9 @@ export const contracts = {
                   archived: {
                     type: 'boolean',
                   },
+                  pinned: {
+                    type: 'boolean',
+                  },
                   hasUnread: {
                     type: 'boolean',
                   },
@@ -26572,6 +28413,7 @@ export const contracts = {
                   },
                 },
                 required: [
+                  'parentSessionId',
                   'branch',
                   'dataSource',
                   'permissions',
@@ -26584,6 +28426,7 @@ export const contracts = {
                   'revision',
                   'updatedAt',
                   'archived',
+                  'pinned',
                   'hasUnread',
                   'tailMessageId',
                   'activity',
@@ -29101,53 +30944,30 @@ export const contracts = {
     interface: {
       kind: 'service',
       methods: {
-        apply: {
+        delete: {
           mode: 'mutation',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              change: {
-                $ref: '#/$defs/SkillLibraryChange',
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
-              digest: {
+              reference: {
                 type: 'string',
-                minLength: 71,
-                maxLength: 71,
               },
             },
-            required: ['change', 'digest'],
-            title: 'SkillLibraryReview',
+            required: ['reference'],
+            title: 'SkillLibraryManageSkill',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              SkillLibraryChange: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  workspace: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentWorkspace',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  kind: {
-                    $ref: '#/$defs/SkillLibraryChangeKind',
-                  },
-                  reference: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['kind', 'reference', 'revision'],
-              },
               AgentWorkspace: {
                 type: 'object',
                 additionalProperties: false,
@@ -29218,10 +31038,6 @@ export const contracts = {
                 ],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
             },
           },
           output: {
@@ -29239,17 +31055,6 @@ export const contracts = {
                   },
                 },
                 required: ['kind', 'reference'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
               },
               {
                 type: 'object',
@@ -29271,53 +31076,30 @@ export const contracts = {
           },
           resources: {},
         },
-        deleteSource: {
-          mode: 'mutation',
+        discoverSource: {
+          mode: 'query',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              change: {
-                $ref: '#/$defs/SkillLibraryChange',
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
-              digest: {
+              source: {
                 type: 'string',
-                minLength: 71,
-                maxLength: 71,
               },
             },
-            required: ['change', 'digest'],
-            title: 'SkillLibraryReview',
+            required: ['source'],
+            title: 'SkillLibraryDiscoverSource',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              SkillLibraryChange: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  workspace: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentWorkspace',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  kind: {
-                    $ref: '#/$defs/SkillLibraryChangeKind',
-                  },
-                  reference: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['kind', 'reference', 'revision'],
-              },
               AgentWorkspace: {
                 type: 'object',
                 additionalProperties: false,
@@ -29388,141 +31170,290 @@ export const contracts = {
                 ],
                 description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
             },
           },
           output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'applied',
-                  },
-                  reference: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reference'],
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              source: {
+                $ref: '#/$defs/SkillLibrarySourceSnapshot',
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
+              skills: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SkillLibrarySourceSkill',
                 },
-                required: ['kind'],
-                additionalProperties: false,
               },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reason'],
-              },
-            ],
-            title: 'SkillLibraryChangeResult',
+            },
+            required: ['source', 'skills'],
+            title: 'SkillLibraryDiscoveredSource',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
+              },
+              SkillLibrarySourceSkill: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  directory: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  description: {
+                    type: 'string',
+                  },
+                },
+                required: ['directory', 'name', 'description'],
+              },
+            },
           },
           resources: {},
         },
-        importSource: {
+        install: {
           mode: 'mutation',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              bytes: {
-                type: 'integer',
-                format: 'uint',
-                minimum: 1,
+              workspace: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentWorkspace',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
-              digest: {
-                type: 'string',
-                minLength: 71,
-                maxLength: 71,
+              location: {
+                $ref: '#/$defs/ConfigurationLocation',
+              },
+              source: {
+                $ref: '#/$defs/SkillLibrarySourceSnapshot',
+              },
+              skills: {
+                type: 'array',
+                items: {
+                  type: 'string',
+                },
               },
             },
-            required: ['bytes', 'digest'],
-            title: 'SkillLibraryImportSource',
+            required: ['location', 'source', 'skills'],
+            title: 'SkillLibraryInstall',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
+            $defs: {
+              AgentWorkspace: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  worktree: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
+                  },
+                  projectId: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
+                  },
+                },
+                required: ['path', 'directoryIdentity', 'identity'],
+              },
+              Binding: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
+                  source: {
+                    type: 'string',
+                  },
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
+                    type: 'string',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                required: [
+                  'id',
+                  'common_dir',
+                  'source',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
+                ],
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
+              },
+              ConfigurationLocation: {
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+              },
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
+              },
+            },
           },
           output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'applied',
-                  },
-                  reference: {
-                    type: 'string',
-                  },
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              results: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SkillLibraryInstallOutcome',
                 },
-                required: ['kind', 'reference'],
               },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reason'],
-              },
-            ],
-            title: 'SkillLibraryChangeResult',
+            },
+            required: ['results'],
+            title: 'SkillLibraryInstallResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-          },
-          resources: {
-            file: {
-              type: {
-                name: 'maka.bytes',
-                version: 1,
+            $defs: {
+              SkillLibraryInstallOutcome: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'installed',
+                      },
+                      reference: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'reference'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'rejected',
+                      },
+                      directory: {
+                        type: 'string',
+                      },
+                      reason: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'directory', 'reason'],
+                  },
+                ],
               },
-              optional: false,
-            },
-            id: {
-              type: {
-                name: 'maka.text.utf8',
-                version: 1,
-              },
-              optional: false,
             },
           },
+          resources: {},
         },
         list: {
           mode: 'query',
@@ -29662,6 +31593,12 @@ export const contracts = {
                   writable: {
                     type: 'boolean',
                   },
+                  targets: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/SkillLibraryTarget',
+                    },
+                  },
                   preferencesWritable: {
                     type: 'boolean',
                   },
@@ -29699,6 +31636,7 @@ export const contracts = {
                 required: [
                   'kind',
                   'writable',
+                  'targets',
                   'preferencesWritable',
                   'preferenceRevision',
                   'revision',
@@ -29721,6 +31659,25 @@ export const contracts = {
             title: 'SkillLibraryPage',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
+              SkillLibraryTarget: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  location: {
+                    $ref: '#/$defs/ConfigurationLocation',
+                  },
+                  path: {
+                    type: 'string',
+                  },
+                },
+                required: ['location', 'path'],
+              },
+              ConfigurationLocation: {
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+              },
               SkillLibraryEntry: {
                 type: 'object',
                 additionalProperties: false,
@@ -29728,13 +31685,28 @@ export const contracts = {
                   bundled: {
                     type: 'boolean',
                   },
-                  installed: {
-                    type: 'boolean',
+                  location: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConfigurationLocation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
-                  imported: {
-                    type: 'boolean',
-                    description:
-                      'Imported authoring source; unavailable to the model until explicitly installed.',
+                  path: {
+                    type: 'string',
+                  },
+                  installation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SkillLibraryInstallation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   preference: {
                     $ref: '#/$defs/SkillPreference',
@@ -29766,8 +31738,7 @@ export const contracts = {
                 },
                 required: [
                   'bundled',
-                  'installed',
-                  'imported',
+                  'path',
                   'preference',
                   'reference',
                   'source',
@@ -29776,6 +31747,59 @@ export const contracts = {
                   'valid',
                   'issues',
                 ],
+              },
+              SkillLibraryInstallation: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  source: {
+                    $ref: '#/$defs/SkillLibrarySourceSnapshot',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                required: ['source', 'directory'],
+              },
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
               },
               SkillPreference: {
                 type: 'object',
@@ -30676,308 +32700,6 @@ export const contracts = {
           },
           resources: {},
         },
-        preview: {
-          mode: 'query',
-          input: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              workspace: {
-                anyOf: [
-                  {
-                    $ref: '#/$defs/AgentWorkspace',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-              },
-              kind: {
-                $ref: '#/$defs/SkillLibraryChangeKind',
-              },
-              reference: {
-                type: 'string',
-                minLength: 1,
-              },
-              revision: {
-                type: 'string',
-                minLength: 1,
-              },
-            },
-            required: ['kind', 'reference', 'revision'],
-            title: 'SkillLibraryChange',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              AgentWorkspace: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  worktree: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Binding',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                    description:
-                      'Native owner allocation; never accepted from a caller as workspace authority.',
-                  },
-                  projectId: {
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                    description: "Optional membership in this Agent's canonical Project catalog.",
-                  },
-                  path: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
-                },
-                required: ['path', 'directoryIdentity', 'identity'],
-              },
-              Binding: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  common_dir: {
-                    type: 'string',
-                  },
-                  source: {
-                    type: 'string',
-                  },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  base_commit: {
-                    type: 'string',
-                  },
-                  directory: {
-                    type: 'string',
-                  },
-                },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
-                description: 'Immutable allocation intent, not the current child branch or HEAD.',
-              },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
-            },
-          },
-          output: {
-            oneOf: [
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'ready',
-                  },
-                  review: {
-                    $ref: '#/$defs/SkillLibraryReview',
-                  },
-                  target: {
-                    type: 'string',
-                  },
-                  entries: {
-                    type: 'integer',
-                    format: 'uint',
-                    minimum: 0,
-                  },
-                  paths: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  pathsTruncated: {
-                    type: 'boolean',
-                  },
-                  locallyModified: {
-                    type: 'boolean',
-                  },
-                },
-                required: [
-                  'kind',
-                  'review',
-                  'target',
-                  'entries',
-                  'paths',
-                  'pathsTruncated',
-                  'locallyModified',
-                ],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'changed',
-                  },
-                },
-                required: ['kind'],
-                additionalProperties: false,
-              },
-              {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                required: ['kind', 'reason'],
-              },
-            ],
-            title: 'SkillLibraryPreview',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              SkillLibraryReview: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  change: {
-                    $ref: '#/$defs/SkillLibraryChange',
-                  },
-                  digest: {
-                    type: 'string',
-                    minLength: 71,
-                    maxLength: 71,
-                  },
-                },
-                required: ['change', 'digest'],
-              },
-              SkillLibraryChange: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  workspace: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentWorkspace',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  kind: {
-                    $ref: '#/$defs/SkillLibraryChangeKind',
-                  },
-                  reference: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['kind', 'reference', 'revision'],
-              },
-              AgentWorkspace: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  worktree: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Binding',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                    description:
-                      'Native owner allocation; never accepted from a caller as workspace authority.',
-                  },
-                  projectId: {
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                    description: "Optional membership in this Agent's canonical Project catalog.",
-                  },
-                  path: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
-                },
-                required: ['path', 'directoryIdentity', 'identity'],
-              },
-              Binding: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  common_dir: {
-                    type: 'string',
-                  },
-                  source: {
-                    type: 'string',
-                  },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  base_commit: {
-                    type: 'string',
-                  },
-                  directory: {
-                    type: 'string',
-                  },
-                },
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
-                description: 'Immutable allocation intent, not the current child branch or HEAD.',
-              },
-              SkillLibraryChangeKind: {
-                type: 'string',
-                enum: ['install', 'update', 'delete'],
-              },
-            },
-          },
-          resources: {},
-        },
         read: {
           mode: 'query',
           input: {
@@ -31181,13 +32903,28 @@ export const contracts = {
                   bundled: {
                     type: 'boolean',
                   },
-                  installed: {
-                    type: 'boolean',
+                  location: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ConfigurationLocation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
-                  imported: {
-                    type: 'boolean',
-                    description:
-                      'Imported authoring source; unavailable to the model until explicitly installed.',
+                  path: {
+                    type: 'string',
+                  },
+                  installation: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/SkillLibraryInstallation',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   preference: {
                     $ref: '#/$defs/SkillPreference',
@@ -31219,8 +32956,7 @@ export const contracts = {
                 },
                 required: [
                   'bundled',
-                  'installed',
-                  'imported',
+                  'path',
                   'preference',
                   'reference',
                   'source',
@@ -31229,6 +32965,65 @@ export const contracts = {
                   'valid',
                   'issues',
                 ],
+              },
+              ConfigurationLocation: {
+                type: 'string',
+                enum: ['project:maka', 'project:agents', 'user:maka', 'user:agents'],
+                description:
+                  'Standard user/project configuration locations, ordered from highest precedence.',
+              },
+              SkillLibraryInstallation: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  source: {
+                    $ref: '#/$defs/SkillLibrarySourceSnapshot',
+                  },
+                  directory: {
+                    type: 'string',
+                  },
+                },
+                required: ['source', 'directory'],
+              },
+              SkillLibrarySourceSnapshot: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'git',
+                      },
+                      url: {
+                        type: 'string',
+                      },
+                      reference: {
+                        type: ['string', 'null'],
+                      },
+                      revision: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'url', 'revision'],
+                  },
+                  {
+                    type: 'object',
+                    additionalProperties: false,
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'directory',
+                      },
+                      path: {
+                        type: 'string',
+                      },
+                    },
+                    required: ['kind', 'path'],
+                  },
+                ],
+                description:
+                  'The exact source snapshot selected during discovery, or last installed.',
               },
               SkillPreference: {
                 type: 'object',
@@ -31548,436 +33343,135 @@ export const contracts = {
           },
           resources: {},
         },
-      },
-    },
-  },
-  skillOutcomes: {
-    name: 'maka.skills.Outcomes',
-    version: 1,
-    transport: 'remote',
-    interface: {
-      kind: 'service',
-      methods: {
-        read: {
-          mode: 'query',
+        update: {
+          mode: 'mutation',
           input: {
             type: 'object',
             additionalProperties: false,
             properties: {
-              source: {
-                $ref: '#/$defs/DeploymentRef',
-              },
-              namespace: {
-                $ref: '#/$defs/InstanceId',
-              },
-              export: {
-                type: 'string',
-              },
-              method: {
-                type: 'string',
-              },
-              operation: {
-                type: 'string',
-                format: 'uuid',
-              },
-              fingerprint: {
-                type: 'string',
-              },
-              contract: {
-                $ref: '#/$defs/RecoveryContract',
-              },
-              recovery: {
-                $ref: '#/$defs/RecoveryProtocol',
-              },
-            },
-            required: [
-              'source',
-              'namespace',
-              'export',
-              'method',
-              'operation',
-              'fingerprint',
-              'contract',
-              'recovery',
-            ],
-            title: 'RecoveryRef',
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            $defs: {
-              DeploymentRef: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-              },
-              RecoveryContract: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                required: ['name', 'version', 'transport', 'digest'],
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
-          },
-          output: {
-            type: 'object',
-            additionalProperties: false,
-            properties: {
-              original: {
-                $ref: '#/$defs/OperationReply',
-              },
-              published: {
+              workspace: {
                 anyOf: [
                   {
-                    $ref: '#/$defs/SkillLibraryChangeResult',
+                    $ref: '#/$defs/AgentWorkspace',
                   },
                   {
                     type: 'null',
                   },
                 ],
               },
+              reference: {
+                type: 'string',
+              },
             },
-            required: ['original'],
-            description:
-              'Canonical publication evidence alongside the unmodified original Host facts.',
-            title: 'SkillLibraryOutcome',
+            required: ['reference'],
+            title: 'SkillLibraryManageSkill',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              OperationReply: {
+              AgentWorkspace: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
-                  reference: {
-                    $ref: '#/$defs/RecoveryRef',
+                  worktree: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/Binding',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    description:
+                      'Native owner allocation; never accepted from a caller as workspace authority.',
                   },
-                  receipt: {
-                    $ref: '#/$defs/Receipt',
+                  projectId: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                    description: "Optional membership in this Agent's canonical Project catalog.",
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  directoryIdentity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  identity: {
+                    type: 'string',
+                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
                   },
                 },
-                required: ['reference', 'receipt'],
+                required: ['path', 'directoryIdentity', 'identity'],
               },
-              RecoveryRef: {
+              Binding: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  common_dir: {
+                    type: 'string',
+                  },
                   source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
                     type: 'string',
                   },
-                  method: {
+                  source_identity: {
+                    type: 'string',
+                    pattern: '^sha256:[a-f0-9]{64}$',
+                  },
+                  base_commit: {
                     type: 'string',
                   },
-                  operation: {
+                  directory: {
                     type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
                   },
                 },
                 required: [
+                  'id',
+                  'common_dir',
                   'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
+                  'source_identity',
+                  'base_commit',
+                  'directory',
                 ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-              },
-              RecoveryContract: {
-                type: 'object',
-                additionalProperties: false,
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                required: ['name', 'version', 'transport', 'digest'],
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-              Receipt: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'not_recorded',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                    description:
-                      'An authorized lookup found no row at the exact original reference.',
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'recorded',
-                      },
-                      outcome: {
-                        $ref: '#/$defs/OperationOutcome',
-                      },
-                      cleanup: {
-                        $ref: '#/$defs/OperationCleanup',
-                      },
-                    },
-                    required: ['kind', 'outcome', 'cleanup'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unavailable',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-                description:
-                  "A caller's receipt observation, never an execution grant. Unavailable makes\nno claim about the journal's contents or physical cleanup.",
-              },
-              OperationOutcome: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unresolved',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'returned',
-                      },
-                      value: true,
-                    },
-                    required: ['kind', 'value'],
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unknown',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-                description:
-                  'Unresolved means no durable result is known, including after process loss.',
-              },
-              OperationCleanup: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'unconfirmed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'confirmed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'failed',
-                      },
-                      diagnostic: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'diagnostic'],
-                  },
-                ],
-              },
-              SkillLibraryChangeResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'applied',
-                      },
-                      reference: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'reference'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'changed',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    additionalProperties: false,
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    required: ['kind', 'reason'],
-                  },
-                ],
+                description: 'Immutable allocation intent, not the current child branch or HEAD.',
               },
             },
+          },
+          output: {
+            oneOf: [
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'applied',
+                  },
+                  reference: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'reference'],
+              },
+              {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'rejected',
+                  },
+                  reason: {
+                    type: 'string',
+                  },
+                },
+                required: ['kind', 'reason'],
+              },
+            ],
+            title: 'SkillLibraryChangeResult',
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
           },
           resources: {},
         },
@@ -37345,6 +38839,104 @@ export const contracts = {
           },
           resources: {},
         },
+        catalogModels: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsCatalogModelsRead',
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                default: '',
+              },
+              after: {
+                $ref: '#/$defs/CatalogModelReference',
+                default: null,
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'SettingsCatalogModelsPage',
+            type: 'object',
+            properties: {
+              models: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/SettingsCatalogModel',
+                },
+                maxItems: 16,
+              },
+              after: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            required: ['models', 'after'],
+            $defs: {
+              SettingsCatalogModel: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  contextWindow: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'label', 'contextWindow'],
+              },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
+            },
+          },
+          resources: {},
+        },
         connection: {
           mode: 'query',
           input: {
@@ -37511,6 +39103,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -37541,6 +39138,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -37594,6 +39203,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -37602,6 +39226,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -37943,6 +39622,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -37973,6 +39657,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -38026,6 +39722,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -38034,6 +39745,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -39128,6 +40894,9 @@ export const contracts = {
               SettingsModelDefaults: {
                 type: 'object',
                 properties: {
+                  catalogMatched: {
+                    type: 'boolean',
+                  },
                   label: {
                     type: 'string',
                   },
@@ -39180,6 +40949,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'catalogMatched',
                   'label',
                   'contextWindow',
                   'inputLimit',
@@ -39586,6 +41356,9 @@ export const contracts = {
               SettingsProviderSummary: {
                 type: 'object',
                 properties: {
+                  customEndpoint: {
+                    type: 'boolean',
+                  },
                   identity: {
                     $ref: '#/$defs/Identity',
                   },
@@ -39600,7 +41373,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['identity', 'label', 'authentication'],
+                required: ['customEndpoint', 'identity', 'label', 'authentication'],
               },
               Identity: {
                 description:
@@ -39852,6 +41625,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -39882,6 +41660,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -39935,6 +41725,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -39943,6 +41748,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',
@@ -40239,6 +42099,9 @@ export const contracts = {
               SettingsModelDefaults: {
                 type: 'object',
                 properties: {
+                  catalogMatched: {
+                    type: 'boolean',
+                  },
                   label: {
                     type: 'string',
                   },
@@ -40291,6 +42154,7 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: [
+                  'catalogMatched',
                   'label',
                   'contextWindow',
                   'inputLimit',
@@ -40803,6 +42667,11 @@ export const contracts = {
               ModelOverride: {
                 type: 'object',
                 properties: {
+                  catalogModel: {
+                    description:
+                      "Catalog defaults for this connection's model; the request model ID is unchanged.",
+                    $ref: '#/$defs/CatalogModelReference',
+                  },
                   adapter: {
                     description:
                       "Public adapter contribution name; omitted selects the wire's default.",
@@ -40833,6 +42702,18 @@ export const contracts = {
                   },
                   vision: {
                     type: 'boolean',
+                  },
+                  imageInput: {
+                    description:
+                      'Explicit route image declarations; replaces catalog image constraints.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ImageInput',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
                   },
                   contextWindow: {
                     description:
@@ -40886,6 +42767,21 @@ export const contracts = {
                 },
                 additionalProperties: false,
               },
+              CatalogModelReference: {
+                type: 'object',
+                properties: {
+                  provider: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  modelId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['provider', 'modelId'],
+              },
               CodeLanguage: {
                 description: 'Interpreter used only for model-facing Code Mode cells.',
                 type: 'string',
@@ -40894,6 +42790,61 @@ export const contracts = {
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              ImageInput: {
+                description: 'Route declarations for image input; absent fields remain unknown.',
+                type: 'object',
+                properties: {
+                  mimeTypes: {
+                    description:
+                      'Exact MIME declarations. A generic image modality leaves this unknown.',
+                    type: ['array', 'null'],
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  maxPerMessage: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxPerRequest: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  maxBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  minWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  minHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxWidth: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  maxHeight: {
+                    type: ['integer', 'null'],
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  requestBytes: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
               ApiProtocol: {
                 type: 'string',

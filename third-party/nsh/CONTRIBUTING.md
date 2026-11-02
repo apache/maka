@@ -117,7 +117,8 @@ Commit subjects and pull request titles name the area first, then say what chang
 ```
 
 - The area is the part of NSH the change is about, in lower case: a crate without its `nsh-` prefix (`core`,
-  `animation`, `js`, `engine`, `package`, `bundler`, `dev`, `cli`, `xtask`, `base`), a platform (`ios`, `android`, `macos`,
+  `animation`, `js`, `engine`, `package`, `bundler`, `dev`, `cli`, `xtask`), a component of `nsh-base` by its name in snake case, never `base` (`rich_editor`,
+  `editor`, `input`, `data_table`), a platform (`ios`, `android`, `macos`,
   `windows`, `linux`), a JS layer or module (`runtime`, `list`, `animated`, `navigation`), or `tailwind`, `text`, `docs`, `examples`, `gallery`, `ci`. A change to all the desktop
   backends (macOS, Windows and Linux) is `desktop`, one to both mobile platforms (iOS and Android) is `mobile`. Name
   one area only, never several separated by commas: when a change spans several, look at it as a whole and name the

@@ -304,14 +304,15 @@ On Android, a view embedded below a toolbar gets only the parts of the system ba
 
 ## The platform
 
-`os()`, `os_version()`, `idiom()` and `is_desktop()` in Rust, and the `platform` constant from `nsh` in TSX, describe where the app runs. They stay the same while the app runs.
+`os()`, `os_version()`, `idiom()`, `is_desktop()` and `is_catalyst()` in Rust, and the `platform` constant from `nsh` in TSX, describe where the app runs. They stay the same while the app runs.
 
 | Rust | TSX | Description |
 |---|---|---|
 | `os()` | `platform.os` | `Os::Ios`, `Os::Android`, `Os::MacOs`, `Os::Windows`, `Os::Linux` or `Os::Web` (`os().name()` is TSX's string). Mac Catalyst is iOS. |
 | `os_version()` | `platform.version` | Major and minor; on Android the API level and 0. |
-| `idiom()` | `platform.idiom`, `platform.catalyst` | `Idiom::Phone`, `Pad`, `Mac`, `Tv` or `Desktop`. |
-| `is_desktop()` | `platform.idiom === "desktop" && !platform.isTerminal` | macOS, Windows or Linux, or a desktop browser. |
+| `idiom()` | `platform.idiom` | `Idiom::Phone`, `Pad`, `Mac`, `Tv` or `Desktop`; desktop OSes report `Desktop` even when rendered in a terminal. |
+| `is_desktop()` | `platform.desktop` | Graphical macOS, Windows or Linux, or a desktop browser ([Desktop and mobile](./platform-specific.md#desktop-and-mobile)). |
+| `is_catalyst()` | `platform.catalyst` | Mac Catalyst, in either of its idioms. |
 
 TSX's `platform` in full:
 
@@ -319,8 +320,9 @@ TSX's `platform` in full:
 |---|---|
 | `platform.os` | `"ios"`, `"android"`, `"macos"`, `"windows"`, `"linux"` or `"web"`. Mac Catalyst reports `"ios"`. |
 | `platform.version` | A string: iOS and desktops: the OS version (`"17.5"`); Android: the API level (`"35"`); the web: `"0.0"`. |
-| `platform.idiom` | `"phone"`, `"pad"`, `"mac"`, `"tv"` or `"desktop"`. `"desktop"` describes the device class: macOS, Windows, Linux and desktop browsers. Use `renderer` to distinguish terminal presentation. |
-| `platform.catalyst` | Mac Catalyst in the Mac idiom. |
+| `platform.idiom` | `"phone"`, `"pad"`, `"mac"`, `"tv"` or `"desktop"`. `"desktop"` describes the device class, including terminal apps on desktop OSes. `"mac"` is UIKit's Mac idiom under Mac Catalyst, a mobile idiom. |
+| `platform.desktop` | Graphical desktop behavior applies: macOS, Windows, Linux and desktop browsers; terminal rendering is excluded. `desktop={{…}}` props and `platform.select({ desktop })` follow it. |
+| `platform.catalyst` | The app runs under Mac Catalyst (`os` `"ios"`), in the Mac or the iPad idiom. |
 | `platform.select(spec)` | The value for this platform; see [Platform-specific code](./platform-specific.md#platformselect). |
 | `platform.renderer` | `"native"` (platform views / desktop graphics), `"web"` (browser HTML) or `"terminal"` (terminal cells). |
 | `platform.isTerminal` | The surface renders in terminal cells; `platform.os` remains the host OS. |

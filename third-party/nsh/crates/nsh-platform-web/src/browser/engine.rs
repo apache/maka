@@ -54,6 +54,7 @@ impl Host for Runtime {
         *self.theme.borrow_mut() = Some(services.theme);
         *self.host.borrow_mut() = Some(services.host);
         *self.wake.borrow_mut() = Some(services.wake);
+        self.timers.set_clock(services.clock);
         self.set_environment(&services.environment);
         Ok(())
     }
@@ -216,7 +217,7 @@ impl Host for Runtime {
             "colorScheme":if e.color_scheme==nsh_engine::ColorScheme::Dark {"dark"}else{"light"},
             "fontScale":e.font_scale,"rtl":e.rtl,"reduceMotion":e.reduce_motion,"pixelRatio":e.pixel_ratio,
             "screenReader":e.screen_reader,"locale":e.locale.as_str(),"host":e.host,
-            "platform":{"os":"web","version":e.os_version.0,"idiom":format!("{:?}",e.idiom).to_lowercase(),"appleKeyboard":e.apple_keyboard}
+            "platform":{"os":"web","version":e.os_version.0,"idiom":format!("{:?}",e.reported_idiom()).to_lowercase(),"desktop":e.desktop(),"appleKeyboard":e.apple_keyboard}
         });
         self.event(
             "environment",
@@ -235,11 +236,36 @@ impl Host for Runtime {
     fn take_fonts(&self, out: &mut Vec<String>) {
         out.append(&mut self.fonts.borrow_mut());
     }
+    // On the system's clock requestAnimationFrame is the browser's, run in
+    // the app realm; on a manual one the engine's frames run it.
     fn wants_frame(&self) -> bool {
-        false
+        !self.bindings.stopped.get() && self.timers.wants_frame()
     }
     fn run_frame(&self) {
-        // Browser requestAnimationFrame callbacks run in the app realm.
+        if !self.bindings.stopped.get() {
+            self.timers.run_frame();
+        }
+    }
+    fn next_timer(&self) -> Option<nsh_core::time::Instant> {
+        self.timers.next_deadline()
+    }
+    fn run_timers(&self, now: nsh_core::time::Instant) {
+        if !self.bindings.stopped.get() {
+            self.timers.run(now);
+        }
+    }
+    fn take_network(&self, out: &mut Vec<(u32, nsh_core::platform::FetchOp)>) {
+        self.fetches.take(out);
+    }
+    fn fetch_event(&self, id: u32, event: nsh_core::platform::FetchEvent) {
+        if !self.bindings.stopped.get() {
+            self.fetches.event(id, event);
+        }
+    }
+    fn fetch_refused(&self, id: u32, message: &str, url: &str) {
+        if !self.bindings.stopped.get() {
+            self.fetches.refused(id, message, url);
+        }
     }
     fn animations_finished(&self, finished: &[nsh_core::animation::Finished]) {
         self.event(
@@ -291,6 +317,8 @@ impl Host for Runtime {
         None
     }
     fn stop(&self, _reason: String) {
+        self.timers.clear();
+        self.fetches.clear();
         self.bindings.stop();
     }
 }

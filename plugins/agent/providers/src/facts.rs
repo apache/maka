@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use maka_agent_ports::provider::Error;
+use maka_agent_ports::provider::{Error, Policy};
 type Result<T> = std::result::Result<T, Error>;
 pub(crate) mod adapter;
 pub(crate) mod discovery;
@@ -27,7 +27,10 @@ mod metadata;
 use maka_agent_facts::configuration::ApiProtocol;
 pub use metadata::{ModelMetadata, ThinkingOffBehavior};
 use serde::Deserialize;
-use std::{collections::BTreeMap, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, OnceLock},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,6 +44,8 @@ pub enum AuthKind {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderFacts {
+    #[serde(skip)]
+    pub(crate) policy: OnceLock<std::result::Result<Arc<Policy>, String>>,
     pub label: String,
     pub base_url: String,
     pub auth_kind: AuthKind,

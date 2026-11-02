@@ -78,6 +78,8 @@ final class Native {
     static final int OPEN_URL = 66;
     static final int CARET_MOVE = 67;
     static final int PASTE = 68;
+    static final int SCREEN_COLOR = 69;
+    static final int FILE_REQUEST = 70;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
@@ -276,6 +278,9 @@ final class Native {
      * else null.
      */
     static native float[] scroll(long handle, int id, float x, float y, int applied);
+
+    /** Keeps the virtual list rows holding views {@code ids} rendered wherever they scroll (a selection's ends); none lets go. */
+    static native void keepRendered(long handle, int[] ids);
 
     /**
      * How far a multiline input's text scrolled ({@code y}), the size of that

@@ -22,21 +22,25 @@ supplies padding, colors, borders and state feedback through `classes` and `styl
 
 ## Layers
 
-The table is a hit layer, a body and a header (`view.rs`):
+The table is a body, a hit layer over it and a header (`view.rs`), from the bottom:
 
-- the *hit layer* is a vertical scroll view of a horizontal one of an empty box of the content's size. The platforms
-  scroll it as they scroll any scroll view (inertia, scroll bars, wheel, touch), and its box takes presses, hovers and
-  the context menu;
-- the *body* over it receives no pointer and draws the cells of the rows and columns in view, placed where the table
-  last scrolled to. Its regions are the row headers, the fixed columns (which move with the rows only) and the scrolling
+- the *body* receives no pointer and draws the cells of the rows and columns in view, placed where the table last
+  scrolled to. Its regions are the row headers, the fixed columns (which move with the rows only) and the scrolling
   columns (which move both ways). The cells a scroll needs come with the next commit, which moves the body with them;
-- the *header* above it is interactive: group labels, titles, resize handles and the drop line of a column being moved.
+- the *hit layer* over it is a vertical scroll view of a horizontal one of an empty box of the content's size. The
+  platforms scroll it as they scroll any scroll view (inertia, scroll bars, wheel, touch), and its box takes presses,
+  hovers and the context menu. It draws nothing but its scroll bars (the platform's indicator, or the built-in
+  `Scrollbar` of the app's theme, both the scroll view's own), which lie over the rows' backgrounds this way: with
+  the body above, a striped, hovered or selected row would cover the bar;
+- the *header* above them is interactive: group labels, titles, resize handles and the drop line of a column being moved.
 
 The fixed-column separator sits above each row background and below its cells, so app-supplied cell borders
 remain visible at the fixed boundary.
 
-Rows come from `RowWindow` (`window.rs`, `reaching(margin, ahead)`), columns from the same with a reach of 1 and 3, so
-a scroll inside the window made commits a few mount items only.
+Rows come from `RowWindow::following` (`window.rs`): the rows in view and 4 past each edge, moved with every row a
+scroll crosses; columns the same with 1 past each edge. A scroll makes as many rows as it brings into reach, each frame
+alike: a window that jumped a viewport and a half ahead (as `List`'s does) made several hundred cells' texts at once,
+~20 ms on a Pixel 10 Pro, a stall of several frames while the scroll view moved on.
 
 The rows' and the scrolling columns' origins move by whole device pixels (`region`, `on_pixel`, `view.rs`), as layout
 rounds frames: at a fraction, the cells' texts would round to another pixel in their cells as the origin moves, and every
@@ -57,6 +61,15 @@ the first row in view, so what is drawn is exact at any size and the scroll bar 
 work the same way on the horizontal axis. Offsets the table scrolls to (`scrollToRow`, revealing the selection) are
 `Axis::scroll_points`: the 32-bit float that does not stop short of the row, since far down a scaled axis one step of
 that float is several content points. Columns hold prefix sums, so finding the column at an x is a binary search.
+
+Scaled, a finger would move the content as many times as far as itself as the ratio says (a million rows of 28 points:
+nine times, a slow drag of 3 rows moving 25). Where no scroll bar is dragged (not `is_desktop()`), offsets are followed
+from an anchor instead (`Anchor`, `Axis::content_offset_from`): the content moves as far as the scroll for half the room
+to the scroll view's end that way, faster past that so the ends still meet. When a scroll comes to rest (`ScrollEnd`,
+`Dt::rest`) the anchor moves to where the bar stands for the content shown (`Axis::anchor_at`, on a device pixel) and the
+scroll view is scrolled there, unseen: the cells are placed from the content offset, which does not change. A scroll the
+table makes takes the anchor of its target the same way; an animated one within reach moves one to one from where it
+is. On the desktops the offset stays scaled: dragging the bar must reach the whole content.
 
 ## Columns' own classes, fitting, bounce
 
@@ -88,9 +101,11 @@ show keep the quote they opened with, computed from their id.
 ## Performance
 
 Headless, debug build, the gallery's demo (`nsh test examples/gallery/App.tsx --trace`, 390 × 844): a scroll frame
-inside the window made commits 4 mount items in ~1.2 ms; a window shift (row slots taking other rows) ~340 items in
-~4 ms, with no views made (before the slots: ~2000 items in ~14 ms, every row of the window rebuilt); the first window
-~4000 items. A tick commits ~33 items in a median 1.7 ms (at most 2.7 ms); scrolling while it ticks, a frame with a
+that crosses no row commits 4 mount items in ~1.2 ms; one that crosses a few rows (10 points of scroll bar, three rows
+of the scaled million) ~35–50 items in ~2 ms, with no views made (before the slots: ~2000 items in ~14 ms, every row
+of the window rebuilt; with a window jumping a viewport and a half ahead, ~340 items at each jump). On a Pixel 10 Pro
+(release, scripted swipes) the table holds ~870 views instead of ~2350, commits take 3 ms at the median and 7 ms at
+the 90th percentile, and no frame misses its deadline. A tick commits ~33 items in a median 1.7 ms (at most 2.7 ms); scrolling while it ticks, a frame with a
 tick ~44 items in ~3 ms. Before the origins moved in whole points, a scroll frame at a fraction sent ~470 items: every
 cell text's frame.
 

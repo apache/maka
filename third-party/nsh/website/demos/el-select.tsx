@@ -1,6 +1,6 @@
 import { type JSX, mount, signal, Text, View } from "nsh";
 import { Button, type OpenChangeReason, Select, type SelectGroup, type SelectItemState, Switch } from "nsh/base";
-import { button, buttonText, desktop, focusRing, hoverFill, Log, Panel, size, Split, tint, ui } from "./palette";
+import { button, buttonText, CheckMark, desktop, focusRing, hoverFill, Icon, Log, Panel, size, Split, tint, ui } from "./palette";
 
 // Two selects in a settings card: a plain one (typeahead jumps by letter)
 // and a searchable one with sections, a disabled item and an empty state.
@@ -70,7 +70,7 @@ function Trigger(props: { title?: string; placeholder: string; open: boolean; di
   return (
     // No hover while disabled.
     <View {...look} hoverStyle={props.disabled ? undefined : look.hoverStyle}>
-      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().faint }}>
+      <Text style={{ numberOfLines: 1, flex: 1, fontSize: controlText, color: props.title ? ui().text : ui().muted }}>
         {props.title ?? props.placeholder}
       </Text>
       {/* With a clear button over the end (`cleanable`), an empty lane as wide as the button in place of the chevron. */}
@@ -115,7 +115,11 @@ function Row(props: { item: SelectItemState; detail?: string }) {
       <If when={props.detail}>
         <Text style={{ fontSize: 12, color: ui().faint }}>{props.detail}</Text>
       </If>
-      <Text style={{ width: 12, fontSize: 12, textAlign: "right", color: ui().accent }}>{props.item.selected ? "✓" : ""}</Text>
+      <View style={{ width: 16 }}>
+        <If when={props.item.selected}>
+          <CheckMark size={16} tint={ui().accent} />
+        </If>
+      </View>
     </View>
   );
 }
@@ -240,7 +244,7 @@ function App() {
               clearButtonAccessibilityLabel="Clear the region"
               clearButtonClass="absolute items-center justify-center rounded-full enabled:hover:opacity-70"
               clearButtonStyle={{ top: (size.control - 20) / 2, right: 10, width: 20, height: 20 }}
-              clearButton={<Text style={{ fontSize: 12, color: ui().muted }}>✕</Text>}
+              clearButton={<Icon name="close" size={14} tint={ui().muted} />}
               trigger={<Trigger title={titleOf(REGIONS, region())} placeholder="Choose a region" open={regionOpen()} disabled={locked()} clearable={region() !== null} />}
               renderItem={(item) => <Row item={item} detail={item.disabled ? "At capacity" : item.value} />}
               renderGroup={(group) => <Header group={group} />}

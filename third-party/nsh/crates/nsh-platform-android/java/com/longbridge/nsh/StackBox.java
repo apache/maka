@@ -154,15 +154,20 @@ final class StackBox extends FrameLayout implements Node {
         a.start();
     }
 
-    /** `t` 0: `upper` covers the stack; 1: `upper` is gone. */
+    /**
+     * `t` 0: `upper` covers the stack; 1: `upper` is gone. Slides move by
+     * whole pixels: Skia keys the blurred masks of shadows on the subpixel
+     * part of their position, so a fractional offset each frame blurs every
+     * shadow the screens draw again, frame after frame.
+     */
     private static void place(View lower, View upper, float t, float w, boolean fade) {
         if (fade) {
             upper.setTranslationX(0);
             lower.setTranslationX(0);
             upper.setAlpha(1 - t);
         } else {
-            upper.setTranslationX(t * w);
-            lower.setTranslationX(-(1 - t) * w * 0.25f);
+            upper.setTranslationX(Math.round(t * w));
+            lower.setTranslationX(Math.round(-(1 - t) * w * 0.25f));
         }
     }
 

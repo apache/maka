@@ -85,6 +85,35 @@ height, from the first line the core's text engine lays it out in: `canvas::line
 
 The drawing format is documented in `crates/nsh-core/src/canvas.rs`.
 
+**SVGs** (Rust components: `element::svg(src)`, `Svg`, in the prelude; `src` an `ImageSrc`, as `image`'s:
+`asset!("icon.svg")`, a URL, a file, or `ImageSrc::svg_markup(text)`). An SVG document drawn as authored, in
+its own colors, as an `<svg>` written inline in a web page: a canvas whose drawing `nsh_core::svg::drawing`
+(feature `svg`) records from usvg's tree (paths, solid colors, linear and radial gradients, opacity, groups and their
+transforms, stroke properties, clip paths, blend modes as composite operations), so every platform replays vectors
+at its device pixels and an icon is sharp at any size and scale (an image of an SVG is a raster: Linux draws one at
+its view's size bucket, Windows and GPUI one at `svg::OVERSAMPLE` per point and scale it). Its bytes come through the
+shared image loader (`images.md` "Loading and memory": dedup, L3, the disk cache for remote ones; the engine gives the
+core its assets, access policy and disk cache with `Core::set_image_context`), and the document is parsed once per
+source key on a decode thread (`svg/drawings.rs`) and kept in the image budget, costed by its operations, leased while
+an element shows it and shared by every size. Inline markup, and a drawing in memory, show in the first frame; another
+source draws nothing until it loads (an `svg()` of a static source re-renders nothing: its drawing is a signal the
+canvas reads). `currentColor` is the canvas view's text color (`color`, inherited), so
+`stroke="currentColor"` icons follow the theme and `text-*` classes: usvg resolves `currentColor` while it parses, so
+the root gets a `color` of a color the document does not write (where it sets none itself) and the paints of that
+color become `ViewPaint::FillCurrentColor` / `StrokeCurrentColor`, which the core resolves as it resolves the other
+view paints (and sends again when the text color changes). The drawing is in the `viewBox`'s coordinates (usvg's
+mapping onto the SVG's size undone) after one `ViewPaint::Fit` (`canvas::ViewBoxFit`): the core maps the view box
+onto the canvas's box by `preserveAspectRatio` (`xMidYMid meet` by default; an SVG without a `viewBox` scales as an
+image of its size) and sends such a drawing after the round's layout, and again when the layout gives the canvas
+another size (`Core::send_fitted`). The canvas lays out as an image: at the SVG's `width` × `height` (else its
+`viewBox`'s size) where its style sets no size, keeping that ratio where it sets one side (`LeafContext::Image`).
+What a canvas has no operation for is drawn as near as it can be: a group's opacity multiplies its shapes' (exact
+where they do not overlap), a clip path of several shapes clips to them as one path, gradients pad
+(`spreadMethod` aside) and a gradient stop of `currentColor` is black; masks and filters are left out (what they
+apply to is drawn as it is) and a pattern paints nothing (each logged); `<text>` and `<image>` are not drawn. The
+web runtime, without the feature, shows it as an `image()` of a `data:` URI, contained in its box, where the browser
+draws it and `currentColor` is black.
+
 **Nodes** (Rust components). A drawing can name parts of what it draws as elements of their own
 (`Painter::node(CanvasNode::new(bounds, role, label))`, with `test_id` and `selected`): a grid's cells, a chart's bars.
 They are the canvas's children to assistive technologies and UI tests, at their bounds in the canvas, with their role,

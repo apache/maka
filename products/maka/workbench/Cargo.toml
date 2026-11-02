@@ -31,6 +31,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 open = "5.4.5"
 percent-encoding = "2.3.2"
 url = "2.5.8"
+usvg = { version = "0.46", default-features = false, features = ["text", "system-fonts"] }
 maka-agent-api.workspace = true
 maka-agent-facts.workspace = true
 maka-app-client.workspace = true
@@ -62,6 +63,7 @@ image = { version = "0.25", default-features = false, features = ["tiff"] }
 maka-ui-build.workspace = true
 
 [dev-dependencies]
+nsh-testing = { path = "../../../third-party/nsh/crates/nsh-testing", default-features = false }
 nsh-bundler = { workspace = true, features = ["bundle"] }
 nsh-js.workspace = true
 tempfile.workspace = true

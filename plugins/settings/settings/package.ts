@@ -38,6 +38,7 @@ export default {
         authentication: one(sdk.contracts.settingsAuthentication),
         setup: one(sdk.contracts.settingsSetup),
         agent: one(sdk.contracts.agent),
+        skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
         management: one(sdk.contracts.deploymentManager),
         receipts: one(sdk.contracts.receiptReader),
       },
@@ -52,6 +53,17 @@ export default {
           title: {
             fallback: 'Connections & models',
             translations: { 'zh-CN': '连接与模型', 'zh-TW': '連線與模型' },
+          },
+        },
+        skills: {
+          kind: 'settings',
+          title: { fallback: 'Skills', translations: { 'zh-CN': '技能', 'zh-TW': '技能' } },
+        },
+        mcp: {
+          kind: 'settings',
+          title: {
+            fallback: 'MCP servers',
+            translations: { 'zh-CN': 'MCP 服务器', 'zh-TW': 'MCP 伺服器' },
           },
         },
         network: {

@@ -18,7 +18,7 @@ Native Shell provides eleven standard modules for TSX, imported by their bare na
 | `fs/promises` | `readFile`, `writeFile`, `readdir`, `exists`, `mkdir`, `rename`, `unlink`, `rmdir`, `stat`, `lstat`, `readlink`, default |
 | `process` | `run`, `spawn`, `exit`, `platform`, `arch`, `nextTick`, `ChildProcess`, default; the default object also has `env` and `dataDir` and is the global `process` |
 | `net` | `connect`, `Socket`, default |
-| `websocket` | `WebSocket.connect(url, options?)` resolving a `WebSocketConnection` (`read`, `write`, `close`), `WebSocketConnection`; the global `WebSocket` constructor on native hosts |
+| `websocket` | `connect(url, options?)` resolving a `WebSocketConnection` (`read`, `write`, `close(code?, reason?)`, `closeCode`, `closeReason`), `WebSocketConnection`, default; the global `WebSocket` constructor on native hosts |
 
 ## From Rust
 
@@ -42,7 +42,7 @@ Rust code does the same work with Rust's standard library and crates.io, in the 
 
 Each module is imported by exactly the name in the table: `import { join } from "path"`, `import fs from "fs/promises"`. The bundler keeps these imports, and the runtime serves them natively; the catalog is these eleven names. `buffer`, `crypto`, `path`, `url` and `zlib` are LLRT's implementations, pinned to `d9fd873e793c6551c5d92b2e31480f3279e3cd8d`, with declarations projected from that revision onto the exports the runtime has. The others are NSH's own. NSH keeps the identity of its URL, Blob, stream and event classes.
 
-All eleven modules load on native hosts and in browser apps. `Buffer`, hashing, crypto and compression use the same portable Rust implementation in WebAssembly, including synchronous APIs; random values use browser cryptographic entropy. Browser `path` operations use POSIX paths and a virtual `/` working directory. Browser files use persistent app-private storage, and WebSockets use the browser transport. Process execution and raw TCP calls report typed platform errors in browsers.
+All eleven modules load on native hosts and in browser apps. `Buffer`, hashing, crypto and compression use the same portable Rust implementation in WebAssembly, including synchronous APIs; random values use browser cryptographic entropy. Browser `path` operations use POSIX paths and a virtual `/` working directory. Browser files use persistent app-private storage, and WebSockets use the browser transport. Process execution and raw TCP calls fail with `code` `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` in browsers.
 
 ## How they compare with Node.js and gpui-shell
 
@@ -50,17 +50,46 @@ The modules follow Node's names and shapes for the subset they export, and gpui-
 
 - `fs/promises`' `exists` is `true` for a symlink whose target is missing, and `unlink`, `rename`, `rmdir`, `lstat` and `readlink` act on a symlink itself.
 - `Stats` and `Dirent` have their fields (`size`, `mtimeMs`, `name`, ...) as own properties, as Node's do, and `isFile()`, `isDirectory()` and `isSymbolicLink()` on their prototype.
-- A `ChildProcess` listener receives the event's payload: the output text, or the exit's `{ code, signal }` (with `error` when the runtime ended the child). `on` returns the child.
+- A `ChildProcess` listener receives the event's payload: the output text, or the exit's `{ code, signal }` (with `error` and `errorCode` when the runtime ended the child). `on` returns the child. `run` resolves `{ code, signal, stdout, stderr }`: gpui-shell's output with the signal that ended the child.
 - A child's environment is a small set from the host plus the names the app is granted, and it runs in the app's data directory or a `cwd` within an `fs.write` root ([Processes](#processes)).
 - `process.platform`, `process.arch`, `os.platform()` and `os.arch()` give Rust's `std::env::consts` names, as gpui-shell's do: `"macos"`, `"windows"`, `"linux"`, `"ios"`, `"android"`; `"aarch64"`, `"x86_64"` ([OS metadata](#os-metadata-and-logging)).
 - `process.dataDir` is `null` when the host has no data directory; `process.exit` asks the host to close the app surface.
 - Limits are part of each API: sizes, counts and timeouts are listed with each module below.
 
+## Failures
+
+A function that returns a promise reports every failure by rejecting it, as Node's `fs/promises` does: a wrong argument, a path or host the app is not granted, a used-up limit and an I/O error alike, so one `catch` (or `.catch`) handles them all. A synchronous function (`process.spawn`, `process.exit`, `os.homedir`, `ChildProcess.write`, the global `WebSocket`'s constructor and `send`) throws. A wrong use (an argument of the wrong type, an option out of its range) is a `TypeError` or `RangeError`. Every failure an app can handle carries a `code`, which stays the same from release to release; the message is written for people and may change, so apps branch on `code`:
+
+| `code` | What it means |
+|---|---|
+| `ERR_ACCESS_DENIED` | The app's `capabilities` do not grant the call. The error has `permission`, the capability's key in `nsh.json` (`"fs"`, `"process"`, `"network"`), and `resource`, what was asked for: the path, the command (`"exit"` for `process.exit`), the `"host:port"` of a socket or the WebSocket's URL |
+| `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` | The call belongs to other platforms: files run on desktops and in browsers, processes on desktops, TCP sockets on native hosts, `os.homedir()` on hosts that configure a home directory |
+| `ERR_NSH_QUOTA_EXCEEDED` | A limit of the runtime is used up: operations or data in flight, children, sockets, WebSockets, bytes waiting to be sent, listeners |
+| `ETIMEDOUT` | The call ran out of time: `run`'s `timeoutMs`, a connection, a WebSocket handshake, write or close |
+| `ENOENT`, `EEXIST`, `EACCES`, `ECONNREFUSED`, ... | The operating system's answer, with Node's codes; `EACCES` and `EPERM` are the OS refusing a file, apart from the app's capabilities |
+| `ERR_OUT_OF_RANGE`, `ERR_FS_FILE_TOO_LARGE`, `ERR_SOCKET_CLOSED`, `ERR_CHILD_PROCESS_STDIO_MAXBUFFER` | Node's codes for a size past a limit, a closed connection and output past `run`'s capture |
+
+```tsx
+import fs from "fs/promises";
+
+async function loadSettings(): Promise<string> {
+  try {
+    return await fs.readFile("${dataDir}/settings.json", "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return "{}";
+    if (error.code === "ERR_ACCESS_DENIED") console.warn(`not granted: ${error.permission} ${error.resource}`);
+    throw error;
+  }
+}
+```
+
+A host app may grant less than the app declares ([Sandbox and Capabilities](../docs/sandbox-and-capabilities.md)), so an app handles `ERR_ACCESS_DENIED` as it handles a failed request.
+
 ## OS metadata and logging
 
-`os.platform(): string` and `os.arch(): string` report the actual native host OS and architecture, and `process.platform` and `process.arch` hold the same values. They are the names of Rust's `std::env::consts::OS` and `ARCH`, as gpui-shell's are: `"macos"`, `"windows"`, `"linux"`, `"ios"`, `"android"` for the OS, `"aarch64"`, `"x86_64"` for the architecture, so apps compare against them directly (`process.platform === "macos"`). `os.EOL: string` is the host's line separator. `os.homedir(): string` returns a configured absolute host home path and throws when none is configured. Directory paths are metadata: file operations still require `fs.read` / `fs.write` grants.
+`os.platform(): string` and `os.arch(): string` report the actual native host OS and architecture, and `process.platform` and `process.arch` hold the same values. They are the names of Rust's `std::env::consts::OS` and `ARCH`, as gpui-shell's are: `"macos"`, `"windows"`, `"linux"`, `"ios"`, `"android"` for the OS, `"aarch64"`, `"x86_64"` for the architecture, so apps compare against them directly (`process.platform === "macos"`). `os.EOL: string` is the host's line separator. `os.homedir(): string` returns a configured absolute host home path; where none is configured it throws an error with `code` `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. Directory paths are metadata: file operations still require `fs.read` / `fs.write` grants.
 
-Browser apps read an empty `process.env` object and receive an error from `os.homedir()`, since home paths and environment variables belong to native hosts.
+Browser apps read an empty `process.env` object, and `os.homedir()` throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` there, since home paths and environment variables belong to native hosts.
 
 `import console from "console"` shares the VM's global `console` object. The module has a default export only, supporting `log`, `info`, `debug`, `warn`, `error`, each with signature `(...values: unknown[]): void`. It uses NSH's logger formatting.
 
@@ -70,7 +99,7 @@ Browser apps read an empty `process.env` object and receive an error from `os.ho
 
 ## Files
 
-`fs/promises` reads and writes native files on desktop hosts (macOS, Windows and Linux), and app-private browser files through the Origin Private File System (OPFS). Every path is checked against `capabilities.fs` before the operation starts: `read` roots for `readFile`, `readdir`, `stat`, `lstat`, `readlink` and `exists`, `write` roots for `writeFile`, `mkdir`, `rename`, `unlink` and `rmdir`. A path outside the grants throws a `TypeError` at the call; I/O failures reject the promise with an `Error`.
+`fs/promises` reads and writes native files on desktop hosts (macOS, Windows and Linux), and app-private browser files through the Origin Private File System (OPFS). Every path is checked against `capabilities.fs` before the operation starts: `read` roots for `readFile`, `readdir`, `stat`, `lstat`, `readlink` and `exists`, `write` roots for `writeFile`, `mkdir`, `rename`, `unlink` and `rmdir`. Every failure rejects the promise: a path outside the grants with `code` `ERR_ACCESS_DENIED` (`permission` `"fs"`, `resource` the path as the app wrote it), before any disk work.
 
 ```json
 {
@@ -82,9 +111,9 @@ Browser apps read an empty `process.env` object and receive an error from `os.ho
 
 Roots are absolute paths, `${dataDir}` (this app's data directory, chosen by the host), `${pluginDir}` (the app's directory), `${homeDir}`, or paths relative to the app's directory. A relative path in a call is resolved in each granted root in turn. An embedding host may narrow the grants further. Every operation stays inside its granted root, symlinks included; an absolute path is checked as written, so a root is reached by its own path (or its resolved one), not through a link outside it. `lstat`, `readlink`, `exists`, `unlink`, `rename` and `rmdir` act on a symlink itself: `exists` is `true` for a symlink whose target is missing, and `unlink` removes the link and keeps its target.
 
-Failures carry Node's error properties: `code` (`ENOENT`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOTEMPTY`, `ELOOP`, `EACCES`, `EPERM`, ...; `EILSEQ` for text that is not UTF-8, `ERR_FS_FILE_TOO_LARGE` past the read limit), `syscall` and `path`, so `error.code === "ENOENT"` tells a missing file apart. A path outside the grants throws a `TypeError` with `code` `EACCES`, and `ENOSYS` where the host has no native filesystem.
+Failures carry Node's error properties: `code` (`ENOENT`, `EEXIST`, `ENOTDIR`, `EISDIR`, `ENOTEMPTY`, `ELOOP`, `EACCES`, `EPERM`, ...; `EILSEQ` for text that is not UTF-8, `ERR_FS_FILE_TOO_LARGE` past the read limit), `syscall` and `path`, so `error.code === "ENOENT"` tells a missing file apart. A path outside the grants rejects with `ERR_ACCESS_DENIED`, a call on iOS or Android (whose apps keep data with [`Storage`](./nsh.md#storage)) with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and a wrong argument (an unknown encoding or option) with a `TypeError`.
 
-`readFile` returns a `Uint8Array`, or a string with `"utf8"`, and reads files up to 64 MiB. `writeFile` writes a string or `Uint8Array` of up to 8 MiB, creating or replacing a regular file. `readdir` lists up to 10 000 names (1 MiB of them; a larger directory rejects with a `RangeError`, `code` `ERR_OUT_OF_RANGE`), sorted, or `Dirent`s (`name`, `isDirectory()`) with `{ withFileTypes: true }`. `stat` and `lstat` resolve a `Stats` with `size`, `mode`, `mtimeMs` / `atimeMs` / `birthtimeMs`, `mtime` / `atime` / `birthtime` as `Date`s, and `isFile()`, `isDirectory()` and `isSymbolicLink()`. `rmdir` removes one empty directory. One VM runs up to 1024 operations at a time and holds up to 64 MiB of file data in flight (data handed to `writeFile` until it is written, data read until its promise settles); a call past these limits throws a `RangeError`, a read past them rejects.
+`readFile` returns a `Uint8Array`, or a string with `"utf8"`, and reads files up to 64 MiB. `writeFile` writes a string or `Uint8Array` of up to 8 MiB, creating or replacing a regular file. `readdir` lists up to 10 000 names (1 MiB of them; a larger directory rejects with a `RangeError`, `code` `ERR_OUT_OF_RANGE`), sorted, or `Dirent`s (`name`, `isDirectory()`) with `{ withFileTypes: true }`. `stat` and `lstat` resolve a `Stats` with `size`, `mode`, `mtimeMs` / `atimeMs` / `birthtimeMs`, `mtime` / `atime` / `birthtime` as `Date`s, and `isFile()`, `isDirectory()` and `isSymbolicLink()`. `rmdir` removes one empty directory. One VM runs up to 1024 operations at a time and holds up to 64 MiB of file data in flight (data handed to `writeFile` until it is written, data read until its promise settles); a call past these limits rejects with `ERR_NSH_QUOTA_EXCEEDED`, and a `writeFile` past 8 MiB with a `RangeError` (`code` `ERR_OUT_OF_RANGE`).
 
 Browser storage is scoped to the page's origin and the app's own namespace, with the same file grants and size limits checked in Rust. OPFS requires a secure context, such as HTTPS or localhost. File modification times come from browser metadata; unknown access/birth times and modes are zero. `rename` uses an atomic browser handle move and reports `ENOTSUP` when the browser does not provide it. Browser entries are regular files or directories, and `readlink` reports `EINVAL`.
 
@@ -138,7 +167,7 @@ child.on("stdout", (line) => console.log(line));
 child.on("exit", ({ code, signal }) => console.log("done", code, signal));
 ```
 
-`run` resolves `{ code, stdout, stderr }` for any exit status and rejects on launch failures, timeouts and output past its limit. `spawn` returns a child at once; `stdin: "pipe"` enables `write` and `end`, and `lines: true` delivers complete lines. `on(event, handler)` returns the child, and a handler gets the event's payload: the text, or `{ code, signal }` once, after the final output (with `error` when the runtime ended the child: a timeout, an over-long line) (at once for a listener added later). `pid` is the child's process id. A refused command, or a `cwd` outside the grants, throws a `TypeError` with `code` `EACCES`; a launch failure carries `code` (`ENOENT` for a missing executable, `EACCES` for one that cannot run), `syscall` (`spawn <command>`) and `path`: `spawn` throws it, `run` rejects with it. Past the children limit, `spawn` throws and `run` rejects with a `RangeError`. `process.dataDir` is `null` when the host has no data directory. `kill`, a timeout, the reactive owner's cleanup and the VM's teardown end the whole process tree: on Unix its process group gets SIGTERM and then SIGKILL after 250 ms (at teardown, SIGKILL at once).
+`run` resolves `{ code, signal, stdout, stderr }` for any exit status: `code` is the exit status and `signal` `null`, or, when a signal ended the child, `code` is `null` and `signal` its name (`"SIGTERM"`). It rejects on every failure. `spawn` returns a child at once; `stdin: "pipe"` enables `write` and `end`, and `lines: true` delivers complete lines. `on(event, handler)` returns the child, and a handler gets the event's payload: the text, or `{ code, signal }` once, after the final output (with `error` when the runtime ended the child: a timeout, an over-long line) (at once for a listener added later). `pid` is the child's process id. `spawn` throws what `run` rejects with, before the child starts: a command `process.execute` does not grant fails with `ERR_ACCESS_DENIED` (`permission` `"process"`, `resource` the command), a `cwd` outside the `fs.write` grants with `ERR_ACCESS_DENIED` (`permission` `"fs"`, `resource` the `cwd`), a call off the desktops with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and a call past the children limit with `ERR_NSH_QUOTA_EXCEEDED`; a launch failure carries `code` (`ENOENT` for a missing executable, `EACCES` for one the OS cannot run), `syscall` (`spawn <command>`) and `path`. `run` rejects with `ETIMEDOUT` at its deadline and with a `RangeError` (`code` `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`) for output past its capture; a spawned child's exit carries the same message in `error` and its code in `errorCode`. `process.dataDir` is `null` when the host has no data directory. `kill`, a timeout, the reactive owner's cleanup and the VM's teardown end the whole process tree: on Unix its process group gets SIGTERM and then SIGKILL after 250 ms (at teardown, SIGKILL at once).
 
 | Limit | Value |
 |---|---|
@@ -147,20 +176,35 @@ child.on("exit", ({ code, signal }) => console.log("done", code, signal));
 | One line with `lines: true` | 8 MiB |
 | Children per VM | 32 |
 | Output in flight per VM | 8 MiB; readers wait for JS to take it |
-| Pending stdin per child | 1 MiB; `write` throws past it |
+| Pending stdin per child | 1 MiB; `write` throws `ERR_NSH_QUOTA_EXCEEDED` past it |
 | Listeners | 64 per event per child |
 
-`process.exit(code?)` requests that the host close this app surface. Grant it with `"exit": true` in `capabilities.process`; the engine forwards the request through the platform's app-exit command. On macOS, this closes the surface window. In a browser, it stops the app and clears its surface while keeping the host page open. An embedding host controls how its surface handles the request. Gallery denies this capability so its **Request host exit** action demonstrates permission handling and keeps the demo open.
+`process.exit(code?)` requests that the host close this app surface. Grant it with `"exit": true` in `capabilities.process`; the engine forwards the request through the platform's app-exit command. A call the grant does not cover throws `ERR_ACCESS_DENIED` (`permission` `"process"`, `resource` `"exit"`). Hosts take exit requests through an exit handler they install; elsewhere the call throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`. On macOS, this closes the surface window. In a browser, it stops the app and clears its surface while keeping the host page open. An embedding host controls how its surface handles the request. Gallery denies this capability so its **Request host exit** action demonstrates permission handling and keeps the demo open.
 
 ## Network permissions and boundaries
 
-Global `fetch` retains NSH's streaming HTTP implementation, checking `network.hosts` or `network.http` for requests and redirect hops. WebSocket supports `ws:` / `wss:`, text and binary messages, event listeners and closing handshakes. A WebSocket handshake is an HTTP GET, so both the global `WebSocket` and the `websocket` module's `WebSocket.connect` use the HTTP grants: `ws` is checked as `http` and `wss` as `https`, using GET (a rule may also list `ws` / `wss` in `schemes`). NSH checks the initial normalized URL before starting the connection. The native handshake connects to that URL and rejects redirects; browser WebSocket redirects and connection policy are controlled by the browser. Both APIs refuse a URL with credentials or a fragment. Each VM holds at most 32 WebSockets across both APIs, and messages are at most 8 MiB in both.
+Global `fetch` retains NSH's streaming HTTP implementation, checking `network.hosts` or `network.http` for requests and redirect hops. WebSocket supports `ws:` / `wss:`, text and binary messages, event listeners and closing handshakes. A WebSocket handshake is an HTTP GET, so both the global `WebSocket` and the `websocket` module's `connect` use the HTTP grants: `ws` is checked as `http` and `wss` as `https`, using GET (a rule may also list `ws` / `wss` in `schemes`). NSH checks the initial normalized URL before starting the connection. The native handshake connects to that URL and rejects redirects; browser WebSocket redirects and connection policy are controlled by the browser. Both APIs refuse a URL with credentials or a fragment. Each VM holds at most 32 WebSockets across both APIs, and messages are at most 8 MiB in both.
 
-The global `WebSocket` queues at most eight messages to send, with at most 8 MiB buffered (`bufferedAmount`); `send()` past either throws. Its handshake and each write time out after 30 seconds, and closing waits up to 5 seconds for the peer's close frame. Messages are delivered as `message` events as they arrive.
+A URL the app is not granted is refused before any connection starts. The global `WebSocket` reports it as a browser reports a connection that fails: the constructor returns the socket, which then fires `error` and `close` (code 1006, `wasClean` `false`), so the handlers the app sets right after the constructor hear them. The module's `connect` rejects with `ERR_ACCESS_DENIED` (`permission` `"network"`, `resource` the URL). The 33rd WebSocket throws (the constructor) or rejects (`connect`) with `ERR_NSH_QUOTA_EXCEEDED`, and a malformed URL is a `SyntaxError` (the constructor) or a `TypeError` (`connect`).
 
-The `websocket` module's `WebSocketConnection` holds at most eight pending operations (reads, writes, close) and at most 8 MiB of writes not sent yet; a `write()` past the byte limit throws a `RangeError` at the call, and one past the operation limit rejects. One `read()` may wait at a time. Messages that arrive before they are read are kept, up to eight and 8 MiB together; one more closes the connection, since the app reads slower than the peer sends. Resolving, connecting and the handshake together, each write and closing time out after 30 seconds. After the connection ends (the peer closed it, a read or write failed, or too much arrived unread), `read()` still resolves the kept messages, in order, then rejects with why it ended.
+The global `WebSocket` queues at most eight messages to send, with at most 8 MiB buffered (`bufferedAmount`); `send()` past either throws `ERR_NSH_QUOTA_EXCEEDED`, and once the socket is closing, `send()` discards its data, as a browser's does. Its handshake and each write time out after 30 seconds, and closing waits up to 5 seconds for the peer's close frame. Messages are delivered as `message` events as they arrive.
 
-`net.connect({ host, port })` uses only `network.sockets`, a list of exact `"host:port"` destinations (`"[::1]:9000"` for IPv6), checked before DNS lookup. Each entry grants one port on one host; host patterns, `network.hosts` and HTTP grants cover HTTP traffic only, and an app without `"capabilities"` lists its sockets too. The returned `Socket` provides `read(size?)`, `write(text)` and `close()`; reads return `Uint8Array`, or `null` at EOF. A refused grant throws a `TypeError` and a limit a `RangeError` at the call; connection and I/O failures reject with Node's `code` (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `ECONNRESET`, ...) and `syscall`, a connection's also with `address` and `port`, and an operation on a closed socket with `ERR_SOCKET_CLOSED`. Connections and I/O have 30-second timeouts, each read/write is limited to 1 MiB, at most 4 MiB of writes may wait to be sent, and `close()` ends pending reads and writes at once. Each VM keeps at most 32 sockets open or connecting. This is a promise-based client socket interface.
+The `websocket` module's `WebSocketConnection` holds at most eight pending operations (reads, writes, close) and at most 8 MiB of writes not sent yet; a `write()` past either rejects with `ERR_NSH_QUOTA_EXCEEDED`, and a message past 8 MiB with a `RangeError` (`code` `ERR_OUT_OF_RANGE`). One `read()` may wait at a time; a second rejects with a `TypeError`. Messages that arrive before they are read wait for the app, and their flow follows its reads: while eight messages or 8 MiB wait unread, the connection stops reading from the network, so the peer's sending waits too, and reading resumes as the app reads. Resolving, connecting and the handshake together, each write and closing time out after 30 seconds.
+
+`read()` resolves the messages in arrival order. Once the connection has closed cleanly (the peer closed it, or the app called `close()`) and every message that came before is read, `read()` resolves `null`, as a `net` socket's does at EOF; `closeCode` and `closeReason` then hold the close frame's code and reason (`null` while the connection is open; 1005 for a close frame without a code, 1006 for a connection that ended without a closing handshake). `read()` rejects only for a failure, after the messages that came before it, with its `code`: `ERR_SOCKET_CLOSED` for a connection that ended without a closing handshake, `ETIMEDOUT`, the OS's code for a socket error, or `EPROTO` for a protocol error (with the HTTP `status` of a refused handshake). `close(code?, reason?)` sends its code (1000, the default, or 3000 to 4999) and reason (at most 123 UTF-8 bytes) in the close frame, as the global `WebSocket`'s `close()` does; a code or reason outside these rejects with a `RangeError` (`code` `ERR_OUT_OF_RANGE`). It discards the messages not read yet and resolves once the peer answers the closing handshake.
+
+```tsx
+import { connect } from "websocket";
+
+const socket = await connect("wss://chat.example.com/socket");
+await socket.write("hello");
+for (let message; (message = await socket.read()) !== null; ) {
+  console.log(message);
+}
+console.log(`closed: ${socket.closeCode} ${socket.closeReason}`);
+```
+
+`net.connect({ host, port })` uses only `network.sockets`, a list of exact `"host:port"` destinations (`"[::1]:9000"` for IPv6), checked before DNS lookup. Each entry grants one port on one host; host patterns, `network.hosts` and HTTP grants cover HTTP traffic only, and an app without `"capabilities"` lists its sockets too. The returned `Socket` provides `read(size?)`, `write(text)` and `close()`; reads return `Uint8Array`, or `null` at EOF. Every failure rejects: a destination not granted with `ERR_ACCESS_DENIED` (`permission` `"network"`, `resource` `"host:port"`), the 33rd socket and writes past the 4 MiB that may wait with `ERR_NSH_QUOTA_EXCEEDED`, a read or write past 1 MiB with a `RangeError` (`code` `ERR_OUT_OF_RANGE`); connection and I/O failures reject with Node's `code` (`ECONNREFUSED`, `ENOTFOUND`, `ETIMEDOUT`, `ECONNRESET`, ...) and `syscall`, a connection's also with `address` and `port`, and a write on a closed socket with `ERR_SOCKET_CLOSED` (a read there returns `null`). Connections and I/O have 30-second timeouts, each read/write is limited to 1 MiB, at most 4 MiB of writes may wait to be sent, and `close()` ends pending reads and writes at once. Each VM keeps at most 32 sockets open or connecting. This is a promise-based client socket interface.
 
 Raw TCP uses native hosts. Both WebSocket interfaces use the browser transport in web apps, retaining Rust capability checks and the limits above. Custom browser handshake headers report an explicit unsupported-option error. Browser connection policies also apply. Embedding grants intersect the app's capability declaration.
 

@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct StoredSessionConfiguration {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
     #[serde(default)]
@@ -34,6 +36,8 @@ pub struct StoredSessionConfiguration {
     pub compaction_prompt: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
+    #[serde(default)]
+    pub pinned: bool,
     pub labels: Vec<String>,
     pub workspace: BindingRef,
     pub permissions: WorkspacePermissions,
@@ -47,6 +51,8 @@ pub struct StoredSessionConfiguration {
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolvedConfiguration {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub parent_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<crate::contract::BackendPreference>,
     #[serde(default)]
@@ -57,6 +63,8 @@ pub struct ResolvedConfiguration {
     pub compaction_prompt: Option<String>,
     pub title: String,
     pub title_is_manual: bool,
+    #[serde(default)]
+    pub pinned: bool,
     pub labels: Vec<String>,
     pub workspace: Workspace,
     pub binding: BindingStamp,
@@ -75,12 +83,14 @@ impl StoredSessionConfiguration {
             .workspace
             .boundary_revision(self.boundary_revision, stamp)?;
         Ok(ResolvedConfiguration {
+            parent_session_id: self.parent_session_id,
             backend: self.backend,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
             compaction_prompt: self.compaction_prompt,
             title: self.title,
             title_is_manual: self.title_is_manual,
+            pinned: self.pinned,
             labels: self.labels,
             workspace,
             binding: stamp,
@@ -102,12 +112,14 @@ impl ResolvedConfiguration {
     /// The Session metadata transaction validates the reference's current epochs.
     pub fn into_stored(self, workspace: BindingRef) -> StoredSessionConfiguration {
         StoredSessionConfiguration {
+            parent_session_id: self.parent_session_id,
             backend: self.backend,
             collaboration_mode: self.collaboration_mode,
             tools: self.tools,
             compaction_prompt: self.compaction_prompt,
             title: self.title,
             title_is_manual: self.title_is_manual,
+            pinned: self.pinned,
             labels: self.labels,
             workspace,
             permissions: self.permissions,

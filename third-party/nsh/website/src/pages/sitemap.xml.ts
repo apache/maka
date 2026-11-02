@@ -1,5 +1,6 @@
 import type { APIRoute } from 'astro';
 import { pages } from '../lib/sections';
+import { getShowcaseApps } from '../lib/showcases';
 import { SITE_URL, url } from '../lib/site';
 
 const escapeXml = (value: string) => value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -11,7 +12,7 @@ export const GET: APIRoute = async () => {
 
   // Each entry lists its translations, so search engines pair the locales.
   const entries: { href: string; en?: string; zh?: string }[] = [];
-  for (const [e, z] of [[url(''), url('zh-CN')], [url('playground'), url('zh-CN/playground')], [url('gallery'), url('zh-CN/gallery')]]) {
+  for (const [e, z] of [[url(''), url('zh-CN')], [url('playground'), url('zh-CN/playground')], [url('gallery'), url('zh-CN/gallery')], [url('apps'), url('zh-CN/apps')], ...(await getShowcaseApps()).filter((app) => app.hasReadme).map((app) => [url(`apps/${app.id}`), url(`zh-CN/apps/${app.id}`)])]) {
     entries.push({ href: e, en: e, zh: z }, { href: z, en: e, zh: z });
   }
   for (const page of [...en, ...zh]) {

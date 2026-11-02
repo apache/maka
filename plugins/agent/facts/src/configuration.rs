@@ -29,12 +29,12 @@ mod model_catalog;
 mod model_info;
 mod model_override;
 pub use model_catalog::ModelCatalogEntry;
-pub use model_info::{ModelCapabilities, ModelInfo};
+pub use model_info::{ImageInput, ModelCapabilities, ModelInfo};
 mod model_validation;
 pub mod policy;
 pub use model_override::{
-    ApiProtocol, ModelModalities, ModelModality, ModelOverride, ModelOverrideCapabilities,
-    RelayServiceTier,
+    ApiProtocol, CatalogModelReference, ModelModalities, ModelModality, ModelOverride,
+    ModelOverrideCapabilities, RelayServiceTier,
 };
 pub mod validation;
 mod vault;

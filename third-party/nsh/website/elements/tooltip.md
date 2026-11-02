@@ -1,7 +1,6 @@
 ---
 title: Tooltip
 description: "The Tooltip component: a hint about the element it is in, shown on the desktops when the pointer rests on it, styled by the app."
-order: 28
 group: base
 demo: el-tooltip
 ---
@@ -65,12 +64,27 @@ It goes above its trigger by default (`placement`), on the other side when there
 area. With `open` the app decides when it shows: it follows `onOpenChange`, which reports the pointer resting on the
 trigger or leaving it, and can show it on any device.
 
+It comes and goes with your transitions: `startingClass` is its look in its first frame and `endingClass` its look
+once hidden, which it keeps while the `transition-*` classes of its `class` run; `onClose` follows.
+
+```tsx
+<Tooltip
+  class="rounded-md bg-gray-900 px-2 py-1 transition-opacity duration-100"
+  startingClass="opacity-0"
+  endingClass="opacity-0"
+>
+  <Text class="text-white">Save the document</Text>
+</Tooltip>
+```
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
 | `children` | `.child(..)` | `JSX.Element` | none | What it says. |
 | `class`, `style` | `.app_class(..)`, `Styled` methods | `string`, `StyleProp<ViewStyle>` | none | The look of the bubble: the tooltip itself. |
+| `startingClass`, `startingStyle` | `.starting_class(..)`, `.starting_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Its look in its first frame: its transitions run from it. |
+| `endingClass`, `endingStyle` | `.ending_class(..)`, `.ending_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Its look once hidden: it stays while its transitions run. |
 | `open` | `.open(..)` | `boolean` | none | Shown, controlled by the app. |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | Shown at first, without `open`. |
 | `delay` | `.delay(..)` | `number` | `500` | Milliseconds the pointer rests on the trigger before it shows. |
@@ -86,7 +100,7 @@ trigger or leaving it, and can show it on any device.
 |---|---|---|
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | The pointer rested on the trigger, or left or pressed it (`reason` `"hover"`). |
 | `onOpen` | `.on_open(\|\| ..)` | It is shown. |
-| `onClose` | `.on_close(\|\| ..)` | It is gone, also when the app hid it. |
+| `onClose` | `.on_close(\|\| ..)` | It is gone, after its exit; also when the app hid it. |
 
 ## Accessibility
 

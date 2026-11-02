@@ -61,23 +61,25 @@ impl EventLog {
         let fence = sql_number(through)?;
         let (source, item) = sql_position(cut)?;
         self.connection
-            .read(move |connection| {
-                Box::pin(async move {
-                    super::directory::check_read(connection, &session, through).await?;
-                    let crossing: bool = sqlx::query_scalar(
-                        "SELECT EXISTS(SELECT 1 FROM transcript_directory
+            .observe(move |connection| {
+                super::bodycache::run(connection, move |tx| {
+                    Box::pin(async move {
+                        super::directory::ensure(tx, &session, through).await?;
+                        let crossing: bool = sqlx::query_scalar(
+                            "SELECT EXISTS(SELECT 1 FROM transcript_directory
                  WHERE session_id = ?1 AND source_sequence <= ?2
                  GROUP BY turn_id HAVING
                     SUM((source_sequence,item_index) <= (?3,?4)) > 0
                     AND SUM((source_sequence,item_index) > (?3,?4)) > 0)",
-                    )
-                    .bind(session)
-                    .bind(fence)
-                    .bind(source)
-                    .bind(item)
-                    .fetch_one(connection)
-                    .await?;
-                    Ok(!crossing)
+                        )
+                        .bind(session)
+                        .bind(fence)
+                        .bind(source)
+                        .bind(item)
+                        .fetch_one(tx)
+                        .await?;
+                        Ok(!crossing)
+                    })
                 })
             })
             .await
@@ -108,7 +110,7 @@ impl EventLog {
         let direction = read.direction;
         let limit = read.limit as i64;
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
-            super::directory::check_read(tx, &session, fence).await?;
+            super::directory::ensure(tx, &session, fence).await?;
             let query = match (direction, position.is_some()) {
                 (TranscriptDirection::Older, true) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<=(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2",
                 (TranscriptDirection::Newer, true) => "SELECT source_sequence,item_index,turn_id FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>=(?4,?5) ORDER BY source_sequence,item_index LIMIT ?3",
@@ -155,7 +157,7 @@ impl EventLog {
         )?;
         let session = session.to_owned();
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
-            super::directory::check_read(tx, &session, position.source_sequence).await?;
+            super::directory::ensure(tx, &session, position.source_sequence).await?;
             super::bodycache::ensure(tx, &session, position).await?;
             let total:i64=sqlx::query_scalar("SELECT total_bytes FROM temp.transcript_rows WHERE session_id=?1 AND source_sequence=?2 AND item_index=?3")
                 .bind(&session).bind(source).bind(item).fetch_optional(&mut *tx).await?.ok_or_else(||invalid("transcript message was not found"))?;
@@ -181,7 +183,7 @@ impl EventLog {
         let session = session.to_owned();
         let turn = turn.to_owned();
         self.connection.observe(move |connection| super::bodycache::run(connection, move |tx| Box::pin(async move {
-            super::directory::check_read(tx,&session,through).await?;
+            super::directory::ensure(tx,&session,through).await?;
             let first:Option<(i64,i64)>=sqlx::query_as("SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND turn_id=?2 AND source_sequence<=?3 ORDER BY source_sequence,item_index LIMIT 1")
                 .bind(&session).bind(&turn).bind(fence).fetch_optional(&mut *tx).await?;
             let Some((source,item))=first else {  return Ok(None) };

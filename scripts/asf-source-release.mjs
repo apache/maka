@@ -42,7 +42,7 @@ import { fileURLToPath } from 'node:url';
 const defaultRepoRoot = resolve(import.meta.dirname, '..');
 const archivePattern = /^apache-maka-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-incubating-src\.tar\.gz$/;
 const versionPattern = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
-const requiredReleaseDocuments = ['DISCLAIMER-WIP', 'LICENSE', 'NOTICE'];
+const requiredReleaseDocuments = ['DISCLAIMER', 'LICENSE', 'NOTICE'];
 const requiredRootFiles = [...requiredReleaseDocuments, 'package.json', 'package-lock.json'];
 const forbiddenSegments = new Set(['.agents', '.claude', '.git', '.maka-shots', 'node_modules']);
 const knownNonCategoryXLicenses = new Set([
@@ -127,7 +127,7 @@ const textSourceBasenames = new Set([
   '.mailmap',
   'Cargo.toml.orig',
   'CNAME',
-  'DISCLAIMER-WIP',
+  'DISCLAIMER',
   'Dockerfile',
   'LICENSE',
   'LICENSE-APACHE',
@@ -571,10 +571,10 @@ function validateArchiveContents(archivePath, identity, entries) {
       const contents = readFileSync(join(candidateRoot, requiredFile), 'utf8');
       if (!contents.trim()) throw new Error(`${requiredFile} is empty`);
       if (
-        requiredFile === 'DISCLAIMER-WIP' &&
+        requiredFile === 'DISCLAIMER' &&
         (!contents.includes('Apache Maka') || !contents.includes('incubation'))
       ) {
-        throw new Error('DISCLAIMER-WIP does not identify Apache Maka as an incubating project');
+        throw new Error('DISCLAIMER does not identify Apache Maka as an incubating project');
       }
     }
 

@@ -3,7 +3,10 @@
 
 use nsh_core::{element::Style, prelude::*};
 
-use crate::popup::{OpenChangeReason, OpenState, SheetMotion, lifecycle};
+use crate::{
+    popup::{OpenChangeReason, OpenState, SheetMotion, lifecycle},
+    roving::leave_bar,
+};
 
 /// The props of [`Sheet`].
 #[derive(Debug, Clone, PartialEq, Props)]
@@ -114,6 +117,8 @@ pub fn Sheet(props: SheetProps, cx: Scope<SheetEvent>) -> impl IntoElement {
         move || cx.emit(SheetEvent::Close),
     );
     when(motion.shown, move || {
+        // Placed in a toolbar, its content is still no part of it.
+        leave_bar();
         let backdrop = overlay()
             .inset_0()
             .bind_opacity(&dragged_fade)

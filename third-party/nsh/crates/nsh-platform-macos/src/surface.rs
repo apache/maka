@@ -240,6 +240,9 @@ pub(crate) struct Surface {
     on_hot_update_failed: RefCell<Option<Box<dyn Fn()>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
+    /// The reader of `asset:/` image URIs bound to the running load, over
+    /// [`Self::asset_base`] ([`crate::AppView::load_with_config`]).
+    pub(crate) image_assets: RefCell<crate::image::AssetSource>,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
     pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// The window's chrome: title bar, menus ([`crate::chrome`]).
@@ -297,6 +300,7 @@ impl Surface {
             on_error: RefCell::new(None),
             on_hot_update_failed: RefCell::new(None),
             asset_base: RefCell::new(None),
+            image_assets: RefCell::default(),
             image_cache: RefCell::new(None),
             native: Default::default(),
             keymap: Default::default(),
@@ -354,6 +358,8 @@ impl Surface {
                 control.set_tokens(tokens);
             }
         };
+        // Remote images download with NSURLSession.
+        crate::image::install_transport();
         match Engine::start_with(config, CoreTextEngine::default, sink, setup) {
             Ok(engine) => {
                 // The app's downloaded images go through its disk cache.
@@ -697,12 +703,13 @@ impl Surface {
         let _ = on;
     }
 
-    /// Whether a native animation runs: the graph's, or the platform's own
+    /// Whether a native animation runs: the graph's (not one looping
+    /// forever, which no test step waits for), or the platform's own
     /// (scroll glides, zooms; not a scroll indicator's fade, after which
     /// nothing changes); or batches wait for the next frame.
     #[cfg(feature = "dev")]
     pub(crate) fn animating(&self) -> bool {
-        self.anim.borrow().animating()
+        self.anim.borrow().finishing()
             || self.frame_callbacks.borrow().len() > self.cosmetic_frames.get()
             || !self.queued.borrow().is_empty()
     }

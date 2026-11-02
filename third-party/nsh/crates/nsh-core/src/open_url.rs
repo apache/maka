@@ -53,12 +53,18 @@ pub fn check_url(url: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Why an app may not open `url`: the error its `openUrl` throws when the
-/// `openUrl` capability does not grant the URL's scheme.
-pub fn not_granted(url: &str) -> String {
+/// Why an app may not open `url`: what its `openUrl` rejects with when
+/// the `openUrl` capability does not grant the URL's scheme
+/// ([`JsError::access_denied`](crate::element::JsError::access_denied),
+/// permission `"openUrl"`, the URL its resource).
+pub fn not_granted(url: &str) -> crate::element::JsError {
     let scheme = url.split_once(':').map_or(url, |(scheme, _)| scheme);
-    format!(
-        "openUrl: `{scheme}:` URLs are not granted: add `\"openUrl\": true` (or `{scheme}` to `\"openUrl\": {{ \"schemes\": [...] }}`) to capabilities in nsh.json"
+    crate::element::JsError::access_denied(
+        format!(
+            "openUrl: `{scheme}:` URLs are not granted: add `\"openUrl\": true` (or `{scheme}` to `\"openUrl\": {{ \"schemes\": [...] }}`) to capabilities in nsh.json"
+        ),
+        "openUrl",
+        url,
     )
 }
 

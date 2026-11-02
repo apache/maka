@@ -22,10 +22,10 @@ mod access;
 mod admission;
 mod app_access;
 mod browser_access;
+mod browser_files;
 mod browser_popup;
 mod evaluate;
-#[cfg(all(test, target_os = "linux"))]
-mod live_tests;
+mod native_monitor;
 mod sessions;
 
 use futures_util::{FutureExt, future::BoxFuture};
@@ -156,7 +156,7 @@ impl Computer {
             let result = self.evaluate(
                 name,
                 input,
-                context.scope().clone(),
+                context.resource_capturer().into(),
                 configuration.permission_basis(),
                 interaction.clone(),
                 cancellation.clone(),
@@ -213,7 +213,6 @@ impl Handler for Service {
                     result,
                     Err(ToolError::Persistence(_) | ToolError::CleanupUnconfirmed(_))
                 ) {
-                    owner.stopping.cancel();
                     Err("Computer cleanup unconfirmed".into())
                 } else {
                     Ok(())
@@ -230,15 +229,14 @@ impl Handler for Service {
 impl NativeOwner for Service {
     fn execution_basis(&self) -> Option<Value> {
         // Grants and output artifacts belong to this Root; device selection is
-        // captured configuration. REPL bindings are transient and their current
-        // state is captured separately for each model request.
+        // captured configuration. REPL state belongs to actual tool calls.
         let root = self.0.store.owned_root().ok()?;
         serde_json::to_value((root.root_id(), &self.0.configuration)).ok()
     }
     fn prepare_retirement(
         &self,
     ) -> Option<Box<dyn maka_host_runtime::application::NativeRetirement>> {
-        self.0.resources.is_idle().then(|| Box::new(()) as _)
+        (!self.0.resources.has_pending()).then(|| Box::new(()) as _)
     }
     fn close(&self) -> BoxFuture<'static, Result<(), String>> {
         let owner = self.0.clone();

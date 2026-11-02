@@ -1,7 +1,7 @@
 import { platform } from "nsh";
 import type { ScrollbarTheme } from "nsh/base";
 
-const touch = platform.idiom !== "desktop";
+const touch = !platform.desktop;
 
 /**
  * The gallery's scroll bars, gpui-component's, which `Scrollbar.setTheme`

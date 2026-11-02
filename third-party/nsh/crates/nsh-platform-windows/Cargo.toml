@@ -24,7 +24,7 @@ log.workspace = true
 
 # Empty off Windows (like the other platform crates off their targets).
 [target.'cfg(windows)'.dependencies]
-nsh-core = { workspace = true, features = ["svg"] }
+nsh-core = { workspace = true, features = ["svg", "loader"] }
 nsh-engine = { workspace = true, features = ["net", "shader"] }
 nsh-base = { workspace = true, features = ["highlight"] }
 windows.workspace = true
@@ -37,7 +37,6 @@ rustc-hash.workspace = true
 serde_json.workspace = true
 url.workspace = true
 ttf-parser.workspace = true
-ureq.workspace = true
 crossbeam-channel.workspace = true
 nsh-dev = { workspace = true, features = ["client"], optional = true }
 nsh-testing = { workspace = true, features = ["agent"], optional = true }

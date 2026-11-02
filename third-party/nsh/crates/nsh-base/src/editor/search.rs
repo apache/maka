@@ -8,9 +8,31 @@
 
 use std::ops::Range;
 
+use nsh_core::prelude::SharedString;
 use regex::{Regex, RegexBuilder};
 
 use super::{buffer::Buffer, data::EditorSearch};
+
+/// The regular expression of the last search, kept while its query and
+/// options stay: an active search runs again after every edit, and
+/// compiling its regex each time cost more than the finding.
+#[derive(Default)]
+pub(crate) struct Compiled(Option<(Query, Result<Option<Regex>, String>)>);
+
+/// What a search's regex is compiled from: the query, case sensitivity and
+/// whether it is a regex.
+type Query = (SharedString, bool, bool);
+
+impl Compiled {
+    /// The regex `search` runs (see [`compile`]), compiled once per query.
+    fn get(&mut self, search: &EditorSearch) -> Result<Option<Regex>, String> {
+        let key = (search.query.clone(), search.case_sensitive, search.regex);
+        match &self.0 {
+            Some((cached, regex)) if *cached == key => regex.clone(),
+            _ => self.0.insert((key, compile(search))).1.clone(),
+        }
+    }
+}
 
 /// Every match of `search` (at most `limit`); Err with the regex error for an
 /// invalid regular expression. An empty query finds nothing. A regular
@@ -19,9 +41,10 @@ use super::{buffer::Buffer, data::EditorSearch};
 pub(crate) fn find_all(
     buffer: &Buffer,
     search: &EditorSearch,
+    compiled: &mut Compiled,
     limit: usize,
 ) -> Result<Vec<Range<usize>>, String> {
-    let Some(regex) = compile(search)? else {
+    let Some(regex) = compiled.get(search)? else {
         return Ok(Vec::new());
     };
     let text = buffer.text();
@@ -34,12 +57,13 @@ pub(crate) fn replacement(
     buffer: &Buffer,
     range: Range<usize>,
     search: &EditorSearch,
+    compiled: &mut Compiled,
     with: &str,
 ) -> String {
     if !search.regex {
         return with.to_owned();
     }
-    let Ok(Some(regex)) = compile(search) else {
+    let Ok(Some(regex)) = compiled.get(search) else {
         return with.to_owned();
     };
     // The lines the match is on are all the context `^`, `$` and `\b` look
@@ -51,33 +75,31 @@ pub(crate) fn replacement(
     expand(&regex, &context, range.start - start, with)
 }
 
-/// What replacing every match of `search` with `with` does (at most `limit`
-/// matches): the edits, sorted and apart, for one undo step. Builds the text
-/// once, where calling [`replacement`] per match would read its lines each
-/// time.
-#[cfg(test)]
+/// What replacing each of `matches` (found by `search`) with `with` does:
+/// the edits for one undo step. Compiles the regex and builds the text once,
+/// where calling [`replacement`] per match would do both every time.
 pub(crate) fn replace_all(
     buffer: &Buffer,
+    matches: &[Range<usize>],
     search: &EditorSearch,
+    compiled: &mut Compiled,
     with: &str,
-    limit: usize,
-) -> Result<Vec<(Range<usize>, String)>, String> {
-    let Some(regex) = compile(search)? else {
-        return Ok(Vec::new());
+) -> Vec<(Range<usize>, String)> {
+    let regex = match compiled.get(search) {
+        Ok(Some(regex)) if search.regex => Some(regex),
+        _ => None,
     };
-    let text = buffer.text();
-    let found = matches(&regex, &text, search.whole_word, limit);
-    Ok(found
-        .into_iter()
+    let text = regex.as_ref().map(|_| buffer.text());
+    matches
+        .iter()
         .map(|range| {
-            let replaced = if search.regex {
-                expand(&regex, &text, range.start, with)
-            } else {
-                with.to_owned()
+            let replaced = match (&regex, &text) {
+                (Some(regex), Some(text)) => expand(regex, text, range.start, with),
+                _ => with.to_owned(),
             };
-            (range, replaced)
+            (range.clone(), replaced)
         })
-        .collect())
+        .collect()
 }
 
 /// The index of the first match at or after `offset` (wrapping to 0).
@@ -111,7 +133,7 @@ pub(crate) fn within<'a>(
     scope: impl IntoIterator<Item = &'a Range<usize>>,
 ) -> Vec<Range<usize>> {
     let mut scope: Vec<&Range<usize>> = scope.into_iter().collect();
-    scope.sort_by_key(|r| (r.start, r.end));
+    crate::sort::sort_by_key(&mut scope, |r| (r.start, r.end));
     matches
         .into_iter()
         .filter(|m| {
@@ -225,7 +247,13 @@ mod tests {
     }
 
     fn find(text: &str, search: &EditorSearch) -> Vec<Range<usize>> {
-        find_all(&Buffer::new(text), search, usize::MAX).unwrap()
+        find_all(
+            &Buffer::new(text),
+            search,
+            &mut Compiled::default(),
+            usize::MAX,
+        )
+        .unwrap()
     }
 
     /// The texts matched (in a text without '\r', whose offsets the
@@ -308,7 +336,7 @@ mod tests {
         assert_eq!(found("a1 b22\nc333", &digits), vec!["1", "22", "333"]);
         let mut bad = search("(a");
         bad.regex = true;
-        assert!(find_all(&Buffer::new("a"), &bad, 10).is_err());
+        assert!(find_all(&Buffer::new("a"), &bad, &mut Compiled::default(), 10).is_err());
         let mut lines = search("^\\w+$");
         lines.regex = true;
         assert_eq!(found("one\ntwo three\nfour", &lines), vec!["one", "four"]);
@@ -334,7 +362,13 @@ mod tests {
     #[test]
     fn limits_and_line_breaks() {
         assert_eq!(
-            find_all(&Buffer::new("aaaa"), &search("a"), 2).unwrap(),
+            find_all(
+                &Buffer::new("aaaa"),
+                &search("a"),
+                &mut Compiled::default(),
+                2
+            )
+            .unwrap(),
             vec![0..1, 1..2]
         );
         // The buffer's "\r\n" are '\n'; a query with "\r\n" still finds them.
@@ -348,20 +382,30 @@ mod tests {
         let buffer = Buffer::new("let a = 1;\nlet bb = 22;");
         let mut assign = search(r"let (?P<name>\w+) = (\d+)");
         assign.regex = true;
-        let matches = find_all(&buffer, &assign, 10).unwrap();
+        let matches = find_all(&buffer, &assign, &mut Compiled::default(), 10).unwrap();
         assert_eq!(matches.len(), 2);
         assert_eq!(
             replacement(
                 &buffer,
                 matches[1].clone(),
                 &assign,
+                &mut Compiled::default(),
                 "const ${name}: i32 = $2 $$"
             ),
             "const bb: i32 = 22 $"
         );
         let plain = search("a");
-        assert_eq!(replacement(&buffer, 4..5, &plain, "$1"), "$1");
-        let edits = replace_all(&buffer, &assign, "${name}=$2", 10).unwrap();
+        assert_eq!(
+            replacement(&buffer, 4..5, &plain, &mut Compiled::default(), "$1"),
+            "$1"
+        );
+        let edits = replace_all(
+            &buffer,
+            &matches,
+            &assign,
+            &mut Compiled::default(),
+            "${name}=$2",
+        );
         assert_eq!(
             edits,
             vec![(0..9, "a=1".to_owned()), (11..22, "bb=22".to_owned())]
@@ -373,14 +417,21 @@ mod tests {
         let buffer = Buffer::new("xfoo\nfoo bar");
         let mut start = search("^(foo)");
         start.regex = true;
-        let matches = find_all(&buffer, &start, 10).unwrap();
+        let matches = find_all(&buffer, &start, &mut Compiled::default(), 10).unwrap();
         assert_eq!(matches, vec![5..8]);
-        assert_eq!(replacement(&buffer, 5..8, &start, "[$1]"), "[foo]");
+        assert_eq!(
+            replacement(&buffer, 5..8, &start, &mut Compiled::default(), "[$1]"),
+            "[foo]"
+        );
         // A range the regex does not match (the text changed) keeps `with`.
-        assert_eq!(replacement(&buffer, 1..4, &start, "[$1]"), "[$1]");
+        assert_eq!(
+            replacement(&buffer, 1..4, &start, &mut Compiled::default(), "[$1]"),
+            "[$1]"
+        );
         let mut prefix = search("^");
         prefix.regex = true;
-        let edits = replace_all(&buffer, &prefix, "// ", 10).unwrap();
+        let lines = find_all(&buffer, &prefix, &mut Compiled::default(), 10).unwrap();
+        let edits = replace_all(&buffer, &lines, &prefix, &mut Compiled::default(), "// ");
         assert_eq!(
             edits,
             vec![(0..0, "// ".to_owned()), (5..5, "// ".to_owned())]

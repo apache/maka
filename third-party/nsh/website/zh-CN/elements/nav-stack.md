@@ -1,7 +1,6 @@
 ---
 title: NavStack
 description: 原生导航栈：NavStack、NavPage 与 createNavStack，页面的推入与弹出、标题栏插槽、离开页面，以及各平台如何呈现导航栈。
-order: 22
 group: base
 demo: ui-navigation
 ---

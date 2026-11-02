@@ -22,6 +22,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [dependencies]
 maka-agent-facts.workspace = true
@@ -29,9 +30,6 @@ maka-capabilities.workspace = true
 futures-util.workspace = true
 tokio.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
-cap-std.workspace = true
-cap-fs-ext = "4.0.3"
 tokio-util.workspace = true
 serde.workspace = true
 schemars.workspace = true
@@ -39,7 +37,12 @@ serde_json.workspace = true
 yaml-rust2 = { version = "0.13.0", default-features = false }
 
 [dev-dependencies]
+uuid.workspace = true
 tempfile.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration.rs"

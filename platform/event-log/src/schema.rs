@@ -85,6 +85,18 @@ pub(crate) async fn initialize_connection_with_control(
             return Err(StoreError::UnsupportedDatabase);
         }
     }
+    // Blob offsets address the canonical serializer's UTF-8 bytes.
+    if tables == 0 {
+        sqlx::query("PRAGMA encoding = 'UTF-8'")
+            .execute(&mut *connection)
+            .await?;
+    }
+    let encoding: String = sqlx::query_scalar("PRAGMA main.encoding")
+        .fetch_one(&mut *connection)
+        .await?;
+    if encoding != "UTF-8" {
+        return Err(StoreError::UnsupportedDatabase);
+    }
     // A fresh file needs pointer-map pages before SQLx creates its first table.
     // Reclamation can then return space in small steps without a full VACUUM.
     if tables == 0 {
@@ -100,7 +112,22 @@ pub(crate) async fn initialize_connection_with_control(
             .await?;
     }
     crate::sqlite_functions::register(connection).await?;
-    MIGRATIONS.run_direct(None, &mut *connection, false).await?;
+    crate::sqlite_functions::register_migrations(connection).await?;
+    let migrated = MIGRATIONS
+        .run_direct(None, &mut *connection, false)
+        .await
+        .map_err(StoreError::from);
+    let unregistered = crate::sqlite_functions::unregister_migrations(connection).await;
+    match (migrated, unregistered) {
+        (Ok(()), Ok(())) => {}
+        (Err(cause), Err(cleanup)) => {
+            return Err(StoreError::StartupCleanupFailed {
+                cause: Box::new(cause),
+                cleanup: Box::new(cleanup),
+            });
+        }
+        (Err(error), Ok(())) | (Ok(()), Err(error)) => return Err(error),
+    }
     sqlx::raw_sql(
         "PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = FILE;",
     )
@@ -118,6 +145,3 @@ pub(crate) async fn initialize_connection_with_control(
 mod fixtures;
 #[cfg(test)]
 pub(crate) use fixtures::schema as fixture;
-
-#[cfg(test)]
-mod payload_migration_tests;

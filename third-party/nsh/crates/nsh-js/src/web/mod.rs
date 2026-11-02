@@ -852,6 +852,16 @@ pub(crate) fn fetch_event(
     fetch::event(cx, id, event)
 }
 
+/// Fails request `id`, which the app's capabilities do not grant
+/// (`fetch` rejects with a `TypeError` whose `code` is
+/// `ERR_ACCESS_DENIED`).
+pub(crate) fn fetch_refused(cx: Ctx, id: crate::net::RequestId, message: &str, url: &str) -> R<()> {
+    if !web(cx).built {
+        return Ok(());
+    }
+    fetch::refused(cx, id, message, url)
+}
+
 /// Cancels the requests whose response bodies were collected unread.
 pub(crate) fn forget_dropped_fetches(cx: Ctx) {
     fetch::forget_dropped(cx);

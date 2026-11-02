@@ -17,14 +17,24 @@
  * under the License.
  */
 
+import { LoadingState } from '../../../../products/maka/workbench/app/Loading';
+import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   createText,
+  createTransientText,
   UiError,
   errorText,
   type UiText,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
-import { tr } from '../../../../products/maka/workbench/app/locale';
+import { tr, type MessageKey } from '../../../../products/maka/workbench/app/locale';
+import type { StagedFile } from 'maka/host';
+import type {
+  AgentResumable,
+  AgentResumeParkReason,
+  AgentResumeResult,
+  AgentExecution,
+} from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import {
   batch,
   cleanup,
@@ -49,7 +59,6 @@ import {
   confirmSend,
   pendingSends,
   recoverSend,
-  abandonSend,
   type ScopedHost,
 } from '../../../../products/maka/workbench/app/host';
 import {
@@ -57,6 +66,7 @@ import {
   Header,
   captionTextStyle,
   controlStyle,
+  toolbarControlStyle,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
 import {
@@ -67,13 +77,14 @@ import {
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
+import { Preview } from '../../../../products/maka/workbench/app/preview';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
+  ComposerQueue,
   ComposerSendAction as SendAction,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
-import type { QueueSession } from '../../../../products/maka/workbench/app/QueueDock';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
 import type {
   BackendIdentity,
@@ -81,14 +92,22 @@ import type {
 } from '../../../../products/maka/workbench/app/modelSelection';
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
 import {
+  botTurnEnding,
+  createBotTranscript,
+} from '../../../../products/maka/workbench/app/botTranscript';
+import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
+import {
   MessageRow,
+  originLabel,
   type MessageViewState,
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
-import { MessageEdit } from '../../../../products/maka/workbench/app/MessageEdit';
+import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
+import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
+import { createSessionPlan } from '../../../../products/maka/workbench/app/sessionPlan';
 import {
   TurnPanel,
   TurnSummary,
@@ -103,7 +122,7 @@ import {
   projectProcessGroups,
   sameProcessActivity,
   sameProcessRows,
-  sourceSequence,
+  orderProcessRows,
   stableRowId,
 } from '../../../../products/maka/workbench/app/processGroups';
 import type {
@@ -151,7 +170,9 @@ type HistoryNavigation =
   | { kind: 'start' | 'tail' }
   | { kind: 'turn'; item: TurnNavigationItem }
   | { kind: 'message'; anchor: ConversationAnchor };
-type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & { identity: object };
+type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & {
+  identity: object;
+};
 
 export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = Omit<
@@ -159,18 +180,18 @@ export type ConversationHandle = Omit<
   'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
 > & {
   attachments: AttachmentDraft;
+  goal: ReturnType<typeof createSessionGoal>;
   modelDetails(): ModelDetails;
   permissions: ReturnType<typeof createSessionPermissions>;
   projectMcp: ReturnType<typeof createProjectMcp>;
   compact(prompt?: string): Promise<void>;
   interactions(): AgentPendingInteractions;
-  computerApps(): AgentComputerApps;
   activeTurn(): string | null;
   activityTurn(): string | null;
   flushDraft(): Promise<boolean>;
   focus(): void;
-  /** A null target follows the current live turn. */
-  jumpLatest(turnId: string | null): void;
+  /** A null target follows the current live turn; `reload` reads the tail again. */
+  jumpLatest(turnId: string | null, reload?: boolean): void;
   refresh(): Promise<any>;
   reveal(anchor: ConversationAnchor, current: () => boolean): Promise<void>;
   focusHistory(): void;
@@ -178,9 +199,27 @@ export type ConversationHandle = Omit<
   /** The title its header shows. */
   title(): string;
 };
+// What the user can do about each reason the Host declined to continue.
+const continuationParked: Record<AgentResumeParkReason, MessageKey> = {
+  closed: 'Maka is shutting down. Continue after it restarts.',
+  archived: 'Restore this conversation to continue it.',
+  busy: 'This conversation is busy or has queued messages. Continue once it is idle.',
+  source_missing: 'There is no stopped response to continue.',
+  source_changed:
+    'The conversation changed after this response stopped. Send a new message instead.',
+  source_not_resumable: 'This response cannot be continued. Send a new message instead.',
+  already_continued: 'This response has already been continued.',
+  workspace_changed:
+    'The workspace changed after this response stopped. Send a new message instead.',
+  safety_check_failed: 'This response cannot be continued safely. Send a new message instead.',
+};
+
 type ConversationProps = {
   client: ScopedHost;
   control: Control;
+  continuationPending(): boolean;
+  /** The Bot Session when the application knows it; `null` for none; `undefined` if unknown. */
+  botSession?(): string | null | undefined;
   fork(action: Extract<SessionAction, { kind: 'fork' }>): Promise<void>;
   /**
    * Edit and resend a user message, or regenerate a reply (desktop): fork before
@@ -192,8 +231,14 @@ type ConversationProps = {
     send: boolean,
   ): Promise<boolean>;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
-  takePrefill?(): { text: string; send: boolean } | null;
+  takePrefill?(available: boolean): {
+    text: string;
+    send: boolean;
+    files?: StagedFile[];
+    first?: boolean;
+  } | null;
   commands(): void;
+  connectionLost(): boolean;
   visible(): boolean;
   foreground(): boolean;
   browser(): BrowserHeader;
@@ -237,10 +282,18 @@ function receiptMessage(reply: any): UiText {
       ? uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
-  return uiMessage(
-    'The original send has no confirmed result. Recover its receipt before sending again.',
-  );
+  return uiMessage('This action could not be completed.');
 }
+
+// Rows share the composer's column: at most 800 wide, centered. The terminal's
+// scroll bar takes a cell of the right margin.
+const readingColumn = {
+  width: '100%',
+  maxWidth: 800,
+  alignSelf: 'center',
+  paddingLeft: 16,
+  paddingRight: platform.isTerminal ? 24 : 16,
+} as const;
 
 export function Conversation(props: ConversationProps) {
   const host = useHost();
@@ -266,21 +319,40 @@ export function Conversation(props: ConversationProps) {
   const live = signal<Row[]>([]);
   const toolActivity = signal<ToolActivity[]>([]);
   const parts = signal<LivePart[]>([]);
+  const preview = new Preview();
   const pendingMessages = signal<Row[]>([]);
   const queued = signal<AgentQueue | null>(null);
   const title = signal(sessionId);
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
+  const toolProgressById = computed(
+    () =>
+      new Map(
+        toolActivity()
+          .filter((item) => item.invocationId === invocation())
+          .map((item) => [item.toolUseId, item.phase] as const),
+      ),
+  );
+  const toolProgress = (id: string) => toolProgressById().get(id) ?? null;
   const compacting = signal<AgentCompactionProgress | null>(null);
+  const resumable = signal<AgentResumable | null>(null);
+  const resuming = signal(false);
+  const confirmingContinuation = () => resuming() || props.continuationPending();
+  const resumeRevision = signal(0);
   const stoppingRun = signal<string | null>(null);
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
+  const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
+  const plan = createSessionPlan(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
-  const interactions = signal<AgentPendingInteractions>({ revision: -1, entries: [] });
+  const interactions = signal<AgentPendingInteractions>({
+    revision: -1,
+    entries: [],
+  });
   const computerApps = signal<AgentComputerApps>({ entries: [] });
   let interactionsFromStream = false;
   const error = createText();
@@ -320,10 +392,19 @@ export function Conversation(props: ConversationProps) {
   const unresolved = signal<any[]>([]);
   const receiptsKnown = signal(false);
   const recovering = signal(false);
-  const notice = createText();
+  const notice = createTransientText();
   const reading = signal<'chat' | 'trajectory'>('chat');
+  // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
+  // replies and steps stay in Trajectory.
+  const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
+  // The process group whose activity list last reported its end.
+  const readerAtEnd = signal<string | null>(null);
+  // At the end of a paused group there is nothing below to reach, only
+  // following to resume, and nothing to follow once the run has ended.
+  const pausedAtEnd = () =>
+    !awayFromLatest() && innerReader() !== null && innerReader() === readerAtEnd();
   const metrics = signal<any>(null);
   const turnStates = new Map<string, TurnViewState>();
   const groupStates = new Map<string, GroupViewState>();
@@ -392,6 +473,17 @@ export function Conversation(props: ConversationProps) {
         const sequence = Math.max(part.startSequence, row.sequence ?? 0);
         if (!latest || sequence > latest.sequence) latest = { part, row, sequence };
       }
+      const currentPreview = live()
+        .filter((row) => row.preview && row.invocationId === invocation() && row.closedAt === null)
+        .at(-1);
+      if (currentPreview)
+        return currentPreview.field === 'body'
+          ? { kind: 'response', detail: '', rowId: stableRowId(currentPreview) }
+          : {
+              kind: 'thinking',
+              detail: thinkingSummary(currentPreview.text),
+              rowId: stableRowId(currentPreview),
+            };
       if (!latest) return { kind: 'working', detail: '' };
       if (latest.part.field === 'body')
         return { kind: 'response', detail: '', rowId: stableRowId(latest.row) };
@@ -408,15 +500,9 @@ export function Conversation(props: ConversationProps) {
   );
   let previousGroups: ProcessEntry[] = [];
   const projection = computed(() => {
-    // Canonical position and live PartStarted sequence are source order. A send
-    // echo has no source position yet and stays at the local tail until admitted.
-    const ordered = [...rows(), ...processLive()].sort((left, right) => {
-      return (
-        (sourceSequence(left) ?? 0) - (sourceSequence(right) ?? 0) ||
-        (left.position?.itemIndex ?? 0) - (right.position?.itemIndex ?? 0) ||
-        Number(left.field === 'body') - Number(right.field === 'body')
-      );
-    });
+    // Current model previews have their own attempt/part order; only durable
+    // history and executor streams have a source sequence.
+    const ordered = orderProcessRows([...rows(), ...processLive()]);
     const next = projectProcessGroups({
       rows: [...ordered, ...(atHistoryTail() ? pendingMessages() : [])],
       toolActivity: processActivity(),
@@ -437,14 +523,81 @@ export function Conversation(props: ConversationProps) {
   type DisplayEntry =
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
-    | { kind: 'row'; key: string; rowId: string; repeats?: number };
+    | { kind: 'row'; key: string; rowId: string; repeats?: number }
+    | { kind: 'bot'; key: string; turnId: string }
+    | { kind: 'botNote'; key: string; turnId: string }
+    | { kind: 'botWorking'; key: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
+    // Until the Host has said whether this is the Bot, assume it is: showing the model's
+    // own text on the Bot's Chat would publish internal output, while a short blank on an
+    // ordinary conversation only delays it. Reading a Bot never becomes visible by failing.
+    const botChat = bot.identity() !== 'ordinary' && reading() === 'chat';
+    // The Bot's reply to a Turn is what it sent with SendUser during that Turn,
+    // shown after the Turn's own entries.
+    let openTurn: string | undefined;
+    let workingShown = false;
+    // Chat hides the model's own output. Until the running Turn has its own header,
+    // show that the Bot is at work, where that header will appear so it replaces
+    // this row in place instead of arriving above an already shown reply.
+    const working = (turnId: string | undefined) => {
+      const running = runTurn();
+      if (run() !== 'running' || workingShown || (turnId !== undefined && turnId !== running))
+        return;
+      const headed = result.some(
+        (item) =>
+          running !== null &&
+          ((item.kind === 'process' && item.group.turnId === running) ||
+            (item.kind === 'summary' && item.turnId === running)),
+      );
+      if (headed) return;
+      workingShown = true;
+      result.push({ kind: 'botWorking', key: 'bot/working' });
+    };
+    const speak = () => {
+      if (openTurn !== undefined) {
+        working(openTurn);
+        const sent = bot.forTurn(openTurn).length > 0;
+        if (sent)
+          result.push({
+            kind: 'bot',
+            key: `bot/${openTurn}`,
+            turnId: openTurn,
+          });
+        // Silence is valid and gets no marker; a Turn that neither sent nor slept would
+        // look the same, so say so.
+        const turn = projection().turns.get(openTurn);
+        const finished = turn !== undefined && !turn.active && openTurn !== runTurn();
+        const turnId = openTurn;
+        const slept = [...projection().rowsById.values()].some(
+          (row) => row.turnId === turnId && row.tool?.call?.name === 'sleep',
+        );
+        if (
+          turn &&
+          botTurnEnding({
+            finished,
+            outcome: turnOutcome(turn),
+            sent,
+            slept,
+          }) === 'unanswered'
+        )
+          result.push({
+            kind: 'botNote',
+            key: `bot/${openTurn}/note`,
+            turnId: openTurn,
+          });
+      }
+      openTurn = undefined;
+    };
     for (const entry of projection().entries) {
       const row = entry.kind === 'message' ? projection().rowsById.get(entry.rowId) : undefined;
       const turnId = entry.kind === 'process' ? entry.turnId : row?.turnId;
       const turn = turnId ? projection().turns.get(turnId) : undefined;
+      if (botChat && turnId !== openTurn) {
+        speak();
+        openTurn = turnId;
+      }
       if (
         turn &&
         (entry.kind === 'process' ||
@@ -465,20 +618,37 @@ export function Conversation(props: ConversationProps) {
         if (!turn || !turnExpanded(turn)) continue;
         result.push({ kind: 'process', key: entry.key, group: entry });
       } else if (row) {
+        // Only SendUser publishes for the Bot. The model's own text, including a
+        // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
+        // failure is a failure row, which this does not hide.
+        if (botChat && row.role === 'assistant') continue;
+        // A message the Host wrote on the user's behalf (a worker finishing, a task
+        // result) is not something the user said. It stays in Trajectory.
+        if (botChat && row.role === 'user' && row.origin) continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
         if (
           reading() === 'trajectory' &&
-          (row.role === 'user' ||
-            row.finalOutput ||
+          ((row.role === 'user' && !row.origin) ||
+            (row.finalOutput && bot.identity() === 'ordinary') ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))
         )
           continue;
-        result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
+        result.push({
+          kind: 'row',
+          key: entry.key,
+          rowId: entry.rowId,
+          repeats: entry.repeats,
+        });
       }
+    }
+    if (botChat) {
+      speak();
+      // The running Turn may not be projected yet (its message is still pending).
+      working(undefined);
     }
     return result;
   });
@@ -503,7 +673,7 @@ export function Conversation(props: ConversationProps) {
     for (const item of landmarks().items) {
       items.set(item.turnId, {
         turnId: item.turnId,
-        label: item.label,
+        label: originLabel(item.origin) ?? item.label,
         anchor: {
           kind: 'landmark',
           through: landmarks().through,
@@ -517,7 +687,8 @@ export function Conversation(props: ConversationProps) {
       const previous = items.get(row.turnId);
       const label =
         row.role === 'user'
-          ? Array.from(row.text.replace(/\s+/g, ' ').trim()).slice(0, 96).join('')
+          ? (originLabel(row.origin) ??
+            Array.from(row.text.replace(/\s+/g, ' ').trim()).slice(0, 96).join(''))
           : '';
       if (!previous)
         items.set(row.turnId, {
@@ -551,14 +722,22 @@ export function Conversation(props: ConversationProps) {
   let followAgain = false;
   let historyIdentity: object = {};
   let windowTask: Promise<boolean> | null = null;
-  let historyDestination: { position: HistoryPosition; explicit: boolean; failed: boolean } = {
+  let historyDestination: {
+    position: HistoryPosition;
+    explicit: boolean;
+    failed: boolean;
+  } = {
     position: { kind: 'tail' },
     explicit: false,
     failed: false,
   };
   let olderTask: Promise<boolean> | null = null;
   let newerTask: Promise<boolean> | null = null;
-  let attemptedRead: { revision: number; messageId: string; exposure: object } | null = null;
+  let attemptedRead: {
+    revision: number;
+    messageId: string;
+    exposure: object;
+  } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
   let editEpoch = 0;
@@ -568,6 +747,7 @@ export function Conversation(props: ConversationProps) {
   // revision being sent. Edits made meanwhile show at once and are saved after.
   let holding = false;
   let heldDraft: (AttachmentEdit & { text: string }) | null = null;
+  const autoSend = signal<{ text: string; first?: boolean } | null>(null);
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -587,6 +767,9 @@ export function Conversation(props: ConversationProps) {
       rows.set(mergeChunks(rows(), chunks, older, through));
       const canonical = canonicalRows().byMessage;
       const currentLive = live();
+      for (const row of currentLive)
+        if (row.preview && canonical.has(`${row.messageId}/${row.field}`))
+          preview.commit(row.invocationId!, row.stepId!, row.messageId);
       const nextLive = currentLive.filter((row) => !canonical.has(`${row.messageId}/${row.field}`));
       if (nextLive.length !== currentLive.length) live.set(nextLive);
       const currentPending = pendingMessages();
@@ -945,12 +1128,20 @@ export function Conversation(props: ConversationProps) {
       computerApps.set(page.apps);
       return;
     }
+    if (page.kind === 'preview') {
+      const next = preview.page(page.page, live(), toolActivity(), canonicalRows().byMessage);
+      live.set(next.rows);
+      toolActivity.set(next.tools);
+      return;
+    }
     if (page.kind !== 'events') return;
     latestKnown = Math.max(latestKnown, page.through);
     let changed = false;
     for (const event of page.events) {
       if (event.sequence <= watchLast) continue;
       const fact = event.fact;
+      if (fact.kind === 'tool_input_ready')
+        preview.retireTool(event.invocationId, fact.stepId, fact.toolUseId);
       const nextTools = updateToolActivity(toolActivity(), event);
       if (nextTools !== toolActivity()) toolActivity.set(nextTools);
       const field = (kind: string) => (kind === 'thinking' ? 'thinking' : 'body');
@@ -979,18 +1170,6 @@ export function Conversation(props: ConversationProps) {
           );
           changed = true;
           break;
-        case 'part_started':
-          openParts([
-            {
-              invocationId: event.invocationId,
-              stepId: fact.stepId,
-              partId: fact.partId,
-              messageId: fact.messageId,
-              field: field(fact.textKind),
-              startSequence: event.sequence,
-            },
-          ]);
-          break;
         case 'delta': {
           const part = parts().find(
             (part) =>
@@ -1009,6 +1188,7 @@ export function Conversation(props: ConversationProps) {
             role: part.field === 'thinking' ? 'thinking' : 'assistant',
             turnId: event.turnId,
             text: (previous?.text ?? '') + fact.text,
+            prefix: true,
             sequence: event.sequence,
             closedAt: null,
           };
@@ -1017,18 +1197,12 @@ export function Conversation(props: ConversationProps) {
           );
           break;
         }
-        case 'part_finished':
-          parts.set(
-            parts().filter(
-              (part) =>
-                part.invocationId !== event.invocationId ||
-                part.stepId !== fact.stepId ||
-                part.partId !== fact.partId,
-            ),
-          );
+        case 'part_committed':
+          preview.commit(event.invocationId, fact.stepId, fact.messageId);
           changed = true;
           break;
         case 'step_ended':
+          preview.commit(event.invocationId, fact.stepId);
           closeLive(event.sequence, event.invocationId, fact.stepId);
           parts.set(
             parts().filter(
@@ -1105,8 +1279,10 @@ export function Conversation(props: ConversationProps) {
       else if (
         !historyDestination.explicit &&
         (await resetHistory(historyDestination.position, observed.through))
-      )
+      ) {
+        await loadTurnStart();
         list?.scrollToEnd({ animated: false });
+      }
       if (!alive) return;
       transcriptStatus.set('live');
       if (!historyDestination.failed) error.set('');
@@ -1128,16 +1304,10 @@ export function Conversation(props: ConversationProps) {
       try {
         await stream.close();
       } catch (reason) {
-        throw new UiError(
-          '{observation}; original observation cleanup remains unconfirmed: {reason}',
-          {
-            observation: failure ? errorText(failure.reason) : uiMessage('Observation stopped'),
-            reason: errorText(reason),
-          },
-        );
+        console.warn('Conversation observer cleanup failed:', reason);
       } finally {
         // This replaces only the read-only JS observer. Native Client retains
-        // unconfirmed Request custody, within its existing limit, until the
+        // unconfirmed Request custody until the
         // original session close acknowledges cleanup. No mutation is replayed.
         if (subscription === stream) subscription = null;
         if (readFailure?.stream === stream) readFailure = null;
@@ -1226,6 +1396,21 @@ export function Conversation(props: ConversationProps) {
   };
   const loadOlder = () => extendHistory('before');
   const loadNewer = () => extendHistory('after');
+  // A tail page can hold only the end of a long turn, whose process rows fold
+  // into a few lines that leave the reader too short to scroll for older pages.
+  // Read back to the message that opened the latest turn, within a few pages.
+  const loadTurnStart = async () => {
+    for (let page = 0; page < 8; page++) {
+      const turnId = rows().at(-1)?.turnId;
+      if (
+        turnId === undefined ||
+        historyWindow()?.before == null ||
+        rows().some((row) => row.role === 'user' && row.field === 'body' && row.turnId === turnId)
+      )
+        return;
+      if (!(await loadOlder())) return;
+    }
+  };
   const cancelNavigation = (turnId = navigatingTurn()) => {
     if (!alive || turnId !== navigatingTurn()) return;
     navigation.set(null);
@@ -1245,7 +1430,11 @@ export function Conversation(props: ConversationProps) {
   const navigateStart = async () => {
     if (!alive) return;
     const target: HistoryNavigation = { kind: 'start' };
-    historyDestination = { position: { kind: 'start' }, explicit: true, failed: false };
+    historyDestination = {
+      position: { kind: 'start' },
+      explicit: true,
+      failed: false,
+    };
     navigation.set(target);
     try {
       const observed = await observe();
@@ -1269,7 +1458,11 @@ export function Conversation(props: ConversationProps) {
     reading.set('chat');
     if (row.turnId) {
       const turn = projection().turns.get(row.turnId);
-      if (turn) turnState(turn.turnId).expanded.set({ open: true, answerKey: turn.answerKey });
+      if (turn)
+        turnState(turn.turnId).expanded.set({
+          open: true,
+          answerKey: turn.answerKey,
+        });
     }
     const id = stableRowId(row);
     const entry = display().find((item) =>
@@ -1312,7 +1505,11 @@ export function Conversation(props: ConversationProps) {
     if (!current()) throw new UiError('History navigation was cancelled.');
     const target: HistoryNavigation = { kind: 'message', anchor };
     const destination = {
-      position: { kind: 'row' as const, position: anchor.position, field: 'body' as const },
+      position: {
+        kind: 'row' as const,
+        position: anchor.position,
+        field: 'body' as const,
+      },
       explicit: true,
       failed: false,
     };
@@ -1363,7 +1560,10 @@ export function Conversation(props: ConversationProps) {
     if (!alive) return;
     const target: HistoryNavigation = { kind: 'turn', item };
     historyDestination = {
-      position: { kind: 'event', sequence: item.anchor.position.sourceSequence },
+      position: {
+        kind: 'event',
+        sequence: item.anchor.position.sourceSequence,
+      },
       explicit: true,
       failed: false,
     };
@@ -1426,6 +1626,14 @@ export function Conversation(props: ConversationProps) {
       heldDraft = edit;
       return;
     }
+    const first = autoSend();
+    if (first?.first) {
+      const firstText = first.text;
+      heldDraft = edit.text !== firstText ? edit : null;
+      pendingDraft = { ...edit, text: firstText };
+      startSave();
+      return;
+    }
     pendingDraft = edit;
     startSave();
   };
@@ -1475,6 +1683,13 @@ export function Conversation(props: ConversationProps) {
       : left.connectionId === right.connectionId &&
         left.modelId === right.modelId &&
         left.thinkingLevel === right.thinkingLevel;
+  // Choosing a model answers the earlier send's complaint; other errors stay.
+  effect(() => {
+    if (backendIdentity(backend()) === null) return;
+    untracked(() => {
+      if (error() === tr('Choose a model before sending.')) error.set('');
+    });
+  });
   // Metadata follows the route's value, not observe()'s newly allocated backend
   // objects or live stream state. The durable backend remains the only choice.
   const modelRoute = computed(() => {
@@ -1530,7 +1745,9 @@ export function Conversation(props: ConversationProps) {
               ? { kind: 'ready', choice: result.choice }
               : {
                   kind: 'unavailable',
-                  message: uiMessage('Model unavailable: {model}.', { model: captured.modelId }),
+                  message: uiMessage('Model unavailable: {model}.', {
+                    model: captured.modelId,
+                  }),
                 },
         });
       } catch (reason) {
@@ -1566,7 +1783,90 @@ export function Conversation(props: ConversationProps) {
       throw new UiError('Model unavailable: {model}. Choose another model.', {
         model: backend.modelId,
       });
-    return { model: resolved.choice.selection, thinkingLevel: backend.thinkingLevel ?? null };
+    return {
+      model: resolved.choice.selection,
+      thinkingLevel: backend.thinkingLevel ?? null,
+    };
+  };
+
+  const resumeBasis = computed(() =>
+    JSON.stringify([
+      resumeRevision(),
+      ready(),
+      archived(),
+      invocation(),
+      readState().revision,
+      readState().through,
+      backendIdentity(backend()),
+      props.continuationPending(),
+    ]),
+  );
+  effect(() => {
+    resumeBasis();
+    let current = true;
+    untracked(() => {
+      if (props.continuationPending()) return;
+      resumable.set(null);
+      const selected = backendIdentity(backend());
+      if (!ready() || archived() || invocation() || !selected) return;
+      void (async () => {
+        const resolved = await host.query('settings', 'resolveModel', {
+          connectionId: selected.connectionId,
+          modelId: selected.modelId,
+        });
+        if (!alive || !current || resolved.kind !== 'ready') return;
+        const value = await host.query('agent', 'resumable', {
+          sessionId,
+          model: resolved.choice.selection,
+          thinkingLevel: selected.thinkingLevel,
+        });
+        if (alive && current) resumable.set(value);
+      })().catch((reason) => {
+        if (alive && current) report(reason);
+      });
+    });
+    return () => {
+      current = false;
+    };
+  });
+  const resume = async (source: AgentExecution, expectedBackend: BackendIdentity) => {
+    const observed = resumable();
+    if (
+      !alive ||
+      confirmingContinuation() ||
+      invocation() ||
+      draft().trim() ||
+      attachments.files().length ||
+      sendBlockedReason() ||
+      observed?.kind !== 'ready' ||
+      observed.source.sessionId !== source.sessionId ||
+      observed.source.invocationId !== source.invocationId ||
+      observed.source.highWater !== source.highWater ||
+      !sameBackend(backendIdentity(backend()), expectedBackend)
+    )
+      return;
+    resuming.set(true);
+    try {
+      const model = await selection(expectedBackend);
+      if (!alive || !model || draft().trim() || attachments.files().length) return;
+      const result: AgentResumeResult = await props.control('resume', {
+        sessionId,
+        sourceInvocationId: source.invocationId,
+        sourceHighWater: source.highWater,
+        ...model,
+      });
+      if (!alive) return;
+      if (result.kind === 'parked') notice.set(uiMessage(continuationParked[result.reason]));
+      await observe();
+    } catch (reason) {
+      report(reason);
+    } finally {
+      if (alive)
+        batch(() => {
+          resuming.set(false);
+          resumeRevision.set(resumeRevision() + 1);
+        });
+    }
   };
 
   const settleReply = (
@@ -1633,14 +1933,17 @@ export function Conversation(props: ConversationProps) {
     if (!draftReady()) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
+    if (confirmingContinuation()) return tr('Confirming continuation…');
     if (sending()) return tr('Confirming send… New typing is kept.');
-    if (recovering()) return tr('Reading original receipts… New typing is kept.');
-    if (!receiptsKnown() || unresolved().length)
-      return tr('Sending waits for the original receipt; it will not be replayed.');
+    if (recovering()) return tr('Checking send status…');
+    if (!receiptsKnown() || unresolved().length) return tr('Checking send status…');
     return '';
   };
-  const send = async (text: string, expectedBackend?: BackendIdentity) => {
-    if (!alive || (!text.trim() && attachments.files().length === 0)) return;
+  const send = async (text: string, expectedBackend?: BackendIdentity, first?: boolean) => {
+    if (!alive) return;
+    if (!text.trim() && attachments.files().length === 0) {
+      return;
+    }
     if (sendBlockedReason()) {
       notice.set(
         uiMessage(
@@ -1649,7 +1952,7 @@ export function Conversation(props: ConversationProps) {
       );
       return;
     }
-    if (draft() !== text) changeDraft(text);
+    if (!first && draft() !== text) changeDraft(text);
     const epoch = editEpoch;
     const files = [...attachments.files()];
     sending.set(true);
@@ -1658,7 +1961,9 @@ export function Conversation(props: ConversationProps) {
     try {
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
-      if (!(await projectMcp.check()) || !alive) return;
+      if (!(await projectMcp.check()) || !alive) {
+        return;
+      }
       await flushDraft();
       if (!alive) return;
       if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
@@ -1713,17 +2018,15 @@ export function Conversation(props: ConversationProps) {
       unresolved.set(originals);
       receiptsKnown.set(true);
       for (const original of originals) {
-        if (!original.reference) {
-          notice.set(
-            uiMessage(
-              'An attempt was not confirmed. Explicitly abandon it below before starting a new send.',
-            ),
-          );
-          continue;
+        try {
+          const reply = await recoverSend(client, original.id);
+          if (!alive) return;
+          if (reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'unresolved')
+            continue;
+          settleReply(reply);
+        } catch (reason) {
+          report(reason);
         }
-        const reply = await recoverSend(client, original.id);
-        if (!alive) return;
-        settleReply(reply);
       }
       const stored = await loadDraft(client);
       if (!alive) return;
@@ -1738,38 +2041,11 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
-  const abandon = async (operationId: string) => {
-    if (!alive || recovering() || sending()) return;
-    recovering.set(true);
-    const epoch = editEpoch;
-    try {
-      const original = await abandonSend(client, operationId);
-      if (!alive) return;
-      if (original.abandoned) {
-        notice.set(
-          uiMessage(
-            'Unconfirmed attempt abandoned. The draft is kept; press Enter explicitly to send a new attempt.',
-          ),
-        );
-      } else if (original.reference) {
-        const reply = await recoverSend(client, operationId);
-        if (!alive) return;
-        settleReply(reply);
-        const stored = await loadDraft(client);
-        if (!alive) return;
-        acceptRecoveredDraft(stored, epoch);
-      }
-      const operations = await pendingSends(client);
-      if (!alive) return;
-      unresolved.set(operations);
-      receiptsKnown.set(true);
-    } catch (reason) {
-      report(reason);
-    } finally {
-      if (alive) recovering.set(false);
-    }
-  };
-
+  createPendingRecovery({
+    pending: () => !receiptsKnown() || unresolved().length > 0,
+    blocked: () => !draftReady() || sending() || recovering(),
+    recover,
+  });
   const stop = async (invocationId: string | null) => {
     if (!alive || !invocationId || invocation() !== invocationId || stopping()) return;
     stoppingRun.set(invocationId);
@@ -1805,13 +2081,18 @@ export function Conversation(props: ConversationProps) {
       return;
     void send(text, expectedBackend);
   };
-  const queueSession: QueueSession = {
+  const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
-    running: () => invocation() !== null && !stopping(),
+    running: () => connected() && invocation() !== null && !stopping(),
     async read(messageId, expectedRevision) {
       if (!alive) throw new UiError('This conversation is closed.');
-      return host.query('agent', 'queueMessage', { sessionId, messageId, expectedRevision });
+      return host.query('agent', 'queueMessage', {
+        sessionId,
+        messageId,
+        expectedRevision,
+      });
     },
     async change(expectedRevision, edit) {
       if (!alive) throw new UiError('This conversation is closed.');
@@ -1823,16 +2104,24 @@ export function Conversation(props: ConversationProps) {
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
-    computerApps,
+    computerAccess: {
+      snapshot: computerApps,
+      async stop(operationId) {
+        await props.control('stopComputerApp', { sessionId, operationId });
+      },
+    },
     draft,
     attachments,
     previewImage: props.previewImage,
     editable: () => draftReady() && !savingFailed(),
+    loading: () => !ready() || !draftReady(),
     blockedReason: sendBlockedReason,
     backend: () => backendIdentity(backend()),
     modelDetails,
     refreshModel,
     permissions,
+    plan,
+    goal,
     projectMcp,
     workspace,
     empty: () =>
@@ -1843,23 +2132,33 @@ export function Conversation(props: ConversationProps) {
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,
-    error,
-    notice,
-    recoverable: () => !sending() && draftReady() && (!receiptsKnown() || unresolved().length > 0),
+    connected,
+    error: () => (connected() ? error() : ''),
+    notice: () => (connected() ? notice() : ''),
     recovering: () => recovering() || sending(),
-    unconfirmed: () =>
-      unresolved()
-        .filter((original) => !original.reference)
-        .map((original) => original.id),
     stopping,
+    resumable,
+    resuming: confirmingContinuation,
+    resume,
     metrics: () => metricText(metrics()),
+    contextUsage: () => {
+      const value = metrics();
+      if (!value?.contextTokens || !value.contextWindow) return null;
+      return {
+        tokens: value.contextTokens,
+        outputTokensPerSecond: value.outputTokensPerSecond ?? null,
+        window: value.contextWindow,
+        approximate: value.approximate || value.contextLastKnown,
+      };
+    },
     changeDraft,
     submit(event) {
-      void send(event.text);
+      const value = resumable();
+      if (!event.text.trim() && !attachments.files().length && value?.kind === 'ready')
+        void resume(value.source, backendIdentity(backend()));
+      else void send(event.text);
     },
     sendRendered,
-    recover,
-    abandon,
     invocation,
     activeTurn: runTurn,
     activityTurn: () => {
@@ -1926,10 +2225,35 @@ export function Conversation(props: ConversationProps) {
         state.list.focus();
       } else list?.focus();
     },
-    jumpLatest(turnId) {
+    jumpLatest(turnId, reload = false) {
       if (!alive) return;
+      const showLatest = () => {
+        awayFromLatest.set(false);
+        innerReader.set(null);
+        const group = projection().entries.findLast(
+          (entry) => entry.kind === 'process' && entry.turnId === (turnId ?? runTurn()),
+        );
+        if (group?.kind === 'process') {
+          const state = groupState(group.key);
+          state.following.set(true);
+          if (state.list) state.list.scrollToEnd({ animated: false });
+          else state.opening = 'bottom';
+        }
+        list?.scrollToEnd({ animated: false });
+      };
+      // The loaded window already reaches the latest row and follows new ones:
+      // scroll it in place, keeping the rows above, without waiting on the Host.
+      if (!reload && atHistoryTail() && navigation() === null) {
+        props.focusComposer();
+        showLatest();
+        return;
+      }
       const target: HistoryNavigation = { kind: 'tail' };
-      historyDestination = { position: { kind: 'tail' }, explicit: true, failed: false };
+      historyDestination = {
+        position: { kind: 'tail' },
+        explicit: true,
+        failed: false,
+      };
       navigation.set(target);
       props.focusComposer();
       void (async () => {
@@ -1946,18 +2270,9 @@ export function Conversation(props: ConversationProps) {
             navigation() !== target
           )
             return;
-          awayFromLatest.set(false);
-          innerReader.set(null);
-          const group = projection().entries.findLast(
-            (entry) => entry.kind === 'process' && entry.turnId === (turnId ?? runTurn()),
-          );
-          if (group?.kind === 'process') {
-            const state = groupState(group.key);
-            state.following.set(true);
-            if (state.list) state.list.scrollToEnd({ animated: false });
-            else state.opening = 'bottom';
-          }
-          list?.scrollToEnd({ animated: false });
+          await loadTurnStart();
+          if (!alive || navigation() !== target) return;
+          showLatest();
         } finally {
           if (navigation() === target) navigation.set(null);
         }
@@ -1981,11 +2296,16 @@ export function Conversation(props: ConversationProps) {
       });
       if (!alive) return;
       if (result.kind !== 'started')
-        throw new UiError('Context compaction rejected: {reason}', { reason: result.reason });
+        throw new UiError('Context compaction rejected: {reason}', {
+          reason: result.reason,
+        });
       await observe();
-      ownHandle.jumpLatest(null);
+      ownHandle.jumpLatest(null, true);
     },
-    refresh: observe,
+    refresh() {
+      resumeRevision.set(resumeRevision() + 1);
+      return observe();
+    },
   };
   const readTarget = () => {
     const observed = readState();
@@ -2039,7 +2359,13 @@ export function Conversation(props: ConversationProps) {
       };
     }
     if (innerReader() !== null) return null;
-    return { kind: 'row' as const, observed, exposure, tail, identity: historyIdentity };
+    return {
+      kind: 'row' as const,
+      observed,
+      exposure,
+      tail,
+      identity: historyIdentity,
+    };
   };
   effect(() => {
     if (!props.visible() || !props.foreground()) {
@@ -2104,7 +2430,9 @@ export function Conversation(props: ConversationProps) {
       const result = reply.receipt.outcome.value as AgentMarkReadResult;
       if (!alive) return;
       if (result.kind === 'rejected')
-        throw new UiError('Read confirmation rejected: {reason}', { reason: result.reason });
+        throw new UiError('Read confirmation rejected: {reason}', {
+          reason: result.reason,
+        });
       acceptReadState(result.session);
     })()
       .catch(report)
@@ -2116,17 +2444,18 @@ export function Conversation(props: ConversationProps) {
 
   // A fork made to regenerate a reply sends its prefilled text once sending is possible,
   // unless the draft was changed first.
-  const autoSend = signal<string | null>(null);
   effect(() => {
-    const text = autoSend();
-    if (text === null || sendBlockedReason()) return;
+    const pending = autoSend();
+    if (pending === null || sendBlockedReason()) return;
     untracked(() => {
       autoSend.set(null);
-      if (draft() === text) void send(text);
+      if (pending.first || draft() === pending.text)
+        void send(pending.text, undefined, pending.first);
     });
   });
   cleanup(() => {
     alive = false;
+    bot.close();
     historyIdentity = {};
     navigation.set(null);
     wakeReconnect?.();
@@ -2155,11 +2484,22 @@ export function Conversation(props: ConversationProps) {
         draft.set(stored.text);
         attachments.restore(stored.attachments);
         draftReady.set(true);
-        const prefill = props.takePrefill?.() ?? null;
-        if (prefill && stored.text === '' && stored.attachments.length === 0) {
-          changeDraft(prefill.text);
-          props.focusComposer();
-          if (prefill.send) autoSend.set(prefill.text);
+        const prefill =
+          props.takePrefill?.(stored.text === '' && stored.attachments.length === 0) ?? null;
+        if (prefill) {
+          try {
+            if (stored.text === '' && stored.attachments.length === 0) {
+              changeDraft(prefill.text);
+              for (const file of prefill.files ?? [])
+                attachments.observeIntake(client.beginStagedUpload(file), () => {});
+              props.focusComposer();
+              if (prefill.send) {
+                autoSend.set({ text: prefill.text, first: prefill.first });
+              }
+            }
+          } finally {
+            for (const file of prefill.files ?? []) file.dispose();
+          }
         }
         void attachments.start();
         const operations = await pendingSends(client);
@@ -2172,6 +2512,8 @@ export function Conversation(props: ConversationProps) {
   );
 
   const railShown = () => ready() && navigationItems().length > 1;
+  // The desktop rail's width, kept on both sides so the reading column stays centered.
+  const railInset = () => (!platform.isTerminal && railShown() ? railWidth() + 8 : 0);
   const rail = () => (
     <TurnNavigation
       items={navigationItems}
@@ -2223,22 +2565,29 @@ export function Conversation(props: ConversationProps) {
         files={props.files}
         filesOpener={props.filesOpener}
       />
-      <If when={transcriptStatus() === 'failed'}>
-        <Button
-          accessibilityLabel={ready() ? tr('Reconnect updates') : tr('Retry loading conversation')}
-          onPress={inputAction(retryTranscript, sessionId)}
+      <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
+        <View
           style={{
-            ...controlStyle,
-            alignSelf: 'flex-start',
-            backgroundColor: C.raised,
+            flexDirection: 'row',
+            alignItems: 'center',
+            gap: 8,
+            paddingHorizontal: 16,
+            paddingVertical: 8,
+            borderBottomWidth: 1,
+            borderBottomColor: C.line,
           }}
-          hoverStyle={{ backgroundColor: C.surface }}
-          focusStyle={{ backgroundColor: C.line }}
         >
-          <Text style={{ ...captionTextStyle, color: C.accent }}>
-            {ready() ? tr('Reconnect updates') : tr('Retry loading conversation')}
+          <Text style={{ ...captionTextStyle, color: C.muted, flex: 1 }}>
+            {tr('Reconnecting updates… Your draft is kept.')}
           </Text>
-        </Button>
+          <Button
+            accessibilityLabel={tr('Reconnect updates')}
+            onPress={inputAction(retryTranscript, sessionId)}
+            style={controlStyle}
+          >
+            <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
+          </Button>
+        </View>
       </If>
       <View
         style={{
@@ -2256,8 +2605,11 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
-          style={controlStyle}
-          onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
+          style={toolbarControlStyle}
+          onPress={inputAction(chooseReading, {
+            owner: sessionId,
+            mode: 'chat',
+          })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
           activeStyle={{ backgroundColor: C.line }}
@@ -2275,8 +2627,11 @@ export function Conversation(props: ConversationProps) {
           role="tab"
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
-          style={controlStyle}
-          onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
+          style={toolbarControlStyle}
+          onPress={inputAction(chooseReading, {
+            owner: sessionId,
+            mode: 'trajectory',
+          })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
           activeStyle={{ backgroundColor: C.line }}
@@ -2298,8 +2653,8 @@ export function Conversation(props: ConversationProps) {
           flexDirection: 'column',
           minHeight: 0,
           width: '100%',
-          // Reserve the desktop rail's width so it never overlaps the reading column.
-          paddingHorizontal: !platform.isTerminal && railShown() ? railWidth() + 8 : 0,
+          // Keep the desktop rail clear of the list, whose scroll bar ends beside it.
+          paddingRight: railInset(),
         }}
       >
         <View
@@ -2308,9 +2663,6 @@ export function Conversation(props: ConversationProps) {
             flexDirection: 'column',
             minHeight: 0,
             width: '100%',
-            maxWidth: 800,
-            alignSelf: 'center',
-            paddingHorizontal: 16,
           }}
         >
           <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
@@ -2341,7 +2693,13 @@ export function Conversation(props: ConversationProps) {
                   ? { autoscrollToBottomThreshold: 32 }
                   : {}
               }
-              contentStyle={{ paddingRight: 8, paddingBottom: platform.isTerminal ? 0 : 16 }}
+              // The list spans the margins too, so the wheel scrolls it anywhere
+              // beside the reading column; the matching left inset keeps that
+              // column centered in the window.
+              contentStyle={{
+                paddingLeft: railInset(),
+                paddingBottom: platform.isTerminal ? 0 : 16,
+              }}
               style={{ flex: 1, minHeight: 0 }}
               onScroll={(event) => {
                 changedReadExposure();
@@ -2371,164 +2729,250 @@ export function Conversation(props: ConversationProps) {
                   void loadNewer();
               }}
               empty={
-                <Text style={{ color: C.muted, paddingVertical: 32 }}>
-                  {tr('Loading session history…')}
-                </Text>
+                <If when={!ready()}>
+                  <LoadingState label={tr('Loading session history…')} />
+                </If>
               }
             >
               {(key) => (
-                <Each of={[key()]} key={(id: string) => id}>
-                  {(ownedKey) => {
-                    const initial = displayByKey().get(ownedKey());
-                    if (!initial) return <View />;
-                    const entry = () => displayByKey().get(ownedKey()) ?? initial;
-                    const reveal = () =>
-                      list?.scrollToIndex({
-                        index: displayKeys().indexOf(ownedKey()),
-                        viewPosition: 0,
-                        animated: false,
-                      });
-                    if (initial.kind === 'summary') {
-                      const first = projection().turns.get(initial.turnId);
-                      if (!first) return <View />;
-                      const turn = () => projection().turns.get(initial.turnId) ?? first;
-                      return (
-                        <TurnSummary
-                          turn={turn}
-                          expanded={() => turnExpanded(turn())}
-                          canFold={() => canFoldTurn(turn())}
-                          toggle={(open) => {
-                            turnState(initial.turnId).expanded.set({
-                              open,
-                              answerKey: turn().answerKey,
-                            });
-                            if (open) reveal();
-                          }}
-                        />
-                      );
-                    }
-                    if (initial.kind === 'process') {
-                      const group = () => {
-                        const latest = entry();
-                        return latest.kind === 'process' ? latest.group : initial.group;
-                      };
-                      const first = projection().turns.get(initial.group.turnId);
-                      if (!first) return <View />;
-                      const turn = () => projection().turns.get(initial.group.turnId) ?? first;
-                      const tool = () =>
-                        latestToolActivity(
-                          toolActivity().filter((item) => group().toolIds.includes(item.toolUseId)),
-                          invocation(),
-                          group().turnId,
+                <View style={readingColumn}>
+                  <Each of={[key()]} key={(id: string) => id}>
+                    {(ownedKey) => {
+                      const initial = displayByKey().get(ownedKey());
+                      if (!initial) return <View />;
+                      const entry = () => displayByKey().get(ownedKey()) ?? initial;
+                      const reveal = () =>
+                        list?.scrollToIndex({
+                          index: displayKeys().indexOf(ownedKey()),
+                          viewPosition: 0,
+                          animated: false,
+                        });
+                      if (initial.kind === 'summary') {
+                        const first = projection().turns.get(initial.turnId);
+                        if (!first) return <View />;
+                        const turn = () => projection().turns.get(initial.turnId) ?? first;
+                        return (
+                          <TurnSummary
+                            turn={turn}
+                            expanded={() => turnExpanded(turn())}
+                            canFold={() => canFoldTurn(turn())}
+                            toggle={(open) => {
+                              turnState(initial.turnId).expanded.set({
+                                open,
+                                answerKey: turn().answerKey,
+                              });
+                              if (open) reveal();
+                            }}
+                          />
                         );
+                      }
+                      if (initial.kind === 'process') {
+                        const group = () => {
+                          const latest = entry();
+                          return latest.kind === 'process' ? latest.group : initial.group;
+                        };
+                        const first = projection().turns.get(initial.group.turnId);
+                        if (!first) return <View />;
+                        const turn = () => projection().turns.get(initial.group.turnId) ?? first;
+                        const tool = () =>
+                          latestToolActivity(
+                            toolActivity().filter((item) =>
+                              group().toolIds.includes(item.toolUseId),
+                            ),
+                            invocation(),
+                            group().turnId,
+                          );
+                        return (
+                          <TurnPanel
+                            group={group}
+                            turn={turn}
+                            toolActivity={tool}
+                            toolProgress={toolProgress}
+                            state={groupState(initial.group.key)}
+                            row={currentRow}
+                            rowState={rowState}
+                            sessionId={sessionId}
+                            through={() => latestKnown}
+                            previewImage={props.previewImage}
+                            openLink={props.openLink}
+                            userScroll={() => cancelNavigation()}
+                            reveal={reveal}
+                            activity={activity}
+                            viewport={readingSize}
+                            reading={(away) => {
+                              changedReadExposure();
+                              if (away) innerReader.set(initial.group.key);
+                              else if (innerReader() === initial.group.key) innerReader.set(null);
+                            }}
+                            settled={(atEnd) => {
+                              if (atEnd) readerAtEnd.set(initial.group.key);
+                              else if (readerAtEnd() === initial.group.key) readerAtEnd.set(null);
+                            }}
+                          />
+                        );
+                      }
+                      if (initial.kind === 'botWorking')
+                        return (
+                          <BotWorking
+                            detail={() => {
+                              const tool = latestToolActivity(
+                                toolActivity(),
+                                invocation(),
+                                runTurn(),
+                              );
+                              return tool ? `${tool.name}` : '';
+                            }}
+                          />
+                        );
+                      if (initial.kind === 'botNote')
+                        return <BotNote text={() => tr('The Bot did not reply this time')} />;
+                      if (initial.kind === 'bot')
+                        return (
+                          <BotReply
+                            messages={() => bot.forTurn(initial.turnId)}
+                            openLink={props.openLink}
+                            userScroll={() => cancelNavigation()}
+                          />
+                        );
+                      const first = currentRow(initial.rowId);
+                      if (!first) return <View />;
+                      const row = () => currentRow(initial.rowId) ?? first;
                       return (
-                        <TurnPanel
-                          group={group}
-                          turn={turn}
-                          toolActivity={tool}
-                          state={groupState(initial.group.key)}
-                          row={currentRow}
-                          rowState={rowState}
+                        <MessageRow
+                          item={row}
+                          repeats={() => {
+                            const item = displayByKey().get(initial.rowId);
+                            return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
+                          }}
+                          toolMaxHeight={() => readingSize().height}
+                          toolProgress={toolProgress}
+                          ownerKey={() => initial.rowId}
+                          viewState={rowState(initial.rowId)}
                           sessionId={sessionId}
                           through={() => latestKnown}
                           previewImage={props.previewImage}
                           openLink={props.openLink}
                           userScroll={() => cancelNavigation()}
-                          reveal={reveal}
-                          activity={activity}
-                          viewport={readingSize}
-                          reading={(away) => {
-                            changedReadExposure();
-                            if (away) innerReader.set(initial.group.key);
-                            else if (innerReader() === initial.group.key) innerReader.set(null);
+                          onExpand={reveal}
+                          onToolReading={(key) => {
+                            if (
+                              !alive ||
+                              key !== initial.rowId ||
+                              displayByKey().get(key)?.kind !== 'row' ||
+                              !rowStates.get(key)?.expanded()
+                            )
+                              return;
+                            innerReader.set(key);
                           }}
+                          finalActions={(row, ownerKey) => (
+                            <FinalActions
+                              row={row}
+                              ownerKey={ownerKey}
+                              sessionId={sessionId}
+                              through={() => latestKnown}
+                              fork={props.fork}
+                              extra={
+                                !platform.isTerminal && props.edit ? (
+                                  <MessageEdit
+                                    regenerate
+                                    row={() => loadedOpening(row().turnId)}
+                                    sessionId={sessionId}
+                                    through={() => latestKnown}
+                                    opensTurn={() => true}
+                                    edit={props.edit!}
+                                  />
+                                ) : undefined
+                              }
+                            />
+                          )}
+                          failureActions={
+                            platform.isTerminal
+                              ? undefined
+                              : (row) => (
+                                  // Only where the conversation ends in this failure.
+                                  <If
+                                    when={
+                                      run() !== 'running' && displayKeys().at(-1) === initial.rowId
+                                    }
+                                  >
+                                    <TurnRetry
+                                      row={() => loadedOpening(row().turnId)}
+                                      sessionId={sessionId}
+                                      through={() => latestKnown}
+                                      blocked={() =>
+                                        draft().trim() || attachments.files().length > 0
+                                          ? tr('Send or clear the draft first.')
+                                          : sendBlockedReason()
+                                      }
+                                      send={send}
+                                    />
+                                  </If>
+                                )
+                          }
+                          editMessage={
+                            !platform.isTerminal && props.edit
+                              ? (row, ownerKey) => (
+                                  <MessageEdit
+                                    row={row}
+                                    ownerKey={ownerKey}
+                                    sessionId={sessionId}
+                                    through={() => latestKnown}
+                                    opensTurn={() => opensTurn(row())}
+                                    edit={props.edit!}
+                                  />
+                                )
+                              : undefined
+                          }
                         />
                       );
-                    }
-                    const first = currentRow(initial.rowId);
-                    if (!first) return <View />;
-                    const row = () => currentRow(initial.rowId) ?? first;
-                    return (
-                      <MessageRow
-                        item={row}
-                        repeats={() => {
-                          const item = displayByKey().get(initial.rowId);
-                          return item?.kind === 'row' ? (item.repeats ?? 1) : 1;
-                        }}
-                        toolMaxHeight={() => readingSize().height}
-                        ownerKey={() => initial.rowId}
-                        viewState={rowState(initial.rowId)}
-                        sessionId={sessionId}
-                        through={() => latestKnown}
-                        previewImage={props.previewImage}
-                        openLink={props.openLink}
-                        userScroll={() => cancelNavigation()}
-                        onExpand={reveal}
-                        onToolReading={(key) => {
-                          if (
-                            !alive ||
-                            key !== initial.rowId ||
-                            displayByKey().get(key)?.kind !== 'row' ||
-                            !rowStates.get(key)?.expanded()
-                          )
-                            return;
-                          innerReader.set(key);
-                        }}
-                        finalActions={(row, ownerKey) => (
-                          <FinalActions
-                            row={row}
-                            ownerKey={ownerKey}
-                            sessionId={sessionId}
-                            through={() => latestKnown}
-                            fork={props.fork}
-                            extra={
-                              !platform.isTerminal && props.edit ? (
-                                <MessageEdit
-                                  regenerate
-                                  row={() => loadedOpening(row().turnId)}
-                                  sessionId={sessionId}
-                                  through={() => latestKnown}
-                                  opensTurn={() => true}
-                                  edit={props.edit!}
-                                />
-                              ) : undefined
-                            }
-                          />
-                        )}
-                        editMessage={
-                          !platform.isTerminal && props.edit
-                            ? (row, ownerKey) => (
-                                <MessageEdit
-                                  row={row}
-                                  ownerKey={ownerKey}
-                                  sessionId={sessionId}
-                                  through={() => latestKnown}
-                                  opensTurn={() => opensTurn(row())}
-                                  edit={props.edit!}
-                                />
-                              )
-                            : undefined
-                        }
-                      />
-                    );
-                  }}
-                </Each>
+                    }}
+                  </Each>
+                </View>
               )}
             </List>
             <If when={platform.isTerminal && railShown()}>{rail()}</If>
-            <ReturnToLatest
-              visible={awayFromLatest() || innerReader() !== null}
-              activate={inputAction(ownHandle.jumpLatest, null)}
-            />
+            <View
+              style={[
+                {
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: railInset(),
+                  right: 0,
+                },
+                { pointerEvents: 'box-none' },
+              ]}
+            >
+              <ReturnToLatest
+                visible={
+                  awayFromLatest() ||
+                  (innerReader() !== null && (!pausedAtEnd() || run() === 'running'))
+                }
+                paused={pausedAtEnd()}
+                activate={inputAction(ownHandle.jumpLatest, null)}
+              />
+            </View>
           </View>
           <Each of={compacting() === null ? [] : [compacting()!]} key={(progress) => progress.id}>
             {(progress) => (
-              <CompactionDivider state="running" startedAt={() => progress().startedAt} />
+              <View style={{ paddingLeft: railInset() }}>
+                <View style={[readingColumn, { paddingRight: 16 }]}>
+                  <CompactionDivider state="running" startedAt={() => progress().startedAt} />
+                </View>
+              </View>
             )}
           </Each>
         </View>
         <If when={!platform.isTerminal && railShown()}>
-          <View style={{ position: 'absolute', top: 0, bottom: 0, right: 8, flexDirection: 'row' }}>
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              right: 8,
+              flexDirection: 'row',
+            }}
+          >
             {rail()}
           </View>
         </If>

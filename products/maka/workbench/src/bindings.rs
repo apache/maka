@@ -20,6 +20,7 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod diagrams;
 mod files;
 mod links;
 mod mutation;
@@ -56,7 +57,6 @@ struct Owner {
     client: Client,
     runtime: Handle,
     tasks: StdMutex<Option<TaskTracker>>,
-    budget: maka_ui_support::budget::NativeBudget,
     plugins: plugins::Packages,
     reload: crate::reload::UiReload,
 }
@@ -139,7 +139,6 @@ impl Bindings {
                 client,
                 runtime,
                 tasks: StdMutex::new(Some(TaskTracker::new())),
-                budget: Default::default(),
                 plugins: Default::default(),
                 reload: Default::default(),
             }),
@@ -196,6 +195,8 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
     registry.register::<uploads::AttachmentPicker>();
     registry.class::<terminal_grid::TerminalGrid>();
     registry.class::<uploads::UploadIntake>();
+    registry.class::<uploads::StagedFile>();
+    registry.class::<uploads::StagedClipboard>();
     registry.class::<ui_services::UiScope>();
     registry.value("host", make_host);
     registry
@@ -293,6 +294,27 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    /// Snapshot files selected for a conversation that has not yet been sent.
+    pub async fn stage_files(
+        this: Instance<Self>,
+        files: Vec<String>,
+    ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        let snapshots = uploads::stage_files(owner.clone(), files).await?;
+        Ok(snapshots
+            .into_iter()
+            .map(|file| uploads::staged_file(owner.clone(), file))
+            .collect())
+    }
+    /// Capture an explicit clipboard paste before a session exists.
+    pub async fn stage_clipboard(
+        this: Instance<Self>,
+    ) -> Result<Instance<uploads::StagedClipboard>, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        Ok(Instance::new(uploads::stage_clipboard(owner).await?))
+    }
     pub fn asset_uri(&self, uri: String) -> Result<String, String> {
         self.client.asset_uri(uri)
     }
@@ -325,6 +347,18 @@ impl ApplicationHost {
         target: String,
     ) -> Result<links::MarkdownImageSource, String> {
         links::markdown_image(&target)
+    }
+
+    /// Convert diagram labels to paths locally; NSH keeps its existing SVG loader.
+    pub async fn diagram_image(this: Instance<Self>, svg: String) -> Result<String, String> {
+        let owner = this.with(|host| host.owner.clone());
+        drop(this);
+        execute(owner, async move {
+            tokio::task::spawn_blocking(move || diagrams::image(&svg))
+                .await
+                .map_err(|error| format!("Diagram worker failed: {error}"))?
+        })
+        .await
     }
 
     /// Hand an HTTP(S) link to this client's system browser, or return an exact
@@ -607,6 +641,24 @@ impl ApplicationHost {
         .await
     }
 
+    /// Prepare an Agent control before the caller confirms the original operation.
+    pub async fn begin_control(
+        this: Instance<Self>,
+        method: String,
+        input: JsonValue,
+    ) -> Result<Instance<OriginalMutation>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let mutation = client.control(Uuid::new_v4(), &method, input).await?;
+            mutation.prepare().await?;
+            Ok(OriginalMutation::new(owner, mutation))
+        })
+        .await?;
+        Ok(Instance::new(original))
+    }
+
     /// Confirm one Settings mutation with an optional request-local secret resource.
     pub async fn settings_mutation(
         this: Instance<Self>,
@@ -739,6 +791,18 @@ impl ApplicationHost {
         .await
     }
 
+    /// Dismiss an original's recovery prompt, retaining its reference and actual outcome.
+    pub async fn dismiss_control(this: Instance<Self>, operation_id: String) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(owner.clone(), async move {
+            let client = source.local(&owner).await?;
+            client.dismiss_control(id).await
+        })
+        .await
+    }
+
     /// Fence a control only if its preparation has not committed.
     pub async fn abandon_control(
         this: Instance<Self>,
@@ -844,6 +908,17 @@ impl ScopedHost {
     /// Admit files selected by this editor's native paste or drop gesture.
     pub fn begin_file_drop(&self, uris: Vec<String>) -> Instance<uploads::UploadIntake> {
         Instance::new(uploads::UploadIntake::files(self.scope.clone(), uris))
+    }
+
+    /// Upload a file that was selected before the session was created.
+    pub fn begin_staged_upload(
+        &self,
+        file: Instance<uploads::StagedFile>,
+    ) -> Result<Instance<uploads::UploadIntake>, String> {
+        Ok(Instance::new(uploads::UploadIntake::staged(
+            self.scope.clone(),
+            file,
+        )?))
     }
 
     /// Read native clipboard content only for the user's explicit paste action.

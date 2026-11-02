@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { cleanup, signal, Text, View } from 'nsh';
+import { cleanup, platform, signal, Text, View } from 'nsh';
 import { tr } from './locale';
 import { C, captionTextStyle } from './ui';
 
@@ -49,6 +49,17 @@ export function CompactionDivider(props: CompactionDividerProps) {
         : 'Context compacted ({duration})',
       { duration: duration(durationMs()) },
     );
+  return <NoteDivider label={label()} />;
+}
+
+/** A quiet line across the conversation for something the Host did, not a message. */
+export function NoteDivider(props: { label: string }) {
+  // The terminal draws a border as a line of cells; the desktop paints no
+  // zero-height border, so there the line is a filled point.
+  const lineStyle = () =>
+    platform.isTerminal
+      ? { flex: 1, borderTopWidth: 1, borderTopColor: C.line }
+      : { flex: 1, height: 1, backgroundColor: C.line };
   return (
     <View
       style={{
@@ -60,9 +71,16 @@ export function CompactionDivider(props: CompactionDividerProps) {
         flexShrink: 0,
       }}
     >
-      <View style={{ flex: 1, borderTopWidth: 1, borderTopColor: C.line }} />
-      <Text style={{ color: C.muted, ...captionTextStyle }}>{label()}</Text>
-      <View style={{ flex: 1, borderTopWidth: 1, borderTopColor: C.line }} />
+      <View style={lineStyle()} />
+      <Text
+        style={[
+          { color: C.muted, ...captionTextStyle, flexShrink: 1 },
+          { numberOfLines: 1, textOverflow: 'ellipsis' },
+        ]}
+      >
+        {props.label}
+      </Text>
+      <View style={lineStyle()} />
     </View>
   );
 }

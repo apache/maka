@@ -44,6 +44,10 @@ final class SelectableView implements SelectionHandle.Owner {
 
     private static native String nativeText(long handle, SelectableView area);
 
+    private static native int[] nativeReadingOrder(int count, float[] runs);
+
+    private static native int[] nativeKept(long handle);
+
     private final Mounter mounter;
     /** The area's view. */
     final View view;
@@ -169,6 +173,7 @@ final class SelectableView implements SelectionHandle.Owner {
         if (observer != null && observer.isAlive()) observer.removeOnPreDrawListener(follow);
         observer = null;
         if (mounter.selectedArea == this) mounter.selectedArea = null;
+        Native.keepRendered(mounter.handle(), new int[0]);
         android.view.ActionMode m = mode;
         mode = null;
         if (m != null) m.finish();
@@ -213,10 +218,23 @@ final class SelectableView implements SelectionHandle.Owner {
         if (empty() && !extending) clear();
     }
 
-    /** The texts of the subtree that take part, depth first. */
+    /** Each view group's children, as {@code nativeReadingOrder} reads them. */
+    private float[] runs = new float[64];
+    private int runsLength;
+
+    /**
+     * The texts of the subtree that take part, depth first, in reading order: a virtual list's recycled
+     * cells are mounted in no particular order ({@code nativeReadingOrder} has the rule).
+     */
     private void collect() {
         texts.clear();
+        runsLength = 0;
         collect(view);
+        if (texts.size() < 2) return;
+        int[] order = nativeReadingOrder(texts.size(), java.util.Arrays.copyOf(runs, runsLength));
+        if (order == null || order.length != texts.size()) return;
+        java.util.ArrayList<TextBox> listed = new java.util.ArrayList<>(texts);
+        for (int i = 0; i < order.length; i++) texts.set(i, listed.get(order[i]));
     }
 
     private void collect(View v) {
@@ -226,8 +244,29 @@ final class SelectableView implements SelectionHandle.Owner {
         }
         if (v instanceof ViewGroup) {
             ViewGroup group = (ViewGroup) v;
-            for (int i = 0, n = group.getChildCount(); i < n; i++) collect(group.getChildAt(i));
+            int n = group.getChildCount();
+            float[] children = new float[n * 6];
+            for (int i = 0; i < n; i++) {
+                View child = group.getChildAt(i);
+                int from = texts.size();
+                collect(child);
+                children[i * 6] = child.getLeft();
+                children[i * 6 + 1] = child.getTop();
+                children[i * 6 + 2] = child.getWidth();
+                children[i * 6 + 3] = child.getHeight();
+                children[i * 6 + 4] = from;
+                children[i * 6 + 5] = texts.size();
+            }
+            if (n > 1) {
+                appendRun(n);
+                for (float f : children) appendRun(f);
+            }
         }
+    }
+
+    private void appendRun(float value) {
+        if (runsLength == runs.length) runs = java.util.Arrays.copyOf(runs, runs.length * 2);
+        runs[runsLength++] = value;
     }
 
     /** The texts' view ids: the model keeps a selection on its texts as others come and go. */
@@ -307,6 +346,9 @@ final class SelectableView implements SelectionHandle.Owner {
     /** Draws what the model selected: each text's highlight, the handles, the toolbar's place. */
     private void update() {
         if (handle == 0) return;
+        // Scrolled away, the ends' rows must not be recycled.
+        int[] kept = nativeKept(handle);
+        if (kept != null) Native.keepRendered(mounter.handle(), kept);
         int[] ranges = nativeRanges(handle, this);
         java.util.ArrayList<TextBox> now = new java.util.ArrayList<>();
         if (ranges != null) {

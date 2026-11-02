@@ -19,6 +19,7 @@ No release is recorded yet, 0.3.0 included: the first one recorded starts the co
 | Host element props, events, style keys and their values | `crates/nsh-core/src/js/` (`Prop`, `host::EVENTS`, `style_keys!`) | bundles pass them by name; a prop renamed is silently ignored, so the app runs wrong |
 | Tailwind utilities and variants | `crates/nsh-core/src/tailwind/` | resolved at run time from the class strings in the bundle |
 | Behavior: defaults, units, event payloads, the order of callbacks | everywhere | an app relies on what it saw when it was written |
+| Failures: whether a call throws or rejects, the error's class and `code` (and `permission` / `resource` of `ERR_ACCESS_DENIED`) | `nsh_core::element::codes`, each call (`docs/dev/api-naming.md` "Failures") | an app catches and branches on them; error messages are for people and may change, so no app may depend on their text |
 | The TypeScript declarations (`.nsh/types`) | generated (`crates/nsh-js/src/declarations.rs`) | an old app's source must still type-check and build when its team fixes a bug |
 | The package format (`.nshpkg`) and its signatures | `crates/nsh-package` | a package signed for an earlier release still verifies; it carries its JS source, which runs when its bytecode is not this runtime's (`BYTECODE_VERSION` may change freely) |
 
@@ -45,7 +46,10 @@ good, whatever the version number says. Between releases, and before the first c
    pass in (props, styles, options, configs) gains optional members only. Parameter names are not part of a type:
    TypeScript compares function types by structure, so `(data: number) => void` and `(value: number) => void` are one
    type, and a function, method or callback may rename its parameters; their count, optionality and types may not
-   change.
+   change. A union gains members whichever way it goes: what apps read too (`platform.os`, a resource's state, the
+   reason a popup closed), as the DOM's types grow in TypeScript's own declarations. An app handles a value it does
+   not know (a `switch`'s `default`), and the checks count a member added to such a union as compatible. A new member
+   comes with a new case (a new platform, a new way to close); a case an app saw keeps the value it reported (rule 4).
 4. **Behavior is kept.** Defaults, units, coordinate spaces, the payload of an event and when it fires stay as they
    were. New behavior is opt-in, through a new prop, option or value. A bug fix that changes what a working app sees
    is a behavior change: fix it behind an opt-in, or make sure no app can rely on the old result.

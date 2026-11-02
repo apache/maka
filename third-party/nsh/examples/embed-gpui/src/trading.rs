@@ -4,11 +4,15 @@
 //!
 //! The desk (the selected symbol, the orders, the positions) lives here,
 //! once, in a `watch` channel: the host's sidebar and toolbar follow it
-//! (`watch`), every ticket subscribes to it (`Trading.subscribe`), and
+//! (`watch`), every ticket listens to it (`Trading.on("change", …)`), and
 //! whoever changes it (the host's watchlist, a ticket's watchlist, a
 //! ticket's order) changes it for all of them.
 
-use std::sync::{LazyLock, OnceLock};
+use std::{
+    cell::RefCell,
+    rc::Rc,
+    sync::{LazyLock, OnceLock},
+};
 
 use nsh_core::prelude::*;
 use tokio::sync::{mpsc, oneshot, watch};
@@ -215,16 +219,28 @@ impl Trading {
         answered.await.unwrap_or(false)
     }
 
-    /// Calls `on_change` with the desk now and after every change, for as
-    /// long as the app runs.
-    pub async fn subscribe(on_change: Callback<Desk>) {
-        let mut desk = DESK.subscribe();
-        loop {
-            on_change.post(desk.borrow_and_update().clone());
-            if desk.changed().await.is_err() {
-                return;
-            }
+    /// Calls `listener` with the desk now and after every change
+    /// (`change`, the one event), until the returned function is called
+    /// or what called `on` goes.
+    pub fn on(event: String, listener: Callback<Desk>, cx: CallCx<'_>) -> Result<Stop, String> {
+        if event != "change" {
+            return Err(format!("no Trading event `{event}`"));
         }
+        let listener = Rc::new(RefCell::new(Some(listener)));
+        let held = listener.clone();
+        cx.start(async move {
+            let mut desk = DESK.subscribe();
+            loop {
+                let Some(listener) = held.borrow().clone() else {
+                    return;
+                };
+                listener.post(desk.borrow_and_update().clone());
+                if desk.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Stop::new(move || drop(listener.take())))
     }
 }
 

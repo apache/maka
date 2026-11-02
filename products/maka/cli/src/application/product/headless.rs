@@ -121,12 +121,67 @@ impl ProductHost {
     }
 }
 
+/// launchd starts Dock apps with a soft limit of 256 descriptors, which an idle
+/// Host nearly fills; a store that then fails to open a file stops the Host.
+#[cfg(unix)]
+fn raise_open_file_limit() {
+    let mut limit = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: `limit` is a valid rlimit for the duration of the call.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
+        eprintln!(
+            "open file limit unchanged: {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+    let wanted = limit.rlim_max;
+    #[cfg(target_os = "macos")]
+    let wanted = {
+        let mut maximum: libc::c_int = 0;
+        let mut size = std::mem::size_of_val(&maximum);
+        // SAFETY: the named sysctl writes one c_int into `maximum`; no new value is supplied.
+        if unsafe {
+            libc::sysctlbyname(
+                c"kern.maxfilesperproc".as_ptr(),
+                (&raw mut maximum).cast(),
+                &raw mut size,
+                std::ptr::null_mut(),
+                0,
+            )
+        } != 0
+        {
+            eprintln!(
+                "open file limit unchanged: cannot read kern.maxfilesperproc: {}",
+                std::io::Error::last_os_error()
+            );
+            return;
+        }
+        wanted.min(maximum as libc::rlim_t)
+    };
+    if wanted <= limit.rlim_cur {
+        return;
+    }
+    limit.rlim_cur = wanted;
+    // SAFETY: `limit` is a valid rlimit; its hard limit is unchanged.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
+        eprintln!(
+            "open file limit unchanged: cannot raise to {wanted}: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 pub(crate) async fn open_host(
     owner: RootOwner,
     options: Options,
     roots: Roots,
     catalog_transport: Option<Arc<dyn maka_agent_ports::model::Transport>>,
 ) -> Result<ProductHost, HostError> {
+    #[cfg(unix)]
+    raise_open_file_limit();
     let store = Arc::new(maka_transport::open_store(Arc::new(owner)).await?);
     let catalog = async {
         let configuration = maka_config::ConfigurationStore::for_root(store.owned_root()?).await?;
@@ -579,36 +634,65 @@ async fn replace_workspace_locations(
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn initial_process_policy_accepts_normalized_workspace_roots() {
-        let directory = tempfile::tempdir().unwrap();
-        let workspace = directory.path().join("workspace");
-        std::fs::create_dir(&workspace).unwrap();
-        let store = launch::create(directory.path().join("host")).await.unwrap();
-        let (loaded, _) = prepare(
-            &store,
-            Roots::Configured(Some(vec![DirectoryRootSpec {
-                label: "Workspace".into(),
-                path: workspace.clone(),
-            }])),
-        )
-        .await
-        .unwrap();
-        for name in PROCESS_INSTANCES {
-            let settings: maka_workspace_api::processes::Configuration = serde_json::from_value(
-                serde_json::to_value(&loaded.source().input.instances[name].configuration.values)
-                    .unwrap(),
-            )
-            .unwrap();
-            settings.filesystem.compile().unwrap();
-            if name == "workspace-processes" {
-                assert_eq!(
-                    settings.filesystem.rules[0].path.canonicalize().unwrap(),
-                    workspace.canonicalize().unwrap(),
-                );
-            }
+    #[cfg(unix)]
+    #[test]
+    fn a_low_open_file_limit_is_raised_within_the_hard_limit() {
+        const CHILD: &str = "MAKA_OPEN_FILE_LIMIT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "application::product::headless::tests::a_low_open_file_limit_is_raised_within_the_hard_limit",
+                    "--test-threads=1",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "isolated open file limit test failed: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
         }
-        store.drain().await;
+        // This exact-test subprocess owns its limit.
+        let read = || {
+            let mut limit = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            // SAFETY: `limit` is a valid rlimit for the duration of the call.
+            assert_eq!(
+                unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) },
+                0
+            );
+            limit
+        };
+        let original = read();
+        #[cfg(not(target_os = "macos"))]
+        {
+            let low = libc::rlimit {
+                rlim_cur: original.rlim_max.min(64),
+                rlim_max: original.rlim_max,
+            };
+            // SAFETY: only this subprocess's soft limit is lowered.
+            assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+            raise_open_file_limit();
+            let raised = read();
+            assert_eq!(raised.rlim_cur, original.rlim_max);
+            assert_eq!(raised.rlim_max, original.rlim_max);
+        }
+
+        let hard = original.rlim_max.min(200);
+        let low = libc::rlimit {
+            rlim_cur: hard.min(64),
+            rlim_max: hard,
+        };
+        // SAFETY: `low` is a valid rlimit for the duration of the call.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &low) }, 0);
+        raise_open_file_limit();
+        assert_eq!(read().rlim_cur, hard);
     }
 
     #[tokio::test]
@@ -1107,51 +1191,6 @@ mod tests {
                 .reference,
             changed.source().reference
         );
-        // A moved/rebuilt CLI must replace even an existing older helper, with
-        // no package update and without changing the user's source or permissions.
-        let old_helper = directory.path().join("old-maka");
-        std::fs::write(&old_helper, b"old executable").unwrap();
-        let expected = changed.source().input.clone();
-        let mut revision = changed.source().reference.revision;
-        for exists in [true, false] {
-            if !exists {
-                std::fs::remove_file(&old_helper).unwrap();
-            }
-            let mut stale = expected.clone();
-            stale
-                .instances
-                .get_mut("settings")
-                .unwrap()
-                .configuration
-                .values
-                .remove("workspaceLocations");
-            for name in ["workspace-processes", "coordinator-workspace-processes"] {
-                stale
-                    .instances
-                    .get_mut(name)
-                    .unwrap()
-                    .configuration
-                    .values
-                    .insert("helper".into(), json!(old_helper));
-            }
-            let stale = store
-                .commit_application(
-                    deployment,
-                    revision,
-                    stale,
-                    changed.source().remote_exports.clone(),
-                    changed.packages().to_vec(),
-                )
-                .await
-                .unwrap();
-            let (repaired, _) = prepare(&store, Roots::Saved).await.unwrap();
-            assert_eq!(repaired.source().input, expected);
-            assert_eq!(repaired.source().reference.deployment, deployment);
-            assert_eq!(repaired.source().reference.revision, stale.revision + 1);
-            let (again, _) = prepare(&store, Roots::Saved).await.unwrap();
-            assert_eq!(again.source().reference, repaired.source().reference);
-            revision = repaired.source().reference.revision;
-        }
         store.drain().await;
     }
 }

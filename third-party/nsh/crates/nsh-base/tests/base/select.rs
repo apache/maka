@@ -6,7 +6,7 @@
 //! and the value and the open state are the app's when it sets them.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -170,6 +170,8 @@ struct Seen {
     parents: HashMap<NodeId, NodeId>,
     /// The views inserted into the root view, in order.
     roots: Vec<NodeId>,
+    /// Options updated since the observer was reset.
+    updated_options: HashSet<NodeId>,
 }
 
 struct App {
@@ -303,11 +305,17 @@ fn start_on(props: HarnessProps, os: Os, idiom: Idiom, screen_reader: bool) -> A
         for item in &batch.items {
             match item {
                 MountItem::ViewProps { id, props } => {
+                    if props.accessibility.role == AccessibilityRole::Option {
+                        seen.updated_options.insert(*id);
+                    }
                     seen.props.insert(*id, (**props).clone());
                 }
                 MountItem::AccessibilityLabel { id, label } => {
                     if let Some(p) = seen.props.get_mut(id) {
                         p.accessibility.label = label.clone();
+                        if p.accessibility.role == AccessibilityRole::Option {
+                            seen.updated_options.insert(*id);
+                        }
                     }
                 }
                 MountItem::Frame { id, frame } => {
@@ -653,6 +661,32 @@ fn search_filters_the_items_and_their_sections() {
     app.see("Value: rice");
 }
 
+#[test]
+fn a_search_keystroke_in_a_long_list_sends_only_the_rows_in_view() {
+    let updated = [5000, 50000].map(|count| {
+        let mut app = desktop(HarnessProps {
+            searchable: true,
+            ..props(many(count))
+        });
+        app.open_list();
+        app.see("Item 0");
+        app.type_text("Search", "4").unwrap();
+        app.see(">Item 4");
+        app.idle(Duration::from_millis(50)).unwrap();
+        app.seen.lock().unwrap().updated_options.clear();
+        app.type_text("text:4", "2").unwrap();
+        app.see(">Item 42");
+        app.idle(Duration::from_millis(50)).unwrap();
+        let seen = app.seen.lock().unwrap();
+        seen.updated_options.len()
+    });
+    assert!(updated[0] > 0, "the search must update options");
+    assert_eq!(
+        updated[0], updated[1],
+        "search updates a window of rows regardless of the source length"
+    );
+}
+
 // 7. Typeahead.
 
 #[test]
@@ -756,12 +790,12 @@ fn on_the_desktops_the_popup_is_at_the_trigger_as_wide_and_within_the_window() {
     assert_eq!(frame.origin.x, px(40.0));
     assert_eq!(frame.origin.y, px(130.0));
     // As wide as the trigger: filled from Rust, the combobox is the view
-    // the select makes around the app's element, which its column
-    // stretches to the select's 200 (a TSX trigger is the app's element
-    // itself: the engine's `a_base_select_on_a_desktop_…`). Its rows have
-    // no width of their own.
-    assert_eq!(seen.frames[&trigger].size.width, px(200.0));
-    assert_eq!(frame.size.width, px(200.0), "{frame:?}");
+    // the select makes around the app's element, which lays that element
+    // out through and takes its 160 (a TSX trigger is the app's element
+    // itself, as wide: the engine's `a_base_select_on_a_desktop_…`). Its
+    // rows have no width of their own.
+    assert_eq!(seen.frames[&trigger].size.width, px(160.0));
+    assert_eq!(frame.size.width, px(160.0), "{frame:?}");
     // Never past the window: its rows scroll.
     assert!(frame.origin.y + frame.size.height <= px(844.0), "{frame:?}");
 }

@@ -1,7 +1,7 @@
 ---
 title: List
 description: 虚拟化、可复用单元格的列表：行、多列、吸顶标题、倒序聊天列表、可见性回调和滚动到指定项。
-order: 7
+order: 50
 group: primitives
 demo: el-list
 ---

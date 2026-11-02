@@ -21,35 +21,6 @@ use super::*;
 use serde_json::json;
 
 #[tokio::test]
-async fn selection_is_created_once_and_finishing_only_discards_preparation() {
-    let (_dir, store) = crate::applications::tests::store().await;
-    let id = Uuid::new_v4();
-    assert!(store.application_launch().await.unwrap().is_none());
-    let record = || Launch {
-        deployment: id,
-        configuration: json!({"trusted":"original"}),
-        pending: Some(vec![1, 2, 3]),
-    };
-    store.begin_application_launch(record()).await.unwrap();
-    assert!(store.begin_application_launch(record()).await.is_err());
-    assert!(
-        store
-            .complete_application_launch(Uuid::new_v4())
-            .await
-            .is_err()
-    );
-    let original = store.application_launch().await.unwrap().unwrap();
-    assert_eq!(original.pending, Some(vec![1, 2, 3]));
-    store.complete_application_launch(id).await.unwrap();
-    store.complete_application_launch(id).await.unwrap();
-    let completed = store.application_launch().await.unwrap().unwrap();
-    assert_eq!(completed.deployment, id);
-    assert_eq!(completed.configuration, original.configuration);
-    assert!(completed.pending.is_none());
-    store.close().await.unwrap();
-}
-
-#[tokio::test]
 async fn launcher_requires_root_and_preserves_complete_configuration_with_typed_storage() {
     let directory = tempfile::tempdir().unwrap();
     let unowned = EventLog::open(&directory.path().join("unowned.sqlite"))

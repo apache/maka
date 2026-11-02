@@ -1,7 +1,6 @@
 ---
 title: NumberInput
 description: "The NumberInput component: a number typed in a field or stepped with buttons, the arrow keys and screen readers, kept to its step's decimals and to min and max, with a field, buttons and a controls column the app styles."
-order: 20.87
 group: base
 demo: el-number-input
 ---

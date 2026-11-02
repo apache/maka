@@ -71,7 +71,7 @@ pub(crate) async fn apply(
             }
             let active: bool = sqlx::query_scalar(
                 "SELECT EXISTS(SELECT 1 FROM local_runtime_events o WHERE o.kind = 'invocation_opened'
-                 AND o.invocation_id = ? AND json_extract(o.event_json, '$.invocation') = json(?)
+                 AND o.invocation_id = ? AND json_extract(o.event_header, '$.invocation') = json(?)
                  AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id = o.invocation_id AND t.kind = 'invocation_ended'))"
             ).bind(&invocation.invocation_id).bind(serde_json::to_string(&invocation)?)
                 .fetch_one(&mut *tx).await?;

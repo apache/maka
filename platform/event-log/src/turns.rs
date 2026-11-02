@@ -102,9 +102,9 @@ impl EventLog {
             .read(move |connection| {
                 Box::pin(async move {
                     let row: Option<(String, Option<String>, Option<String>)> = sqlx::query_as(
-                        "SELECT json_extract(event_json, '$.invocation'),
-                    json_extract(event_json, '$.fact.input.claim.source'),
-                    json_extract(event_json, '$.fact.input.request_fingerprint')
+                        "SELECT json_extract(event_header, '$.invocation'),
+                    json_extract(event_header, '$.fact.input.claim.source'),
+                    json_extract(event_header, '$.fact.input.request_fingerprint')
                  FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'
                    AND (? IS NULL OR event_session = ?)",
                     )
@@ -142,9 +142,9 @@ impl EventLog {
                 Box::pin(async move {
                     let mut tx = connection.begin().await?;
                     let opening: Option<String> = sqlx::query_scalar(
-                        "SELECT event_json FROM runtime_events WHERE invocation_id = ?1
+                        "SELECT event_header FROM runtime_events WHERE invocation_id = ?1
                  AND kind = 'invocation_opened'
-                 AND json_extract(event_json, '$.invocation.session_id') = ?2",
+                 AND json_extract(event_header, '$.invocation.session_id') = ?2",
                     )
                     .bind(invocation)
                     .bind(session)
@@ -196,11 +196,11 @@ impl EventLog {
         let invocation = invocation.clone();
         self.connection.read(move |connection| Box::pin(async move {
             let configuration: Option<String> = sqlx::query_scalar(
-                "SELECT json_extract(event_json, '$.fact.configuration') FROM runtime_events
+                "SELECT json_extract(event_header, '$.fact.configuration') FROM runtime_events
                  WHERE invocation_id = ?1 AND kind = 'invocation_opened'
-                 AND json_extract(event_json, '$.invocation.session_id') = ?2
-                 AND json_extract(event_json, '$.invocation.run_id') = ?3
-                 AND json_extract(event_json, '$.invocation.turn_id') = ?4"
+                 AND json_extract(event_header, '$.invocation.session_id') = ?2
+                 AND json_extract(event_header, '$.invocation.run_id') = ?3
+                 AND json_extract(event_header, '$.invocation.turn_id') = ?4"
             ).bind(&invocation.invocation_id).bind(&invocation.session_id).bind(&invocation.run_id).bind(&invocation.turn_id)
                 .fetch_optional(connection).await?.flatten();
             configuration.map(|value| serde_json::from_str(&value).map_err(StoreError::from)).transpose()
@@ -225,7 +225,7 @@ impl EventLog {
                         return Ok(None);
                     };
                     let opening: String = sqlx::query_scalar(
-                        "SELECT event_json FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
+                        "SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
                     ).bind(invocation).fetch_one(&mut *tx).await?;
                     let result = project(&mut tx, serde_json::from_str(&opening)?).await?;
                     tx.commit().await?;
@@ -267,10 +267,10 @@ pub(crate) async fn read(
     turn_id: Option<&str>,
 ) -> Result<Option<TurnBoundary>, StoreError> {
     let opening: Option<String> = sqlx::query_scalar(
-        "SELECT event_json FROM runtime_events
+        "SELECT event_header FROM runtime_events
              WHERE kind = 'invocation_opened'
-             AND json_extract(event_json, '$.invocation.session_id') = ?1
-             AND (?2 IS NULL OR json_extract(event_json, '$.invocation.turn_id') = ?2)
+             AND json_extract(event_header, '$.invocation.session_id') = ?1
+             AND (?2 IS NULL OR json_extract(event_header, '$.invocation.turn_id') = ?2)
              ORDER BY sequence DESC LIMIT 1",
     )
     .bind(session_id)
@@ -293,8 +293,8 @@ pub(crate) async fn run_invocation(
 ) -> Result<Option<String>, StoreError> {
     let ids: Vec<String> = sqlx::query_scalar(
         "SELECT invocation_id FROM runtime_events WHERE kind = 'invocation_opened'
-         AND json_extract(event_json, '$.invocation.session_id') = ?
-         AND json_extract(event_json, '$.invocation.run_id') = ? LIMIT 2",
+         AND json_extract(event_header, '$.invocation.session_id') = ?
+         AND json_extract(event_header, '$.invocation.run_id') = ? LIMIT 2",
     )
     .bind(session)
     .bind(run)
@@ -319,7 +319,7 @@ pub(crate) async fn project(
     };
     let root = root::read(connection, &opening.invocation, &input).await?;
     let terminal: Option<String> = sqlx::query_scalar(
-            "SELECT event_json FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_ended'",
+            "SELECT event_header FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_ended'",
         ).bind(&opening.invocation.invocation_id).fetch_optional(&mut *connection).await?;
     let state = if let Some(terminal) = terminal {
         let terminal: RuntimeEvent = serde_json::from_str(&terminal)?;

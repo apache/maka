@@ -18,7 +18,7 @@
 
 use std::{mem::ManuallyDrop, rc::Rc};
 
-use nsh_core::{Checked, Command, NodeId, Points, ROOT_ID, ViewKind};
+use nsh_core::{AccessibilityCurrent, Checked, Command, NodeId, Points, ROOT_ID, ViewKind};
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, VARIANT_FALSE, VARIANT_TRUE, WPARAM},
@@ -33,7 +33,7 @@ use windows::{
     core::{BOOL, BSTR, Error, HRESULT, IUnknown, IUnknownImpl, PCWSTR, Result, implement},
 };
 
-use super::{Control, Exposed, Part, part};
+use super::{Control, Exposed, Part, part, toggled};
 use crate::{geom::Mat4, surface::Surface, view::NshView};
 
 // --- VARIANTs --------------------------------------------------------------
@@ -663,17 +663,20 @@ impl IRawElementProviderSimple_Impl for Element_Impl {
             };
             match pattern {
                 UIA_InvokePatternId => {
-                    a.state.checked.is_none()
+                    toggled(a).is_none()
                         && (s.events.contains(nsh_core::EventKind::Press)
                             || a.actions.iter().any(|x| &*x.name == "activate"))
                 }
-                UIA_TogglePatternId => a.state.checked.is_some(),
+                UIA_TogglePatternId => toggled(a).is_some(),
                 UIA_ExpandCollapsePatternId => a.state.expanded.is_some(),
                 UIA_SelectionItemPatternId => {
                     a.state.selected
                         || matches!(
                             control,
-                            Control::TabItem | Control::RadioButton | Control::ListItem
+                            Control::TabItem
+                                | Control::RadioButton
+                                | Control::ListItem
+                                | Control::TreeItem
                         )
                 }
                 UIA_RangeValuePatternId => super::range_of(a, control).is_some(),
@@ -698,7 +701,17 @@ impl IRawElementProviderSimple_Impl for Element_Impl {
         let var = match property {
             UIA_ControlTypePropertyId => Var::i32(control_type(control).0),
             UIA_NamePropertyId => Var::opt_str(super::name_of(view).as_deref()),
-            UIA_LocalizedControlTypePropertyId => Var::opt_str(control.localized()),
+            UIA_LocalizedControlTypePropertyId => {
+                // A button with a pressed state is a toggle button, as
+                // browsers name ARIA's `aria-pressed`.
+                let toggle = control == Control::Button
+                    && view.state().props.accessibility.state.pressed.is_some();
+                Var::opt_str(if toggle {
+                    Some("toggle button")
+                } else {
+                    control.localized()
+                })
+            }
             UIA_AutomationIdPropertyId => Var::opt_str(view.state().props.test_id.as_deref()),
             UIA_HelpTextPropertyId => {
                 let s = view.state();
@@ -725,7 +738,35 @@ impl IRawElementProviderSimple_Impl for Element_Impl {
                 nsh_core::LiveRegion::Polite => Var::i32(Polite.0),
                 nsh_core::LiveRegion::Assertive => Var::i32(Assertive.0),
             },
-            UIA_HeadingLevelPropertyId if control == Control::Heading => Var::i32(HeadingLevel1.0),
+            UIA_HeadingLevelPropertyId if control == Control::Heading => {
+                // `HeadingLevel1` to `HeadingLevel9`; level 1 without one.
+                let level = view.state().props.accessibility.level.unwrap_or(1);
+                Var::i32(HeadingLevel1.0 + level.clamp(1, 9) as i32 - 1)
+            }
+            UIA_LevelPropertyId if control == Control::TreeItem => {
+                match view.state().props.accessibility.level {
+                    Some(level) => Var::i32(level.min(i32::MAX as u32) as i32),
+                    None => Var::empty(),
+                }
+            }
+            UIA_LandmarkTypePropertyId => match control {
+                Control::Navigation => Var::i32(UIA_NavigationLandmarkTypeId.0),
+                Control::Region => Var::i32(UIA_CustomLandmarkTypeId.0),
+                _ => Var::empty(),
+            },
+            UIA_LocalizedLandmarkTypePropertyId if control == Control::Region => Var::str("region"),
+            // ARIA's `aria-current`, as browsers expose it.
+            UIA_AriaPropertiesPropertyId => match view.state().props.accessibility.state.current {
+                Some(current) => Var::str(match current {
+                    AccessibilityCurrent::True => "current=true",
+                    AccessibilityCurrent::Page => "current=page",
+                    AccessibilityCurrent::Step => "current=step",
+                    AccessibilityCurrent::Location => "current=location",
+                    AccessibilityCurrent::Date => "current=date",
+                    AccessibilityCurrent::Time => "current=time",
+                }),
+                None => Var::empty(),
+            },
             UIA_FrameworkIdPropertyId | UIA_ProviderDescriptionPropertyId => Var::str("nsh"),
             UIA_IsControlElementPropertyId | UIA_IsContentElementPropertyId => Var::bool(true),
             _ => Var::empty(),
@@ -933,9 +974,7 @@ impl IToggleProvider_Impl for Element_Impl {
 
     fn ToggleState(&self) -> Result<ToggleState> {
         let t = self.target()?;
-        Ok(toggle_state(
-            t.view.state().props.accessibility.state.checked,
-        ))
+        Ok(toggle_state(toggled(&t.view.state().props.accessibility)))
     }
 }
 
@@ -1087,9 +1126,14 @@ fn control_type(c: Control) -> UIA_CONTROLTYPE_ID {
         Control::Text | Control::Heading | Control::Timer => UIA_TextControlTypeId,
         Control::Slider => UIA_SliderControlTypeId,
         Control::Status => UIA_StatusBarControlTypeId,
-        Control::Alert | Control::RadioGroup | Control::Grid | Control::Group => {
-            UIA_GroupControlTypeId
-        }
+        Control::Alert
+        | Control::RadioGroup
+        | Control::Grid
+        | Control::Group
+        | Control::Region
+        | Control::Navigation => UIA_GroupControlTypeId,
+        Control::Tree => UIA_TreeControlTypeId,
+        Control::TreeItem => UIA_TreeItemControlTypeId,
         Control::CheckBox => UIA_CheckBoxControlTypeId,
         Control::ComboBox => UIA_ComboBoxControlTypeId,
         Control::Menu => UIA_MenuControlTypeId,

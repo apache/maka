@@ -28,3 +28,5 @@ Language is a single Root preference, updated with the existing policy revision.
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
 Settings preserves full configuration, labels, search inputs and authentication resources. Page targets bound each continuation slice rather than the full inventory; one complete larger item still advances. The Host owns physical resource admission and settlement; Settings retains domain syntax, CAS and credential authority.
+
+Model details can associate a connection’s model ID with a searchable public catalog entry. The association supplies missing metadata without changing the request ID, endpoint, credentials, protocol controls or pricing identity. Account facts and explicit model settings take precedence. Clear the association to return to automatic matching; accepted tasks keep their captured catalog defaults.

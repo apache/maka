@@ -388,7 +388,8 @@ final class TouchTracker {
 
     /** The innermost node view that can take a touch at ({@code x}, {@code y}) of {@code v}. */
     private static View deepest(View v, float x, float y) {
-        int pointerEvents = v instanceof Box ? ((Box) v).pointerEvents : 0;
+        int pointerEvents = v instanceof Box ? ((Box) v).pointerEvents
+                : v instanceof InputBox ? ((InputBox) v).pointerEvents : 0;
         if (pointerEvents == 1 || v.getVisibility() != View.VISIBLE) return null;
         if (v instanceof ViewGroup && pointerEvents != 3) {
             ViewGroup g = (ViewGroup) v;

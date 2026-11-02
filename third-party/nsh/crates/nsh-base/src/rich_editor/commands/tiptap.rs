@@ -439,11 +439,12 @@ pub fn update_attributes(ty: SchemaType, attrs: Attrs) -> BoxCommand {
 pub fn reset_attributes(ty: SchemaType, keys: Vec<String>) -> BoxCommand {
     command(move |state, mut dispatch| {
         let without = |attrs: &Attrs| -> Attrs {
-            attrs
-                .iter()
-                .filter(|(k, _)| !keys.contains(k))
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect()
+            crate::rich_editor::model::attrs_from(
+                &mut attrs
+                    .iter()
+                    .filter(|(k, _)| !keys.contains(k))
+                    .map(|(k, v)| (k.clone(), v.clone())),
+            )
         };
         let mut tr = state.tr();
         let mut can_reset = false;

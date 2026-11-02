@@ -66,7 +66,7 @@ pub(crate) async fn validate_append(
         }
         Fact::InvocationEnded { outcome } => {
             let compact: bool = sqlx::query_scalar(
-                "SELECT json_extract(event_json, '$.fact.input.kind') = 'context_compact'
+                "SELECT json_extract(event_header, '$.fact.input.kind') = 'context_compact'
                  FROM runtime_events WHERE invocation_id = ? AND kind = 'invocation_opened'",
             )
             .bind(&event.invocation.invocation_id)

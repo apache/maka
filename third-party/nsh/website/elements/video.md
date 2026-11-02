@@ -1,7 +1,7 @@
 ---
 title: Video
 description: "The Video element: native video playback with your own or the system's controls."
-order: 10
+order: 90
 group: primitives
 demo: el-video
 ---
@@ -105,7 +105,7 @@ an aspect ratio when you want the video's own proportions.
 | `onProgress` | `.on_progress` | `{ currentTime, duration }` (`VideoProgress`: `current_time`, `duration`) | Every `progressUpdateInterval` while playing (seconds). |
 | `onBuffer` | `.on_buffer` | `{ isBuffering }` (`bool`) | Playback stalled for data / resumed. |
 | `onEnd` | `.on_end` | none | Playback reached the end (with `repeat`, at the end of each loop). |
-| `onError` | `.on_error` | `{ message }` (`&str`) | Loading or playback failed. |
+| `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading or playback failed; `code` is `"ERR_ACCESS_DENIED"` for a source the app's capabilities do not grant. |
 
 ```rust tabs
 let ratio = signal(16.0_f32 / 9.0);
@@ -132,7 +132,7 @@ const ratio = signal(16 / 9);
 ## Capabilities
 
 When the app declares [capabilities](../docs/sandbox-and-capabilities.md), video sources load from the hosts `network`
-allows; a source on another host shows an empty view.
+allows; a source on another host shows an empty view and reports `onError` with `code` `"ERR_ACCESS_DENIED"`.
 
 ## Platform notes
 

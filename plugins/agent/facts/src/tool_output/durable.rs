@@ -98,11 +98,11 @@ fn validate_raw(output: &ToolOutput) -> Result<(), &'static str> {
             &reply.receipt,
             maka_plugin_core::operation::Receipt::Recorded {
                 outcome: maka_plugin_core::operation::OperationOutcome::Returned { .. },
-                cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed
+                ..
             }
         )
     {
-        return Err("successful operation output requires a confirmed returned receipt");
+        return Err("successful operation output requires a returned receipt");
     }
     Ok(())
 }
@@ -140,7 +140,7 @@ pub(crate) fn freeze(
         ToolOutput::Operation(reply) => match &reply.receipt {
             maka_plugin_core::operation::Receipt::Recorded {
                 outcome: maka_plugin_core::operation::OperationOutcome::Returned { value },
-                cleanup: maka_plugin_core::operation::OperationCleanup::Confirmed,
+                ..
             } => Some((
                 DurableToolProjection::Json {
                     value: value.clone(),

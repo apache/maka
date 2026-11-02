@@ -1,5 +1,8 @@
 // NSH-owned standard modules: shared logger, metadata, per-VM process
-// state, queued callbacks and capability-denied operations.
+// state, queued callbacks and capability-denied operations: a denial is an
+// `ERR_ACCESS_DENIED` error naming the capability and what was asked for,
+// thrown by a synchronous function and the rejection of one returning a
+// promise; a wrong use is a `TypeError`.
 import { Text, View, signal } from "nsh";
 import logger from "console";
 import os, { EOL, arch, homedir, platform } from "os";
@@ -10,13 +13,36 @@ const results: string[] = [];
 function check(name: string, value: boolean) {
   results.push(`${name}=${value}`);
 }
-function denied(operation: () => unknown): boolean {
+function misused(operation: () => unknown): boolean {
   try {
     operation();
     return false;
   } catch (error) {
     return error instanceof TypeError;
   }
+}
+function isDenial(error: any, resource: string): boolean {
+  // Read before `instanceof` narrows `error` to `Error`, which has no code.
+  const { code, permission, resource: on } = error ?? {};
+  return error instanceof Error && code === "ERR_ACCESS_DENIED"
+    && permission === "process" && on === resource;
+}
+function denied(operation: () => unknown, resource: string): boolean {
+  try {
+    operation();
+    return false;
+  } catch (error) {
+    return isDenial(error, resource);
+  }
+}
+function rejected(operation: () => Promise<unknown>, resource: string): Promise<boolean> {
+  let promise: Promise<unknown>;
+  try {
+    promise = operation();
+  } catch {
+    return Promise.resolve(false);
+  }
+  return promise.then(() => false, (error) => isDenial(error, resource));
 }
 
 check("console.identity", logger === console);
@@ -37,8 +63,8 @@ let homeMetadata = false;
 try {
   const home = homedir();
   homeMetadata = home.startsWith("/") || /^[A-Za-z]:[\\/]/.test(home) || home.startsWith("\\\\");
-} catch (error) {
-  homeMetadata = String(error).includes("no absolute native home directory");
+} catch (error: any) {
+  homeMetadata = error.code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
 }
 check("os.home", homeMetadata);
 check("process.identity", runtimeProcess === process
@@ -53,18 +79,21 @@ check("process.environment", firstEnvironment !== secondEnvironment
   && process.env.NSH_COMPAT_LOCAL === undefined);
 check("process.dataDir", runtimeProcess.dataDir === process.dataDir
   && (process.dataDir === null || typeof process.dataDir === "string"));
-check("process.runDenied", denied(() => run("nsh-compat-ungranted", [])));
-check("process.spawnDenied", denied(() => spawn("nsh-compat-ungranted", [])));
-check("process.childConstructor", denied(() => new (ChildProcess as any)()));
-check("process.exitDenied", denied(() => exit(7)));
-check("process.nextTickInvalid", denied(() => nextTick(null as any)));
+const runDenied = rejected(() => run("nsh-compat-ungranted", []), "nsh-compat-ungranted");
+check("process.spawnDenied", denied(() => spawn("nsh-compat-ungranted", []), "nsh-compat-ungranted"));
+check("process.childConstructor", misused(() => new (ChildProcess as any)()));
+check("process.exitDenied", denied(() => exit(7), "exit"));
+check("process.nextTickInvalid", misused(() => nextTick(null as any)));
 
 const order: string[] = [];
 nextTick((a: number, b: number) => {
   order.push(String(a + b));
   process.nextTick(() => {
     check("process.nextTick", order.join(",") === "sync,5,promise");
-    lines.set(results);
+    runDenied.then((value) => {
+      check("process.runDenied", value);
+      lines.set(results);
+    });
   });
 }, 2, 3);
 Promise.resolve().then(() => order.push("promise"));

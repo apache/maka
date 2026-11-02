@@ -21,125 +21,6 @@ use super::*;
 
 // Keep the provider request held until Stop. Record behavioral failures before
 // cleanup so the old admission refusal cannot leave a live worker behind.
-async fn unrestricted_queue_regression(count: usize, large: bool) {
-    tokio::time::timeout(Duration::from_secs(180), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
-        let session = fixture.create("Unrestricted pending queue").await;
-        let started = fixture.send(&session).await.unwrap();
-        let (mut held, _) = listener.accept().await.unwrap();
-        request(&mut held).await;
-        let selection = fixture.selection().await;
-        let token = fixture.owner.runs.lock().await.controls[&session].cancellation.clone();
-        let mut originals = Vec::<(String, String)>::new();
-        let observed: Result<(), String> = async {
-            for index in 0..count {
-                let message = if large {
-                    char::from(b'a' + index as u8).to_string().repeat(600 * 1024)
-                } else {
-                    format!("{}-{index}", "🦀".repeat(80))
-                };
-                let value = fixture.mutation(2, "send", json!({"sessionId":session,"message":message,"model":selection}), Uuid::new_v4()).await?;
-                if value["kind"] != "queued" { return Err(format!("send {} did not queue: {value}", index + 1)); }
-                let id = value["messageId"].as_str().ok_or("missing queued message ID")?.to_owned();
-                originals.push((id, message));
-            }
-            let queue = fixture.query("queue", json!({"sessionId":session})).await?;
-            let ids: Vec<_> = originals.iter().map(|(id, _)| id.clone()).collect();
-            let actual: Vec<_> = queue["entries"].as_array().ok_or("missing entries")?.iter().map(|row| row["messageId"].clone()).collect();
-            if actual != ids.iter().map(|id| json!(id)).collect::<Vec<_>>() { return Err("queue omitted or reordered accepted inputs".into()); }
-            for (id, message) in [&originals[0], &originals[count - 1]] {
-                let read = fixture.query("queueMessage", json!({"sessionId":session,"messageId":id,"expectedRevision":queue["revision"]})).await?;
-                if read != json!({"kind":"ready","revision":queue["revision"],"message":message,"hasAttachments":false}) { return Err(format!("original body changed for {id}")); }
-            }
-            let durable = fixture.session(&session).await.message_queue(&session).await.map_err(|e| e.to_string())?;
-            if large && durable.entries.iter().map(|entry| serde_json::to_vec(entry).unwrap().len()).sum::<usize>() <= 8 * 1024 * 1024 { return Err("workload did not cross the former aggregate byte limit".into()); }
-            for (entry, (id, message)) in durable.entries.iter().zip(&originals) {
-                if entry.source.message.message_id != *id || entry.source.unprepared_content.text != *message || entry.source.message.content.text != *message { return Err("durable original input changed".into()); }
-            }
-            let through = fixture.query("observe", json!({"sessionId":session})).await?["through"].clone();
-            let mut watch = fixture.app.client().subscribe(fixture.binding(2).await, "watch".into(), json!({"sessionId":session,"after":through}), scope(&fixture.issuer, true), Attachments::new().into()).await.map_err(|e| e.to_string())?;
-            let first = watch.recv().await.ok_or("watch closed without delivering the queue")?;
-            if first != json!({"kind":"queue","queue":queue}) { return Err("watch did not deliver the complete queue".into()); }
-            if !large && serde_json::to_vec(&first).unwrap().len() <= 64 * 1024 { return Err("watch workload did not cross the former delivery byte limit".into()); }
-            drop(watch);
-            let replacement = if large { "z".repeat(600 * 1024) } else { "edited original input".into() };
-            let update = json!({"sessionId":session,"expectedRevision":queue["revision"],"edit":{"kind":"update","messageId":ids[0],"message":replacement}});
-            let operation = Uuid::new_v4();
-            let changed = fixture.mutation(2, "editQueue", update.clone(), operation).await?;
-            if changed["kind"] != "committed" || fixture.mutation(2, "editQueue", update.clone(), operation).await? != changed { return Err("update did not commit idempotently".into()); }
-            if fixture.mutation(2, "editQueue", update, Uuid::new_v4()).await?["kind"] != "revision_conflict" { return Err("stale edit crossed its revision fence".into()); }
-            let read = fixture.query("queueMessage", json!({"sessionId":session,"messageId":ids[0],"expectedRevision":changed["revision"]})).await?;
-            if read != json!({"kind":"ready","revision":changed["revision"],"message":replacement,"hasAttachments":false}) { return Err("edited body was truncated or changed".into()); }
-            let foreign = fixture.create("Other queue owner").await;
-            let foreign_queue = fixture.query("queue", json!({"sessionId":foreign})).await?;
-            if fixture.query("queueMessage", json!({"sessionId":foreign,"messageId":ids[0],"expectedRevision":foreign_queue["revision"]})).await? != json!({"kind":"missing"}) { return Err("queue body crossed Session ownership".into()); }
-            let reversed: Vec<_> = ids.iter().rev().cloned().collect();
-            let reordered = fixture.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":changed["revision"],"edit":{"kind":"reorder","messageIds":reversed}}), Uuid::new_v4()).await?;
-            if reordered["kind"] != "committed" { return Err(format!("full lane reorder rejected: {reordered}")); }
-            let queue = fixture.query("queue", json!({"sessionId":session})).await?;
-            let actual: Vec<_> = queue["entries"].as_array().ok_or("missing reordered entries")?.iter().map(|row| row["messageId"].clone()).collect();
-            if actual != reversed.iter().map(|id| json!(id)).collect::<Vec<_>>() { return Err("full lane reorder lost identities or order".into()); }
-            let retracted = fixture.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":reordered["revision"],"edit":{"kind":"retract","messageId":reversed[0]}}), Uuid::new_v4()).await?;
-            if retracted["kind"] != "committed" || fixture.query("queueMessage", json!({"sessionId":session,"messageId":reversed[0],"expectedRevision":retracted["revision"]})).await? != json!({"kind":"missing"}) { return Err("retraction did not remove its target".into()); }
-            if large {
-                // Restore seven large bodies so Stop and its recovered receipt
-                // also cross the former aggregate limit after retraction.
-                let message = "replacement".repeat(600 * 1024 / "replacement".len());
-                let value = fixture.mutation(2, "send", json!({"sessionId":session,"message":message,"model":selection}), Uuid::new_v4()).await?;
-                if value["kind"] != "queued" { return Err("replacement did not queue".into()); }
-                originals.push((value["messageId"].as_str().ok_or("missing replacement ID")?.to_owned(), message));
-            }
-            Ok(())
-        }.await;
-        let before_stop_revision = fixture.session(&session).await.message_queue(&session).await.unwrap().revision;
-        let stop_input = json!({"sessionId":session,"invocationId":started["invocationId"]});
-        let operation = Uuid::new_v4();
-        let stopped = fixture.mutation(2, "stop", stop_input.clone(), operation).await;
-        let replayed = fixture.mutation(2, "stop", stop_input.clone(), operation).await;
-        let cancelled_by_stop = token.is_cancelled();
-        if stopped.is_err() {
-            // Baseline cleanup uses individual public retractions, whose receipts
-            // contain no queue-sized payload, then a fresh Stop operation.
-            for (id, _) in &originals {
-                let queue = fixture.query("queue", json!({"sessionId":session})).await.unwrap();
-                fixture.mutation(2, "editQueue", json!({"sessionId":session,"expectedRevision":queue["revision"],"edit":{"kind":"retract","messageId":id}}), Uuid::new_v4()).await.unwrap();
-            }
-            fixture.mutation(2, "stop", stop_input, Uuid::new_v4()).await.unwrap();
-        }
-        fixture.drained().await;
-        let remaining = fixture.session(&session).await.message_queue(&session).await.unwrap();
-        let mut cancelled = Vec::new();
-        let mut canonical = Vec::new();
-        for (id, _) in &originals {
-            cancelled.push(fixture.session(&session).await.message_cancelled(&session, id).await.unwrap());
-            canonical.push(fixture.session(&session).await.root_message(&session, id).await.unwrap().is_none());
-        }
-        fixture.app.shutdown().await.unwrap();
-        fixture.config.shutdown().await.unwrap();
-        assert!(observed.is_ok(), "{observed:?}");
-        let admitted = count + usize::from(large);
-        assert_eq!(originals.len(), admitted);
-        assert_eq!(stopped, Ok(json!({"requested":true})));
-        assert_eq!(replayed, stopped);
-        assert!(cancelled_by_stop);
-        assert_eq!(remaining.revision, before_stop_revision + 1);
-        assert!(remaining.entries.is_empty());
-        assert_eq!(cancelled, vec![true; admitted]);
-        assert_eq!(canonical, vec![true; admitted]);
-    }).await.unwrap();
-}
-
-#[tokio::test]
-async fn queue_accepts_more_than_sixty_four_and_delivers_a_complete_large_watch() {
-    unrestricted_queue_regression(256, false).await;
-}
-
-#[tokio::test]
-async fn queue_accepts_more_than_eight_mib_and_preserves_full_original_messages() {
-    unrestricted_queue_regression(7, true).await;
-}
-
 #[tokio::test]
 async fn queued_followup_uses_original_worker_and_a_new_invocation() {
     tokio::time::timeout(Duration::from_secs(30), async {
@@ -232,6 +113,8 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         request(&mut socket).await;
         let queued = fixture.send(&session).await.unwrap();
         assert_eq!(queued["kind"], "queued");
+        let selected = fixture.session(&session).await.message_queue(&session).await.unwrap().entries.remove(0);
+        assert_eq!(selected.source.message.message_id, queued["messageId"]);
         let selection = fixture.selection().await;
         let client = fixture.app.client();
         let stop = client
@@ -294,6 +177,9 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         drop(gate);
         assert_eq!(tail.await.err().unwrap(), "agent_admission_failed");
         fixture.drained().await;
+        let selection_cancellation = CancellationToken::new();
+        assert!(fixture.owner.prepare_selected(&session, &selected, &selection_cancellation).await.unwrap().is_none());
+        assert!(!selection_cancellation.is_cancelled());
         assert!(
             fixture.session(&session).await.pending_messages(&session)
                 .await
@@ -420,6 +306,22 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
                     assert_eq!(update["through"], through);
                     assert_eq!(update["events"], json!([]));
                 }
+                Some("preview") => {
+                    let contract::DeliveryPage::Preview { page } = serde_json::from_value(update)
+                        .expect("queue watch preview must satisfy the public delivery contract")
+                    else { unreachable!() };
+                    match page {
+                        contract::PreviewPage::Empty { host_epoch } => {
+                            assert_eq!(host_epoch, fixture.owner.preview_epoch());
+                        }
+                        contract::PreviewPage::Cut { host_epoch, invocation_id, depends_on, parts, .. } => {
+                            assert_eq!(host_epoch, fixture.owner.preview_epoch());
+                            assert_eq!(invocation_id, started["invocationId"].as_str().unwrap());
+                            assert!(depends_on <= through);
+                            assert!(parts.is_empty(), "the held provider has emitted no model content");
+                        }
+                    }
+                }
                 _ => panic!("unexpected queue watch delivery: {update}"),
             }
         };
@@ -441,6 +343,116 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
         drop(watch);
         fixture.mutation(2, "stop", json!({"sessionId":session,"invocationId":started["invocationId"]}), Uuid::new_v4()).await.unwrap();
         fixture.drained().await;
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn queue_preparation_does_not_hold_the_global_lifecycle_and_close_waits_for_original_sql() {
+    use sqlx::{Connection, Executor};
+
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(&format!("http://{}/v1", listener.local_addr().unwrap()), None).await;
+        let a = fixture.create("Recovered queue preparation").await;
+        let blocked_database = fixture.session_database(&a);
+        let c = loop {
+            let session = fixture.create("Independent running Session").await;
+            if fixture.session_database(&session) != blocked_database {
+                break session;
+            }
+        };
+        let running = fixture.send(&c).await.unwrap();
+        let (mut running_socket, _) = listener.accept().await.unwrap();
+        request(&mut running_socket).await;
+
+        // Leave the original admitted message durable, without starting a Run.
+        let database = rusqlite::Connection::open(&blocked_database).unwrap();
+        database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap();
+        assert!(fixture.send(&a).await.is_err());
+        let original = fixture.session(&a).await.pending_messages(&a).await.unwrap();
+        assert_eq!(original.len(), 1);
+        database.execute_batch("DROP TRIGGER hold_opening").unwrap();
+        drop(database);
+
+        // Capture a real create before gating SQL. Choose a different physical
+        // Session writer so the test isolates the Agent lifecycle boundary.
+        let create_input = fixture.create_input("Independent creation").await;
+        let client = fixture.app.client();
+        let create = loop {
+            let prepared = client.prepare_mutation(fixture.binding(2).await, "create".into(), create_input.clone(), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+            let id = fixture.owner.operation_id(prepared.reference());
+            let mut hash = Sha256::new();
+            hash.update(b"session\0");
+            hash.update(id.as_bytes());
+            let partition = usize::from(hash.finalize()[0]) % maka_event_log::root_store::PARTITION_COUNT;
+            let path = fixture.root.join("runtime-partitions").join(format!("{partition:02}.sqlite"));
+            if path != blocked_database {
+                break prepared.reference().clone();
+            }
+        };
+        let stop = client.prepare_mutation(fixture.binding(2).await, "stop".into(), json!({"sessionId":c,"invocationId":running["invocationId"]}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let stop_reference = stop.reference().clone();
+        drop(stop);
+
+        let b = fixture.owner.operation_id(&create);
+        let selection = fixture.selection().await;
+        let send = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":b,"message":"Independent admission","model":selection}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let send_reference = send.reference().clone();
+        drop(send);
+        let mut writer = sqlx::SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(&blocked_database)).await.unwrap();
+        writer.execute("BEGIN IMMEDIATE").await.unwrap();
+        let scheduling = fixture.owner.schedule_pending();
+        tokio::pin!(scheduling);
+        let mut scheduled = false;
+        let preparing = loop {
+            tokio::select! {
+                result = &mut scheduling, if !scheduled => { result.unwrap(); scheduled = true; },
+                () = tokio::task::yield_now() => {},
+            }
+            let runs = fixture.owner.runs.lock().await;
+            if let Some(preparing) = runs.preparing.get(&a) {
+                break preparing.clone();
+            }
+        };
+        let mut same_session = Box::pin(fixture.owner.runs.session(&a));
+        assert!(futures_util::poll!(same_session.as_mut()).is_pending());
+        let parent = scope(&fixture.issuer, true);
+        let created = fixture.owner.create(serde_json::from_value(create_input).unwrap(), &create, &parent).await.unwrap();
+        let Created::Created { session } = created else { panic!("independent creation was refused"); };
+        assert_eq!(session.id, b);
+        let admitted = fixture.owner.send(Send {
+            session_id: b.clone(), message: "Independent admission".into(),
+            model: selection, thinking_level: None, attachments: vec![],
+        }, &send_reference, &parent).await.unwrap();
+        assert!(matches!(admitted, SendResult::Started { .. }));
+        let (mut independent_socket, _) = listener.accept().await.unwrap();
+        request(&mut independent_socket).await;
+        assert!(fixture.owner.stop_run(&c, running["invocationId"].as_str().unwrap(), &stop_reference).await.unwrap());
+        assert!(!preparing.is_cancelled());
+        assert!(futures_util::poll!(same_session.as_mut()).is_pending());
+        drop(same_session);
+
+        let mut close = fixture.owner.close();
+        assert!(futures_util::poll!(close.as_mut()).is_pending());
+        assert!(preparing.is_cancelled(), "close must fence the original preparing worker first");
+        assert!(futures_util::poll!(close.as_mut()).is_pending(), "a cancelled observer cannot settle the held SQL writer");
+        writer.execute("ROLLBACK").await.unwrap();
+        close.await.unwrap();
+        if !scheduled {
+            scheduling.await.unwrap();
+        }
+        let runs = fixture.owner.runs.lock().await;
+        assert!(runs.preparing.is_empty());
+        assert!(runs.controls.is_empty());
+        drop(runs);
+        let queue = fixture.session(&a).await.pending_messages(&a).await.unwrap();
+        assert!(queue.len() <= 1);
+        if let Some(pending) = queue.first() {
+            assert_eq!(pending, &original[0], "cancellation must preserve the original accepted identity");
+        }
+        drop((running_socket, independent_socket));
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();

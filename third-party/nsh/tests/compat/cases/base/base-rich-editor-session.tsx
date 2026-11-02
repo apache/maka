@@ -53,6 +53,7 @@ function App() {
   const lines = signal<string[]>([]);
   const keys = signal("Keys: none");
   const updates = signal(0);
+  const revised = signal("");
 
   const run = () => {
     const out: string[] = [];
@@ -97,7 +98,10 @@ function App() {
         watch,
       ],
     });
-    editor.subscribe(() => updates.set(updates() + 1));
+    const stopRevisions = editor.on("revision", ({ revision }) => {
+      updates.set(updates() + 1);
+      revised.set(`${revision === editor.revision} ${typeof stopRevisions}`);
+    });
 
     step("Plugin", () => `${watch.key} ${watch.capturing}`);
     step("Classes", () => `${schema instanceof RichSchema} ${editor instanceof RichEditorSession}`);
@@ -194,6 +198,30 @@ function App() {
       loose.endDrag();
       return `${loose.pageCoordsAtPos(1)} ${loose.posAtPageCoords({ x: 0, y: 0 })} ${loose.getText()}`;
     });
+    // A position outside the document is a RangeError (ProseMirror's), an unknown command a TypeError; `null` is an answer.
+    step("Positions", () => {
+      const doc = createRichEditor({ content: "ab", plugins: [] });
+      // One paragraph of two characters: positions 0 to 4.
+      const size = 4;
+      const caught = (f: () => unknown) => {
+        try {
+          f();
+          return "none";
+        } catch (e) {
+          return (e as Error).name;
+        }
+      };
+      return [
+        (doc.resolve(1) as { parent: string }).parent,
+        doc.nodeAt(size) === null,
+        caught(() => doc.resolve(size + 1)),
+        caught(() => doc.nodeAt(99)),
+        caught(() => doc.coordsAtPos(99)),
+        caught(() => doc.findParentNode("paragraph", 99)),
+        caught(() => doc.run(command("noSuchCommand"))),
+        caught(() => doc.can(setBlockType("noSuchNode"))),
+      ].join(" ");
+    });
     step("Error", () => {
       try {
         createRichEditor({ schema: tiny, plugins: [keymap({ "Mod-b": toggleMark("bold") })] });
@@ -209,7 +237,7 @@ function App() {
     <View style={{ flex: 1, paddingTop: 60, paddingLeft: 20, gap: 4 }}>
       <View onPress={run}><Text>RunSession</Text></View>
       <Text>{keys()}</Text>
-      <Text>{`Updates: ${updates() > 0}`}</Text>
+      <Text>{`Updates: ${updates() > 0} ${revised()}`}</Text>
       {() => lines().map((line) => <Text>{line}</Text>)}
     </View>
   );

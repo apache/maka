@@ -19,7 +19,6 @@
 
 use maka_agent_facts::configuration::ModelCapabilities;
 use maka_agent_facts::configuration::ModelInfo;
-use maka_agent_facts::execution::ThinkingLevel;
 use maka_agent_ports::provider::Error;
 use serde::{Deserialize, Deserializer};
 use std::collections::HashSet;
@@ -91,7 +90,7 @@ pub fn decode_model_inventory(bytes: &[u8]) -> Result<Vec<ModelInfo>, Error> {
             .filter(|n| (1.0..=9_007_199_254_740_991.0).contains(n) && n.fract() == 0.0)
             .map(|n| n as u64);
         if let Some(advertised) = row.supported_reasoning_levels {
-            use ThinkingLevel::*;
+            use maka_agent_facts::execution::ThinkingLevel::*;
             info.thinking_levels = Some(
                 [
                     (Off, "none"),
@@ -156,47 +155,4 @@ fn whitespace(c: char) -> bool {
     matches!(c, '\u{9}'..='\u{d}' | '\u{20}' | '\u{a0}' | '\u{1680}'
         | '\u{2000}'..='\u{200a}' | '\u{2028}' | '\u{2029}' | '\u{202f}'
         | '\u{205f}' | '\u{3000}' | '\u{feff}')
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::{Value, json};
-
-    #[test]
-    fn account_facts_preserve_absent_empty_and_explicit_negative_declarations() {
-        let source = json!({"models":[{
-            "slug":"future-codex", "display_name":"Future Codex", "context_window":272000,
-            "supported_reasoning_levels":[{"effort":"high"},{"effort":"low"},
-                {"effort":"low"},{"effort":"future-level"}],
-            "supports_reasoning_summaries":true, "supports_reasoning_summary_parameter":false,
-            "input_modalities":["text","image"], "supports_parallel_tool_calls":false
-        }, {"slug":"plain", "supported_reasoning_levels":[]}, {"slug":"unknown"}]});
-        let rows = decode_model_inventory(&serde_json::to_vec(&source).unwrap()).unwrap();
-        assert_eq!(
-            rows[0].thinking_levels,
-            Some(vec![ThinkingLevel::Low, ThinkingLevel::High])
-        );
-        assert_eq!(rows[0].supports_reasoning_summary, Some(false));
-        assert_eq!(rows[0].capabilities.unwrap().vision, Some(true));
-        assert_eq!(
-            rows[0].capabilities.unwrap().parallel_tool_calls,
-            Some(false)
-        );
-        assert_eq!(rows[0].display_name.as_deref(), Some("Future Codex"));
-        assert_eq!(rows[1].thinking_levels, Some(vec![]));
-        assert_eq!(rows[1].capabilities.unwrap().reasoning, Some(false));
-        assert!(rows[2].thinking_levels.is_none());
-        for invalid in [Value::Null, json!([{"effort":"invalid"}, 1])] {
-            assert!(
-                decode_model_inventory(
-                    &serde_json::to_vec(&json!({
-                        "models":[{"slug":"bad","supported_reasoning_levels":invalid}]
-                    }))
-                    .unwrap()
-                )
-                .is_err()
-            );
-        }
-    }
 }

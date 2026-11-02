@@ -53,7 +53,13 @@ impl ComputerAppTarget {
                 .is_none_or(|binding| observed.binding.as_ref() == Some(binding))
     }
 
-    #[cfg(any(all(feature = "native-desktop", target_os = "macos"), test))]
+    #[cfg(any(
+        all(
+            feature = "native-desktop",
+            any(target_os = "macos", target_os = "windows")
+        ),
+        test
+    ))]
     pub(crate) fn check_observed(
         &self,
         observed: &Self,
@@ -74,7 +80,13 @@ impl ComputerAppTarget {
     }
 }
 
-#[cfg(any(all(feature = "native-desktop", target_os = "macos"), test))]
+#[cfg(any(
+    all(
+        feature = "native-desktop",
+        any(target_os = "macos", target_os = "windows")
+    ),
+    test
+))]
 pub(crate) fn macos_target(
     name: String,
     application_id: String,

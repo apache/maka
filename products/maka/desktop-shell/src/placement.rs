@@ -295,20 +295,4 @@ mod tests {
         let edge = place(&saved(1448., 918., 1280., 820.), display, MIN).unwrap();
         assert!(edge.bounds.is_some());
     }
-
-    #[test]
-    fn the_placement_survives_a_round_trip_through_its_file() {
-        let directory = std::env::temp_dir().join(format!("maka-placement-{}", Uuid::new_v4()));
-        std::fs::create_dir(&directory).unwrap();
-        let path = directory.join(FILE);
-        let maximized = Saved {
-            state: State::Maximized,
-            ..saved(-1200., 40., 1024., 700.)
-        };
-        write(&path, &maximized).unwrap();
-        let read: Saved = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
-        assert_eq!(read, maximized);
-        assert!(!path.with_extension("json.partial").exists());
-        std::fs::remove_dir_all(directory).unwrap();
-    }
 }

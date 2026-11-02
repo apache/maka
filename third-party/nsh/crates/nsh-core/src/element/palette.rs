@@ -1,7 +1,7 @@
 //! Tailwind's default palette as typed colors (`palette::SKY.shade(500)` is
 //! `sky-500`): the same values Tailwind classes resolve to, independent of
 //! the app's Tailwind theme, as the typed styles' scales are. Theme colors
-//! ([`super::Theme`]) stay the components' first choice; the palette is
+//! (`nsh_base::Theme`) stay the components' first choice; the palette is
 //! for what a theme does not name (illustrations, charts, demos).
 
 use crate::{

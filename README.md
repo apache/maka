@@ -61,4 +61,4 @@ Use `just --list` for development commands. See [Contributing](CONTRIBUTING.md),
 
 The npm launcher selects a matching native package; it contains no agent runtime. Native preview artifacts are built and verified from one source archive. Packaging and publication are documented in [packages/cli](packages/cli/README.md).
 
-Apache Maka is undergoing incubation at the Apache Software Foundation. See [DISCLAIMER-WIP](DISCLAIMER-WIP), [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Apache Maka is undergoing incubation at the Apache Software Foundation. See [DISCLAIMER](DISCLAIMER), [LICENSE](LICENSE) and [NOTICE](NOTICE).

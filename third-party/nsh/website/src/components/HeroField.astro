@@ -1,29 +1,56 @@
 ---
-// The home hero's background: the site's dot grid drawn on a 2D canvas.
-// Each dot has its own seeded size, brightness and twinkle, and a slowly
-// drifting value-noise field decides where the grid shimmers, so the field
-// is irregular and mostly dark. Near the pointer a few dots light up more
-// than their neighbours and swell into the accent, inside a noise-perturbed
-// reach that trails the pointer a little, over a small faint halo. The
-// canvas never takes input: the listeners are on the hero, passive. It
-// fades toward the copy, so text keeps its contrast. Colors are the
-// `--hero-*` tokens below, read again when the theme changes.
+// The home hero's background: the sky from close up, inside a galaxy, drawn
+// by a fragment shader (WebGL). The galaxy's milky light, white leaning a
+// little cool or warm by region, lying in belts as Jupiter's clouds do, around a core where the copy
+// gives way to the device. Three layers of stars of different temperatures
+// drift at their depth's pace and twinkle; the brightest wear diffraction
+// spikes, and now and then a meteor crosses. Presses act on gravity: a held
+// press is a small mass that bends the starlight toward it; released, it
+// sends a gentle wave that carries the stars outward as it passes before
+// they settle back, and turns their drift to a new heading. The canvas
+// never takes input: the listeners are on the hero and the window, passive.
+// The sky shows across the hero, about half as strong behind the copy, so
+// text keeps its contrast; every mask is a smooth gradient. It holds still
+// under reduced motion. Colors are the `--hero-*` tokens below, read again
+// when the theme changes.
 //
-// `?fieldperf` logs the mean draw time every 120 frames.
+// `?fieldperf` logs the mean frame time every 120 frames.
 ---
 <canvas class="hero-field" aria-hidden="true"></canvas>
 
 <style is:global>
   :root {
-    --hero-dot: rgba(255, 255, 255, 0.18);
-    --hero-dot-hot: var(--citrus, #c8f26d);
-    --hero-glow: rgba(200, 242, 109, 0.06);
+    --hero-star: rgba(236, 244, 255, 0.9);
+    --hero-star-hot: var(--citrus, #c8f26d);
+    --hero-star-blue: #8fb2ff;
+    --hero-star-teal: #6fd6a8;
+    --hero-star-red: #ff7a6e;
+    --hero-star-orange: #ff8a5c;
+    --hero-star-violet: #b49cff;
+    --hero-glow: rgba(200, 242, 109, 0.14);
+    --hero-nebula-lime: rgba(200, 242, 109, 0.5);
+    --hero-nebula-slate: rgba(126, 168, 255, 0.26);
+    --hero-nebula-grey: rgba(150, 156, 150, 0.28);
+    --hero-nebula-teal: rgba(70, 190, 140, 0.32);
+    --hero-nebula-citrus: rgba(200, 242, 109, 0.56);
+    --hero-deep: rgba(10, 11, 13, 0.5);
   }
   html.light,
   html:not(.dark) {
-    --hero-dot: rgba(22, 23, 26, 0.26);
-    --hero-dot-hot: #5a7a12;
-    --hero-glow: rgba(90, 122, 18, 0.05);
+    --hero-star: rgba(22, 23, 26, 0.8);
+    --hero-star-hot: #5a7a12;
+    --hero-star-blue: #2563eb;
+    --hero-star-teal: #059669;
+    --hero-star-red: #dc2626;
+    --hero-star-orange: #ea580c;
+    --hero-star-violet: #7c3aed;
+    --hero-glow: rgba(140, 196, 20, 0.24);
+    --hero-nebula-lime: rgba(122, 186, 10, 0.72);
+    --hero-nebula-slate: rgba(70, 118, 235, 0.36);
+    --hero-nebula-grey: rgba(110, 145, 230, 0.24);
+    --hero-nebula-teal: rgba(16, 172, 118, 0.4);
+    --hero-nebula-citrus: rgba(134, 198, 14, 0.78);
+    --hero-deep: rgba(0, 0, 0, 0);
   }
   .hero-field {
     position: absolute;
@@ -37,125 +64,521 @@
 </style>
 
 <script>
-  const SPACING = 26; // CSS px between dots
-  const MAX_DOTS = 2500;
-  const REACH = 150; // the pointer's mean reach, CSS px
-  const GLOW = 140; // the halo's radius, CSS px
-  const BASE_LEVELS = 6;
-  const HOT_LEVELS = 6;
+  const FIELD_STEP = 11; // CSS px per texel of the nebula's field
   const STACKED = 1080; // under this width the hero stacks: copy above, device below
-  const NOISE = 32; // the value-noise lattice, NOISE × NOISE, wrapping
+  const MAX_DPR = 2;
+  const WAVES = 4; // presses whose waves can run at once
+  const WAVE_LIFE = 2.4; // seconds the smallest wave runs; a larger one runs longer
+  const FULL_HOLD = 1.2; // seconds of holding that make the largest wave
+  const METEOR_EVERY = 6.5; // seconds between meteors
 
-  const smooth = (a: number, b: number, x: number) => {
-    const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-    return t * t * (3 - 2 * t);
-  };
+  const VERTEX = `
+    attribute vec2 position;
+    void main() { gl_Position = vec4(position, 0.0, 1.0); }
+  `;
 
-  // A seeded PRNG, so the field looks the same on every load.
-  let seed = 0x9e3779b9;
-  const rand = () => {
-    seed ^= seed << 13;
-    seed ^= seed >>> 17;
-    seed ^= seed << 5;
-    return (seed >>> 0) / 4294967296;
-  };
-  const lattice = new Float32Array(NOISE * NOISE);
-  for (let i = 0; i < lattice.length; i++) lattice[i] = rand();
-  /** Smooth value noise in [0, 1], wrapping every NOISE units. */
-  const noise = (x: number, y: number) => {
-    const fx = Math.floor(x), fy = Math.floor(y);
-    const ux = x - fx, uy = y - fy;
-    const sx = ux * ux * (3 - 2 * ux), sy = uy * uy * (3 - 2 * uy);
-    const x0 = ((fx % NOISE) + NOISE) % NOISE, y0 = ((fy % NOISE) + NOISE) % NOISE;
-    const x1 = (x0 + 1) % NOISE, y1 = (y0 + 1) % NOISE;
-    const a = lattice[y0 * NOISE + x0], b = lattice[y0 * NOISE + x1];
-    const c = lattice[y1 * NOISE + x0], d = lattice[y1 * NOISE + x1];
-    return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy;
-  };
+  const NOISE = `
+    float hash(vec2 p) {
+      p = fract(p * vec2(123.34, 456.21));
+      p += dot(p, p + 45.32);
+      return fract(p.x * p.y);
+    }
+    float noise(vec2 p) {
+      vec2 i = floor(p), f = fract(p);
+      vec2 u = f * f * (3.0 - 2.0 * f);
+      return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), u.x),
+                 mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x), u.y);
+    }
+    float fbm(vec2 p) {
+      float v = 0.0, a = 0.5;
+      for (int i = 0; i < 4; i++) {
+        v += a * noise(p);
+        p = mat2(1.6, 1.2, -1.2, 1.6) * p;
+        a *= 0.5;
+      }
+      return v;
+    }
+  `;
+
+  // The first pass: the nebula's field, a texel every FIELD_STEP CSS px (its
+  // features are hundreds of px wide, so the sky samples it with linear
+  // filtering instead of evaluating the noise per pixel). Red is the clouds,
+  // green where their hue is along the nebula's palette, blue a second weave
+  // toward blue. All of it keeps flowing.
+  const FIELD = `
+    precision highp float;
+    uniform vec2 size;      // the hero, CSS px
+    uniform vec2 grid;      // the texture, texels
+    uniform float time;     // seconds
+    ${NOISE}
+    // Noise warped by noise, drifting.
+    float flow(vec2 p) {
+      vec2 q = p / 900.0;
+      float t = time * 0.09;
+      vec2 w = vec2(fbm(q + vec2(0.0, t)), fbm(q + vec2(5.2, 1.3) - t * 0.8));
+      return fbm(q * 1.4 + 2.2 * w + vec2(t * 0.6, -t * 0.3));
+    }
+    void main() {
+      vec2 p = vec2(gl_FragCoord.x / grid.x, 1.0 - gl_FragCoord.y / grid.y) * size;
+      float hue = smoothstep(0.25, 0.75, fbm(p / 1500.0 + vec2(-time * 0.04, time * 0.03)));
+      float blue = smoothstep(0.4, 0.72, fbm(p / 1450.0 + vec2(9.1, 3.7) + vec2(time * 0.03, time * 0.02)));
+      gl_FragColor = vec4(flow(p), hue, blue, 1.0);
+    }
+  `;
+
+  // The second pass, per pixel, in CSS px with the origin at the top left.
+  const SKY = `
+    #ifdef GL_OES_standard_derivatives
+    #extension GL_OES_standard_derivatives : enable
+    #endif
+    precision highp float;
+    uniform sampler2D field;
+    uniform vec2 size;      // the hero, CSS px
+    uniform float dpr;
+    uniform float time;     // seconds
+    uniform float stacked;  // 1 when the copy is above the device
+    uniform vec4 copy;      // the hero's copy: left, top, right, bottom, CSS px
+    uniform vec4 frame;     // the hero's content column: left, top, right, bottom, CSS px
+    uniform vec4 device;    // the demo device: left, top, right, bottom, CSS px
+    uniform vec2 centre;    // the galaxy's heart: between the copy and the device
+    uniform vec4 waves[${WAVES}]; // released presses: x, y, the time (negative: none), the size
+    uniform vec4 charge;          // a press being held: x, y, the time it began, 1 while held
+    uniform vec2 drift;           // how far the stars have drifted, px at a pace of 1 (presses turn it)
+    uniform vec4 starColor; // straight alpha
+    uniform vec3 hotColor;
+    uniform vec3 starBlue;
+    uniform vec3 starTeal;
+    uniform vec3 starRed;
+    uniform vec3 starOrange;
+    uniform vec3 starViolet;
+    uniform vec4 glowColor;
+    uniform vec4 nebula[5];       // the clouds' hues, the accent's family: lime, green, teal (most clouds), gold, bright citrus (a few) (straight alpha)
+    uniform vec4 deepColor;       // darkens the hero's sky toward the night
+    ${NOISE}
+    vec4 sampleField(vec2 p) { return texture2D(field, vec2(p.x / size.x, 1.0 - p.y / size.y)); }
+
+    // How much of the sky shows: all of it across the hero, about half
+    // behind the copy (fading over a couple of hundred px), thinning along the
+    // hero's top and bottom.
+    float open(vec2 p) {
+      vec2 n = p / size;
+      vec2 dd = max(copy.xy - p, p - copy.zw);
+      float outside = length(max(dd, 0.0)) + min(max(dd.x, dd.y), 0.0);
+      float clear = mix(0.45, 1.0, smoothstep(-80.0, 200.0, outside));
+      return clear * smoothstep(0.0, 0.18, n.y) * smoothstep(1.0, 0.7, n.y);
+    }
+
+    // The galaxy, crossing the hero through the open space beside the device
+    // (where the demo hides none of it): a band whose edges waver with the
+    // clouds, around a long core. x: the band, as wide as the hero; y: the
+    // river of stars down its middle; z: the core.
+    vec4 galaxy(vec2 p, float cloud, float detail) {
+      float sway = 0.05 * sin(time * 0.06);
+      vec2 dir = normalize(stacked > 0.5 ? vec2(1.0, -0.3 + sway) : vec2(1.0, -0.62 + sway));
+      vec2 rel = p - centre;
+      float along = dot(rel, dir);
+      float across = dot(rel, vec2(-dir.y, dir.x));
+      float width = max(size.y, 420.0) * (stacked > 0.5 ? 1.4 : 1.8);
+      float wobble = (cloud - 0.5) * 900.0 + sin(along / 700.0 + time * 0.15) * 18.0;
+      float band = exp(-pow((across + wobble) / width, 2.0)) * (0.35 + 0.65 * exp(-pow(along / (size.x * 1.5), 2.0)));
+      // The core, drawn out along the band, breathing.
+      vec2 e = vec2(along / 1.7, across + wobble * 0.3);
+      float breath = 0.9 + 0.1 * sin(time * 0.5);
+      float core = exp(-dot(e, e) / pow(width * 0.32, 2.0)) * breath;
+      float river = exp(-pow((across + wobble * 0.35) / (size.y * 0.3), 2.0)) * (0.3 + 0.7 * exp(-pow(along / (size.x * 0.55), 2.0)));
+      return vec4(band, river, core, 0.0);
+    }
+
+    // Belts, as Jupiter's clouds lie: stripes along the galaxy's heading,
+    // folded by the clouds' turbulence, eddying with the detail and slowly
+    // rolling along.
+    float belts(vec2 p, float cloud, float detail) {
+      vec2 dir = normalize(stacked > 0.5 ? vec2(1.0, -0.3) : vec2(1.0, -0.62));
+      vec2 r = p - centre;
+      float across = dot(r, vec2(-dir.y, dir.x));
+      float along = dot(r, dir);
+      float fold = (cloud - 0.5) * 3.0 + (detail - 0.5) * 1.4 + 0.6 * sin(along / 260.0 + time * 0.08);
+      return 0.5 + 0.5 * sin(across / 46.0 + fold);
+    }
+
+    // One layer of stars: at most one per cell, placed, sized and colored by
+    // chance, shown where the layer's density passes the star's own pick (so
+    // the galaxy holds more), drifting at the layer's speed; the brightest
+    // few (spiky: their share) wear a cross of diffraction spikes. out: its
+    // color.
+    float stars(vec2 p, float cell, float seed, float speed, float big, float density, float spiky, float systems, out vec3 rgb) {
+      vec2 q = p + drift * speed;
+      vec2 id = floor(q / cell);
+      vec2 spot = (id + 0.3 + 0.4 * vec2(hash(id + seed), hash(id + seed + 17.3))) * cell;
+      float pick = hash(id + seed + 41.7);
+      float show = smoothstep(pick, pick + 0.12, density);
+      float r = max(big * (0.6 + 0.4 * pow(hash(id + seed + 7.1), 3.0)), 0.6 / dpr);
+      vec2 v = q - spot;
+      #ifdef GL_OES_standard_derivatives
+      // Back to the screen: gravity stretches the space the stars sit in,
+      // never the stars themselves, so they stay round.
+      vec2 ex = dFdx(p) * dpr, ey = dFdy(p) * dpr;
+      float det = ex.x * ey.y - ey.x * ex.y;
+      if (abs(det) > 1e-3) v = vec2(ey.y * v.x - ey.x * v.y, ex.x * v.y - ex.y * v.x) / det;
+      #endif
+      float d = length(v);
+      float twinkle = 0.82 + 0.18 * sin(time * (0.5 + 1.2 * pick) + pick * 60.0);
+      float hue = hash(id + seed + 3.3);
+      // Their colors: blue, teal, red, orange and violet, about half white.
+      rgb = hue < 0.2 ? starBlue : hue < 0.27 ? starTeal : hue < 0.32 ? starRed
+        : hue < 0.38 ? starOrange : hue < 0.46 ? starViolet : starColor.rgb;
+      rgb = mix(rgb, starColor.rgb, 0.05);
+      // A crisp disc with a narrow glow; most stars faint, a few bright, the
+      // brightest a little larger.
+      float aa = 0.6 / dpr;
+      float light = (smoothstep(r + aa, r - aa, d) + 0.18 * exp(-d / (r * 1.2))) * (0.45 + 0.9 * pow(hash(id + seed + 7.1), 3.0));
+      if (hash(id + seed + 5.9) > 1.0 - spiky) {
+        float reach = cell * 0.3;
+        float fade = 1.0 - smoothstep(0.0, reach, max(abs(v.x), abs(v.y)));
+        float thin = 0.45 / dpr + 0.15;
+        rgb = hue < 0.5 ? mix(starBlue, starColor.rgb, 0.5) : starColor.rgb;
+        light = light * 1.2 + 0.6 * fade * (exp(-abs(v.y) / thin) * exp(-abs(v.x) / (reach * 0.5))
+          + exp(-abs(v.x) / thin) * exp(-abs(v.y) / (reach * 0.5)));
+        twinkle = 0.7 + 0.3 * twinkle;
+      }
+      // Some (systems: their share) are systems: half wear a ring seen
+      // tilted, the rest have one to three companions orbiting them.
+      float kind = hash(id + seed + 13.7);
+      if (kind < systems) {
+        float ang = hash(id + seed + 2.9) * 6.2832;
+        vec2 u = mat2(cos(ang), sin(ang), -sin(ang), cos(ang)) * v;
+        if (kind < systems * 0.5) {
+          float tilt = 2.4 + 1.6 * hash(id + seed + 4.4);
+          float ring = exp(-pow((length(vec2(u.x, u.y * tilt)) - r * 3.0) / (0.6 + 0.12 * r), 2.0));
+          // The ring's far side passes behind the star.
+          ring *= u.y < 0.0 ? smoothstep(r - aa, r + aa, d) : 1.0;
+          light += 0.55 * ring;
+        } else {
+          for (int k = 0; k < 3; k++) {
+            float fk = float(k);
+            if (k > 0 && hash(id + seed + fk * 5.1) < 0.4) continue;
+            float orbit = r * (4.0 + fk * 3.2);
+            float phase = hash(id + seed + fk * 3.1) * 6.2832 + time * 0.5 / (1.0 + fk);
+            vec2 at = vec2(cos(phase), sin(phase) * 0.45) * orbit;
+            float size = 1.0 + 0.6 * hash(id + seed + fk * 7.7);
+            light += 0.75 * smoothstep(size + aa, size - aa, length(u - at));
+          }
+        }
+      }
+      return show * twinkle * light;
+    }
+
+    // The three layers of stars, far to near: the nearer, the
+    // larger, faster and fewer, and bent more by gravity (q); the galaxy
+    // holds a few more.
+    // Star clusters, as the sky holds them: in some cells of a coarse grid
+    // over the stars' own coordinates (so they drift with them), a tight
+    // round group, densest at its middle.
+    float clusters(vec2 q) {
+      vec2 id = floor(q / 520.0);
+      if (hash(id + 71.3) > 0.4) return 0.0;
+      vec2 at = (id + 0.3 + 0.4 * vec2(hash(id + 3.7), hash(id + 9.2))) * 520.0;
+      float r = 40.0 + 40.0 * hash(id + 5.5);
+      return exp(-dot(q - at, q - at) / (r * r));
+    }
+
+    float starfield(vec2 p, vec2 q, float thick, float band, float detail, out vec3 rgb) {
+      // Not scattered evenly: the stars crowd where the clouds are, are few
+      // between them, and gather in clusters.
+      vec3 c0, c1, c2, c3;
+      vec2 qc = mix(p, q, 0.7);
+      // And some reaches are nearly empty: voids, drifting with the stars.
+      float filled = smoothstep(0.3, 0.46, fbm((qc + drift * 2.0) / 900.0 + 7.3));
+      float s0 = stars(qc, 14.0, 47.0, 2.0, 2.1, 0.45 * clusters(qc + drift * 2.0) * filled, 0.0, 0.0, c0) * 0.75;
+      float s1 = stars(mix(p, q, 0.6), 52.0, 1.0, 1.5, 3.6, (0.12 + 0.5 * thick) * filled, 0.0, 0.0, c1) * 0.8;
+      float s2 = stars(mix(p, q, 0.8), 120.0, 9.0, 3.0, 5.0, (0.12 + 0.4 * thick) * filled, 0.0, 0.0, c2);
+      float s3 = stars(q, 260.0, 23.0, 6.0, 4.6, (0.18 + 0.3 * thick) * mix(0.3, 1.0, filled), 0.15, 0.35, c3);
+      // The galaxy's unresolved stars: a faint grain where it is thick.
+      vec3 cg;
+      float grain = stars(mix(p, q, 0.5), 9.0, 61.0, 1.0, 1.0, 0.3 * thick * filled, 0.0, 0.0, cg) * 0.32;
+      float sum = s0 + s1 + s2 + s3 + grain;
+      rgb = (c0 * s0 + c1 * s1 + c2 * s2 + c3 * s3 + cg * grain) / max(sum, 1e-4);
+      return sum;
+    }
+
+    void main() {
+      vec2 p = vec2(gl_FragCoord.x, size.y * dpr - gl_FragCoord.y) / dpr;
+      vec4 f = sampleField(p);
+      float sky = open(p);
+      // Fine structure for the clouds, finer than the field:
+      // ridged, so it reads as filaments.
+      float detail = 1.0 - abs(2.0 * fbm(p / 260.0 + vec2(time * 0.04, -time * 0.025) + f.r * 1.5) - 1.0);
+      vec4 gx = galaxy(p, f.r, detail);
+      float band = gx.x;
+
+      // Gravity bends the starlight: the galaxy's core is a well; a held
+      // press is a mass that grows with the hold, drawing the starlight in;
+      // released, it leaves as a gentle gravitational wave, a ring running
+      // out from there that stirs the stars and lights them a little as it
+      // passes (a longer hold, with a little chance, makes it run a little
+      // farther and longer).
+      // q: where the bent space at p comes from.
+      vec2 q = p;
+      vec2 fromCore = p - centre;
+      q += fromCore * 0.55 * (0.9 + 0.1 * sin(time * 0.5)) * 120000.0 / (dot(fromCore, fromCore) + 120000.0);
+      float wave = 0.0, flash = 0.0;
+      for (int i = 0; i < ${WAVES}; i++) {
+        vec4 w = waves[i];
+        float age = time - w.z;
+        float span = ${WAVE_LIFE.toFixed(1)} * (0.75 + 0.45 * w.w);
+        if (w.z < 0.0 || age < 0.0 || age > span) continue;
+        float life = 1.0 - age / span;
+        vec2 away = p - w.xy;
+        float d = length(away);
+        float front = age * 260.0 * (0.8 + 0.25 * w.w);
+        float width = (18.0 + age * 14.0) * (0.8 + 0.2 * w.w);
+        float ring = exp(-pow((d - front) / width, 2.0)) * life * life;
+        wave += ring * 0.35;
+        // It carries the stars outward as it passes, and they settle back
+        // behind it.
+        float carry = exp(-pow((d - front + width) / (width * 2.0), 2.0)) * life;
+        if (d > 0.5) q -= away / d * carry * (10.0 + 6.0 * w.w);
+        flash += exp(-pow(d / 36.0, 2.0)) * exp(-age * 7.0) * 0.4;
+      }
+      if (charge.w > 0.5) {
+        float held = clamp((time - charge.z) / ${FULL_HOLD.toFixed(1)}, 0.0, 1.0);
+        vec2 away = p - charge.xy;
+        float d = length(away);
+        float reach = 30.0 + 60.0 * held;
+        float pulse = 0.9 + 0.1 * sin(time * (6.0 + 6.0 * held));
+        flash += exp(-pow(d / reach, 2.0)) * (0.15 + 0.25 * held) * pulse;
+        q += away * (0.12 + 0.3 * held) * reach * reach / (d * d + reach * reach);
+      }
+      float hit = clamp(wave + flash, 0.0, 1.0);
+
+      // The stars, the same ones all along: a press's wave pushes them out
+      // as it passes and they settle back, and the press turns their drift.
+      // A faint few stay over the copy.
+      float thick = max(smoothstep(0.35, 0.8, f.r) * band * 0.6, gx.y);
+      float seen = sky;
+      vec3 starRgb;
+      float sum = starfield(p, q, thick, band, detail, starRgb);
+      starRgb = mix(starRgb, hotColor, clamp(hit * 0.8, 0.0, 1.0));
+      float sa = clamp(sum * starColor.a * seen * (1.0 + 1.2 * hit), 0.0, 1.0);
+
+      // A meteor now and then: a short streak across the device's side,
+      // its place and heading by chance.
+      float slot = floor(time / ${METEOR_EVERY.toFixed(1)});
+      float mt = fract(time / ${METEOR_EVERY.toFixed(1)}) * ${METEOR_EVERY.toFixed(1)};
+      if (mt < 1.1) {
+        vec2 from = vec2(mix(0.5, 0.95, hash(vec2(slot, 3.1))), mix(0.05, 0.4, hash(vec2(slot, 7.7)))) * size;
+        vec2 dir = normalize(vec2(-1.0, 0.45 + 0.3 * hash(vec2(slot, 1.9))));
+        float run = mt * 520.0;
+        vec2 rel = p - from;
+        float along = dot(rel, dir);
+        float across = abs(dot(rel, vec2(-dir.y, dir.x)));
+        float tail = smoothstep(run - 140.0, run, along) * step(along, run);
+        float fade = smoothstep(0.0, 0.15, mt) * smoothstep(1.1, 0.6, mt);
+        float m = tail * exp(-pow(across / 0.9, 2.0)) * fade * sky;
+        starRgb = mix(starRgb, starColor.rgb, m / max(sa + m, 1e-4));
+        sa = clamp(sa + m * starColor.a, 0.0, 1.0);
+      }
+
+      // The nebula under the stars: the clouds inside the band and the core,
+      // their hues weaving, lying in belts as Jupiter's do, brighter where a
+      // wave passes.
+      float cloud = smoothstep(0.25, 0.7, f.r);
+      float fine = smoothstep(0.5, 0.95, detail);
+      // The light gathers within the content column, fading out over a
+      // couple of hundred px beyond it.
+      vec2 fd = max(frame.xy - p, p - frame.zw);
+      float clear = sky * (1.0 - smoothstep(0.0, 220.0, length(max(fd, 0.0))));
+      // It lights the copy, not the demo: dim behind the device.
+      vec2 dv = max(device.xy - p, p - device.zw);
+      clear *= mix(0.25, 1.0, smoothstep(-60.0, 160.0, length(max(dv, 0.0)) + min(max(dv.x, dv.y), 0.0)));
+      // Clouds in the site's own colors: slate blue and grey by region, teal
+      // in a few, the primary's green tinting them and lighting their wisps.
+      float belt = belts(p, f.r, detail);
+      float h = f.g * 1.3 + belt * 0.22 + time * 0.012;
+      vec4 hue = mix(nebula[1], nebula[2], 1.0 - abs(fract(h * 0.5) * 2.0 - 1.0));
+      hue = mix(hue, nebula[3], clamp(smoothstep(0.78, 0.95, f.b) * 0.7 * cloud, 0.0, 1.0));
+      float lit = smoothstep(0.0, 0.4, fine * cloud) * 0.85 + 0.15 * cloud;
+      hue = mix(hue, mix(nebula[0], nebula[4], smoothstep(0.3, 0.8, f.b)), lit);
+      // Most of the light opens between the copy and the device.
+      vec2 e = (p - centre) / vec2(max(300.0, size.x * 0.18), max(260.0, size.y * 0.34));
+      clear *= 0.12 + 0.88 * exp(-dot(e, e));
+      float gn = hue.a * (band * (0.06 + 0.35 * cloud + 1.3 * fine * (0.35 + 0.65 * cloud)) + gx.z * cloud * 0.25 + gx.y * 0.25 * cloud) * (0.55 + 0.6 * belt) * clear;
+      float gw = glowColor.a * hit * 0.35 * seen;
+      // Softly capped, so no moment of the clouds floods the hero.
+      float g = 0.45 * (1.0 - exp(-(gn + gw) / 0.45));
+      vec3 glowRgb = (hue.rgb * gn + glowColor.rgb * gw) / max(gn + gw, 1e-4);
+      // The night behind it all, across the hero, fading out along its
+      // bottom into the page.
+      // Darker reaches of it here and there, the clouds thin over them.
+      float dark = smoothstep(0.52, 0.72, fbm(p / 700.0 + vec2(time * 0.01, -time * 0.008) + 3.1));
+      g *= 1.0 - 0.6 * dark;
+      float va = deepColor.a * (1.0 + 0.7 * dark) * (1.0 - smoothstep(0.7, 1.0, p.y / size.y));
+
+      // Premultiplied: the stars over the nebula over the night.
+      vec3 rgb = glowRgb * g + deepColor.rgb * va * (1.0 - g);
+      float a = g + va * (1.0 - g);
+      rgb = starRgb * sa + rgb * (1.0 - sa);
+      a = sa + a * (1.0 - sa);
+      gl_FragColor = vec4(rgb, a);
+    }
+  `;
+
+  /** A CSS color as straight-alpha RGBA in [0, 1] (the 2D canvas parses it). */
+  const parse = (() => {
+    const cx = document.createElement('canvas').getContext('2d', { willReadFrequently: true });
+    return (color: string, fallback: number[]) => {
+      if (!cx || !color) return fallback;
+      cx.clearRect(0, 0, 1, 1);
+      cx.fillStyle = '#000';
+      cx.fillStyle = color;
+      cx.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = cx.getImageData(0, 0, 1, 1).data;
+      if (!a) return [0, 0, 0, 0];
+      return [r / 255, g / 255, b / 255, a / 255];
+    };
+  })();
+
+  function link(gl: WebGLRenderingContext, fragment: string) {
+    const program = gl.createProgram()!;
+    for (const [type, source] of [[gl.VERTEX_SHADER, VERTEX], [gl.FRAGMENT_SHADER, fragment]] as const) {
+      const s = gl.createShader(type)!;
+      gl.shaderSource(s, source);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s) ?? 'shader');
+      gl.attachShader(program, s);
+    }
+    gl.bindAttribLocation(program, 0, 'position');
+    gl.linkProgram(program);
+    if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program) ?? 'link');
+    const uniforms = new Map<string, WebGLUniformLocation | null>();
+    return {
+      program,
+      u: (name: string) => {
+        if (!uniforms.has(name)) uniforms.set(name, gl.getUniformLocation(program, name));
+        return uniforms.get(name)!;
+      },
+    };
+  }
 
   function mount(canvas: HTMLCanvasElement) {
     const hero = (canvas.closest('.hero') as HTMLElement | null) ?? canvas.parentElement!;
-    const cx = canvas.getContext('2d');
-    if (!cx) return;
+    const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false });
+    if (!gl) return;
+    // Keeps the stars round where gravity bends their space.
+    gl.getExtension('OES_standard_derivatives');
+    let fieldPass: ReturnType<typeof link>, skyPass: ReturnType<typeof link>;
+    try {
+      fieldPass = link(gl, FIELD);
+      skyPass = link(gl, SKY);
+    } catch (err) {
+      console.warn('[hero-field]', err);
+      return;
+    }
+    // One triangle over the viewport.
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(0);
+    gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+    // The flow field's texture and framebuffer.
+    const texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    const framebuffer = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
     const root = document.documentElement;
     const reduced = matchMedia('(prefers-reduced-motion: reduce)');
     const perf = location.search.includes('fieldperf');
 
-    let w = 0, h = 0, dpr = 1, n = 0;
-    let bx = new Float32Array(0), by = new Float32Array(0), side = new Float32Array(0);
-    // Per dot: size, brightness, twinkle phase and speed, how much the pointer lights it.
-    let size = new Float32Array(0), bright = new Float32Array(0), tphase = new Float32Array(0);
-    let tspeed = new Float32Array(0), pick = new Float32Array(0);
-    let baseBuckets = new Uint16Array(0), hotBuckets = new Uint16Array(0);
-    let hotF = new Float32Array(0), dxs = new Float32Array(0), dys = new Float32Array(0);
-    const baseCount = new Uint32Array(BASE_LEVELS);
-    const hotCount = new Uint32Array(HOT_LEVELS);
-
-    let dot = '', hot = '';
-    const glow = document.createElement('canvas');
-    const glowCtx = glow.getContext('2d')!;
-
-    // Pointer: the target, the eased head, a slower trail, the eased strength.
-    let tx = 0, ty = 0, px = 0, py = 0, qx = 0, qy = 0, strength = 0, active = false;
-    let visible = true, running = false, frame = 0, last = 0, t = 0;
+    let w = 0, h = 0, gw = 1, gh = 1;
+    // The released presses' waves: x, y, the time each was released
+    // (negative: none) and its size; the oldest replaced first. A press
+    // being held: x, y, the time it began, 1 while held.
+    const waves = new Float32Array(WAVES * 4);
+    for (let i = 0; i < WAVES; i++) waves[i * 4 + 2] = -1;
+    let nextWave = 0;
+    const charge = new Float32Array(4);
+    // The stars' drift: where it has carried them (px at a pace of 1), its
+    // heading and pace, and the heading and pace a press turned it toward.
+    const drift = new Float32Array(2);
+    let heading = 0.29, pace = 1, toHeading = heading, toPace = pace;
+    let pressId = -1;
+    let visible = true, running = false, frame = 0, last = 0;
+    // The first frame (and the still one): a moment whose light opens between
+    // the copy and the device.
+    let t = 480;
+    // The drift as far along as that moment.
+    drift[0] = Math.cos(heading) * t;
+    drift[1] = Math.sin(heading) * t;
     let perfSum = 0, perfFrames = 0;
 
     function readColors() {
       const style = getComputedStyle(root);
-      dot = style.getPropertyValue('--hero-dot').trim() || 'rgba(255,255,255,.16)';
-      hot = style.getPropertyValue('--hero-dot-hot').trim() || style.getPropertyValue('--citrus').trim() || '#c8f26d';
-      const glowColor = style.getPropertyValue('--hero-glow').trim() || 'rgba(200,242,109,.06)';
-      const px2 = Math.ceil(GLOW * 2 * dpr);
-      glow.width = glow.height = px2;
-      const g = glowCtx.createRadialGradient(px2 / 2, px2 / 2, 0, px2 / 2, px2 / 2, px2 / 2);
-      g.addColorStop(0, glowColor);
-      g.addColorStop(0.45, glowColor.replace(/[\d.]+\)$/, (m) => `${parseFloat(m) * 0.45})`));
-      g.addColorStop(1, 'rgba(0,0,0,0)');
-      glowCtx.clearRect(0, 0, px2, px2);
-      glowCtx.fillStyle = g;
-      glowCtx.fillRect(0, 0, px2, px2);
+      const { program, u } = skyPass;
+      gl!.useProgram(program);
+      const color = (name: string, fallback: number[]) => parse(style.getPropertyValue(name).trim(), fallback);
+      gl!.uniform4fv(u('starColor'), color('--hero-star', [0.93, 0.96, 1, 0.9]));
+      gl!.uniform3fv(u('hotColor'), color('--hero-star-hot', [0.78, 0.95, 0.43, 1]).slice(0, 3));
+      gl!.uniform3fv(u('starBlue'), color('--hero-star-blue', [0.71, 0.8, 1, 1]).slice(0, 3));
+      gl!.uniform3fv(u('starTeal'), color('--hero-star-teal', [0.44, 0.84, 0.66, 1]).slice(0, 3));
+      gl!.uniform3fv(u('starRed'), color('--hero-star-red', [1, 0.48, 0.43, 1]).slice(0, 3));
+      gl!.uniform3fv(u('starOrange'), color('--hero-star-orange', [1, 0.54, 0.36, 1]).slice(0, 3));
+      gl!.uniform3fv(u('starViolet'), color('--hero-star-violet', [0.71, 0.61, 1, 1]).slice(0, 3));
+      gl!.uniform4fv(u('glowColor'), color('--hero-glow', [0.78, 0.95, 0.43, 0.16]));
+      gl!.uniform4fv(u('nebula'), [
+        ...color('--hero-nebula-lime', [0.75, 0.94, 0.39, 0.42]),
+        ...color('--hero-nebula-slate', [0.43, 0.82, 0.47, 0.4]),
+        ...color('--hero-nebula-grey', [0.24, 0.75, 0.67, 0.38]),
+        ...color('--hero-nebula-teal', [0.91, 0.86, 0.43, 0.38]),
+        ...color('--hero-nebula-citrus', [0.84, 0.98, 0.51, 0.44]),
+      ]);
+      gl!.uniform4fv(u('deepColor'), color('--hero-deep', [0, 0, 0, 0]));
     }
 
     function layout() {
       const rect = hero.getBoundingClientRect();
       w = Math.max(1, Math.round(rect.width));
       h = Math.max(1, Math.round(rect.height));
-      dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = Math.min(MAX_DPR, window.devicePixelRatio || 1);
       canvas.width = Math.round(w * dpr);
       canvas.height = Math.round(h * dpr);
-      cx!.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      let s = SPACING;
-      if ((w / s + 2) * (h / s + 2) > MAX_DOTS) s = Math.sqrt((w * h) / MAX_DOTS) + 1;
-      const cols = Math.ceil(w / s) + 2;
-      const rows = Math.ceil(h / s) + 2;
-      n = Math.min(MAX_DOTS, cols * rows);
-      bx = new Float32Array(n); by = new Float32Array(n); side = new Float32Array(n);
-      size = new Float32Array(n); bright = new Float32Array(n); tphase = new Float32Array(n);
-      tspeed = new Float32Array(n); pick = new Float32Array(n);
-      hotF = new Float32Array(n); dxs = new Float32Array(n); dys = new Float32Array(n);
-      baseBuckets = new Uint16Array(BASE_LEVELS * n);
-      hotBuckets = new Uint16Array(HOT_LEVELS * n);
-      const stacked = w < STACKED;
-      const ox = (w - (cols - 1) * s) / 2, oy = (h - (rows - 1) * s) / 2;
-      seed = 0x2545f491;
-      let i = 0;
-      for (let r = 0; r < rows && i < n; r++) {
-        for (let c = 0; c < cols && i < n; c++, i++) {
-          const x = ox + c * s, y = oy + r * s;
-          bx[i] = x; by[i] = y;
-          // Faint over the copy (left, or top when stacked), full around the device.
-          side[i] = 0.12 + 0.88 * (stacked ? smooth(0.3, 0.75, y / h) : smooth(0.12, 0.62, x / w));
-          size[i] = 0.7 + rand() * 0.75;
-          bright[i] = 0.35 + rand() * 0.65;
-          tphase[i] = rand() * Math.PI * 2;
-          tspeed[i] = 0.4 + rand() * 1.4;
-          // Most dots barely react; a few light up well above their neighbours.
-          const p = rand();
-          pick[i] = 0.25 + p * p * 1.35;
-        }
+      gw = Math.ceil(w / FIELD_STEP) + 1;
+      gh = Math.ceil(h / FIELD_STEP) + 1;
+      gl!.bindTexture(gl!.TEXTURE_2D, texture);
+      gl!.texImage2D(gl!.TEXTURE_2D, 0, gl!.RGBA, gw, gh, 0, gl!.RGBA, gl!.UNSIGNED_BYTE, null);
+      const stacked = w < STACKED ? 1 : 0;
+      gl!.useProgram(fieldPass.program);
+      gl!.uniform2f(fieldPass.u('size'), w, h);
+      gl!.uniform2f(fieldPass.u('grid'), gw, gh);
+      const { program, u } = skyPass;
+      gl!.useProgram(program);
+      gl!.uniform1i(u('field'), 0);
+      gl!.uniform2f(u('size'), w, h);
+      gl!.uniform1f(u('dpr'), canvas.width / w);
+      gl!.uniform1f(u('stacked'), stacked);
+      const copy = hero.querySelector('.hero__copy')?.getBoundingClientRect();
+      if (copy) gl!.uniform4f(u('copy'), copy.left - rect.left, copy.top - rect.top, copy.right - rect.left, copy.bottom - rect.top);
+      else gl!.uniform4f(u('copy'), -1e4, -1e4, -1e4, -1e4);
+      const frame = hero.querySelector('.hero__inner')?.getBoundingClientRect();
+      if (frame) gl!.uniform4f(u('frame'), frame.left - rect.left, frame.top - rect.top, frame.right - rect.left, frame.bottom - rect.top);
+      else gl!.uniform4f(u('frame'), 0, 0, w, h);
+      // The galaxy's heart past the copy's trailing edge, toward the device,
+      // level with the copy; between them once stacked.
+      const device = hero.querySelector('.device')?.getBoundingClientRect();
+      if (device) gl!.uniform4f(u('device'), device.left - rect.left, device.top - rect.top, device.right - rect.left, device.bottom - rect.top);
+      else gl!.uniform4f(u('device'), -1e4, -1e4, -1e4, -1e4);
+      if (copy && device) {
+        const x = stacked ? w / 2 : copy.right + (device.left - copy.right) * 0.2 - rect.left;
+        const y = stacked ? ((copy.bottom + device.top) / 2) - rect.top : ((copy.top + copy.bottom) / 2) - rect.top;
+        gl!.uniform2f(u('centre'), x, y);
+      } else {
+        gl!.uniform2f(u('centre'), w * (stacked ? 0.5 : 0.62), h * (stacked ? 0.7 : 0.45));
       }
-      if (!active) { px = qx = tx = w * 0.72; py = qy = ty = h * 0.5; }
       readColors();
       if (!running) draw(0);
     }
@@ -163,104 +586,38 @@
     function draw(dt: number) {
       const start = perf ? performance.now() : 0;
       t += dt;
-      // Ease the pointer, its trail (slower) and its strength, frame-rate independent.
-      const k = 1 - Math.exp(-dt * 6);
-      px += (tx - px) * k;
-      py += (ty - py) * k;
-      const kt = 1 - Math.exp(-dt * 2.2);
-      qx += (px - qx) * kt;
-      qy += (py - qy) * kt;
-      strength += ((active ? 1 : 0) - strength) * (1 - Math.exp(-dt * (active ? 4 : 1.6)));
+      // The drift eases toward the heading and pace the last press set.
+      const ease = Math.min(1, dt * 1.2);
+      heading += (toHeading - heading) * ease;
+      pace += (toPace - pace) * ease;
+      drift[0] += Math.cos(heading) * pace * dt;
+      drift[1] += Math.sin(heading) * pace * dt;
 
-      const c = cx!;
-      c.clearRect(0, 0, w, h);
+      const g = gl!;
+      g.bindFramebuffer(g.FRAMEBUFFER, framebuffer);
+      g.viewport(0, 0, gw, gh);
+      g.useProgram(fieldPass.program);
+      g.uniform1f(fieldPass.u('time'), t);
+      g.drawArrays(g.TRIANGLES, 0, 3);
 
-      // A small, faint halo under the dots.
-      if (strength > 0.01) {
-        c.globalAlpha = strength;
-        c.drawImage(glow, px - GLOW, py - GLOW, GLOW * 2, GLOW * 2);
-      }
-
-      const nt = t * 0.035;
-      baseCount.fill(0);
-      hotCount.fill(0);
-      for (let i = 0; i < n; i++) {
-        let x = bx[i], y = by[i];
-        // Where the grid shimmers: a drifting noise field, sharpened so most
-        // of it stays quiet; each dot twinkles on its own clock.
-        const field = noise(x * 0.006 + nt, y * 0.006 - nt * 0.7);
-        const lit = field * field * field;
-        const twinkle = 0.5 + 0.5 * Math.sin(tphase[i] + t * tspeed[i]);
-        const a = side[i] * bright[i] * (0.18 + 0.82 * lit) * (0.45 + 0.55 * twinkle);
-        x += (noise(x * 0.02 + 7.1, y * 0.02 + nt * 2) - 0.5) * 1.6;
-        y += (noise(x * 0.02 + 3.3 + nt * 2, y * 0.02) - 0.5) * 1.6;
-
-        let f = 0;
-        if (strength > 0.01) {
-          // The reach wobbles with the noise; the trail keeps a weaker reach.
-          const reach = REACH * (0.7 + 0.6 * noise(x * 0.012 + nt * 3, y * 0.012));
-          const r2 = reach * reach;
-          const ex = x - px, ey = y - py, d2 = ex * ex + ey * ey;
-          const fx = x - qx, fy = y - qy, e2 = fx * fx + fy * fy;
-          let head = 0, trail = 0;
-          if (d2 < r2) { const q = 1 - d2 / r2; head = q * q; }
-          if (e2 < r2 * 0.6) { const q = 1 - e2 / (r2 * 0.6); trail = q * q * 0.5; }
-          f = Math.min(1, Math.max(head, trail) * pick[i] * (0.6 + 0.4 * twinkle)) * strength;
-          if (f > 0.02 && d2 > 1) {
-            const len = Math.sqrt(d2);
-            x += (ex / len) * f * 4;
-            y += (ey / len) * f * 4;
-          }
-        }
-        dxs[i] = x; dys[i] = y; hotF[i] = f;
-        const level = Math.min(BASE_LEVELS - 1, (a * BASE_LEVELS) | 0);
-        baseBuckets[level * n + baseCount[level]++] = i;
-        if (f > 0.06) {
-          const hl = Math.min(HOT_LEVELS - 1, (f * HOT_LEVELS) | 0);
-          hotBuckets[hl * n + hotCount[hl]++] = i;
-        }
-      }
-
-      // Base dots: one path per alpha level, each at its own size.
-      c.fillStyle = dot;
-      for (let l = 0; l < BASE_LEVELS; l++) {
-        const count = baseCount[l];
-        if (!count) continue;
-        c.globalAlpha = (l + 0.5) / BASE_LEVELS;
-        c.beginPath();
-        const off = l * n;
-        for (let j = 0; j < count; j++) {
-          const i = baseBuckets[off + j];
-          const r = 0.8 * size[i];
-          c.rect(dxs[i] - r, dys[i] - r, r * 2, r * 2);
-        }
-        c.fill();
-      }
-
-      // Lit dots near the pointer: round, a little larger, in the accent.
-      c.fillStyle = hot;
-      for (let l = 0; l < HOT_LEVELS; l++) {
-        const count = hotCount[l];
-        if (!count) continue;
-        const level = (l + 1) / HOT_LEVELS;
-        c.beginPath();
-        const off = l * n;
-        for (let j = 0; j < count; j++) {
-          const i = hotBuckets[off + j];
-          const x = dxs[i], y = dys[i];
-          const r = size[i] * (0.9 + 1.5 * level);
-          c.moveTo(x + r, y);
-          c.arc(x, y, r, 0, Math.PI * 2);
-        }
-        c.globalAlpha = 0.25 + 0.75 * level;
-        c.fill();
-      }
-      c.globalAlpha = 1;
+      g.bindFramebuffer(g.FRAMEBUFFER, null);
+      g.viewport(0, 0, canvas.width, canvas.height);
+      g.useProgram(skyPass.program);
+      g.activeTexture(g.TEXTURE0);
+      g.bindTexture(g.TEXTURE_2D, texture);
+      g.uniform1f(skyPass.u('time'), t);
+      g.uniform4fv(skyPass.u('waves'), waves);
+      g.uniform4fv(skyPass.u('charge'), charge);
+      g.uniform2fv(skyPass.u('drift'), drift);
+      g.clearColor(0, 0, 0, 0);
+      g.clear(g.COLOR_BUFFER_BIT);
+      g.drawArrays(g.TRIANGLES, 0, 3);
 
       if (perf) {
+        g.finish();
         perfSum += performance.now() - start;
         if (++perfFrames === 120) {
-          console.info('[hero-field]', `mean draw ${(perfSum / perfFrames).toFixed(3)} ms over ${perfFrames} frames, ${n} dots`);
+          console.info('[hero-field]', `mean frame ${(perfSum / perfFrames).toFixed(3)} ms over ${perfFrames} frames, ${canvas.width}×${canvas.height}, field ${gw}×${gh}`);
           perfSum = 0;
           perfFrames = 0;
         }
@@ -275,7 +632,7 @@
     }
 
     function update() {
-      const should = visible && !document.hidden && !reduced.matches;
+      const should = visible && !document.hidden && !reduced.matches && !gl!.isContextLost();
       if (should && !running) {
         running = true;
         last = 0;
@@ -284,29 +641,50 @@
         running = false;
         cancelAnimationFrame(frame);
       }
-      if (reduced.matches) {
-        active = false;
-        strength = 0;
-        draw(0);
-      }
+      if (reduced.matches) draw(0);
     }
 
-    const aim = (clientX: number, clientY: number) => {
-      if (reduced.matches) return;
+    // A press anywhere on the hero (a primary button or a touch) gathers
+    // light while it is held and, released, sends a wave from where it is
+    // then: its size grows with the hold, and chance varies it a little.
+    // None while motion is reduced.
+    const at = (e: PointerEvent) => {
       const rect = hero.getBoundingClientRect();
-      tx = clientX - rect.left;
-      ty = clientY - rect.top;
-      active = true;
+      return [e.clientX - rect.left, e.clientY - rect.top];
     };
-    const release = () => { active = false; };
-    hero.addEventListener('pointermove', (e) => aim(e.clientX, e.clientY), { passive: true });
-    hero.addEventListener('pointerdown', (e) => aim(e.clientX, e.clientY), { passive: true });
-    hero.addEventListener('pointerleave', release, { passive: true });
-    hero.addEventListener('pointerup', (e) => { if (e.pointerType !== 'mouse') release(); }, { passive: true });
-    hero.addEventListener('pointercancel', release, { passive: true });
-    // Scrolling cancels touch pointers; touch events keep following the finger.
-    hero.addEventListener('touchmove', (e) => { const p = e.touches[0]; if (p) aim(p.clientX, p.clientY); }, { passive: true });
-    hero.addEventListener('touchend', release, { passive: true });
+    hero.addEventListener('pointerdown', (e) => {
+      if (reduced.matches || !e.isPrimary || e.button !== 0) return;
+      pressId = e.pointerId;
+      [charge[0], charge[1]] = at(e);
+      charge[2] = t;
+      charge[3] = 1;
+    }, { passive: true });
+    hero.addEventListener('pointermove', (e) => {
+      if (e.pointerId === pressId) [charge[0], charge[1]] = at(e);
+    }, { passive: true });
+    const release = (e: PointerEvent, send: boolean) => {
+      if (e.pointerId !== pressId) return;
+      pressId = -1;
+      charge[3] = 0;
+      if (!send) return;
+      const held = Math.min(1, (t - charge[2]) / FULL_HOLD);
+      const i = nextWave * 4;
+      waves[i] = charge[0];
+      waves[i + 1] = charge[1];
+      waves[i + 2] = t;
+      waves[i + 3] = (0.6 + 1.4 * held) * (0.8 + 0.4 * Math.random());
+      nextWave = (nextWave + 1) % WAVES;
+      // The press turns the stars' drift, by more after a longer hold.
+      toHeading = heading + (Math.random() < 0.5 ? -1 : 1) * (0.5 + 1.5 * held + 0.5 * Math.random());
+      toPace = 0.7 + 0.6 * Math.random() + 0.6 * held;
+    };
+    // Released anywhere: the wave starts where the press last was on the hero.
+    window.addEventListener('pointerup', (e) => release(e, true), { passive: true });
+    // A press the browser takes for scrolling or a gesture sends nothing.
+    window.addEventListener('pointercancel', (e) => release(e, false), { passive: true });
+
+    // A lost context (the GPU reset) stops the field until the page reloads.
+    canvas.addEventListener('webglcontextlost', (e) => { e.preventDefault(); update(); });
 
     new ResizeObserver(layout).observe(hero);
     new IntersectionObserver((entries) => {

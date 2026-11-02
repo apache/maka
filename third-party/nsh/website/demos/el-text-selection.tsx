@@ -13,7 +13,7 @@ function App() {
       <View style={{ width: "100%", maxWidth: 560, alignSelf: "center", padding: 20, paddingTop: 24, gap: 14 }}>
         <Text style={{ fontSize: 22, fontWeight: "700", color: ui().text }}>selectable view</Text>
         <Text style={{ color: ui().muted, lineHeight: 20 }}>
-          {platform.idiom === "desktop"
+          {platform.desktop
             ? "Drag with the mouse from the title into the list: one selection runs across them. Double click a word, triple click a paragraph, Ctrl / Cmd+C copies."
             : "Long press a word, then drag the handles across the texts: one selection runs across them. Copy is in the menu."}
         </Text>

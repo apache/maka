@@ -17,140 +17,30 @@
  * under the License.
  */
 
-//! Fixture-only prepared source. Semantic reads fail so live and loopback tests
-//! cannot accidentally exercise the explicit in-memory fallback path.
-use maka_agent_facts::model::prompt_source::{
-    Next, NextWire, NextWireMetadata, WireMetadata, WireMetadataCursor, WirePosition,
-};
+//! Prepared wire requests fail immediately if the executor opens semantic history.
 use maka_model::{
-    ModelError, ModelRequest,
-    prompt::{Message, Prompt, PromptCursor, PromptSource, WireChunk, WireCursor, WireSource},
+    ModelRequest,
+    prompt::{Message, Prompt, PromptCursor, PromptSource},
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
-#[derive(Default)]
-struct Counters {
-    semantic: AtomicUsize,
-    wire_bytes: AtomicUsize,
-}
-pub(crate) struct Reads(Arc<Counters>);
-impl Reads {
-    pub(crate) fn assert_wire_only(&self) {
-        assert_eq!(
-            self.0.semantic.load(Ordering::SeqCst),
-            0,
-            "prepared request must never open semantic history"
-        );
-        assert!(
-            self.0.wire_bytes.load(Ordering::SeqCst) > 0,
-            "provider must consume the prepared body"
-        );
-    }
-}
-struct Source {
-    chunks: Arc<Vec<WireChunk>>,
-    counters: Arc<Counters>,
-}
-struct FailedCursor;
-impl PromptSource for Source {
+struct FailedSource;
+impl PromptSource for FailedSource {
     fn open(&self) -> Box<dyn PromptCursor> {
-        self.counters.semantic.fetch_add(1, Ordering::SeqCst);
-        Box::new(FailedCursor)
+        panic!("prepared request must not open semantic history")
     }
 }
-impl PromptCursor for FailedCursor {
-    fn next(&mut self) -> Next<'_> {
-        Box::pin(async {
-            Err(ModelError::Adapter(
-                "fixture semantic history must remain unread".into(),
-            ))
-        })
-    }
-}
-struct Cursor {
-    chunks: Arc<Vec<WireChunk>>,
-    position: usize,
-    counters: Arc<Counters>,
-}
-impl WireCursor for Cursor {
-    fn next(&mut self) -> NextWire<'_> {
-        Box::pin(async move {
-            let Some(chunk) = self.chunks.get(self.position) else {
-                return Ok(None);
-            };
-            self.position += 1;
-            self.counters
-                .wire_bytes
-                .fetch_add(chunk.bytes.len(), Ordering::SeqCst);
-            Ok(Some(WireChunk {
-                bytes: chunk.bytes.clone(),
-                item_start: chunk.item_start,
-                item_end: chunk.item_end,
-                message_index: chunk.message_index,
-                metadata: chunk.metadata.clone(),
-            }))
-        })
-    }
-}
-struct MetadataCursor {
-    chunks: Arc<Vec<WireChunk>>,
-    position: usize,
-}
-impl WireMetadataCursor for MetadataCursor {
-    fn next(&mut self) -> NextWireMetadata<'_> {
-        Box::pin(async move {
-            while let Some(chunk) = self.chunks.get(self.position) {
-                let piece_index = self.position;
-                self.position += 1;
-                if let Some(metadata) = &chunk.metadata {
-                    return Ok(Some(WireMetadata {
-                        position: WirePosition {
-                            message_index: chunk.message_index,
-                            piece_index,
-                        },
-                        message_index: chunk.message_index,
-                        metadata: metadata.clone(),
-                    }));
-                }
-            }
-            Ok(None)
-        })
-    }
-}
-impl Source {
-    fn position(&self, start: usize) -> usize {
-        self.chunks
-            .iter()
-            .position(|chunk| chunk.message_index >= start)
-            .unwrap_or(self.chunks.len())
-    }
-    fn cursor(&self, position: usize) -> Box<dyn WireCursor> {
-        Box::new(Cursor {
-            chunks: self.chunks.clone(),
-            position,
-            counters: self.counters.clone(),
-        })
-    }
-}
-impl WireSource for Source {
-    fn open(&self, start_message: usize) -> Box<dyn WireCursor> {
-        self.cursor(self.position(start_message))
-    }
-    fn open_at(&self, position: WirePosition) -> Option<Box<dyn WireCursor>> {
-        Some(self.cursor(position.piece_index))
-    }
-    fn open_metadata(&self, start_message: usize) -> Option<Box<dyn WireMetadataCursor>> {
-        Some(Box::new(MetadataCursor {
-            chunks: self.chunks.clone(),
-            position: self.position(start_message),
-        }))
-    }
+fn resources() -> maka_model::ModelPreparationResources {
+    maka_model::ModelPreparationResources::new(maka_model::PreparationPolicy {
+        staging_bytes: 8 * 1024 * 1024,
+        resident_bytes: 8 * 1024 * 1024,
+        progress_bytes: 256 * 1024,
+        work_bytes: 256 * 1024,
+    })
+    .unwrap()
 }
 
-pub(crate) fn prepare_input(input: &mut ModelRequest) -> Reads {
+pub(crate) async fn prepare_input(input: &mut ModelRequest) {
     let messages = input
         .prompt
         .memory_messages()
@@ -165,29 +55,33 @@ pub(crate) fn prepare_input(input: &mut ModelRequest) -> Reads {
         })
         .unwrap_or_default();
     let logical = Prompt::from_messages(messages.clone());
-    let wire = maka_model::WireEncoding::new(
+    let encoding = maka_model::WireEncoding::new(
         input.language,
         &input.provider,
         &input.provider_options,
         &input.tools,
     )
-    .unwrap()
-    .prepare_group(messages, &maka_model::PreparationContext::default());
-    let identity = format!("fixture-wire-v1:{}:{}", logical.identity(), wire.codec);
-    let chunks = wire.chunks.collect::<Result<Vec<_>, _>>().unwrap();
-    let counters = Arc::new(Counters::default());
-    let source = Arc::new(Source {
-        chunks: Arc::new(chunks),
-        counters: counters.clone(),
-    });
+    .unwrap();
+    let format = encoding.format();
+    let codec = encoding.codec().to_owned();
+    let wire = encoding
+        .prepare_source(
+            Arc::new(
+                maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(
+                    &messages,
+                ),
+            ),
+            resources(),
+        )
+        .await
+        .unwrap();
     input.prompt = Prompt::new(
-        source.clone(),
+        Arc::new(FailedSource),
         logical.identity(),
         logical.len(),
         logical.breakdown().clone(),
     )
     .with_normalization(input.provider.kind.clone())
-    .with_wire(wire.format, wire.codec, identity, source)
+    .with_wire(format, codec, wire.identity, wire.source)
     .with_instructions(instructions);
-    Reads(counters)
 }

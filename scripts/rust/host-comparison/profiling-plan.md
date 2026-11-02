@@ -105,20 +105,7 @@ work after provider drain remains attributed to Host persistence/verification.
 Also inspect provider event-loop lateness and controller CPU: driver saturation
 invalidates an inference about Host capacity.
 
-For long state, use `session_longevity::fixed_window_history` with one surviving
-Root/Engine and cumulative `MAKA_LONGEVITY_H=1000,5000,10000`, fixed W/P and recorded
-repetitions; compare P=0 with explicitly retained leases when testing retention.
-Use `session_longevity::same_run_steps` separately for one long tool Run per
-Session and actual automatic compaction. Fix W and steps across revisions.
-Retain fixtures with `MAKA_LONGEVITY_RETAIN_FIXTURE=1`, then run
-`session_longevity::retained_fixture_reopens` using the emitted retained record.
-Check canonical tool dispatch/resolution counts, compaction/checkpoints and zero
-errors. Do not substitute raw SQLite copies or a replacement writer for live
-state. The existing sampling gate pauses tool progress while collection finishes,
-including cancellation; its sampling pauses and SQL table scans are diagnostic
-work. Exclude them from operation timing and from CPU-hotspot attribution using
-phase boundaries, while retaining their cost separately. `sql_queue_backlog` is
-currently null and must not be interpreted as a measured zero.
+For long histories, use the retained `long_task_perf::engine_long_history` fixture and `benchmark-long-task.py` with identical fixture source and workload settings. Separate seeding, request delivery and completion timing. Confirm actual requests and completed work in its records; profiling is a separate run.
 
 ## Bounded fallback instrumentation
 
@@ -147,7 +134,7 @@ After diagnosis, rebuild normal production binaries and run at least five
 alternating baseline/candidate pairs with frozen workload and no profiler or
 temporary instrumentation. Keep every failure, actual completed work, hashes and
 resource samples. Summarize medians and ranges only for complete comparable
-campaigns. `benchmark-long-task.py` covers other retained operation-specific
+campaigns. `benchmark-long-task.py` covers the retained Engine request/completion
 release probes; it does not parse `MAKA_SESSION_LONGEVITY` receipts and must not
 be silently reused as a longevity reducer. A longevity reducer must preserve
 configuration fingerprints, H/W/P, errors, fixture verification and distinct raw,

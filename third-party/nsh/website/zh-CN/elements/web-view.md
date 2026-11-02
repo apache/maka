@@ -1,7 +1,7 @@
 ---
 title: WebView
 description: WebView 元素：在应用中显示网页和内联 HTML，并支持双向通信。
-order: 9
+order: 80
 group: primitives
 demo: el-web-view
 ---
@@ -75,7 +75,7 @@ web view 接受 [view](./view.md) 的属性（它没有子元素），另外还�
 |---|---|---|---|
 | `onLoadStart` | `.on_load_start` | `WebViewNavigation` | 页面开始加载。 |
 | `onLoad` | `.on_load` | `WebViewNavigation` | 页面加载完成。 |
-| `onError` | `.on_error` | `{ message }`（`&str`） | 加载失败。 |
+| `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载失败；页面或 `html` 不在应用的能力范围内时 `code` 为 `"ERR_ACCESS_DENIED"`。 |
 | `onNavigationStateChange` | `.on_navigation_state_change` | `WebViewNavigation` | URL、标题、加载状态或历史记录发生变化。 |
 | `onMessage` | `.on_message` | `{ data: string }`（`&str`） | 页面调用了 `window.nsh.postMessage(data)`。 |
 
@@ -149,7 +149,7 @@ function Bridge() {
 
 ## 能力声明
 
-应用在 `nsh.json` 中声明了[能力](../docs/sandbox-and-capabilities.md)时，web view 显示和跳转到 `webview` 下列出的主机。指向其他主机的 `src` 显示为空视图；跳到其他主机的顶层导航（用户点击的链接）会在原生侧取消。
+应用在 `nsh.json` 中声明了[能力](../docs/sandbox-and-capabilities.md)时，web view 显示和跳转到 `webview` 下列出的主机。指向其他主机的 `src`，或未声明 `webview` 的应用中的 `html`，显示为空视图；跳到其他主机的顶层导航（用户点击的链接）会在原生侧取消。每种情况都会触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。
 
 ```json
 {

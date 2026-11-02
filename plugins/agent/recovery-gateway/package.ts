@@ -31,7 +31,6 @@ export default {
     host: {
       ...native(sdk.nativeImplementations.gateway),
       imports: {
-        skillOutcomes: one(sdk.contracts.skillOutcomes),
         receipts: one(sdk.contracts.receiptReader),
       },
     },

@@ -251,7 +251,7 @@ export function RichEditorDemo() {
   const revision = signal(editor.revision);
   const source = signal(editor.getMarkdown());
   const text = signal(editor.getText());
-  editor.subscribe((r) => {
+  editor.on("revision", ({ revision: r }) => {
     revision.set(r);
     source.set(editor.getMarkdown());
     text.set(editor.getText());

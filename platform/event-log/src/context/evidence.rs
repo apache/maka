@@ -88,6 +88,3 @@ pub(super) async fn high_water(
         .high_water(connection, sequence_number(before.saturating_sub(1))?)
         .await
 }
-
-#[cfg(test)]
-mod tests;

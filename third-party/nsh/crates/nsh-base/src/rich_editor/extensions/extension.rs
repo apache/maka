@@ -591,7 +591,7 @@ impl ExtensionManager {
         }
         let mut flat = Vec::new();
         flatten(extensions, &mut flat);
-        flat.sort_by_key(|e| std::cmp::Reverse(e.priority));
+        crate::sort::sort_by_key(&mut flat, |e| std::cmp::Reverse(e.priority));
         let mut seen = std::collections::HashSet::new();
         for extension in &flat {
             if !seen.insert(extension.name.as_str()) {
@@ -669,7 +669,7 @@ impl ExtensionManager {
     /// it, and the core's run last).
     pub fn runtime_order(&self) -> Vec<&Extension> {
         let mut order: Vec<&Extension> = self.extensions.iter().rev().collect();
-        order.sort_by_key(|e| std::cmp::Reverse(e.priority));
+        crate::sort::sort_by_key(&mut order, |e| std::cmp::Reverse(e.priority));
         order
     }
 

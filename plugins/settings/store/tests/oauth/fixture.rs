@@ -34,7 +34,7 @@ pub(super) fn credential(secret: &str) -> Credential {
 }
 
 pub(super) struct Fixture {
-    pub(super) temp: tempfile::TempDir,
+    pub(super) _temp: tempfile::TempDir,
     pub(super) store: Arc<ConfigurationStore>,
     pub(super) target: ConnectionCredentialTarget,
 }
@@ -82,7 +82,7 @@ impl Fixture {
             configuration: json!({"endpoint":"https://provider.test/v1"}),
         };
         Self {
-            temp,
+            _temp: temp,
             store,
             target,
         }
@@ -161,14 +161,6 @@ impl Fixture {
             panic!("updated connection");
         };
         self.target.revision = basis.revision;
-    }
-    pub(super) async fn sql(&self) -> sqlx::SqliteConnection {
-        sqlx::SqliteConnection::connect_with(
-            &sqlx::sqlite::SqliteConnectOptions::new()
-                .filename(self.temp.path().join("root/configuration-rust.sqlite")),
-        )
-        .await
-        .unwrap()
     }
     pub(super) async fn remove(&self) {
         let result = self

@@ -19,7 +19,6 @@
 
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::RuntimeEvent;
-use maka_agent_facts::model::ModelToolCall;
 use maka_agent_facts::tool_call::{HostSdkParent, ToolOrigin};
 use sqlx::SqliteConnection;
 
@@ -39,6 +38,24 @@ fn identity(value: &str) -> Result<(), StoreError> {
 impl crate::EventLog {
     /// The immutable T1 whose input the original prepared effect will execute.
     /// This is evidence for a confirmation, not effect admission or authorization.
+    pub async fn tool_dispatch_receipt(
+        &self,
+        context: &maka_agent_facts::tools::ToolCallContext,
+        name: &str,
+        input: &serde_json::Value,
+    ) -> Result<maka_agent_facts::native_approval::DispatchReceipt, StoreError> {
+        self.validate_root()?;
+        self.check_bound_session(&context.invocation.session_id)?;
+        let context = context.clone();
+        let name = name.to_owned();
+        let input = input.clone();
+        self.connection.read(move |db|Box::pin(async move {
+            let (sequence,json):(i64,String)=sqlx::query_as("SELECT sequence,event_header FROM runtime_events WHERE invocation_id=? AND operation_id=? AND kind='tool_dispatched'").bind(&context.invocation.invocation_id).bind(&context.operation_id).fetch_optional(db).await?.ok_or_else(||invalid("service confirmation requires durable dispatch"))?;
+            let event:RuntimeEvent=serde_json::from_str(&json)?;
+            if event.invocation!=context.invocation || !matches!(&event.fact,Fact::ToolDispatched{name:original,input:original_input,..} if *original==name && *original_input==input) {return Err(invalid("service confirmation differs from durable dispatch"))}
+            Ok(maka_agent_facts::native_approval::DispatchReceipt{event_id:event.id,sequence:crate::sequence_number(sequence)?})
+        })).await
+    }
     pub async fn tool_dispatch_fence(
         &self,
         context: &maka_agent_facts::tools::ToolCallContext,
@@ -53,7 +70,7 @@ impl crate::EventLog {
             .run(move |connection| {
                 Box::pin(async move {
                     let (sequence, encoded): (i64, String) = sqlx::query_as(
-                        "SELECT sequence, event_json FROM runtime_events
+                        "SELECT sequence, event_header FROM runtime_events
                  WHERE invocation_id = ? AND operation_id = ? AND kind = 'tool_dispatched'",
                     )
                     .bind(&context.invocation.invocation_id)
@@ -110,7 +127,7 @@ pub(crate) async fn validate(
             }
             let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events d
                 WHERE d.invocation_id=? AND d.operation_id=? AND d.kind='tool_dispatched'
-                  AND json_extract(d.event_json,'$.fact.call.origin.kind')='code_cell'
+                  AND json_extract(d.event_header,'$.fact.call.origin.kind')='code_cell'
                   AND NOT EXISTS(SELECT 1 FROM runtime_events s WHERE s.invocation_id=d.invocation_id
                     AND s.operation_id=d.operation_id AND s.kind='tool_settled'))")
                 .bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
@@ -147,14 +164,14 @@ pub(crate) async fn validate(
                        WHERE operation_id=?1 AND kind IN ('tool_dispatched','tool_rejected'))
                      OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
                        AND kind IN ('tool_dispatched','tool_rejected')
-                       AND json_extract(event_json,'$.fact.call.tool_call_id')=?3
-                       AND CASE WHEN json_extract(event_json,'$.fact.call.origin.kind')='provider'
-                         THEN json_extract(event_json,'$.fact.call.origin.step_id') END IS NULL)
+                       AND json_extract(event_header,'$.fact.call.tool_call_id')=?3
+                       AND CASE WHEN json_extract(event_header,'$.fact.call.origin.kind')='provider'
+                         THEN json_extract(event_header,'$.fact.call.origin.step_id') END IS NULL)
                      OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
                        AND kind IN ('tool_dispatched','tool_rejected')
-                       AND json_extract(event_json,'$.fact.call.tool_call_id')=?3
-                       AND CASE WHEN json_extract(event_json,'$.fact.call.origin.kind')='provider'
-                         THEN json_extract(event_json,'$.fact.call.origin.step_id') END=?4)",
+                       AND json_extract(event_header,'$.fact.call.tool_call_id')=?3
+                       AND CASE WHEN json_extract(event_header,'$.fact.call.origin.kind')='provider'
+                         THEN json_extract(event_header,'$.fact.call.origin.step_id') END=?4)",
                 )
                 .bind(operation_id)
                 .bind(invocation)
@@ -168,7 +185,7 @@ pub(crate) async fn validate(
                        WHERE operation_id=?1 AND kind IN ('tool_dispatched','tool_rejected'))
                      OR EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id=?2
                        AND kind IN ('tool_dispatched','tool_rejected')
-                       AND json_extract(event_json,'$.fact.call.tool_call_id')=?3)",
+                       AND json_extract(event_header,'$.fact.call.tool_call_id')=?3)",
                 )
                 .bind(operation_id)
                 .bind(invocation)
@@ -230,7 +247,7 @@ pub(crate) async fn validate(
                         "SELECT EXISTS(SELECT 1 FROM runtime_events AS parent
                          WHERE parent.invocation_id = ? AND parent.operation_id = ?
                          AND parent.kind = 'tool_dispatched'
-                         AND json_extract(parent.event_json, '$.fact.call.tool_call_id') = ?
+                         AND json_extract(parent.event_header, '$.fact.call.tool_call_id') = ?
                          AND NOT EXISTS(SELECT 1 FROM runtime_events AS settled
                              WHERE settled.invocation_id = parent.invocation_id
                              AND settled.operation_id = parent.operation_id
@@ -254,26 +271,16 @@ pub(crate) async fn validate(
                             "provider tool operation identity does not match step and call",
                         ));
                     }
-                    let accepted = if let Some(builder) = crate::model_items::read(tx, invocation, step_id).await? {
-                        builder.accepted_parts().find_map(|(_, part)| match part {
-                            maka_agent_facts::model::ModelPart::ToolCall { call: accepted }
-                                if accepted.id == call.tool_call_id && !accepted.provider_executed => Some(accepted.clone()),
-                            _ => None,
-                        })
-                    } else {
-                        // Legacy journals accept calls at whole-response completion.
-                        let accepted: Option<String> = sqlx::query_scalar(
-                            "SELECT json_extract(part.value, '$.call')
-                             FROM runtime_events AS model, json_each(model.event_json, '$.fact.output.parts') AS part
-                             WHERE model.invocation_id = ? AND model.operation_id = ?
-                             AND model.kind = 'model_completed'
-                             AND json_extract(part.value, '$.kind') = 'tool_call'
-                             AND json_extract(part.value, '$.call.id') = ?
-                             AND json_extract(part.value, '$.call.provider_executed') = 0",
-                        ).bind(invocation).bind(step_id).bind(&call.tool_call_id)
-                            .fetch_optional(&mut *tx).await?;
-                        accepted.map(|json| serde_json::from_str::<ModelToolCall>(&json)).transpose()?
-                    }.ok_or_else(|| invalid("provider tool requires an accepted local model call"))?;
+                    let accepted = crate::model_items::accepted_call(
+                        tx,
+                        invocation,
+                        step_id,
+                        &call.tool_call_id,
+                    )
+                    .await?
+                    .ok_or_else(|| {
+                        invalid("provider tool requires an accepted local model call")
+                    })?;
                     let same_input = match &event.fact {
                         Fact::ToolDispatched { input, .. } => matches!(
                             &accepted.input,
@@ -293,11 +300,11 @@ pub(crate) async fn validate(
                 "SELECT EXISTS(SELECT 1 FROM context_obligations live
                  CROSS JOIN runtime_events child ON child.sequence=live.opened_at
                  WHERE live.invocation_id = ?1 AND live.kind='tool'
-                 AND ((json_extract(child.event_json, '$.fact.call.origin.kind') = 'code_mode'
-                   AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?2)
-                   OR (json_extract(child.event_json, '$.fact.call.origin.kind') = 'host_sdk'
-                     AND json_extract(child.event_json, '$.fact.call.origin.parent_relationship.kind') IS NOT 'evaluation_observer'
-                     AND json_extract(child.event_json, '$.fact.call.origin.parent_operation_id') = ?2)))",
+                 AND ((json_extract(child.event_header, '$.fact.call.origin.kind') = 'code_mode'
+                   AND json_extract(child.event_header, '$.fact.call.origin.parent_operation_id') = ?2)
+                   OR (json_extract(child.event_header, '$.fact.call.origin.kind') = 'host_sdk'
+                     AND json_extract(child.event_header, '$.fact.call.origin.parent_relationship.kind') IS NOT 'evaluation_observer'
+                     AND json_extract(child.event_header, '$.fact.call.origin.parent_operation_id') = ?2)))",
             ).bind(invocation).bind(operation_id).fetch_one(&mut *tx).await?;
             if pending {
                 return Err(invalid("parent tool cannot settle before its children"));

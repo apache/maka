@@ -277,12 +277,12 @@ mod tests {
     use maka_agent_ports::model::Credentials;
     use maka_agent_ports::model::Socket;
     use maka_agent_ports::model::Transport;
-    use maka_agent_ports::provider::Definition;
     use maka_agent_ports::provider::Descriptor;
     use maka_agent_ports::provider::Error;
     use maka_agent_ports::provider::Model;
     use maka_agent_ports::provider::Provider;
     use maka_agent_ports::provider::Resolve;
+    use maka_agent_ports::provider::{Definition, Policy};
     use maka_capabilities::http;
     use maka_config::{
         ConfigurationStore,
@@ -475,9 +475,9 @@ mod tests {
                 scope: maka_plugin_core::scope::Scope::Profile,
                 name: "account".into(),
             };
-            let definition = Arc::new(
-                Definition::new(
-                    Descriptor {
+            let definition = Arc::new(Definition::new(
+                Arc::new(
+                    Policy::new(Descriptor {
                         label: "External account".into(),
                         custom_endpoint: false,
                         configuration_schema: json!({"type":"object"}),
@@ -485,11 +485,11 @@ mod tests {
                         authentication: vec![],
                         anonymous: false,
                         discovery: false,
-                    },
-                    Arc::new(RefreshProvider),
-                )
-                .unwrap(),
-            );
+                    })
+                    .unwrap(),
+                ),
+                Arc::new(RefreshProvider),
+            ));
             let LoginPreparation::Ready(login) = store.prepare_oauth_login(
                 serde_json::from_value(json!({
                     "attemptId":"fixture-login",

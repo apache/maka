@@ -25,7 +25,6 @@ use maka_agent_facts::context::ModelPurpose;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
-use serde_json::json;
 use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
@@ -33,7 +32,6 @@ use std::sync::{
 use tokio::{net::TcpListener, sync::Barrier};
 use tokio_util::sync::CancellationToken;
 
-#[path = "auto_context/background.rs"]
 mod background;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
@@ -60,12 +58,14 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
         );
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let observed = log.clone();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut socket).await;
             fixture::respond(&mut socket, "old-answer", "stop").await;
             let mut requests = Vec::new();
             let mut main = None;
+            let mut summary = None;
             for _ in 0..if expected { 2 } else { 1 } {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut socket).await;
@@ -77,11 +77,35 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
                     .next()
                     .unwrap(),
                 ) {
-                    fixture::respond(&mut socket, fixture::SUMMARY, "stop").await;
+                    summary = Some(socket);
                 } else {
                     main = Some(socket);
                 }
                 requests.push(request);
+            }
+            if let Some(mut summary) = summary {
+                let mut commits = observed.subscribe_commits();
+                crate::context_overflow::overflow(main.as_mut().unwrap(), false).await;
+                // Keep the provider's Summary unfinished until the Main has
+                // durably announced that it is waiting for that same candidate.
+                tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                    loop {
+                        let prefix = observed.prefix(100, 128 * 1024).await.unwrap();
+                        if prefix.events.iter().any(|event| {
+                            event.event.invocation.invocation_id == "invocation-next"
+                                && matches!(event.event.fact, Fact::ContextCompactionWaiting)
+                        }) {
+                            break;
+                        }
+                        commits.changed().await.unwrap();
+                    }
+                })
+                .await
+                .expect("Main overflow waits for its pending Summary");
+                fixture::respond(&mut summary, fixture::SUMMARY, "stop").await;
+                let (mut resumed, _) = listener.accept().await.unwrap();
+                requests.push(fixture::read_request(&mut resumed).await);
+                main = Some(resumed);
             }
             fixture::respond(main.as_mut().unwrap(), "done", "stop").await;
             requests
@@ -116,7 +140,7 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             )
         });
         assert_eq!(summaries.len(), usize::from(expected));
-        assert_eq!(mains.len(), 1);
+        assert_eq!(mains.len(), 1 + usize::from(expected));
         let output = mains[0]["max_tokens"].as_u64().unwrap();
         if matching {
             // Proactive work runs alongside the main request. Until adoption,
@@ -126,6 +150,13 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             assert!((199_000..200_000).contains(&output));
         }
         let prefix = log.prefix(100, 128 * 1024).await.unwrap();
+        assert_eq!(
+            prefix
+                .events
+                .iter()
+                .any(|event| matches!(event.event.fact, Fact::ContextCompactionWaiting)),
+            expected
+        );
         assert_eq!(
             prefix
                 .events
@@ -149,6 +180,10 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
             );
             assert!(mains[0]["messages"].to_string().contains("question-next"));
             assert!(mains[0]["messages"].to_string().contains("old-answer"));
+            let resumed = mains[1]["messages"].to_string();
+            assert!(resumed.contains("summary-marker"));
+            assert!(resumed.contains("question-next"));
+            assert!(!resumed.contains("old-answer"));
         }
     }
 }
@@ -159,10 +194,11 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
     let path = directory.path().join("events.sqlite");
     let log = Arc::new(SessionFixture::open(&path).await.unwrap());
 
-    image_projection::artifact(&log, "anchor-image", 8, true).await;
+    let original_image = image_projection::png(8, 8).await;
+    image_projection::artifact(&log, "anchor-image", original_image.clone()).await;
     let mut image: maka_agent_facts::attachment::AttachmentRef =
         serde_json::from_value(image_projection::attachment("anchor-image")).unwrap();
-    image.bytes = 8;
+    image.bytes = original_image.len() as u64;
     let image_reference = image.storage_ref.resource_ref().unwrap();
     let summary_text = format!("{}\nRequired image: {image_reference}", fixture::SUMMARY);
     let retained_summary = summary_text.clone();
@@ -305,11 +341,12 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
         Some(address)
     );
     let image = log
-        .read_artifact_chunk("session", "anchor-image", 0, 8)
+        .read_artifact_chunk("session", "anchor-image", 0, original_image.len())
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(image.bytes, b"\x89PNG\r\n\x1a\n");
+    assert_eq!(image.bytes, original_image);
+    assert_eq!(image.total_bytes, image.bytes.len() as u64);
     let source = log
         .get_session::<serde_json::Value>("session")
         .await
@@ -356,15 +393,13 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
         .unwrap()
         .unwrap();
     assert_ne!(copied.id(), "anchor-image");
-    assert_eq!(
-        branch
-            .read_artifact_chunk("branch", copied.id(), 0, 8)
-            .await
-            .unwrap()
-            .unwrap()
-            .bytes,
-        image.bytes
-    );
+    let copied_image = branch
+        .read_artifact_chunk("branch", copied.id(), 0, original_image.len())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(copied_image.total_bytes, image.total_bytes);
+    assert_eq!(copied_image.bytes, image.bytes);
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}/v1", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {

@@ -404,7 +404,7 @@ impl<H: Host> Graph<H> {
     }
 
     /// Replaces node `id`'s value with `value`, without notifying: the old
-    /// one, to change and write back ([`write`]).
+    /// one, to change and write back ([`write()`]).
     pub fn replace_value(&mut self, id: u32, value: H::Value) -> H::Value {
         std::mem::replace(&mut self.nodes[id as usize].value, value)
     }
@@ -673,9 +673,23 @@ fn g<'a, H: Host>(h: H) -> &'a mut Graph<H> {
 /// root, `runWithOwner`): what `f` makes runs at once rather than queued;
 /// only effects wait for the end.
 pub fn run_updates<H: Host, R>(h: H, init: bool, f: impl FnOnce() -> R) -> R {
+    let Some(wait) = begin_updates(h, init) else {
+        return f();
+    };
+    let r = f();
+    end_updates(h, wait);
+    r
+}
+
+/// The start of a [`run_updates`] round, out of line so the generic
+/// function is little more than its closure (one per closure, hundreds in
+/// all): `None` inside a running round, else whether the effects wait for
+/// an outer round.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn begin_updates<H: Host>(h: H, init: bool) -> Option<bool> {
     let graph = g(h);
     if graph.updates.is_some() {
-        return f();
+        return None;
     }
     if !init {
         graph.updates = Some(Vec::new());
@@ -687,14 +701,18 @@ pub fn run_updates<H: Host, R>(h: H, init: bool, f: impl FnOnce() -> R) -> R {
         false
     };
     graph.exec += 1;
-    let r = f();
+    Some(wait)
+}
+
+/// The end of a [`run_updates`] round.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn end_updates<H: Host>(h: H, wait: bool) {
     complete_updates(h, wait);
     if !wait {
         // The round ended: the runaway count starts over. The JS host also
         // resets it when a call returns; Rust components make no such call.
         g(h).reset_runs();
     }
-    r
 }
 
 /// Solid's `completeUpdates`. Solid runs the effects in a new round, whose
@@ -1040,10 +1058,17 @@ pub fn effect<H: Host>(h: H, kind: Kind, func: H::Func, value: H::Value) -> u32 
 
 /// Runs `f` with no listener (untracked).
 pub fn untracked<H: Host, R>(h: H, f: impl FnOnce() -> R) -> R {
-    let listener = g(h).set_listener(NONE);
+    let listener = swap_listener(h, NONE);
     let r = f();
-    g(h).listener = listener;
+    swap_listener(h, listener);
     r
+}
+
+/// Makes `listener` the graph's, returning the previous one (out of line
+/// for the generic functions around closures).
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn swap_listener<H: Host>(h: H, listener: u32) -> u32 {
+    g(h).set_listener(listener)
 }
 
 /// Runs `f` as one batch: its writes apply together at the end.
@@ -1054,14 +1079,28 @@ pub fn batch<H: Host, R>(h: H, f: impl FnOnce() -> R) -> R {
 /// Runs `f` under owner `owner` with no listener, as a root runs (what `f`
 /// makes runs at once).
 pub fn with_owner<H: Host, R>(h: H, owner: u32, f: impl FnOnce() -> R) -> R {
+    let previous = enter_owner_untracked(h, owner);
+    let r = run_updates(h, true, f);
+    leave_owner_untracked(h, previous);
+    r
+}
+
+/// The start of [`with_owner`]: `owner` current, no listener; what was
+/// before, for [`leave_owner_untracked`].
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn enter_owner_untracked<H: Host>(h: H, owner: u32) -> (SavedOwner, u32) {
     let graph = g(h);
     let previous_owner = graph.enter_owner(owner);
     let previous_listener = graph.set_listener(NONE);
-    let r = run_updates(h, true, f);
+    (previous_owner, previous_listener)
+}
+
+/// The end of [`with_owner`]: the owner and listener before it back.
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn leave_owner_untracked<H: Host>(h: H, (previous_owner, previous_listener): (SavedOwner, u32)) {
     let graph = g(h);
     graph.leave_owner(previous_owner);
     graph.listener = previous_listener;
-    r
 }
 
 /// Runs `f` in a new root owner under the current one (context passes
@@ -1071,11 +1110,19 @@ pub fn with_owner<H: Host, R>(h: H, owner: u32, f: impl FnOnce() -> R) -> R {
 /// Under [`DISPOSED`] there is no root: `f` runs there too (what it makes
 /// goes at once) and the root is `DISPOSED`, which disposing ignores.
 pub fn with_root<H: Host, R>(h: H, f: impl FnOnce() -> R) -> (u32, R) {
-    if g(h).owner == DISPOSED {
-        return (DISPOSED, with_owner(h, DISPOSED, f));
-    }
-    let id = g(h).root();
+    let id = new_root(h);
     (id, with_owner(h, id, f))
+}
+
+/// The root [`with_root`] runs under: a new one, or [`DISPOSED`].
+#[cfg_attr(target_arch = "wasm32", inline(never))]
+fn new_root<H: Host>(h: H) -> u32 {
+    let graph = g(h);
+    if graph.owner == DISPOSED {
+        DISPOSED
+    } else {
+        graph.root()
+    }
 }
 
 /// [`with_root`] as if run under `owner`: what is made later (a list's

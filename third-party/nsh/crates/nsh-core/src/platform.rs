@@ -83,11 +83,18 @@ impl Os {
         }
     }
 
-    /// A desktop OS (macOS, Windows, Linux). A surface's graphical desktop
-    /// behavior (`nsh/desktop`, `desktop={{…}}` props) also depends on its
-    /// renderer and browser idiom: [`Environment::desktop`].
+    /// A desktop OS (macOS, Windows, Linux). Graphical desktop behavior
+    /// also depends on the renderer and browser idiom: [`Environment::desktop`].
     pub fn is_desktop(self) -> bool {
         matches!(self, Os::MacOs | Os::Windows | Os::Linux)
+    }
+
+    /// iOS running under Mac Catalyst, in every idiom (`platform.catalyst`):
+    /// this build is Catalyst's (`target_abi = "macabi"`). Catalyst runs the
+    /// iOS backend, so it is mobile, not desktop: `ios={{…}}` props apply and
+    /// `nsh/desktop`'s window and menu APIs are not there.
+    pub fn is_catalyst(self) -> bool {
+        self == Os::Ios && cfg!(target_abi = "macabi")
     }
 }
 
@@ -134,12 +141,14 @@ pub enum Idiom {
     Phone,
     /// A tablet.
     Pad,
-    /// A Mac (Mac Catalyst).
+    /// UIKit's Mac idiom (Mac Catalyst optimized for Mac). Catalyst runs
+    /// the iOS backend, so this idiom is mobile, not [`Idiom::Desktop`].
     Mac,
     /// A TV.
     Tv,
-    /// A desktop computer (a desktop backend, or a browser with a mouse and
-    /// a wide viewport; Mac Catalyst is [`Idiom::Mac`]).
+    /// Desktop: a desktop backend (macOS, Windows, Linux), or a browser with
+    /// a mouse and a wide viewport ([`Idiom::desktop_on`]). Mac Catalyst is
+    /// [`Idiom::Pad`] or [`Idiom::Mac`], as UIKit reports.
     Desktop,
 }
 
@@ -149,6 +158,20 @@ impl Idiom {
     /// the surface's renderer.
     pub fn desktop_on(self, os: Os) -> bool {
         os.is_desktop() || (os == Os::Web && self == Idiom::Desktop)
+    }
+
+    /// The idiom apps see on `os` (TS: `platform.idiom`): [`Idiom::Desktop`]
+    /// exactly where [`Idiom::desktop_on`] holds, so that `"desktop"` agrees
+    /// with desktop device classification whatever a platform set. Elsewhere
+    /// this idiom, and [`Idiom::Phone`] for [`Idiom::Desktop`] on a mobile OS.
+    pub fn reported_on(self, os: Os) -> Idiom {
+        if self.desktop_on(os) {
+            Idiom::Desktop
+        } else if self == Idiom::Desktop {
+            Idiom::Phone
+        } else {
+            self
+        }
     }
 }
 
@@ -210,6 +233,15 @@ pub struct Environment {
     /// The app embedding NSH answers `nsh/host`'s calls
     /// ([`crate::Command::HostCall`]); without it, they reject at once.
     pub host: bool,
+    /// The platform picks a color from the screen
+    /// ([`crate::Command::PickScreenColor`]); without it, a pick answers
+    /// no color at once.
+    pub screen_color: bool,
+    /// The platform shows the system's open and save dialogs and opens,
+    /// reveals and trashes local paths ([`crate::Command::FileRequest`],
+    /// the desktops); without it, those requests answer at once with an
+    /// error.
+    pub file_requests: bool,
 }
 
 impl Environment {
@@ -225,9 +257,15 @@ impl Environment {
 
     /// Graphical desktop behavior applies: a desktop OS with a graphical
     /// renderer, or a browser in the desktop idiom (`desktop={{…}}` props,
-    /// `platform.select({ desktop })`).
+    /// `platform.select({ desktop })`, `platform.desktop`).
     pub fn desktop(&self) -> bool {
         self.renderer != Renderer::Terminal && self.idiom.desktop_on(self.os)
+    }
+
+    /// The host device idiom apps see (TS: `platform.idiom`, [`Idiom::reported_on`]);
+    /// terminal rendering does not change the device idiom.
+    pub fn reported_idiom(&self) -> Idiom {
+        self.idiom.reported_on(self.os)
     }
 }
 
@@ -255,6 +293,8 @@ impl Default for Environment {
             terminal_keyboard: false,
             locale: Locale::EN_US,
             host: false,
+            screen_color: false,
+            file_requests: false,
         }
     }
 }
@@ -567,6 +607,47 @@ mod tests {
             }
             .desktop()
         );
+    }
+
+    #[test]
+    fn desktop_is_a_desktop_os_or_a_desktop_browser() {
+        let desktop = |os: Os, idiom: Idiom| Environment {
+            os,
+            idiom,
+            ..Environment::default()
+        };
+        for (os, idiom, expected) in [
+            (Os::MacOs, Idiom::Desktop, true),
+            (Os::Windows, Idiom::Desktop, true),
+            (Os::Linux, Idiom::Desktop, true),
+            // A desktop OS is desktop whatever idiom it was given.
+            (Os::Linux, Idiom::Phone, true),
+            (Os::Web, Idiom::Desktop, true),
+            (Os::Web, Idiom::Pad, false),
+            (Os::Web, Idiom::Phone, false),
+            (Os::Ios, Idiom::Phone, false),
+            (Os::Ios, Idiom::Pad, false),
+            // Mac Catalyst: the iOS backend, mobile in either idiom.
+            (Os::Ios, Idiom::Mac, false),
+            (Os::Ios, Idiom::Desktop, false),
+            (Os::Android, Idiom::Tv, false),
+        ] {
+            let env = desktop(os, idiom);
+            assert_eq!(env.desktop(), expected, "{os:?} {idiom:?}");
+            // `platform.idiom` is "desktop" exactly where desktop applies.
+            assert_eq!(
+                env.reported_idiom() == Idiom::Desktop,
+                expected,
+                "{os:?} {idiom:?}"
+            );
+        }
+        assert_eq!(desktop(Os::Ios, Idiom::Mac).reported_idiom(), Idiom::Mac);
+        assert_eq!(
+            desktop(Os::Ios, Idiom::Desktop).reported_idiom(),
+            Idiom::Phone
+        );
+        assert!(!Os::MacOs.is_catalyst() && !Os::Web.is_catalyst());
+        assert_eq!(Os::Ios.is_catalyst(), cfg!(target_abi = "macabi"));
     }
 
     #[test]

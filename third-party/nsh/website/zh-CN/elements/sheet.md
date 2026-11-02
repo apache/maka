@@ -1,7 +1,6 @@
 ---
 title: Sheet
 description: Sheet 组件：位于屏幕一侧边缘、覆盖在背景层之上的面板，点击背景层、Escape 和返回键会关闭它，样式由应用决定。
-order: 29
 group: base
 demo: el-sheet
 ---

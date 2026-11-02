@@ -23,7 +23,8 @@ use super::{
     format::{Copy, Record, Valuation, Writer},
 };
 use crate::{EventLog, StoreError, sequence_number};
-use sqlx::{Connection, SqliteConnection};
+use futures_util::TryStreamExt;
+use sqlx::{Connection, Row, SqliteConnection};
 use tokio::io::AsyncWrite;
 
 /// Inventory and checksum of a complete uncompressed transfer, not permission
@@ -71,21 +72,7 @@ impl EventLog {
                             .await?;
                         catalog(&mut tx, &inventory, &mut writer).await?;
                         histories(&mut tx, &closure, &mut writer).await?;
-                        for sequence in &closure.events {
-                            let json: String = sqlx::query_scalar(
-                                "SELECT event_json FROM runtime_events WHERE sequence=?",
-                            )
-                            .bind(*sequence as i64)
-                            .fetch_one(&mut *tx)
-                            .await
-                            .map_err(StoreError::from)?;
-                            writer
-                                .record(&Record::Event {
-                                    sequence: *sequence,
-                                    json,
-                                })
-                                .await?;
-                        }
+                        events(&mut tx, &closure, &mut writer).await?;
                         super::blobs::export(&mut tx, &inventory, &closure, &mut writer).await?;
                         accounting(&mut tx, &closure, &mut writer).await?;
                         let (output, bytes, digest) = writer.finish().await?;
@@ -104,6 +91,44 @@ impl EventLog {
                 })
             })
             .await?
+    }
+}
+
+async fn events<W: AsyncWrite + Unpin>(
+    db: &mut SqliteConnection,
+    closure: &Closure,
+    writer: &mut Writer<W>,
+) -> Result<(), StoreError> {
+    // Batch only identities; stream each joined body in the caller's snapshot.
+    // The batch size bounds query parameters, never the accepted event size.
+    let mut selected = closure.events.iter();
+    loop {
+        let batch: Vec<u64> = selected.by_ref().take(128).copied().collect();
+        if batch.is_empty() {
+            return Ok(());
+        }
+        let mut rows = sqlx::query(sqlx::AssertSqlSafe(format!(
+            "SELECT e.sequence,e.event_header,{} FROM runtime_events e {}
+             WHERE e.sequence IN(SELECT value FROM json_each(?)) ORDER BY e.sequence",
+            crate::canonical::COLUMNS,
+            crate::canonical::JOINS
+        )))
+        .bind(serde_json::to_string(&batch)?)
+        .fetch(&mut *db);
+        let mut count = 0;
+        while let Some(row) = rows.try_next().await? {
+            let json = crate::canonical::json(&row)?.into_owned();
+            writer
+                .record(&Record::Event {
+                    sequence: sequence_number(row.try_get("sequence")?)?,
+                    json,
+                })
+                .await?;
+            count += 1;
+        }
+        if count != batch.len() {
+            return Err(StoreError::InvalidTransition("missing bundle event".into()));
+        }
     }
 }
 

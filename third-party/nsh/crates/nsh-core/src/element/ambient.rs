@@ -10,6 +10,7 @@
 use std::{
     any::{Any, TypeId},
     future::Future,
+    path::PathBuf,
     rc::Rc,
     sync::Arc,
     time::Duration,
@@ -21,7 +22,7 @@ use super::{
     AdaptiveColor, Environment, Memo, Owner, Signal, SignalEquals, Tokens, cleanup, computed,
     reactive::with_data,
     signal_with,
-    task::{self, Action, Answer, ClipboardImage, DialogAnswer, Executor, ImageSize},
+    task::{self, Action, Answer, ClipboardImage, DialogAnswer, Executor, FileAnswer, ImageSize},
 };
 use crate::{
     Command, Dialog, EdgeInsets, LayoutAnimation, NodeId, Points, Size,
@@ -70,6 +71,7 @@ struct EnvSignals {
     screen_reader: Memo<bool>,
     pixel_ratio: Memo<f32>,
     locale: Memo<Locale>,
+    screen_color: Memo<bool>,
 }
 
 impl EnvSignals {
@@ -94,6 +96,7 @@ impl EnvSignals {
                 screen_reader: part!(screen_reader),
                 pixel_ratio: part!(pixel_ratio),
                 locale: part!(locale),
+                screen_color: part!(screen_color),
             }
         })
     }
@@ -273,11 +276,12 @@ pub fn os_version() -> (u16, u16) {
         .with_untracked(|e| e.os_version)
 }
 
-/// The kind of device (TS: `platform.idiom`, `platform.catalyst`).
+/// The kind of device (TS: `platform.idiom`, [`Idiom::reported_on`]). A
+/// terminal retains its host device idiom while [`is_desktop`] is false.
 pub fn idiom() -> Idiom {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
-        .with_untracked(|e| e.idiom)
+        .with_untracked(|e| e.idiom.reported_on(e.os))
 }
 
 /// How the surface presents its UI (TS: `platform.renderer`); it does not change.
@@ -292,8 +296,15 @@ pub fn is_terminal() -> bool {
     renderer() == Renderer::Terminal
 }
 
-/// Whether graphical desktop behavior applies: a desktop OS with a graphical
-/// renderer, or a browser in the desktop idiom.
+/// Whether the app runs under Mac Catalyst, in every idiom (TS:
+/// `platform.catalyst`, [`Os::is_catalyst`]); Catalyst is mobile, not
+/// desktop.
+pub fn is_catalyst() -> bool {
+    os().is_catalyst()
+}
+
+/// Whether graphical desktop behavior applies (TS: `platform.desktop`): a
+/// desktop OS with a graphical renderer, or a browser in the desktop idiom.
 pub fn is_desktop() -> bool {
     with_data(|d| d.ambient.env.as_ref().map(|e| e.env))
         .expect("the core sets the environment")
@@ -306,6 +317,16 @@ pub fn tokens() -> Arc<Tokens> {
     with_data(|d| d.ambient.tokens)
         .expect("the core sets the tokens")
         .get()
+}
+
+/// Draws the app with the design tokens `tokens` (the app's own, which an
+/// embedding app's still win over), in place of the UI set's defaults or
+/// the theme file's: Tailwind's token classes, [`tokens`] and the
+/// platform's own controls (Linux's menus) follow. An app that picks its
+/// theme while it runs sets it here (`set_tokens(theme.into())` of an
+/// `nsh_base::Theme`).
+pub fn set_tokens(tokens: impl Into<Tokens>) {
+    act(Action::Tokens(tokens.into()));
 }
 
 /// The width of `text` on one line in `font` (the CSS `font` shorthand; an
@@ -453,16 +474,28 @@ pub fn clipboard_has_string() -> Answer<bool> {
     answer
 }
 
-/// Puts the image of a `data:` URI (as [`clipboard_image`] gives) on the
-/// system clipboard (TS: `Clipboard.writeImage`).
+/// Puts the image of a base64 `data:` URI, or of the URL
+/// [`clipboard_image`] gave, on the system clipboard (TS:
+/// `Clipboard.writeImage`). Where the platform puts no images on the
+/// clipboard (Android) nothing happens.
 pub fn set_clipboard_image(uri: impl Into<String>) {
     act(super::services::set_clipboard_image(uri.into()));
 }
 
-/// The image on the system clipboard, `None` when it holds none (TS:
-/// `Clipboard.readImage`), to await in a task.
+/// The image on the system clipboard, `None` when it holds none, when it
+/// is over [`crate::platform::clipboard::MAX_IMAGE_BYTES`] encoded or the
+/// platform reads no images (Android) (TS: `Clipboard.readImage`), to
+/// await in a task.
 pub fn clipboard_image() -> Answer<Option<ClipboardImage>> {
     let (answer, action) = super::services::clipboard_image();
+    act(action);
+    answer
+}
+
+/// [`clipboard_image`] for `Clipboard.readImage`: `Err` with the size in
+/// encoded bytes of an image over the limit.
+pub(crate) fn clipboard_checked_image() -> Answer<Result<Option<ClipboardImage>, usize>> {
+    let (answer, action) = super::services::clipboard_checked_image();
     act(action);
     answer
 }
@@ -475,10 +508,100 @@ pub fn clipboard_has_image() -> Answer<bool> {
     answer
 }
 
+/// Whether the platform lets the user pick a color on the screen
+/// ([`pick_screen_color`]): macOS and browsers with an `EyeDropper`.
+pub fn can_pick_screen_color() -> bool {
+    env(|e| e.screen_color)
+}
+
+/// The color the user picks anywhere on the screen (the system's color
+/// sampler, a browser's `EyeDropper`), to await in a task: `None` when the
+/// user cancelled or the platform has no sampler
+/// ([`can_pick_screen_color`]).
+pub fn pick_screen_color() -> Answer<Option<crate::Hsla>> {
+    let (answer, action) = super::services::pick_screen_color();
+    act(action);
+    answer
+}
+
 /// The `file:` URLs of the local files on the system clipboard (files
 /// copied in a file manager; TS: `Clipboard.readFiles`), to await in a task.
 pub fn clipboard_files() -> Answer<Vec<String>> {
     let (answer, action) = super::services::clipboard_files();
+    act(action);
+    answer
+}
+
+/// Shows the system's open dialog and gives the files (or folders,
+/// [`OpenDialog::folders`](crate::file_dialog::OpenDialog::folders)) the
+/// user picked, to await in a task: `None` when cancelled, the error when
+/// the dialog could not show (on Linux without a file chooser portal, or
+/// on a platform without file dialogs: iOS, Android, the web;
+/// [`crate::platform::Environment::file_requests`]). GPUI's
+/// `prompt_for_paths`.
+pub fn pick_paths(
+    dialog: crate::file_dialog::OpenDialog,
+) -> Answer<Result<Option<Vec<PathBuf>>, String>> {
+    file_request(
+        crate::file_dialog::FileRequest::OpenDialog(dialog),
+        FileAnswer::OpenDialog,
+    )
+}
+
+/// Shows the system's save dialog and gives the path the user chose to
+/// save to, to await in a task: `None` when cancelled, the error when the
+/// dialog could not show ([`pick_paths`]). The file is not created. GPUI's
+/// `prompt_for_new_path`.
+pub fn pick_save_path(
+    dialog: crate::file_dialog::SaveDialog,
+) -> Answer<Result<Option<PathBuf>, String>> {
+    file_request(
+        crate::file_dialog::FileRequest::SaveDialog(dialog),
+        FileAnswer::SaveDialog,
+    )
+}
+
+/// Opens the local file or folder at `path` (absolute) in its default app
+/// (GPUI's `open_with_system`), to await in a task or drop: `Ok` once it
+/// opened, the error when it did not (no app for it, a relative path, a
+/// platform that opens no local paths). [`open_url`] opens no `file:`
+/// URLs; this is their way.
+pub fn open_path(path: impl Into<PathBuf>) -> Answer<Result<(), String>> {
+    file_request(
+        crate::file_dialog::FileRequest::OpenPath(path.into()),
+        FileAnswer::Done,
+    )
+}
+
+/// Shows the item at `path` (absolute) selected in the file manager
+/// (Finder, File Explorer, the desktop's file manager; GPUI's
+/// `reveal_path`), to await in a task or drop: `Ok` once it showed, the
+/// error when it did not (it does not exist, a relative path, a platform
+/// without a file manager).
+pub fn reveal_path(path: impl Into<PathBuf>) -> Answer<Result<(), String>> {
+    file_request(
+        crate::file_dialog::FileRequest::RevealPath(path.into()),
+        FileAnswer::Done,
+    )
+}
+
+/// Moves the item at `path` (absolute) to the trash (the Recycle Bin on
+/// Windows), to await in a task: where it went when the platform says
+/// (macOS), else `None`, which is no failure; the error when it could not
+/// (it does not exist, the volume has no trash, the platform has none).
+pub fn move_to_trash(path: impl Into<PathBuf>) -> Answer<Result<Option<PathBuf>, String>> {
+    file_request(
+        crate::file_dialog::FileRequest::MoveToTrash(path.into()),
+        FileAnswer::Trash,
+    )
+}
+
+/// Sends file request `request`, answered through `answer`.
+fn file_request<T>(
+    request: crate::file_dialog::FileRequest,
+    answer: impl FnOnce(super::AnswerSlot<T>) -> FileAnswer,
+) -> Answer<T> {
+    let (answer, action) = super::services::file_request(request, answer);
     act(action);
     answer
 }
@@ -497,7 +620,7 @@ pub fn pick_images(request: crate::picker::PickRequest) -> Answer<Vec<crate::pic
 pub(crate) fn host_call(
     name: String,
     args: crate::JsonValue,
-) -> Answer<Result<crate::JsonValue, String>> {
+) -> Answer<Result<crate::JsonValue, super::JsError>> {
     let (answer, action) = super::services::host_call(name, args);
     act(action);
     answer
@@ -755,7 +878,7 @@ pub fn animated_value(value: f32) -> super::AnimatedValue {
 
 /// Animated values for a view's opacity and transform, and motions to
 /// play on them (TS: `createMotion`): bind it with
-/// [`super::Styled::bind_motion`]. A `Copy` handle the current owner keeps.
+/// [`super::Element::bind_motion`]. A `Copy` handle the current owner keeps.
 pub fn motion() -> super::Motion {
     super::Motion::new(&executor())
 }
@@ -904,6 +1027,39 @@ impl super::NodeRef {
     }
 }
 
+/// Watches the order the tree has the elements `elements` gives in, while
+/// the current owner lives: `handler` hears it as indices into that list
+/// (`[2, 0, 1]`: the third element comes first; elements carried by no
+/// node in the tree last, in the order given) whenever it differs from the
+/// list's own. `nsh-base`'s roving focus keeps a group's items (a
+/// toolbar's) in order this way: components render in the order the core
+/// makes them, which is not the tree's (an item inside a group renders
+/// after the toolbar's later children).
+///
+/// The core looks at the end of a commit round: in the round the watch is
+/// made in, after [`super::OrderWatch::invalidate`] (an element came), and
+/// after a round that moved a node (an app's keyed reorder), asking
+/// `elements` untracked; what the handler changes goes out in the same
+/// batch. A round that moved nothing and invalidated nothing costs nothing.
+#[doc(hidden)]
+pub fn watch_order(
+    elements: impl Fn() -> Vec<super::ElementRef> + 'static,
+    handler: impl Fn(&[usize]) + 'static,
+) -> super::OrderWatch {
+    let owner = Owner::current();
+    let handler = Rc::new(move |order: &[usize]| owner.run(|| handler(order)));
+    let watches = executor().watches.clone();
+    let (id, dirty) = watches.borrow_mut().add_order(Rc::new(elements), handler);
+    let weak = Rc::downgrade(&watches);
+    cleanup(move || {
+        if let Some(watches) = weak.upgrade() {
+            let removed = watches.borrow_mut().remove_order(id);
+            drop(removed);
+        }
+    });
+    super::OrderWatch::new(dirty)
+}
+
 fn add_watch(target: Rc<dyn Fn() -> Option<NodeId>>, handler: super::watch::ScrollHandler) {
     let watches = executor().watches.clone();
     let id = watches.borrow_mut().add(target, handler);
@@ -932,7 +1088,7 @@ pub fn key_label(keystroke: &str) -> String {
 }
 
 /// Listens to the Android back button while the current owner lives (TS:
-/// `BackHandler.onBackPress(f)`): when no modal is
+/// `BackHandler.on("press", f)`): when no modal is
 /// shown, `f` runs before the stack pops, newest listener first, and returns
 /// true when it handled the press. While one listens, a back gesture does
 /// not preview the pop.
@@ -947,6 +1103,11 @@ pub fn on_back_press(f: impl Fn() -> bool + 'static) {
 
 pub(crate) fn title_bar() -> crate::geometry::Edges<crate::geometry::Points> {
     env(|e| e.title_bar)
+}
+
+/// The views' menu handlers.
+pub(crate) fn view_menus() -> Rc<std::cell::RefCell<super::menus::ViewMenus>> {
+    executor().menus.clone()
 }
 
 pub(crate) fn desktop_command(command: crate::desktop::DesktopCommand) {

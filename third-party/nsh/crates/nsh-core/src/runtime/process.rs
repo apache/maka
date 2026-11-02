@@ -17,7 +17,7 @@ use std::{
 
 use crate::element::{
     CallCx, Callback, Instance, JsError, JsObject, JsValue, Later, Local, PropEnum, PropError,
-    System, TsTypes, class, module,
+    System, TsTypes, class, codes, module,
 };
 
 /// Subprocesses owned by this app's VM, and its process metadata.
@@ -42,8 +42,13 @@ impl Process {
     /// deadline. A child's environment is PATH, HOME, USERPROFILE,
     /// SystemRoot, TEMP, TMP, TMPDIR, LANG and LC_* from the host, plus the
     /// names capabilities.process.env grants; never the whole host
-    /// environment. A refused command or option throws; a launch failure,
-    /// a timeout and output past the limit reject.
+    /// environment. Every failure rejects: a command
+    /// capabilities.process.execute does not grant (or a `cwd` outside
+    /// capabilities.fs.write) with `code` `ERR_ACCESS_DENIED`, a platform
+    /// without processes with `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, a
+    /// launch failure with the OS's code (`ENOENT`), the deadline with
+    /// `ETIMEDOUT`, output past the limit with
+    /// `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`.
     pub(crate) fn run(
         command: String,
         args: Option<Vec<String>>,
@@ -64,14 +69,15 @@ impl Process {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (launch, cx);
-            Err(JsError::Type(UNAVAILABLE.into()))
+            Err(unavailable())
         }
     }
 
     /// Starts `command` as `run` does and streams its decoded UTF-8 output,
     /// or complete lines with `lines: true`; stdin is closed unless
     /// `stdin: "pipe"`. Listeners get the event's payload only (gpui-shell's
-    /// also get a context).
+    /// also get a context). It throws what `run` rejects with before the
+    /// launch.
     pub(crate) fn spawn(
         command: String,
         args: Option<Vec<String>>,
@@ -98,24 +104,29 @@ impl Process {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = (launch, cx);
-            Err(JsError::Type(UNAVAILABLE.into()))
+            Err(unavailable())
         }
     }
 
     /// Asks the host to exit (capabilities.process.exit); never exits the
-    /// host process directly.
+    /// host process directly. Throws `ERR_ACCESS_DENIED` (`permission`
+    /// `"process"`, `resource` `"exit"`) when not granted, and
+    /// `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM` when the host takes no exit
+    /// requests.
     pub(crate) fn exit(code: Option<i32>, sys: System) -> Result<(), JsError> {
         if !sys.access.allows_exit() {
-            return Err(JsError::Type(
+            return Err(JsError::access_denied(
                 "process.exit() is not granted; set capabilities.process.exit to true in the \
-                 manifest"
-                    .into(),
+                 manifest",
+                "process",
+                "exit",
             ));
         }
         let handler = sys.exit.ok_or_else(|| {
             JsError::Error(
                 "process.exit() is granted but this host installed no exit request handler".into(),
             )
+            .with_code(codes::UNAVAILABLE)
         })?;
         handler(code.unwrap_or(0));
         Ok(())
@@ -187,8 +198,10 @@ pub(crate) enum Stdin {
 /// What `run` resolves with.
 #[derive(Debug, Clone, Default, JsObject)]
 pub(crate) struct CommandOutput {
-    /// The exit status; -1 when a signal ended the child.
-    code: i32,
+    /// The exit status, `null` when a signal ended the child.
+    code: Option<i32>,
+    /// The signal that ended it (`"SIGTERM"`), `null` when it exited.
+    signal: Option<String>,
     stdout: String,
     stderr: String,
 }
@@ -200,10 +213,14 @@ pub(crate) struct ExitResult {
     code: Option<i32>,
     /// The signal that ended it (`"SIGTERM"`).
     signal: Option<String>,
-    /// Why the runtime ended it (a timeout, an over-long line); absent
-    /// otherwise.
+    /// Why the runtime ended it (a timeout, an over-long line): the message
+    /// `run` would reject with; absent otherwise.
     #[prop(skip_none)]
     error: Option<String>,
+    /// The `code` of `error`, as `run`'s rejection carries it (`ETIMEDOUT`,
+    /// `ERR_CHILD_PROCESS_STDIO_MAXBUFFER`); absent with it.
+    #[prop(skip_none)]
+    error_code: Option<String>,
 }
 
 /// A child's events.
@@ -290,16 +307,18 @@ impl ChildProcess {
         let mut listeners = child.listeners.borrow_mut();
         let list = &mut listeners[event as usize];
         if list.len() >= MAX_LISTENERS {
-            return Err(JsError::Type(format!(
+            return Err(JsError::Error(format!(
                 "a child takes at most {MAX_LISTENERS} listeners per event"
-            )));
+            ))
+            .with_code(codes::QUOTA_EXCEEDED));
         }
         list.push(handler);
         drop(listeners);
         Ok(this)
     }
 
-    /// Queues UTF-8 for stdin (`stdin: "pipe"`); at most 1 MiB may wait.
+    /// Queues UTF-8 for stdin (`stdin: "pipe"`); at most 1 MiB may wait
+    /// (`ERR_NSH_QUOTA_EXCEEDED` past it; `EPIPE` once the child is gone).
     pub(crate) fn write(&self, text: String) -> Result<(), JsError> {
         if !self.child.stdin_open.get() {
             return Err(JsError::Type(
@@ -311,7 +330,7 @@ impl ChildProcess {
         #[cfg(target_arch = "wasm32")]
         {
             let _ = text;
-            Err(JsError::Type(UNAVAILABLE.into()))
+            Err(unavailable())
         }
     }
 
@@ -334,8 +353,11 @@ impl ChildProcess {
 /// `run`'s deadline when none is given.
 const RUN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_LISTENERS: usize = 64;
-#[cfg(target_arch = "wasm32")]
-const UNAVAILABLE: &str = "process is available on desktop hosts";
+
+/// What a platform without processes fails with.
+fn unavailable() -> JsError {
+    JsError::Error("process is available on desktop hosts".into()).with_code(codes::UNAVAILABLE)
+}
 
 fn timeout(ms: Option<f64>) -> Result<Option<std::time::Duration>, JsError> {
     match ms {
@@ -400,7 +422,7 @@ mod native {
     use super::{Child, ChildEvent, ChildProcess, CommandOutput, ExitResult, Payload};
     use crate::{
         access::{Access, env_names_match},
-        element::{CallCx, Held, JsError, Later, System},
+        element::{CallCx, Held, JsError, Later, System, codes},
     };
 
     /// Output one VM holds in flight, and what `run` captures per stream
@@ -437,7 +459,8 @@ mod native {
     }
     pub(super) enum Event {
         Output(bool, String),
-        Exit(Option<i32>, Option<i32>, Option<String>),
+        /// Its status, its signal, and why the runtime ended it.
+        Exit(Option<i32>, Option<i32>, Option<JsError>),
     }
 
     /// The VM's side of its children.
@@ -527,18 +550,16 @@ mod native {
                 target_os = "windows"
             )) || !sys.os.is_desktop()
             {
-                return Err(JsError::Type(
-                    "process is available on desktop hosts".into(),
-                ));
+                return Err(super::unavailable());
             }
             if command.is_empty() || command.contains('\0') {
                 return Err(JsError::Type("invalid executable".into()));
             }
             if !sys.access.allows_process(&command) {
-                return Err(spawn_error(
-                    JsError::Type(format!("process capability denied for `{command}`"))
-                        .with_code("EACCES"),
-                    &command,
+                return Err(JsError::access_denied(
+                    format!("`{command}` is not granted by capabilities.process.execute"),
+                    "process",
+                    command,
                 ));
             }
             if args.len() > 4096 {
@@ -554,10 +575,11 @@ mod native {
                         &sys.paths,
                         true,
                     )
-                    .map_err(|e| {
-                        JsError::Type(e)
-                            .with_code("EACCES")
-                            .with("path", cwd.as_str())
+                    .map_err(|e| match e {
+                        crate::access::FileRefusal::NotGranted(why) => {
+                            JsError::access_denied(format!("cwd `{cwd}`: {why}"), "fs", &cwd)
+                        }
+                        e => JsError::Type(format!("cwd `{cwd}`: {e}")),
                     })?,
                 // The app's own data directory, which needs no grant.
                 None => {
@@ -569,13 +591,20 @@ mod native {
                         )
                     })?;
                     std::fs::create_dir_all(&dir).map_err(|e| {
-                        JsError::Type(format!("could not create the app data directory: {e}"))
+                        let message = format!("could not create the app data directory: {e}");
+                        match crate::element::io_code(&e) {
+                            Some(code) => JsError::Error(message).with_code(code),
+                            None => JsError::Error(message),
+                        }
                     })?;
                     dir
                 }
             };
             if !cwd.is_dir() {
-                return Err(JsError::Type("cwd must be an existing directory".into()));
+                let code = if cwd.exists() { "ENOTDIR" } else { "ENOENT" };
+                return Err(JsError::Error("cwd must be an existing directory".into())
+                    .with_code(code)
+                    .with("path", cwd.to_string_lossy().into_owned()));
             }
             Ok(Self {
                 command,
@@ -675,7 +704,8 @@ mod native {
     fn launch_child(sys: &System, launch: Launch, stdin: bool) -> Result<Started, JsError> {
         let children = sys.locals.get::<super::Children>();
         let place = sys.quotas.take(CHILDREN, MAX_CHILDREN).ok_or_else(|| {
-            JsError::Range(format!("a VM may run at most {MAX_CHILDREN} children"))
+            JsError::Error(format!("a VM may run at most {MAX_CHILDREN} children"))
+                .with_code(codes::QUOTA_EXCEEDED)
         })?;
         let mut cmd = Command::new(resolve_executable(&launch.command)?);
         cmd.env_clear()
@@ -788,7 +818,9 @@ mod native {
             let mut overflowed = false;
             loop {
                 let Some(event) = events.recv().await else {
-                    return Err("the process ended without an exit status".to_owned());
+                    return Err(JsError::Error(
+                        "the process ended without an exit status".to_owned(),
+                    ));
                 };
                 match event {
                     Event::Output(err, chunk) => {
@@ -802,19 +834,20 @@ mod native {
                             captured.push_str(&chunk);
                         }
                     }
-                    Event::Exit(code, _, error) => {
+                    Event::Exit(code, signal, error) => {
                         children.inner.finished(id);
                         cleanup.release();
                         if overflowed {
-                            return Err(format!(
+                            return Err(max_buffer(format!(
                                 "process output exceeded {QUEUE_BYTES} bytes on one stream"
-                            ));
+                            )));
                         }
                         if let Some(error) = error {
                             return Err(error);
                         }
                         return Ok(CommandOutput {
-                            code: code.unwrap_or(-1),
+                            code,
+                            signal: signal.map(signal_name),
                             stdout,
                             stderr,
                         });
@@ -880,9 +913,9 @@ mod native {
                     while let Some(part) = parts.next() {
                         pending[stream].push_str(part);
                         if pending[stream].len() > QUEUE_BYTES {
-                            line_error = Some(
+                            line_error = Some(max_buffer(
                                 "a line of output exceeded 8 MiB without a newline".to_owned(),
-                            );
+                            ));
                             pending[stream].clear();
                             kill(&child);
                             break;
@@ -906,10 +939,12 @@ mod native {
                     // An owner that lives long must not collect one cleanup
                     // per child it ever ran.
                     cleanup.release();
+                    let error = line_error.or(error);
                     let exit = ExitResult {
                         code,
                         signal: signal.map(signal_name),
-                        error: line_error.or(error),
+                        error: error.as_ref().map(|e| e.message().to_owned()),
+                        error_code: error.as_ref().and_then(|e| e.code()).map(str::to_owned),
                     };
                     *child.exited.borrow_mut() = Some(exit.clone());
                     child.stdin_open.set(false);
@@ -929,12 +964,19 @@ mod native {
         let len = text.len();
         if control.queued_input.fetch_add(len, Ordering::AcqRel) + len > MAX_STDIN {
             control.queued_input.fetch_sub(len, Ordering::AcqRel);
-            return Err(JsError::Type("stdin queue exceeded 1 MB".into()));
+            return Err(
+                JsError::Error("stdin queue exceeded 1 MB".into()).with_code(codes::QUOTA_EXCEEDED)
+            );
         }
         control
             .input
             .send(Input::Write(text.into_bytes()))
-            .map_err(|_| JsError::Type("process input is closed".into()))
+            .map_err(|_| JsError::Error("process input is closed".into()).with_code("EPIPE"))
+    }
+
+    /// Output past what the runtime holds, as Node's `maxBuffer`.
+    fn max_buffer(message: String) -> JsError {
+        JsError::Range(message).with_code("ERR_CHILD_PROCESS_STDIO_MAXBUFFER")
     }
 
     pub(super) fn close_stdin(child: &Child) {
@@ -996,7 +1038,7 @@ mod native {
             true
         }
 
-        fn exit(&self, code: Option<i32>, signal: Option<i32>, error: Option<String>) {
+        fn exit(&self, code: Option<i32>, signal: Option<i32>, error: Option<JsError>) {
             let _ = self.tx.send(Event::Exit(code, signal, error));
         }
     }
@@ -1495,11 +1537,15 @@ mod native {
             let mut kill = mailbox.stopped.load(Ordering::Acquire);
             if mailbox.unreadable.load(Ordering::Acquire) {
                 kill = true;
-                error.get_or_insert_with(|| "process output could not be read".to_owned());
+                error.get_or_insert_with(|| {
+                    JsError::Error("process output could not be read".to_owned())
+                });
             }
             if timeout.is_some_and(|limit| started.elapsed() >= limit) {
                 kill = true;
-                error.get_or_insert_with(|| "process timed out".to_owned());
+                error.get_or_insert_with(|| {
+                    JsError::Error("process timed out".to_owned()).with_code(codes::TIMED_OUT)
+                });
             }
             // A pipe write may block: stdin is written on its own thread, never
             // this supervisor.
@@ -1528,12 +1574,14 @@ mod native {
                 Ok(true) => break,
                 Ok(false) => {}
                 Err(e) => {
-                    error = Some(e.to_string());
+                    error = Some(e.into());
                     break;
                 }
             }
             if forced.is_some_and(|at| at.elapsed() >= ABANDON) {
-                error = Some("the process could not be ended (it may run as another user)".into());
+                error = Some(JsError::Error(
+                    "the process could not be ended (it may run as another user)".into(),
+                ));
                 abandoned = true;
                 break;
             }
@@ -1590,7 +1638,7 @@ mod native {
             _: Option<String>,
             _: Option<std::time::Duration>,
         ) -> Result<Self, JsError> {
-            Err(JsError::Type(super::UNAVAILABLE.into()))
+            Err(super::unavailable())
         }
     }
 }

@@ -8,6 +8,9 @@ export const SITE_DESCRIPTION =
 
 export const REPO_URL = 'https://github.com/longbridge/nsh';
 
+/** The App Stories catalog, where apps are submitted. */
+export const SHOWCASES_URL = 'https://github.com/longbridge/nsh-showcases';
+
 export const GPUI_KIT_URL = 'https://gpui-kit.com';
 
 /** Where "Edit this page" points: the file's path relative to the repository root follows. */

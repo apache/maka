@@ -17,11 +17,18 @@
 //!
 //! On a manual clock (`EngineConfig::clock`) the app's time moves only as
 //! the driver moves it: display frames come at once, one frame's time
-//! apart, while the app asks for them or a native animation runs (so steps
-//! finish animations without waiting for them), [`Headless::wait`] and a
-//! long press move the clock by their time, and [`Headless::run_for`] /
-//! [`Headless::fast_forward`] move it as a test says. What the driver
-//! waits for (a step's quiet, a `waitFor`'s timeout) stays real time.
+//! apart, while the app asks for them or a native animation that ends by
+//! itself runs (so steps finish animations without waiting for them),
+//! [`Headless::wait`] and a long press move the clock by their time, and
+//! [`Headless::run_for`] / [`Headless::fast_forward`] move it as a test
+//! says. A wait for what the app shows ([`Headless::wait_until`],
+//! [`Headless::wait_for`]) moves it too, a display frame at a time,
+//! looking after each frame, by its timeout at most, and fails once that
+//! much real time passed too; what a step waits for (its quiet) stays real
+//! time. Native animations that
+//! loop forever (a spinner) run in the background on either clock: their
+//! values move with the app's time, and no step or wait waits for them
+//! (nor moves a manual clock for them).
 //!
 //! `nsh test` runs apps this way (feature `js`: [`crate::run_file`]),
 //! printing the batches under their steps with `--trace`; so do Rust tests
@@ -63,7 +70,8 @@ pub use self::{
     stub::{RecordingNetwork, StubHandler, StubNetwork, StubReply, StubResponse, StubRoute},
 };
 use crate::{
-    screen::{self, Back, Contact, InputResult, Pick, Screen},
+    failure,
+    screen::{Back, Contact, InputResult, Pick, Screen},
     selector::Selector,
 };
 
@@ -79,6 +87,10 @@ const SETTLE: Duration = Duration::from_secs(2);
 const MAX_IDLE: Duration = Duration::from_secs(10);
 /// How far a scroll moves per display frame, in points.
 const SCROLL_STEP: Points = Points(10.0);
+/// On a manual clock: how long a wait looks in real time for batches
+/// between two of its frames, for what the app's clock does not bring (a
+/// response a test's function gives).
+const FRAME_LOOK: Duration = Duration::from_millis(1);
 
 struct ChannelSink {
     batches: Sender<MountBatch>,
@@ -228,8 +240,8 @@ const CLICK_INTERVAL: Duration = Duration::from_millis(500);
 /// A step takes the batches that came since the last one first (they
 /// belong to it), then names itself the step of the batches that follow:
 /// what [`Headless::observe`] sees. Steps that act on the app return once
-/// it rendered nothing for 100 ms and no native animation runs (2 s at
-/// most), and fail when the app threw meanwhile (an exception that
+/// it rendered nothing for 100 ms and no native animation runs that ends
+/// by itself (2 s at most), and fail when the app threw meanwhile (an exception that
 /// escaped a callback, a bundle that did not load, a VM that was stopped)
 /// or asked what only a real platform answers (an image from the
 /// clipboard).
@@ -257,6 +269,14 @@ pub struct Headless {
     dialogs: Dialogs,
     /// Who answers the picks.
     picks: Picks,
+    /// The color the user picks on the screen ([`Headless::on_screen_color`]).
+    screen_color: Option<nsh_core::Hsla>,
+    /// The paths the user picks in the open dialog
+    /// ([`Headless::on_pick_paths`]).
+    picked_paths: Vec<std::path::PathBuf>,
+    /// The path the user chooses in the save dialog
+    /// ([`Headless::on_pick_save_path`]).
+    save_path: Option<std::path::PathBuf>,
     step: String,
     applied: u64,
     /// The app left (`process.exit`, `Command::ExitApp`): no more batches
@@ -307,6 +327,9 @@ impl Headless {
             animator: Animator::new(clock.clone()),
             dialogs: Dialogs::Default,
             picks: Picks::Default,
+            screen_color: None,
+            picked_paths: Vec::new(),
+            save_path: None,
             step: "open".to_owned(),
             applied: 0,
             exited: false,
@@ -374,7 +397,11 @@ impl Headless {
         self.engine.control().advance_clock(by, move || {
             let _ = tx.send(());
         });
-        let _ = rx.recv_timeout(MAX_IDLE);
+        // A gone engine never moves the clock: the steps that wait for it
+        // to move would wait for good.
+        if let Err(crossbeam_channel::RecvTimeoutError::Disconnected) = rx.recv_timeout(MAX_IDLE) {
+            panic!("the engine stopped (its thread panicked?): the manual clock cannot move");
+        }
     }
 
     /// One display frame on the manual clock, `by` after the last: the
@@ -395,12 +422,13 @@ impl Headless {
     }
 
     /// Whether, on a manual clock, the app wants frames: it asked for one,
-    /// or a native animation runs.
+    /// or a native animation that ends by itself runs (one looping forever
+    /// would move the clock for as long as the driver waits).
     fn wants_frames(&self) -> bool {
         self.wanted
             .as_ref()
             .is_some_and(|w| w.load(Ordering::Relaxed))
-            || (self.clock.is_manual() && self.animator.running())
+            || (self.clock.is_manual() && self.animator.finishing())
     }
 
     /// Lets the app's time pass by `time`: real time on the system's clock,
@@ -521,6 +549,33 @@ impl Headless {
         + 'static,
     ) {
         self.picks = Picks::Handler(Box::new(handler));
+    }
+
+    /// The platform picks colors from the screen
+    /// ([`nsh_core::platform::Environment::screen_color`]), and the user
+    /// picks `color` whenever the app asks (`pick_screen_color`, a
+    /// `ColorEyeDropper`); `None` cancels.
+    pub fn on_screen_color(&mut self, color: Option<nsh_core::Hsla>) -> Result<(), String> {
+        self.screen_color = color;
+        self.set_environment("onScreenColor", |env| env.screen_color = true)
+    }
+
+    /// The platform has file dialogs, a file manager and a trash
+    /// ([`nsh_core::platform::Environment::file_requests`]), and the user
+    /// picks `paths` whenever the app shows the open dialog (`pick_paths`;
+    /// none cancels). Opening, revealing and trashing paths then succeed
+    /// without touching them (trashing says nowhere they went); every
+    /// request is in [`Screen::file_requests`].
+    pub fn on_pick_paths(&mut self, paths: Vec<std::path::PathBuf>) -> Result<(), String> {
+        self.picked_paths = paths;
+        self.set_environment("onPickPaths", |env| env.file_requests = true)
+    }
+
+    /// As [`Headless::on_pick_paths`], for the save dialog
+    /// (`pick_save_path`): the user chooses `path`; `None` cancels.
+    pub fn on_pick_save_path(&mut self, path: Option<std::path::PathBuf>) -> Result<(), String> {
+        self.save_path = path;
+        self.set_environment("onPickSavePath", |env| env.file_requests = true)
     }
 
     /// Leaves the picks steps ask for to the caller: a step returns with
@@ -701,6 +756,27 @@ impl Headless {
             ];
             control.dispatch_event(ROOT_ID, EventKind::OpenUrl, EventPayload::Map(fields));
         }
+        for id in self.screen.take_screen_colors() {
+            let mut fields = vec![("id", PayloadValue::Number(f64::from(id)))];
+            if let Some(color) = self.screen_color {
+                let packed = nsh_core::Color::from(color).0;
+                fields.push(("color", PayloadValue::Number(f64::from(packed))));
+            }
+            control.dispatch_event(ROOT_ID, EventKind::ScreenColor, EventPayload::Map(fields));
+        }
+        for (id, request) in self.screen.take_file_answers() {
+            use nsh_core::file_dialog::FileRequest;
+            let paths = match request {
+                FileRequest::OpenDialog(_) => self.picked_paths.clone(),
+                FileRequest::SaveDialog(_) => self.save_path.clone().into_iter().collect(),
+                _ => Vec::new(),
+            };
+            control.dispatch_event(
+                ROOT_ID,
+                EventKind::FileRequest,
+                EventPayload::file_answer(id, paths),
+            );
+        }
         if self.screen.take_back_asked() {
             self.go_back(false);
         }
@@ -790,7 +866,8 @@ impl Headless {
     }
 
     /// Applies batches until none comes for `quiet` and no native
-    /// animation runs, or for `limit` at most: false if the limit ended it.
+    /// animation that ends by itself runs, or for `limit` at most: false if
+    /// the limit ended it.
     fn quiet(&mut self, quiet: Duration, limit: Duration) -> bool {
         let end = Instant::now() + limit;
         // Frames on a manual clock come at once: the limit is its time too.
@@ -805,7 +882,7 @@ impl Headless {
                 Pumped::Error | Pumped::Exited => return true,
                 Pumped::Timeout => {
                     let now = Instant::now();
-                    if !self.animator.running() && now >= last + quiet {
+                    if !self.animator.finishing() && now >= last + quiet {
                         return true;
                     }
                     if now >= end {
@@ -817,8 +894,8 @@ impl Headless {
     }
 
     /// Applies batches until none comes for 100 ms and no native animation
-    /// runs, or for 2 s at most (an app updating all the time never goes
-    /// quiet): false if the limit ended it.
+    /// that ends by itself runs, or for 2 s at most (an app updating all
+    /// the time never goes quiet): false if the limit ended it.
     pub fn settle(&mut self) -> bool {
         self.quiet(QUIET, SETTLE)
     }
@@ -928,7 +1005,11 @@ impl Headless {
     pub fn back(&mut self) -> Result<(), String> {
         self.step("back");
         if !self.go_back(true) {
-            return Err(format!("nothing to go back from; {}", self.on_screen()));
+            return Err(format!(
+                "{}; {}",
+                failure::NOTHING_TO_GO_BACK_FROM,
+                self.on_screen()
+            ));
         }
         self.done()
     }
@@ -993,7 +1074,7 @@ impl Headless {
                 Pumped::Timeout => {
                     if Instant::now() >= deadline {
                         self.check()?;
-                        return Err(format!("the app rendered nothing in {} s", WAIT.as_secs()));
+                        return Err(failure::rendered_nothing(WAIT));
                     }
                 }
             }
@@ -1010,7 +1091,12 @@ impl Headless {
     }
 
     /// Applies batches until `done` holds for the screen, `timeout` at
-    /// most; the error names `what` and the texts on screen.
+    /// most; the error names `what` and the texts on screen. On a manual
+    /// clock the wait moves it, a display frame at a time (the timers due
+    /// run on the way, as [`Headless::run_for`] runs them), looking after
+    /// each frame, by `timeout` at most; it fails once the clock moved that
+    /// far and `timeout` of real time passed too, so what comes from
+    /// outside the app (a route's function, the network) has that long.
     pub fn wait_until(
         &mut self,
         what: &str,
@@ -1018,10 +1104,21 @@ impl Headless {
         done: impl Fn(&Screen) -> bool,
     ) -> Result<(), String> {
         let deadline = Instant::now() + timeout;
+        let clock_end = self.clock.is_manual().then(|| self.clock.now() + timeout);
         self.drain();
         self.check()?;
         while !done(&self.screen) {
-            match self.pump(deadline) {
+            // The clock moves by the timeout at most; then the wait goes on
+            // for what comes from outside the app, until as much real time
+            // passed.
+            let pumped = match clock_end {
+                Some(end) if self.clock.now() < end => {
+                    let left = end.saturating_duration_since(self.clock.now());
+                    self.wait_frame(left.min(FRAME))
+                }
+                _ => self.pump(deadline),
+            };
+            match pumped {
                 Pumped::Batch => {}
                 Pumped::Error => self.check()?,
                 Pumped::Exited => {
@@ -1031,10 +1128,12 @@ impl Headless {
                     ));
                 }
                 Pumped::Timeout => {
-                    if Instant::now() >= deadline {
+                    let over = Instant::now() >= deadline
+                        && clock_end.is_none_or(|end| self.clock.now() >= end);
+                    if over {
                         return Err(format!(
-                            "{what} never happened in {} ms; {}",
-                            timeout.as_millis(),
+                            "{}; {}",
+                            failure::never_happened(what, timeout),
                             self.on_screen()
                         ));
                     }
@@ -1079,13 +1178,59 @@ impl Headless {
         self.check()
     }
 
+    /// What a test polling a condition waits for between looks, as
+    /// [`Headless::wait_until`] waits: on a manual clock, moves it by a
+    /// display frame (`timeout` of the app's time at most) and applies what
+    /// came, giving how far the clock moved; on the system's clock,
+    /// [`Headless::next_change`] (and zero).
+    pub fn next_frame(&mut self, timeout: Duration) -> Result<Duration, String> {
+        if !self.clock.is_manual() {
+            return self.next_change(timeout).map(|()| Duration::ZERO);
+        }
+        // An app that left takes no frame, but the wait's time runs out.
+        let by = timeout.min(FRAME);
+        if !by.is_zero() {
+            self.wait_frame(by);
+        }
+        self.check().map(|()| by)
+    }
+
+    /// On a manual clock: a frame of a wait, `by` after the last, and what
+    /// it brought; then a batch or an error that comes within
+    /// [`FRAME_LOOK`] of real time.
+    fn wait_frame(&mut self, by: Duration) -> Pumped {
+        if self.exited {
+            return Pumped::Exited;
+        }
+        self.frame(by);
+        self.drain();
+        crossbeam_channel::select_biased! {
+            recv(self.errors) -> error => match error {
+                Ok(error) => {
+                    self.seen.push(error);
+                    Pumped::Error
+                }
+                Err(_) => Pumped::Timeout,
+            },
+            recv(self.batches) -> batch => match batch {
+                Ok(batch) => {
+                    self.apply(&batch);
+                    Pumped::Batch
+                }
+                Err(_) => Pumped::Timeout,
+            },
+            default(FRAME_LOOK) => Pumped::Timeout,
+        }
+    }
+
     /// The one view `pick` gave for `selector`, or the error a step on
     /// `what` fails with.
     fn picked(&self, pick: Pick, selector: &str, what: &str) -> Result<NodeId, String> {
         match pick {
             Pick::One(id) => Ok(id),
             Pick::None => Err(format!(
-                "no {what} matches `{selector}`; {}",
+                "{}; {}",
+                failure::not_found(what, selector),
                 self.on_screen()
             )),
             Pick::Many(n) => Err(format!(
@@ -1093,8 +1238,8 @@ impl Headless {
                  a view around it (`id:list >> {selector}`)"
             )),
             Pick::Disabled => Err(format!(
-                "`{selector}` {}; {}",
-                screen::disabled(what),
+                "{}; {}",
+                failure::disabled(selector, what),
                 self.on_screen()
             )),
         }
@@ -1733,9 +1878,9 @@ mod tests {
         let mut app = Headless::start(EngineConfig::new(Root::of::<PressPoint>())).unwrap();
         app.first_render().unwrap();
         app.press_at("id:pad", point(px(10.0), px(12.0))).unwrap();
-        app.wait_for("seen: at 10 12 in 10 22").unwrap();
+        app.wait_for("text:seen: at 10 12 in 10 22").unwrap();
         app.press("id:pad").unwrap();
-        app.wait_for("seen: at 40 20 in 40 30").unwrap();
+        app.wait_for("text:seen: at 40 20 in 40 30").unwrap();
     }
 
     #[component]
@@ -1899,19 +2044,92 @@ mod tests {
         assert_eq!(app.screen().selected("id:cell-b1"), Ok(true));
         assert_eq!(app.screen().selected("id:cell-a1"), Ok(false));
         app.press("id:cell-b1").unwrap();
-        app.wait_for("pressed: 1").unwrap();
+        app.wait_for("text:pressed: 1").unwrap();
         assert!(
             app.shows("touch x: 150 local x: 150"),
             "{:?}",
             app.screen().texts()
         );
         app.press("text:12").unwrap();
-        app.wait_for("pressed: 2").unwrap();
+        app.wait_for("text:pressed: 2").unwrap();
         assert!(
             app.shows("touch x: 50 local x: 50"),
             "{:?}",
             app.screen().texts()
         );
+    }
+
+    /// A toolbar's group of a toggle button, a heading with its level and
+    /// a pagination's current page.
+    #[component]
+    fn Formatting() -> impl IntoElement {
+        let bold = signal(false);
+        view()
+            .child(
+                view()
+                    .role(AccessibilityRole::Group)
+                    .label("Text style")
+                    .child(
+                        view()
+                            .test_id("bold")
+                            .role(AccessibilityRole::Button)
+                            .label("Bold")
+                            .accessibility_state(move || AccessibilityState {
+                                pressed: Some(if bold.get() {
+                                    nsh_core::Checked::True
+                                } else {
+                                    nsh_core::Checked::False
+                                }),
+                                ..AccessibilityState::default()
+                            })
+                            .on_press(move || bold.update(|b| *b = !*b))
+                            .child(text("B")),
+                    ),
+            )
+            .child(
+                text("Details")
+                    .test_id("details")
+                    .role(AccessibilityRole::Header)
+                    .accessibility_level(2_u32),
+            )
+            .child(
+                view()
+                    .role(AccessibilityRole::Navigation)
+                    .label("Pages")
+                    .child(
+                        view()
+                            .test_id("page-2")
+                            .role(AccessibilityRole::Link)
+                            .accessibility_state(AccessibilityState {
+                                current: Some(nsh_core::AccessibilityCurrent::Page),
+                                ..AccessibilityState::default()
+                            })
+                            .child(text("2")),
+                    ),
+            )
+    }
+
+    #[test]
+    fn roles_find_groups_and_states_follow_a_toggle() {
+        let mut app = Headless::start(EngineConfig::new(Root::of::<Formatting>())).unwrap();
+        app.first_render().unwrap();
+        let screen = app.screen();
+        assert_eq!(screen.count("role:group[Text style]"), Ok(1));
+        assert_eq!(screen.count("role:navigation[Pages] >> role:link"), Ok(1));
+        assert_eq!(screen.accessibility_level("id:details"), Ok(Some(2)));
+        assert_eq!(
+            screen.accessibility_state("id:page-2").map(|s| s.current),
+            Ok(Some(nsh_core::AccessibilityCurrent::Page))
+        );
+        let pressed = |app: &Headless| {
+            app.screen()
+                .accessibility_state("role:button[Bold]")
+                .map(|s| s.pressed)
+        };
+        assert_eq!(pressed(&app), Ok(Some(nsh_core::Checked::False)));
+        app.press("role:button[Bold]").unwrap();
+        app.wait(Duration::from_millis(50)).unwrap();
+        assert_eq!(pressed(&app), Ok(Some(nsh_core::Checked::True)));
     }
 
     /// The metrics of a line of text in a canvas font.
@@ -1985,7 +2203,6 @@ mod tests {
                 id: field,
                 command: Command::Focus,
             }],
-            ..Default::default()
         });
         app.done().unwrap();
         app.wait_for("Blurs 1 Presses 0").unwrap();
@@ -1994,7 +2211,6 @@ mod tests {
                 id: field,
                 command: Command::Blur,
             }],
-            ..Default::default()
         });
         app.done().unwrap();
         app.press_key("enter").unwrap();
@@ -2931,5 +3147,50 @@ mount(() => {
         app.wait(Duration::from_secs(5)).unwrap();
         assert!(app.screen().sent(&Command::ExitApp));
         assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    /// Saves to the path the user chooses and shows it in the file manager.
+    #[component]
+    fn SaveAs() -> impl IntoElement {
+        let saved = signal(String::from("none"));
+        view()
+            .child(text(move || format!("Saved {}", saved.get())))
+            .child(text("Save").on_press(move |_: &()| {
+                let dialog = nsh_core::file_dialog::SaveDialog::new().file_name("Untitled.md");
+                let path = pick_save_path(dialog);
+                spawn(async move {
+                    let path = match path.await {
+                        Ok(Some(path)) => path,
+                        Ok(None) => return saved.set("cancelled".into()),
+                        Err(_) => return saved.set("unavailable".into()),
+                    };
+                    let shown = reveal_path(path.clone()).await.is_ok();
+                    saved.set(format!("{} {shown}", path.display()));
+                });
+            }))
+    }
+
+    #[test]
+    fn the_save_dialog_answers_with_the_path_the_test_chose() {
+        use nsh_core::file_dialog::FileRequest;
+        let mut app = Headless::start(EngineConfig::new(Root::of::<SaveAs>())).unwrap();
+        app.first_render().unwrap();
+        // No file dialogs on this platform: unavailable at once.
+        app.press("Save").unwrap();
+        app.wait_for("Saved unavailable").unwrap();
+        assert!(app.screen().file_requests().is_empty());
+        app.on_pick_save_path(None).unwrap();
+        app.press("Save").unwrap();
+        app.wait_for("Saved cancelled").unwrap();
+        app.on_pick_save_path(Some("/docs/a.md".into())).unwrap();
+        app.press("Save").unwrap();
+        app.wait_for("Saved /docs/a.md true").unwrap();
+        let requests = app.screen().file_requests();
+        assert_eq!(requests.len(), 3);
+        assert!(matches!(
+            &requests[1],
+            FileRequest::SaveDialog(save) if save.file_name.as_deref() == Some("Untitled.md")
+        ));
+        assert_eq!(requests[2], FileRequest::RevealPath("/docs/a.md".into()));
     }
 }

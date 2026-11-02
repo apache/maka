@@ -3,17 +3,19 @@ import { Collapsible, Switch } from "nsh/base";
 import { desktop, focusRing, hoverFill, Log, Panel, size, Split, ui } from "./palette";
 
 // Each section: a summary row, the app's trigger (it says whether it is
-// expanded to screen readers), and details the collapsible shows while the
-// app has it open. The chevron turns with a transition of the app's. One
-// inset per card, leading and trailing: the summary's chevron lane is as
-// wide as the turned chevron, so it ends where the values below it end.
+// expanded to screen readers), and details the collapsible reveals while the
+// app has it open: its height springs open and shut (`reveal`), and the
+// sections below move with it. The chevron turns with a transition of the
+// app's. One inset per card, leading and trailing: the summary's chevron
+// lane is as wide as the turned chevron, so it ends where the values below
+// it end.
 // The pointer's hover and the keyboard's focus ring come from the palette;
-// the chevron and the switch stay still with reduced motion.
+// the reveal, the chevron and the switch stay still with reduced motion.
 const pad = desktop ? "px-3" : "px-4";
 
 function Section(props: { label: string; detail: string; open: boolean; onToggle: () => void; content: JSX.Element }) {
   return (
-    <Collapsible open={props.open} content={props.content}>
+    <Collapsible open={props.open} reveal content={props.content}>
       <View
         role="button"
         accessibilityState={{ expanded: props.open }}

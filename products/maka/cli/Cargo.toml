@@ -17,16 +17,19 @@
 
 
 [package]
+build = "build/main.rs"
 name = "maka-cli"
 default-run = "maka"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+autotests = false
 
 [features]
 default = ["native-desktop"]
 native-desktop = ["maka-computer-use/native-desktop"]
+desktop-tests = ["dep:gpui", "dep:gpui_wgpu", "dep:nsh-platform-gpui", "dep:nsh-gpui-terminal"]
 
 [[bin]]
 name = "maka"
@@ -39,10 +42,14 @@ path = "src/service_main.rs"
 test = false
 
 [[test]]
-name = "terminal_real_host"
-path = "../terminal-shell/tests/real_host.rs"
+name = "integration"
+path = "tests/integration/main.rs"
 
 [dependencies]
+gpui = { package = "gpui-fast", version = "0.1.10", default-features = false, optional = true }
+gpui_wgpu = { package = "gpui-fast-wgpu", version = "0.1.10", default-features = false, features = ["offscreen"], optional = true }
+nsh-platform-gpui = { workspace = true, optional = true }
+nsh-gpui-terminal = { workspace = true, optional = true }
 maka-ui-build.workspace = true
 maka-code-runtime.workspace = true
 hex.workspace = true
@@ -97,20 +104,13 @@ nsh-bundler.workspace = true
 nsh-core.workspace = true
 nsh-base.workspace = true
 maka-capabilities.workspace = true
-maka-ui-support.workspace = true
 crossterm.workspace = true
-image = { version = "0.25.10", default-features = false, features = ["png"] }
-maka-agent-native.workspace = true
 maka-app-client.workspace = true
-maka-files-native.workspace = true
-maka-providers.workspace = true
 maka-workbench.workspace = true
 nsh-engine.workspace = true
 nsh-platform-tui.workspace = true
 ratatui.workspace = true
-rusqlite.workspace = true
 log = "0.4.34"
-schemars.workspace = true
 agent-client-protocol.workspace = true
 tokio-util = { workspace = true, features = ["compat"] }
 hyper = { version = "1.12.0", features = ["server", "http1"] }
@@ -126,7 +126,3 @@ libc.workspace = true
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_System_Com", "Win32_System_TaskScheduler", "Win32_System_Variant", "Win32_System_Ole"] }
 windows-sys = { version = "0.61.2", features = ["Win32_System_Diagnostics_Debug", "Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_JobObjects", "Win32_System_Threading"] }
-
-# Shared Host integration fixtures declare their wire schemas.
-[package.metadata.cargo-machete]
-ignored = ["schemars"]

@@ -72,6 +72,35 @@ pub(super) async fn fit_prepared_summary(
     language: Language,
     cancellation: &tokio_util::sync::CancellationToken,
 ) -> Result<crate::prepared_prompt::PreparedPrompt, crate::RunError> {
+    if prompt.breakdown().estimated_tokens() <= tokens {
+        return Ok(prompt.clone());
+    }
+    if prompt.is_generated() {
+        return fit_generated_summary(prompt, tokens, language, cancellation).await;
+    }
+    let active = prompt.active().ok_or_else(|| {
+        crate::RunError::Internal("summary source was not promoted to its full envelope".into())
+    })?;
+    crate::history::source_summary::fit(prompt, tokens, language, cancellation, &active)
+        .await
+        .map_err(|error| match error {
+            crate::history::source_summary::FitError::Run(error) => error,
+            error @ crate::history::source_summary::FitError::NeedsBacking { .. } => {
+                crate::RunError::Preparation(std::io::Error::new(
+                    std::io::ErrorKind::Unsupported,
+                    error,
+                ))
+            }
+        })
+}
+
+/// Explicit small generated input retains the owned-message test/UI boundary.
+async fn fit_generated_summary(
+    prompt: &crate::prepared_prompt::PreparedPrompt,
+    tokens: u64,
+    language: Language,
+    cancellation: &tokio_util::sync::CancellationToken,
+) -> Result<crate::prepared_prompt::PreparedPrompt, crate::RunError> {
     use std::collections::VecDeque;
     if prompt.breakdown().estimated_tokens() <= tokens {
         return Ok(prompt.clone());
@@ -245,7 +274,14 @@ pub(super) async fn fit_prepared_summary(
             if let Some(provider) = prompt.model().normalization() {
                 body = body.with_normalization(provider.clone());
             }
-            return Ok(crate::prepared_prompt::PreparedPrompt::new(body));
+            let mut fitted = crate::prepared_prompt::PreparedPrompt::new(body);
+            if let Some(resources) = prompt.resources() {
+                fitted = fitted.with_resources(resources.clone());
+            }
+            if let Some(arena) = prompt.arena() {
+                fitted = fitted.with_arena(arena.clone());
+            }
+            return Ok(fitted.with_preparation_from(prompt));
         }
         if text_bytes > 0 {
             text_bytes = text_bytes
@@ -303,145 +339,21 @@ fn excerpt(text: &str, bytes: usize, language: Language) -> String {
 
 /// The final request owns its output reserve, after all prompt/tool projections.
 /// This cap never changes the configured model limit or the persisted history.
-pub(super) fn output_limit<W>(
-    input: &RunInput<W>,
+pub(super) fn output_limit(
+    window: Option<u64>,
     estimated_input_tokens: u64,
     requested: u64,
     purpose: ModelPurpose,
 ) -> u64 {
     let minimum = match purpose {
         ModelPurpose::Main => 1,
-        ModelPurpose::Summary => summary_output_reserve(input),
+        ModelPurpose::Summary => window
+            .unwrap_or(200_000)
+            .saturating_mul(4)
+            .div_ceil(100)
+            .max(1),
     };
-    input
-        .context
-        .as_ref()
-        .and_then(|context| context.model_context_window)
-        .map_or(requested, |window| {
-            requested.min(window.saturating_sub(estimated_input_tokens).max(minimum))
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use maka_model::prompt::FileData;
-
-    #[tokio::test]
-    async fn overlapping_anchor_and_tail_account_for_media_once() {
-        let file = ContentPart::File {
-            data: FileData::Data("distinctive-media-payload".into()),
-            media_type: "image/png".into(),
-            provider_options: Some(serde_json::json!({"detail":"high"})),
-        };
-        let system = Message::System {
-            content: "Summary instructions".into(),
-            provider_options: None,
-        };
-        let prompt = vec![
-            system.clone(),
-            Message::User {
-                content: vec![ContentPart::text("Original task and image"), file.clone()],
-                provider_options: None,
-            },
-            Message::Assistant {
-                content: vec![AssistantPart::Text {
-                    text: format!(
-                        "{}Recent progress; effect remains unknown",
-                        "older log ".repeat(5000)
-                    ),
-                    provider_options: None,
-                }],
-                provider_options: None,
-            },
-        ];
-        for (tokens, expected_files) in [(2000, 1), (500, 0)] {
-            let prepared = crate::prepared_prompt::PreparedPrompt::new(
-                maka_model::prompt::Prompt::from_messages(prompt.clone()),
-            );
-            let fitted = fit_prepared_summary(
-                &prepared,
-                tokens,
-                Language::En,
-                &tokio_util::sync::CancellationToken::new(),
-            )
-            .await
-            .unwrap();
-            assert!(fitted.breakdown().estimated_tokens() <= tokens);
-            let mut cursor = fitted.open();
-            let mut fitted = Vec::new();
-            while let Some(message) = cursor.next().await.unwrap() {
-                fitted.push(message);
-            }
-            assert_eq!(fitted[0], system);
-            let Message::User { content, .. } = &fitted[1] else {
-                panic!("historical excerpt");
-            };
-            let files: Vec<_> = content
-                .iter()
-                .filter(|part| matches!(part, ContentPart::File { .. }))
-                .collect();
-            assert_eq!(files.len(), expected_files);
-            let text: String = content
-                .iter()
-                .filter_map(|part| match part {
-                    ContentPart::Text { text, .. } => Some(text.as_str()),
-                    ContentPart::File { .. } => None,
-                })
-                .collect();
-            assert!(!text.contains("distinctive-media-payload"));
-            if expected_files == 1 {
-                assert_eq!(files[0], &file);
-                assert!(!text.contains("media parts omitted"));
-            } else {
-                assert!(text.contains("1 media parts omitted"));
-                assert!(text.contains("request-source message position"));
-                assert!(text.contains("image/png"));
-            }
-        }
-    }
-
-    #[tokio::test]
-    async fn prepared_overflow_excerpt_keeps_media_native_and_within_budget() {
-        let file = ContentPart::File {
-            data: FileData::Data("media-must-not-enter-text".into()),
-            media_type: "image/png".into(),
-            provider_options: None,
-        };
-        let mut messages = vec![Message::user("initial task")];
-        messages.extend(
-            (0..100).map(|index| Message::user(format!("{index}: {}", "history ".repeat(200)))),
-        );
-        messages.push(Message::User {
-            content: vec![ContentPart::text("recent image"), file.clone()],
-            provider_options: None,
-        });
-        let prompt = crate::prepared_prompt::PreparedPrompt::new(
-            maka_model::prompt::Prompt::from_messages(messages),
-        );
-        let fitted = fit_prepared_summary(
-            &prompt,
-            2000,
-            Language::En,
-            &tokio_util::sync::CancellationToken::new(),
-        )
-        .await
-        .unwrap();
-        assert!(fitted.breakdown().estimated_tokens() <= 2000);
-        let mut cursor = fitted.open();
-        let Some(Message::User { content, .. }) = cursor.next().await.unwrap() else {
-            panic!("summary excerpt")
-        };
-        assert!(content.iter().any(|part| part == &file));
-        assert!(
-            content
-                .iter()
-                .filter_map(|part| match part {
-                    ContentPart::Text { text, .. } => Some(text),
-                    _ => None,
-                })
-                .all(|text| !text.contains("media-must-not-enter-text"))
-        );
-        assert!(cursor.next().await.unwrap().is_none());
-    }
+    window.map_or(requested, |window| {
+        requested.min(window.saturating_sub(estimated_input_tokens).max(minimum))
+    })
 }

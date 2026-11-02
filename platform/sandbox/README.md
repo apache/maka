@@ -33,6 +33,8 @@ Only unsupported capabilities or policies select the existing low-privilege-acco
 
 Destination-restricted traffic passes through an execution-owned gateway. Routing and credentials stay with the Host, and redirects need their own destination permission. Linux and Windows expand deny globs before launch; future matching paths are covered on a subsequent launch, not by that existing snapshot.
 
+On macOS, `allowed` includes the system resolver's `mDNSResponder` Unix socket; other Host Unix sockets remain blocked. Destination-restricted processes use the gateway's resolver instead of gaining direct access to that socket.
+
 Filesystem permissions apply to paths. MXC tightens conflicting object aliases listed in the policy; it does not scan writable trees for pre-existing, unlisted hard links.
 
 MXC networking follows Codex: `denied` blocks network access including IPv4/IPv6 loopback. `restricted` permits Windows host-loopback access, including `127.0.0.0/8`, `::1` and the host's other local interface addresses. Remote destinations must pass through the execution-owned proxy, which enforces the granted destination host and port. Thus the restricted policy permits access to local services beyond the proxy itself. `allowed` permits normal networking.
@@ -57,7 +59,7 @@ The native Windows acceptance fixture builds the real Host backend and process t
 cargo build -p maka-host-runtime --example windows_mxc --target x86_64-pc-windows-msvc
 ```
 
-Run the resulting `windows_mxc.exe` from a Windows local path as a normal user. It creates and removes its own `LOCALAPPDATA` temporary directory and verifies filesystem restrictions, arguments and environment, pipe and ConPTY I/O, descendant lifetime, cancellation, and networking. Its network checks require the unsandboxed host to reach `example.com:443` over TCP as a positive control; no HTTP request is sent. Unavailable MXC support is a failure, not a skipped check.
+Run the resulting `windows_mxc.exe` from a Windows local path as a normal user. It creates and removes its own `LOCALAPPDATA` temporary directory and verifies filesystem restrictions, arguments and environment, pipe and ConPTY I/O, descendant lifetime, cancellation, and networking. Its network checks require the unsandboxed host to reach `example.com:443` over TCP as a positive control, then verify DNS resolution and the hostname connection inside an `allowed` sandbox too; no HTTP request is sent. Unavailable MXC support is a failure, not a skipped check.
 
 ## Source provenance
 `src/seatbelt/{base,network}.sbpl` are copied unchanged from Codex's

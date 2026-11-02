@@ -22,7 +22,6 @@ import { test } from 'node:test';
 import {
   readFileSync,
   readdirSync,
-  existsSync,
   mkdtempSync,
   rmSync,
   writeFileSync,
@@ -34,27 +33,47 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('the product ships complete Host and shared UI packages', () => {
-  const inputs = JSON.parse(readFileSync(resolve(root, 'package-inputs.json'), 'utf8'));
-  const names = readdirSync(resolve(root, 'dist/packages')).sort();
-  assert.deepEqual(names, Object.keys(inputs).sort());
-  for (const name of names) {
-    const manifest = JSON.parse(
-      readFileSync(resolve(root, 'dist/packages', name, 'maka.extension.json'), 'utf8'),
-    );
-    assert.ok(
-      manifest.application.host || manifest.application.ui || manifest.application.composition,
-      name,
-    );
-    if (manifest.application.ui)
-      assert.ok(
-        existsSync(resolve(root, 'dist/packages', name, manifest.application.ui.module)),
-        name,
-      );
-    assert.ok(manifest.displayName?.trim(), name);
-    assert.ok(manifest.description?.trim(), name);
-    assert.ok(manifest.localizations?.['zh-CN']?.description?.trim(), name);
-  }
+test('own Session tools grant the original Agent service without an import cycle', async () => {
+  const { composition, instanceNames, packageNames } = await import(
+    '../dist/authoring/composition.mjs'
+  );
+  const keys = Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`]));
+  const { host, native } = composition({
+    locale: 'en',
+    hostDeployment: 'host',
+    keys,
+    packages: Object.fromEntries(
+      packageNames.map((name) => [name, { id: name, revision: 'a'.repeat(64) }]),
+    ),
+    agent: {
+      workspaceRoots: [],
+      tools: [
+        {
+          name: 'SessionUpdate',
+          description: 'Update a conversation',
+          target: { kind: 'export', name: 'agent' },
+          method: 'metadata',
+          result: 'json',
+          confirmation: 'preapproved',
+        },
+      ],
+    },
+  });
+  assert.deepEqual(host.instances.agent.bindings, {});
+  assert.deepEqual(native, [
+    {
+      origin: [keys.agent],
+      consumer: [keys.agent],
+      provider: [keys.agent],
+      export: 'agent',
+      methods: ['metadata'],
+      recovery: true,
+    },
+  ]);
+  assert.deepEqual(host.instances.agent.configuration.values.tools[0].target, {
+    kind: 'export',
+    name: 'agent',
+  });
 });
 
 test('publishing plugin packages preserves unchanged files and removes obsolete bytes', async () => {
@@ -98,7 +117,7 @@ test('native Web tools freeze their display contract while retaining explicit cu
         {
           name: 'WorkspacePage',
           description: 'Fetch a page',
-          import: 'web',
+          target: { kind: 'import', name: 'web' },
           method: 'fetch',
           result: 'json',
           confirmation: 'preapproved',
@@ -106,7 +125,7 @@ test('native Web tools freeze their display contract while retaining explicit cu
         {
           name: 'WorkspaceQuery',
           description: 'Search the web',
-          import: 'web',
+          target: { kind: 'import', name: 'web' },
           method: 'search',
           result: 'json',
           confirmation: 'preapproved',
@@ -114,7 +133,7 @@ test('native Web tools freeze their display contract while retaining explicit cu
         {
           name: 'CustomPage',
           description: 'Use a custom card',
-          import: 'web',
+          target: { kind: 'import', name: 'web' },
           method: 'fetch',
           result: 'json',
           confirmation: 'preapproved',
@@ -135,4 +154,28 @@ test('native Web tools freeze their display contract while retaining explicit cu
   assert.deepEqual(host.instances.agent.bindings.web, [
     { kind: 'instance', path: ['workspace-web'], export: 'web' },
   ]);
+});
+
+test('the default ModelList tool binds the settings model directory without a client gateway', async () => {
+  const { composition, installation, instanceNames, packageNames } = await import(
+    '../dist/authoring/composition.mjs'
+  );
+  const defaults = installation({ workspace: '/workspace', helper: '/helper', home: '/home' });
+  const tools = defaults.agent.tools.filter(({ name }) => name === 'ModelList');
+  assert.equal(tools.length, 1);
+  assert.deepEqual(tools[0].target, { kind: 'import', name: 'settings' });
+  assert.equal(tools[0].method, 'models');
+  assert.equal(tools[0].confirmation, 'preapproved');
+  const { host } = composition({
+    ...defaults,
+    hostDeployment: 'host',
+    keys: Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`])),
+    packages: Object.fromEntries(
+      packageNames.map((name) => [name, { id: name, revision: 'a'.repeat(64) }]),
+    ),
+  });
+  assert.deepEqual(host.instances.agent.bindings.settings, [
+    { kind: 'instance', path: ['settings'], export: 'Settings' },
+  ]);
+  assert.deepEqual(host.instances.settings.bindings, {});
 });

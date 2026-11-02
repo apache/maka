@@ -48,7 +48,8 @@ view()
 | `.label(..)` | `accessibilityLabel` | `string` | What screen readers read, instead of the texts inside. |
 | `.hint(..)` | `accessibilityHint` | `string` | What activating the element does, read after a pause. |
 | `.role(..)` | `role` | `AccessibilityRole` | What the element is. |
-| `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | Its state: disabled, selected, checked, busy, expanded. `selected` also applies the selected style, `checked` the checked style when true and the indeterminate style when `"mixed"`. |
+| `.accessibility_state(..)` | `accessibilityState` | `AccessibilityState` | Its state: disabled, selected, checked, busy, expanded, pressed, current. `selected` also applies the selected style, `checked` the checked style when true and the indeterminate style when `"mixed"`, `pressed` the pressed style when true. |
+| `.accessibility_level(..)` | `accessibilityLevel` | `number` | The level of a heading (1 the top), the depth of a tree item (1 at the top). |
 | `.accessibility_value(..)` | `accessibilityValue` | `{ min?, max?, now?, text? }` | The value of a range or textual element. |
 | | `accessibilityActions` | `{ name, label? }[]` | Actions offered to assistive technologies. |
 | `.on_accessibility_action(..)` | `onAccessibilityAction` | `(e: { actionName }) => void` | An action was performed (Rust: its name). |
@@ -61,12 +62,14 @@ Give every icon-only control a label: a screen reader cannot read a glyph or an 
 
 ### Roles
 
-The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as [`Select`](../elements/select.md)'s list, and its options, the chosen one marked by `accessibilityState.selected`).
+The role (`.role(AccessibilityRole::Header)`, `role="header"`) tells the user what kind of element this is and how to operate it. In Rust it is an `AccessibilityRole` variant (`Button`, `Header`, `Switch`, ...); the TSX values are `"none"`, `"button"`, `"link"`, `"search"`, `"image"`, `"imagebutton"`, `"keyboardkey"`, `"text"`, `"adjustable"`, `"header"`, `"summary"`, `"alert"`, `"checkbox"`, `"combobox"`, `"menu"`, `"menubar"`, `"menuitem"`, `"progressbar"`, `"radio"`, `"radiogroup"`, `"scrollbar"`, `"spinbutton"`, `"switch"`, `"tab"`, `"tablist"`, `"timer"`, `"toolbar"`, `"list"`, `"grid"`, `"table"`, `"rowgroup"`, `"row"`, `"columnheader"` and `"cell"` (the roles of [`Table`](../elements/table.md)'s parts), `"listbox"` and `"option"` (a list of options to choose from, such as [`Select`](../elements/select.md)'s list, and its options, the chosen one marked by `accessibilityState.selected`), `"group"` (related elements that belong together), `"region"` (a section worth reaching on its own, such as an accordion's panel), `"navigation"` (links that move around the app, such as a pagination), `"tree"` and `"treeitem"` (items that expand and collapse, each at its `accessibilityLevel`), `"menuitemcheckbox"` and `"menuitemradio"` (menu items that are checked, alone or as one choice of a group).
 
 The most useful ones:
 
 - `"button"` for anything pressable that is not a link; `"link"` for navigation to content.
-- `"header"` for section titles: screen reader users jump between headers to skim a screen.
+- `"header"` for section titles: screen reader users jump between headers to skim a screen. `accessibilityLevel` gives its level (1 the top) where the platform reads one.
+- `"button"` with `accessibilityState.pressed` for a toggle button, one that stays on or off (bold in a toolbar).
+- `"navigation"` around links that move between pages, the link of the shown page with `accessibilityState.current: "page"`.
 - `"switch"`, `"checkbox"`, `"radio"` with `accessibilityState.checked`.
 - `"adjustable"` for sliders and steppers, with `accessibilityValue` and the `increment` / `decrement` actions
   (each thumb of a [`Slider`](../elements/slider.md) is one).
@@ -131,7 +134,7 @@ view()
 </View>
 ```
 
-The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded? }` in TSX. `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
+The state is `AccessibilityState { disabled, selected, checked: Option<Checked>, busy, expanded, pressed: Option<Checked>, current: Option<AccessibilityCurrent> }` in Rust and `{ disabled?, selected?, checked?: boolean | "mixed", busy?, expanded?, pressed?: boolean | "mixed", current?: boolean | "page" | "step" | "location" | "date" | "time" }` in TSX. `pressed` makes a button a toggle button (ARIA's `aria-pressed`); `current` marks the current item of a set (ARIA's `aria-current`): a pagination's page, a wizard's step. `disabled` is also implied by disabling the view (`.disabled(..)`, `disabled`). `accessibilityValue` with `min`, `max` and `now` is read as a percentage; with `text` it is read as given ("3 of 10", "Medium").
 
 ## Actions
 

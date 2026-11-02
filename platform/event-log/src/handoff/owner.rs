@@ -30,7 +30,7 @@ use std::collections::HashSet;
 
 async fn opening(tx: &mut SqliteConnection, id: &str) -> Result<Option<RuntimeEvent>, StoreError> {
     let json: Option<String> = sqlx::query_scalar(
-        "SELECT event_json
+        "SELECT event_header
          FROM runtime_events WHERE invocation_id=? AND kind='invocation_opened'",
     )
     .bind(id)

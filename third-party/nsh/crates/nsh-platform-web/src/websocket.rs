@@ -1,4 +1,7 @@
 //! Browser WebSockets, owned by the same player and wasm instance as the engine.
+//! While the `websocket` module's unread queue is full, the page holds the
+//! socket's events (`websocket_pause` in `web/nsh.js`) and delivers them in
+//! order once the app reads.
 
 use std::{
     cell::{Cell, RefCell},
@@ -65,6 +68,12 @@ impl WebSocketTask for Socket {
     }
     fn buffered_amount(&self) -> usize {
         ffi::websocket_buffered(self.id)
+    }
+    /// The browser's WebSocket API has no flow control: the page holds the
+    /// socket's events, in order, outside the WebAssembly memory until it
+    /// resumes.
+    fn pause(&mut self, paused: bool) {
+        ffi::websocket_pause(self.id, paused);
     }
 }
 impl Drop for Socket {

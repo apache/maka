@@ -78,7 +78,7 @@ impl Library {
                     tool.input == ToolInput::Skill
                         && tool.method == method
                         && services.imports().any(|(name, targets)| {
-                            name == tool.import
+                            matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Import { name: import } if name == import)
                                 && targets.len() == 1
                                 && targets[0].execution_basis() == binding.execution_basis()
                         })
@@ -146,11 +146,13 @@ impl Owner {
             None => None,
         };
         // This read-only basis selects tool names; it never renders or admits model work.
+        let selected_catalog = self
+            .mcp_projects
+            .available(&session.configuration.workspace)
+            .await?;
         let basis = MessageBasis {
-            mcp_revision: self
-                .mcp_projects
-                .available(&session.configuration.workspace)
-                .await?,
+            mcp_revision: selected_catalog.revision.clone(),
+            mcp_catalog: Some(selected_catalog),
             language: Language::En,
             compaction_prompt: None,
             graph,
@@ -171,7 +173,9 @@ impl Owner {
         };
         let input = serde_json::to_value(SkillToolRequest {
             workspace: Some(session.configuration.workspace),
-            tools: self.selected_tools(&basis, false, Some(editing))?.names(),
+            tools: self
+                .selected_tools(&input.session_id, &basis, false, Some(editing))?
+                .names(),
             input: maka_skills_api::contract::ModelSearch {
                 query: input.query,
                 limit: None,

@@ -60,6 +60,7 @@ struct Observation {
     cancellation: CancellationToken,
 }
 struct Owned {
+    exports: Arc<BTreeMap<String, Binding>>,
     imports: Arc<BTreeMap<String, Vec<Binding>>>,
     resource: Resource,
     close: Option<Close>,
@@ -136,6 +137,7 @@ pub(super) struct Owner {
     sources: BTreeMap<PackageRef, Package>,
     native: NativeRegistry,
     issuer: Issuer,
+    preparation_resources: maka_capabilities::model_preparation::ModelPreparationResources,
     policy: Arc<dyn Policy>,
     scripts: Option<Arc<dyn backend::Factory>>,
     shared: Option<usize>,
@@ -153,6 +155,7 @@ pub(super) struct Owner {
     closing: bool,
     closing_vms: bool,
     closed: bool,
+    shutdown_complete: bool,
 }
 impl Owner {
     // These are independently owned deployment dependencies, not a new config
@@ -164,6 +167,7 @@ impl Owner {
         sources: BTreeMap<PackageRef, Package>,
         native: NativeRegistry,
         issuer: Issuer,
+        preparation_resources: maka_capabilities::model_preparation::ModelPreparationResources,
         policy: Arc<dyn Policy>,
         scripts: Option<Arc<dyn backend::Factory>>,
         updates: watch::Sender<Snapshot>,
@@ -192,6 +196,7 @@ impl Owner {
             sources,
             native,
             issuer,
+            preparation_resources,
             policy,
             scripts,
             shared: None,
@@ -209,6 +214,7 @@ impl Owner {
             closing: false,
             closing_vms: false,
             closed: false,
+            shutdown_complete: false,
         }
     }
     pub async fn run(
@@ -301,7 +307,7 @@ impl Owner {
                         Err(error) => {
                             let source = self.persisted.as_ref().map(|(source, _)| source.reference());
                             tracing::warn!(target: "maka_host_runtime::application", stage = "source_watch",
-                                cause = diagnostics::cause(&error), sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
+                                cause = diagnostics::cause(&error), error = %error, sql_code = diagnostics::sql_code(&error), os_code = diagnostics::os_code(&error),
                                 state_domain = source.map(|source| source.state_domain.as_str()),
                                 deployment_id = source.map(|source| tracing::field::display(source.deployment)), "Host runtime failure");
                             changes = None;
@@ -432,6 +438,7 @@ impl Owner {
         Ok(())
     }
     fn stop(&mut self) {
+        self.preparation_resources.close();
         self.closing = true;
         self.starting = false;
         self.pending.clear();
@@ -448,25 +455,18 @@ impl Owner {
         if self.starting
             || self.loading_adoption.is_some()
             || !self.jobs.is_empty()
-            || !self.failed.is_empty()
-            || self.cleanup_error.is_some()
-            || self
-                .owned
-                .values()
-                .any(|owned| owned.initializing || owned.closing)
+            || self.owned.values().any(|owned| owned.initializing)
             || self.activations.values().any(|activation| {
                 !self
                     .runtime
-                    .status(activation)
-                    .is_ok_and(|status| status.calls == 0)
+                    .pending_calls(activation)
+                    .is_ok_and(|calls| calls == 0)
             })
         {
             let reason = if self.starting || self.loading_adoption.is_some() {
                 "startup"
             } else if !self.jobs.is_empty() {
                 "jobs"
-            } else if !self.failed.is_empty() || self.cleanup_error.is_some() {
-                "cleanup"
             } else {
                 "activation"
             };
@@ -685,7 +685,11 @@ impl Owner {
             if self
                 .runtime
                 .status(activation)
-                .is_ok_and(|s| s.phase == Phase::Retiring && s.calls == 0)
+                .is_ok_and(|s| s.phase == Phase::Retiring)
+                && self
+                    .runtime
+                    .pending_calls(activation)
+                    .is_ok_and(|calls| calls == 0)
                 && let Some(owned) = self.owned.get_mut(id)
                 && !owned.initializing
                 && !owned.closing
@@ -732,7 +736,18 @@ impl Owner {
             self.drive();
             return;
         }
-        if self.closing && self.activations.is_empty() && self.jobs.is_empty() && !self.closing_vms
+        if self.closing
+            && self.jobs.is_empty()
+            && !self.closing_vms
+            && self
+                .owned
+                .values()
+                .all(|owned| !owned.initializing && owned.close.is_none())
+            && self.activations.values().all(|activation| {
+                self.runtime
+                    .pending_calls(activation)
+                    .is_ok_and(|calls| calls == 0)
+            })
         {
             self.closing_vms = true;
             self.terminals.clear();
@@ -781,6 +796,7 @@ impl Owner {
         self.owned.insert(
             instance.identity.clone(),
             Owned {
+                exports: Arc::default(),
                 imports: Arc::new(imports),
                 resource,
                 close: None,
@@ -791,6 +807,24 @@ impl Owner {
                 vm: None,
             },
         );
+        let exports = entry
+            .exports
+            .iter()
+            .map(|(name, declaration)| {
+                let capability = self
+                    .runtime
+                    .own_export(&activation, name)
+                    .map_err(|e| e.to_string())?;
+                Ok((
+                    name.clone(),
+                    self.capture_binding(capability, Arc::new(declaration.contract.clone()))?,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>>>()?;
+        self.owned
+            .get_mut(&instance.identity)
+            .expect("initializing owner")
+            .exports = Arc::new(exports);
         match &entry.implementation {
             Implementation::Native { implementation } => {
                 let factory = self.native.0[implementation].clone();
@@ -801,8 +835,10 @@ impl Owner {
                     services: NativeServices {
                         activation: activation.clone(),
                         imports: self.owned[activation.instance()].imports.clone(),
+                        exports: self.owned[activation.instance()].exports.clone(),
                         dispatch: self.dispatch.clone(),
                         issuer: self.issuer.clone(),
+                        preparation_resources: self.preparation_resources.clone(),
                     },
                     persistence: self
                         .persisted
@@ -999,62 +1035,75 @@ impl Owner {
                     .map_err(|e| e.to_string())?
                     .contract
                     .clone();
-                let instance = self
-                    .runtime
-                    .instance(capability.provider())
-                    .map_err(|e| e.to_string())?;
-                let owned = self
-                    .owned
-                    .get(capability.provider().instance())
-                    .ok_or("provider has no captured imports")?;
-                // Use the actual activation's retained plan and captured imports,
-                // never the desired plan or a newly resolved dependency. Child
-                // digests carry the dependency closure without retaining values.
-                let imports: BTreeMap<_, Vec<_>> = owned
-                    .imports
-                    .iter()
-                    .map(|(name, bindings)| {
-                        (
-                            name,
-                            bindings.iter().map(Binding::execution_basis).collect(),
-                        )
-                    })
-                    .collect();
-                let native = owned
-                    .native_owner
-                    .as_ref()
-                    .map(|owner| {
-                        std::panic::catch_unwind(AssertUnwindSafe(|| owner.execution_basis()))
-                            .map(|basis| match basis {
-                                Some(facts) => serde_json::json!({"facts": facts}),
-                                None => {
-                                    serde_json::json!({"activation": capability.provider().epoch()})
-                                }
-                            })
-                            .map_err(|_| "native execution basis panicked")
-                    })
-                    .transpose()?;
-                let mut basis = serde_json::json!({
-                    "identity": instance.identity, "parent": instance.parent,
-                    "package": instance.package, "disabled": instance.disabled,
-                    "configuration": instance.configuration, "entry": instance.entry,
-                    "bindings": instance.bindings, "exports": instance.exports,
-                    "imports": imports, "export": capability.export(), "contract": contract.as_ref(),
-                    "native": native,
-                });
-                basis.sort_all_objects();
-                let digest = maka_agent_facts::artifact::content_digest(
-                    &serde_json::to_vec(&basis).map_err(|e| e.to_string())?,
-                );
-                Ok(Binding(
-                    capability,
-                    contract,
-                    digest.into(),
-                    Arc::new(instance.package.clone()),
-                    Arc::new(AtomicBool::new(false)),
-                ))
+                self.capture_binding(capability, contract)
             })
             .collect()
+    }
+    fn capture_binding(
+        &self,
+        capability: Capability<Service>,
+        contract: Arc<Contract>,
+    ) -> Result<Binding> {
+        let instance = self
+            .runtime
+            .instance(capability.provider())
+            .map_err(|e| e.to_string())?;
+        let owned = self
+            .owned
+            .get(capability.provider().instance())
+            .ok_or("provider has no captured imports")?;
+        // Use the actual activation's retained plan and captured imports,
+        // never the desired plan or a newly resolved dependency. Child
+        // digests carry the dependency closure without retaining values.
+        let imports: BTreeMap<_, Vec<_>> = owned
+            .imports
+            .iter()
+            .map(|(name, bindings)| {
+                (
+                    name,
+                    bindings.iter().map(Binding::execution_basis).collect(),
+                )
+            })
+            .collect();
+        // Own exports follow the caller's logical owner across activations;
+        // capability epochs still fence admission to the original activation.
+        let native = if capability.consumer() == capability.provider() {
+            None
+        } else {
+            owned
+                .native_owner
+                .as_ref()
+                .map(|owner| {
+                    std::panic::catch_unwind(AssertUnwindSafe(|| owner.execution_basis()))
+                        .map(|basis| match basis {
+                            Some(facts) => serde_json::json!({"facts": facts}),
+                            None => {
+                                serde_json::json!({"activation": capability.provider().epoch()})
+                            }
+                        })
+                        .map_err(|_| "native execution basis panicked")
+                })
+                .transpose()?
+        };
+        let mut basis = serde_json::json!({
+            "identity": instance.identity, "parent": instance.parent,
+            "package": instance.package, "disabled": instance.disabled,
+            "configuration": instance.configuration, "entry": instance.entry,
+            "bindings": instance.bindings, "exports": instance.exports,
+            "imports": imports, "export": capability.export(), "contract": contract.as_ref(),
+            "native": native,
+        });
+        basis.sort_all_objects();
+        let digest = maka_agent_facts::artifact::content_digest(
+            &serde_json::to_vec(&basis).map_err(|e| e.to_string())?,
+        );
+        Ok(Binding(
+            capability,
+            contract,
+            digest.into(),
+            Arc::new(instance.package.clone()),
+            Arc::new(AtomicBool::new(false)),
+        ))
     }
     fn capture_ui(
         &self,
@@ -1203,7 +1252,6 @@ impl Owner {
                 if kind.closed() && parent.is_none() {
                     return;
                 }
-                let mut descriptor_failed = false;
                 let admission = (|| {
                     if self.closing
                         || !self.issuer.owns(&scope)
@@ -1346,7 +1394,6 @@ impl Owner {
                                 let error =
                                     "Host admission policy or attachment descriptor panicked"
                                         .to_string();
-                                descriptor_failed = true;
                                 return Err(error);
                             }
                         };
@@ -1383,11 +1430,7 @@ impl Owner {
                         drop(kind.take_confirmation());
                         drop((attachments, resources, bytes, input, scope));
                         if let Some(ticket) = parent.take() {
-                            ticket.complete(if descriptor_failed {
-                                Err(error.clone())
-                            } else {
-                                Ok(())
-                            });
+                            ticket.complete(Ok(()));
                         }
                         kind.reject(error);
                     }
@@ -1498,6 +1541,7 @@ impl Owner {
                             operation_scope: None,
                             attachments: attachments.clone(),
                             imports: self.owned[execution.provider().instance()].imports.clone(),
+                            exports: self.owned[execution.provider().instance()].exports.clone(),
                             dispatch: self.dispatch.clone(),
                         };
                         let is_mutation = operation.is_some();
@@ -1838,7 +1882,10 @@ impl Owner {
                     drop((confirmation, attachments, _resources, _bytes, scope));
                 }
                 if let Some(ticket) = parent {
-                    ticket.complete(cleanup.clone());
+                    // Failed execution custody is retained by this Host above.
+                    // The caller's observation has ended; child cleanup remains
+                    // unconfirmed in its own receipt and retained scope.
+                    ticket.complete(Ok(()));
                 }
                 reply.send(result, cleanup, receipt.map(|receipt| *receipt));
             }
@@ -1899,7 +1946,10 @@ impl Owner {
                     self.owned.remove(activation.instance());
                 }
             }
-            Done::VmsClosed => self.closed = true,
+            Done::VmsClosed => {
+                self.shutdown_complete = true;
+                self.closed = self.cleanup_error.is_none();
+            }
         }
     }
     fn snapshot(&self) -> Snapshot {
@@ -1915,6 +1965,7 @@ impl Owner {
             initialization_failures: self.initialization_failures.clone(),
             closing: self.closing,
             closed: self.closed,
+            shutdown_complete: self.shutdown_complete,
             cleanup_error: self.cleanup_error.clone(),
             instances: self
                 .activations

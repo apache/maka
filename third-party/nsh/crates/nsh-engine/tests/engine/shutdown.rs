@@ -30,6 +30,7 @@ fn stop_spinning(code: &str) -> (Duration, Vec<String>) {
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,

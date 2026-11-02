@@ -73,14 +73,16 @@ async fn sink(delay: Option<oneshot::Receiver<()>>) -> (String, tokio::task::Joi
 #[tokio::test]
 async fn real_http_stream_has_exact_bytes_and_reopens_for_replay() {
     let expected = [b"prefix".as_slice(), &vec![42; 128 * 1024], b"suffix"].concat();
-    for _ in 0..2 {
-        let (url, server) = sink(None).await;
-        // A fresh cursor is opened for each attempt; no transport replay buffer.
-        let source = RequestBody::stream(futures_util::stream::iter(vec![
+    let source = RequestBody::replayable(|| {
+        RequestBody::stream(futures_util::stream::iter(vec![
             Ok(Bytes::from_static(b"prefix")),
             Ok(Bytes::from(vec![42; 128 * 1024])),
             Ok(Bytes::from_static(b"suffix")),
-        ]));
+        ]))
+    });
+    let replay = source.replay_source().unwrap();
+    for source in [source, replay.open(CancellationToken::new()).await.unwrap()] {
+        let (url, server) = sink(None).await;
         let (body, mut receipt) = body(source, CancellationToken::new());
         let response = reqwest::Client::builder()
             .no_proxy()
@@ -132,11 +134,11 @@ async fn cancellation_keeps_giant_allocation_owned_until_last_transport_slice_dr
     assert_eq!(frame.len(), CHUNK_BYTES);
     drop(body);
     assert_eq!(dropped.load(Ordering::SeqCst), 0);
-    let settlement = tokio::spawn(async move { receipt.finish().await });
-    tokio::task::yield_now().await;
-    assert!(!settlement.is_finished());
+    let settlement = receipt.finish();
+    tokio::pin!(settlement);
+    assert!(futures_util::poll!(settlement.as_mut()).is_pending());
     drop(frame);
-    settlement.await.unwrap().unwrap();
+    settlement.await.unwrap();
     assert_eq!(dropped.load(Ordering::SeqCst), 1);
 }
 
@@ -185,4 +187,88 @@ async fn delayed_real_http_sink_backpressures_source_and_cancel_releases_it() {
     drop(release);
     server.abort();
     let _ = server.await;
+}
+
+#[tokio::test]
+async fn source_receipt_releases_payload_while_response_headers_are_held() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}/upload", listener.local_addr().unwrap());
+    let (read, received) = oneshot::channel();
+    let (release, headers) = oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.unwrap();
+        let state = Arc::new(tokio::sync::Mutex::new(Some((read, headers))));
+        let service = service_fn(move |request: hyper::Request<hyper::body::Incoming>| {
+            let state = state.clone();
+            async move {
+                let (read, headers) = state.lock().await.take().unwrap();
+                let bytes = request.into_body().collect().await.unwrap().to_bytes();
+                read.send(bytes.to_vec()).unwrap();
+                headers.await.unwrap();
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from_static(b"ok"))))
+            }
+        });
+        hyper::server::conn::http1::Builder::new()
+            .keep_alive(false)
+            .serve_connection(TokioIo::new(socket), service)
+            .await
+            .unwrap();
+    });
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let bytes = Bytes::from_owner(Allocation {
+        bytes: vec![7; 1024 * 1024],
+        dropped: dropped.clone(),
+    });
+    let source = RequestBody::with_length(
+        futures_util::stream::once(async move { Ok(bytes) }),
+        1024 * 1024,
+    );
+    let (body, mut receipt) = body(source, CancellationToken::new());
+    let client = reqwest::Client::builder().no_proxy().build().unwrap();
+    let response = client.post(url).body(body).send();
+    tokio::pin!(response);
+    let received = tokio::select! {
+        result = received => result.unwrap(),
+        result = &mut response => panic!("headers arrived before release: {result:?}"),
+    };
+    assert_eq!(received, vec![7; 1024 * 1024]);
+    receipt.source_released().await.unwrap();
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert!(futures_util::poll!(response.as_mut()).is_pending());
+    release.send(()).unwrap();
+    let response = response.await.unwrap();
+    assert_eq!(response.status(), 200);
+    assert_eq!(response.bytes().await.unwrap(), b"ok".as_slice());
+    server.await.unwrap();
+    assert_eq!(receipt.finish().await.unwrap()["bodyComplete"], true);
+}
+
+#[tokio::test]
+async fn source_receipt_waits_for_final_chunk_without_requiring_wrapper_drop() {
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let bytes = Bytes::from_owner(Allocation {
+        bytes: vec![9; 8],
+        dropped: dropped.clone(),
+    });
+    let source = RequestBody::with_length(futures_util::stream::once(async move { Ok(bytes) }), 8);
+    let (mut body, mut receipt) = body(source, CancellationToken::new());
+    let chunk = body.frame().await.unwrap().unwrap().into_data().unwrap();
+    assert_eq!(chunk.as_ref(), &[9; 8]);
+    {
+        let released = receipt.source_released();
+        tokio::pin!(released);
+        assert!(futures_util::poll!(released.as_mut()).is_pending());
+        assert_eq!(dropped.load(Ordering::SeqCst), 0);
+        drop(chunk);
+        released.await.unwrap();
+    }
+    assert_eq!(dropped.load(Ordering::SeqCst), 1);
+    assert!(body.frame().await.is_none());
+    {
+        let finished = receipt.finish();
+        tokio::pin!(finished);
+        assert!(futures_util::poll!(finished.as_mut()).is_pending());
+        drop(body);
+        assert_eq!(finished.await.unwrap()["bodyComplete"], true);
+    }
 }

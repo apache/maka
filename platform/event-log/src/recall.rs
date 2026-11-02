@@ -22,7 +22,7 @@
 use crate::{EventLog, StoreError};
 use maka_agent_facts::{attachment::AttachmentRef, history::RowPosition};
 use maka_agent_ports::session::history::Role;
-use rusqlite::{Connection as RawConnection, params};
+use rusqlite::{Connection as RawConnection, OptionalExtension, params};
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -299,10 +299,11 @@ impl Ranked {
     }
 }
 
-const COLUMNS: &str = "d.session_id,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role,d.body,d.attachments";
+const COLUMNS: &str =
+    "d.session_id,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role";
 // Indexed candidates must drive scope checks, rather than probing FTS for every session document.
-const VISIBLE:&str="CROSS JOIN session_control s ON s.id=d.session_id CROSS JOIN root_control.session_routes r ON r.session_id=s.id
-    WHERE r.partition=?1 AND r.ready=1 AND r.visible=1 AND instr(d.session_id,?2)=1
+const VISIBLE:&str="CROSS JOIN root_control.session_routes r ON r.session_id=s.id
+    WHERE r.partition=?1 AND r.ready=1 AND r.visible=1 AND instr(s.id,?2)=1
     AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)";
 
 fn hit(row: &rusqlite::Row<'_>, through: u64) -> Result<SearchHit, StoreError> {
@@ -335,6 +336,27 @@ fn hit(row: &rusqlite::Row<'_>, through: u64) -> Result<SearchHit, StoreError> {
     })
 }
 
+fn render_hit(
+    db: &RawConnection,
+    session: &str,
+    source: i64,
+    item: i64,
+    message: &maka_presentation::Message,
+    through: u64,
+) -> Result<SearchHit, StoreError> {
+    let query = format!(
+        "WITH source(payload) AS (VALUES(?4)) SELECT {COLUMNS},{},
+             CASE WHEN d.role='user' THEN COALESCE(json_extract(payload,'$.attachments'),'[]') ELSE '[]' END
+         FROM transcript_directory d,source
+         WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3",
+        crate::transcript::directory::RECALL_BODY,
+    );
+    let payload = serde_json::to_vec(message)?;
+    let mut statement = db.prepare_cached(&query)?;
+    let mut rows = statement.query(params![session, source, item, payload])?;
+    hit(rows.next()?.ok_or(StoreError::TranscriptConflict)?, through)
+}
+
 fn fence(db: &RawConnection) -> Result<u64, StoreError> {
     crate::sequence_number(
         db.prepare_cached("SELECT COALESCE(MAX(sequence),0) FROM event_log")?
@@ -364,10 +386,10 @@ fn search_on_handle(
     partition: usize,
     prefix: &str,
     input: SearchQuery,
+    through: u64,
     cancellation: &CancellationToken,
 ) -> Result<SearchBatch, StoreError> {
     check(cancellation)?;
-    let through = fence(db)?;
     let through_sql = number(through)?;
     let mut gaps = Vec::new();
     let mut incomplete = BTreeSet::new();
@@ -407,13 +429,14 @@ fn search_on_handle(
         })
         .collect();
     let query = format!(
-        "SELECT {COLUMNS},d.folded
-         FROM recall_terms CROSS JOIN recall_documents d ON d.id=recall_terms.rowid {VISIBLE}
+        "SELECT {COLUMNS}
+         FROM recall_terms CROSS JOIN transcript_directory d ON d.rowid=recall_terms.rowid CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
          AND recall_terms MATCH ?3 AND (?4 IS NULL OR d.session_id=?4)
          AND (?5 IS NULL OR d.timestamp>=?5) AND (?6 IS NULL OR d.timestamp<=?6)
          AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,''))
          AND d.source_sequence<=?9
-         AND NOT EXISTS(SELECT 1 FROM transcript_failures f WHERE f.session_id=d.session_id AND f.source_sequence<=?9)"
+         AND NOT EXISTS(SELECT 1 FROM transcript_failures f WHERE f.session_id=d.session_id AND f.source_sequence<=?9)
+         ORDER BY d.session_id,d.source_sequence,d.item_index"
     );
     let exclude = input.exclude.as_ref();
     let mut statement = db.prepare_cached(&query)?;
@@ -429,14 +452,34 @@ fn search_on_handle(
         through_sql,
     ])?;
     let mut ranked = Ranked::new(input.limit);
+    let mut source_rows: Option<((String, i64), Vec<maka_presentation::Row>)> = None;
     while let Some(row) = rows.next()? {
         check(cancellation)?;
-        let folded: String = row.get(9)?;
+        let session: String = row.get(0)?;
+        let source: i64 = row.get(2)?;
+        let item: i64 = row.get(3)?;
+        let key = (session, source);
+        if source_rows.as_ref().is_none_or(|(prior, _)| prior != &key) {
+            source_rows = Some((
+                key.clone(),
+                crate::transcript::directory::source_on_handle(db, &key.0, source)?,
+            ));
+        }
+        let message: String = row.get(1)?;
+        let rendered = source_rows
+            .as_ref()
+            .and_then(|(_, rows)| {
+                rows.iter().find(|rendered| {
+                    rendered.position.item_index == item as u64 && rendered.message.id == message
+                })
+            })
+            .ok_or(StoreError::TranscriptConflict)?;
+        let mut found = render_hit(db, &key.0, source, item, &rendered.message, through)?;
+        let folded = fold(&found.body);
         let (matched_terms, score) = literal_density(&folded, &terms, cancellation)?;
         if matched_terms.is_empty() {
             continue;
         }
-        let mut found = hit(row, through)?;
         found.matched_terms = matched_terms;
         found.score = score
             * if found.role == Role::ToolResult {
@@ -472,6 +515,11 @@ fn context_on_handle(
     if through > high_water {
         return Err(invalid("history context fence exceeds committed history"));
     }
+    if maintenance::visible_sessions(db, partition, prefix, Some(session), cancellation)?.is_empty()
+    {
+        return Err(invalid("history context anchor is unavailable"));
+    }
+    crate::transcript::directory::ensure_on_handle(db, session, through)?;
     let through_sql = number(through)?;
     let failed: bool = db.prepare_cached(
         "SELECT EXISTS(SELECT 1 FROM transcript_failures WHERE session_id=?1 AND source_sequence<=?2)"
@@ -481,41 +529,43 @@ fn context_on_handle(
     }
     let exclusion = exclude.as_ref();
     let query = format!(
-        "SELECT {COLUMNS} FROM recall_documents d {VISIBLE}
+        "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d
+         CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
          AND d.session_id=?3 AND d.message_id=?4 AND d.source_sequence<=?5
          AND NOT(d.session_id=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,''))"
     );
-    let anchor = {
-        let mut statement = db.prepare_cached(&query)?;
-        let mut rows = statement.query(params![
-            partition as i64,
-            prefix,
-            session,
-            message,
-            through_sql,
-            exclusion.map(|x| x.0.as_str()),
-            exclusion.map(|x| x.1.as_str()),
-        ])?;
-        let row = rows
-            .next()?
-            .ok_or_else(|| invalid("history context anchor is unavailable"))?;
-        hit(row, through)?
-    };
-    let mut messages = Vec::new();
+    let anchor: (i64, i64, String) = db
+        .prepare_cached(&query)?
+        .query_row(
+            params![
+                partition as i64,
+                prefix,
+                session,
+                message,
+                through_sql,
+                exclusion.map(|x| x.0.as_str()),
+                exclusion.map(|x| x.1.as_str())
+            ],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?
+        .ok_or_else(|| invalid("history context anchor is unavailable"))?;
+    let mut selected = BTreeMap::from([((anchor.0, anchor.1), anchor.2)]);
     let mut more = [false, false];
     for (side, count) in [before, after].into_iter().enumerate() {
         check(cancellation)?;
         let order = if side == 0 { "DESC" } else { "ASC" };
         let comparison = if side == 0 { "<" } else { ">" };
         let mut query = format!(
-            "SELECT d.source_sequence,d.item_index FROM recall_documents d INDEXED BY recall_document_context {VISIBLE}
+            "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d INDEXED BY transcript_context_eligible
+             CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
              AND d.session_id=?3 AND d.source_sequence<=?4
              AND (d.source_sequence,d.item_index){comparison}(?5,?6)
              AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,''))
-             AND (d.body<>'' OR d.role IN('tool_call','tool_result'))
+             AND d.context_eligible=1
              ORDER BY d.source_sequence {order},d.item_index {order}"
         );
-        // One lookahead reports continuation without copying another large body.
+        // Select eligible positions, including one lookahead, before rendering bodies.
         write!(
             &mut query,
             " LIMIT {}",
@@ -528,10 +578,10 @@ fn context_on_handle(
             prefix,
             session,
             through_sql,
-            number(anchor.position.source_sequence)?,
-            number(anchor.position.item_index)?,
+            anchor.0,
+            anchor.1,
             exclusion.map(|x| x.0.as_str()),
-            exclusion.map(|x| x.1.as_str()),
+            exclusion.map(|x| x.1.as_str())
         ])?;
         let mut seen = 0;
         while let Some(row) = rows.next()? {
@@ -540,27 +590,53 @@ fn context_on_handle(
                 more[side] = true;
                 break;
             }
-            let source: i64 = row.get(0)?;
-            let item: i64 = row.get(1)?;
-            let mut full = db.prepare_cached(&format!(
-                "SELECT {COLUMNS} FROM recall_documents d WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3"
-            ))?;
-            let mut full_rows = full.query(params![session, source, item])?;
-            let full_row = full_rows.next()?.ok_or(StoreError::TranscriptConflict)?;
-            messages.push(hit(full_row, through)?);
+            selected.insert(
+                (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?),
+                row.get::<_, String>(2)?,
+            );
             seen += 1;
         }
     }
-    messages.sort_by_key(|message| {
-        (
-            message.position.source_sequence,
-            message.position.item_index,
-        )
-    });
+    let document_query = format!(
+        "WITH source(payload) AS (VALUES(?4))
+                 SELECT d.session_id,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role,{},
+                    CASE WHEN d.role='user' THEN COALESCE(json_extract(payload,'$.attachments'),'[]') ELSE '[]' END
+                 FROM transcript_directory d,source WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3",
+        crate::transcript::directory::RECALL_BODY,
+    );
+    let mut rendered = BTreeMap::new();
+    let sources: BTreeSet<_> = selected.keys().map(|(source, _)| *source).collect();
+    for source in sources {
+        check(cancellation)?;
+        for row in crate::transcript::directory::source_on_handle(db, session, source)? {
+            check(cancellation)?;
+            let key = (
+                number(row.position.source_sequence)?,
+                number(row.position.item_index)?,
+            );
+            let Some(message_id) = selected.get(&key) else {
+                continue;
+            };
+            if message_id != &row.message.id {
+                return Err(StoreError::TranscriptConflict);
+            }
+            let payload = serde_json::to_vec(&row.message)?;
+            let mut statement = db.prepare_cached(&document_query)?;
+            let mut rows = statement.query(params![session, key.0, key.1, payload])?;
+            let found = rows.next()?.ok_or(StoreError::TranscriptConflict)?;
+            rendered.insert(key, hit(found, through)?);
+        }
+    }
+    if rendered.len() != selected.len() {
+        return Err(StoreError::TranscriptConflict);
+    }
+    let anchor = rendered
+        .remove(&(anchor.0, anchor.1))
+        .ok_or(StoreError::TranscriptConflict)?;
     check(cancellation)?;
     Ok(SearchContext {
         anchor,
-        messages,
+        messages: rendered.into_values().collect(),
         has_more_before: more[0],
         has_more_after: more[1],
     })
@@ -575,22 +651,74 @@ impl EventLog {
         cancellation: CancellationToken,
     ) -> Result<SearchBatch, StoreError> {
         self.validate_root()?;
+        let operation =
+            self.search_partition_fenced(partition, prefix, input, cancellation.clone());
+        tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=operation=>result}
+    }
+
+    async fn search_partition_fenced(
+        &self,
+        partition: usize,
+        prefix: String,
+        input: SearchQuery,
+        cancellation: CancellationToken,
+    ) -> Result<SearchBatch, StoreError> {
+        let through = self
+            .connection
+            .read_interruptible(|connection| {
+                Box::pin(async move {
+                    let sequence: i64 =
+                        sqlx::query_scalar("SELECT COALESCE(MAX(sequence),0) FROM event_log")
+                            .fetch_one(connection)
+                            .await?;
+                    crate::sequence_number(sequence)
+                })
+            })
+            .await?;
+        self.search_partition_through(partition, prefix, input, through, cancellation)
+            .await
+    }
+
+    pub(crate) async fn search_partition_through(
+        &self,
+        partition: usize,
+        prefix: String,
+        input: SearchQuery,
+        through: u64,
+        cancellation: CancellationToken,
+    ) -> Result<SearchBatch, StoreError> {
+        check(&cancellation)?;
         let stop = cancellation.clone();
-        let read = self.connection.read_interruptible(move |db| {
-            Box::pin(async move {
-                let mut tx = sqlx::Connection::begin(db).await?;
-                let result = tx
-                    .run_on_worker(move |handle| {
-                        // SAFETY: callback-local exclusive borrow; no SQLite-backed values escape.
+        let operation = self.connection.observe(move |connection| {
+            crate::transcript::bodycache::run(connection, move |tx| {
+                Box::pin(async move {
+                    tx.run_on_worker(move |handle| {
+                        // SAFETY: the observation worker exclusively owns this callback-local handle.
                         let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
-                        search_on_handle(&db, partition, &prefix, input, &stop)
+                        if through > fence(&db)? {
+                            return Err(invalid("history search fence exceeds committed history"));
+                        }
+                        for session in maintenance::visible_sessions(
+                            &db,
+                            partition,
+                            &prefix,
+                            input.session_id.as_deref(),
+                            &stop,
+                        )? {
+                            match maintenance::ensure_session(&db, &session, through, &stop) {
+                                Ok(()) | Err(StoreError::TranscriptSource { .. }) => {}
+                                Err(error) => return Err(error),
+                            }
+                        }
+                        search_on_handle(&db, partition, &prefix, input, through, &stop)
                     })
-                    .await??;
-                tx.commit().await?;
-                Ok(result)
+                    .await?
+                })
             })
         });
-        tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=read=>result}
+        let result = tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=operation=>result};
+        self.validate_root()?;
+        result
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -608,11 +736,10 @@ impl EventLog {
     ) -> Result<SearchContext, StoreError> {
         self.validate_root()?;
         let stop = cancellation.clone();
-        let read = self.connection.read_interruptible(move |db| {
-            Box::pin(async move {
-                let mut tx = sqlx::Connection::begin(db).await?;
-                let result = tx
-                    .run_on_worker(move |handle| {
+        let read = self.connection.observe(move |db| {
+            crate::transcript::bodycache::run(db, move |tx| {
+                Box::pin(async move {
+                    tx.run_on_worker(move |handle| {
                         // SAFETY: callback-local exclusive borrow; all returned history values are owned.
                         let db = unsafe { RawConnection::from_handle(handle.as_ptr()) }?;
                         context_on_handle(
@@ -620,9 +747,8 @@ impl EventLog {
                             exclude, &stop,
                         )
                     })
-                    .await??;
-                tx.commit().await?;
-                Ok(result)
+                    .await?
+                })
             })
         });
         tokio::select! {biased; _=cancellation.cancelled()=>Err(cancelled()), result=read=>result}

@@ -37,7 +37,9 @@ function App() {
       const { time } = await host.call<{ time: string }>("time");
       answer.set(`The host says it is ${time}`);
     } catch (e) {
-      answer.set(`The host did not answer: ${(e as Error).message}`);
+      // Branch on the error's `code`; its message is for people.
+      const { code } = e as Error & { code?: string };
+      answer.set(code === "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" ? "No host app here" : `The host did not answer (${code})`);
     }
   };
   return (

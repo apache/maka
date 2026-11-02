@@ -19,18 +19,22 @@
 
 # MCP tools
 
-Maka uses the official Rust MCP SDK (`rmcp`) for stdio and Streamable HTTP tool servers. The native Agent discovers tools at activation, then exposes them to direct calls, tool discovery and both Code Mode languages through the same tool catalog, approval flow and durable journal.
+Maka uses the official Rust MCP SDK (`rmcp`) for stdio and Streamable HTTP tool servers. The native Agent discovers configured tools, then exposes them to direct calls, tool discovery and both Code Mode languages through the same tool catalog, approval flow and durable journal.
 
 ## Portable configuration files
 
-Maka reads strict JSON with a `mcpServers` object from these locations, following the same home and workspace selection as `AGENTS.md`:
+Manage servers in **Settings → MCP servers**. Choose global settings or select a project, then add a local command or Streamable HTTP endpoint. Arguments have separate inputs; advanced options include the working directory, environment variables and HTTP headers. Existing file entries can be edited or deleted regardless of who created them. Saving preserves unrelated servers and unknown JSON fields, and rejects an edit if the file changed meanwhile.
 
-| Scope | Selection order |
+Maka reads JSON with a `mcpServers` object from four locations, highest precedence first:
+
+| Scope | File |
 | --- | --- |
-| User | `~/.maka/mcp.json`, `~/.maka/.mcp.json`, `~/.agents/mcp.json`, `~/.agents/.mcp.json` |
-| Project | `mcp.json`, then `.mcp.json`, directly in the conversation's selected workspace |
+| Project | `<workspace>/.maka/mcp.json` |
+| Project | `<workspace>/.agents/mcp.json` |
+| Global | `~/.maka/mcp.json` |
+| Global | `~/.agents/mcp.json` |
 
-The home is the Agent's configured `assistant.home`. No parent-directory search occurs. The first existing file in each scope wins; an empty server object masks the fallback file, and invalid/unreadable files produce an error instead of falling back. Files must be regular files within the selected directory and at most 1 MiB. Workspace-instruction preferences do not turn MCP loading off.
+The home is the Host Agent's configured `assistant.home`. The project is a selected, validated workspace; management does not require a conversation. There is no parent-directory search. Same-named entries replace the whole lower server; distinct lower servers remain available. Empty files do not hide lower entries. Invalid or unreadable files report an error. Workspace-instruction preferences do not turn MCP loading off.
 
 ```json
 {
@@ -53,9 +57,9 @@ Entries replace whole servers by name, in this order: installation configuration
 
 In files, omitted `cwd` means the configuration file's directory; relative `cwd` is resolved from that directory. Relative executable paths such as `./.venv/bin/mcp` resolve from the effective `cwd`; bare commands use `PATH`. Arguments are passed literally.
 
-User files load at Agent activation. Project files require explicit user confirmation in the terminal before any server connects or starts. Sending presents the selected file, commands/endpoints, environment/header references, preapproval and read-only grants while keeping the draft. Choose **Trust configuration**, then send the draft. The `projectMcp` query and `trustProjectMcp` mutation expose the same flow to other clients; Agent-originated calls cannot grant trust.
+New calls read the current files. Project files require explicit user confirmation in the terminal before any server connects or starts. Sending presents the selected file, commands/endpoints, environment/header references, preapproval and read-only grants while keeping the draft. Choose **Trust configuration**, then send the draft. The `projectMcp` query and `trustProjectMcp` mutation expose the same flow to other clients; Agent-originated calls cannot grant trust.
 
-Trust persists for the selected workspace identity, path and configuration revision. File changes require confirmation again. New messages capture the newly trusted catalog; already queued messages retain their original connections. Different workspaces have separate project catalogs even when server names match. No dedicated connection editor is included.
+Trust persists for the selected workspace identity, path and configuration revision. File changes require confirmation again. New messages capture the newly trusted catalog; already queued messages retain their original connections. Different workspaces have separate project catalogs even when server names match. Background work selects its MCP catalog when its message is admitted; accepted messages and parked approvals retain their captured connections. Replaced connections are closed once accepted work no longer needs them.
 
 ## Installation configuration
 
@@ -100,21 +104,21 @@ Stdio uses a command and argument array, without a shell. `cwd` must be absolute
 
 ## Names, trust and results
 
-Server names contain 1–32 ASCII letters, digits, underscores or hyphens. Public names are `mcp__<server>__<tool>`; server hyphens and other characters in remote tool names become underscores. Collisions and unknown tools in explicit selections fail activation. For example, Code Mode calls `tools.mcp__local_docs__search({...})` in JavaScript or `await tools.mcp__local_docs__search({...})` in Python.
+Server names contain ASCII letters, digits, underscores or hyphens. Public names are `mcp__<server>__<tool>`; server hyphens and other characters in remote tool names become underscores. Collisions and unknown tools in explicit selections fail activation. For example, Code Mode calls `tools.mcp__local_docs__search({...})` in JavaScript or `await tools.mcp__local_docs__search({...})` in Python.
 
 Omitting `tools` exposes all discovered tools from that server; an empty list exposes none. `readOnlyTools` explicitly trusts the named remote tools in read-only sessions and plans. Server `readOnlyHint` annotations cannot grant this permission. `preapproved` defaults to false, so calls require confirmation. Explicit preapproval skips confirmation but retains the session's live tool and workspace permission checks, including a recheck after approval. Planning still requires explicit read-only trust.
 
-Installing an MCP server is a trust decision. Stdio servers run as the Host user, outside the session filesystem sandbox, and may access the machine independently of tool calls. HTTP servers control their own filesystem, network and effects. Maka permissions govern which MCP calls are admitted; they do not sandbox the server. Installation/user servers start at Agent activation; project servers start after configuration trust, on first use. Both occur before any per-call approval. Do not install untrusted servers or forward unrelated credentials.
+Installing an MCP server is a trust decision. Stdio servers run as the Host user, outside the session filesystem sandbox, and may access the machine independently of tool calls. HTTP servers control their own filesystem, network and effects. Maka permissions govern which MCP calls are admitted; they do not sandbox the server. Installation servers start at Agent activation; file-configured servers start when their catalog is requested, with project trust required first. Both occur before any per-call approval. Do not install untrusted servers or forward unrelated credentials.
 
 The journal and Code Mode preserve the full MCP `CallToolResult` envelope, including `content`, `structuredContent`, `isError`, annotations and metadata. Text, images and audio also use the existing model-output projection. `isError: true` remains a server-reported tool error in that envelope. Resource links remain references and are not fetched automatically. Server descriptions, schemas and returned text are untrusted content.
 
 ## Lifecycle and limits
 
-Tool schemas are frozen for each captured connection. A list-change notification retires the catalog; reactivate the Agent to discover a fresh catalog. A new protocol session gets a new binding identity, so previously queued work cannot silently acquire the replacement server. Submit a new message after reactivation. Installation/user startup failure fails Agent activation; project startup failure rejects the new message with the server name. Servers are not silently omitted. Unconfirmed startup cleanup prevents further project startup in that activation and remains a shutdown error.
+Tool schemas are frozen for each captured connection. A list-change notification retires the catalog; reactivate the Agent to discover a fresh catalog. A new protocol session gets a new binding identity, so previously queued work cannot silently acquire the replacement server. Submit a new message after reactivation. Installation startup failure fails Agent activation; file-configured server startup failure rejects the request with the server name. Servers are not silently omitted. Unconfirmed startup cleanup prevents further file-configured startup in that activation and remains a shutdown error.
 
 Calls are sent once, with no automatic replay or expired-session recovery. Timeout/cancellation requests cancellation and retires an unsettled connection. Local stdio cleanup waits for process-group termination. Missing terminal results remain outcome-unknown; closing an HTTP connection cannot prove that external work stopped, so its cleanup remains unconfirmed. Inspect the external system before deliberately retrying an uncertain effect. Shutdown closes all owned connections.
 
-Server configuration and discovery have no fixed count, page or byte quotas. Discovery follows cursors to completion and rejects repeated cursors. Stdio messages, HTTP JSON/error bodies and SSE events retain their complete payloads; cancellation and connection cleanup still apply. Defaults are 10 seconds for startup and 120 seconds per call; supported configured ranges are 1–300,000 ms and 1–3,600,000 ms respectively.
+Server configuration and discovery have no fixed count, page or byte quotas. Discovery follows cursors to completion and rejects repeated cursors. Stdio messages, HTTP JSON/error bodies and SSE events retain their complete payloads; cancellation and connection cleanup still apply. Defaults are 10 seconds for startup and 120 seconds per call. Configured timeouts must be positive.
 
 This integration exposes tools. It does not expose a resources/prompts browser, roots, sampling, elicitation, tasks, OAuth management or legacy HTTP+SSE transport.
 

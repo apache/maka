@@ -1,7 +1,7 @@
 ---
 title: Video
 description: Video 元素：原生视频播放，可使用自定义控件或系统控件。
-order: 10
+order: 90
 group: primitives
 demo: el-video
 ---
@@ -101,7 +101,7 @@ function Player() {
 | `onProgress` | `.on_progress` | `{ currentTime, duration }`（`VideoProgress`：`current_time`、`duration`） | 播放期间每隔 `progressUpdateInterval` 触发（秒）。 |
 | `onBuffer` | `.on_buffer` | `{ isBuffering }`（`bool`） | 因等待数据而卡顿 / 恢复播放。 |
 | `onEnd` | `.on_end` | 无 | 播放到结尾（设置了 `repeat` 时，每轮结束都会触发）。 |
-| `onError` | `.on_error` | `{ message }`（`&str`） | 加载或播放失败。 |
+| `onError` | `.on_error` | `{ message, code? }`（`&str`，即消息） | 加载或播放失败；视频源不在应用的能力范围内时 `code` 为 `"ERR_ACCESS_DENIED"`。 |
 
 ```rust tabs
 let ratio = signal(16.0_f32 / 9.0);
@@ -127,7 +127,7 @@ const ratio = signal(16 / 9);
 
 ## 能力声明
 
-应用声明了[能力](../docs/sandbox-and-capabilities.md)时，视频源从 `network` 允许的主机加载；指向其他主机的视频源显示为空视图。
+应用声明了[能力](../docs/sandbox-and-capabilities.md)时，视频源从 `network` 允许的主机加载；指向其他主机的视频源显示为空视图，并触发 `onError`，其 `code` 为 `"ERR_ACCESS_DENIED"`。
 
 ## 平台说明
 

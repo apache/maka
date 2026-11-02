@@ -1,7 +1,6 @@
 ---
 title: Sheet
 description: "The Sheet component: a panel at an edge of the screen over a backdrop, closed by the backdrop, Escape and back, styled by the app."
-order: 29
 group: base
 demo: el-sheet
 ---

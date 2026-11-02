@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { JSX } from 'nsh';
+import { cleanup, signal, type JSX } from 'nsh';
 import type {
   UiCommandContext,
   UiExports,
@@ -32,38 +32,61 @@ import {
   type ConversationSessionInput,
   type ConversationPreviewInput,
 } from '../../../../packages/plugin-sdk/src/workbench-views.js';
-import { createConversationUi } from './SessionSurface';
+import { createConversationUi, type ConversationWindow } from './SessionSurface';
+import { invokeFocusedConversation } from '../../../../products/maka/workbench/app/conversationCommands';
+import type { WorkspaceViewHandle } from '../../../../packages/plugin-sdk/src/workspace-view.js';
 import { createHost, HostProvider } from '../../../../products/maka/workbench/app/host';
 
 export const activate: UiModule<JSX.Element>['activate'] = (context) => {
   const host = createHost(context.application);
-  const views = createConversationUi(context, host);
+  const sides = signal<ReturnType<typeof createConversationUi>[]>([]);
+  const window: ConversationWindow = {
+    workspace: signal<WorkspaceViewHandle | null>(null),
+    sessions: () =>
+      [views, ...sides()].flatMap((pane) => {
+        const id = pane.sessionId();
+        return id === null ? [] : [id];
+      }),
+    command: (id) => invokeFocusedConversation([views, ...sides()], id),
+  };
+  const views = createConversationUi(context, host, window);
+  const owner = (sessionId: string | null) =>
+    [views, ...sides()].find((pane) => pane.sessionId() === sessionId);
   const Navigation = (props: { input: ConversationNavigationInput }) =>
     views.navigation(props.input);
-  const Session = (props: { input: ConversationSessionInput }) => views.session(props.input);
+  const Session = (props: { input: ConversationSessionInput }) => {
+    if (!props.input.shell.closePane) return views.session(props.input);
+    const side = createConversationUi(context, host, window, { browsing: views.browsing });
+    sides.set([...sides(), side]);
+    cleanup(() => sides.set(sides().filter((pane) => pane !== side)));
+    return side.session(props.input);
+  };
   const Preview = (props: { input: ConversationPreviewInput }) => views.preview(props.input);
   const commands: UiExports<JSX.Element> = Object.fromEntries(
     [
       'commands',
       'browse',
       'sessions',
+      'find',
       'new',
+      'bot',
       'workspace',
       'models',
       'settings',
       'files',
       'compact',
+      'goal',
       'latest',
       'history-focus',
       'activity-focus',
       'stop',
+      'plan',
     ].map((id) => [
       id,
       {
         kind: 'command' as const,
-        enabled: (input: UiCommandContext) =>
-          input.sessionId === views.sessionId() && views.enabled(id),
-        run: (input: UiCommandContext) => views.run(id, input.argument),
+        enabled: (input: UiCommandContext) => owner(input.sessionId)?.enabled(id) ?? false,
+        run: (input: UiCommandContext) => owner(input.sessionId)?.run(id, input.argument),
       },
     ]),
   );
@@ -104,6 +127,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         },
       },
     },
-    prepareReload: views.prepareReload,
+    prepareReload: async () => {
+      await Promise.all(sides().map((pane) => pane.prepareReload()));
+      return views.prepareReload();
+    },
   };
 };

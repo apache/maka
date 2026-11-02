@@ -19,7 +19,6 @@
 
 //! Skill library and publication receipt wire contracts.
 pub mod contract;
-pub mod outcomes;
 pub use contract::{configuration_schema, contract};
 pub const IMPLEMENTATION: &str = "maka.skills.library";
 pub const EXPORT: &str = "skills";

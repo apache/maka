@@ -21,7 +21,10 @@ use crate::support::{context as fixture, store::SessionFixture};
 use maka_agent_engine::RunWork;
 use maka_agent_facts::{
     event::Fact,
-    tools::{ToolError, ToolExecutor, ToolFuture},
+    tools::{
+        PreparationFuture, PreparedEffect, ToolCallContext, ToolError, ToolExecutor, ToolFuture,
+        ToolPreparer,
+    },
 };
 use maka_tools::{
     ToolCatalog, ToolDefinition, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
@@ -31,7 +34,12 @@ use std::{sync::Arc, time::Duration};
 use tokio::{net::TcpListener, sync::Semaphore};
 use tokio_util::sync::CancellationToken;
 
+struct PreparationGate {
+    entered: Semaphore,
+    release: Semaphore,
+}
 struct HeldTools {
+    preparation: Option<Arc<PreparationGate>>,
     entered: Semaphore,
     release: Semaphore,
     cancelled: Semaphore,
@@ -61,7 +69,38 @@ impl ToolExecutor for Executor {
         })
     }
 }
+impl ToolPreparer for Executor {
+    fn names(&self) -> Vec<String> {
+        ToolExecutor::names(self)
+    }
+    fn prepare(
+        &self,
+        name: String,
+        input: Value,
+        _: ToolCallContext,
+        _: CancellationToken,
+    ) -> PreparationFuture {
+        let gates = self.0.clone();
+        Box::pin(async move {
+            if input["n"] == 0
+                && let Some(preparation) = &gates.preparation
+            {
+                preparation.entered.add_permits(1);
+                preparation.release.acquire().await.unwrap().forget();
+            }
+            Ok(PreparedEffect::new(move |cancellation| {
+                Box::pin(async move {
+                    Executor(gates)
+                        .invoke(name, input, cancellation)
+                        .await
+                        .map(Into::into)
+                })
+            }))
+        })
+    }
+}
 fn catalog(gates: Arc<HeldTools>) -> ToolCatalog {
+    let prepared = gates.preparation.is_some();
     let executor = Arc::new(Executor(gates));
     ToolCatalog::new(
         [
@@ -79,7 +118,11 @@ fn catalog(gates: Arc<HeldTools>) -> ToolCatalog {
             },
             nesting: ToolNesting::Nestable,
             semantics,
-            handler: ToolHandler::Immediate(executor.clone()),
+            handler: if prepared {
+                ToolHandler::Prepared(executor.clone())
+            } else {
+                ToolHandler::Immediate(executor.clone())
+            },
         }),
     )
     .unwrap()
@@ -113,7 +156,12 @@ async fn accepted_parallel_calls_overlap_and_preserve_every_result() {
             fixture::respond(&mut socket, "done", "stop").await;
             request
         });
+        let preparation = Arc::new(PreparationGate {
+            entered: Semaphore::new(0),
+            release: Semaphore::new(0),
+        });
         let gates = Arc::new(HeldTools {
+            preparation: Some(preparation.clone()),
             entered: Semaphore::new(0),
             release: Semaphore::new(0),
             cancelled: Semaphore::new(0),
@@ -121,7 +169,6 @@ async fn accepted_parallel_calls_overlap_and_preserve_every_result() {
         });
         let mut input = fixture::input(&base, "parallel", false);
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "run queries".into(),
             tools: catalog(gates.clone()),
@@ -134,12 +181,49 @@ async fn accepted_parallel_calls_overlap_and_preserve_every_result() {
                 .run(store, input, CancellationToken::new())
                 .await
         });
+        preparation.entered.acquire().await.unwrap().forget();
         gates
             .entered
-            .acquire_many(CALLS as u32)
+            .acquire_many((CALLS - 1) as u32)
             .await
             .unwrap()
             .forget();
+        let prefix = log.prefix(1024, 1024 * 1024).await.unwrap();
+        assert!(prefix.events.iter().any(|stored| matches!(
+            &stored.event.fact,
+            Fact::ModelRequested {
+                item_acceptance: false,
+                ..
+            }
+        )));
+        let output = prefix
+            .events
+            .iter()
+            .find_map(|stored| match &stored.event.fact {
+                Fact::ModelCompleted { output, .. } => Some(output),
+                _ => None,
+            })
+            .expect("a faster sibling commits the complete model acceptance");
+        let calls: Vec<_> = crate::support::model_records::parts(output, &prefix.events)
+            .filter_map(|part| match part {
+                maka_agent_facts::model::ModelPart::ToolCall { call } => Some(call),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(calls.len(), CALLS);
+        for (n, call) in calls.into_iter().enumerate() {
+            assert_eq!(call.id, format!("call-{n}"));
+            assert_eq!(call.input.as_json(), Some(&json!({"n":n})));
+        }
+        assert!(
+            !prefix.events.iter().any(|stored| matches!(
+                &stored.event.fact,
+                Fact::ToolDispatched { operation_id, .. } if operation_id.ends_with(":call-0")
+            )),
+            "the first sibling is still preparing while the others execute"
+        );
+        preparation.release.add_permits(1);
+        gates.entered.acquire().await.unwrap().forget();
         let prefix = log.prefix(1024, 1024 * 1024).await.unwrap();
         assert_eq!(
             prefix
@@ -220,6 +304,7 @@ async fn cleanup_failure_cancels_and_drains_already_running_siblings() {
             .await;
         });
         let gates = Arc::new(HeldTools {
+            preparation: None,
             entered: Semaphore::new(0),
             release: Semaphore::new(0),
             cancelled: Semaphore::new(0),
@@ -227,7 +312,6 @@ async fn cleanup_failure_cancels_and_drains_already_running_siblings() {
         });
         let mut input = fixture::input(&base, "failed", false);
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "run queries".into(),
             tools: catalog(gates.clone()),
@@ -254,30 +338,43 @@ async fn cleanup_failure_cancels_and_drains_already_running_siblings() {
         assert!(running.await.unwrap().is_err());
         engine.drain().await;
         server.await.unwrap();
-        assert!(matches!(log.prefix(100, 1024 * 1024).await, Err(maka_event_log::StoreError::ConnectionClosed)),
-            "unconfirmed cleanup quarantines the original Root");
-        let partitions = directory.path().join("events.root/runtime-partitions");
-        let settled = tokio::task::spawn_blocking(move || {
-            let mut settled = Vec::new();
-            for entry in std::fs::read_dir(partitions).unwrap() {
-                let path = entry.unwrap().path();
-                if path.extension().is_none_or(|extension| extension != "sqlite") { continue; }
-                let db = rusqlite::Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
-                let mut query = db.prepare("SELECT event_json FROM runtime_events WHERE invocation_id='invocation-failed' AND kind='tool_settled'").unwrap();
-                for json in query.query_map([], |row| row.get::<_, String>(0)).unwrap() {
-                    settled.push(serde_json::from_str::<maka_agent_facts::event::RuntimeEvent>(&json.unwrap()).unwrap());
-                }
-            }
-            settled
-        }).await.unwrap();
-        assert_eq!(settled.len(), 1, "only the drained sibling has a confirmed outcome");
-        let Fact::ToolSettled { operation_id, outcome:maka_agent_facts::event::ToolOutcome::Succeeded { model_projection, .. } } = &settled[0].fact else {
+        let prefix = log.prefix(100, 1024 * 1024).await.unwrap();
+        let settled: Vec<_> = prefix
+            .events
+            .iter()
+            .map(|stored| &stored.event)
+            .filter(|event| {
+                event.invocation.invocation_id == "invocation-failed"
+                    && matches!(event.fact, Fact::ToolSettled { .. })
+            })
+            .collect();
+        assert_eq!(
+            settled.len(),
+            1,
+            "only the drained sibling has a confirmed outcome"
+        );
+        let Fact::ToolSettled {
+            operation_id,
+            outcome:
+                maka_agent_facts::event::ToolOutcome::Succeeded {
+                    model_projection, ..
+                },
+        } = &settled[0].fact
+        else {
             panic!("the drained sibling must publish its actual success");
         };
         assert!(operation_id.ends_with(":call-1"));
-        assert_eq!(*model_projection, maka_agent_facts::tool_output::DurableToolProjection::Json { value:json!({"n":1}) });
+        assert_eq!(
+            *model_projection,
+            maka_agent_facts::tool_output::DurableToolProjection::Json {
+                value: json!({"n":1})
+            }
+        );
         drop(engine);
-        assert!(log.close().await.is_err(), "physical cleanup failure cannot confirm Root shutdown");
+        assert!(
+            log.close().await.is_err(),
+            "physical cleanup failure cannot confirm Root shutdown"
+        );
     })
     .await
     .expect("failed tool cleanup must cancel and drain its siblings");
@@ -310,6 +407,7 @@ async fn accepted_exclusive_call_rejects_siblings_in_arrival_order() {
             request
         });
         let gates = Arc::new(HeldTools {
+            preparation: None,
             entered: Semaphore::new(0),
             release: Semaphore::new(0),
             cancelled: Semaphore::new(0),
@@ -317,7 +415,6 @@ async fn accepted_exclusive_call_rejects_siblings_in_arrival_order() {
         });
         let mut input = fixture::input(&base, "exclusive", false);
         input.work = RunWork::Message {
-            allow_prior_unknown: false,
             source_messages: Vec::new(),
             message: "run queries".into(),
             tools: catalog(gates.clone()),

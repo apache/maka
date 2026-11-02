@@ -41,15 +41,32 @@ impl Host {
         NOTE.send_replace(note);
     }
 
-    /// Calls `on` with the host's note now and on every change.
-    pub(crate) async fn subscribe(on: Callback<String>) {
-        let mut notes = NOTE.subscribe();
-        loop {
-            on.post(notes.borrow_and_update().clone());
-            if notes.changed().await.is_err() {
-                return;
-            }
+    /// Calls `listener` with the host's note now and on every change
+    /// (`change`), until the returned function is called or what called
+    /// `on` goes.
+    pub(crate) fn on(
+        event: String,
+        listener: Callback<String>,
+        cx: CallCx<'_>,
+    ) -> Result<Stop, String> {
+        if event != "change" {
+            return Err(format!("no Host event `{event}`"));
         }
+        let listener = std::rc::Rc::new(std::cell::RefCell::new(Some(listener)));
+        let held = listener.clone();
+        cx.start(async move {
+            let mut notes = NOTE.subscribe();
+            loop {
+                let Some(listener) = held.borrow().clone() else {
+                    return;
+                };
+                listener.post(notes.borrow_and_update().clone());
+                if notes.changed().await.is_err() {
+                    return;
+                }
+            }
+        });
+        Ok(Stop::new(move || drop(listener.take())))
     }
 }
 
@@ -128,6 +145,7 @@ fn start(
         trace: false,
         network: None,
         websocket: None,
+        refuse_connections: None,
         filesystem: None,
         assets: None,
         chunk_loader: None,
@@ -210,12 +228,12 @@ import { nativeModule } from "nsh";
 
 interface HostApi {
   publish(note: string): void;
-  subscribe(on: (note: string) => void): Promise<void>;
+  on(event: "change", listener: (note: string) => void): () => void;
 }
 const { Host } = nativeModule<{ Host: HostApi }>("host/test");
 
 const note = signal("");
-Host.subscribe((n) => note.set(n));
+Host.on("change", (n) => note.set(n));
 // The first engine publishes; both hear it, as they hear the host's own.
 if (globalThis.publisher) setTimeout(() => Host.publish("from A"), 20);
 
@@ -223,7 +241,7 @@ mount(() => <Text>{`note ${note()}`}</Text>);
 "#;
 
 #[test]
-fn the_host_pushes_its_data_to_every_app_that_subscribed() {
+fn the_host_pushes_its_data_to_every_app_that_listens() {
     let (_a, a) = start(
         &SYNC.replace("globalThis.publisher", "true"),
         vec![registry()],

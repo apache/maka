@@ -1189,7 +1189,7 @@ pub fn move_table_column(table: Option<usize>, from: usize, to: usize, select: b
             .into_iter()
             .enumerate()
             .map(|(i, mut cells)| {
-                cells.sort_by_key(|(col, _)| *col);
+                crate::sort::sort_by_key(&mut cells, |(col, _)| *col);
                 found.node.child(i).copy(Fragment::from(
                     cells.into_iter().map(|(_, c)| c).collect::<Vec<_>>(),
                 ))

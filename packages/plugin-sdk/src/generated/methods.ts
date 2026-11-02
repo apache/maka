@@ -34,6 +34,10 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+export type AgentOpenBotOutput_AgentBotRejection =
+  | 'disabled'
+  | 'creation_rejected'
+  | 'no_workspace';
 /**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
@@ -99,6 +103,7 @@ export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
   [k: string]: SettingsUpdateInput_ModelOverride | undefined;
@@ -298,6 +303,36 @@ export interface ServiceMethods {
       input: Runtime.AgentAttachmentImageRead;
       output: Runtime.AgentAttachmentImagePage;
     };
+    botOutbox: {
+      mode: 'query';
+      input: {
+        /**
+         * Return messages with a sequence greater than this cursor, oldest first.
+         */
+        after?: number;
+        /**
+         * Most messages to return, at most 100. Zero reads only the head
+         * (`sessionId` and `through`).
+         */
+        limit?: number;
+      };
+      output: {
+        enabled: boolean;
+        sessionId?: string | null;
+        /**
+         * Highest sequence recorded so far; 0 when empty.
+         */
+        through: number;
+        /**
+         * @maxItems 100
+         */
+        messages: AgentBotOutboxOutput_AgentBotMessage[];
+        /**
+         * Pass as `after` to read the next page; absent when caught up.
+         */
+        nextAfter?: number | null;
+      };
+    };
     catalog: {
       mode: 'subscription';
       input: Runtime.AgentList;
@@ -494,10 +529,20 @@ export interface ServiceMethods {
       input: Runtime.AgentFileListRead;
       output: Runtime.AgentFilePage;
     };
+    manageMcpServer: {
+      mode: 'mutation';
+      input: Runtime.AgentMcpConfigurationChange;
+      output: Runtime.AgentMcpConfigurationResult;
+    };
     markRead: {
       mode: 'mutation';
       input: Runtime.AgentMarkRead;
       output: Runtime.AgentMarkReadResult;
+    };
+    mcpConfigurations: {
+      mode: 'query';
+      input: Runtime.AgentMcpConfigurations;
+      output: Runtime.AgentMcpConfigurationList;
     };
     metadata: {
       mode: 'mutation';
@@ -508,6 +553,30 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentObservation;
+    };
+    openBot: {
+      mode: 'mutation';
+      /**
+       * Open this installation's Bot Session, creating it on first use.
+       */
+      input: {
+        /**
+         * Where the Bot Session is created on first use. Absent: the Host's first
+         * configured workspace root, so opening the Bot never needs another conversation.
+         */
+        workspace?: Runtime.AgentWorkspaceSelection | null;
+        title?: string | null;
+      };
+      output:
+        | {
+            kind: 'opened';
+            sessionId: string;
+            created: boolean;
+          }
+        | {
+            kind: 'rejected';
+            reason: AgentOpenBotOutput_AgentBotRejection;
+          };
     };
     pendingInteractions: {
       mode: 'query';
@@ -612,6 +681,11 @@ export interface ServiceMethods {
       input: Runtime.AgentInteractionRespond;
       output: Runtime.AgentInteractionResult;
     };
+    resumable: {
+      mode: 'query';
+      input: Runtime.AgentResumableRead;
+      output: Runtime.AgentResumable;
+    };
     resume: {
       mode: 'mutation';
       input: Runtime.AgentResume;
@@ -641,6 +715,11 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentSelectBackend;
       output: Runtime.AgentMetadataResult;
+    };
+    selectWorkspace: {
+      mode: 'mutation';
+      input: Runtime.AgentDirectorySelection;
+      output: Runtime.AgentWorkspace | null;
     };
     send: {
       mode: 'mutation';
@@ -734,6 +813,36 @@ export interface ServiceMethods {
       input: Runtime.AgentWatch;
       output: Runtime.AgentDeliveryPage;
     };
+    watchBotOutbox: {
+      mode: 'subscription';
+      input: {
+        /**
+         * Return messages with a sequence greater than this cursor, oldest first.
+         */
+        after?: number;
+        /**
+         * Most messages to return, at most 100. Zero reads only the head
+         * (`sessionId` and `through`).
+         */
+        limit?: number;
+      };
+      output: {
+        enabled: boolean;
+        sessionId?: string | null;
+        /**
+         * Highest sequence recorded so far; 0 when empty.
+         */
+        through: number;
+        /**
+         * @maxItems 100
+         */
+        messages: AgentWatchBotOutboxOutput_AgentBotMessage[];
+        /**
+         * Pass as `after` to read the next page; absent when caught up.
+         */
+        nextAfter?: number | null;
+      };
+    };
     watchChecklist: {
       mode: 'subscription';
       input: Runtime.AgentChecklistRead;
@@ -784,6 +893,187 @@ export interface ServiceMethods {
         workspaceInstructions: boolean;
         incognitoActive: boolean;
         shellTitles: boolean;
+      };
+    };
+    catalogModels: {
+      mode: 'query';
+      input: {
+        query?: string;
+        after?: SettingsCatalogModelsInput_CatalogModelReference;
+      };
+      output: {
+        /**
+         * @maxItems 16
+         */
+        models:
+          | []
+          | [SettingsCatalogModelsOutput_SettingsCatalogModel]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ]
+          | [
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+              SettingsCatalogModelsOutput_SettingsCatalogModel,
+            ];
+        after: SettingsCatalogModelsOutput_CatalogModelReference | null;
       };
     };
     connection: {
@@ -1194,6 +1484,109 @@ export interface ServiceMethods {
       output: Runtime.TerminalOutcome_TerminalOutputEvent;
     };
   };
+  skillLibrary: {
+    delete: {
+      mode: 'mutation';
+      input: Runtime.SkillLibraryManageSkill;
+      output: Runtime.SkillLibraryChangeResult;
+    };
+    discoverSource: {
+      mode: 'query';
+      input: Runtime.SkillLibraryDiscoverSource;
+      output: Runtime.SkillLibraryDiscoveredSource;
+    };
+    install: {
+      mode: 'mutation';
+      input: Runtime.SkillLibraryInstall;
+      output: Runtime.SkillLibraryInstallResult;
+    };
+    list: {
+      mode: 'query';
+      input: Runtime.SkillLibraryList;
+      output: Runtime.SkillLibraryPage;
+    };
+    load: {
+      mode: 'query';
+      /**
+       * Actual Agent registrations are supplied outside model-controlled arguments.
+       * These names describe compatibility and confer no execution authority.
+       */
+      input: {
+        workspace?: Runtime.AgentWorkspace | null;
+        tools: string[];
+        input: Runtime.SkillModelLoad;
+      };
+      output: Runtime.SkillModelLoadResult;
+    };
+    prepare: {
+      mode: 'query';
+      /**
+       * Actual Agent registrations are supplied outside model-controlled arguments.
+       * These names describe compatibility and confer no execution authority.
+       */
+      input: {
+        workspace?: Runtime.AgentWorkspace | null;
+        tools: string[];
+        input: Runtime.SkillPrepare;
+      };
+      output: Runtime.SkillPreparation;
+    };
+    read: {
+      mode: 'query';
+      input: Runtime.SkillLibraryRead;
+      output: Runtime.SkillLibraryDocument;
+    };
+    search: {
+      mode: 'query';
+      /**
+       * Actual Agent registrations are supplied outside model-controlled arguments.
+       * These names describe compatibility and confer no execution authority.
+       */
+      input: {
+        workspace?: Runtime.AgentWorkspace | null;
+        tools: string[];
+        input: Runtime.SkillModelSearch;
+      };
+      output: Runtime.SkillModelSearchResult;
+    };
+    setPreference: {
+      mode: 'mutation';
+      input: Runtime.SkillLibrarySetPreference;
+      output: Runtime.SkillLibraryPreferenceResult;
+    };
+    update: {
+      mode: 'mutation';
+      input: Runtime.SkillLibraryManageSkill;
+      output: Runtime.SkillLibraryChangeResult;
+    };
+  };
+}
+/**
+ * One message the Bot deliberately sent to its user.
+ */
+export interface AgentBotOutboxOutput_AgentBotMessage {
+  /**
+   * Monotonic position in the outbox, starting at 1.
+   */
+  sequence: number;
+  /**
+   * The model-chosen idempotency key of the `SendUser` call.
+   */
+  messageId: string;
+  /**
+   * Position of this message within its `SendUser` call.
+   */
+  index: number;
+  text: string;
+  /**
+   * Milliseconds since the Unix epoch when the message was recorded.
+   */
+  at: number;
+  /**
+   * The Turn whose work sent this message, so clients can show it as that
+   * Turn's reply.
+   */
+  turnId?: string | null;
 }
 /**
  * Canonical physical execution receipt, independent of the current Session tip.
@@ -1247,6 +1640,42 @@ export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   invocation: string;
   [k: string]: unknown | undefined;
 }
+/**
+ * One message the Bot deliberately sent to its user.
+ */
+export interface AgentWatchBotOutboxOutput_AgentBotMessage {
+  /**
+   * Monotonic position in the outbox, starting at 1.
+   */
+  sequence: number;
+  /**
+   * The model-chosen idempotency key of the `SendUser` call.
+   */
+  messageId: string;
+  /**
+   * Position of this message within its `SendUser` call.
+   */
+  index: number;
+  text: string;
+  /**
+   * Milliseconds since the Unix epoch when the message was recorded.
+   */
+  at: number;
+  /**
+   * The Turn whose work sent this message, so clients can show it as that
+   * Turn's reply.
+   */
+  turnId?: string | null;
+}
+export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
+  reference: SettingsCatalogModelsOutput_CatalogModelReference;
+  label: string;
+  contextWindow: number | null;
+}
+export interface SettingsCatalogModelsOutput_CatalogModelReference {
+  provider: string;
+  modelId: string;
+}
 export interface SettingsUpdateInput_ConnectionVersionBasis {
   connectionId: string;
   revision: number;
@@ -1264,6 +1693,10 @@ export interface SettingsUpdateInput_ConnectionCatalogEntryUpdate {
   } | null;
 }
 export interface SettingsUpdateInput_ModelOverride {
+  /**
+   * Catalog defaults for this connection's model; the request model ID is unchanged.
+   */
+  catalogModel?: SettingsUpdateInput_CatalogModelReference;
   /**
    * Public adapter contribution name; omitted selects the wire's default.
    */
@@ -1283,6 +1716,10 @@ export interface SettingsUpdateInput_ModelOverride {
   thinkingLevels?: SettingsUpdateInput_ThinkingLevel[];
   defaultThinkingLevel?: SettingsUpdateInput_ThinkingLevel;
   vision?: boolean;
+  /**
+   * Explicit route image declarations; replaces catalog image constraints.
+   */
+  imageInput?: SettingsUpdateInput_ImageInput | null;
   /**
    * Override total input-plus-output capacity, without subtracting a reply budget.
    */
@@ -1307,6 +1744,27 @@ export interface SettingsUpdateInput_ModelOverride {
   capabilities?: SettingsUpdateInput_ModelOverrideCapabilities;
   modalities?: SettingsUpdateInput_ModelModalities;
   serviceTier?: SettingsUpdateInput_RelayServiceTier;
+}
+export interface SettingsUpdateInput_CatalogModelReference {
+  provider: string;
+  modelId: string;
+}
+/**
+ * Route declarations for image input; absent fields remain unknown.
+ */
+export interface SettingsUpdateInput_ImageInput {
+  /**
+   * Exact MIME declarations. A generic image modality leaves this unknown.
+   */
+  mimeTypes?: string[] | null;
+  maxPerMessage?: number | null;
+  maxPerRequest?: number | null;
+  maxBytes?: number | null;
+  minWidth?: number | null;
+  minHeight?: number | null;
+  maxWidth?: number | null;
+  maxHeight?: number | null;
+  requestBytes?: number | null;
 }
 /**
  * Vision has one declaration owner: ModelOverride::vision.

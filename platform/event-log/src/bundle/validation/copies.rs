@@ -169,10 +169,10 @@ impl Copies {
                         }
                         let selected: bool = sqlx::query_scalar(
                             "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE sequence=?
-                             AND json_extract(event_json,'$.invocation.turn_id')=?
+                             AND json_extract(event_header,'$.invocation.turn_id')=?
                              AND ((kind='invocation_opened'
-                               AND json_extract(event_json,'$.fact.input.kind')='message'
-                               AND json_array_length(event_json,'$.fact.input.source_messages')>0)
+                               AND json_extract(event_header,'$.fact.input.kind')='message'
+                               AND json_array_length(event_header,'$.fact.input.source_messages')>0)
                                OR kind='message_steered'))",
                         )
                         .bind(sequence as i64)

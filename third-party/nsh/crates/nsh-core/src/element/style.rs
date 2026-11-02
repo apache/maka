@@ -183,6 +183,9 @@ impl Variant {
     pub(crate) const INDETERMINATE: Self = Self::states(state::INDETERMINATE);
     /// While expanded (set by the core from the accessibility state).
     pub(crate) const EXPANDED: Self = Self::states(state::EXPANDED);
+    /// While a toggle button is on (set by the core from the
+    /// accessibility state).
+    pub(crate) const ARIA_PRESSED: Self = Self::states(state::ARIA_PRESSED);
     /// In dark appearance.
     const DARK: Self = Self {
         states: 0,
@@ -228,6 +231,8 @@ impl Variant {
             (state::CHECKED, rank::CHECKED),
             (state::INDETERMINATE, rank::INDETERMINATE),
             (state::EXPANDED, rank::EXPANDED),
+            (state::ARIA_PRESSED, rank::ARIA_PRESSED),
+            (state::BUSY, rank::ARIA_BUSY),
         ];
         for (bit, key) in keys {
             if self.group_states & bit != 0 {
@@ -748,7 +753,7 @@ pub(crate) type BoundStyle = Rc<dyn Fn(&mut StyleRefinement)>;
 /// An element's styles, in order (later declarations win). Built by the
 /// [`Styled`] methods; `.active(|s| …)` and the like hand a fresh one to
 /// their closure. Values given as signals or closures are bound parts,
-/// added after the static declarations ([`StyleRefinement::resolved`]).
+/// added after the static declarations (`StyleRefinement::resolved`).
 #[derive(Clone, Default)]
 pub struct StyleRefinement {
     entries: Entries,
@@ -783,7 +788,7 @@ impl PartialEq for StyleRefinement {
 
 impl Eq for StyleRefinement {}
 
-/// The static declarations (a resolved style, [`StyleRefinement::resolved`],
+/// The static declarations (a resolved style, `StyleRefinement::resolved`,
 /// has no bound parts).
 impl Hash for StyleRefinement {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -1559,6 +1564,15 @@ pub trait Styled: Sized {
             StyleKey::Display,
             PropertyValue::Display(taffy::Display::None),
         );
+        self
+    }
+
+    /// Laid out but not shown, nor what is inside it (CSS's `visibility:
+    /// hidden`, Tailwind's `invisible`, GPUI's `Styled::invisible`): it
+    /// keeps its place and frame, and takes no presses or keyboard focus.
+    fn invisible(mut self) -> Self {
+        self.style()
+            .value(StyleKey::Visibility, PropertyValue::Bool(true));
         self
     }
 
@@ -4040,6 +4054,16 @@ pub trait Styled: Sized {
     fn expanded(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
         let s = f(StyleRefinement::default());
         self.style().extend_as(Variant::EXPANDED, s);
+        self
+    }
+
+    /// Styles while a toggle button is on (Tailwind's `aria-pressed:`):
+    /// the element's accessibility state says it is pressed, not mixed
+    /// (`gpui-base`'s `Toggle` styled `pressed`). Not `.active(..)`, a
+    /// press in progress.
+    fn aria_pressed(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        let s = f(StyleRefinement::default());
+        self.style().extend_as(Variant::ARIA_PRESSED, s);
         self
     }
 

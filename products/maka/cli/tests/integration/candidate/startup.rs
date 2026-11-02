@@ -196,9 +196,11 @@ fn detached_candidate_captures_pre_ready_and_released_owner_failures() {
             .await
             .unwrap();
             let mut original_registration = None;
+            let mut phase = "waiting for child exit";
             let outcome = std::panic::AssertUnwindSafe(async {
                 tokio::time::timeout(Duration::from_secs(15), async {
                     if released {
+                        phase = "waiting for registration";
                         loop {
                             if fixture.registration.exists() {
                                 break;
@@ -211,13 +213,16 @@ fn detached_candidate_captures_pre_ready_and_released_owner_failures() {
                         }
                         let found = discovery::read(&fixture.root).unwrap();
                         original_registration = Some(fs::read(&fixture.registration).unwrap());
+                        phase = "connecting accepted client";
                         let mut client = connect(&fixture.root).await;
                         let mut stdin = child.stdin.take().unwrap();
+                        phase = "releasing launcher ownership";
                         stdin
                             .write_all(b"{\"kind\":\"runtime-host-launch-owner-release\"}\n")
                             .await
                             .unwrap();
                         drop(stdin);
+                        phase = "reading Host status after owner release";
                         assert!(
                             !Client::status(&found.endpoint, Some(client.epoch()))
                                 .await
@@ -226,7 +231,9 @@ fn detached_candidate_captures_pre_ready_and_released_owner_failures() {
                         );
                         // A real shutdown failure after launcher release must still reach stderr.
                         fs::write(&fixture.registration, b"not a registration").unwrap();
+                        phase = "closing accepted client";
                         client.close().await.unwrap();
+                        phase = "requesting idle retirement";
                         assert!(
                             Client::retire_with_options(
                                 &found.endpoint,
@@ -238,6 +245,9 @@ fn detached_candidate_captures_pre_ready_and_released_owner_failures() {
                             .unwrap()
                         );
                     }
+                    if released {
+                        phase = "waiting for child exit";
+                    }
                     let status = child.wait().await.unwrap();
                     assert!(
                         !status.success(),
@@ -245,7 +255,11 @@ fn detached_candidate_captures_pre_ready_and_released_owner_failures() {
                     );
                 })
                 .await
-                .expect("captured candidate did not settle");
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "captured candidate did not settle: released={released}, phase={phase}: {error:?}"
+                    )
+                });
                 let output = Command::new(env!("CARGO_BIN_EXE_maka"))
                     .args(["host", "logs", "--root-id", &fixture.root_id])
                     .output()

@@ -1,7 +1,7 @@
 ---
 title: Scroll
 description: "The native scroll view: vertical and horizontal scrolling, paging and snapping, pull to refresh, zooming and scroll events."
-order: 5
+order: 40
 group: primitives
 demo: el-scroll
 ---

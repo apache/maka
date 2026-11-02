@@ -23,7 +23,7 @@ pub use journal::{
     Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
     UploadReference,
 };
-use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding};
+use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding, Resources};
 use maka_host_runtime::application::{
     host::{Client as HostClient, LocalCall},
     transport::{Description, wire::Reply},
@@ -54,6 +54,7 @@ const CONTROL_METHODS: &[&str] = &[
     "trustProjectMcp",
     "selectBackend",
     "compact",
+    "resume",
     "setCompactionPrompt",
     "markRead",
     "stop",
@@ -63,13 +64,22 @@ const CONTROL_METHODS: &[&str] = &[
     "metadata",
     "changeSession",
     "fork",
+    "openBot",
+    "changePlan",
+    "changeGoal",
 ];
 const CONTROL_KIND: &str = "agent-control";
 const SETTINGS_KIND: &str = "settings";
 const TERMINAL_KIND: &str = "terminal";
 const TERMINAL_METHODS: [&str; 4] = ["start", "stop", "control", "release"];
-const SETTINGS_ENDPOINTS: [&str; 5] =
-    ["settings", "agent", "setup", "management", "authentication"];
+const SETTINGS_ENDPOINTS: [&str; 6] = [
+    "settings",
+    "agent",
+    "skills",
+    "setup",
+    "management",
+    "authentication",
+];
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct ServiceOwner {
@@ -101,7 +111,12 @@ const SETTINGS_METHODS: [&str; 10] = [
 ];
 fn settings_route(endpoint: &str, method: &str) -> bool {
     (endpoint == "settings" && SETTINGS_METHODS.contains(&method))
-        || (endpoint == "agent" && method == "updateGlobalInstructions")
+        || (endpoint == "agent"
+            && matches!(
+                method,
+                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
+            ))
+        || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
         || (endpoint == "management" && matches!(method, "setEnabled" | "configure"))
         || (endpoint == "authentication" && method == "loginCredential")
@@ -191,13 +206,25 @@ struct Scope {
     children: Mutex<BTreeMap<Uuid, Client>>,
     requests_changed: Notify,
     shutdown: CancellationToken,
+    opening_stop: CancellationToken,
+    openings: Arc<Resources>,
 }
 struct Request {
     id: Uuid,
     operation: Option<Uuid>,
     observation_ended: AtomicBool,
+    preparation: std::sync::Mutex<Option<std::fs::File>>,
     stop: CancellationToken,
     state: Mutex<State>,
+}
+impl Request {
+    fn end_observation(&self) {
+        self.observation_ended.store(true, Ordering::Release);
+        self.preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+    }
 }
 struct State {
     call: LocalCall,
@@ -243,6 +270,8 @@ impl Client {
             children: Mutex::new(BTreeMap::new()),
             requests_changed: Notify::new(),
             shutdown: CancellationToken::new(),
+            opening_stop: CancellationToken::new(),
+            openings: Arc::default(),
         })))
     }
     /// Capture a UI consumer's declared bindings in an owned child session. Its
@@ -275,6 +304,8 @@ impl Client {
             children: Mutex::new(BTreeMap::new()),
             requests_changed: Notify::new(),
             shutdown: self.0.shutdown.child_token(),
+            opening_stop: CancellationToken::new(),
+            openings: Arc::default(),
         }));
         let owner = self.0.host.lock().await;
         self.0.children.lock().await.insert(id, child.clone());
@@ -332,30 +363,60 @@ impl Client {
         resources: Attachments,
         operation: Option<Uuid>,
     ) -> Result<(Arc<Request>, Description)> {
-        // Opening and registration share the anchor lock with shutdown. Once closing
-        // fences admission, its snapshot includes every previously opened request.
-        let host = self.0.host.lock().await;
-        if self.0.closing.load(Ordering::Acquire) {
-            return Err("client scope is closing".into());
+        let (opened, opening) = tokio::sync::oneshot::channel();
+        {
+            let host = self.0.host.lock().await;
+            if self.0.closing.load(Ordering::Acquire) {
+                return Err("client scope is closing".into());
+            }
+            let description = host.catalogue().describe(endpoint)?.clone();
+            let call = host.call(endpoint, method.into(), input, resources);
+            let mut ticket = self.0.openings.reserve().map_err(error)?;
+            ticket.start();
+            let client = self.clone();
+            // The scope retains physical opening work even if its caller disappears.
+            tokio::spawn(async move {
+                let result = tokio::select! {
+                    biased;
+                    () = client.0.opening_stop.cancelled() => Err("client scope is closing".into()),
+                    result = call => result,
+                };
+                let result = match result {
+                    Ok(call) => {
+                        let request = Arc::new(Request {
+                            id: Uuid::new_v4(),
+                            operation,
+                            observation_ended: AtomicBool::new(false),
+                            preparation: std::sync::Mutex::new(None),
+                            stop: CancellationToken::new(),
+                            state: Mutex::new(State {
+                                call,
+                                phase: Phase::New,
+                            }),
+                        });
+                        if client.0.closing.load(Ordering::Acquire) {
+                            request.stop.cancel();
+                        }
+                        client
+                            .0
+                            .requests
+                            .lock()
+                            .await
+                            .insert(request.id, request.clone());
+                        Ok((request, description))
+                    }
+                    Err(error) => Err(error),
+                };
+                if let Err(Ok((request, _))) = opened.send(result) {
+                    request.end_observation();
+                    client.0.requests_changed.notify_waiters();
+                }
+                ticket.complete(Ok(()));
+            });
         }
-        let description = host.catalogue().describe(endpoint)?.clone();
-        let call = host.call(endpoint, method.into(), input, resources).await?;
-        let request = Arc::new(Request {
-            id: Uuid::new_v4(),
-            operation,
-            observation_ended: AtomicBool::new(false),
-            stop: CancellationToken::new(),
-            state: Mutex::new(State {
-                call,
-                phase: Phase::New,
-            }),
-        });
-        self.0
-            .requests
-            .lock()
+        opening
             .await
-            .insert(request.id, request.clone());
-        Ok((request, description))
+            .map_err(|_| "client channel opening cleanup remains unconfirmed".to_owned())?
     }
     async fn release_if_clean(&self, request: &Request, state: &State) {
         if state.call.binding_retired() {
@@ -364,7 +425,7 @@ impl Client {
         if matches!(state.phase, Phase::Complete | Phase::Interrupted)
             || state.call.cleanup_confirmed()
         {
-            request.observation_ended.store(true, Ordering::Release);
+            request.end_observation();
             self.0.requests_changed.notify_waiters();
         }
         if state.call.cleanup_confirmed() {
@@ -478,17 +539,25 @@ impl Client {
         input: Value,
         resources: Attachments,
     ) -> Result<Mutation> {
+        let preparation = self
+            .0
+            .journal
+            .preparation_lease(false)
+            .await?
+            .expect("shared preparation lease");
         self.0.journal.reserve(&operation).await?;
         if operation.upload.is_some() {
             self.notify_uploads();
         }
-        self.open_mutation(operation, input, resources).await
+        self.open_mutation(operation, input, resources, preparation)
+            .await
     }
     async fn open_mutation(
         &self,
         operation: Operation,
         input: Value,
         resources: Attachments,
+        preparation: std::fs::File,
     ) -> Result<Mutation> {
         let (request, description) = self
             .open(
@@ -513,6 +582,10 @@ impl Client {
             closed?;
             return Err("client operation target changed before opening its original call".into());
         }
+        *request
+            .preparation
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(preparation);
         Ok(Mutation {
             client: self.clone(),
             request,
@@ -582,8 +655,15 @@ impl Client {
             reference: None,
             receipt: None,
         };
+        let preparation = self
+            .0
+            .journal
+            .preparation_lease(false)
+            .await?
+            .expect("shared preparation lease");
         self.0.journal.reserve_settings(&operation).await?;
-        self.open_mutation(operation, input, resources).await
+        self.open_mutation(operation, input, resources, preparation)
+            .await
     }
     /// Upload bytes selected by native input, with the original editor/provider owner.
     pub async fn upload_attachment(
@@ -687,7 +767,8 @@ impl Client {
         }
         let owner = self.service_owner("agent").await?;
         let correlation = control_correlation(method, &input, &owner)?;
-        let session_id = if method == "create" {
+        // Creation targets no existing Session.
+        let session_id = if matches!(method, "create" | "openBot") {
             None
         } else {
             Some(
@@ -827,23 +908,10 @@ impl Client {
             reference: None,
             receipt: None,
         };
-        self.0.journal.reserve(&operation).await?;
-        let (request, description) = self
-            .open(
-                endpoint,
-                "send",
-                Value::Object(input),
-                Attachments::new(),
-                Some(id),
-            )
-            .await?;
-        Ok(Mutation {
-            client: self.clone(),
-            request,
-            operation,
-            description,
-        })
+        self.begin_mutation(operation, Value::Object(input), Attachments::new())
+            .await
     }
+
     pub async fn operation(&self, id: Uuid) -> Result<Operation> {
         self.0.journal.load(&self.0.source, id).await
     }
@@ -868,6 +936,14 @@ impl Client {
             .journal
             .pending_controls(&self.0.source, &owner)
             .await
+    }
+    /// Stop prompting for this original without cancelling, replaying, or changing its outcome.
+    pub async fn dismiss_control(&self, id: Uuid) -> Result<()> {
+        let operation = self.operation_for_control(id).await?;
+        if operation.reference.is_none() {
+            return Err("unprepared controls must be abandoned before dismissing".into());
+        }
+        self.0.journal.dismiss_control(id).await
     }
     /// A settled or abandoned Settings attempt retains its original owner.
     pub async fn operation_for_settings(&self, id: Uuid) -> Result<Operation> {
@@ -991,11 +1067,20 @@ impl Client {
     /// Query only the exact reference recorded before confirmation. A missing or
     /// unknown receipt never authorizes replay of the business method.
     pub async fn recover(&self, id: Uuid) -> Result<OperationReply> {
-        let operation = self.operation(id).await?;
+        let mut operation = self.operation(id).await?;
+        if operation.reference.is_none() {
+            let _lease = self
+                .0
+                .journal
+                .preparation_lease(true)
+                .await?
+                .ok_or("client journal still has active preparation")?;
+            operation = self.abandon_unprepared(id).await?;
+        }
         let original = operation
             .reference
             .as_ref()
-            .ok_or("client attempt has no confirmed preparation; it cannot be replayed")?;
+            .ok_or("client operation ended before dispatch")?;
         let reader = match &self.0.parent {
             Some((owner, _)) => Self(owner.upgrade().ok_or("original receipt reader is closed")?),
             None => self.clone(),
@@ -1057,8 +1142,10 @@ impl Client {
     /// stop immediately; original mutations retain this session until they settle.
     pub async fn retire(&self) -> Result<()> {
         self.0.closing.store(true, Ordering::Release);
+        self.0.opening_stop.cancel();
         let reads: Vec<_> = {
             let _host = self.0.host.lock().await;
+            self.0.openings.settle().await.map_err(error)?;
             self.0
                 .requests
                 .lock()
@@ -1098,7 +1185,12 @@ impl Client {
     pub async fn close(&self) -> Result<()> {
         self.0.closing.store(true, Ordering::Release);
         self.0.shutdown.cancel();
+        self.0.opening_stop.cancel();
         let mut host = self.0.host.lock().await;
+        for request in self.0.requests.lock().await.values() {
+            request.stop.cancel();
+        }
+        self.0.openings.settle().await.map_err(error)?;
         let children: Vec<_> = self.0.children.lock().await.values().cloned().collect();
         for child in &children {
             let _ = Box::pin(child.close()).await;
@@ -1138,6 +1230,13 @@ pub struct Mutation {
     operation: Operation,
     description: Description,
 }
+impl Drop for Mutation {
+    fn drop(&mut self) {
+        self.request.end_observation();
+        self.client.0.requests_changed.notify_waiters();
+    }
+}
+
 /// One observation from the original mutation. Cleanup never replaces its business receipt.
 #[derive(Debug)]
 pub enum MutationEvent {
@@ -1183,6 +1282,7 @@ impl Mutation {
                     return Err("Host preparation belongs to another draft owner".into());
                 }
                 self.client.0.journal.prepared(self.operation.id, &reference).await?;
+                self.request.preparation.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
                 if self.operation.upload.is_some() { self.client.notify_uploads(); }
                 state.phase = Phase::Prepared;
                 self.client.operation(self.operation.id).await
@@ -1202,8 +1302,7 @@ impl Mutation {
         loop {
             match event {
                 Some(MutationEvent::Progress(_)) => event = self.next().await?,
-                Some(MutationEvent::Finished { reply, cleanup }) => {
-                    cleanup?;
+                Some(MutationEvent::Finished { reply, .. }) => {
                     return Ok(*reply);
                 }
                 Some(MutationEvent::NotDispatched) => {
@@ -1334,20 +1433,36 @@ impl Mutation {
                 }
             }
         };
-        self.request
-            .observation_ended
-            .store(true, Ordering::Release);
+        self.request.end_observation();
         self.client.0.requests_changed.notify_waiters();
         self.client.release_if_clean(&self.request, &state).await;
         result
     }
 
     /// Lose only the physical observer. The shell still owns the original request.
-    pub async fn disconnect(&self) {
+    pub async fn disconnect(&self) -> Result<()> {
         let mut state = self.request.state.lock().await;
+        let undispatched = state
+            .call
+            .awaiting_confirmation()
+            .then(|| state.call.reference().cloned())
+            .flatten();
         state.call.disconnect();
         state.phase = Phase::Interrupted;
+        let recorded = if let Some(reference) = undispatched {
+            // Disconnect fences this caller from ever confirming. It does not
+            // acknowledge remote cleanup of the prepared call.
+            self.client
+                .0
+                .journal
+                .abandon_undispatched(&self.client.0.source, self.operation.id, &reference)
+                .await
+                .map(|_| ())
+        } else {
+            Ok(())
+        };
         self.client.release_if_clean(&self.request, &state).await;
+        recorded
     }
     pub async fn close(&self) -> Result<()> {
         self.request_cancel();

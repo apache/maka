@@ -1137,6 +1137,30 @@ fn place(view: &NshView, input: &InputState) {
                     ..content
                 },
             );
+            // A field that shows nothing (an editor's own text sink) may be
+            // laid out smaller than a character and its line: scrolling to
+            // its caret then never settles, and every input method update
+            // moves the caret, and the candidates the input method places
+            // at it, by a pixel. It gets room for a line of a character or
+            // two (more would move its caret off the editor's), and leaves
+            // the pointer to what is under it.
+            let invisible = {
+                let config = input.config.borrow();
+                config.caret_hidden && config.style.color.0 & 0xff == 0
+            };
+            scroller.set_can_target(!invisible);
+            let content = if invisible {
+                let line = text.create_pango_layout(Some("Ag")).pixel_size().1 as f32;
+                Bounds {
+                    size: Size::new(
+                        content.size.width.max(Points(line * 2.0)),
+                        content.size.height.max(Points(line + 2.0)),
+                    ),
+                    ..content
+                }
+            } else {
+                content
+            };
             view.set_native(scroller, content);
         }
     }

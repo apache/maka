@@ -166,7 +166,7 @@ async fn subscription_profile_survives_proxy_ws_continuation_and_http_fallback()
             let token = profile["token"].as_str().unwrap();
             let mut next = codex_request(port, token);
             let step = generate_step(&executor, &lane, codex_request(port, token)).await;
-            assert!(matches!(&step.parts[..], [ModelPart::Text {text, ..}] if text == "OK"));
+            assert!(matches!(&step.parts[..], [ModelPart::Text {text, ..}] if text.chunks().collect::<String>() == "OK"));
             if index == 0 {
                 let content = accepted_content(&step);
                 crate::edit_prompt(&mut next.prompt, |messages| messages.push(serde_json::from_value(json!({"role":"assistant","content":content})).unwrap()));

@@ -32,8 +32,8 @@ pub(crate) async fn current_opening(
         return Ok(None);
     };
     let row: Option<(i64, String)> = sqlx::query_as(
-        "SELECT sequence, event_json FROM runtime_events e WHERE invocation_id = ?
-         AND kind = 'invocation_opened' AND json_extract(event_json, '$.invocation.session_id') = ?
+        "SELECT sequence, event_header FROM runtime_events e WHERE invocation_id = ?
+         AND kind = 'invocation_opened' AND json_extract(event_header, '$.invocation.session_id') = ?
          AND NOT EXISTS(SELECT 1 FROM runtime_events t WHERE t.invocation_id = e.invocation_id AND t.kind = 'invocation_ended')",
     ).bind(id).bind(session).fetch_optional(connection).await?;
     let (sequence, json) =
@@ -41,51 +41,22 @@ pub(crate) async fn current_opening(
     Ok(Some((sequence, serde_json::from_str(&json)?)))
 }
 
-/// Checks all old effects, including hidden children and failed-but-unknown runs.
+/// Live execution remains a boundary; a closed run's uncertainty is model context.
 pub(crate) async fn require_safe(
     connection: &mut SqliteConnection,
     session: &str,
     current: Option<&str>,
-) -> Result<(), StoreError> {
+) -> Result<bool, StoreError> {
     require_safe_through(connection, session, current, i64::MAX as u64).await
 }
 
-/// Historical observations cannot borrow a later settlement or inherit later work.
-/// Current cuts use durable obligations; older cuts derive only the requested state.
+/// Historical cuts use only settlements and closed runs within their fence.
 pub(crate) async fn require_safe_through(
     connection: &mut SqliteConnection,
     session: &str,
     current: Option<&str>,
     through: u64,
-) -> Result<(), StoreError> {
-    require_safe_through_policy(connection, session, current, through, false).await
-}
-
-/// An explicit new message may observe a sealed prior tool dispatch with no
-/// result. This never authorizes replay, continuation, or a terminal outcome.
-pub(crate) async fn require_manual_message_safe(
-    connection: &mut SqliteConnection,
-    session: &str,
-    current: Option<&str>,
 ) -> Result<bool, StoreError> {
-    require_safe_through_policy(connection, session, current, i64::MAX as u64, true).await?;
-    let pending: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM context_obligations
-         WHERE session_id=? AND kind='tool' AND sealed_unknown=1)",
-    )
-    .bind(session)
-    .fetch_one(connection)
-    .await?;
-    Ok(pending)
-}
-
-async fn require_safe_through_policy(
-    connection: &mut SqliteConnection,
-    session: &str,
-    current: Option<&str>,
-    through: u64,
-    allow_sealed_unknown: bool,
-) -> Result<(), StoreError> {
     // Durable obligations survive reopen. Only a genuinely older requested cut
     // needs historical derivation; ordinary current reads never rescan the ledger.
     let indexed: bool = sqlx::query_scalar(
@@ -101,11 +72,14 @@ async fn require_safe_through_policy(
             "SELECT EXISTS(SELECT 1 FROM context_obligations
              WHERE session_id=?1 AND (?2 IS NULL OR invocation_id!=?2)
                AND kind!='interrupted_provider'
-               AND NOT (?3 AND kind='tool' AND sealed_unknown=1))",
+               AND NOT (kind='tool' AND sealed_unknown=1)
+               AND NOT (kind='completed_provider' AND EXISTS(
+                 SELECT 1 FROM runtime_events terminal WHERE terminal.invocation_id=context_obligations.invocation_id
+                   AND terminal.kind='invocation_ended'
+                   AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled'))))",
         )
         .bind(session)
         .bind(current)
-        .bind(allow_sealed_unknown)
         .fetch_one(&mut *connection)
         .await?;
         if unsettled {
@@ -114,22 +88,33 @@ async fn require_safe_through_policy(
         let unknown_provider_effect: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM context_obligations
              WHERE session_id=?1 AND kind='interrupted_provider'
-               AND (?2 IS NULL OR invocation_id!=?2))",
+               AND (?2 IS NULL OR invocation_id!=?2)
+               AND NOT EXISTS(SELECT 1 FROM runtime_events terminal
+                 WHERE terminal.invocation_id=context_obligations.invocation_id AND terminal.kind='invocation_ended'
+                   AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled')))",
         )
         .bind(session)
         .bind(current)
-        .fetch_one(connection)
+        .fetch_one(&mut *connection)
         .await?;
         if unknown_provider_effect {
             return Err(StoreError::HistoryProviderEffectUnresolved);
         }
-        return Ok(());
+        let unknown: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM context_obligations o WHERE session_id=?1
+             AND (kind='tool' AND sealed_unknown=1
+               OR kind IN ('interrupted_provider','completed_provider') AND EXISTS(
+                 SELECT 1 FROM runtime_events terminal WHERE terminal.invocation_id=o.invocation_id
+                   AND terminal.kind='invocation_ended'
+                   AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled'))))"
+        ).bind(session).fetch_one(&mut *connection).await?;
+        return Ok(unknown);
     }
     let unsafe_history: bool = sqlx::query_scalar(concat!(
         "WITH runtime_events AS NOT MATERIALIZED (SELECT * FROM main.runtime_events WHERE sequence <= ?3), ",
         crate::model_items::accepted_calls!(), "
          SELECT EXISTS(SELECT 1 FROM runtime_events e
-         WHERE json_extract(e.event_json, '$.invocation.session_id') = ?1
+         WHERE json_extract(e.event_header, '$.invocation.session_id') = ?1
          AND (e.kind = 'invocation_opened' OR e.kind = 'tool_dispatched'
            OR e.kind = 'model_requested' OR e.kind = 'model_completed')
          AND (?2 IS NULL OR e.invocation_id != ?2) AND (
@@ -137,9 +122,9 @@ async fn require_safe_through_policy(
               WHERE t.invocation_id = e.invocation_id AND t.kind = 'invocation_ended'))
            OR (e.kind = 'tool_dispatched' AND NOT EXISTS(SELECT 1 FROM runtime_events t
               WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind = 'tool_settled')
-              AND (?4 = 0 OR NOT EXISTS(SELECT 1 FROM runtime_events terminal
+              AND NOT EXISTS(SELECT 1 FROM runtime_events terminal
                 WHERE terminal.invocation_id = e.invocation_id AND terminal.kind = 'invocation_ended'
-                AND json_extract(terminal.event_json, '$.fact.outcome.kind') IN ('failed','cancelled'))))
+                AND json_extract(terminal.event_header, '$.fact.outcome.kind') IN ('failed','cancelled')))
            OR (e.kind = 'model_requested' AND NOT EXISTS(SELECT 1 FROM runtime_events t
               WHERE t.invocation_id = e.invocation_id AND t.operation_id = e.operation_id AND t.kind IN ('model_completed','model_interrupted')))
            OR (e.kind = 'model_requested' AND EXISTS(SELECT 1 FROM accepted_calls p
@@ -147,40 +132,65 @@ async fn require_safe_through_policy(
               AND NOT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id = e.invocation_id
                 AND d.operation_id = e.operation_id || ':' || json_extract(p.call, '$.id')
                 AND d.kind IN ('tool_dispatched','tool_rejected'))))
-           OR (e.kind = 'model_completed' AND EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') p
-              WHERE json_extract(p.value, '$.kind') = 'tool_call' AND json_extract(p.value, '$.call.provider_executed') = 1
-              AND NOT EXISTS(SELECT 1 FROM json_each(e.event_json, '$.fact.output.parts') result
-                WHERE json_extract(result.value, '$.kind') = 'tool_result'
-                  AND json_extract(result.value, '$.id') = json_extract(p.value, '$.call.id')
-                  AND json_extract(result.value, '$.name') = json_extract(p.value, '$.call.name'))))))",
-    )).bind(session).bind(current).bind(through as i64).bind(allow_sealed_unknown).fetch_one(&mut *connection).await?;
+           OR (e.kind='model_completed' AND NOT EXISTS(SELECT 1 FROM runtime_events terminal
+             WHERE terminal.invocation_id=e.invocation_id AND terminal.kind='invocation_ended'
+               AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled')) AND EXISTS(
+             SELECT 1 FROM model_selected_parts s JOIN model_part_bodies p ON p.event_id=s.body_event_id AND p.ordinal=s.ordinal
+             WHERE s.sequence=e.sequence AND json_extract(p.part,'$.kind')='tool_call' AND json_extract(p.part,'$.call.provider_executed')=1
+               AND NOT EXISTS(SELECT 1 FROM model_selected_parts rs JOIN model_part_bodies result ON result.event_id=rs.body_event_id AND result.ordinal=rs.ordinal
+                 WHERE rs.sequence=e.sequence AND json_extract(result.part,'$.kind')='tool_result'
+                   AND json_extract(result.part,'$.id')=json_extract(p.part,'$.call.id')
+                   AND json_extract(result.part,'$.name')=json_extract(p.part,'$.call.name'))))))",
+    )).bind(session).bind(current).bind(through as i64).fetch_one(&mut *connection).await?;
     if unsafe_history {
         return Err(StoreError::HistoryUnsettled);
     }
     // An interrupted model step closes the request, not an observed remote
     // effect. Only that step's durably observed matching result settles it.
     let unknown_provider_effect: bool = sqlx::query_scalar(
-        "WITH runtime_events AS NOT MATERIALIZED (SELECT * FROM main.runtime_events WHERE sequence <= ?3)
-         SELECT EXISTS(SELECT 1 FROM runtime_events interrupted JOIN runtime_events call
-           ON call.invocation_id = interrupted.invocation_id AND call.kind = 'model_observed'
-           AND json_extract(call.event_json, '$.fact.step_id') = json_extract(interrupted.event_json, '$.fact.step_id')
-           AND call.sequence < interrupted.sequence
-         WHERE interrupted.kind = 'model_interrupted'
-           AND json_extract(interrupted.event_json, '$.invocation.session_id') = ?1
-           AND (?2 IS NULL OR interrupted.invocation_id != ?2)
-           AND json_extract(call.event_json, '$.fact.event.kind') = 'tool_call'
-           AND json_extract(call.event_json, '$.fact.event.data.provider_executed') = 1
-           AND NOT EXISTS(SELECT 1 FROM runtime_events result WHERE result.invocation_id = call.invocation_id
-             AND result.kind = 'model_observed' AND result.sequence > call.sequence AND result.sequence < interrupted.sequence
-             AND json_extract(result.event_json, '$.fact.step_id') = json_extract(call.event_json, '$.fact.step_id')
-             AND json_extract(result.event_json, '$.fact.event.kind') = 'provider_tool_result'
-             AND json_extract(result.event_json, '$.fact.event.data.id') = json_extract(call.event_json, '$.fact.event.data.id')
-             AND json_extract(result.event_json, '$.fact.event.data.name') = json_extract(call.event_json, '$.fact.event.data.name')))",
+        "SELECT EXISTS(SELECT 1 FROM runtime_events interrupted JOIN model_part_bodies call
+           ON call.invocation_id=interrupted.invocation_id AND call.step_id=interrupted.operation_id
+           AND call.source_kind='model_observed' AND call.source_sequence<interrupted.sequence
+         WHERE interrupted.kind='model_interrupted' AND interrupted.event_session=?1
+           AND interrupted.sequence<=?3 AND (?2 IS NULL OR interrupted.invocation_id!=?2)
+           AND NOT EXISTS(SELECT 1 FROM runtime_events terminal
+             WHERE terminal.invocation_id=interrupted.invocation_id AND terminal.kind='invocation_ended'
+               AND terminal.sequence<=?3
+               AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled'))
+           AND json_extract(call.part,'$.kind')='tool_call' AND json_extract(call.part,'$.call.provider_executed')=1
+           AND NOT EXISTS(SELECT 1 FROM model_part_bodies result WHERE result.invocation_id=call.invocation_id
+             AND result.step_id=call.step_id AND result.source_kind='model_observed'
+             AND result.source_sequence>call.source_sequence AND result.source_sequence<interrupted.sequence
+             AND json_extract(result.part,'$.kind')='tool_result'
+             AND json_extract(result.part,'$.id')=json_extract(call.part,'$.call.id')
+             AND json_extract(result.part,'$.name')=json_extract(call.part,'$.call.name')))",
     ).bind(session).bind(current).bind(through as i64).fetch_one(&mut *connection).await?;
     if unknown_provider_effect {
         return Err(StoreError::HistoryProviderEffectUnresolved);
     }
-    Ok(())
+    let unknown: bool = sqlx::query_scalar(
+        "WITH events AS NOT MATERIALIZED (SELECT * FROM runtime_events WHERE sequence<=?2)
+         SELECT EXISTS(SELECT 1 FROM events d
+           WHERE d.event_session=?1 AND d.kind='tool_dispatched'
+             AND EXISTS(SELECT 1 FROM events terminal WHERE terminal.invocation_id=d.invocation_id
+               AND terminal.kind='invocation_ended'
+               AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled'))
+             AND NOT EXISTS(SELECT 1 FROM events result WHERE result.invocation_id=d.invocation_id
+               AND result.operation_id=d.operation_id AND result.kind='tool_settled'))
+           OR EXISTS(SELECT 1 FROM model_part_bodies call
+             WHERE call.owner_session_id=?1 AND call.source_sequence<=?2
+               AND json_extract(call.part,'$.kind')='tool_call'
+               AND json_extract(call.part,'$.call.provider_executed')=1
+               AND EXISTS(SELECT 1 FROM events terminal WHERE terminal.invocation_id=call.invocation_id
+                 AND terminal.kind='invocation_ended'
+                 AND json_extract(terminal.event_header,'$.fact.outcome.kind') IN ('failed','cancelled'))
+               AND NOT EXISTS(SELECT 1 FROM model_part_bodies result
+                 WHERE result.invocation_id=call.invocation_id AND result.step_id=call.step_id
+                   AND result.source_sequence<=?2 AND json_extract(result.part,'$.kind')='tool_result'
+                   AND json_extract(result.part,'$.id')=json_extract(call.part,'$.call.id')
+                   AND json_extract(result.part,'$.name')=json_extract(call.part,'$.call.name')))"
+    ).bind(session).bind(through as i64).fetch_one(&mut *connection).await?;
+    Ok(unknown)
 }
 
 pub(super) async fn closed_boundary(
@@ -191,7 +201,7 @@ pub(super) async fn closed_boundary(
     let closed: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM session_history_events WHERE sequence = ? AND kind IN ('invocation_ended','message_imported')
          AND owner_session_id = ?)",
-    ).bind(i64::try_from(through).map_err(|_| invalid("coverage overflow"))?).bind(session).fetch_one(connection).await?;
+    ).bind(i64::try_from(through).map_err(|_| invalid("coverage overflow"))?).bind(session).fetch_one(&mut *connection).await?;
     if !closed {
         return Err(invalid("coverage must end at a closed Session boundary"));
     }
@@ -233,7 +243,7 @@ pub(super) async fn summary_boundary(
          WHERE invocation_id=? AND purpose='summary' AND tool_observed_at IS NOT NULL)",
     )
     .bind(invocation)
-    .fetch_one(connection)
+    .fetch_one(&mut *connection)
     .await?;
     if unsafe_summary {
         return Err(invalid("summary contains tool observations"));
@@ -260,18 +270,18 @@ pub(crate) async fn model_source_unchanged(
     let changed: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
         "SELECT EXISTS(SELECT 1 FROM runtime_events e
          LEFT JOIN context_execution_steps s ON s.invocation_id=e.invocation_id
-           AND s.operation_id=CAST(json_extract(e.event_json,'$.fact.step_id') AS TEXT)
+           AND s.operation_id=CAST(json_extract(e.event_header,'$.fact.step_id') AS TEXT)
          WHERE e.sequence > ?2
-           AND (e.event_json IS NOT NULL AND e.event_session=?3) AND {filter}
+           AND (e.event_header IS NOT NULL AND e.event_session=?3) AND {filter}
            AND NOT (e.invocation_id=?1 AND e.kind IN ('tool_dispatched','tool_settled','tool_rejected','tool_notified')
              AND EXISTS(SELECT 1 FROM context_independent_tools i WHERE i.invocation_id=e.invocation_id
                AND i.operation_id=CASE WHEN e.kind='tool_notified'
-                 THEN json_extract(e.event_json,'$.fact.operation_id') ELSE e.operation_id END))
+                 THEN json_extract(e.event_header,'$.fact.operation_id') ELSE e.operation_id END))
            AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_interrupted')
              AND EXISTS(SELECT 1 FROM runtime_events r WHERE r.sequence=s.requested_at AND r.sequence>?2
                AND s.terminal_kind='model_interrupted' AND s.terminal_status='retryable_failure'
                AND (s.item_acceptance!=1 OR s.accepted_at IS NULL) AND s.barrier_at IS NULL
-               AND json_remove(json_extract(r.event_json,'$.fact'),'$.step_id')=json_remove(json(?5),'$.step_id')))
+               AND json_remove(json_extract(r.event_header,'$.fact'),'$.step_id')=json_remove(json(?5),'$.step_id')))
            AND NOT (e.invocation_id=?1 AND e.kind IN ('model_requested','model_observed','model_completed','model_interrupted')
              AND COALESCE(s.purpose='summary' AND s.tool_observed_at IS NULL,0)))"
     )))
@@ -280,7 +290,7 @@ pub(crate) async fn model_source_unchanged(
     .bind(&selection.session)
     .bind(&selection.lineage)
     .bind(serde_json::to_string(&request.fact)?)
-    .fetch_one(connection)
+    .fetch_one(&mut *connection)
     .await?;
     if changed {
         return Err(invalid("model request source changed"));
@@ -290,10 +300,10 @@ pub(crate) async fn model_source_unchanged(
 
 const EXECUTION_BOUNDARY: &str = "WITH work AS (
            SELECT kind,operation_id FROM context_execution_work INDEXED BY context_execution_live
-             WHERE invocation_id=?1 AND closed_at IS NULL AND opened_at<=?2
+             WHERE invocation_id=?1 AND closed_at IS NULL AND opened_at<=?2 AND kind!='executor_tool'
            UNION ALL
            SELECT kind,operation_id FROM context_execution_work INDEXED BY context_execution_closed
-             WHERE invocation_id=?1 AND closed_at>?2 AND opened_at<=?2)
+             WHERE invocation_id=?1 AND closed_at>?2 AND opened_at<=?2 AND kind!='executor_tool')
          SELECT EXISTS(SELECT 1 FROM work w
            WHERE NOT (?3 AND w.kind='tool' AND EXISTS(
              SELECT 1 FROM context_independent_tools i WHERE i.invocation_id=?1
@@ -313,7 +323,7 @@ async fn execution_boundary(
         .bind(invocation)
         .bind(i64::try_from(through).map_err(|_| invalid("coverage overflow"))?)
         .bind(matches!(boundary, Boundary::Model))
-        .fetch_one(connection)
+        .fetch_one(&mut *connection)
         .await?;
     if pending {
         return Err(invalid(
@@ -322,7 +332,3 @@ async fn execution_boundary(
     }
     Ok(())
 }
-
-#[cfg(test)]
-#[path = "safety/tests.rs"]
-mod tests;

@@ -211,11 +211,13 @@ impl EventLog {
                         .execute(&mut *tx)
                         .await?;
                     }
+                    let approval_ready = crate::native_approvals::waits_for_interaction(&mut tx, &request_id).await?;
                     let commits = commits.for_session(&record.session_id);
                     record.outcome = Some(outcome);
                     crate::sessions::advance_revision(&mut tx, &record.session_id).await?;
                     tx.commit().await.map_err(StoreError::CommitUnknown)?;
                     commits.metadata();
+                    if approval_ready { commits.activations(); }
                     Ok(InteractionCommit {
                         matches: true,
                         record,

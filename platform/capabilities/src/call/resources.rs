@@ -43,6 +43,11 @@ impl Resources {
         let state = self.state.lock().unwrap();
         state.failure.is_none() && self.tasks.is_empty()
     }
+    /// Running owners, independent of cleanup failures already reported by completed owners.
+    /// Retirement callers must fence producers before checking this observation.
+    pub fn has_pending(&self) -> bool {
+        !self.tasks.is_empty()
+    }
     pub fn reserve(self: &Arc<Self>) -> Result<Ticket, ToolError> {
         let state = self.state.lock().unwrap();
         if state.closed {

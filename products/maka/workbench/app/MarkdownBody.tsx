@@ -19,7 +19,8 @@
 
 import { cleanup, platform, signal, Text, View } from 'nsh';
 import { TextView } from 'nsh/base';
-import { hasCompletePrefix, type Row } from './history';
+import { hasTextPrefix, type Row } from './history';
+import { MermaidView, mermaidExtensions } from './MermaidView';
 import { MarkdownImageView } from './MarkdownImage';
 import { SourceText } from './SourceText';
 import { tr } from './locale';
@@ -43,7 +44,7 @@ export function MarkdownBody(props: {
   return (
     <View selectable>
       <If
-        when={hasCompletePrefix(props.row())}
+        when={hasTextPrefix(props.row())}
         else={
           <Text style={[{ ...readingStyle, color: color() }, { userSelect: 'text' }]}>
             <SourceText row={props.row} sourceId={props.sourceId} />
@@ -52,6 +53,8 @@ export function MarkdownBody(props: {
       >
         <TextView
           markdown={props.row().text}
+          extensions={mermaidExtensions}
+          renderCustom={(node) => <MermaidView source={() => node.text ?? ''} />}
           sourceId={props.sourceId}
           selectable
           contentStyle={{ rowGap: props.compact ? 6 : 16 }}
@@ -70,7 +73,7 @@ export function MarkdownBody(props: {
                 props.sourceId === sourceId &&
                 current.messageId === row.messageId &&
                 current.field === row.field &&
-                hasCompletePrefix(current) &&
+                hasTextPrefix(current) &&
                 current.text.startsWith(row.text)
               );
             };
@@ -122,13 +125,23 @@ export function MarkdownBody(props: {
               borderRadius: props.compact ? 8 : 12,
             },
             codeBlockCode: { ...codeTextStyle, color: color() },
-            // The desktop starts the actions where the code starts.
             codeBlockHeader: platform.isTerminal
               ? { color: C.muted }
               : { color: C.muted, paddingHorizontal: 12, paddingTop: 8 },
-            tableCell: { ...readingStyle, color: color(), borderColor: C.line },
+            // The desktop starts the language where the code starts.
+            codeBlockLanguage: platform.isTerminal
+              ? secondaryTextStyle
+              : { ...secondaryTextStyle, paddingLeft: 4 },
+            // The desktop starts a table's text where a code block's starts.
+            tableCell: {
+              ...readingStyle,
+              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
+              color: color(),
+              borderColor: C.line,
+            },
             tableHeaderCell: {
               ...readingStyle,
+              ...(platform.isTerminal ? {} : { paddingHorizontal: 16 }),
               color: color(),
               fontWeight: '600',
               borderColor: C.line,

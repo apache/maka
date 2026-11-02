@@ -192,7 +192,7 @@ export function Photos() {
       </View>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingTop: 12 }}>
         <Icon name="arrow-down" size={14} tint={colors.faint} />
-        {platform.idiom === "desktop" ? (
+        {platform.desktop ? (
           <Text style={{ flex: 1, fontSize: 13, color: colors.faint }}>
             {refreshKey ? `${refreshKey} refreshes. ` : ""}Scrolling to the end loads {PAGE} more.
           </Text>
@@ -200,7 +200,7 @@ export function Photos() {
           <Text style={{ flex: 1, fontSize: 13, color: colors.faint }}>Pull to refresh. Scrolling to the end loads {PAGE} more.</Text>
         )}
         {/* The mouse does not pull scroll views down: desktops refresh here. */}
-        <If when={platform.idiom === "desktop"}>
+        <If when={platform.desktop}>
           <Button label={refreshing() ? "Refreshing…" : "Refresh"} variant="secondary" disabled={refreshing()} onPress={refresh} />
         </If>
       </View>

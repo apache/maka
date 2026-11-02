@@ -25,13 +25,7 @@ use maka_agent_facts::tool_output::DurableToolProjection;
 use maka_agent_facts::tool_output::ProjectionPart;
 use maka_model::prompt::{ContentPart, ToolOutput};
 
-pub(super) fn project<'a>(
-    projection: &'a DurableToolProjection,
-    message: usize,
-    images: &mut Vec<images::Target<'a>>,
-    vision: bool,
-    language: Language,
-) -> ToolOutput {
+pub(super) fn project(projection: &DurableToolProjection, language: Language) -> ToolOutput {
     match projection {
         DurableToolProjection::Text { text } => ToolOutput::Text(text.clone()),
         DurableToolProjection::Json { value } => ToolOutput::Json(value.clone()),
@@ -46,29 +40,14 @@ pub(super) fn project<'a>(
         DurableToolProjection::Content { parts } => {
             let value: Vec<_> = parts
                 .iter()
-                .enumerate()
-                .map(|(part, item)| match item {
+                .map(|item| match item {
                     ProjectionPart::Text { text } => ContentPart::text(text.clone()),
-                    ProjectionPart::Audio { audio } => {
-                        images.push(images::Target::Audio {
-                            message,
-                            part,
-                            audio,
-                        });
-                        ContentPart::text(match language {
-                            Language::En => "Audio could not be loaded.",
-                            Language::ZhCn => "无法加载音频。",
-                            Language::ZhTw => "無法載入音訊。",
-                        })
-                    }
-                    ProjectionPart::Artifact { image } => {
-                        if vision {
-                            images.push(images::Target::Tool {
-                                message,
-                                part,
-                                image,
-                            });
-                        }
+                    ProjectionPart::Audio { .. } => ContentPart::text(match language {
+                        Language::En => "Audio could not be loaded.",
+                        Language::ZhCn => "无法加载音频。",
+                        Language::ZhTw => "無法載入音訊。",
+                    }),
+                    ProjectionPart::Artifact { .. } => {
                         ContentPart::text(images::no_vision(language))
                     }
                 })

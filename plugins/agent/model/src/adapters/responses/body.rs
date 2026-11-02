@@ -191,8 +191,7 @@ impl RequestBody {
                         state.last_message = Some(chunk.message_index);
                         continue;
                     }
-                    if chunk.bytes.len() > 16 * 1024
-                        || chunk.message_index < state.skip
+                    if chunk.message_index < state.skip
                         || chunk.message_index >= state.message_count
                         || state
                             .last_message
@@ -206,7 +205,7 @@ impl RequestBody {
                     }
                     state.last_message = Some(chunk.message_index);
                     state.inside_item = !chunk.item_end;
-                    let bytes = http::Bytes::from(chunk.bytes);
+                    let bytes = chunk.bytes;
                     if chunk.item_start {
                         if state.comma {
                             state.pending = Some(bytes);
@@ -262,8 +261,31 @@ impl RequestBody {
             }
         })
     }
-    pub fn http(self) -> http::RequestBody {
-        http::RequestBody::replayable(move || http::RequestBody::stream(self.clone().chunks()))
+    pub fn http(self, source: Option<maka_agent_ports::model::RequestSource>) -> http::RequestBody {
+        let Some(source) = source else {
+            return http::RequestBody::replayable(move || {
+                http::RequestBody::stream(self.clone().chunks())
+            });
+        };
+        let properties = self.properties.clone();
+        let config = self.config.clone();
+        let skip = self.skip;
+        let initial = http::RequestBody::stream(self.chunks()).with_cleanup(source.cleanup);
+        http::RequestBody::with_replay(initial, move |cancellation| {
+            let properties = properties.clone();
+            let config = config.clone();
+            let frozen = source.frozen.clone();
+            Box::pin(async move {
+                let materialized = frozen.open(cancellation).await.map_err(source_error)?;
+                let body = Self {
+                    properties,
+                    prompt: materialized.prompt,
+                    skip,
+                    config,
+                };
+                Ok(http::RequestBody::stream(body.chunks()).with_cleanup(materialized.cleanup))
+            })
+        })
     }
     pub fn websocket(mut self) -> maka_agent_ports::model::TextStream {
         let properties = self.properties.as_object_mut().unwrap();
@@ -293,7 +315,7 @@ fn source_error(error: maka_agent_ports::model::Error) -> http::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::model::prompt::{Message, ToolOutput};
+    use maka_agent_facts::model::prompt::Message;
     use maka_agent_facts::model::prompt_source::{Next, PromptSource};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -309,51 +331,6 @@ mod tests {
             }),
         }
     }
-    async fn wire(body: RequestBody) -> Value {
-        let mut stream = Box::pin(body.chunks());
-        let mut bytes = Vec::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk.unwrap();
-            assert!(chunk.len() <= 16 * 1024);
-            bytes.extend_from_slice(&chunk);
-        }
-        serde_json::from_slice(&bytes).unwrap()
-    }
-
-    #[tokio::test]
-    async fn replay_and_delta_share_original_view_and_preserve_wire_values() {
-        let prompt = Prompt::from_messages(vec![
-            Message::user("quotation: \"; slash: \\; unicode: 中\n".repeat(2000)),
-            Message::tool(
-                "call_1",
-                "lookup",
-                ToolOutput::Json(json!({"value":"retained"})),
-            ),
-            Message::notification("exec_2", "late output"),
-        ]);
-        let full = body(prompt);
-        let first = wire(full.clone()).await;
-        assert_eq!(first, wire(full.clone()).await);
-        let mut delta = full.clone();
-        delta.skip = 1;
-        delta.properties["previous_response_id"] = json!("response_1");
-        let delta_wire = wire(delta.clone()).await;
-        assert_eq!(
-            delta_wire["input"],
-            Value::Array(first["input"].as_array().unwrap()[1..].to_vec())
-        );
-        assert_eq!(wire(delta.full()).await, first);
-        let mut chunks = full.websocket();
-        let mut bytes = Vec::new();
-        while let Some(chunk) = chunks.next().await {
-            bytes.extend_from_slice(&chunk.unwrap());
-        }
-        let websocket: Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(websocket["input"], first["input"]);
-        assert_eq!(websocket["type"], "response.create");
-        assert!(websocket.get("stream").is_none());
-    }
-
     struct Generated {
         reads: Arc<AtomicUsize>,
         drops: Arc<AtomicUsize>,

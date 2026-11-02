@@ -32,7 +32,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-async fn overflow(socket: &mut TcpStream, observed: bool) {
+pub(super) async fn overflow(socket: &mut TcpStream, observed: bool) {
     let error = json!({"error":{"message":"request exceeds context","type":"invalid_request_error","code":"context_length_exceeded"}});
     let (status, media, body) = if observed {
         let chunk = json!({"id":"partial","object":"chat.completion.chunk","created":1,"model":"test","choices":[{"index":0,"delta":{"content":"already-observed"},"finish_reason":null}]});

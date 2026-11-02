@@ -1,7 +1,6 @@
 ---
 title: Radio
 description: "Radio and RadioGroup: a set of options the user picks exactly one of. Each radio owns presses, keyboard activation, the disabled state and its role and checked state for screen readers; the group is the set; the look and the value are the app's."
-order: 20.4
 group: base
 demo: el-radio
 ---

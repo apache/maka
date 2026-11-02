@@ -447,8 +447,9 @@ export function QuantityStepper(props: QuantityStepperProps) {
 
 组件拥有它创建的东西，它创建的一切都随它消失：它的 `<If>` 分支隐藏、它的行被移除或它的页面被弹出时。在 Rust 中，任务、
 定时器和间隔（`spawn`、`set_timeout`、`set_interval`）以及按键绑定（`on_key`）随创建它们时的归属者结束；在 TSX 中，用
-[`cleanup`](./reactivity.md#cleanup) 注册停止操作，或从 effect 中返回它。开始监听的函数返回一个停止监听的函数
-（`() => void`），组件渲染期间注册的内容随组件一起移除，`keymap.bind` 就是如此。
+[`cleanup`](./reactivity.md#cleanup) 注册停止操作，或从 effect 中返回它。监听用 `on(event, listener)`
+（`host.on(name, listener)`、`BackHandler.on("press", listener)`），它返回一个停止监听的函数（`() => void`，Rust 中返回
+`Stop`），组件渲染期间注册的内容随组件一起移除，`keymap.bind` 的绑定也是如此。
 
 某个东西意外地一直在运行时，先检查在组件之外创建的 effect 和 computed 值（在事件处理函数或定时器回调中创建的没有归属者，会
 一直存在）、注册时没有保留停止操作的监听，以及从没有组件归属的 store 启动的工作。被丢弃的 `resource` 加载会中止（TSX 中的
@@ -822,6 +823,8 @@ const liked = signal<Set<number>>(new Set());
 - 模式是可以增加取值的字符串联合类型，而不是以后需要第三种状态的布尔值；
 - 一个值只有一种类型：`version: string`，而不是 `string | number`；
 - 函数返回一个可以增加字段的对象，而不是元组或单独的值；
+- 返回 Promise 的函数通过 reject 报告所有失败，调用方能处理的失败带上 `code`，NSH 自己的接口也是如此：调用方按 code 区分，
+  消息是给人看的，可能会变；
 - 重命名时保留旧名称，作为同一实现的 `@deprecated` 别名。
 
 在 Rust 中，需要持续演进的行为状态默认使用私有字段。有意设计成记录的配置和序列化数据可以暴露字段，但所有包含公开字段的
@@ -835,17 +838,19 @@ const liked = signal<Set<number>>(new Set());
 不能假设每个平台支持相同的能力。标题栏和窗口控件、无障碍、剪贴板、触感反馈、滚动物理、字体和时序都可能不同。一个包在每个
 平台上运行（[平台特定代码](./platform-specific.md)）；平台特定的代码放在 NSH 为它准备的位置，并定义回退行为：
 
-- 两个平台都有的 prop 是顶层 prop；只有一个平台有的 prop 放进 `ios={{…}}`、`android={{…}}`、`desktop={{…}}` 或
-  `web={{…}}`（Rust 中是构建器方法），只有当前平台的对象会生效；
+- 元素在各平台上都要表达的意思是顶层 prop；平台系统自带的功能放进 `ios={{…}}`、`android={{…}}`、`desktop={{…}}` 或
+  `web={{…}}`（Rust 中是构建器方法），有这个功能的每个平台各放一份，只有当前平台的对象会生效；
 - 移动平台的 API 来自 `nsh/mobile`，桌面的 API 来自 `nsh/desktop`；
 - 按平台设置的样式使用 `ios:`、`android:` 和 `web:` 类名。
 
 平台分支即使表现不同，也必须保留语义契约。例如对话框在 iOS 上是面板，在桌面上是覆盖窗口的一层，但应用仍需要一致的打开状态。
-共享的行为在无界面环境中测试，平台的部分用 `nsh test --target` 测试。
+共享的行为在无界面环境中测试，平台的部分用 `nsh test --target` 测试。按 NSH 报告的值（`platform.os`、状态、原因）分支时，每个分支都要有
+`default`：之后的版本会增加平台和情况，今天下发的应用也要在上面运行（[兼容性](./compatibility.md)）。
 
 应用在 `nsh.json` 的 `"capabilities"` 中声明它在 VM 之外能访问的内容：可以请求的主机、Web 视图显示的页面、剪贴板、状态栏
 （[沙箱与权限](./sandbox-and-capabilities.md)）。将被下发到其他应用中的应用，准确列出它用到的内容，并像处理失败的请求那样
-处理被拒绝的请求：宿主应用授予的权限可能少于应用声明的。
+处理被拒绝的请求：宿主应用授予的权限可能少于应用声明的。被拒绝的调用以 `code` 为 `"ERR_ACCESS_DENIED"` 的错误失败，
+它的 `permission` 是能力名，`resource` 是请求的内容。
 
 ## 文件、代码与命名风格
 
@@ -883,7 +888,7 @@ const liked = signal<Set<number>>(new Set());
 | 其他事件 | `on<Event>`，现在时，一个对象 | `onPress()`、`onSubmit({ text })` |
 | 阶段 | `<act>Start`、`<act>End` | `onPanStart`、`onLoadStart` |
 | 鼠标位于视图上方 | `Enter` / `Move` / `Leave`，与 DOM 相同 | `onMouseEnter`、`onMouseMove`、`onMouseLeave` |
-| 开始监听 | 返回 `() => void` | `keymap.bind(..)` |
+| 开始监听 | `on(event, listener)`，返回 `() => void` | `host.on(name, l)`、`BackHandler.on("press", l)` |
 | 环境中的值 | 访问器，旁边是 `set<Value>` | `colorScheme()`、`setColorScheme` |
 | 只读的布尔值 | `is<Adjective>`、`has<Noun>` | `isAvailable` |
 

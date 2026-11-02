@@ -1,7 +1,6 @@
 ---
 title: Popover
 description: "The Popover component: content anchored to a trigger, on top of everything, that the trigger, a press outside, Escape and back close, styled by the app."
-order: 26
 group: base
 demo: el-popover
 ---
@@ -102,6 +101,29 @@ A popover is anchored to its trigger on every device: what it shows belongs next
 
 For a list of actions use a [Menu](./menu.md), which becomes a sheet on phones; for a panel use a [Sheet](./sheet.md).
 
+## Entrance and exit
+
+A popover comes and goes with your transitions. `popupStartingClass` is the popup's look in its first frame, and the
+`transition-*` classes of `popupClass` carry it to its own look: its entrance. `popupEndingClass` is its look once
+closed: the popover stays, taking no presses, while those transitions run, then goes, and `onClose` follows. Opened
+again on its way out, it returns to its look from where it is. `popupStartingStyle` and `popupEndingStyle` do the same
+with inline styles. When the user asks for less motion, it appears and goes at once.
+
+```tsx
+<Popover
+  popupClass="rounded-lg bg-white p-3 shadow-lg transition-all duration-150 ease-out"
+  popupStartingClass="opacity-0 scale-95"
+  popupEndingClass="opacity-0 scale-95"
+  onPosition={({ placement }) => side.set(placement)}
+  trigger={<Text>Details</Text>}
+>
+  <OrderSummary />
+</Popover>
+```
+
+`onPosition({ placement, bounds, available })` says where the popup went: the side of the trigger (the other one when
+`placement` had no room), its frame and the room on that side, so an arrow or an entrance can point at the trigger.
+
 ## Props
 
 | Prop | Rust | Type | Default | Description |
@@ -116,6 +138,8 @@ For a list of actions use a [Menu](./menu.md), which becomes a sheet on phones; 
 | `closeOnPressOutside` | `.close_on_press_outside(..)` | `boolean` | `true` | A press outside closes it. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The look of the popup, the box the content is in. |
 | `anchor` | `.anchor(..)` | `ViewRef \| null` | none | An element rendered elsewhere to place it against, before the trigger's bounds. |
+| `popupStartingClass`, `popupStartingStyle` | `.popup_starting_class(..)`, `.popup_starting_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup's look in its first frame, over its own: its transitions run from it. |
+| `popupEndingClass`, `popupEndingStyle` | `.popup_ending_class(..)`, `.popup_ending_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup's look once closed, over its own: it stays while its transitions run. |
 | `trigger` | `.trigger(..)` | `JSX.Element` | none | What opens it; it is placed against it. While the popover is open its `aria-expanded:` classes and `expandedStyle` apply. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content. |
 
@@ -125,8 +149,9 @@ For a list of actions use a [Menu](./menu.md), which becomes a sheet on phones; 
 |---|---|---|
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | It opened or closed, with why: `"triggerPress"`, `"pressOutside"` or `"cancel"`. |
 | `onOpen` | `.on_open(\|\| ..)` | It is shown. |
-| `onClose` | `.on_close(\|\| ..)` | It is gone, also when the app closed it. |
+| `onClose` | `.on_close(\|\| ..)` | It is gone, after its exit; also when the app closed it. |
 | `onCancel` | `.on_cancel(\|\| ..)` | The user tried to close it (Escape or back, a press outside), whether or not it closed. |
+| `onPosition` | `.on_position(\|e\| ..)` | The popup was placed: `placement` (the side it went on), `bounds` (its frame), `available` (the room on that side). |
 
 ## Accessibility
 

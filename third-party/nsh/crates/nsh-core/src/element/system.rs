@@ -51,7 +51,18 @@ pub struct System {
     pub filesystem: Option<Arc<dyn crate::filesystem::FileSystem>>,
     /// The operating system the app runs on, as the host says.
     pub os: crate::platform::Os,
+    /// Refuses the app's connections (`net` sockets and WebSockets, both
+    /// APIs) before they reach the network: a test's, which reaches it
+    /// only when the test asks (`nsh test`'s `network: "live"`). `None`:
+    /// they connect. `fetch` goes through the host's network instead.
+    pub refuse_connections: Option<RefuseConnections>,
 }
+
+/// What a host refuses the app's connections with
+/// ([`System::refuse_connections`]): given what the app connects to (a
+/// WebSocket's URL, a socket's `host:port`), the error its call fails
+/// with.
+pub type RefuseConnections = Arc<dyn Fn(&str) -> JsError + Send + Sync>;
 
 impl System {
     /// The VM's capabilities and directories.
@@ -71,7 +82,26 @@ impl System {
             websocket: None,
             filesystem: None,
             os: crate::platform::Os::default(),
+            refuse_connections: None,
         }
+    }
+
+    /// Whether the app may connect to `target` (a WebSocket's URL, a
+    /// socket's `host:port`) as far as the host is concerned: the error
+    /// [`System::refuse_connections`] gives, when the host set one. The
+    /// app's capabilities are checked apart.
+    pub fn check_connection(&self, target: &str) -> Result<(), JsError> {
+        match &self.refuse_connections {
+            Some(refuse) => Err(refuse(target)),
+            None => Ok(()),
+        }
+    }
+
+    /// Refuses the app's connections with what `refuse` gives
+    /// ([`System::refuse_connections`]).
+    pub fn with_refuse_connections(mut self, refuse: Option<RefuseConnections>) -> Self {
+        self.refuse_connections = refuse;
+        self
     }
 
     /// Uses the host WebSocket transport instead of the native stack.
@@ -211,6 +241,72 @@ impl fmt::Debug for Cleanup {
     }
 }
 
+/// What stops something JS started, returned to JS as a function that
+/// stops it (`() => void`): what every `on(…)` of Rust returns. It runs
+/// once, when JS calls the function or when what owns the call in JS goes
+/// (the reactive owner it runs under, or the module's run under hot
+/// reload; [`CallCx::on_cleanup`]), whichever comes first, so a listener a
+/// component adds goes with the component. Returned from a synchronous
+/// call: a task's or an op's result reaches JS when nothing owns the call.
+/// What `f` holds stays alive as long as the JS function does, so it holds
+/// instances weakly.
+#[derive(Default)]
+#[non_exhaustive]
+pub struct Stop {
+    run: Rc<StopOnce>,
+}
+
+/// What a [`Stop`] runs, until it ran.
+type StopOnce = RefCell<Option<Box<dyn FnOnce()>>>;
+
+impl Stop {
+    /// Stops with `f`.
+    pub fn new(f: impl FnOnce() + 'static) -> Self {
+        Self {
+            run: Rc::new(RefCell::new(Some(Box::new(f)))),
+        }
+    }
+
+    fn run(run: &StopOnce) {
+        // Taken before it runs: what it does may call the function again.
+        let f = run.borrow_mut().take();
+        if let Some(f) = f {
+            f();
+        }
+    }
+}
+
+impl fmt::Debug for Stop {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("Stop")
+    }
+}
+
+impl Ret for Stop {
+    fn ts_type(_types: &mut super::TsTypes) -> String {
+        "() => void".into()
+    }
+
+    fn into_js<'a>(self, host: &'a dyn JsHost) -> Result<super::JsOwned<'a>, super::PropError> {
+        let run = self.run;
+        let release = host.on_cleanup(Box::new({
+            let run = run.clone();
+            move || Self::run(&run)
+        }));
+        let release = RefCell::new(Some(release));
+        let stop = host.new_function(Box::new(move || {
+            // Unregistered first: an owner that lives long does not
+            // collect stopped listeners.
+            let release = release.borrow_mut().take();
+            if let Some(release) = release {
+                release();
+            }
+            Self::run(&run);
+        }))?;
+        Ok(super::JsOwned::new(host, stop))
+    }
+}
+
 impl fmt::Debug for System {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("System")
@@ -284,8 +380,8 @@ impl fmt::Debug for Held {
 
 /// Work a function or member that is not `async` starts in the JS call
 /// and finishes as a task of the core: JS gets a promise of `T`. What the
-/// call does before returning it (checking its arguments, taking a quota)
-/// throws as a synchronous call's error does; the task's `Err` rejects
+/// call refuses before returning it (an argument, a grant, a quota)
+/// rejects the promise, as the task's `Err` does
 /// (a [`JsError`] with its class and properties, any other error as an
 /// `Error` with its message). TS: `Promise<T>`.
 #[must_use = "the work runs only when the call returns it"]
@@ -391,6 +487,22 @@ impl JsError {
         self.with("code", code)
     }
 
+    /// What a call the app's capabilities do not grant fails with, as
+    /// Node's permission model: an `Error` with `code`
+    /// [`codes::ACCESS_DENIED`], `permission` (the capability: `"fs"`,
+    /// `"network"`, `"clipboard"`, ...) and `resource` (the path, URL or
+    /// name asked for; `""` when the capability has none).
+    pub fn access_denied(
+        message: impl Into<String>,
+        permission: &str,
+        resource: impl Into<String>,
+    ) -> Self {
+        JsError::Error(message.into())
+            .with_code(codes::ACCESS_DENIED)
+            .with("permission", permission)
+            .with("resource", resource.into())
+    }
+
     /// Its message.
     pub fn message(&self) -> &str {
         match self {
@@ -406,6 +518,25 @@ impl JsError {
             _ => None,
         }
     }
+}
+
+/// The `code`s of the errors NSH's calls fail with besides an I/O
+/// error's (`ENOENT`, `EACCES`, ...: [`io_code`]). Apps branch on them; the
+/// messages are for people and may change.
+pub mod codes {
+    /// The app's capabilities do not grant the call
+    /// ([`super::JsError::access_denied`]; Node's permission model's).
+    pub const ACCESS_DENIED: &str = "ERR_ACCESS_DENIED";
+    /// The platform the app runs on has no such feature (Node's).
+    pub const UNAVAILABLE: &str = "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM";
+    /// A quota of the runtime is used up: calls waiting at once, open
+    /// sockets, storage.
+    pub const QUOTA_EXCEEDED: &str = "ERR_NSH_QUOTA_EXCEEDED";
+    /// The call ran out of time.
+    pub const TIMED_OUT: &str = "ETIMEDOUT";
+    /// The embedding app answered a `host.call` with an error (its handler
+    /// failed, or it handles no such name); the message is the host's.
+    pub const HOST_ERROR: &str = "ERR_NSH_HOST_ERROR";
 }
 
 /// An I/O error as Node reports it: `Error` with the message and the
@@ -558,6 +689,11 @@ mod tests {
             cx.start(async {});
         }
 
+        /// Listens until the returned function is called.
+        pub(crate) fn listen() -> Stop {
+            Stop::new(|| {})
+        }
+
         /// Where the files are.
         #[getter]
         pub(crate) fn root(sys: System) -> Option<String> {
@@ -602,6 +738,7 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("function watch(path: string): void;"), "{d}");
+        assert!(d.contains("function listen(): () => void;"), "{d}");
         assert!(
             d.contains("  on(event: string, f: (index: number, label: string) => void): Handle;"),
             "{d}"
@@ -620,6 +757,26 @@ mod tests {
         assert_eq!(host.read(out), Some(serde_json::json!([0, 7, 255])));
         let bad = host.value(JsonValue::from("x"));
         assert!(<Vec<u8>>::from_js(crate::element::JsIn::new(&host, bad)).is_err());
+    }
+
+    #[test]
+    fn a_stop_is_a_function_that_runs_once() {
+        use crate::element::Ret;
+        let host = json_host::JsonHost::default();
+        let runs = std::rc::Rc::new(std::cell::Cell::new(0));
+        let stop = Stop::new({
+            let runs = runs.clone();
+            move || runs.set(runs.get() + 1)
+        });
+        let f = stop.into_js(&host).unwrap().into_raw();
+        assert_eq!(
+            crate::element::JsHost::kind(&host, f),
+            crate::element::JsKind::Function
+        );
+        assert_eq!(runs.get(), 0);
+        host.call(f);
+        host.call(f);
+        assert_eq!(runs.get(), 1);
     }
 
     #[derive(Debug, JsObject)]

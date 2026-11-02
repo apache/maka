@@ -17,8 +17,10 @@
  * under the License.
  */
 
+import { createPendingRecovery } from '../../../../products/maka/workbench/app/pendingRecovery';
 import {
   cleanup,
+  untracked,
   computed,
   effect,
   inputAction,
@@ -28,13 +30,18 @@ import {
   View,
   keymap,
   windowSize,
+  platform,
   type ViewRef,
+  type Signal,
   type JSX,
 } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
+import type { StagedFile } from 'maka/host';
 import type {
   AgentInteractionResult,
+  AgentWorkspaceAccess,
+  CollaborationMode,
   ModelSelection,
   UiTarget,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
@@ -54,12 +61,14 @@ import {
 import { delayed } from '../../../../products/maka/workbench/app/delayed';
 import {
   createText,
+  createTransientText,
   UiError,
   errorText,
+  errorMessage,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { currentLocale, displayText, tr } from '../../../../products/maka/workbench/app/locale';
-import type { Host } from '../../../../products/maka/workbench/app/host';
+import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
 import {
   bodyTextStyle,
   C,
@@ -80,6 +89,7 @@ import {
   type RecallTarget,
 } from '../../../../products/maka/workbench/app/RecallSearch';
 import { createForeground } from '../../../../products/maka/workbench/app/activation';
+import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { Palette } from '../../../../products/maka/workbench/app/Palette';
 import type {
   CommandEntry,
@@ -87,18 +97,27 @@ import type {
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
+import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
+import { GoalDialog } from '../../../../products/maka/workbench/app/GoalDialog';
 import { CompactDialog } from '../../../../products/maka/workbench/app/CompactDialog';
-import type { ModelBackend } from '../../../../products/maka/workbench/app/modelSelection';
+import type {
+  ModelBackend,
+  ModelDetails,
+} from '../../../../products/maka/workbench/app/modelSelection';
 import {
   InteractionComposer,
   interactionOutcomeSummary,
 } from '../../../../products/maka/workbench/app/InteractionComposer';
-import { ComputerAppControls } from '../../../../products/maka/workbench/app/ComputerAppControls';
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
 import {
   createBrowsing,
+  type Browsing,
   type BrowserWorkspace,
 } from '../../../../products/maka/workbench/app/browsing';
+import {
+  browserOrder,
+  groupConversations,
+} from '../../../../products/maka/workbench/app/conversationGroups';
 import {
   WorkspaceBrowser,
   type WorkspaceBrowserProps,
@@ -123,31 +142,80 @@ import { watchNotifications } from '../../../../products/maka/workbench/app/noti
 type OverlayTarget = {
   sessionId: string | null;
 } & (
-  | { kind: 'commands' | 'workspaces' | 'sessions' | 'search' }
+  | { kind: 'commands' | 'workspaces' | 'sessions' }
+  // `within`: the search starts in the open conversation only.
+  | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
   | { kind: 'settings'; model?: ModelSelection }
+  | {
+      kind: 'goal';
+      objective?: string;
+      goal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal;
+    }
   | { kind: 'compact'; owner: ConversationHandle; prompt?: string }
 );
 type Overlay = OverlayTarget & { instance: number };
+function unavailableSession(reason: unknown): boolean {
+  return (
+    reason === 'agent_session_unavailable' ||
+    (reason instanceof Error && reason.message === 'agent_session_unavailable')
+  );
+}
 type ActionContext = { instance: number | null; sessionId: string | null };
-export function createConversationUi(context: UiContext<UiHost, JSX.Element>, host: Host) {
+type PendingFile = {
+  id: string;
+  name: string;
+  bytes: number;
+  file: StagedFile;
+};
+type PendingDraft = {
+  workspace: BrowserWorkspace;
+  workspaceLabel: string;
+  text: string;
+  backend: ModelBackend | null;
+  access: AgentWorkspaceAccess | null;
+  requests: boolean | null;
+  mode: CollaborationMode;
+  modelChosen: boolean;
+  files: PendingFile[];
+  target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
+  revision: number;
+};
+export type ConversationWindow = {
+  workspace: Signal<WorkspaceViewHandle | null>;
+  sessions(): readonly string[];
+  command(id: string): void;
+};
+
+// A pane opened beside the main one shares its catalog read and leaves the
+// window title, notifications, menu and app-wide shortcuts to the main pane.
+export function createConversationUi(
+  context: UiContext<UiHost, JSX.Element>,
+  host: Host,
+  window: ConversationWindow,
+  side?: { browsing: Browsing },
+) {
   const runtime = context.runtime;
   effect(() => currentLocale.set(context.locale()));
   const shell = signal<ConversationShell | null>(null);
   const bind = (next: ConversationShell) => {
     if (shell() !== next) shell.set(next);
   };
-  const browsing = createBrowsing(host);
+  const browsing = side?.browsing ?? createBrowsing(host);
   const foreground = createForeground();
   const selected = () => shell()?.sessionId() ?? null;
   const overlay = signal<Overlay | null>(null);
   const reloading = () => runtime.reloading() || (shell()?.blocked() ?? false);
-  const workspace = signal<WorkspaceViewHandle | null>(null);
+  const workspace = window.workspace;
+  const requireWorkspace = () => {
+    const current = workspace();
+    if (!current) throw new UiError('Workspace preview is unavailable.');
+    return current;
+  };
   const resources = {
     shown: () => workspace()?.shown() ?? false,
     hide: () => workspace()?.hide(),
     openFiles: (target: { sessionId: string }) => workspace()?.openFiles(target),
-    openImage: (image: ImagePreview) => workspace()?.openImage(image),
     attachOpener: (sessionId: string, node: ViewRef) => workspace()?.attachOpener(sessionId, node),
     focused: () => workspace()?.focused() ?? false,
   };
@@ -159,7 +227,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   });
   const browserFocus = signal(false);
   const error = createText();
-  const status = createText();
+  const status = createTransientText();
   const switching = signal(false);
   const busy = signal(false);
   // Shown only when saving a draft or confirming an action takes a while, so a
@@ -169,13 +237,112 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const controlsKnown = signal(false);
   const recovering = signal(false);
   const recoveredFork = signal<{ id: string; title: string } | null>(null);
+  // Shown once, in the fork just opened from a conversation action, until the
+  // user leaves it: the switch is otherwise silent and the titles look alike.
+  const forkNotice = signal<{
+    id: string;
+    source: string;
+    title: string;
+  } | null>(null);
   const handle = signal<ConversationHandle | null>(null);
+  const pending = signal<PendingDraft | null>(null);
+  const updatePending = (patch: Partial<Omit<PendingDraft, 'revision'>>) => {
+    const current = pending();
+    if (current) pending.set({ ...current, ...patch, revision: current.revision + 1 });
+  };
+  const replacePending = (next: PendingDraft | null) => {
+    const previous = pending();
+    pending.set(next);
+    for (const file of previous?.files ?? []) file.file.dispose();
+  };
+  cleanup(() => replacePending(null));
+  const pendingWorkspace = computed(() => pending()?.workspace ?? null);
+  const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
+  const pendingText = computed(() => pending()?.text ?? '');
+  const pendingSending = signal(false);
+  const pendingFiles = computed(() => pending()?.files ?? []);
+  const pendingIntake = signal<Promise<void> | null>(null);
+  const pendingFileBusy = () => pendingIntake() !== null;
+  const pendingPicker = signal(false);
+  const pendingAccess = computed(() => pending()?.access ?? null);
+  const pendingRequests = computed(() => pending()?.requests ?? null);
+  // Known from the last conversation read; a new one cannot ask the Host first.
+  const plansEnabled = signal<boolean | null>(null);
+  effect(() => {
+    const enabled = handle()?.plan.view()?.enabled;
+    if (enabled !== undefined) plansEnabled.set(enabled);
+  });
+  const pendingMode = computed(() =>
+    plansEnabled() === false ? 'agent' : (pending()?.mode ?? 'agent'),
+  );
+  const pendingBackend = computed(() => pending()?.backend ?? null);
+  const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
+  const pendingModelDetails = signal<ModelDetails>({
+    kind: 'unavailable',
+    message: uiMessage('Choose a model.'),
+  });
+  const pendingModelInstance = signal<number | null>(null);
+  const pendingTarget = computed(() => pending()?.target ?? null);
+  const pendingCreated = computed(() => {
+    const target = pendingTarget();
+    return target?.kind === 'session' ? target.sessionId : null;
+  });
+  const pendingCreateAttempt = computed(() => {
+    const target = pendingTarget();
+    return target?.kind === 'creating' ? target.operationId : null;
+  });
+  const pendingHandoff = signal<string | null>(null);
+  const pendingCreateUncertain = () => pendingCreateAttempt() !== null;
+  let pendingModelGeneration = 0;
+  const pendingDraftGeneration = signal(0);
+  let pendingDefaultEpoch = 0;
+  let pendingDefaultRead: Promise<void> | null = null;
+  const pendingModel = {
+    sessionId: 'pending',
+    backend: pendingBackend,
+    modelDetails: pendingModelDetails,
+    async refreshModel() {
+      const backend = pendingBackend();
+      const generation = ++pendingModelGeneration;
+      if (!backend) {
+        pendingModelDetails.set({
+          kind: 'unavailable',
+          message: uiMessage('Choose a model.'),
+        });
+        return;
+      }
+      pendingModelDetails.set({ kind: 'loading' });
+      try {
+        const result = await host.query('settings', 'resolveModel', {
+          connectionId: backend.connectionId,
+          modelId: backend.modelId,
+        });
+        if (!alive || generation !== pendingModelGeneration) return;
+        pendingModelDetails.set(
+          result.kind === 'ready'
+            ? { kind: 'ready', choice: result.choice }
+            : {
+                kind: 'unavailable',
+                message: uiMessage('Model unavailable: {model}.', {
+                  model: backend.modelId,
+                }),
+              },
+        );
+      } catch (reason) {
+        if (alive && generation === pendingModelGeneration)
+          pendingModelDetails.set({
+            kind: 'unavailable',
+            message: errorText(reason),
+          });
+      }
+    },
+  };
   let dropFiles: ((event: { uris: string[] }) => void) | null = null;
   const fileDragging = signal(false);
   let editor: { focus(): void } | undefined;
   const composerSession = computed(() => {
     const owner = handle();
-    return owner ? projectComposerSession(owner, host) : null;
+    return owner && owner.sessionId === selected() ? projectComposerSession(owner, host) : null;
   });
   const focusComposer = () => editor?.focus();
   let browserRoot: ViewRef | undefined;
@@ -199,6 +366,18 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   let observedSession: string | null = null;
   let wasVisible = false;
+  const readPendingSession = async () => {
+    const id = pendingCreated();
+    if (!id) return null;
+    try {
+      return await host.query('agent', 'observe', { sessionId: id });
+    } catch (reason) {
+      if (!unavailableSession(reason)) throw reason;
+      if (pendingCreated() === id) updatePending({ target: null });
+      return null;
+    }
+  };
+
   effect(() => {
     const next = selected();
     if (next !== observedSession) {
@@ -256,6 +435,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     const current = () =>
       alive && selected() === source.sessionId && (overlay()?.instance ?? null) === source.instance;
     if (!current() || switching() || reloading()) return false;
+    if (forkNotice() && forkNotice()!.id !== id) forkNotice.set(null);
     const owner = handle();
     const sourceOverlay = overlay();
     if (selected() === id) {
@@ -279,6 +459,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         : null;
       const committed = await shell()!.openSession(id);
       if (!committed) return false;
+      if (source.sessionId === null && pendingWorkspace())
+        pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       if (overlay() === sourceOverlay) overlay.set(null);
       status.set('');
       if (revealed) await revealed;
@@ -293,8 +475,10 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   const returned = (reply: any) => {
     const receipt = reply?.receipt;
+    if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'unknown')
+      throw new UiError('This action could not be completed.');
     if (receipt?.kind !== 'recorded' || receipt.outcome?.kind !== 'returned')
-      throw new UiError('Confirmation is still unknown. Recover the original action below.');
+      throw new UiError('Syncing changes…');
     const value = receipt.outcome.value;
     return value;
   };
@@ -303,7 +487,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     if (!urgent && !controlsKnown())
       throw new UiError('Checking earlier actions. Try again in a moment.');
     const originals: any[] = urgent ? await host.pendingControls() : controls();
-    const pending = originals.find(
+    const unresolved = originals.find(
       (original) =>
         (original.method === method ||
           (['metadata', 'changeSession', 'fork', 'setCompactionPrompt'].includes(method) &&
@@ -315,15 +499,42 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         (method !== 'stopComputerApp' || original.correlation.operationId === input.operationId) &&
         (method !== 'respond' || original.correlation.requestId === input.requestId),
     );
-    if (pending)
-      throw new UiError(
-        'This action has an unresolved original. Recover it below before trying again.',
-      );
+    if (unresolved) throw new UiError('Syncing changes…');
     if (!urgent && busy())
       throw new UiError('An action is being confirmed. Try again in a moment.');
+    const pendingCreation = method === 'create' && pendingSending() && pendingWorkspace() !== null;
     if (!urgent) busy.set(true);
     try {
-      const result = returned((await host.control(method, input)).reply);
+      let result: any;
+      if (pendingCreation) {
+        const original = await host.beginControl(method, input);
+        updatePending({
+          target: { kind: 'creating', operationId: original.operationId },
+        });
+        for (;;) {
+          const event = await original.next();
+          if (event === null) throw new UiError('Syncing changes…');
+          if (event.kind === 'not_dispatched') {
+            updatePending({ target: null });
+            throw new UiError('The action was not dispatched. Try again.');
+          }
+          if (event.kind === 'finished') {
+            if (
+              event.reply?.receipt?.kind === 'recorded' &&
+              event.reply.receipt.outcome?.kind === 'unknown'
+            )
+              updatePending({ target: null });
+            result = returned(event.reply);
+            updatePending({
+              target:
+                result.kind === 'created'
+                  ? { kind: 'session', sessionId: result.session.id }
+                  : null,
+            });
+            break;
+          }
+        }
+      } else result = returned((await host.control(method, input)).reply);
       if (method === 'respond') presentInteraction(input, result);
       return result;
     } catch (reason) {
@@ -439,8 +650,99 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       });
     await owner.refresh();
   };
-  const create = async (workspace: BrowserWorkspace, expectedSessionId = selected()) => {
+  const create = async (
+    workspace: BrowserWorkspace,
+    expectedSessionId = selected(),
+    workspaceLabel?: string,
+  ) => {
     if (!alive || selected() !== expectedSessionId) return;
+    if (!platform.isTerminal) {
+      if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
+      const label =
+        workspaceLabel ??
+        (workspace.kind === 'session'
+          ? (handle()?.workspace() ?? '')
+          : (workspace.selection.segments.at(-1) ?? ''));
+      if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
+      if (expectedSessionId === null && pendingWorkspace()) {
+        try {
+          await readPendingSession();
+        } catch (reason) {
+          report(reason);
+          return;
+        }
+        if (pendingCreated()) {
+          report(
+            new UiError(
+              'This conversation was already created. Finish sending it before changing workspaces.',
+            ),
+          );
+          return;
+        }
+        updatePending({ workspace, workspaceLabel: label });
+        pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+        pendingModelInstance.set(null);
+        overlay.set(null);
+        focusComposer();
+        return;
+      }
+      if (
+        pendingWorkspace() &&
+        (pendingText() ||
+          pendingFiles().length ||
+          pendingCreated() ||
+          pendingAccess() !== null ||
+          pendingRequests() !== null ||
+          pendingModelChosen())
+      ) {
+        overlay.set(null);
+        focusComposer();
+        return;
+      }
+      replacePending({
+        workspace,
+        workspaceLabel: label,
+        text: '',
+        backend: null,
+        access: null,
+        requests: null,
+        mode: 'agent',
+        modelChosen: false,
+        files: [],
+        target: null,
+        revision: 0,
+      });
+      pendingDraftGeneration.set(pendingDraftGeneration() + 1);
+      const generation = ++pendingDefaultEpoch;
+      pendingPicker.set(false);
+      pendingModelGeneration += 1;
+      pendingModelDetails.set({
+        kind: 'unavailable',
+        message: uiMessage('Choose a model.'),
+      });
+      pendingModelInstance.set(null);
+      pendingDefaultRead = host
+        .query('settings', 'connections', { kind: 'start' })
+        .then((page) => {
+          if (
+            !alive ||
+            pendingDefaultEpoch !== generation ||
+            pendingWorkspace() === null ||
+            pendingBackend() ||
+            page.kind !== 'ready' ||
+            !page.defaultTarget
+          )
+            return;
+          updatePending({
+            backend: { ...page.defaultTarget, thinkingLevel: null },
+          });
+          return pendingModel.refreshModel();
+        })
+        .catch(report);
+      overlay.set(null);
+      focusComposer();
+      return;
+    }
     const source = {
       sessionId: expectedSessionId,
       instance: overlay()?.instance ?? null,
@@ -473,9 +775,13 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const newConversation = (sessionId: string | null) => {
     if (!alive || selected() !== sessionId) return;
     if (sessionId) void create({ kind: 'session', sessionId }, sessionId);
+    else if (pendingWorkspace()) focusComposer();
     else open({ kind: 'workspaces', sessionId });
   };
   const removeSelected = async (sessionId: string) => {
+    if (pendingCreated() === sessionId) {
+      updatePending({ target: null });
+    }
     const scope = browsing.scope();
     if (scope.kind === 'workspace' && scope.sessionId === sessionId)
       browsing.setScope({ kind: 'all' });
@@ -488,7 +794,285 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   // Text a fork made to edit a message or regenerate a reply puts in its draft (and sends),
   // taken once by its Conversation.
-  const prefills = new Map<string, { text: string; send: boolean }>();
+  const prefills = new Map<
+    string,
+    { text: string; send: boolean; files?: StagedFile[]; first?: boolean }
+  >();
+  const stagePending = (
+    read: () => Promise<{ files: StagedFile[]; text?: string | null }>,
+    onText?: (text: string) => void,
+  ) => {
+    const workspace = pendingWorkspace();
+    if (!workspace || pendingFileBusy() || pendingSending()) return;
+    const intake = read()
+      .then(async ({ files, text }) => {
+        if (!alive || pendingWorkspace() !== workspace) {
+          for (const file of files) file.dispose();
+          return;
+        }
+        updatePending({
+          files: [
+            ...pendingFiles(),
+            ...files.map((file) => {
+              const metadata = file.metadata() as {
+                name: string;
+                bytes: number;
+              };
+              return {
+                id: file.id,
+                name: metadata.name,
+                bytes: metadata.bytes,
+                file,
+              };
+            }),
+          ],
+        });
+        if (text) onText?.(text);
+        pendingPicker.set(false);
+        if (selected() === null && overlay() === null && (shell()?.visible() ?? false))
+          focusComposer();
+      })
+      .catch(report)
+      .finally(() => {
+        if (alive) pendingIntake.set(null);
+      });
+    pendingIntake.set(intake);
+  };
+  const pendingComposer = computed(() => {
+    const generation = pendingDraftGeneration();
+    const workspace = pendingWorkspace();
+    const owns = () =>
+      alive &&
+      selected() === null &&
+      pendingWorkspace() === workspace &&
+      pendingDraftGeneration() === generation;
+    const confirmation = () => `${generation}/${pending()?.revision ?? 0}`;
+    return {
+      id: `pending/${generation}`,
+      draft: pendingText,
+      workspace: pendingWorkspaceLabel,
+      permissions: {
+        id: `pending/${generation}`,
+        access: pendingAccess,
+        requestPermissions: pendingRequests,
+        pending: pendingSending,
+        selectAccess: (access: AgentWorkspaceAccess) => {
+          if (owns() && !pendingSending() && pendingAccess() !== access) {
+            updatePending({ access });
+          }
+        },
+        selectRequests: (requests: boolean) => {
+          if (owns() && !pendingSending() && pendingRequests() !== requests) {
+            updatePending({ requests });
+          }
+        },
+        mode: () => (plansEnabled() === false ? null : pendingMode()),
+        selectMode: (mode: CollaborationMode) => {
+          if (owns() && !pendingSending() && pendingMode() !== mode) {
+            updatePending({ mode });
+          }
+        },
+      },
+      changeDraft: (text: string) => {
+        if (owns() && pendingText() !== text) {
+          updatePending({ text });
+        }
+      },
+      confirmation,
+      sending: pendingSending,
+      ready: () => !pendingCreateUncertain() && !pendingFileBusy(),
+      files: pendingFiles,
+      picking: pendingPicker,
+      openPicker: (open: boolean) => {
+        if (owns()) pendingPicker.set(open);
+      },
+      removeFile: (id: string) => {
+        if (!owns() || pendingSending()) return;
+        const removed = pendingFiles().find((file) => file.id === id);
+        if (!removed) return;
+        updatePending({
+          files: pendingFiles().filter((file) => file.id !== id),
+        });
+        removed.file.dispose();
+      },
+      selectFiles(files: string[]) {
+        if (owns() && files.length)
+          stagePending(async () => ({ files: await host.stageFiles(files) }));
+      },
+      pasteClipboard(onText: (text: string) => void) {
+        if (owns())
+          stagePending(async () => {
+            const selection = await host.stageClipboard();
+            try {
+              return { files: selection.files(), text: selection.text };
+            } finally {
+              selection.dispose();
+            }
+          }, onText);
+      },
+      reportError: report,
+      submit(text: string, expected?: string) {
+        const workspace = pendingWorkspace();
+        const staged = pendingFiles();
+        const files = staged.map((item) => item.file);
+        const access = pendingAccess();
+        const requests = pendingRequests();
+        const mode = pendingMode();
+        if (
+          !owns() ||
+          !workspace ||
+          text !== pendingText() ||
+          (expected !== undefined && expected !== confirmation()) ||
+          (!text.trim() && files.length === 0) ||
+          pendingSending() ||
+          pendingFileBusy() ||
+          pendingCreateUncertain() ||
+          selected() !== null
+        )
+          return;
+        pendingSending.set(true);
+        void (async () => {
+          try {
+            error.set('');
+            const requireUnchangedDraft = () => {
+              if (pendingText() !== text)
+                throw new UiError(
+                  'The draft changed before confirmation. Send again to confirm it.',
+                );
+            };
+            await pendingDefaultRead;
+            if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
+            requireUnchangedDraft();
+            const backend = pendingBackend();
+            if (!backend) {
+              pendingModelInstance.set(++overlayInstance);
+              return;
+            }
+            await pendingModel.refreshModel();
+            if (!alive || selected() !== null || pendingWorkspace() !== workspace) return;
+            requireUnchangedDraft();
+            if (pendingBackend() !== backend || pendingModelDetails().kind !== 'ready')
+              throw new UiError('Model unavailable: {model}. Choose another model.', {
+                model: backend.modelId,
+              });
+            let id = pendingCreated();
+            let sendFirst = true;
+            if (id) {
+              const previous = await readPendingSession();
+              id = pendingCreated();
+              if (id && previous) {
+                const history = await host.query('agent', 'history', {
+                  sessionId: id,
+                  through: previous.through,
+                  position: { kind: 'start' },
+                  view: 'conversation',
+                });
+                sendFirst = !history.chunks.some((row) => row.role === 'user');
+              }
+            }
+            const reusingSession = id !== null;
+            if (!id) {
+              const result = await control('create', {
+                title: tr('New conversation'),
+                automaticTitle: true,
+                labels: [],
+                workspace,
+              });
+              if (result.kind !== 'created')
+                throw new UiError('Conversation creation rejected: {reason}', {
+                  reason: result.reason ?? result.kind,
+                });
+              id = result.session.id as string;
+            }
+            requireUnchangedDraft();
+            if (reusingSession || access !== null || requests !== null || mode !== 'agent') {
+              if (
+                !controlsKnown() ||
+                controls().some(
+                  (original) => original.sessionId === id && original.method === 'metadata',
+                )
+              )
+                throw new UiError('Syncing changes…');
+              const observed = await host.query('agent', 'observe', {
+                sessionId: id,
+              });
+              const session = observed.session;
+              const settings = {
+                access: access ?? session.permissions.access,
+                requestPermissions: requests ?? session.permissions.requestPermissions,
+              };
+              const permissionsChanged =
+                settings.access !== session.permissions.access ||
+                settings.requestPermissions !== session.permissions.requestPermissions;
+              const modeChanged = mode !== (session.collaborationMode ?? 'agent');
+              if (permissionsChanged || modeChanged) {
+                const changed = await control('metadata', {
+                  sessionId: id,
+                  expectedRevision: session.revision,
+                  title: session.title,
+                  labels: session.labels,
+                  ...(permissionsChanged ? { permissions: { settings, revokeGrants: true } } : {}),
+                  ...(modeChanged ? { collaborationMode: mode } : {}),
+                });
+                if (
+                  changed.kind === 'rejected' &&
+                  modeChanged &&
+                  changed.reason === 'tools_unavailable'
+                ) {
+                  // This Agent does not plan: say so once and send in agent mode next time.
+                  plansEnabled.set(false);
+                  updatePending({ mode: 'agent' });
+                  throw new UiError('Plans are unavailable in this Agent.');
+                }
+                if (changed.kind !== 'committed')
+                  throw new UiError(
+                    permissionsChanged
+                      ? 'Sandbox settings rejected: {reason}'
+                      : 'Planning mode could not start: {reason}',
+                    {
+                      reason: changed.reason ?? changed.kind,
+                    },
+                  );
+              }
+            }
+            const choice = await control('selectBackend', {
+              sessionId: id,
+              backend: { kind: 'model', ...backend },
+            });
+            if (choice.kind !== 'committed')
+              throw new UiError('Model selection rejected: {reason}', {
+                reason: choice.reason ?? choice.kind,
+              });
+            requireUnchangedDraft();
+            const stored = await loadDraft(host.session(id));
+            if (stored.revision > 0)
+              throw new UiError(
+                'The conversation draft changed. Open the conversation to review it.',
+              );
+            prefills.set(id, { text, send: sendFirst, files, first: true });
+            pendingHandoff.set(id);
+            const switched = await switchSession(id, {
+              sessionId: null,
+              instance: null,
+            });
+            if (switched) {
+              await browsing.refresh();
+            } else {
+              prefills.delete(id);
+              pendingHandoff.set(null);
+            }
+          } catch (reason) {
+            report(reason);
+          } finally {
+            if (alive) pendingSending.set(false);
+          }
+        })();
+      },
+    };
+  });
+  cleanup(() => {
+    prefills.clear();
+  });
   const changeBrowsedSession = async (
     action: SessionAction,
     origin: string | null,
@@ -516,6 +1100,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       if (prefill !== undefined) prefills.set(result.session.id, prefill);
       opened = await switchSession(result.session.id, source);
       if (!opened) prefills.delete(result.session.id);
+      else
+        forkNotice.set({
+          id: result.session.id,
+          source: action.session.id,
+          title: action.session.title || tr('Untitled conversation'),
+        });
     } else if (handle()?.sessionId === result.session.id) await handle()!.refresh();
     await browsing.refresh();
     return opened;
@@ -533,6 +1123,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       !(shell()?.visible() ?? false) ||
       overlay() ||
       !owner ||
+      !owner.connected() ||
       selected() !== sessionId ||
       owner.sessionId !== sessionId ||
       owner.invocation() !== invocationId
@@ -562,14 +1153,65 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   const commandSessions = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'search', sessionId: context.sessionId });
   };
+  const commandFind = (context: ActionContext) => {
+    // With no conversation open, Find searches them all.
+    if (closeCommand(context))
+      open({
+        kind: 'search',
+        sessionId: context.sessionId,
+        within: handle() !== null,
+      });
+  };
   const commandNew = (context: ActionContext) => {
     if (closeCommand(context)) newConversation(context.sessionId);
+  };
+  // The Bot is one persistent Session per installation; the first open creates it
+  // in the current conversation's workspace, later opens return the same Session.
+  // `undefined` until the Host has answered; then the Bot Session or `null` for none.
+  const botSession = signal<string | null | undefined>(undefined);
+  const refreshBotSession = async () => {
+    const head = await host.query('agent', 'botOutbox', { limit: 0 });
+    if (alive) botSession.set(head.sessionId ?? null);
+    return head.sessionId ?? null;
+  };
+  void refreshBotSession().catch(() => {});
+  const commandBot = (context: ActionContext) => {
+    const sessionId = context.sessionId;
+    if (!closeCommand(context)) return;
+    void (async () => {
+      try {
+        error.set('');
+        // An existing Bot opens directly; only its first open needs a workspace.
+        const existing = botSession() ?? (await refreshBotSession().catch(() => null));
+        if (existing !== null) {
+          await switchSession(existing, { sessionId, instance: null });
+          return;
+        }
+        // The Host picks the workspace of the Bot's first open itself.
+        const result = await control('openBot', {});
+        if (!alive) return;
+        if (result.kind !== 'opened')
+          throw new UiError('Bot could not be opened: {reason}', {
+            reason: result.reason ?? result.kind,
+          });
+        botSession.set(result.sessionId);
+        await switchSession(result.sessionId, { sessionId, instance: null });
+        if (result.created) await browsing.refresh();
+      } catch (reason) {
+        report(reason);
+      }
+    })();
   };
   const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
   };
   const commandModels = (context: ActionContext) => {
-    if (closeCommand(context)) open({ kind: 'models', sessionId: context.sessionId });
+    if (!closeCommand(context)) return;
+    if (context.sessionId === null && pendingWorkspace()) {
+      pendingModelInstance.set(pendingModelInstance() === null ? ++overlayInstance : null);
+      return;
+    }
+    open({ kind: 'models', sessionId: context.sessionId });
   };
   const commandSettings = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'settings', sessionId: context.sessionId });
@@ -580,7 +1222,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!alive || selected() !== sessionId || overlay()) return;
-    await workspace()?.openLink(sessionId, target, restoreFocus);
+    try {
+      await requireWorkspace().openLink(sessionId, target, restoreFocus);
+    } catch (reason) {
+      report(reason);
+    }
   };
   const commandLatest = (context: ActionContext & { turnId: string | null }) => {
     if (closeCommand(context)) handle()?.jumpLatest(context.turnId);
@@ -592,7 +1238,175 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     if (closeCommand(context)) handle()?.focusActivity(context.turnId);
   };
   const commandStop = (context: ActionContext & { invocationId: string | null }) => {
-    if (closeCommand(context)) void handle()?.stop(context.invocationId).catch(report);
+    if (closeCommand(context) && handle()?.connected())
+      void handle()?.stop(context.invocationId).catch(report);
+  };
+  const commandPlan = (context: ActionContext) => {
+    if (!closeCommand(context)) return;
+    const owner = handle();
+    if (owner) {
+      void owner.plan.selectMode(owner.plan.mode() === 'plan' ? 'agent' : 'plan');
+      return;
+    }
+    const draft = pendingComposer();
+    draft.permissions.selectMode(pendingMode() === 'plan' ? 'agent' : 'plan');
+  };
+  const pendingGoalError = createText();
+  const goalCreating = signal(false);
+  const pendingGoal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal = {
+    view: () => ({ enabled: true, current: null }),
+    pending: () => goalCreating() || pendingFileBusy(),
+    error: pendingGoalError,
+    change: async () => false,
+    async create(objective, tokenBudget) {
+      const workspace = pendingWorkspace();
+      if (
+        !workspace ||
+        goalCreating() ||
+        pendingSending() ||
+        pendingFileBusy() ||
+        pendingCreateUncertain()
+      )
+        return false;
+      const generation = pendingDraftGeneration();
+      const draft = pendingText();
+      const files = pendingFiles().map((item) => item.file);
+      const access = pendingAccess();
+      const requests = pendingRequests();
+      const owns = () =>
+        alive &&
+        selected() === null &&
+        pendingWorkspace() === workspace &&
+        pendingDraftGeneration() === generation;
+      const requireOwner = () => {
+        if (!owns()) throw new UiError('Conversation navigation was cancelled.');
+      };
+      goalCreating.set(true);
+      pendingSending.set(true);
+      pendingGoalError.set('');
+      try {
+        await pendingDefaultRead;
+        requireOwner();
+        const backend = pendingBackend();
+        if (!backend) throw new UiError('Choose a model.');
+        await pendingModel.refreshModel();
+        requireOwner();
+        const model = pendingModelDetails();
+        if (pendingBackend() !== backend || model.kind !== 'ready')
+          throw new UiError('Choose a model.');
+        let id = pendingCreated();
+        if (!id) {
+          const result = await control('create', {
+            title: tr('New conversation'),
+            automaticTitle: true,
+            labels: [],
+            workspace,
+          });
+          if (result.kind !== 'created') {
+            console.warn('Goal conversation creation rejected', result);
+            throw new UiError('This action could not be completed.');
+          }
+          id = result.session.id as string;
+        }
+        requireOwner();
+        const session = (await host.query('agent', 'observe', { sessionId: id })).session;
+        if (access !== null || requests !== null) {
+          const changed = await control('metadata', {
+            sessionId: id,
+            expectedRevision: session.revision,
+            title: session.title,
+            labels: session.labels,
+            permissions: {
+              settings: {
+                access: access ?? session.permissions.access,
+                requestPermissions: requests ?? session.permissions.requestPermissions,
+              },
+              revokeGrants: true,
+            },
+          });
+          if (changed.kind !== 'committed')
+            throw new UiError('This action could not be completed.');
+        }
+        requireOwner();
+        const chosen = await control('selectBackend', {
+          sessionId: id,
+          backend: { kind: 'model', ...backend },
+        });
+        if (chosen.kind !== 'committed') {
+          console.warn('Goal model selection rejected', chosen);
+          throw new UiError('This action could not be completed.');
+        }
+        const observed = (await host.query('agent', 'observe', { sessionId: id })).session;
+        requireOwner();
+        const prior = await host.query('agent', 'goal', { sessionId: id });
+        if (
+          prior.current &&
+          (prior.current.objective !== objective || prior.current.tokenBudget !== tokenBudget)
+        )
+          throw new UiError('Finish or cancel the current Goal before starting another.');
+        if (!prior.current) {
+          const created = await control('changeGoal', {
+            sessionId: id,
+            kind: 'create',
+            objective,
+            tokenBudget,
+            start: true,
+            approval: {
+              target: {
+                sessionId: id,
+                workspace: observed.workspace,
+                permissions: observed.permissions,
+                boundaryRevision: observed.boundaryRevision,
+                binding: observed.binding,
+              },
+              model: model.choice.selection,
+              thinkingLevel: backend.thinkingLevel ?? null,
+            },
+          });
+          if (created.kind === 'conflict')
+            throw new UiError('The Goal changed. Review it and try again.');
+          if (created.kind === 'rejected') throw new UiError(goalRejection(created.reason));
+        }
+        requireOwner();
+        const text = /^\s*\/goal(?:\s|$)/u.test(draft) ? '' : draft;
+        prefills.set(id, { text, send: false, files, first: true });
+        pendingHandoff.set(id);
+        const switched = await switchSession(id, {
+          sessionId: null,
+          instance: overlay()?.instance ?? null,
+        });
+        if (!switched) {
+          prefills.delete(id);
+          pendingHandoff.set(null);
+          return false;
+        }
+        await browsing.refresh();
+        return true;
+      } catch (reason) {
+        console.warn('Goal start failed', reason);
+        if (owns()) pendingGoalError.set(errorText(reason));
+        return false;
+      } finally {
+        if (alive) {
+          goalCreating.set(false);
+          pendingSending.set(false);
+        }
+      }
+    },
+  };
+  const commandGoal = async (context: ActionContext, objective?: string) => {
+    if (!closeCommand(context)) return false;
+    const goal = handle()?.goal ?? (pendingWorkspace() ? pendingGoal : null);
+    if (!goal) return false;
+    if (objective?.trim()) {
+      const owner = handle();
+      const accepted = await goal.create(objective.trim(), null);
+      if (!accepted && alive && selected() === context.sessionId && handle() === owner)
+        open({ kind: 'goal', sessionId: context.sessionId, goal, objective: objective.trim() });
+      return accepted;
+    }
+    open({ kind: 'goal', sessionId: selected(), goal });
+    return true;
   };
   const commandCompact = async (context: ActionContext, prompt?: string) => {
     if (!closeCommand(context)) return false;
@@ -646,37 +1460,67 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       );
     if (command)
       void runtime
-        .invoke(command, { sessionId: selected(), argument: step > 0 ? '+1' : String(step) })
+        .invoke(command, {
+          sessionId: selected(),
+          argument: step > 0 ? '+1' : String(step),
+        })
         .catch(report);
   };
-  keymap.bind('mod+p', () => invokeOwn('commands'), { when: 'always' });
-  keymap.bind('mod+o', () => invokeOwn('sessions'), { when: 'always' });
-  if (ownTitleBar) keymap.bind('mod+f', () => invokeOwn('sessions'), { when: 'always' });
-  keymap.bind('mod+g', () => invokeOwn('models'), { when: 'always' });
-  keymap.bind('mod+n', () => invokeOwn('new'), { when: 'always' });
-  keymap.bind('mod+l', () => invokeOwn('latest'), { when: 'always' });
-  keymap.bind('alt+up', () => invokeOwn('history-focus'), { when: 'always' });
-  keymap.bind('alt+down', () => invokeOwn('activity-focus'), {
-    when: 'always',
+  // A side pane binds its conversation's keys within itself, so they take
+  // over from the main pane's only while focus is there.
+  const unbindKeys: (() => void)[] = [];
+  cleanup(() => {
+    for (const unbind of unbindKeys.splice(0)) unbind();
   });
-  windowTitle(() => handle()?.title() ?? null);
-  watchNotifications({
-    sessions: browsing.sessions,
-    foreground,
-    open: (sessionId) => void selectBrowsed(sessionId, selected()),
-  });
+  const bindKeys = (within?: ViewRef) => {
+    const options = within ? { when: 'always' as const, within } : { when: 'always' as const };
+    unbindKeys.push(keymap.bind('mod+p', () => invokeOwn('commands'), options));
+    if (ownTitleBar) unbindKeys.push(keymap.bind('mod+f', () => invokeOwn('find'), options));
+    unbindKeys.push(keymap.bind('mod+g', () => invokeOwn('models'), options));
+    unbindKeys.push(keymap.bind('mod+l', () => invokeOwn('latest'), options));
+    unbindKeys.push(keymap.bind('alt+up', () => invokeOwn('history-focus'), options));
+    unbindKeys.push(keymap.bind('alt+down', () => invokeOwn('activity-focus'), options));
+    if (within) return;
+    unbindKeys.push(keymap.bind('mod+o', () => invokeOwn('sessions'), options));
+    unbindKeys.push(keymap.bind('mod+n', () => invokeOwn('new'), options));
+    if (ownTitleBar) {
+      unbindKeys.push(keymap.bind('mod+shift+]', () => stepSession(1), options));
+      unbindKeys.push(keymap.bind('mod+shift+[', () => stepSession(-1), options));
+    }
+  };
+  let sideKeys: ViewRef | undefined;
+  let paneRoot: ViewRef | undefined;
+  if (!side) {
+    bindKeys();
+    windowTitle(() => handle()?.title() ?? null);
+    watchNotifications({
+      sessions: browsing.sessions,
+      foreground,
+      open: (sessionId) => void selectBrowsed(sessionId, selected()),
+    });
+  }
   const recoverControls = async () => {
     if (recovering()) return;
     recovering.set(true);
     error.set('');
+    status.set('');
+    let responseConfirmed = false;
+    let failed = false;
     try {
       const originals = await host.pendingControls();
-      let responseConfirmed = false;
       for (const original of originals) {
-        if (!original.reference) continue;
         try {
           const reply = await host.recoverControl(original.id);
           if (!alive) return;
+          if (reply?.receipt?.kind === 'recorded' && reply.receipt.outcome?.kind === 'unresolved')
+            continue;
+          if (
+            original.method === 'create' &&
+            original.id === pendingCreateAttempt() &&
+            reply?.receipt?.kind === 'recorded' &&
+            reply.receipt.outcome?.kind === 'unknown'
+          )
+            updatePending({ target: null });
           const result = returned(reply);
           if (
             original.method === 'respond' &&
@@ -705,7 +1549,18 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               id: result.session.id,
               title: result.session.title,
             });
-          if (original.method === 'create' && result.kind === 'created') {
+          if (original.method === 'openBot' && result.kind === 'opened') {
+            botSession.set(result.sessionId);
+            await switchSession(result.sessionId);
+          }
+          if (original.method === 'create' && original.id === pendingCreateAttempt()) {
+            updatePending({
+              target:
+                result.kind === 'created'
+                  ? { kind: 'session', sessionId: result.session.id }
+                  : null,
+            });
+          } else if (original.method === 'create' && result.kind === 'created') {
             await switchSession(result.session.id);
             if (selected() === result.session.id && !result.session.backend)
               open({
@@ -715,34 +1570,44 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               });
           }
         } catch (reason) {
+          if (
+            original.method === 'create' &&
+            original.id === pendingCreateAttempt() &&
+            errorMessage(reason) === 'client operation ended before dispatch'
+          )
+            updatePending({ target: null });
+          failed = true;
           report(reason);
         }
       }
       const owner = handle();
       if (owner && selected() === owner.sessionId) await owner.refresh();
       await browsing.refresh();
-      if (!responseConfirmed) status.set(uiMessage('Original actions checked.'));
     } catch (reason) {
+      failed = true;
       report(reason);
     } finally {
-      await refreshControls().catch(report);
-      if (alive) recovering.set(false);
+      await refreshControls().catch((reason) => {
+        failed = true;
+        controlsKnown.set(false);
+        report(reason);
+      });
+      if (alive) {
+        recovering.set(false);
+        if (!failed && !responseConfirmed && controls().length === 0) status.set('');
+      }
     }
   };
-  const openRecoveredFork = ({ id, origin }: { id: string; origin: string | null }) =>
+  const openBrowsed = ({ id, origin }: { id: string; origin: string | null }) =>
     selectBrowsed(id, origin);
-  const abandonControl = async (id: string) => {
-    try {
-      await host.abandonControl(id);
-      await refreshControls();
-    } catch (reason) {
-      report(reason);
-    }
-  };
   const previewImage = (image: ImagePreview) => {
     if (!alive || selected() !== image.source.read.sessionId || overlay()) return;
     browserFocus.set(false);
-    resources.openImage(image);
+    try {
+      requireWorkspace().openImage(image);
+    } catch (reason) {
+      report(reason);
+    }
   };
   const closeSidebar = () => {
     if (!alive || !(shell()?.visible() ?? false) || overlay()) return;
@@ -780,21 +1645,47 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     expanded: sidebarShown(),
     hidden: overlay()?.kind === 'sessions' && !foreground,
     toggle: inputAction(toggleSidebar, { sessionId, expanded: sidebarShown() }),
+    close: shell()?.closePane,
   });
   // The bindings above take the same keys first; the menu shows and offers them.
-  applicationMenu({
-    newConversation: () => invokeOwn('new'),
-    chooseWorkspace: () => invokeOwn('workspace'),
-    sessions: () => invokeOwn('browse'),
-    search: () => invokeOwn('sessions'),
-    commands: () => invokeOwn('commands'),
-    models: () => invokeOwn('models'),
-    latest: () => invokeOwn('latest'),
-    settings: () => invokeOwn('settings'),
-    sidebarShown,
-    toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
-    textSize: changeTextSize,
-  });
+  if (!side)
+    applicationMenu({
+      newConversation: () => invokeOwn('new'),
+      chooseWorkspace: () => invokeOwn('workspace'),
+      sessions: () => invokeOwn('browse'),
+      search: () => invokeOwn('sessions'),
+      find: () => window.command('find'),
+      commands: () => window.command('commands'),
+      models: () => window.command('models'),
+      latest: () => window.command('latest'),
+      nextSession: () => stepSession(1),
+      previousSession: () => stepSession(-1),
+      settings: () => invokeOwn('settings'),
+      sidebarShown,
+      toggleSidebar: () => toggleSidebar({ sessionId: selected(), expanded: sidebarShown() }),
+      textSize: changeTextSize,
+    });
+  // The conversation below (1) or above (-1) the open one in the session browser.
+  // Kept here so the browser's collapsed workspaces outlive its unmounting
+  // and stepping between conversations skips them as the browser does.
+  const collapsedGroups = signal<ReadonlySet<string>>(new Set());
+  const stepSession = (step: 1 | -1) => {
+    const current = overlay();
+    if (switching() || busy() || (current && current.kind !== 'sessions')) return;
+    const bot = botSession() ?? null;
+    const rows = browserOrder(
+      groupConversations(
+        browsing.sessions().filter((session) => session.id !== bot),
+        browsing.projects(),
+        false,
+      ),
+      collapsedGroups(),
+      selected(),
+    );
+    const index = rows.indexOf(selected() ?? '');
+    const next = rows[index === -1 ? 0 : index + step];
+    if (next && next !== selected()) void selectBrowsed(next, selected());
+  };
   const selectBrowsed = async (id: string, origin: string | null) => {
     const current = overlay();
     const instance = current?.kind === 'sessions' ? current.instance : null;
@@ -819,7 +1710,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     browserFocus.set(false);
     return true;
   };
+  const connectionLost = () => shell()?.connectionLost() ?? false;
   const browserProps: WorkspaceBrowserProps = {
+    connectionLost,
     docked: navigationDocked,
     browsing,
     selected,
@@ -833,11 +1726,19 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     },
     close: closeSidebar,
     selectSession: selectBrowsed,
-    changeSession: changeBrowsedSession,
+    changeSession: async (action, origin) => {
+      await changeBrowsedSession(action, origin);
+    },
     create,
     newConversation: (sessionId) => invokeCommand({ id: 'new', sessionId }),
+    openBot: (sessionId) => invokeCommand({ id: 'bot', sessionId }),
+    botSession,
     settings: (sessionId) => invokeCommand({ id: 'settings', sessionId }),
     search: (sessionId) => invokeCommand({ id: 'sessions', sessionId }),
+    canOpenBeside: () => !!shell()?.openBeside,
+    beside: () => shell()?.besideSessionIds?.() ?? [],
+    openBeside: (sessionId) => shell()?.openBeside?.(sessionId),
+    collapsedGroups,
   };
   let wasDocked = shell()?.sidebarDocked();
   let previousWidth = windowSize().width;
@@ -865,6 +1766,11 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     previousWidth = width;
   });
   void refreshControls().catch(report);
+  createPendingRecovery({
+    pending: () => !controlsKnown() || controls().length > 0,
+    blocked: () => recovering() || busy(),
+    recover: recoverControls,
+  });
   // Whether the Host has no model connection, read each time the composer is
   // shown again (back from Settings, too): the start pane then asks for one.
   const noConnections = signal(false);
@@ -956,6 +1862,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   );
   const sessionHandle: ConversationSessionHandle = {
     async leave() {
+      if (
+        (pendingSending() && pendingHandoff() === null) ||
+        pendingCreateUncertain() ||
+        (pendingHandoff() === selected() && pendingHandoff() !== null)
+      )
+        return false;
       const owner = handle();
       const origin = selected();
       const originalOverlay = overlay();
@@ -978,6 +1890,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
   };
   return {
     sessionId: selected,
+    focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
+    command: invokeOwn,
+    browsing,
     navigation(input: ConversationNavigationInput) {
       bind(input.shell);
       return <WorkspaceBrowser {...browserProps} />;
@@ -989,8 +1904,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
         context.configuration.workspace as UiTarget,
         workspaceViewContract,
         {
-          selected,
-          blocked: () => overlay() !== null || reloading() || !(shell()?.visible() ?? false),
+          sessions: window.sessions,
+          blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {
             return input.docked;
           },
@@ -1010,6 +1925,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
       return (
         <viewRuntimeContext.Provider value={runtime}>
           <View
+            ref={(node) => {
+              paneRoot = node;
+              if (!side || sideKeys === node) return;
+              sideKeys = node;
+              bindKeys(node);
+            }}
             onFileDrop={(event) => {
               fileDragging.set(false);
               dropFiles?.(event);
@@ -1034,16 +1955,44 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               {(id) => (
                 <Conversation
                   client={host.session(id())}
+                  connectionLost={connectionLost}
+                  botSession={botSession}
                   visible={() =>
                     selected() === id() && overlay() === null && (shell()?.visible() ?? false)
                   }
                   foreground={foreground}
                   control={control}
-                  fork={(action) => changeBrowsedSession(action, id())}
+                  continuationPending={() =>
+                    !controlsKnown() ||
+                    controls().some(
+                      (original) => original.method === 'resume' && original.sessionId === id(),
+                    )
+                  }
+                  fork={async (action) => {
+                    await changeBrowsedSession(action, id());
+                  }}
                   edit={(action, text, send) => changeBrowsedSession(action, id(), { text, send })}
-                  takePrefill={() => {
+                  takePrefill={(available: boolean) => {
                     const prefill = prefills.get(id()) ?? null;
                     prefills.delete(id());
+                    if (!available) {
+                      if (pendingHandoff() === id()) {
+                        pendingHandoff.set(null);
+                        pendingSending.set(false);
+                        void shell()!.openSession(null).catch(report);
+                      }
+                      if (prefill)
+                        report(
+                          new UiError(
+                            'The draft changed before confirmation. Send again to confirm it.',
+                          ),
+                        );
+                      return null;
+                    }
+                    if (pendingHandoff() === id()) {
+                      pending.set(null);
+                      pendingHandoff.set(null);
+                    }
                     return prefill;
                   }}
                   commands={inputAction(invokeCommand, {
@@ -1053,7 +2002,10 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   browser={() => browserHeader(id())}
                   files={
                     workspace()
-                      ? inputAction(invokeCommand, { id: 'files', sessionId: id() })
+                      ? inputAction(invokeCommand, {
+                          id: 'files',
+                          sessionId: id(),
+                        })
                       : undefined
                   }
                   filesOpener={(node) => resources.attachOpener(id(), node)}
@@ -1087,6 +2039,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               blocked={reloading}
               active={() => overlay() === null && !reloading() && (shell()?.visible() ?? false)}
               session={composerSession}
+              pending={() => (selected() === null && pendingWorkspace() ? pendingComposer() : null)}
               stopAction={stopAction}
               needsConnection={noConnections}
               request={
@@ -1099,11 +2052,6 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                       const owner = item();
                       return (
                         <View style={{ minHeight: 0, flexShrink: 1, gap: 8 }}>
-                          <ComputerAppControls
-                            sessionId={owner.sessionId}
-                            apps={owner.computerApps}
-                            control={control}
-                          />
                           <Each
                             of={owner.interactions().entries.slice(0, 1)}
                             key={(entry) => entry.requestId}
@@ -1114,7 +2062,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                                 requestId={entry().requestId}
                                 control={control}
                                 focusComposer={focusComposer}
-                                confirming={() => busy() || !controlsKnown()}
+                                confirming={() =>
+                                  connectionLost() ||
+                                  !owner.connected() ||
+                                  busy() ||
+                                  !controlsKnown()
+                                }
                               />
                             )}
                           </Each>
@@ -1122,8 +2075,58 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                       );
                     }}
                   </Each>
+                  <If when={!connectionLost() && status()}>
+                    <View
+                      style={{
+                        flexDirection: 'row',
+                        alignItems: 'center',
+                        gap: 8,
+                        paddingHorizontal: 12,
+                        paddingVertical: 4,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <Text
+                        style={[
+                          {
+                            ...bodyTextStyle,
+                            flex: 1,
+                            minWidth: 0,
+                            color: C.muted,
+                          },
+                          { userSelect: 'text' },
+                        ]}
+                      >
+                        {status()}
+                      </Text>
+                      <Button
+                        accessibilityLabel={tr('Dismiss action feedback')}
+                        onPress={inputAction(() => status.set(''), null)}
+                        style={{
+                          ...controlStyle,
+                          width: 32,
+                          height: 32,
+                          paddingHorizontal: 0,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Icon name="close" color={C.muted} />
+                      </Button>
+                    </View>
+                  </If>
                   <If
-                    when={error() || status() || working() || !controlsKnown() || controls().length}
+                    when={
+                      !connectionLost() &&
+                      (handle()?.connected() ?? true) &&
+                      (error() ||
+                        working() ||
+                        !controlsKnown() ||
+                        controls().length ||
+                        forkNotice()?.id === selected())
+                    }
                   >
                     <Scroll
                       accessibilityLabel={tr('Action feedback')}
@@ -1131,6 +2134,9 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                         minHeight: bodyTextStyle.lineHeight + 16,
                         flexShrink: 1,
                         backgroundColor: C.surface,
+                        // A card of its own on the desktop: square corners
+                        // flush on the composer's rounded top read as notches.
+                        ...(platform.isTerminal ? {} : { borderRadius: 8, marginBottom: 8 }),
                       }}
                       contentStyle={{
                         paddingHorizontal: 16,
@@ -1152,51 +2158,46 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                             : tr('Confirming action…')}
                         </Text>
                       </If>
-                      <If when={status()}>
-                        <Text
-                          style={[{ ...bodyTextStyle, color: C.muted }, { userSelect: 'text' }]}
+                      <If when={forkNotice()?.id === selected()}>
+                        <View
+                          style={{
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 8,
+                          }}
                         >
-                          {status()}
-                        </Text>
+                          <Icon name="fork" color={C.secondary} />
+                          <Text
+                            style={{
+                              ...bodyTextStyle,
+                              flex: 1,
+                              color: C.muted,
+                            }}
+                          >
+                            {tr(
+                              'This is a fork of {title}. The original conversation is unchanged.',
+                              { title: forkNotice()!.title },
+                            )}
+                          </Text>
+                          <Button
+                            onPress={inputAction(openBrowsed, {
+                              id: forkNotice()!.source,
+                              origin: selected(),
+                            })}
+                            style={controlStyle}
+                            hoverStyle={controlHoverStyle()}
+                            focusStyle={controlFocusStyle()}
+                          >
+                            <Text style={{ ...bodyTextStyle, color: C.accent }}>
+                              {tr('Back to original')}
+                            </Text>
+                          </Button>
+                        </View>
                       </If>
                       <If when={!controlsKnown() || controls().length > 0}>
-                        <Button
-                          disabled={recovering()}
-                          onPress={inputAction(recoverControls, null)}
-                          style={controlStyle}
-                          hoverStyle={controlHoverStyle()}
-                          focusStyle={controlFocusStyle()}
-                        >
-                          <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                            {recovering()
-                              ? tr('Reading original action receipts…')
-                              : controlsKnown()
-                                ? tr('Recover original actions ({count})', {
-                                    count: controls().length,
-                                  })
-                                : tr('Recheck original actions')}
-                          </Text>
-                        </Button>
-                        <Each
-                          of={controls().filter((original) => !original.reference)}
-                          key={(original) => original.id}
-                        >
-                          {(original) => (
-                            <Button
-                              onPress={inputAction(abandonControl, original().id)}
-                              style={controlStyle}
-                              hoverStyle={controlHoverStyle()}
-                              focusStyle={controlFocusStyle()}
-                            >
-                              <Text style={{ ...bodyTextStyle, color: C.warning }}>
-                                {tr('Abandon unconfirmed {method}', {
-                                  method: original().method,
-                                })}{' '}
-                                · {original().id.slice(0, 8)}
-                              </Text>
-                            </Button>
-                          )}
-                        </Each>
+                        <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                          {tr('Syncing changes…')}
+                        </Text>
                       </If>
                     </Scroll>
                   </If>
@@ -1207,30 +2208,60 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               }}
               commands={composerCommands}
               models={
-                <Each<ConversationHandle>
-                  of={handle() ? [handle()!] : []}
-                  key={(owner: ConversationHandle) => owner.sessionId}
-                >
-                  {(item) => {
-                    const owner = item();
-                    return (
-                      <ModelSelect
-                        owner={owner}
-                        instance={() => {
-                          const current = overlay();
-                          return current?.kind === 'models' && current.sessionId === owner.sessionId
-                            ? current.instance
-                            : null;
-                        }}
-                        current={() => selected() === owner.sessionId && handle() === owner}
-                        toggle={toggleModels}
-                        close={(instance) => closeModels(owner, instance)}
-                        manage={manageModels}
-                        select={(instance, backend) => chooseModel(owner, instance, backend)}
-                      />
-                    );
-                  }}
-                </Each>
+                <>
+                  <If when={selected() === null && pendingWorkspace() !== null}>
+                    <ModelSelect
+                      owner={pendingModel}
+                      instance={pendingModelInstance}
+                      current={() => alive && selected() === null && pendingWorkspace() !== null}
+                      toggle={() =>
+                        pendingModelInstance.set(
+                          pendingModelInstance() === null ? ++overlayInstance : null,
+                        )
+                      }
+                      close={(instance) => {
+                        if (pendingModelInstance() !== instance) return false;
+                        pendingModelInstance.set(null);
+                        return true;
+                      }}
+                      manage={({ instance, model }) => {
+                        if (pendingModelInstance() !== instance) return;
+                        pendingModelInstance.set(null);
+                        shell()?.openSettings(model);
+                      }}
+                      select={async (_instance, backend) => {
+                        if (pendingSending()) return;
+                        updatePending({ backend, modelChosen: true });
+                        await pendingModel.refreshModel();
+                      }}
+                    />
+                  </If>
+                  <Each<ConversationHandle>
+                    of={handle() ? [handle()!] : []}
+                    key={(owner: ConversationHandle) => owner.sessionId}
+                  >
+                    {(item) => {
+                      const owner = item();
+                      return (
+                        <ModelSelect
+                          owner={owner}
+                          instance={() => {
+                            const current = overlay();
+                            return current?.kind === 'models' &&
+                              current.sessionId === owner.sessionId
+                              ? current.instance
+                              : null;
+                          }}
+                          current={() => selected() === owner.sessionId && handle() === owner}
+                          toggle={toggleModels}
+                          close={(instance) => closeModels(owner, instance)}
+                          manage={manageModels}
+                          select={(instance, backend) => chooseModel(owner, instance, backend)}
+                        />
+                      );
+                    }}
+                  </Each>
+                </>
               }
               chooseWorkspace={inputAction(invokeCommand, {
                 id: 'workspace',
@@ -1243,7 +2274,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
             />
             <If when={recoveredFork()}>
               <Button
-                onPress={inputAction(openRecoveredFork, {
+                onPress={inputAction(openBrowsed, {
                   id: recoveredFork()!.id,
                   origin: selected(),
                 })}
@@ -1263,6 +2294,14 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
               {(value) => {
                 const current = value();
                 const close = inputAction(closeOverlay, current.instance);
+                if (current.kind === 'goal')
+                  return (
+                    <GoalDialog
+                      goal={current.goal}
+                      objective={current.objective}
+                      close={() => closeOverlay(current.instance)}
+                    />
+                  );
                 if (current.kind === 'compact')
                   return (
                     <CompactDialog
@@ -1275,6 +2314,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                   return (
                     <RecallSearch
                       origin={current.sessionId}
+                      within={current.within}
                       open={(origin, target) => openRecalled(current.instance, origin, target)}
                       close={() => closeOverlay(current.instance)}
                     />
@@ -1333,7 +2373,7 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
                           void owner.refresh().catch(report);
                         if (alive) void browsing.refresh().catch(report);
                       }}
-                      create={(workspace) => create(workspace, current.sessionId)}
+                      create={(workspace, label) => create(workspace, current.sessionId, label)}
                     />
                   );
                 return (
@@ -1355,10 +2395,25 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
     },
     enabled(id: string) {
       if (!shell() || reloading()) return false;
+      // A side pane holds one open conversation; navigation belongs to the main pane.
+      if (side && ['new', 'workspace', 'browse', 'sessions'].includes(id)) return false;
       if (id === 'files') return handle() !== null && workspace() !== null;
+      if (id === 'bot') return true;
+      if (id === 'goal') return handle()?.goal.view()?.enabled ?? pendingWorkspace() !== null;
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
-      if (id === 'stop') return handle()?.invocation() != null;
+      if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
+      if (id === 'plan') {
+        const owner = handle();
+        if (!owner) return pending() !== null && plansEnabled() !== false;
+        const phase = owner.plan.view()?.current.execution?.phase;
+        return (
+          !!owner.plan.view()?.enabled &&
+          owner.invocation() === null &&
+          phase !== 'awaiting_admission' &&
+          phase !== 'active'
+        );
+      }
       return true;
     },
     run(id: string, argument?: string) {
@@ -1373,8 +2428,12 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           return open({ kind: 'sessions', sessionId: selected() });
         case 'sessions':
           return commandSessions(source);
+        case 'find':
+          return commandFind(source);
         case 'new':
           return commandNew(source);
+        case 'bot':
+          return commandBot(source);
         case 'workspace':
           return commandWorkspace(source);
         case 'models':
@@ -1383,6 +2442,8 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
           return commandSettings(source);
         case 'files':
           return commandFiles(source);
+        case 'goal':
+          return commandGoal(source, argument);
         case 'compact':
           return commandCompact(source, argument);
         case 'latest':
@@ -1402,9 +2463,14 @@ export function createConversationUi(context: UiContext<UiHost, JSX.Element>, ho
             ...source,
             invocationId: handle()?.invocation() ?? null,
           });
+        case 'plan':
+          return commandPlan(source);
       }
     },
     async prepareReload() {
+      if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
+        throw new UiError('Finish or recover the pending action before reloading.');
+      await pendingIntake();
       const owner = handle();
       if (owner && !(await owner.flushDraft()))
         throw new UiError(
@@ -1422,6 +2488,7 @@ function projectComposerSession(
 ): ComposerSession<JSX.Element> {
   return {
     sessionId: owner.sessionId,
+    computerAccess: owner.computerAccess,
     completion: {
       files: (query, directory) =>
         host.subscribe('agent', 'fileCandidates', {
@@ -1438,9 +2505,16 @@ function projectComposerSession(
       pathLabel: host.pathLabel,
     },
     checklist: {
-      read: (offset) => host.query('agent', 'checklist', { sessionId: owner.sessionId, offset }),
+      read: (offset) =>
+        host.query('agent', 'checklist', {
+          sessionId: owner.sessionId,
+          offset,
+        }),
       watch: (offset) =>
-        host.subscribe('agent', 'watchChecklist', { sessionId: owner.sessionId, offset }),
+        host.subscribe('agent', 'watchChecklist', {
+          sessionId: owner.sessionId,
+          offset,
+        }),
     },
     queue: {
       sessionId: owner.queue.sessionId,
@@ -1457,6 +2531,8 @@ function projectComposerSession(
       error: owner.permissions.error,
       select: owner.permissions.select,
     },
+    plan: owner.plan,
+    goal: owner.goal,
     projectMcp: {
       proposal: owner.projectMcp.proposal,
       pending: owner.projectMcp.pending,
@@ -1468,6 +2544,7 @@ function projectComposerSession(
     draft: owner.draft,
     previewImage: owner.previewImage,
     editable: owner.editable,
+    loading: owner.loading,
     blockedReason: owner.blockedReason,
     backend: owner.backend,
     modelDetails: owner.modelDetails,
@@ -1476,17 +2553,18 @@ function projectComposerSession(
     empty: owner.empty,
     error: owner.error,
     notice: owner.notice,
-    recoverable: owner.recoverable,
     recovering: owner.recovering,
-    unconfirmed: owner.unconfirmed,
+    connected: owner.connected,
     invocation: owner.invocation,
     stopping: owner.stopping,
+    resumable: owner.resumable,
+    resuming: owner.resuming,
+    resume: owner.resume,
     metrics: owner.metrics,
+    contextUsage: owner.contextUsage,
     changeDraft: owner.changeDraft,
     submit: owner.submit,
     sendRendered: owner.sendRendered,
-    recover: owner.recover,
-    abandon: owner.abandon,
     stop: owner.stop,
   };
 }
