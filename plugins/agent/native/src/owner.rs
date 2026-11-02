@@ -26,6 +26,7 @@ use maka_agent_engine::{Engine, RunError, RunInput, RunWork};
 mod assistant;
 mod attachments;
 mod auxiliary;
+mod checkpoints;
 mod compaction;
 mod computer_apps;
 mod context;

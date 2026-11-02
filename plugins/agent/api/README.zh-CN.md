@@ -71,3 +71,23 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
 
 `metadata.pinned` 用于置顶或取消置顶会话，省略时保留原状态。Session 结果包含 `pinned`。会话目录先返回置顶会话，再沿用原有 ID 顺序，前后翻页游标仍受目录 revision 约束。新会话和新分支默认不置顶。
+
+## 历史 checkpoint 管理
+
+[Checkpoint 契约](src/contract/checkpoints.rs)通过现有 Agent endpoint 提供显式的 history-only 管理：
+
+| 方法 | 模式 | 返回内容 |
+| --- | --- | --- |
+| `previewHistoryCheckpoint` | Query | Session 历史闭包成员及实时 revision |
+| `publishHistoryCheckpoint` | Mutation | 持久发布状态及清理状态 |
+| `historyCheckpointReceipt` | Query | 原 Host 操作观测及领域发布回执 |
+| `historyCheckpointHead` | Query | 当前 checkpoint Head，或 null |
+| `readHistoryCheckpoint` | Subscription | 指定 retained revision 的原生历史包 |
+
+先预览，再携带 `confirmedSubtreeDigest` 和显式 `expectedRevision` 发布；只有创建第一个 Head 时预期为 null。摘要确认成员集合，不固定此前的内容 revision；Manifest 记录实际一致捕获的切点。繁忙源直接失败，不进入等待队列。日常消息不推进 checkpoint Head。发布经过普通 Host mutation 的准备与确认，确认前保存原 `RecoveryRef` **及原始输入**。结果未知时查询原操作，不换 ID 重发。CAS 冲突对原操作是终态，修改期望需要新操作。
+
+`historyCheckpointReceipt` 同时要求 endpoint 访问和原操作恢复权限。包括 Root 重开后的查询都只读原事实，不重新捕获当前历史。`publication.state.kind = published` 确认存档成功，即使 `operation.outcome` 仍为 `unresolved`、清理仍为 `unconfirmed`：二者来自不同事务。查询不会伪造 Host 完成，也不释放原操作的工作持有权。null 只表示未找到对应保留事实，不证明操作不可能执行。`interrupted` 表示捕获未完成，`prepared` 等待 Root 恢复，`unavailable` 需要排查，不能用原操作重新捕获。发布后的清理失败不撤销已提交 Head。
+
+读取时先获取 Head，再指定其精确 revision；Head 已移动则失败，不自动选择最新。历史成功回执不授予旧 revision 读取能力。已经受理的读取持有校验后的文件，随后 Head 移动仍可完成。流依次返回 `native_history_v1` 元数据、连续偏移的 Base64 `chunk`（解码后每块最多 32 KiB）及含完整对象 SHA-256、字节数的 `end`。内容是原生 `MAKA-SESSION` v2，不是 tar.gz，也不兼容旧 TypeScript checkpoint 格式。接收方须检查元数据、连续偏移、摘要、End、成功的 null 完成及清理结果；缺少 End 就是不完整传输。背压限制排队数据块，取消等待原读取工作排空，不接受调用方任意文件路径。
+
+这些方法属于管理入口，不是模型工具。Scope 来自已获准的 Agent 装配；模型来源调用和其他 namespace 被拒绝。存档只包含原生 Bundle 的历史闭包及关联 Artifact，不包含项目文件、完整 Memory/Goal 状态、执行授权或恢复激活。发布目前依赖 Root 存储的 Unix 实现，不支持的平台显式失败。不可变对象保守保留，自动触发、UI、retention/GC 和 Workspace 捕获另行推进。

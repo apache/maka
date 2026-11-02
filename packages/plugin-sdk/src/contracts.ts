@@ -7269,6 +7269,567 @@ export const contracts = {
           },
           resources: {},
         },
+        historyCheckpointHead: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentHistoryCheckpointHead',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentHistoryCheckpointHead',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
+        historyCheckpointReceipt: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointReceiptRead',
+            type: 'object',
+            properties: {
+              reference: {
+                $ref: '#/$defs/RecoveryRef',
+              },
+              input: {
+                description:
+                  'The exact original input. Changed input cannot select another publication.',
+                $ref: '#/$defs/AgentHistoryCheckpointPublish',
+              },
+            },
+            additionalProperties: false,
+            required: ['reference', 'input'],
+            $defs: {
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              AgentHistoryCheckpointPublish: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  expectedRevision: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  confirmedSubtreeDigest: {
+                    description:
+                      'Membership confirmation returned by previewHistoryCheckpoint, not a live revision.',
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'expectedRevision', 'confirmedSubtreeDigest'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointReceipt',
+            type: 'object',
+            properties: {
+              operation: {
+                description:
+                  'Original Host observation. Domain success never fabricates Host cleanup confirmation.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/OperationObservation',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              publication: {
+                description:
+                  'Authoritative domain result even when the Host response was lost.\nAbsence is not permission to recapture under a replacement operation.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentHistoryCheckpointPublication',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              OperationObservation: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/RecoveryRef',
+                  },
+                  outcome: {
+                    $ref: '#/$defs/OperationOutcome',
+                  },
+                  cleanup: {
+                    $ref: '#/$defs/OperationCleanup',
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'outcome', 'cleanup'],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              OperationOutcome: {
+                description:
+                  'Unresolved means no durable result is known, including after process loss.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unresolved',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'returned',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              AgentHistoryCheckpointPublication: {
+                type: 'object',
+                properties: {
+                  state: {
+                    $ref: '#/$defs/AgentHistoryCheckpointState',
+                  },
+                  cleanupPending: {
+                    description: 'Cleanup failure does not undo a successful publication.',
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['state', 'cleanupPending'],
+              },
+              AgentHistoryCheckpointState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capturing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'prepared',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'published',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
+                      actual: {
+                        type: ['string', 'null'],
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interrupted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
         historyLandmarks: {
           mode: 'query',
           input: {
@@ -13554,6 +14115,62 @@ export const contracts = {
           },
           resources: {},
         },
+        previewHistoryCheckpoint: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointInventory',
+            type: 'object',
+            properties: {
+              rootSessionId: {
+                type: 'string',
+              },
+              subtreeDigest: {
+                type: 'string',
+              },
+              sessions: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentHistoryCheckpointSession',
+                },
+              },
+            },
+            additionalProperties: false,
+            required: ['rootSessionId', 'subtreeDigest', 'sessions'],
+            $defs: {
+              AgentHistoryCheckpointSession: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+            },
+          },
+          resources: {},
+        },
         project: {
           mode: 'mutation',
           input: {
@@ -14215,6 +14832,159 @@ export const contracts = {
           },
           resources: {},
         },
+        publishHistoryCheckpoint: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointPublish',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              expectedRevision: {
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
+              confirmedSubtreeDigest: {
+                description:
+                  'Membership confirmation returned by previewHistoryCheckpoint, not a live revision.',
+                type: 'string',
+                pattern: '^[a-f0-9]{64}$',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedRevision', 'confirmedSubtreeDigest'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointPublication',
+            type: 'object',
+            properties: {
+              state: {
+                $ref: '#/$defs/AgentHistoryCheckpointState',
+              },
+              cleanupPending: {
+                description: 'Cleanup failure does not undo a successful publication.',
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['state', 'cleanupPending'],
+            $defs: {
+              AgentHistoryCheckpointState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capturing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'prepared',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'published',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
+                      actual: {
+                        type: ['string', 'null'],
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interrupted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
         queue: {
           mode: 'query',
           input: {
@@ -14663,6 +15433,176 @@ export const contracts = {
               AgentFileKind: {
                 type: 'string',
                 enum: ['file', 'directory', 'symlink', 'other'],
+              },
+            },
+          },
+          resources: {},
+        },
+        readHistoryCheckpoint: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              revision: {
+                description:
+                  'Only the exact currently retained revision is readable; no latest fallback.',
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'revision'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentHistoryCheckpointFrame',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentHistoryCheckpointFrame',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentHistoryCheckpointFrame: {
+                oneOf: [
+                  {
+                    description: 'The following bytes use the MAKA-SESSION v2 history format.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'native_history_v1',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                      inventory: {
+                        $ref: '#/$defs/AgentHistoryCheckpointInventory',
+                      },
+                      bundle: {
+                        $ref: '#/$defs/AgentHistoryCheckpointObject',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head', 'inventory', 'bundle'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'chunk',
+                      },
+                      offset: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                      data: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 43692,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'offset', 'data'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                      digest: {
+                        type: 'string',
+                      },
+                      bytes: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'digest', 'bytes'],
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              AgentHistoryCheckpointInventory: {
+                type: 'object',
+                properties: {
+                  rootSessionId: {
+                    type: 'string',
+                  },
+                  subtreeDigest: {
+                    type: 'string',
+                  },
+                  sessions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryCheckpointSession',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['rootSessionId', 'subtreeDigest', 'sessions'],
+              },
+              AgentHistoryCheckpointSession: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
               },
             },
           },

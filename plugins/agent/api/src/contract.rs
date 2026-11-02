@@ -36,6 +36,8 @@ mod context;
 pub use context::*;
 mod files;
 pub use files::*;
+mod checkpoints;
+pub use checkpoints::*;
 mod fork;
 pub use fork::*;
 mod git;
@@ -1769,6 +1771,26 @@ pub fn contract() -> Contract {
                 (
                     "create".into(),
                     method::<Create, Created>(MethodMode::Mutation),
+                ),
+                (
+                    "previewHistoryCheckpoint".into(),
+                    method::<SessionRead, HistoryCheckpointInventory>(MethodMode::Query),
+                ),
+                (
+                    "publishHistoryCheckpoint".into(),
+                    method::<HistoryCheckpointPublish, HistoryCheckpointPublication>(MethodMode::Mutation),
+                ),
+                (
+                    "historyCheckpointReceipt".into(),
+                    method::<HistoryCheckpointReceiptRead, HistoryCheckpointReceipt>(MethodMode::Query),
+                ),
+                (
+                    "historyCheckpointHead".into(),
+                    method::<SessionRead, Option<HistoryCheckpointHead>>(MethodMode::Query),
+                ),
+                (
+                    "readHistoryCheckpoint".into(),
+                    method::<HistoryCheckpointRead, Option<HistoryCheckpointFrame>>(MethodMode::Subscription),
                 ),
                 (
                     "fork".into(),
