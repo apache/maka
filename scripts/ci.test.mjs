@@ -130,17 +130,27 @@ test('reviewed notices and distributed dependency licenses select the product ve
 });
 
 test('embedded Markdown remains an input even when it belongs to another Cargo package', () => {
-  const plan = fixture()(['platform/computer-use/skills/maka-cua/SKILL.md']);
-  assert.equal(plan.suites.root.filter, 'all()');
-  assert.ok(plan.suites.bridge);
-  assert.ok(plan.suites.native);
-  assert.equal(plan.full, false);
+  for (const path of [
+    'platform/computer-use/skills/maka-cua/SKILL.md',
+    'platform/computer-use/src/api.md',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites.root);
+    assert.ok(plan.suites.bridge);
+    assert.ok(plan.suites.native);
+    assert.equal(plan.full, false);
+  }
 });
 
 test('documentation is cheap while shared and unknown source inputs request full validation', () => {
   const select = fixture();
-  const docs = select(['docs/guide.md', 'README.md']);
-  assert.deepEqual(Object.keys(docs.suites), ['tooling']);
+  const docs = select([
+    'docs/guide.md',
+    'README.md',
+    'platform/host/README.md',
+    'products/maka/workbench/README.md',
+  ]);
+  assert.deepEqual(Object.keys(docs.suites), []);
   assert.deepEqual(docs.workers, []);
   for (const path of [
     '.cargo/config.toml',
@@ -157,10 +167,9 @@ test('documentation is cheap while shared and unknown source inputs request full
 test('the aggregate accepts only successful planned work, including every selected matrix', () => {
   const full = createPlan({ root, revision: 'head' });
   const results = Object.fromEntries(
-    ['plan', 'tooling', 'suites', 'root-build', 'root-tests'].map((id) => [
-      id,
-      { result: 'success' },
-    ]),
+    ['plan', 'tooling', 'suites', 'root-build', 'root-tests', 'desktop-build', 'desktop-tests'].map(
+      (id) => [id, { result: 'success' }],
+    ),
   );
   checkResults(full, results, true);
   for (const id of Object.keys(results)) {
@@ -176,7 +185,8 @@ test('the aggregate accepts only successful planned work, including every select
   const narrow = fixture()(['tools/schema/src/main.rs']);
   checkResults(narrow, { ...results, 'root-tests': { result: 'skipped' } }, false);
   const docs = fixture()(['docs/guide.md']);
-  checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'success' } });
+  checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'skipped' } });
+  assert.throws(() => checkResults(docs, { plan: { result: 'failure' } }), /did not succeed/);
 });
 
 test('Mermaid dependency patches, UI fixtures and outline font inputs reach their consumers', () => {

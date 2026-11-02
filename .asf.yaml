@@ -59,18 +59,9 @@ github:
         required_approving_review_count: 1
       required_status_checks:
         strict: false
-        # test is the single unconditional job in .github/workflows/ci.yml. It
-        # runs the install-free contract checks on every change and installs the
-        # toolchain only for the validation its own planning step selects, so a
-        # documentation-only change still reports without paying for a build.
-        # Renaming the job there, adding a paths filter that stops ci.yml from
-        # running, or splitting the work back across jobs so this context comes
-        # from an aggregator that can be skipped, freezes every pull request:
-        # the check never reports and no committer can override it.
-        # A required context must report on every pull request, so a lane
-        # behind a paths filter cannot be listed here: the filter would keep
-        # the workflow from starting and the check would stay pending forever.
-        # windows_recovery is filtered and therefore deliberately absent.
+        # test always reports, including documentation-only changes. Keep path
+        # selection inside CI; workflow-level paths filters leave this required
+        # context pending and prevent merging documentation-only PRs.
         contexts:
           - test
 
