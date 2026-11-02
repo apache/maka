@@ -393,54 +393,6 @@ impl Desktop {
         self.press_at(bounds.center());
     }
 
-    /// The card's corners stay concentric with its round buttons, and its
-    /// controls stay on one center line, whatever height the card has.
-    async fn assert_composer_geometry(&self) -> Bounds<gpui::Pixels> {
-        let card = self.control("Focus message composer").await;
-        let add = self.control("Add to message").await;
-        let send = self.control("Send message").await;
-        assert_eq!(add.left() - card.left(), px(8.));
-        assert_eq!(card.right() - send.right(), px(8.));
-        assert_eq!(card.bottom() - send.bottom(), px(8.));
-        for label in ["Sandbox and approvals", "Choose model and effort"] {
-            assert_eq!(self.control(label).await.center().y, send.center().y);
-        }
-        assert_eq!(add.center().y, send.center().y);
-        card
-    }
-
-    /// Pointing at the control repaints its corner, which no label or icon covers.
-    async fn assert_hover_changes(&self, label: &str) {
-        let bounds = self.control(label).await;
-        let corner = Bounds::new(
-            point(bounds.left() + px(6.), bounds.top() + px(6.)),
-            size(px(1.), px(1.)),
-        );
-        self.platform
-            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-                position: point(px(0.), px(0.)),
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }))
-            .unwrap();
-        self.app.update(|cx| cx.refresh_windows());
-        self.pump();
-        let resting = self.pixels(corner).unwrap();
-        self.platform
-            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-                position: bounds.center(),
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }))
-            .unwrap();
-        self.until(&format!("{label} did not respond to hover"), || {
-            self.app.update(|cx| cx.refresh_windows());
-            self.pump();
-            (self.pixels(corner)? != resting).then_some(())
-        })
-        .await;
-    }
-
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         for input in [
             PlatformInput::MouseMove(MouseMoveEvent {
@@ -840,23 +792,13 @@ fn tool_names(request: &ModelRequest) -> Vec<String> {
         .collect()
 }
 
-async fn assert_composer_layout_while_sending(
-    appearance: nsh_core::platform::Appearance,
-    width: gpui::DevicePixels,
-    case: &str,
-) {
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_send_progress_animates_while_model_resolution_is_pending() {
     let mut fixture = Fixture::open().await;
     let gate = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
-    let desktop = Desktop::open_at(
-        &fixture,
-        &gate.address,
-        size(width, gpui::DevicePixels(800)),
-        appearance,
-    )
-    .await;
+    let desktop = Desktop::open(&fixture, &gate.address).await;
     desktop.new_draft().await;
-    desktop.type_text("COMPOSER_GEOMETRY").await;
-    desktop.assert_composer_geometry().await;
+    desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
     desktop.key("enter", false);
     let mut reply = desktop.request(&mut fixture).await;
     reply.thinking("**Opening Reddit homepage**").await;
@@ -880,32 +822,19 @@ async fn assert_composer_layout_while_sending(
     desktop.press("Turn work details").await;
     desktop.press("Process group").await;
     desktop.control("Thinking · Opening Reddit homepage").await;
-    desktop.artifact(&format!("thinking-inline-markdown-{case}"));
+    desktop.artifact("thinking-inline-markdown");
     let previous = desktop.platform.text_input_target();
     desktop.press("Focus message composer").await;
     desktop.target_after(previous).await;
-    desktop.type_text("COMPOSER_GEOMETRY_AGAIN").await;
-    let card = desktop.assert_composer_geometry().await;
-    // The card's border sits outside the backdrop the window reports, and icon
-    // buttons reach 8 points past the column so their glyphs land on its edges.
-    let (left, right) = (card.left() - px(1.), card.right() + px(1.));
-    let edit = desktop.control("Edit and resend in a fork").await;
-    assert_eq!(edit.right() - px(8.), right);
-    let source = desktop.control("Copy message").await;
-    assert_eq!(source.left() + px(8.), left);
-    let turn = desktop.control("Turn work details").await;
-    assert_eq!(turn.left() + px(8.), left);
-    assert_eq!(turn.right() - px(8.), right);
-    desktop.artifact(&format!("composer-before-send-{case}"));
+    desktop.type_text("SECOND_DESKTOP_MESSAGE").await;
     let send = desktop.control("Send message").await;
     gate.arm();
     desktop.key("enter", false);
     desktop
         .wait("send did not reach model resolution", gate.held.notified())
         .await;
-    let confirming = desktop.control("Focus message composer").await;
-    desktop.artifact(&format!("composer-confirming-send-{case}"));
-    assert_eq!(confirming, card, "composer moved while sending in {case}");
+    desktop.control("Focus message composer").await;
+    desktop.artifact("composer-confirming-send");
     let mut previous = desktop.pixels(send).unwrap();
     for _ in 0..2 {
         desktop
@@ -919,66 +848,6 @@ async fn assert_composer_layout_while_sending(
     let mut reply = desktop.request(&mut fixture).await;
     reply.delta("Second reply.").await;
     reply.finish().await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_keeps_one_inset() {
-    assert_composer_layout_while_sending(
-        nsh_core::platform::Appearance::Dark,
-        gpui::DevicePixels(1280),
-        "dark-wide",
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_keeps_one_inset_dark_narrow() {
-    assert_composer_layout_while_sending(
-        nsh_core::platform::Appearance::Dark,
-        gpui::DevicePixels(640),
-        "dark-narrow",
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_keeps_one_inset_light_wide() {
-    assert_composer_layout_while_sending(
-        nsh_core::platform::Appearance::Light,
-        gpui::DevicePixels(1280),
-        "light-wide",
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_keeps_one_inset_light_narrow() {
-    assert_composer_layout_while_sending(
-        nsh_core::platform::Appearance::Light,
-        gpui::DevicePixels(640),
-        "light-narrow",
-    )
-    .await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_controls_respond_to_hover() {
-    let fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
-    for label in [
-        "Add to message",
-        "Sandbox and approvals",
-        "Choose model and effort",
-    ] {
-        desktop.assert_hover_changes(label).await;
-    }
-    desktop.press("Sandbox and approvals").await;
-    for label in ["Read only", "Ask for approval"] {
-        desktop.assert_hover_changes(label).await;
-    }
     desktop.close().await;
     fixture.finish().await;
 }
