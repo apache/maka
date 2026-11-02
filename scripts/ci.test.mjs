@@ -130,11 +130,16 @@ test('reviewed notices and distributed dependency licenses select the product ve
 });
 
 test('embedded Markdown remains an input even when it belongs to another Cargo package', () => {
-  const plan = fixture()(['platform/computer-use/skills/maka-cua/SKILL.md']);
-  assert.equal(plan.suites.root.filter, 'all()');
-  assert.ok(plan.suites.bridge);
-  assert.ok(plan.suites.native);
-  assert.equal(plan.full, false);
+  for (const path of [
+    'platform/computer-use/skills/maka-cua/SKILL.md',
+    'platform/computer-use/src/api.md',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites.root);
+    assert.ok(plan.suites.bridge);
+    assert.ok(plan.suites.native);
+    assert.equal(plan.full, false);
+  }
 });
 
 test('documentation is cheap while shared and unknown source inputs request full validation', () => {

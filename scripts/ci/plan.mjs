@@ -45,8 +45,7 @@ export function documentation(path) {
   return (
     contains('docs', path) ||
     contains('website', path) ||
-    (/\.md$/.test(path) &&
-      !['skills', 'platform/computer-use/skills'].some((entry) => contains(entry, path)))
+    (/\.md$/.test(path) && (!path.includes('/') || /(^|\/)README(?:\.[^/]+)?\.md$/.test(path)))
   );
 }
 
