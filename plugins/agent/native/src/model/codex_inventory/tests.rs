@@ -272,6 +272,55 @@ async fn concurrent_requests_share_discovery_and_cancelled_waiter_does_not_cance
 }
 
 #[tokio::test]
+async fn replaced_login_waits_for_old_flight_then_refreshes_its_own_inventory() {
+    let f = Arc::new(Fixture::new().await);
+    let first = tokio::spawn({
+        let f = f.clone();
+        async move { f.refresh().await }
+    });
+    f.provider.started.acquire().await.unwrap().forget();
+    login(&f.store, &f.binding, "account-b").await;
+    let material = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let second = f.credentials.inventory.ensure(
+        f.store.clone(),
+        f.credentials.clone(),
+        f.definition.clone(),
+        f.binding.clone(),
+        &material,
+    );
+    tokio::pin!(second);
+    assert!(futures_util::poll!(&mut second).is_pending());
+    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+    f.provider.release.add_permits(2);
+    second.await;
+    first.await.unwrap();
+    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+    let proof = f.proof().await;
+    assert_eq!(proof.account_id.as_deref(), Some("account-b"));
+    assert_eq!(proof.compatibility.unwrap().comp_hash, "3000");
+    // A queued waiter can still hold the observation from before B's commit.
+    // It must reuse the newer completed revision rather than issue a third fetch.
+    f.provider.release.add_permits(1);
+    f.credentials
+        .inventory
+        .ensure(
+            f.store.clone(),
+            f.credentials.clone(),
+            f.definition.clone(),
+            f.binding.clone(),
+            &material,
+        )
+        .await;
+    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 2);
+    f.close().await;
+}
+
+#[tokio::test]
 async fn failed_refresh_backs_off_but_replaced_login_retries() {
     let f = Fixture::new().await;
     f.provider.fail.store(true, Ordering::SeqCst);

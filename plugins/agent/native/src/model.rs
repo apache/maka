@@ -272,19 +272,11 @@ impl Source {
             );
             unavailable()
         })?;
-        let mut request_context = self.accepted.context.clone();
-        if model.adapter == maka_providers::codex::ADAPTER {
-            request_context.codex = Some(
-                self.credentials
-                    .inventory
-                    .provenance(&material, &self.accepted.binding.model),
-            );
-        }
-        let credential = match material.credential {
+        let credential = match material.credential.as_ref() {
             Some(snapshot) if snapshot.credential().refresh_at.is_some() => Some(
                 self.credentials
                     .refresh
-                    .bind(snapshot)
+                    .bind(snapshot.clone())
                     .map_err(|_| RunError::InvalidInput("agent_authentication_unavailable".into()))?
                     .resolve_native(
                         self.accepted.provider.clone(),
@@ -312,6 +304,24 @@ impl Source {
             Some(snapshot) => Some(snapshot.credential().clone()),
             None => None,
         };
+        let mut request_context = self.accepted.context.clone();
+        if model.adapter == maka_providers::codex::ADAPTER {
+            let mut provenance = self
+                .credentials
+                .inventory
+                .provenance(&material, &self.accepted.binding.model);
+            let account_id = credential
+                .as_ref()
+                .map(maka_providers::codex::credential_account_id)
+                .transpose()
+                .map_err(|_| RunError::InvalidInput("agent_authentication_unavailable".into()))?
+                .flatten();
+            if provenance.account_id != account_id {
+                provenance.compatibility = None;
+            }
+            provenance.account_id = account_id;
+            request_context.codex = Some(provenance);
+        }
         let credentials = self
             .definition
             .authorize(connection(row), credential, self.session.clone())

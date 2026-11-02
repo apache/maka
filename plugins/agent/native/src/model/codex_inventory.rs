@@ -49,6 +49,7 @@ struct Entry {
 #[derive(Clone)]
 enum Outcome {
     Ready {
+        connection_revision: u64,
         fetched_at: u64,
         hashes: BTreeMap<String, String>,
     },
@@ -83,68 +84,90 @@ impl Authority {
         if self.shutdown.is_cancelled() {
             return;
         }
-        let identity = match identity(material) {
+        let scope = match identity(material) {
             Ok(identity) => identity,
             Err(reason) => {
                 tracing::warn!(stage = "codex_inventory_scope", cause = reason, connection_id = %binding.connection_id, "ChatGPT inventory identity unavailable");
                 return;
             }
         };
-        let mut receiver = {
-            let mut entries = self.entries.lock().unwrap();
-            if let Some(entry) = entries.get(&binding.connection_id)
-                && (entry.result.borrow().is_none()
-                    || (entry.identity == identity
-                        && reusable(&entry.result.borrow(), now(), Instant::now())
-                        && catalog_matches(entry, material, &binding.model)))
-            {
-                entry.result.clone()
-            } else {
-                let wall = now();
-                let monotonic = Instant::now();
-                entries.retain(|_, entry| reusable(&entry.result.borrow(), wall, monotonic));
-                if !entries.contains_key(&binding.connection_id) && entries.len() >= MAX_ENTRIES {
-                    tracing::warn!(
-                        stage = "codex_inventory_capacity",
-                        "ChatGPT inventory refresh capacity reached"
+        let mut refreshed = None;
+        loop {
+            let material = refreshed.as_ref().unwrap_or(material);
+            let (mut receiver, joined_other_identity) = {
+                let mut entries = self.entries.lock().unwrap();
+                if let Some(entry) = entries.get(&binding.connection_id)
+                    && (entry.result.borrow().is_none()
+                        || (entry.identity == scope
+                            && reusable(&entry.result.borrow(), now(), Instant::now())
+                            && catalog_matches(entry, material, &binding.model)))
+                {
+                    (entry.result.clone(), entry.identity != scope)
+                } else {
+                    let wall = now();
+                    let monotonic = Instant::now();
+                    entries.retain(|_, entry| reusable(&entry.result.borrow(), wall, monotonic));
+                    if !entries.contains_key(&binding.connection_id) && entries.len() >= MAX_ENTRIES
+                    {
+                        tracing::warn!(
+                            stage = "codex_inventory_capacity",
+                            "ChatGPT inventory refresh capacity reached"
+                        );
+                        return;
+                    }
+                    let (sender, receiver) = watch::channel(None);
+                    entries.insert(
+                        binding.connection_id.clone(),
+                        Entry {
+                            identity: scope.clone(),
+                            catalog_fetched_at: material.connection.models_fetched_at,
+                            result: receiver.clone(),
+                        },
                     );
+                    let shutdown = self.shutdown.clone();
+                    let store = store.clone();
+                    let credentials = credentials.clone();
+                    let definition = definition.clone();
+                    let binding = binding.clone();
+                    let identity = scope.clone();
+                    self.workers.spawn(async move {
+                        let cancellation = shutdown.child_token();
+                        let result = tokio::select! {
+                            biased;
+                            _ = shutdown.cancelled() => return,
+                            result = tokio::time::timeout(Duration::from_secs(15), refresh(&store, &credentials, definition, &binding, &identity, cancellation.clone())) => result.unwrap_or(Err("discovery_timeout")),
+                        };
+                        cancellation.cancel();
+                        let outcome = match result {
+                            Ok(outcome) => outcome,
+                            Err(reason) => {
+                                tracing::warn!(stage = "codex_inventory_refresh", connection_id = %binding.connection_id, cause = reason, "ChatGPT model inventory refresh failed");
+                                Outcome::Failed { retry_at: Instant::now() + Duration::from_secs(fastrand::u64(30..=60)) }
+                            }
+                        };
+                        sender.send_replace(Some(outcome));
+                    });
+                    (receiver, false)
+                }
+            };
+            // Dropping this future only drops one waiter; the Host tracks the worker.
+            while receiver.borrow().is_none() {
+                if receiver.changed().await.is_err() {
                     return;
                 }
-                let (sender, receiver) = watch::channel(None);
-                entries.insert(
-                    binding.connection_id.clone(),
-                    Entry {
-                        identity: identity.clone(),
-                        catalog_fetched_at: material.connection.models_fetched_at,
-                        result: receiver.clone(),
-                    },
-                );
-                let shutdown = self.shutdown.clone();
-                self.workers.spawn(async move {
-                    let cancellation = shutdown.child_token();
-                    let result = tokio::select! {
-                        biased;
-                        _ = shutdown.cancelled() => return,
-                        result = tokio::time::timeout(Duration::from_secs(15), refresh(&store, &credentials, definition, &binding, &identity, cancellation.clone())) => result.unwrap_or(Err("discovery_timeout")),
-                    };
-                    cancellation.cancel();
-                    let outcome = match result {
-                        Ok(outcome) => outcome,
-                        Err(reason) => {
-                            tracing::warn!(stage = "codex_inventory_refresh", connection_id = %binding.connection_id, cause = reason, "ChatGPT model inventory refresh failed");
-                            Outcome::Failed { retry_at: Instant::now() + Duration::from_secs(fastrand::u64(30..=60)) }
-                        }
-                    };
-                    sender.send_replace(Some(outcome));
-                });
-                receiver
             }
-        };
-        // Dropping this future only drops one waiter; the Host tracks the worker.
-        while receiver.borrow().is_none() {
-            if receiver.changed().await.is_err() {
+            if !joined_other_identity || self.shutdown.is_cancelled() {
                 return;
             }
+            // Recheck freshness after waiting for another identity's lane.
+            let current = match store.observe_model(binding.clone()).await {
+                Ok(Some(current)) => current,
+                _ => return,
+            };
+            if identity(&current).as_ref() != Ok(&scope) {
+                return;
+            }
+            refreshed = Some(current);
         }
     }
 
@@ -165,11 +188,17 @@ impl Authority {
                 return None;
             }
             let result = entry.result.borrow();
-            let Outcome::Ready { fetched_at, hashes } = result.as_ref()? else {
+            let Outcome::Ready {
+                connection_revision,
+                fetched_at,
+                hashes,
+            } = result.as_ref()?
+            else {
                 return None;
             };
             let time = now()?;
-            if *fetched_at > time
+            if material.connection.revision < *connection_revision
+                || *fetched_at > time
                 || time - fetched_at >= MAX_AGE
                 || material.connection.models_fetched_at != Some(*fetched_at)
             {
@@ -202,15 +231,20 @@ impl Authority {
 
 fn catalog_matches(entry: &Entry, material: &ConnectionObservation, model: &str) -> bool {
     match entry.result.borrow().as_ref() {
-        Some(Outcome::Ready { fetched_at, hashes }) => {
-            material.connection.models_fetched_at == Some(*fetched_at)
-                && hashes.get(model)
-                    == material
-                        .connection
-                        .models
-                        .iter()
-                        .find(|row| row.id == model)
-                        .and_then(|row| row.codex_compaction_hash.as_ref())
+        Some(Outcome::Ready {
+            connection_revision,
+            fetched_at,
+            hashes,
+        }) => {
+            material.connection.revision < *connection_revision
+                || (material.connection.models_fetched_at == Some(*fetched_at)
+                    && hashes.get(model)
+                        == material
+                            .connection
+                            .models
+                            .iter()
+                            .find(|row| row.id == model)
+                            .and_then(|row| row.codex_compaction_hash.as_ref()))
         }
         _ => entry.catalog_fetched_at == material.connection.models_fetched_at,
     }
@@ -342,7 +376,11 @@ async fn refresh(
         .await
         .map_err(|_| "discovery_commit")?
     {
-        ConnectionModelFetchResult::Committed { .. } => Ok(Outcome::Ready { fetched_at, hashes }),
+        ConnectionModelFetchResult::Committed { connection, .. } => Ok(Outcome::Ready {
+            connection_revision: connection.revision,
+            fetched_at,
+            hashes,
+        }),
         ConnectionModelFetchResult::Superseded { .. } => Ok(Outcome::Superseded),
         ConnectionModelFetchResult::Rejected { .. } => Err("discovery_rejected"),
         ConnectionModelFetchResult::Failed { .. } => Err("discovery_failed"),
