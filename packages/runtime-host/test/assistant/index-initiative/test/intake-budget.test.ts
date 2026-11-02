@@ -73,29 +73,24 @@ test('oversized original is preserved and all Unicode fragments survive restart 
   });
   f.ctx.llm.generate = async (input: any) => {
     assert.ok(estimatePluginLlmInputTokens(input.system, input.prompt) <= 4000);
-    seen.push(...JSON.parse(input.prompt).events.flatMap((g: any) => g.records));
-    return { text: '""' };
+    const request = JSON.parse(input.prompt);
+    seen.push(...request.events.flatMap((g: any) => g.records));
+    return { text: JSON.stringify({ context: '用户有重要变化', direction: '' }) };
   };
   await f.q.intake.collect();
   f.add('huge', text);
   await f.q.intake.collect();
   f.advance();
   await f.q.intake.judge();
-  assert.equal(seen.length, 0);
+  assert.equal(seen.length, 1);
   const original = f.q.store.db
-    .prepare("SELECT payload FROM intake_events WHERE status='split'")
+    .prepare("SELECT payload FROM intake_events WHERE status='pending'")
     .get();
   assert.equal(JSON.parse(String(original?.payload)).content, text);
   await f.restart();
   for (let i = 0; i < 100 && pending(f); i++) await f.q.intake.judge();
   assert.equal(pending(f), 0);
-  assert.equal(
-    seen
-      .sort((a, b) => a.part - b.part)
-      .map((r) => r.content)
-      .join(''),
-    text,
-  );
+  assert.equal(seen.map((r) => r.content).join(''), text);
   assert.ok(seen.every((r) => r.content.isWellFormed()));
   await f.q.intake.collect();
   assert.equal(pending(f), 0);

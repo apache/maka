@@ -524,7 +524,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
         .boolean()
         .optional()
         .describe(
-          'Enable continuous source-change intake. Polls metadata without a model; new batches get one tool-free wake decision, with a short direction hint or an empty result. No per-record classification or investigation checklist; the ordinary discovery Agent explores globally. Independent from the periodic cadence. Starts at current source positions.',
+          'Enable continuous source-change intake. Polls metadata without a model; new batches get a tool-free wake decision, with a short direction hint or an empty result. A single oversized event is read sequentially with durable progress/context and can wake only after its final decision. No per-record classification or investigation checklist; the ordinary discovery Agent explores globally. Independent from the periodic cadence. Starts at current source positions.',
         ),
       intakeModelKey: z
         .string()
