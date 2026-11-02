@@ -24,6 +24,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -230,23 +231,50 @@ export function executor(root, worker = {}) {
       throw new Error('The full root test selection was unexpectedly empty');
     if (!count) return [];
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
-    const bucket = (pkg) =>
-      pkg === 'maka-agent-native' ? 'native' : pkg === 'maka-cli' ? 'cli' : 'rest';
+    const groups = [];
+    for (const [group, shards, name] of [
+      ['native', 8, 'maka-agent-native'],
+      ['cli', id === 'desktop' ? 4 : 6, 'maka-cli'],
+    ]) {
+      groups.push({
+        group,
+        shards,
+        binaries: selected.filter((suite) => suite['package-name'] === name),
+      });
+    }
+    const packages = new Map();
+    for (const binary of selected) {
+      const name = binary['package-name'];
+      if (['maka-agent-native', 'maka-cli'].includes(name)) continue;
+      if (!packages.has(name)) packages.set(name, { name, bytes: 0, binaries: [] });
+      const entry = packages.get(name);
+      entry.bytes += statSync(binary['binary-path']).size;
+      entry.binaries.push(binary);
+    }
+    const buckets = Array.from({ length: Math.min(4, packages.size) }, () => ({
+      bytes: 0,
+      binaries: [],
+    }));
+    for (const entry of [...packages.values()].sort(
+      (a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name),
+    )) {
+      const bucket = buckets.reduce((a, b) => (a.bytes <= b.bytes ? a : b));
+      bucket.bytes += entry.bytes;
+      bucket.binaries.push(...entry.binaries);
+    }
+    groups.push(
+      ...buckets.map((bucket, index) => ({
+        group: `rest-${index + 1}`,
+        shards: 1,
+        binaries: bucket.binaries,
+      })),
+    );
     const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
     const partitions = [];
     try {
-      // Measured native/CLI fixtures consume 1143s/895s per full run. Separate
-      // archives avoid transferring every test binary to every test machine.
-      const groups =
-        id === 'desktop'
-          ? [['cli', 4]]
-          : [
-              ['native', 8],
-              ['cli', 6],
-              ['rest', 4],
-            ];
-      for (const [group, shards] of groups) {
-        const binaries = selected.filter((suite) => bucket(suite['package-name']) === group);
+      // Balance the remaining packages by the binaries each machine must download
+      // and extract, instead of sending their entire archive to every shard.
+      for (const { group, shards, binaries } of groups) {
         if (!binaries.length) continue;
         const packages = [...new Set(binaries.map((suite) => suite['package-name']))];
         // Archives select binaries; the consumers retain the original test filter.

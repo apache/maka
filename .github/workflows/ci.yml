@@ -92,7 +92,10 @@ jobs:
       filter: ${{ steps.archive.outputs.filter }}
       native: ${{ steps.upload-native.outputs.artifact-id }}
       cli: ${{ steps.upload-cli.outputs.artifact-id }}
-      rest: ${{ steps.upload-rest.outputs.artifact-id }}
+      rest-1: ${{ steps.upload-rest-1.outputs.artifact-id }}
+      rest-2: ${{ steps.upload-rest-2.outputs.artifact-id }}
+      rest-3: ${{ steps.upload-rest-3.outputs.artifact-id }}
+      rest-4: ${{ steps.upload-rest-4.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -128,11 +131,35 @@ jobs:
           compression-level: 0
           if-no-files-found: ignore
       - uses: actions/upload-artifact@v7
-        id: upload-rest
+        id: upload-rest-1
         if: steps.archive.outputs.has_tests == 'true'
         with:
-          name: root-tests-rest-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests-rest.tar.zst
+          name: root-tests-rest-1-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-1.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-2
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-2-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-2.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-3
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-3-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-3.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-4
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-4-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-4.tar.zst
           compression-level: 0
           if-no-files-found: ignore
       - uses: ./.github/actions/ci-cache
