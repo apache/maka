@@ -264,6 +264,12 @@ impl FrozenReplay {
             .as_ref()
             .expect("checked options");
         let settings = model_attempt::PromptSettings {
+            codex: context.as_ref().and_then(|c| c.codex.as_ref()),
+            operation: context
+                .as_ref()
+                .map_or(maka_agent_facts::context::ModelOperation::Inference, |c| {
+                    c.model_operation()
+                }),
             language: configuration.language,
             provider: &self.provider,
             options,

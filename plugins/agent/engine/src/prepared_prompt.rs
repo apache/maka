@@ -180,7 +180,13 @@ impl PreparedPrompt {
     ) -> Result<(), crate::RunError> {
         let suffixes = usize::from(summary) + usize::from(instruction.is_some());
         let bytes =
-            Self::overlay_plan_bytes(system.is_some(), context.baseline.is_some(), suffixes);
+            Self::overlay_plan_bytes(system.is_some(), context.baseline.is_some(), suffixes)
+                .checked_add(OwnedOverlay::checkpoint_payload_bytes(&context))
+                .ok_or_else(|| {
+                    crate::RunError::Preparation(std::io::Error::other(
+                        "native overlay size overflow",
+                    ))
+                })?;
         if bytes == 0 {
             return Ok(());
         }
@@ -214,6 +220,17 @@ impl PreparedPrompt {
         Ok(())
     }
 
+    pub async fn freeze_native_trigger(&self) -> Result<OwnedOverlay, crate::RunError> {
+        let owner = self.overlay_owner.clone().ok_or_else(|| {
+            crate::RunError::Internal("native control lacks overlay owner".into())
+        })?;
+        self.arena
+            .as_ref()
+            .ok_or_else(|| crate::RunError::Internal("native control lacks source owner".into()))?
+            .with_writer(move |_| Ok(OwnedOverlay::native_trigger().bound(owner)))
+            .await
+            .map_err(crate::RunError::Preparation)
+    }
     pub async fn freeze_summary_instruction(
         &self,
         text: Arc<String>,
@@ -301,6 +318,12 @@ impl PreparedPrompt {
         wire::compile(self, language, provider, options, tools, cancellation).await
     }
 
+    pub fn native_checkpoint_identity(&self) -> Option<&str> {
+        self.prefix
+            .first()
+            .filter(|overlay| overlay.is_native_checkpoint())
+            .map(OwnedOverlay::identity)
+    }
     pub fn breakdown(&self) -> PreparedContextBreakdown {
         let mut result = self.body.breakdown().clone();
         for overlay in self

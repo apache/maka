@@ -233,6 +233,16 @@ impl Encoder<'_> {
     }
     async fn assistant(&mut self, part: &AssistantRecipe) -> io::Result<()> {
         match part {
+            AssistantRecipe::CodexCompaction { item } => {
+                self.literal(br#"{"type":"codex-compaction","item":"#)
+                    .await?;
+                self.json(item).await?;
+                self.literal(b"}").await
+            }
+            AssistantRecipe::CodexCompactionTrigger => {
+                self.literal(br#"{"type":"codex-compaction-trigger"}"#)
+                    .await
+            }
             AssistantRecipe::Text {
                 text,
                 provider_options,

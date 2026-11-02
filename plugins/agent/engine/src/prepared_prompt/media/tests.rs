@@ -470,6 +470,7 @@ fn encoded_images(value: &Value, output: &mut Vec<Vec<u8>>) {
 }
 async fn request_size(prompt: &PreparedPrompt, provider: &ProviderConfig) -> u64 {
     ModelRequest {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         language: Language::En,
         provider: provider.clone(),
         prompt: prompt.model(),
@@ -1001,6 +1002,7 @@ async fn complete_request_limit_shrinks_the_whole_image_and_preserves_replay() {
             .await
             .unwrap();
         let request = ModelRequest {
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language: Language::En,
             provider: provider.clone(),
             prompt: prompt.model(),

@@ -303,9 +303,38 @@ pub(crate) async fn latest_selected(
     if matches!(checkpoint.mode, CheckpointMode::Standalone) {
         super::validate::require_terminal(connection, &event).await?;
     }
+    let native_output =
+        if let maka_agent_facts::context::CheckpointContent::CodexNative { item_digest, .. } =
+            &checkpoint.summary
+        {
+            let (_, completion) = super::proof::by_kind(
+                connection,
+                &event.invocation.invocation_id,
+                "model_completed",
+                Some(&checkpoint.summary_step_id),
+            )
+            .await?;
+            let Fact::ModelCompleted { output, .. } = completion.fact else {
+                return Err(invalid("native checkpoint has no completion"));
+            };
+            let options = output
+                .provider_options
+                .ok_or_else(|| invalid("native checkpoint has no output metadata"))?;
+            let item = options["openai"]
+                .get("compaction")
+                .ok_or_else(|| invalid("native checkpoint has no opaque item"))?;
+            if maka_agent_facts::context::native_item_digest(item).map_err(invalid)? != *item_digest
+            {
+                return Err(invalid("native checkpoint item digest changed"));
+            }
+            Some(options)
+        } else {
+            None
+        };
     Ok(Some(ContextBaseline {
         event_id: event.id,
         checkpoint: checkpoint.clone(),
+        native_output,
     }))
 }
 

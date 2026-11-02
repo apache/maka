@@ -105,6 +105,12 @@ fn part(part: facts::ContentPart) -> Result<wire::UserPart, ModelError> {
 }
 fn assistant(part: facts::AssistantPart) -> Result<wire::AssistantPart, ModelError> {
     Ok(match part {
+        facts::AssistantPart::CodexCompaction { .. }
+        | facts::AssistantPart::CodexCompactionTrigger => {
+            return Err(ModelError::Adapter(
+                "Codex native state requires the ChatGPT Responses adapter".into(),
+            ));
+        }
         facts::AssistantPart::Text {
             text,
             provider_options,

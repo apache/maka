@@ -570,8 +570,7 @@ async fn historical_unknown_tool_does_not_disable_automatic_compaction_or_pin_ol
             view.baseline
                 .unwrap()
                 .checkpoint
-                .summary
-                .text
+                .summary.text_value().unwrap()
                 .contains("summary-marker")
         );
         let history = log.prefix(200, 512 * 1024).await.unwrap();

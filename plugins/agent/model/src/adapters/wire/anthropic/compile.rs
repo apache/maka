@@ -522,6 +522,7 @@ fn content_options(part: &ContentRecipe) -> Option<JsonSource> {
 }
 fn assistant_options(part: &AssistantRecipe) -> Option<JsonSource> {
     match part {
+        AssistantRecipe::CodexCompaction { .. } | AssistantRecipe::CodexCompactionTrigger => None,
         AssistantRecipe::Text {
             provider_options, ..
         }
@@ -1173,6 +1174,11 @@ impl Compiler {
         budget: Arc<dyn SourceBudget>,
     ) -> Result<Plan, ModelError> {
         match part {
+            AssistantRecipe::CodexCompaction { .. } | AssistantRecipe::CodexCompactionTrigger => {
+                Err(ModelError::Adapter(
+                    "Codex native state requires ChatGPT Responses".into(),
+                ))
+            }
             AssistantRecipe::Text {
                 text,
                 provider_options,

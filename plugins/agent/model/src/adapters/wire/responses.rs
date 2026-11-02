@@ -255,6 +255,17 @@ async fn encode_message(
             while let Some(part) = cursor.next().await.map_err(failure)? {
                 tokio::task::yield_now().await;
                 match part {
+                    AssistantRecipe::CodexCompaction { item: value } => {
+                        if plaintext.is_some() {
+                            return Err(ModelError::Adapter(
+                                "native Codex compaction requires ChatGPT Responses".into(),
+                            ));
+                        }
+                        items.push(item(vec![F::Raw(value)]));
+                    }
+                    AssistantRecipe::CodexCompactionTrigger => {
+                        items.push(item(vec![literal(br#"{"type":"compaction_trigger"}"#)]))
+                    }
                     AssistantRecipe::Text {
                         text: value,
                         provider_options,

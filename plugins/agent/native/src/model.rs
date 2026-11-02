@@ -309,7 +309,9 @@ impl Source {
         };
         let mut request_context =
             request_context(row, &model.info, self.accepted.model_override.as_ref())?;
-        if model.adapter == maka_providers::codex::ADAPTER {
+        if self.accepted.provider.package_id == maka_providers::codex::ID
+            && self.accepted.provider.name == "chatgpt"
+        {
             let mut provenance = self
                 .credentials
                 .inventory
@@ -384,6 +386,7 @@ fn request_context(
     let input =
         maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
+        operation: None,
         codex: None,
         provider_id: row.provider.name.clone(),
         context_window: input,

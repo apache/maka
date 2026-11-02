@@ -118,6 +118,10 @@ pub enum FileData {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum AssistantPart {
+    CodexCompaction {
+        item: Value,
+    },
+    CodexCompactionTrigger,
     Text {
         text: String,
         #[serde(rename = "providerOptions", skip_serializing_if = "Option::is_none")]

@@ -471,6 +471,10 @@ pub struct ToolResultRecipe {
 }
 #[derive(Clone)]
 pub enum AssistantRecipe {
+    CodexCompaction {
+        item: JsonSource,
+    },
+    CodexCompactionTrigger,
     Text {
         text: TextSource,
         provider_options: Option<JsonSource>,

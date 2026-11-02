@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! The actual generated overlay shapes: one System or one plaintext User value.
+//! Generated instructions and opaque ChatGPT checkpoint/control overlays.
 use maka_agent_facts::{
     context::PreparedContextBreakdown,
     model::prompt_source::{PromptInstructions, source::*},
@@ -51,7 +51,20 @@ impl OwnedOverlay {
             + arc_slice_bytes::<u8>(Sha256::output_size() * 2)
     }
     pub fn user_metadata_bytes() -> usize {
-        Self::system_metadata_bytes() + arc_bytes::<PlainUser>()
+        Self::system_metadata_bytes() + arc_bytes::<PlainUser>().max(arc_bytes::<NativeItem>())
+    }
+    pub fn checkpoint_payload_bytes(source: &ContextView) -> usize {
+        source
+            .baseline
+            .as_ref()
+            .and_then(|baseline| baseline.native_item())
+            .map_or(0, |item| {
+                usize::try_from(
+                    maka_agent_facts::context::measure::json_tokens(item).saturating_mul(3),
+                )
+                .unwrap_or(usize::MAX)
+                .saturating_add(arc_bytes::<String>())
+            })
     }
     pub fn checkpoint_metadata_bytes() -> usize {
         Self::user_metadata_bytes()
@@ -69,8 +82,34 @@ impl OwnedOverlay {
         Self::new(TextOwner::Owned(text), MessageRole::User)
     }
     /// The label contains the complete separator, including the original blank line.
+    pub fn native_trigger() -> Self {
+        Self::new(TextOwner::Trigger, MessageRole::Assistant)
+    }
     pub fn checkpoint(source: Arc<ContextView>, label: &'static str) -> Option<Self> {
-        source.baseline.as_ref()?;
+        let baseline = source.baseline.as_ref()?;
+        let checkpoint = &baseline.checkpoint;
+        if let maka_agent_facts::context::CheckpointContent::CodexNative {
+            estimated_tokens, ..
+        } = &checkpoint.summary
+        {
+            let item = baseline
+                .native_item()
+                .expect("validated native checkpoint item");
+            let capacity = usize::try_from(
+                maka_agent_facts::context::measure::json_tokens(item).saturating_mul(3),
+            )
+            .expect("native payload fits its reserved overlay");
+            let mut bytes = Vec::with_capacity(capacity);
+            serde_json::to_writer(&mut bytes, item).expect("native item serializes to JSON");
+            let text = String::from_utf8(bytes).expect("JSON is UTF-8");
+            let mut overlay = Self::new(TextOwner::Owned(Arc::new(text)), MessageRole::Assistant);
+            Arc::get_mut(&mut overlay.0)
+                .expect("new native overlay")
+                .breakdown
+                .assistant
+                .estimated_tokens = *estimated_tokens + 16;
+            return Some(overlay);
+        }
         Some(Self::new(
             TextOwner::Checkpoint { source, label },
             MessageRole::User,
@@ -93,13 +132,21 @@ impl OwnedOverlay {
                 content: Arc::new(PlainUser { text: source }),
                 provider_options: None,
             },
-            _ => unreachable!("generated overlays have only System and User roles"),
+            MessageRole::Assistant => MessageRecipe::Assistant {
+                content: Arc::new(NativeItem {
+                    value: source,
+                    trigger: matches!(text, TextOwner::Trigger),
+                }),
+                provider_options: None,
+            },
+            _ => unreachable!("generated overlay role"),
         };
         let identity: Arc<str> = hex::encode(text.commitment(role)).into();
         let mut breakdown = PreparedContextBreakdown::default();
         breakdown.counts.messages = 1;
         let bucket = match role {
             MessageRole::System => &mut breakdown.system,
+            MessageRole::Assistant => &mut breakdown.assistant,
             _ => &mut breakdown.user,
         };
         bucket.content_bytes = text.len() as u64;
@@ -149,6 +196,13 @@ impl OwnedOverlay {
                 content: Arc::new(PlainUser { text: source }),
                 provider_options: None,
             },
+            MessageRole::Assistant => MessageRecipe::Assistant {
+                content: Arc::new(NativeItem {
+                    value: source,
+                    trigger: matches!(self.0.text, TextOwner::Trigger),
+                }),
+                provider_options: None,
+            },
             _ => unreachable!("generated overlay role"),
         };
         let empty: Arc<dyn RecipeSource<IdentifiedText>> = Arc::new(BoundIds {
@@ -186,6 +240,9 @@ impl OwnedOverlay {
         metadata.message_index = index;
         metadata
     }
+    pub fn is_native_checkpoint(&self) -> bool {
+        self.0.metadata.role == MessageRole::Assistant && !matches!(self.0.text, TextOwner::Trigger)
+    }
     pub fn identity(&self) -> &str {
         &self.0.metadata.logical_identity
     }
@@ -207,6 +264,17 @@ impl OwnedOverlay {
                 provider_options: None,
             },
             MessageRole::User => Message::user(self.0.text.materialize()),
+            MessageRole::Assistant => Message::Assistant {
+                content: vec![if matches!(self.0.text, TextOwner::Trigger) {
+                    maka_agent_facts::model::prompt::AssistantPart::CodexCompactionTrigger
+                } else {
+                    maka_agent_facts::model::prompt::AssistantPart::CodexCompaction {
+                        item: serde_json::from_str(self.0.text.parts()[0])
+                            .expect("native item JSON"),
+                    }
+                }],
+                provider_options: None,
+            },
             _ => unreachable!("generated overlay role"),
         }
     }
@@ -357,6 +425,7 @@ impl RecipeCursor<IdentifiedText> for BoundEmpty {
 
 #[derive(Clone)]
 enum TextOwner {
+    Trigger,
     Owned(Arc<String>),
     Checkpoint {
         source: Arc<ContextView>,
@@ -366,16 +435,18 @@ enum TextOwner {
 impl TextOwner {
     fn parts(&self) -> [&str; 2] {
         match self {
+            Self::Trigger => ["", ""],
             Self::Owned(text) => [text.as_str(), ""],
             Self::Checkpoint { source, label } => [
                 label,
-                &source
+                source
                     .baseline
                     .as_ref()
                     .expect("captured checkpoint baseline")
                     .checkpoint
                     .summary
-                    .text,
+                    .text_value()
+                    .expect("text checkpoint overlay"),
             ],
         }
     }
@@ -394,6 +465,7 @@ impl TextOwner {
     }
     fn materialize(&self) -> String {
         match self {
+            Self::Trigger => String::new(),
             Self::Owned(text) => text.as_ref().clone(),
             Self::Checkpoint { .. } => {
                 let mut text = String::with_capacity(self.len());
@@ -405,6 +477,18 @@ impl TextOwner {
         }
     }
     fn commitment(&self, role: MessageRole) -> [u8; 32] {
+        if role == MessageRole::Assistant {
+            let mut hash = Sha256::new();
+            hash.update(if matches!(self, Self::Trigger) {
+                b"maka.codex-compaction-trigger.v1".as_slice()
+            } else {
+                b"maka.codex-checkpoint.v1".as_slice()
+            });
+            for part in self.parts() {
+                hash.update(part.as_bytes());
+            }
+            return hash.finalize().into();
+        }
         let mut hash = Sha256::new();
         hash.update(match role {
             MessageRole::System => b"{\"role\":\"system\",\"content\":\"".as_slice(),
@@ -538,4 +622,35 @@ fn arc_slice_bytes<T>(len: usize) -> usize {
     let offset = (header + alignment - 1) & !(alignment - 1);
     let allocation_alignment = alignment.max(mem::align_of::<usize>());
     (offset + mem::size_of::<T>() * len + allocation_alignment - 1) & !(allocation_alignment - 1)
+}
+
+struct NativeItem {
+    value: TextSource,
+    trigger: bool,
+}
+impl RecipeSource<AssistantRecipe> for NativeItem {
+    fn len(&self) -> usize {
+        1
+    }
+    fn open(&self, start: usize) -> Box<dyn RecipeCursor<AssistantRecipe>> {
+        Box::new(NativeCursor {
+            item: (start == 0).then(|| {
+                if self.trigger {
+                    AssistantRecipe::CodexCompactionTrigger
+                } else {
+                    AssistantRecipe::CodexCompaction {
+                        item: JsonSource::new(self.value.bytes().clone()),
+                    }
+                }
+            }),
+        })
+    }
+}
+struct NativeCursor {
+    item: Option<AssistantRecipe>,
+}
+impl RecipeCursor<AssistantRecipe> for NativeCursor {
+    fn next(&mut self) -> NextRecipe<'_, AssistantRecipe> {
+        Box::pin(async { Ok(self.item.take()) })
+    }
 }

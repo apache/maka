@@ -638,3 +638,47 @@ async fn inventory_accepts_opaque_hashes_longer_than_a_local_guess() {
     );
     f.close().await;
 }
+
+#[tokio::test]
+async fn subscription_provenance_follows_provider_identity_with_a_responses_adapter_override() {
+    use super::super::Source;
+    use maka_agent_facts::{
+        composition::{SourceKind, SourceRevision},
+        configuration::ModelSelection,
+    };
+    let f = Fixture::new().await;
+    f.provider.release.add_permits(1);
+    f.refresh().await;
+    let row = f.store.catalog().await.unwrap().connections.remove(0);
+    f.store.update_connection(serde_json::from_value(json!({"expected":{"connectionId":row.connection_id,"revision":row.revision},"changes":{"modelOverrides":{"model-a":{"adapter":"responses"}}}})).unwrap()).await.unwrap();
+    let row = f.store.catalog().await.unwrap().connections.remove(0);
+    let (_, prepared) = Source::select(
+        f.store.clone(),
+        Arc::new(maka_providers::catalog::Catalog::new(
+            maka_providers::catalog::Snapshot::bundled().unwrap(),
+        )),
+        f.credentials.clone(),
+        ModelSelection {
+            connection_id: row.connection_id,
+            revision: row.revision,
+            model_id: "model-a".into(),
+        },
+        None,
+        "session".into(),
+        SourceRevision {
+            kind: SourceKind::ModelProvider,
+            name: "chatgpt".into(),
+            package_id: "maka.codex".into(),
+            entry_id: "maka.codex".into(),
+            activation: "fixture".into(),
+            revision: "1".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(prepared.provider.adapter_name(), "responses");
+    let provenance = prepared.context.unwrap().codex.unwrap();
+    assert_eq!(provenance.compatibility.unwrap().comp_hash, "3000");
+    assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
+    f.close().await;
+}

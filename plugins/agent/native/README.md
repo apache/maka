@@ -120,3 +120,11 @@ preparations do not wait for network discovery; credential resolution follows it
 These are local latency/load policies, not protocol
 limits. The TTL governs new catalog observations; recorded producer facts and checkpoints do not
 expire with that cache. Once capture finishes, proactive compaction executes alongside Main.
+
+ChatGPT subscription `/compact` uses the Responses native `compaction_trigger` control.
+The engine installs its opaque checkpoint only after the producing stream completes and storage
+validates the same source fence and producer request. Subsequent requests replay the checkpoint
+with the preserved suffix; another compact replaces that baseline. Session/global/custom text
+compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
+Other providers retain ordinary text summarization. Native replay currently requires the producing
+model; cross-model admission and switch preflight are separate stack layers.

@@ -367,6 +367,27 @@ mod tests {
         }
     }
     #[tokio::test]
+    async fn native_checkpoint_and_trigger_have_identical_http_and_websocket_items() {
+        use futures_util::TryStreamExt;
+        use maka_agent_facts::model::prompt::AssistantPart;
+        let item = json!({"type":"compaction","id":"cmp","encrypted_content":"opaque","unknown":{"keep":true}});
+        let prompt = Prompt::from_messages(vec![Message::Assistant {
+            content: vec![
+                AssistantPart::CodexCompaction { item: item.clone() },
+                AssistantPart::CodexCompactionTrigger,
+            ],
+            provider_options: None,
+        }]);
+        let http_chunks: Vec<_> = body(prompt.clone()).chunks().try_collect().await.unwrap();
+        let http: Value = serde_json::from_slice(&http_chunks.concat()).unwrap();
+        let websocket_chunks: Vec<_> = body(prompt).websocket().try_collect().await.unwrap();
+        let websocket: Value = serde_json::from_slice(&websocket_chunks.concat()).unwrap();
+        assert_eq!(http["input"], json!([item,{"type":"compaction_trigger"}]));
+        assert_eq!(http["input"], websocket["input"]);
+        assert_eq!(websocket["type"], "response.create");
+    }
+
+    #[tokio::test]
     async fn backpressure_and_drop_do_not_read_the_remaining_history() {
         let reads = Arc::new(AtomicUsize::new(0));
         let drops = Arc::new(AtomicUsize::new(0));

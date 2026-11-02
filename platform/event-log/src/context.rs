@@ -60,6 +60,15 @@ pub struct SourceEvidence {
 pub struct ContextBaseline {
     pub event_id: String,
     pub checkpoint: ContextCheckpoint,
+    native_output: Option<std::sync::Arc<serde_json::Value>>,
+}
+
+impl ContextBaseline {
+    pub fn native_item(&self) -> Option<&serde_json::Value> {
+        self.native_output
+            .as_ref()
+            .and_then(|options| options["openai"].get("compaction"))
+    }
 }
 
 /// Immutable selection metadata for paged model-history rendering. The view

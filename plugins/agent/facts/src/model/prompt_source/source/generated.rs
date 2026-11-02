@@ -165,6 +165,16 @@ fn message_with_mcp(value: &Message, mcp: &mut std::collections::HashSet<String>
                 parts
                     .iter()
                     .map(|part| match part {
+                        AssistantPart::CodexCompaction { item } => {
+                            AssistantRecipe::CodexCompaction {
+                                item: JsonSource::new(SourceBytes::Inline(bytes::Bytes::from(
+                                    item.to_string(),
+                                ))),
+                            }
+                        }
+                        AssistantPart::CodexCompactionTrigger => {
+                            AssistantRecipe::CodexCompactionTrigger
+                        }
                         AssistantPart::Text {
                             text: value,
                             provider_options,

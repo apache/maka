@@ -33,6 +33,7 @@ pub(super) use prepared::prepare_input;
 
 pub(super) fn request(kind: ProviderKind, base_url: String) -> ModelRequest {
     ModelRequest {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
             image_input: None,
