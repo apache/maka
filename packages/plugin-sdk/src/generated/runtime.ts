@@ -1538,6 +1538,10 @@ export type NetworkProxyUpdateResult =
     };
 export type SettingsPreferencesMutation =
   | {
+      kind: 'message_predictions';
+      settings: MessagePredictionSettings;
+    }
+  | {
       kind: 'language';
       preference: LanguagePreference;
     }
@@ -6519,6 +6523,8 @@ export interface PricingUpdate {
   mutation: PricingMutation;
 }
 export interface SettingsAssistantPreferences {
+  predictions: MessagePredictionSettings;
+  defaultPredictionPrompt: string;
   language?: LanguagePreference | null;
   resolvedLanguage: Language;
   compactionPrompt: string;
@@ -6528,6 +6534,16 @@ export interface SettingsAssistantPreferences {
   workspaceInstructions: boolean;
   incognitoActive: boolean;
   shellTitles: boolean;
+}
+export interface MessagePredictionSettings {
+  enabled: boolean;
+  ordinarySessionsOnly: boolean;
+  liveSamplePercent: number;
+  catchUpSamplePercent: number;
+  /**
+   * None or blank selects the localized built-in instructions.
+   */
+  prompt?: string | null;
 }
 export interface SettingsNetworkSnapshot {
   revision: number;
@@ -8225,6 +8241,10 @@ export interface AgentDelivery {
 }
 export interface AgentObservation {
   session: AgentSession;
+  /**
+   * Latest successful source turn at this observation's fence, or none while busy.
+   */
+  lastCompletedTurnId: string | null;
   compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;

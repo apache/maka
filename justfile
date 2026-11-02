@@ -72,6 +72,11 @@ typecheck: setup
 test *args: setup
     node scripts/ci.mjs run root "$@"
 
+# Exercise the workbench in the real desktop renderer; pass nextest filters after the recipe name.
+[group('Checks')]
+test-desktop *args: setup
+    node scripts/ci.mjs run desktop "$@"
+
 # Check the vendored terminal input library with the shared Cargo artifacts.
 [group('Checks')]
 test-termina:

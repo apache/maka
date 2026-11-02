@@ -39,4 +39,6 @@ In the terminal interface, choose the shared language under **Settings → Appea
 
 This preference also selects builtin Agent instructions for new work in existing conversations and WorkHub. Already accepted work retains its language; user content and custom instructions remain unchanged.
 
+**Settings → General → Message predictions** controls optional next-message suggestions. Predictions use the conversation's model and reasoning settings and extend its original model-request prefix. Accept a suggestion with Tab, Right Arrow, Enter or the suggestion button to put it in the draft; it is never sent automatically. Escape dismisses it, and normal typing or input-method composition hides the preview. The settings table lets you change how often predictions run after a reply or when opening a conversation, customize the instructions, and restore the localized defaults.
+
 Bundled packages are installation inputs. Reopening an existing installation uses its committed source and package bytes; rebuilding the checkout does not overwrite a user's composition.

@@ -45,6 +45,8 @@ mod imports;
 pub use goal::*;
 mod todo;
 pub use todo::*;
+mod predictions;
+pub use predictions::*;
 mod recap;
 pub use recap::*;
 mod scheduler;
@@ -957,6 +959,9 @@ pub struct DiagnosticChange {
 #[schemars(rename = "AgentObservation")]
 pub struct Observation {
     pub session: Session,
+    /// Latest successful source turn at this observation's fence, or none while busy.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub last_completed_turn_id: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<CompactionProgress>")]
     pub compacting: Option<CompactionProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1634,6 +1639,10 @@ pub fn contract() -> Contract {
                 (
                     "checklist".into(),
                     method::<ChecklistRead, Checklist>(MethodMode::Query),
+                ),
+                (
+                    "predictNextMessage".into(),
+                    method::<PredictNextMessage, MessagePrediction>(MethodMode::Mutation),
                 ),
                 (
                     "recap".into(),

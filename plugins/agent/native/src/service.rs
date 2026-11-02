@@ -179,6 +179,22 @@ impl Handler for Agent {
                 }
                 "checklist" => encode(owner.checklist(&decode(input)?).await?),
                 "recap" => encode(owner.recap(decode(input)?, context.scope()).await?),
+                "predictNextMessage" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .predict_next_message(
+                                decode(input)?,
+                                context.scope(),
+                                operation,
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
+                            .await?,
+                    )
+                }
                 "generateRecap" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -402,6 +418,13 @@ impl Handler for Agent {
                         id: progress.id,
                         started_at: progress.started_at,
                     });
+                    let last_completed_turn_id = observed.root_turn.as_ref().and_then(|turn| {
+                        matches!(
+                            turn.state.terminal_outcome(),
+                            Some(maka_agent_facts::event::InvocationOutcome::Completed)
+                        )
+                        .then(|| turn.root_invocation().turn_id.clone())
+                    });
                     let run = observed.root_turn.and_then(|turn| {
                         let state = match turn.state {
                             InvocationState::Admitted => RunState::Admitted,
@@ -471,6 +494,7 @@ impl Handler for Agent {
                     let result = encode(Observation {
                         compacting,
                         session,
+                        last_completed_turn_id,
                         metrics,
                         remembered_backend,
                         through: observed.through_sequence,

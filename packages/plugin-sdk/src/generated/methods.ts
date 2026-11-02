@@ -38,6 +38,7 @@ export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
   | 'no_workspace';
+export type AgentPredictNextMessageInput_AgentPredictionTrigger = 'live' | 'catch_up';
 /**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
@@ -103,6 +104,12 @@ export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type SettingsAssistantPreferencesOutput_LanguagePreference =
+  | 'auto'
+  | 'en'
+  | 'zh-CN'
+  | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
@@ -578,6 +585,19 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentPendingInteractions;
     };
+    predictNextMessage: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        expectedTurnId: string;
+        trigger: AgentPredictNextMessageInput_AgentPredictionTrigger;
+      };
+      output: {
+        sourceTurnId: string;
+        policyRevision: number;
+        suggestion?: string | null;
+      };
+    };
     project: {
       mode: 'mutation';
       input: Runtime.AgentProjectChange;
@@ -859,8 +879,10 @@ export interface ServiceMethods {
       mode: 'query';
       input: {};
       output: {
-        language: Runtime.LanguagePreference | null;
-        resolvedLanguage: Runtime.Language;
+        predictions: SettingsAssistantPreferencesOutput_MessagePredictionSettings;
+        defaultPredictionPrompt: string;
+        language: SettingsAssistantPreferencesOutput_LanguagePreference | null;
+        resolvedLanguage: SettingsAssistantPreferencesOutput_Language;
         compactionPrompt: string;
         defaultCompactionPrompt: string;
         revision: number;
@@ -1641,6 +1663,16 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
+  enabled: boolean;
+  ordinarySessionsOnly: boolean;
+  liveSamplePercent: number;
+  catchUpSamplePercent: number;
+  /**
+   * None or blank selects the localized built-in instructions.
+   */
+  prompt: string | null;
 }
 export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
   reference: SettingsCatalogModelsOutput_CatalogModelReference;

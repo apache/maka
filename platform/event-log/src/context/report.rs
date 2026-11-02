@@ -34,6 +34,7 @@ pub struct ContextReport {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ContextRequest {
+    pub event_id: String,
     pub invocation_id: String,
     pub step_id: String,
     pub sequence: u64,
@@ -140,6 +141,7 @@ impl EventLog {
                             },
                         };
                         Some(ContextRequest {
+                            event_id: event.id,
                             invocation_id: event.invocation.invocation_id,
                             step_id,
                             sequence,

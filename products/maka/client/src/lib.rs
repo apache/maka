@@ -51,6 +51,7 @@ pub type Result<T> = std::result::Result<T, String>;
 
 const CONTROL_METHODS: &[&str] = &[
     "create",
+    "predictNextMessage",
     "trustProjectMcp",
     "selectBackend",
     "compact",
@@ -928,13 +929,18 @@ impl Client {
         }
         Ok(operation)
     }
-    /// Only this shell's unsettled Agent controls on the current Host deployment.
+    /// This shell's user-initiated unsettled controls on the current Host deployment.
+    /// Automatic predictions retain their receipts without prompting for manual recovery.
     pub async fn pending_controls(&self) -> Result<Vec<Operation>> {
         let owner = self.service_owner("agent").await?;
-        self.0
+        Ok(self
+            .0
             .journal
             .pending_controls(&self.0.source, &owner)
-            .await
+            .await?
+            .into_iter()
+            .filter(|operation| operation.method != "predictNextMessage")
+            .collect())
     }
     /// Stop prompting for this original without cancelling, replaying, or changing its outcome.
     pub async fn dismiss_control(&self, id: Uuid) -> Result<()> {
