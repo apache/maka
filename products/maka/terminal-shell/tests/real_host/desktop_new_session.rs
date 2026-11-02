@@ -1012,6 +1012,33 @@ async fn desktop_new_draft_shows_a_staged_image() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image() {
+    let fixture = images_fixture().await;
+    let path = fixture.directory.path().join("corrupt.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nnot an image").unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    let start = desktop.control("Add to message").await.left();
+    let label = "Remove attachment corrupt.png";
+    desktop
+        .until("the undecodable image stayed a thumbnail", || {
+            let found = desktop.controls(label);
+            // The file tile keeps its remove button past the thumbnail's 64 points.
+            (found.len() == 1 && found[0].left() - start > px(64.)).then_some(())
+        })
+        .await;
+    desktop.press(label).await;
+    desktop
+        .until("the undecodable image was not removed", || {
+            desktop.controls(label).is_empty().then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_plans_first_then_runs_the_approved_plan() {
     let mut fixture = Fixture::open().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;

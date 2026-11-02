@@ -29,6 +29,7 @@ use nsh_core::prelude::*;
 use nsh_core::{
     JsonValue,
     element::{self, Arg, JsHost, JsIn, JsOwned, JsValue, PropError, Ret, TsTypes},
+    image::loader::MAX_BYTES,
 };
 use std::{rc::Rc, sync::Arc};
 use tokio::sync::{Mutex, mpsc, watch};
@@ -79,7 +80,7 @@ impl StagedFile {
 
     /// Selects this snapshot's bytes for the renderer, so they stay out of the JS heap.
     pub fn image_uri(&self) -> Option<String> {
-        is_image(&self.snapshot).then(|| format!("{STAGED_IMAGE_PREFIX}{}", self.id))
+        has_preview(&self.snapshot).then(|| format!("{STAGED_IMAGE_PREFIX}{}", self.id))
     }
 }
 
@@ -95,8 +96,11 @@ impl Drop for StagedFile {
 
 pub(super) const STAGED_IMAGE_PREFIX: &str = "asset:/staged-image/";
 
-fn is_image(snapshot: &FileSnapshot) -> bool {
-    sniff_mime(snapshot.contents()).is_some_and(|mime| mime.starts_with("image/"))
+/// Selection accepts any size, but reading a preview copies the whole snapshot.
+fn has_preview(snapshot: &FileSnapshot) -> bool {
+    let contents = snapshot.contents();
+    contents.len() as u64 <= MAX_BYTES
+        && sniff_mime(contents).is_some_and(|mime| mime.starts_with("image/"))
 }
 
 pub(super) fn staged_image(owner: &Owner, id: &str) -> Result<Vec<u8>, String> {
@@ -130,7 +134,7 @@ pub(super) async fn stage_files(
 
 pub(super) fn staged_file(owner: Arc<Owner>, snapshot: Arc<FileSnapshot>) -> Instance<StagedFile> {
     let id = Uuid::new_v4();
-    if is_image(&snapshot) {
+    if has_preview(&snapshot) {
         owner
             .staged_images
             .lock()

@@ -19,7 +19,7 @@
 
 import { textTooltip } from './ui';
 import { tr } from './locale';
-import { Image, inputAction, Scroll, Text, View } from 'nsh';
+import { Image, inputAction, Scroll, signal, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistoryAttachment } from '../../../../packages/plugin-sdk/src/index.js';
@@ -97,10 +97,12 @@ export function StagedAttachments(props: {
           <Each of={props.files} key={(file) => file.id}>
             {(file) => {
               const original = file();
+              const undecodable = signal(false);
+              const thumbnail = () => original.imageUri !== null && !undecodable();
               return (
                 <View style={{ flexShrink: 0 }}>
                   <If
-                    when={original.imageUri}
+                    when={thumbnail()}
                     else={<FileTile name={original.name} bytes={original.bytes} />}
                   >
                     <View
@@ -117,6 +119,7 @@ export function StagedAttachments(props: {
                     >
                       <Image
                         src={original.imageUri!}
+                        onError={() => undecodable.set(true)}
                         style={[{ width: 64, height: 64 }, { objectFit: 'cover' }]}
                       />
                     </View>
@@ -127,7 +130,7 @@ export function StagedAttachments(props: {
                     onPress={inputAction(props.remove, original.id)}
                     style={{
                       ...removeStyle(),
-                      ...(original.imageUri ? { right: undefined, left: 36 } : {}),
+                      ...(thumbnail() ? { right: undefined, left: 36 } : {}),
                     }}
                     hoverStyle={{ backgroundColor: C.line }}
                     focusStyle={{ borderColor: C.accent }}
