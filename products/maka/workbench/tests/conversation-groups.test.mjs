@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { browserOrder, groupConversations } from '../app/conversationGroups.ts';
+import { browserOrder, groupConversations, groupWorkspace } from '../app/conversationGroups.ts';
 
 const session = (id, path, options = {}) => ({
   id,
@@ -63,4 +63,43 @@ test('stepping skips collapsed groups but keeps the open conversation', () => {
   assert.deepEqual(browserOrder(groups, new Set(['path:/a']), null), ['b1']);
   assert.deepEqual(browserOrder(groups, new Set(['path:/a']), 'a2'), ['a2', 'b1']);
   assert.deepEqual(browserOrder(groups, new Set(), 'a2'), ['a1', 'a2', 'b1']);
+});
+
+test('new conversations reuse the group workspace, not the currently selected conversation', () => {
+  const groups = groupConversations(
+    [session('other', '/other'), session('workspace', '/work')],
+    [],
+    true,
+  );
+  assert.deepEqual(groupWorkspace(groups[1]), { kind: 'session', sessionId: 'workspace' });
+
+  const registered = {
+    reference: { id: 'project', revision: 'revision' },
+    archived: false,
+    available: true,
+    selection: { rootId: 'root', segments: ['work'], directoryIdentity: 'identity' },
+  };
+  const [empty] = groupConversations([], [registered], true);
+  assert.deepEqual(groupWorkspace(empty), {
+    kind: 'project',
+    project: registered.reference,
+    selection: registered.selection,
+  });
+  for (const change of [{ archived: true }, { available: false }, { selection: null }]) {
+    assert.equal(groupWorkspace({ ...empty, project: { ...registered, ...change } }), null);
+  }
+});
+
+test('mixed pinned groups have no creation workspace; missing projects reuse an existing session', () => {
+  const groups = groupConversations(
+    [
+      session('pin', '/a', { pinned: true }),
+      session('pin2', '/b', { pinned: true }),
+      session('missing', '/c', { project: 'not-listed' }),
+    ],
+    [],
+    true,
+  );
+  assert.equal(groupWorkspace(groups[0]), null);
+  assert.deepEqual(groupWorkspace(groups[1]), { kind: 'session', sessionId: 'missing' });
 });
