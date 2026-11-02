@@ -75,6 +75,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       'settings',
       'files',
       'compact',
+      'goal',
       'latest',
       'history-focus',
       'activity-focus',

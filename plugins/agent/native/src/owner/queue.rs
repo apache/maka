@@ -382,6 +382,8 @@ impl Owner {
         runs.controls.insert(
             running.invocation().session_id.clone(),
             Control {
+                #[cfg(test)]
+                handoff: running.handoff().cloned(),
                 preview: running.preview(),
                 compacting: false,
                 invocation: running.invocation().clone(),
@@ -767,8 +769,7 @@ impl Owner {
                 Err(RunError::Cancelled) if cancellation.is_cancelled() => Ok(None),
                 Err(error @ (RunError::InvalidInput(_) | RunError::ReconciliationRequired(_))) => {
                     if !cancellation.is_cancelled() {
-                        self.fail_pending(invocation, entry, public_error(error))
-                            .await?;
+                        self.fail_pending(invocation, entry, error).await?;
                     }
                     Ok(None)
                 }
@@ -848,12 +849,14 @@ impl Owner {
         let session = self
             .session(&invocation.session_id)
             .await
-            .map_err(RunError::InvalidInput)?;
+            .map_err(RunError::Internal)?;
         basis
             .validate_background_target(&session)
             .map_err(RunError::InvalidInput)?;
-        if (!matches!(basis.background_kind, BackgroundKind::Plan(_))
-            && session.configuration.collaboration_mode != basis.collaboration_mode)
+        if (!matches!(
+            basis.background_kind,
+            BackgroundKind::Plan(_) | BackgroundKind::Goal(_)
+        ) && session.configuration.collaboration_mode != basis.collaboration_mode)
             || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
             || session.archived
             || session.configuration.workspace != basis.workspace
@@ -934,41 +937,56 @@ impl Owner {
         &self,
         entry: &PendingMessageAdmission,
         invocation: Invocation,
-    ) -> Result<(PreparedRun, Arc<MessageBasis>), String> {
-        let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
-            .map_err(|_| "agent_message_basis_invalid")?;
-        self.validate_background(&basis).await?;
-        self.validate_graph_basis(&invocation.session_id, &basis)
+    ) -> Result<(PreparedRun, Arc<MessageBasis>), RunError> {
+        let basis = async {
+            let mut basis: MessageBasis = serde_json::from_value(entry.execution.basis.clone())
+                .map_err(|_| "agent_message_basis_invalid")?;
+            self.validate_background(&basis).await?;
+            self.validate_graph_basis(&invocation.session_id, &basis)
+                .await?;
+            let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
+            self.validate_accepted_tools(&basis, &selected_catalog)?;
+            // Deserialization allocates independent descriptors. Only after the original
+            // content checks succeed may this admitted basis share the captured catalog.
+            if basis.executor.is_none() {
+                basis.tools = self.tool_basis.clone();
+                basis.internal_tools = selected_catalog.definitions.clone();
+                basis.internal_bindings = selected_catalog.bindings.clone();
+                basis.mcp_catalog = Some(selected_catalog);
+            }
+            let session = self.session(&invocation.session_id).await?;
+            basis.validate_background_target(&session)?;
+            if (!matches!(
+                basis.background_kind,
+                BackgroundKind::Plan(_) | BackgroundKind::Goal(_)
+            ) && session.configuration.collaboration_mode != basis.collaboration_mode)
+                || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
+                || session.archived
+                || session.configuration.workspace != basis.workspace
+                || session.configuration.binding != basis.binding
+                || session.configuration.tools != basis.allowed_tools
+                || (basis.executor.is_some() && basis.allowed_tools.is_some())
+            {
+                return Err("agent_session_configuration_changed".into());
+            }
+            workspace::validate(
+                &self.workspace_roots,
+                &basis.workspace,
+                &self.managed_worktrees,
+            )
             .await?;
-        let selected_catalog = self.mcp_projects.catalog(basis.mcp_revision.as_deref())?;
-        self.validate_accepted_tools(&basis, &selected_catalog)?;
-        // Deserialization allocates independent descriptors. Only after the original
-        // content checks succeed may this admitted basis share the captured catalog.
-        if basis.executor.is_none() {
-            basis.tools = self.tool_basis.clone();
-            basis.internal_tools = selected_catalog.definitions.clone();
-            basis.internal_bindings = selected_catalog.bindings.clone();
-            basis.mcp_catalog = Some(selected_catalog);
+            Ok::<_, String>(basis)
         }
-        let session = self.session(&invocation.session_id).await?;
-        basis.validate_background_target(&session)?;
-        if (!matches!(basis.background_kind, BackgroundKind::Plan(_))
-            && session.configuration.collaboration_mode != basis.collaboration_mode)
-            || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
-            || session.archived
-            || session.configuration.workspace != basis.workspace
-            || session.configuration.binding != basis.binding
-            || session.configuration.tools != basis.allowed_tools
-            || (basis.executor.is_some() && basis.allowed_tools.is_some())
-        {
-            return Err("agent_session_configuration_changed".into());
-        }
-        workspace::validate(
-            &self.workspace_roots,
-            &basis.workspace,
-            &self.managed_worktrees,
-        )
-        .await?;
+        .await
+        .map_err(|message| match message.as_str() {
+            "agent_tools_changed"
+            | "agent_session_configuration_changed"
+            | "agent_message_basis_invalid"
+            | "scheduler_authorization_changed"
+            | "goal_continuation_stopped"
+            | "goal_incognito" => RunError::InvalidInput(message),
+            _ => RunError::Internal(message),
+        })?;
         let backend = match (&basis.model, &basis.executor) {
             (Some(model), None) => {
                 let source = crate::model::Source::restore(
@@ -977,20 +995,22 @@ impl Owner {
                     model.clone(),
                     invocation.session_id.clone(),
                     self.revision.clone(),
-                )
-                .map_err(public_error)?;
-                let prepared = source.capture().await.map_err(public_error)?;
+                )?;
+                let prepared = source.capture().await?;
                 PreparedBackend::Model(Box::new((source, prepared)))
             }
-            (None, Some(executor)) => {
-                PreparedBackend::Executor(Box::new(self.executors.restore(executor)?))
-            }
-            _ => return Err("agent_message_basis_invalid".into()),
+            (None, Some(executor)) => PreparedBackend::Executor(Box::new(
+                self.executors
+                    .restore(executor)
+                    .map_err(RunError::InvalidInput)?,
+            )),
+            _ => return Err(RunError::InvalidInput("agent_message_basis_invalid".into())),
         };
         let basis = Arc::new(basis);
         Ok((
             self.input(invocation, backend, basis.clone(), entry.source.clone())
-                .await?,
+                .await
+                .map_err(RunError::InvalidInput)?,
             basis,
         ))
     }
@@ -1152,8 +1172,16 @@ impl Owner {
         &self,
         invocation: Invocation,
         entry: &PendingMessageAdmission,
-        reason: String,
+        reason: RunError,
     ) -> Result<(), RunError> {
+        let prerequisite = matches!(
+            reason,
+            RunError::InvalidInput(_) | RunError::ReconciliationRequired(_)
+        );
+        let model_failure = match &reason {
+            RunError::Model(error) => error.failure_cause(),
+            _ => None,
+        };
         let events = [
             Fact::InvocationOpened {
                 configuration: None,
@@ -1165,9 +1193,14 @@ impl Owner {
             },
             Fact::InvocationEnded {
                 outcome: InvocationOutcome::Failed {
-                    class: "message_preparation_failed".into(),
-                    message: Some(reason),
-                    model_failure: None,
+                    class: if prerequisite {
+                        "message_prerequisite_changed"
+                    } else {
+                        "message_preparation_failed"
+                    }
+                    .into(),
+                    message: Some(reason.to_string()),
+                    model_failure,
                 },
             },
         ]
@@ -1221,6 +1254,28 @@ impl Owner {
                 (parked.checkpoint.invocation, None, None)
             }
         };
+        {
+            let _gate = self.goals.gate.lock().await;
+            if let Some(mut saved) = self
+                .goals
+                .repository
+                .read(session)
+                .await
+                .map_err(|error| error.to_string())?
+                && saved.goal.status == maka_goal::goal::Status::Active
+                && saved
+                    .goal
+                    .pending
+                    .as_ref()
+                    .is_some_and(|pending| pending.invocation().turn_id == original.turn_id)
+            {
+                saved
+                    .goal
+                    .control(maka_goal::goal::Control::Pause)
+                    .map_err(|error| error.to_string())?;
+                self.goals.save(saved).await?;
+            }
+        }
         let command = InterruptCommand {
             host_epoch: self.revision.activation.clone(),
             session_id: session.into(),

@@ -34,6 +34,10 @@ use std::collections::HashSet;
     deny_unknown_fields
 )]
 pub enum MessageOrigin {
+    Goal {
+        goal_id: String,
+        objective: String,
+    },
     WorkhubTask {
         task_id: String,
     },
@@ -50,6 +54,13 @@ pub enum MessageOrigin {
 impl MessageOrigin {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::Goal { goal_id, objective } => {
+                crate::interaction::entity_id(goal_id)?;
+                if objective.trim().is_empty() {
+                    return Err("Goal objective is empty");
+                }
+                Ok(())
+            }
             Self::WorkhubTask { task_id } => crate::interaction::entity_id(task_id),
             Self::WorkhubGraph { graph_id } => crate::interaction::entity_id(graph_id),
             Self::Plan {

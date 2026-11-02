@@ -166,6 +166,8 @@ enum PreparedBackend {
 }
 #[derive(Clone)]
 struct Control {
+    #[cfg(test)]
+    handoff: Option<maka_agent_engine::HandoffGate>,
     compacting: bool,
     preview:
         tokio::sync::watch::Receiver<Option<Arc<maka_agent_facts::model::assembly::AttemptCut>>>,
@@ -498,7 +500,16 @@ impl Owner {
             if settings.goals {
                 catalog.tools = catalog
                     .tools
-                    .with_always_visible(&["GoalStatus"])
+                    .with_always_visible(goal::tools::NAMES)
+                    .and_then(|tools| {
+                        tools.with_request_binding(
+                            goal::tools::NAMES
+                                .iter()
+                                .map(|name| (*name).into())
+                                .collect(),
+                            goals.clone(),
+                        )
+                    })
                     .map_err(|error| error.to_string())?;
             }
             // The Bot's only voice and its rules must not hide behind tool discovery.

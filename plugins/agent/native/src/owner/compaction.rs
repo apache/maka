@@ -282,6 +282,8 @@ impl Owner {
         runs.controls.insert(
             input.session_id.clone(),
             Control {
+                #[cfg(test)]
+                handoff: running.handoff().cloned(),
                 preview: running.preview(),
                 compacting: true,
                 invocation: invocation.clone(),

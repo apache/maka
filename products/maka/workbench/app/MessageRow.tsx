@@ -44,6 +44,8 @@ import type { ImagePreview } from './ImageThumbnail';
 
 /** What names a message the Host generated in place of its text; null for the user's own. */
 export function originLabel(origin: MessageOrigin | null | undefined): string | null {
+  if (origin?.kind === 'goal')
+    return tr('Pursuing Goal: {objective}', { objective: origin.objective });
   return origin?.kind === 'plan' ? tr('Executing plan: {title}', { title: origin.title }) : null;
 }
 
@@ -103,8 +105,8 @@ export function MessageRow({
           return (
             <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
           );
-        // The Host wrote this message to start an approved Plan; the model keeps
-        // the full request, and the conversation names the Plan it ran.
+        // Host-generated execution prompts retain their full model input;
+        // the conversation names the user-approved work.
         const note = () => (row().role === 'user' ? originLabel(row().origin) : null);
         if (note()) return <NoteDivider label={note()!} />;
         // A failure is a notice about the run, not an answer: one quiet line, with

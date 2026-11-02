@@ -42,10 +42,13 @@ pub struct GoalDetail {
     pub revision: u64,
     pub objective: String,
     pub status: GoalStatus,
-    pub iterations: u32,
-    pub max_iterations: u32,
+    pub iterations: u64,
     pub token_budget: Option<u64>,
     pub consumed: maka_goal::goal::Meter,
+    pub remaining_tokens: Option<u64>,
+    pub elapsed_seconds: u64,
+    pub retry_at: Option<u64>,
+    pub created_at: u64,
     pub pending: bool,
     pub report: Option<maka_goal::goal::Report>,
     pub note: String,
@@ -62,7 +65,6 @@ pub enum GoalChange {
     Create {
         session_id: String,
         objective: String,
-        max_iterations: u32,
         token_budget: Option<u64>,
         start: bool,
         approval: GoalApproval,
@@ -72,6 +74,8 @@ pub enum GoalChange {
         goal_id: uuid::Uuid,
         revision: u64,
         action: GoalControl,
+        #[serde(default)]
+        budget: Option<GoalBudget>,
         /// Explicit renewed model and session authority, only for Resume without a pending iteration.
         #[serde(default)]
         approval: Option<GoalApproval>,
@@ -105,4 +109,11 @@ pub struct GoalApproval {
 #[schemars(rename = "AgentGoalReceiptRead")]
 pub struct GoalReceiptRead {
     pub reference: maka_plugin_core::operation::RecoveryRef,
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentGoalBudget")]
+pub struct GoalBudget {
+    pub token_budget: Option<u64>,
 }

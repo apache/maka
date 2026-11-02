@@ -19,10 +19,10 @@
 
 //! Goal owns its objective and outbox; the original Agent queue owns every execution.
 mod dispatch;
-mod tools;
+pub(super) mod tools;
 use super::*;
 use maka_capabilities::storage::{Data, Mutation, Namespace, Store};
-use maka_goal::goal::{Arm, Meter, Repository, Saved, Status};
+use maka_goal::goal::{Arm, Meter, Pending, Repository, Saved, Status};
 use maka_plugin_core::operation::RecoveryRef;
 use std::sync::{
     OnceLock, Weak,
@@ -32,8 +32,8 @@ use tokio::sync::Notify;
 
 pub(super) struct Goals {
     storage: Arc<maka_host_runtime::storage::Storage>,
-    repository: Repository<MessageBasis>,
-    gate: Mutex<()>,
+    pub(super) repository: Repository<MessageBasis>,
+    pub(super) gate: Mutex<()>,
     wake: Notify,
     changed: tokio::sync::watch::Sender<()>,
     owner: OnceLock<Weak<Owner>>,
@@ -78,7 +78,7 @@ impl Goals {
         self.changed.send_modify(|_| {});
         self.wake.notify_one();
     }
-    async fn save(&self, saved: Saved<MessageBasis>) -> Result<(), String> {
+    pub(super) async fn save(&self, saved: Saved<MessageBasis>) -> Result<(), String> {
         self.repository.save(saved).await.map_err(reason)?;
         self.written();
         Ok(())
@@ -136,8 +136,19 @@ fn detail(saved: Saved<MessageBasis>) -> GoalDetail {
         objective: goal.arm.objective,
         status: goal.status,
         iterations: goal.iterations,
-        max_iterations: goal.arm.max_iterations,
         token_budget: goal.arm.token_budget,
+        remaining_tokens: goal
+            .arm
+            .token_budget
+            .filter(|_| goal.consumed.missing == 0)
+            .map(|budget| budget.saturating_sub(goal.consumed.known)),
+        elapsed_seconds: (goal.elapsed_ms
+            + goal
+                .active_since
+                .map_or(0, |start| maka_goal::goal::now_ms().saturating_sub(start)))
+            / 1000,
+        created_at: goal.created_at,
+        retry_at: goal.retry_at,
         consumed: goal.consumed,
         pending: goal.pending.is_some(),
         report: goal.report,
@@ -150,15 +161,21 @@ impl Owner {
     }
     pub async fn goal(&self, input: GoalRead) -> Result<GoalView, String> {
         self.session(&input.session_id).await?;
+        let mut current = self
+            .goals
+            .repository
+            .read(&input.session_id)
+            .await
+            .map_err(reason)?;
+        if let Some(saved) = current.as_mut()
+            && (!saved.goal.status.terminal() || saved.goal.pending.is_some())
+            && let Ok(total) = self.goal_meter(&input.session_id).await
+        {
+            saved.goal.consumed = saved.goal.observed_usage(total);
+        }
         Ok(GoalView {
             enabled: self.settings.goals,
-            current: self
-                .goals
-                .repository
-                .read(&input.session_id)
-                .await
-                .map_err(reason)?
-                .map(detail),
+            current: current.map(detail),
         })
     }
     pub async fn goal_receipt(&self, input: GoalReceiptRead) -> Result<Option<GoalResult>, String> {
@@ -200,7 +217,10 @@ impl Owner {
             .await
             .map_err(reason)?
             .ok_or("goal_missing")?;
-        if saved.goal.id != id || saved.goal.status.terminal() || saved.goal.authority_blocked {
+        if saved.goal.id != id
+            || saved.goal.status != Status::Active
+            || saved.goal.authority_blocked
+        {
             return Err("goal_continuation_stopped".into());
         }
         Ok(())
@@ -234,6 +254,10 @@ impl Owner {
                 BackgroundKind::Goal(id),
             )
             .await?;
+        self.check_goal_tools(&basis)?;
+        Ok(basis)
+    }
+    pub(super) fn check_goal_tools(&self, basis: &MessageBasis) -> Result<(), String> {
         if basis
             .allowed_tools
             .as_ref()
@@ -241,7 +265,7 @@ impl Owner {
         {
             return Err("goal_status_tool_unavailable".into());
         }
-        Ok(basis)
+        Ok(())
     }
     async fn goal_session_idle(&self, session: &str) -> Result<bool, String> {
         let runs = self.runs.lock().await;
@@ -339,15 +363,11 @@ impl Owner {
         match input {
             GoalChange::Create {
                 objective,
-                max_iterations,
                 token_budget,
                 start,
                 approval,
                 ..
             } => {
-                if !self.goal_session_idle(&session).await? {
-                    return self.reject_goal(operation, "goal_session_busy").await;
-                }
                 let hash = Sha256::digest(serde_json::to_vec(operation).map_err(reason)?);
                 let id = Uuid::from_bytes(hash[..16].try_into().expect("SHA-256 prefix"));
                 let grant = match self.goal_approval(&session, id, approval).await {
@@ -359,7 +379,6 @@ impl Owner {
                     operation_id: id,
                     objective,
                     grant,
-                    max_iterations,
                     token_budget,
                     start,
                 };
@@ -382,6 +401,7 @@ impl Owner {
                         &session,
                         arm,
                         baseline,
+                        None,
                         vec![receipt_mutation(operation, &result)?],
                     )
                     .await
@@ -393,6 +413,7 @@ impl Owner {
                 goal_id,
                 revision: expected,
                 action,
+                budget,
                 approval,
                 ..
             } => {
@@ -418,20 +439,33 @@ impl Owner {
                     if action != GoalControl::Resume || saved.goal.pending.is_some() {
                         return self.reject_goal(operation, "goal_approval_invalid").await;
                     }
-                    saved.goal.arm.grant =
-                        match self.goal_approval(&session, goal_id, approval).await {
-                            Ok(grant) => grant,
-                            Err(error) => return self.reject_goal(operation, error).await,
-                        };
+                    let grant = match self.goal_approval(&session, goal_id, approval).await {
+                        Ok(grant) => grant,
+                        Err(error) => return self.reject_goal(operation, error).await,
+                    };
+                    if saved
+                        .goal
+                        .arm
+                        .grant
+                        .model
+                        .as_ref()
+                        .map(|model| &model.binding)
+                        != grant.model.as_ref().map(|model| &model.binding)
+                    {
+                        saved.goal.retry_at = None;
+                    }
+                    saved.goal.arm.grant = grant;
                     saved.goal.arm.language = saved.goal.arm.grant.language;
+                }
+                if let Some(budget) = budget {
+                    if budget.token_budget == Some(0) {
+                        return self.reject_goal(operation, "goal_budget_invalid").await;
+                    }
+                    saved.goal.arm.token_budget = budget.token_budget;
                 }
                 if action == GoalControl::Resume {
                     if let Err(error) = self.goal_privacy().await {
                         return self.reject_goal(operation, error).await;
-                    }
-                    if self.store.session(&session).await.map_err(|error| error.to_string())?.latest_turn_boundary(&session).await.map_err(reason)?.is_some_and(|boundary| matches!(boundary.state,
-                        maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
-                        return self.reject_goal(operation, "goal_resume_session_first").await;
                     }
                     saved.goal.authority_blocked = false;
                 }
