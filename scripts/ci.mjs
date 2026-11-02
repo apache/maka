@@ -47,12 +47,17 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
   ).trim();
   if (process.env.GITHUB_SHA && revision !== process.env.GITHUB_SHA)
     throw new Error('Checkout differs from the workflow revision');
-  if (event === 'pull_request') {
-    baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request.base
-      .sha;
+  if (event === 'push') {
+    baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).before;
+    if (/^0+$/.test(baseline)) baseline = null;
+  }
+  if (baseline !== null || event === 'pull_request') {
+    if (event === 'pull_request')
+      baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request.base
+        .sha;
     await command('git', ['fetch', '--no-tags', '--depth=1', 'origin', baseline], { cwd: root });
   }
-  const changes =
+  let changes =
     baseline === null
       ? null
       : (
@@ -64,6 +69,8 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
         )
           .split('\0')
           .filter(Boolean);
+  // Branch pushes retain full coverage; only documentation-only pushes skip work.
+  if (event === 'push' && changes?.some((path) => !documentation(path))) changes = null;
   const metadata = {};
   if (changes && !changes.some(sharedInput) && changes.some((path) => !documentation(path))) {
     for (const [workspace, manifest] of Object.entries(manifests)) {
@@ -98,7 +105,11 @@ async function main(args) {
     if (process.env.GITHUB_OUTPUT) {
       mkdirSync(temporary, { recursive: true });
       writeFileSync(planFile, JSON.stringify(result));
-      output({ root: Boolean(result.suites.root), workers: result.workers });
+      output({
+        root: Boolean(result.suites.root),
+        tooling: Boolean(result.suites.tooling),
+        workers: result.workers,
+      });
     }
     return;
   }
@@ -148,14 +159,14 @@ async function main(args) {
         'nextest',
         'run',
         '--archive-file',
-        join(temporary, 'root-tests.tar.zst'),
+        join(temporary, `root-tests-${rest[0]}.tar.zst`),
         '--extract-to',
         root,
         '--extract-overwrite',
         '--profile',
         'ci',
         '--partition',
-        rest[0],
+        rest[1],
       ],
       { cwd: root },
     );

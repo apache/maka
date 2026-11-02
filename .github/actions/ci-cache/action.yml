@@ -15,40 +15,33 @@
 # specific language governing permissions and limitations
 # under the License.
 
-name: Publish CI caches
-description: Publish compiler and source outputs before behavior tests.
+name: Publish compiler cache
+description: Keep reusable dependencies even when a behavior test fails.
 inputs:
-  compiled_key:
-    description: Compiler cache key.
+  key:
+    description: Compiler cache key from setup.
     required: true
-  compiled_hit:
+  hit:
     description: Whether the exact compiler cache already exists.
-    default: "false"
-  compiled_writer:
-    description: Whether this worker owns compiler cache publication.
-    default: "false"
-  downloads_key:
-    description: Source cache key.
     required: true
-  downloads_hit:
-    description: Whether the exact source cache already exists.
-    default: "false"
-  downloads_writer:
-    description: Whether this worker owns source cache publication.
-    default: "false"
+  workspace:
+    description: Owning Cargo workspace.
+    default: root
 runs:
   using: composite
   steps:
+    - name: Keep only reusable compiler outputs
+      if: inputs.hit != 'true'
+      shell: bash
+      env:
+        MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
+      run: node scripts/ci/setup.mjs prune
     - uses: actions/cache/save@v6
-      if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && inputs.compiled_writer == 'true' && inputs.compiled_hit != 'true'
-      with:
-        path: target
-        key: ${{ inputs.compiled_key }}
-    - uses: actions/cache/save@v6
-      if: (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/rust-preview'))) && inputs.downloads_writer == 'true' && inputs.downloads_hit != 'true'
+      if: inputs.hit != 'true'
       with:
         path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-        key: ${{ inputs.downloads_key }}
+          target/**/.fingerprint
+          target/**/build
+          target/**/deps/*.*
+          !target/**/deps/*.exe
+        key: ${{ inputs.key }}

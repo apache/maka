@@ -139,8 +139,13 @@ test('embedded Markdown remains an input even when it belongs to another Cargo p
 
 test('documentation is cheap while shared and unknown source inputs request full validation', () => {
   const select = fixture();
-  const docs = select(['docs/guide.md', 'README.md']);
-  assert.deepEqual(Object.keys(docs.suites), ['tooling']);
+  const docs = select([
+    'docs/guide.md',
+    'README.md',
+    'platform/host/README.md',
+    'products/maka/workbench/README.md',
+  ]);
+  assert.deepEqual(Object.keys(docs.suites), []);
   assert.deepEqual(docs.workers, []);
   for (const path of [
     '.cargo/config.toml',
@@ -176,7 +181,8 @@ test('the aggregate accepts only successful planned work, including every select
   const narrow = fixture()(['tools/schema/src/main.rs']);
   checkResults(narrow, { ...results, 'root-tests': { result: 'skipped' } }, false);
   const docs = fixture()(['docs/guide.md']);
-  checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'success' } });
+  checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'skipped' } });
+  assert.throws(() => checkResults(docs, { plan: { result: 'failure' } }), /did not succeed/);
 });
 
 test('Mermaid dependency patches, UI fixtures and outline font inputs reach their consumers', () => {
