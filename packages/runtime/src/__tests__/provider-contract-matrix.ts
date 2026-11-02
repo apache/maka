@@ -112,6 +112,7 @@ export interface ProviderContractDiscoveryPlan {
   query?: Readonly<Record<string, string>>;
   responseShape?: 'array-or-data';
   filter?: 'fallback-models' | 'language-models' | 'tool-capable';
+  excludeModelIdPrefixes?: readonly string[];
 }
 
 /** Derived expectation for a generated `reasoning-replay` cell. */
@@ -295,6 +296,9 @@ function discoveryCell(providerType: ProviderType, def: ProviderDefaults): Provi
             ? { responseShape: discovery.responseShape }
             : {}),
           ...(discovery.filter !== undefined ? { filter: discovery.filter } : {}),
+          ...(discovery.excludeModelIdPrefixes !== undefined
+            ? { excludeModelIdPrefixes: discovery.excludeModelIdPrefixes }
+            : {}),
         },
       };
   }
