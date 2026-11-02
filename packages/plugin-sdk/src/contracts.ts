@@ -562,10 +562,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -815,10 +811,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -1303,353 +1295,6 @@ export const contracts = {
           },
           resources: {},
         },
-        changePlan: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanChange',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-              revision: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-              },
-              action: {
-                $ref: '#/$defs/AgentPlanAction',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'revision', 'action'],
-            $defs: {
-              AgentPlanAction: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'approve',
-                      },
-                      proposalId: {
-                        type: 'string',
-                      },
-                      proposalRevision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      approval: {
-                        $ref: '#/$defs/AgentPlanApproval',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'proposalId', 'proposalRevision', 'approval'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'revise',
-                      },
-                      proposalId: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'proposalId'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'abandon',
-                      },
-                      proposalId: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'proposalId'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'resume',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      approval: {
-                        $ref: '#/$defs/AgentPlanApproval',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'approval'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cancel',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'reason'],
-                  },
-                ],
-              },
-              AgentPlanApproval: {
-                type: 'object',
-                properties: {
-                  target: {
-                    $ref: '#/$defs/AgentScheduledTarget',
-                  },
-                  model: {
-                    $ref: '#/$defs/ModelSelection',
-                  },
-                  thinkingLevel: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ThinkingLevel',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['target', 'model'],
-              },
-              AgentScheduledTarget: {
-                description:
-                  'Exact observed source boundary. This data is checked against the original\nSession; passing it never grants execution by itself.',
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  workspace: {
-                    $ref: '#/$defs/AgentWorkspace',
-                  },
-                  permissions: {
-                    $ref: '#/$defs/AgentWorkspacePermissions',
-                  },
-                  boundaryRevision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  binding: {
-                    $ref: '#/$defs/BindingStamp',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
-              },
-              AgentWorkspace: {
-                type: 'object',
-                properties: {
-                  worktree: {
-                    description:
-                      'Native owner allocation; never accepted from a caller as workspace authority.',
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Binding',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  projectId: {
-                    description: "Optional membership in this Agent's canonical Project catalog.",
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                  },
-                  path: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
-              },
-              Binding: {
-                description: 'Immutable allocation intent, not the current child branch or HEAD.',
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  common_dir: {
-                    type: 'string',
-                  },
-                  source: {
-                    type: 'string',
-                  },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  base_commit: {
-                    type: 'string',
-                  },
-                  directory: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
-              },
-              AgentWorkspacePermissions: {
-                type: 'object',
-                properties: {
-                  access: {
-                    $ref: '#/$defs/AgentWorkspaceAccess',
-                  },
-                  requestPermissions: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: ['access', 'requestPermissions'],
-              },
-              AgentWorkspaceAccess: {
-                description:
-                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
-                type: 'string',
-                enum: ['read_only', 'workspace_write', 'danger_full_access'],
-              },
-              BindingStamp: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  permissionEpoch: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'permissionEpoch'],
-              },
-              ModelSelection: {
-                description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanResult',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
-                  },
-                  actual: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'actual'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'reason'],
-              },
-            ],
-          },
-          resources: {},
-        },
         changeSession: {
           mode: 'mutation',
           input: {
@@ -1774,10 +1419,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -2028,10 +1669,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -3162,10 +2799,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -3415,10 +3048,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -5178,10 +4807,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -5431,10 +5056,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -5758,10 +5379,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -6011,10 +5628,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -8340,10 +7953,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -8593,10 +8202,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -9405,10 +9010,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -9658,10 +9259,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -11096,10 +10693,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -11349,10 +10942,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -11889,10 +11478,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -12142,10 +11727,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -12474,18 +12055,6 @@ export const contracts = {
                 type: ['boolean', 'null'],
                 default: null,
               },
-              collaborationMode: {
-                description: 'Changing collaboration is only allowed while the Session is idle.',
-                anyOf: [
-                  {
-                    $ref: '#/$defs/CollaborationMode',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-                default: null,
-              },
               permissions: {
                 description: 'Omission leaves the permission boundary and its approvals unchanged.',
                 anyOf: [
@@ -12521,10 +12090,6 @@ export const contracts = {
             additionalProperties: false,
             required: ['sessionId', 'expectedRevision', 'title', 'labels'],
             $defs: {
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
-              },
               AgentPermissionChange: {
                 type: 'object',
                 properties: {
@@ -12643,10 +12208,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -12897,10 +12458,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -13171,10 +12728,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -13424,10 +12977,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -13939,753 +13488,6 @@ export const contracts = {
                   'form',
                   'client_capability',
                   'computer_app',
-                ],
-              },
-            },
-          },
-          resources: {},
-        },
-        plan: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanRead',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId'],
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanView',
-            type: 'object',
-            properties: {
-              enabled: {
-                type: 'boolean',
-              },
-              current: {
-                $ref: '#/$defs/AgentPlanSnapshot',
-              },
-            },
-            additionalProperties: false,
-            required: ['enabled', 'current'],
-            $defs: {
-              AgentPlanSnapshot: {
-                description:
-                  'Public business data only; frozen execution authority remains with the owner.',
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  proposal: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanProposal',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  execution: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentPlanExecution',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision'],
-              },
-              PlanProposal: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  planId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanProposalStatus',
-                  },
-                  supersedes: {
-                    type: ['string', 'null'],
-                  },
-                  sourceExecutionId: {
-                    type: ['string', 'null'],
-                  },
-                  submittedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'planId',
-                  'revision',
-                  'turnId',
-                  'artifact',
-                  'status',
-                  'submittedAt',
-                ],
-              },
-              PlanArtifact: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                  },
-                  overview: {
-                    type: ['string', 'null'],
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanStep',
-                    },
-                    minItems: 1,
-                  },
-                  risks: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                },
-                additionalProperties: false,
-                required: ['title', 'steps'],
-              },
-              PlanStep: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    minLength: 1,
-                    pattern: '^[A-Za-z0-9_-]+$',
-                  },
-                  title: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                  files: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                  complexity: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanComplexity',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'title', 'description'],
-              },
-              PlanComplexity: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-              },
-              PlanProposalStatus: {
-                type: 'string',
-                enum: ['pending_approval', 'revision_requested', 'abandoned', 'approved'],
-              },
-              AgentPlanExecution: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  proposalId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanProgress',
-                    },
-                  },
-                  phase: {
-                    $ref: '#/$defs/AgentPlanPhase',
-                  },
-                  invocation: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Invocation',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  reason: {
-                    type: ['string', 'null'],
-                  },
-                  cancellation: {
-                    type: ['string', 'null'],
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'proposalId', 'artifact', 'steps', 'phase', 'updatedAt'],
-              },
-              PlanProgress: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanStepStatus',
-                  },
-                  note: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'status'],
-              },
-              PlanStepStatus: {
-                type: 'string',
-                enum: ['pending', 'in_progress', 'completed', 'skipped'],
-              },
-              AgentPlanPhase: {
-                type: 'string',
-                enum: ['awaiting_admission', 'active', 'interrupted', 'completed', 'cancelled'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
-              },
-            },
-          },
-          resources: {},
-        },
-        planHistory: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanHistoryRead',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-              throughRevision: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
-              },
-              after: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-                default: 0,
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId'],
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanHistory',
-            type: 'object',
-            properties: {
-              throughRevision: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-              },
-              snapshots: {
-                type: 'array',
-                items: {
-                  $ref: '#/$defs/AgentPlanSnapshot',
-                },
-              },
-              nextAfter: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
-              },
-            },
-            additionalProperties: false,
-            required: ['throughRevision', 'snapshots'],
-            $defs: {
-              AgentPlanSnapshot: {
-                description:
-                  'Public business data only; frozen execution authority remains with the owner.',
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  proposal: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanProposal',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  execution: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentPlanExecution',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision'],
-              },
-              PlanProposal: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  planId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanProposalStatus',
-                  },
-                  supersedes: {
-                    type: ['string', 'null'],
-                  },
-                  sourceExecutionId: {
-                    type: ['string', 'null'],
-                  },
-                  submittedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'planId',
-                  'revision',
-                  'turnId',
-                  'artifact',
-                  'status',
-                  'submittedAt',
-                ],
-              },
-              PlanArtifact: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                  },
-                  overview: {
-                    type: ['string', 'null'],
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanStep',
-                    },
-                    minItems: 1,
-                  },
-                  risks: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                },
-                additionalProperties: false,
-                required: ['title', 'steps'],
-              },
-              PlanStep: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    minLength: 1,
-                    pattern: '^[A-Za-z0-9_-]+$',
-                  },
-                  title: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                  files: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                  complexity: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanComplexity',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'title', 'description'],
-              },
-              PlanComplexity: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-              },
-              PlanProposalStatus: {
-                type: 'string',
-                enum: ['pending_approval', 'revision_requested', 'abandoned', 'approved'],
-              },
-              AgentPlanExecution: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  proposalId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanProgress',
-                    },
-                  },
-                  phase: {
-                    $ref: '#/$defs/AgentPlanPhase',
-                  },
-                  invocation: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Invocation',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  reason: {
-                    type: ['string', 'null'],
-                  },
-                  cancellation: {
-                    type: ['string', 'null'],
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'proposalId', 'artifact', 'steps', 'phase', 'updatedAt'],
-              },
-              PlanProgress: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanStepStatus',
-                  },
-                  note: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'status'],
-              },
-              PlanStepStatus: {
-                type: 'string',
-                enum: ['pending', 'in_progress', 'completed', 'skipped'],
-              },
-              AgentPlanPhase: {
-                type: 'string',
-                enum: ['awaiting_admission', 'active', 'interrupted', 'completed', 'cancelled'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
-              },
-            },
-          },
-          resources: {},
-        },
-        planReceipt: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanReceiptRead',
-            type: 'object',
-            properties: {
-              reference: {
-                $ref: '#/$defs/RecoveryRef',
-              },
-            },
-            additionalProperties: false,
-            required: ['reference'],
-            $defs: {
-              RecoveryRef: {
-                type: 'object',
-                properties: {
-                  source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
-                    type: 'string',
-                  },
-                  method: {
-                    type: 'string',
-                  },
-                  operation: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
-                ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              RecoveryContract: {
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'version', 'transport', 'digest'],
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'Nullable_AgentPlanResult',
-            anyOf: [
-              {
-                $ref: '#/$defs/AgentPlanResult',
-              },
-              {
-                type: 'null',
-              },
-            ],
-            $defs: {
-              AgentPlanResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
-                      revision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'revision'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
-                      actual: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'actual'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'reason'],
-                  },
                 ],
               },
             },
@@ -16014,10 +14816,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -16267,10 +15065,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -20222,10 +19016,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -20475,10 +19265,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -21167,10 +19953,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -21420,10 +20202,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -24446,278 +23224,6 @@ export const contracts = {
           },
           resources: {},
         },
-        watchPlan: {
-          mode: 'subscription',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanRead',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId'],
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanView',
-            type: 'object',
-            properties: {
-              enabled: {
-                type: 'boolean',
-              },
-              current: {
-                $ref: '#/$defs/AgentPlanSnapshot',
-              },
-            },
-            additionalProperties: false,
-            required: ['enabled', 'current'],
-            $defs: {
-              AgentPlanSnapshot: {
-                description:
-                  'Public business data only; frozen execution authority remains with the owner.',
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  proposal: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanProposal',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  execution: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentPlanExecution',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision'],
-              },
-              PlanProposal: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  planId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanProposalStatus',
-                  },
-                  supersedes: {
-                    type: ['string', 'null'],
-                  },
-                  sourceExecutionId: {
-                    type: ['string', 'null'],
-                  },
-                  submittedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'planId',
-                  'revision',
-                  'turnId',
-                  'artifact',
-                  'status',
-                  'submittedAt',
-                ],
-              },
-              PlanArtifact: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                  },
-                  overview: {
-                    type: ['string', 'null'],
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanStep',
-                    },
-                    minItems: 1,
-                  },
-                  risks: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                },
-                additionalProperties: false,
-                required: ['title', 'steps'],
-              },
-              PlanStep: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    minLength: 1,
-                    pattern: '^[A-Za-z0-9_-]+$',
-                  },
-                  title: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                  files: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                  complexity: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanComplexity',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'title', 'description'],
-              },
-              PlanComplexity: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-              },
-              PlanProposalStatus: {
-                type: 'string',
-                enum: ['pending_approval', 'revision_requested', 'abandoned', 'approved'],
-              },
-              AgentPlanExecution: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  proposalId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanProgress',
-                    },
-                  },
-                  phase: {
-                    $ref: '#/$defs/AgentPlanPhase',
-                  },
-                  invocation: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Invocation',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  reason: {
-                    type: ['string', 'null'],
-                  },
-                  cancellation: {
-                    type: ['string', 'null'],
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'proposalId', 'artifact', 'steps', 'phase', 'updatedAt'],
-              },
-              PlanProgress: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanStepStatus',
-                  },
-                  note: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'status'],
-              },
-              PlanStepStatus: {
-                type: 'string',
-                enum: ['pending', 'in_progress', 'completed', 'skipped'],
-              },
-              AgentPlanPhase: {
-                type: 'string',
-                enum: ['awaiting_admission', 'active', 'interrupted', 'completed', 'cancelled'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
-              },
-            },
-          },
-          resources: {},
-        },
         watchSchedules: {
           mode: 'subscription',
           input: {
@@ -26803,10 +25309,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -27055,10 +25557,6 @@ export const contracts = {
                 },
                 description:
                   'Executor-owned model selection, independent of Host model connections.',
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 type: 'object',
@@ -28345,10 +26843,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -28597,10 +27091,6 @@ export const contracts = {
                 },
                 description:
                   'Executor-owned model selection, independent of Host model connections.',
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 type: 'object',

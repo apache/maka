@@ -80,7 +80,6 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       'history-focus',
       'activity-focus',
       'stop',
-      'plan',
     ].map((id) => [
       id,
       {

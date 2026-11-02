@@ -38,7 +38,6 @@ mod imports;
 mod interactions;
 mod lifecycle;
 mod notifications;
-mod plan;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
@@ -143,6 +142,8 @@ enum BackgroundKind {
     #[default]
     Schedule,
     Goal(Uuid),
+    /// Planning mode is gone, but a checkpoint parked while executing an approved
+    /// plan still carries this. It must read back so that its recovery can end it.
     Plan(String),
 }
 impl BackgroundKind {
@@ -196,7 +197,6 @@ pub(crate) struct Owner {
     todo: Arc<todo::Todo>,
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
-    plans: Arc<plan::Plans>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
@@ -404,13 +404,6 @@ impl Owner {
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
         }
-        let plans = Arc::new(plan::Plans::new(
-            persistence.store().clone(),
-            prefix.clone(),
-        ));
-        if settings.plans {
-            additional.extend(plans.tools());
-        }
         let goals = Arc::new(goal::Goals::new(
             persistence.store().clone(),
             prefix.clone(),
@@ -474,23 +467,6 @@ impl Owner {
             workers.clone(),
         )
         .and_then(|mut catalog| {
-            catalog.planning.extend(mcp.planning.iter().cloned());
-            if settings.plans {
-                catalog.planning.push("SubmitPlan".into());
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(&["SubmitPlan", "update_plan", "cancel_plan"])
-                    .and_then(|tools| {
-                        tools.with_request_binding(
-                            ["SubmitPlan", "update_plan", "cancel_plan"]
-                                .into_iter()
-                                .map(str::to_owned)
-                                .collect(),
-                            plans.clone(),
-                        )
-                    })
-                    .map_err(|error| error.to_string())?;
-            }
             if graphs.as_ref().is_some_and(|graphs| graphs.enabled()) {
                 catalog.tools = catalog
                     .tools
@@ -521,9 +497,6 @@ impl Owner {
                     .map_err(|error| error.to_string())?;
             }
             if settings.recall {
-                catalog
-                    .planning
-                    .extend(["Recall", "RecallMore", "RecallMaterial"].map(str::to_owned));
                 catalog.tools = catalog
                     .tools
                     .with_request_binding(
@@ -540,7 +513,6 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
-            planning: planning_tools,
             executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
@@ -579,7 +551,6 @@ impl Owner {
                 tools: tools.clone(),
                 definitions: Arc::new(internal_tools),
                 bindings: Arc::new(internal_bindings),
-                planning: planning_tools.clone(),
             },
             prefix.clone(),
             mcp.names.clone(),
@@ -597,7 +568,6 @@ impl Owner {
         ));
         Ok(Arc::new(Self {
             graphs,
-            plans,
             goals,
             auxiliary,
             todo,
@@ -993,34 +963,10 @@ impl Owner {
             });
         }
         use maka_event_log::sessions::SessionMutation;
-        let mode_changed = input
-            .collaboration_mode
-            .is_some_and(|mode| mode != session.configuration.collaboration_mode);
-        if mode_changed {
-            if self.graph_selected(&input.session_id).await? {
-                return Ok(MetadataResult::Rejected {
-                    reason: Rejection::Busy,
-                });
-            }
-            if input.collaboration_mode == Some(CollaborationMode::Plan) && !self.settings.plans {
-                return Ok(MetadataResult::Rejected {
-                    reason: Rejection::ToolsUnavailable,
-                });
-            }
-            if runs.busy(&input.session_id)
-                || self.has_parked_invocation(&input.session_id).await?
-                || !self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.message_queue(&input.session_id).await.map_err(|_| "agent_queue_unavailable")?.entries.is_empty()
-                || self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.latest_turn_boundary(&input.session_id).await.map_err(|_| "agent_execution_unavailable")?
-                    .is_some_and(|boundary| matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
-                return Ok(MetadataResult::Rejected { reason: Rejection::Busy });
-            }
-        }
-        let permissions = input.permissions.is_some() || mode_changed;
+        let permissions = input.permissions.is_some();
         let update = move |configuration: &mut StoredSessionConfiguration| {
             // Policy changes do not turn an automatic title into a manual title.
-            if (input.collaboration_mode.is_none()
-                && input.permissions.is_none()
-                && input.pinned.is_none())
+            if (input.permissions.is_none() && input.pinned.is_none())
                 || configuration.title != input.title
             {
                 configuration.title_is_manual = true;
@@ -1030,11 +976,9 @@ impl Owner {
             if let Some(pinned) = input.pinned {
                 configuration.pinned = pinned;
             }
-            if mode_changed
-                || input.permissions.as_ref().is_some_and(|change| {
-                    change.settings != configuration.permissions || change.revoke_grants
-                })
-            {
+            if input.permissions.as_ref().is_some_and(|change| {
+                change.settings != configuration.permissions || change.revoke_grants
+            }) {
                 configuration.boundary_revision = configuration
                     .boundary_revision
                     .checked_add(1)
@@ -1047,9 +991,6 @@ impl Owner {
             }
             if let Some(change) = input.permissions {
                 configuration.permissions = change.settings;
-            }
-            if let Some(mode) = input.collaboration_mode {
-                configuration.collaboration_mode = mode;
             }
             Ok(())
         };
@@ -1102,10 +1043,10 @@ impl Owner {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        let selected = plan::select(&catalog.tools, basis, &catalog.planning);
         // SendUser and sleep are granted by Bot identity, independent of the tool list.
         let bot = self.bot.is(session);
-        let excluded: Vec<_> = selected
+        let excluded: Vec<_> = catalog
+            .tools
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
@@ -1123,7 +1064,7 @@ impl Owner {
                     })
             })
             .collect();
-        let selected = selected.excluding(&excluded);
+        let selected = catalog.tools.excluding(&excluded);
         let selected = if discovery {
             selected.with_discovery()
         } else {
@@ -1246,11 +1187,6 @@ impl Owner {
         )
         .await?;
         let external = executor.is_some();
-        if session.configuration.collaboration_mode == CollaborationMode::Plan
-            && (!self.settings.plans || external)
-        {
-            return Err("agent_planning_unavailable".into());
-        }
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -1344,7 +1280,6 @@ impl Owner {
                 self.tool_basis.clone()
             },
         };
-        self.prepare_plan_behavior(&id, &mut basis).await?;
         self.prepare_graph_behavior(&id, &mut basis, queued.is_none())
             .await?;
         let identity = self.operation_id(operation);
@@ -1514,7 +1449,6 @@ impl Owner {
             || !self.workers.is_empty()
             || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()
-            || self.plans.keeps_host_awake()
             || self
                 .graphs
                 .as_ref()
@@ -1550,7 +1484,6 @@ impl Owner {
             let todo = owner.todo.finish().await;
             let bot = owner.bot.finish().await;
             let goals = owner.goals.finish().await;
-            let plans = owner.plans.finish().await;
             let graph = match &owner.graphs {
                 Some(graphs) => graphs.finish().await,
                 None => Ok(()),
@@ -1575,7 +1508,6 @@ impl Owner {
             todo?;
             bot?;
             goals?;
-            plans?;
             graph?;
             recap?;
             auxiliary.map_err(|error| error.to_string())?;

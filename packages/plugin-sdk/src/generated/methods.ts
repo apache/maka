@@ -343,11 +343,6 @@ export interface ServiceMethods {
       input: Runtime.AgentGoalChange;
       output: Runtime.AgentGoalResult;
     };
-    changePlan: {
-      mode: 'mutation';
-      input: Runtime.AgentPlanChange;
-      output: Runtime.AgentPlanResult;
-    };
     changeSession: {
       mode: 'mutation';
       input: Runtime.AgentChangeSession;
@@ -582,21 +577,6 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentPendingInteractions;
-    };
-    plan: {
-      mode: 'query';
-      input: Runtime.AgentPlanRead;
-      output: Runtime.AgentPlanView;
-    };
-    planHistory: {
-      mode: 'query';
-      input: Runtime.AgentPlanHistoryRead;
-      output: Runtime.AgentPlanHistory;
-    };
-    planReceipt: {
-      mode: 'query';
-      input: Runtime.AgentPlanReceiptRead;
-      output: Runtime.AgentPlanResult | null;
     };
     project: {
       mode: 'mutation';
@@ -862,11 +842,6 @@ export interface ServiceMethods {
       mode: 'subscription';
       input: Runtime.AgentGoalRead;
       output: Runtime.AgentGoalView;
-    };
-    watchPlan: {
-      mode: 'subscription';
-      input: Runtime.AgentPlanRead;
-      output: Runtime.AgentPlanView;
     };
     watchSchedules: {
       mode: 'subscription';

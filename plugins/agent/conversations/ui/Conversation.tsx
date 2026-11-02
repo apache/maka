@@ -107,7 +107,6 @@ import type { SessionAction } from '../../../../products/maka/workbench/app/sess
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
 import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
-import { createSessionPlan } from '../../../../products/maka/workbench/app/sessionPlan';
 import {
   TurnPanel,
   TurnSummary,
@@ -345,7 +344,6 @@ export function Conversation(props: ConversationProps) {
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
-  const plan = createSessionPlan(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
@@ -2120,7 +2118,6 @@ export function Conversation(props: ConversationProps) {
     modelDetails,
     refreshModel,
     permissions,
-    plan,
     goal,
     projectMcp,
     workspace,

@@ -36,7 +36,6 @@ pub(crate) struct Catalog {
     pub tools: maka_tools::ToolCatalog,
     pub definitions: Arc<Vec<ToolDefinition>>,
     pub bindings: Arc<BTreeMap<String, Option<String>>>,
-    pub planning: Vec<String>,
 }
 struct Snapshot {
     scope: String,
@@ -416,20 +415,11 @@ impl Projects {
                     .map(|(name, binding)| (name.clone(), binding.clone()))
                     .collect();
                 bindings.extend(servers.bindings.clone());
-                let mut planning: Vec<_> = owner
-                    .base
-                    .planning
-                    .iter()
-                    .filter(|name| !suppressed.contains(&name.as_str()))
-                    .cloned()
-                    .collect();
-                planning.extend(servers.planning.clone());
                 let catalog = Arc::new(Catalog {
                     revision: Some(proposal.revision.clone()),
                     tools,
                     definitions: Arc::new(definitions),
                     bindings: Arc::new(bindings),
-                    planning,
                 });
                 let scope = if proposal.file.path.is_some() {
                     proposal.workspace

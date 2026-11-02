@@ -220,7 +220,6 @@ export function installation(
     // Registers SendUser for the Bot Session only; nothing runs until the user opens the Bot.
     bot: true,
     goals: true,
-    plans: true,
     automaticTitles: true,
     recaps: true,
     tools,

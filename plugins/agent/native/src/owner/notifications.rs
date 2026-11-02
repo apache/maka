@@ -158,8 +158,6 @@ impl Owner {
                 session.configuration.tools.as_deref(),
             ),
         };
-        self.prepare_plan_behavior(&source.session_id, &mut basis)
-            .await?;
         self.prepare_graph_behavior(&source.session_id, &mut basis, false)
             .await?;
         let message: MessageInput = text.into();

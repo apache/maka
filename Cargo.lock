@@ -7490,22 +7490,14 @@ name = "maka-assistant"
 version = "0.2.0"
 dependencies = [
  "futures-util",
- "hex",
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
- "maka-event-log",
- "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "unicode-normalization",
- "uuid",
 ]
 
 [[package]]

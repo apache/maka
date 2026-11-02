@@ -195,13 +195,6 @@ export type RuntimeProtocol =
   | SkillPreparationRecord
   | AgentList
   | AgentCreate
-  | AgentPlanRead
-  | AgentPlanView
-  | AgentPlanHistoryRead
-  | AgentPlanHistory
-  | AgentPlanChange
-  | AgentPlanResult
-  | AgentPlanReceiptRead
   | AgentGoalRead
   | AgentGoalView
   | AgentGoalChange
@@ -1115,7 +1108,6 @@ export type AgentBackendPreference =
       kind: 'executor';
       selection: AgentExecutorSelection;
     };
-export type CollaborationMode = 'agent' | 'plan';
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentRejection =
   | 'title_invalid'
@@ -2316,57 +2308,6 @@ export type AgentWorkspaceSelection =
   | {
       kind: 'session';
       sessionId: string;
-    };
-export type PlanComplexity = 'low' | 'medium' | 'high';
-export type PlanProposalStatus =
-  | 'pending_approval'
-  | 'revision_requested'
-  | 'abandoned'
-  | 'approved';
-export type PlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
-export type AgentPlanPhase =
-  | 'awaiting_admission'
-  | 'active'
-  | 'interrupted'
-  | 'completed'
-  | 'cancelled';
-export type AgentPlanAction =
-  | {
-      kind: 'approve';
-      proposalId: string;
-      proposalRevision: number;
-      approval: AgentPlanApproval;
-    }
-  | {
-      kind: 'revise';
-      proposalId: string;
-    }
-  | {
-      kind: 'abandon';
-      proposalId: string;
-    }
-  | {
-      kind: 'resume';
-      executionId: string;
-      approval: AgentPlanApproval;
-    }
-  | {
-      kind: 'cancel';
-      executionId: string;
-      reason: string;
-    };
-export type AgentPlanResult =
-  | {
-      kind: 'committed';
-      revision: number;
-    }
-  | {
-      kind: 'conflict';
-      actual: number;
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
     };
 export type GoalStatus =
   | 'armed'
@@ -5121,7 +5062,8 @@ export interface AgentConfiguration {
    */
   goals?: boolean;
   /**
-   * Enable planning, reviewed approval and execution progress.
+   * Retired with planning mode and ignored. Package updates keep a saved
+   * installation's parameters, so this key must keep validating.
    */
   plans?: boolean;
   /**
@@ -5186,7 +5128,7 @@ export interface McpServerConfiguration {
    */
   tools?: string[] | null;
   /**
-   * Explicitly permit these remote tools in read-only workspaces and plans.
+   * Explicitly permit these remote tools in read-only workspaces.
    * The server's readOnlyHint is descriptive and cannot grant this access.
    */
   readOnlyTools?: string[];
@@ -5892,7 +5834,6 @@ export interface AgentSession {
   parentSessionId: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
-  collaborationMode?: CollaborationMode & string;
   tools?: string[] | null;
   dataSource: AgentDataSource;
   permissions: AgentWorkspacePermissions;
@@ -7239,98 +7180,6 @@ export interface AgentProjectRef {
   id: string;
   revision: string;
 }
-export interface AgentPlanRead {
-  sessionId: string;
-}
-export interface AgentPlanView {
-  enabled: boolean;
-  current: AgentPlanSnapshot;
-}
-/**
- * Public business data only; frozen execution authority remains with the owner.
- */
-export interface AgentPlanSnapshot {
-  revision: number;
-  proposal?: PlanProposal | null;
-  execution?: AgentPlanExecution | null;
-}
-export interface PlanProposal {
-  id: string;
-  planId: string;
-  revision: number;
-  turnId: string;
-  artifact: PlanArtifact;
-  status: PlanProposalStatus;
-  supersedes?: string | null;
-  sourceExecutionId?: string | null;
-  submittedAt: number;
-}
-export interface PlanArtifact {
-  title: string;
-  overview?: string | null;
-  /**
-   * @minItems 1
-   */
-  steps: [PlanStep, ...PlanStep[]];
-  risks?: string[];
-}
-export interface PlanStep {
-  id: string;
-  title: string;
-  description: string;
-  files?: string[];
-  complexity?: PlanComplexity | null;
-}
-export interface AgentPlanExecution {
-  id: string;
-  proposalId: string;
-  artifact: PlanArtifact;
-  steps: PlanProgress[];
-  phase: AgentPlanPhase;
-  invocation?: Invocation | null;
-  reason?: string | null;
-  cancellation?: string | null;
-  updatedAt: number;
-}
-export interface PlanProgress {
-  id: string;
-  status: PlanStepStatus;
-  note?: string | null;
-}
-export interface AgentPlanHistoryRead {
-  sessionId: string;
-  throughRevision?: number | null;
-  after?: number;
-}
-export interface AgentPlanHistory {
-  throughRevision: number;
-  snapshots: AgentPlanSnapshot[];
-  nextAfter?: number | null;
-}
-export interface AgentPlanChange {
-  sessionId: string;
-  revision: number;
-  action: AgentPlanAction;
-}
-export interface AgentPlanApproval {
-  target: AgentScheduledTarget;
-  model: ModelSelection;
-  thinkingLevel?: ThinkingLevel | null;
-}
-/**
- * Exact observed source boundary. This data is checked against the original
- * Session; passing it never grants execution by itself.
- */
-export interface AgentScheduledTarget {
-  sessionId: string;
-  workspace: AgentWorkspace;
-  permissions: AgentWorkspacePermissions;
-  boundaryRevision: number;
-  binding: BindingStamp;
-}
-export interface AgentPlanReceiptRead {
-  reference: RecoveryRef;
-}
 export interface AgentGoalRead {
   sessionId: string;
 }
@@ -7367,6 +7216,17 @@ export interface AgentGoalApproval {
   target: AgentScheduledTarget;
   model: ModelSelection;
   thinkingLevel?: ThinkingLevel | null;
+}
+/**
+ * Exact observed source boundary. This data is checked against the original
+ * Session; passing it never grants execution by itself.
+ */
+export interface AgentScheduledTarget {
+  sessionId: string;
+  workspace: AgentWorkspace;
+  permissions: AgentWorkspacePermissions;
+  boundaryRevision: number;
+  binding: BindingStamp;
 }
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
@@ -7883,10 +7743,6 @@ export interface AgentMetadata {
    * Omission preserves the conversation's position in the catalog.
    */
   pinned?: boolean | null;
-  /**
-   * Changing collaboration is only allowed while the Session is idle.
-   */
-  collaborationMode?: CollaborationMode | null;
   /**
    * Omission leaves the permission boundary and its approvals unchanged.
    */
