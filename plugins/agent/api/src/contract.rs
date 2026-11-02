@@ -42,10 +42,7 @@ mod git;
 pub use git::*;
 mod goal;
 mod imports;
-mod plan;
 pub use goal::*;
-pub use maka_agent_facts::execution::CollaborationMode;
-pub use plan::*;
 mod todo;
 pub use todo::*;
 mod recap;
@@ -97,8 +94,9 @@ pub struct Configuration {
     /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
-    /// Enable planning, reviewed approval and execution progress.
-    #[serde(default)]
+    /// Retired with planning mode and ignored. Package updates keep a saved
+    /// installation's parameters, so this key must keep validating.
+    #[serde(default, skip_serializing)]
     pub plans: bool,
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
@@ -408,9 +406,6 @@ pub struct Metadata {
     /// Omission preserves the conversation's position in the catalog.
     #[serde(default)]
     pub pinned: Option<bool>,
-    /// Changing collaboration is only allowed while the Session is idle.
-    #[serde(default)]
-    pub collaboration_mode: Option<CollaborationMode>,
     /// Omission leaves the permission boundary and its approvals unchanged.
     #[serde(default)]
     pub permissions: Option<PermissionChange>,
@@ -728,8 +723,6 @@ pub struct Session {
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendPreference>,
-    #[serde(default)]
-    pub collaboration_mode: CollaborationMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
     pub data_source: Box<DataSource>,
@@ -1623,26 +1616,6 @@ pub fn contract() -> Contract {
                     },
                 ),
                 (
-                    "plan".into(),
-                    method::<PlanRead, PlanView>(MethodMode::Query),
-                ),
-                (
-                    "watchPlan".into(),
-                    method::<PlanRead, PlanView>(MethodMode::Subscription),
-                ),
-                (
-                    "planHistory".into(),
-                    method::<PlanHistoryRead, PlanHistory>(MethodMode::Query),
-                ),
-                (
-                    "planReceipt".into(),
-                    method::<PlanReceiptRead, Option<PlanResult>>(MethodMode::Query),
-                ),
-                (
-                    "changePlan".into(),
-                    method::<PlanChange, PlanResult>(MethodMode::Mutation),
-                ),
-                (
                     "goal".into(),
                     method::<GoalRead, GoalView>(MethodMode::Query),
                 ),
@@ -1951,6 +1924,21 @@ pub fn contract() -> Contract {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_saved_installation_with_the_retired_plans_setting_still_validates() {
+        for plans in [true, false] {
+            let saved = json!({
+                "plans": plans,
+                "permissions": {"access": "workspace_write", "requestPermissions": true},
+                "workspaceRoots": [],
+                "tools": [],
+            });
+            assert!(jsonschema::is_valid(&configuration_schema(), &saved));
+            let configuration: Configuration = serde_json::from_value(saved).unwrap();
+            assert!(serde_json::to_value(configuration).unwrap()["plans"].is_null());
+        }
+    }
 
     #[test]
     fn history_window_contract_distinguishes_end_from_missing_boundaries() {

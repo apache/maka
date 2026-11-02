@@ -73,8 +73,7 @@ export function ProjectMcp(props: { owner: Owner }) {
                     </If>
                     <If when={server().readOnlyTools.length > 0}>
                       <Text style={{ color: C.warning }}>
-                        {tr('Allowed in read-only sessions and plans')}:{' '}
-                        {server().readOnlyTools.join(', ')}
+                        {tr('Allowed in read-only sessions')}: {server().readOnlyTools.join(', ')}
                       </Text>
                     </If>
                   </View>

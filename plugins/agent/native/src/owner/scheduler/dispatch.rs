@@ -52,7 +52,7 @@ impl Owner {
         if !match &basis.background_kind {
             BackgroundKind::Schedule => self.settings.scheduled_tasks,
             BackgroundKind::Goal(_) => self.settings.goals,
-            BackgroundKind::Plan(_) => self.settings.plans,
+            BackgroundKind::Plan(_) => false,
         } {
             return Err(match &basis.background_kind {
                 BackgroundKind::Schedule => "scheduler_disabled",
@@ -61,16 +61,9 @@ impl Owner {
             }
             .into());
         }
-        match &basis.background_kind {
-            BackgroundKind::Goal(id) => {
-                self.check_goal_background(&boundary.session_id, *id)
-                    .await?
-            }
-            BackgroundKind::Plan(proposal) => {
-                self.check_plan_background(&boundary.session_id, proposal, basis)
-                    .await?
-            }
-            BackgroundKind::Schedule => {}
+        if let BackgroundKind::Goal(id) = &basis.background_kind {
+            self.check_goal_background(&boundary.session_id, *id)
+                .await?
         }
         let source = self.session(&boundary.session_id).await?;
         if source.archived
@@ -130,11 +123,6 @@ impl Owner {
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
-        if session.configuration.collaboration_mode == CollaborationMode::Plan
-            && !matches!(kind, BackgroundKind::Plan(_) | BackgroundKind::Goal(_))
-        {
-            return Err("agent_planning_does_not_authorize_background_execution".into());
-        }
         workspace::validate(
             &self.workspace_roots,
             &session.configuration.workspace,
@@ -175,7 +163,7 @@ impl Owner {
             return Err("graph_background_conflict".into());
         }
 
-        let mut basis = MessageBasis {
+        Ok(MessageBasis {
             mcp_revision: selected_catalog.revision.clone(),
             mcp_catalog: Some(selected_catalog.clone()),
             language,
@@ -206,9 +194,7 @@ impl Owner {
             binding: session.configuration.binding,
             fingerprint: String::new(),
             tools: self.tool_basis.clone(),
-        };
-        self.prepare_plan_behavior(id, &mut basis).await?;
-        Ok(basis)
+        })
     }
     pub(in crate::owner) fn start_schedules(self: &Arc<Self>) {
         if !self.settings.scheduled_tasks {

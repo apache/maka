@@ -68,10 +68,6 @@ impl Setup {
             confirmation: contract::ToolConfirmation::Preapproved,
         }
     }
-    pub(in crate::owner::tests) fn named(mut self, name: &'static str) -> Self {
-        self.tool_name = Some(name);
-        self
-    }
     pub(super) fn javascript() -> Self {
         Self::new(Service::Counter {
             handler: None,

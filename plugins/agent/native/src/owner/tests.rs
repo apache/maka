@@ -20,8 +20,6 @@
 mod http_fixture;
 mod memory_release;
 
-mod plan_tests;
-
 mod goal_tests;
 
 mod recap_tests;

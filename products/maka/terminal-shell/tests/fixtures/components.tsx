@@ -36,10 +36,7 @@ import type {
   AgentSession,
   AgentQueue,
   AgentComputerApps,
-  AgentPlanView,
-  CollaborationMode,
   InteractionRecord,
-  PlanArtifact,
 } from '../../../../../packages/plugin-sdk/src/index.js';
 
 function Sandbox() {
@@ -141,7 +138,7 @@ function Consent() {
   );
 }
 
-function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
+function CompletionComposer(props: { details?: boolean }) {
   const draft = signal('');
   const action = signal('No command');
   const lookup = signal('No lookup');
@@ -173,39 +170,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     },
   });
   const apps = signal<AgentComputerApps>({ entries: props.details ? [makeApp('one')] : [] });
-  const planArtifact: PlanArtifact = {
-    title: 'PLAN_TITLE',
-    overview: 'PLAN_OVERVIEW',
-    steps: [
-      {
-        id: 'one',
-        title: 'PLAN_STEP_ONE',
-        description: 'PLAN_STEP_ONE_DETAIL',
-        files: ['src/one.ts'],
-      },
-      { id: 'two', title: 'PLAN_STEP_TWO', description: 'PLAN_STEP_TWO_DETAIL' },
-    ],
-    risks: ['PLAN_RISK'],
-  };
-  const planView = signal<AgentPlanView>({
-    enabled: !!props.plan,
-    current: {
-      revision: 3,
-      proposal: props.plan
-        ? {
-            id: 'proposal-one',
-            planId: 'plan-one',
-            revision: 1,
-            turnId: 'original-turn',
-            artifact: planArtifact,
-            status: 'pending_approval',
-            submittedAt: 1,
-          }
-        : null,
-      execution: null,
-    },
-  });
-  const mode = signal<CollaborationMode>('agent');
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
@@ -286,47 +250,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
           entries: apps().entries.map((entry) =>
             entry.activity.operationId === operationId ? { ...entry, stopped: true } : entry,
           ),
-        });
-      },
-    },
-    plan: {
-      view: planView,
-      mode,
-      pending: () => false,
-      error: () => '',
-      async selectMode(next) {
-        action.set(`mode:${next}`);
-        mode.set(next);
-      },
-      async change(input) {
-        if (input.kind === 'cancel') {
-          action.set(`plan:cancel:${input.executionId}`);
-          const current = planView().current;
-          planView.set({
-            enabled: true,
-            current: { ...current, execution: { ...current.execution!, phase: 'cancelled' } },
-          });
-          return;
-        }
-        if (input.kind !== 'approve') throw new Error('Unexpected plan action');
-        action.set(`plan:approve:${input.proposalId}:${input.proposalRevision}`);
-        planView.set({
-          enabled: true,
-          current: {
-            revision: 4,
-            proposal: { ...planView().current.proposal!, status: 'approved' },
-            execution: {
-              id: 'execution-one',
-              proposalId: input.proposalId,
-              artifact: planArtifact,
-              steps: [
-                { id: 'one', status: 'completed' },
-                { id: 'two', status: 'in_progress' },
-              ],
-              phase: 'active',
-              updatedAt: 2,
-            },
-          },
         });
       },
     },
@@ -736,8 +659,6 @@ mount(() =>
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer-plan' ? (
-    <CompletionComposer plan />
   ) : scenario === 'composer-details' ? (
     <CompletionComposer details />
   ) : scenario === 'composer' ? (

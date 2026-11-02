@@ -24,8 +24,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-hex.workspace = true
-maka-plugin-core.workspace = true
 maka-agent-facts.workspace = true
 maka-agent-ports.workspace = true
 maka-capabilities.workspace = true
@@ -33,13 +31,5 @@ futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 schemars.workspace = true
-sha2.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
-uuid.workspace = true
 unicode-normalization = "0.1.26"
-
-[dev-dependencies]
-maka-event-log.workspace = true
-tempfile.workspace = true
