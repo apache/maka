@@ -389,6 +389,7 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
     let mut compact = context::input(&base, "final", true);
     compact.supports_vision = true;
     compact.context = Some(ModelRequestContext {
+        codex: None,
         provider_id: "fixture".into(),
         context_window: Some(10_000),
         model_context_window: Some(10_000),

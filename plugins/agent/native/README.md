@@ -90,3 +90,11 @@ WorkHub tasks list newest accepted work first. Each task detail includes its rec
 Reusable WorkHub presets store an explicit connection and model. New ordinary and Graph tasks resolve that target against current settings, so unrelated connection edits do not invalidate the preset. Accepted tasks retain their captured selection and tools; changing or disabling a preset does not rewrite them. New routes report unavailable presets, connections or models before accepting work.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
+
+ChatGPT subscription requests use the Host-owned [account inventory](src/model/codex_inventory.rs).
+Logical model-step preparation shares per-connection discovery, refreshes its five-minute
+compatibility cache on demand, and retries failed discovery after a short jittered backoff.
+Cancelling one waiter leaves shared work with the Host. Each request records its account,
+connection and observed `comp_hash` in `ModelRequested.context`; these are provenance,
+not same-account replay restrictions. Discovery does not change selected models. A fresh
+Host obtains its own account observation before recording compatibility evidence.

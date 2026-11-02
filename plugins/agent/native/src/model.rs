@@ -17,6 +17,7 @@
  * under the License.
  */
 
+pub(crate) mod codex_inventory;
 mod diagnostics;
 pub(crate) mod oauth;
 
@@ -97,6 +98,7 @@ pub(crate) struct AcceptedModel {
 pub(crate) struct Credentials {
     pub executor: maka_model::ModelExecutor,
     pub refresh: Arc<oauth::Authority>,
+    pub inventory: Arc<codex_inventory::Authority>,
 }
 pub(crate) struct Source {
     configuration: Arc<ConfigurationStore>,
@@ -144,6 +146,33 @@ impl Source {
                         provider = %row.provider.name, "Model preparation failed");
                     unavailable()
                 })?);
+            let material = if row.provider.package_id == maka_providers::codex::ID
+                && row.provider.name == "chatgpt"
+            {
+                let binding = ModelBinding {
+                    connection_id: row.connection_id.clone(),
+                    connection_slug: row.slug.clone(),
+                    model: selection.model_id.clone(),
+                };
+                credentials.inventory.ensure(
+                    configuration.clone(), credentials.clone(), definition.clone(),
+                    binding.clone(), &material,
+                ).await;
+                let current = configuration.observe_model(binding).await
+                    .map_err(|_| unavailable())?.ok_or_else(unavailable)?;
+                if current.connection.provider != row.provider
+                    || current.connection.configuration != row.configuration
+                    || current.connection.enabled_model_ids != row.enabled_model_ids
+                    || current.connection.model_overrides != row.model_overrides
+                    || current.connection.request_body_overlay != row.request_body_overlay
+                {
+                    return Err(unavailable());
+                }
+                current
+            } else {
+                material
+            };
+            let row = &material.connection;
             let model = resolve(&definition, row, &selection.model_id, thinking_level).await?;
             revision.name = row.provider.name.clone();
             let source = Self {
@@ -243,6 +272,14 @@ impl Source {
             );
             unavailable()
         })?;
+        let mut request_context = self.accepted.context.clone();
+        if model.adapter == maka_providers::codex::ADAPTER {
+            request_context.codex = Some(
+                self.credentials
+                    .inventory
+                    .provenance(&material, &self.accepted.binding.model),
+            );
+        }
         let credential = match material.credential {
             Some(snapshot) if snapshot.credential().refresh_at.is_some() => Some(
                 self.credentials
@@ -312,7 +349,7 @@ impl Source {
                     .map(|value| value.as_object().expect("validated overlay").clone()),
             },
             options: model.provider_options,
-            context: Some(self.accepted.context.clone()),
+            context: Some(request_context),
             main_output_limit: model.main_output_limit,
             supports_vision: capabilities.vision.unwrap_or(false),
             revision: self.revision.clone(),
@@ -331,6 +368,7 @@ fn request_context(
     let input =
         maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
+        codex: None,
         provider_id: row.provider.name.clone(),
         context_window: input,
         model_context_window: model.context_window,
@@ -379,6 +417,27 @@ impl Source {
                 );
                 unavailable()
             })?;
+        let material = if material.connection.provider.package_id == maka_providers::codex::ID
+            && material.connection.provider.name == "chatgpt"
+        {
+            self.credentials
+                .inventory
+                .ensure(
+                    self.configuration.clone(),
+                    self.credentials.clone(),
+                    self.definition.clone(),
+                    self.accepted.binding.clone(),
+                    &material,
+                )
+                .await;
+            self.configuration
+                .observe_model(self.accepted.binding.clone())
+                .await
+                .map_err(|_| unavailable())?
+                .ok_or_else(unavailable)?
+        } else {
+            material
+        };
         let row = &material.connection;
         if row.provider != self.accepted.provider {
             tracing::warn!(

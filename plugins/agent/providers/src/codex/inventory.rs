@@ -31,6 +31,7 @@ struct Inventory {
 #[derive(Deserialize)]
 struct Row {
     slug: Option<String>,
+    comp_hash: Option<String>,
     visibility: Option<String>,
     priority: Option<f64>,
     display_name: Option<String>,
@@ -83,6 +84,7 @@ pub fn decode_model_inventory(bytes: &[u8]) -> Result<Vec<ModelInfo>, Error> {
             continue;
         }
         let mut info = ModelInfo::new(id);
+        info.codex_compaction_hash = row.comp_hash;
         info.max_output_tokens = output_capacity(id)?;
         info.display_name = row.display_name;
         info.context_window = row

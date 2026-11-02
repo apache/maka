@@ -20,33 +20,29 @@
 use super::*;
 
 #[tokio::test]
-async fn subscription_capacity_survives_discovery_and_older_saved_models() {
+async fn subscription_discovery_preserves_capacity_and_compaction_hash() {
     let provider = Codex::new(Arc::new(
         maka_providers::catalog::Snapshot::bundled().unwrap(),
     ));
     let discovered = maka_providers::codex::decode_model_inventory(
-        br#"{"models":[{"slug":"gpt-6-luna","context_window":272000}]}"#,
+        br#"{"models":[{"slug":"gpt-6-luna","context_window":272000,"comp_hash":"3000"}]}"#,
     )
     .unwrap()
     .remove(0);
     assert_eq!(discovered.max_output_tokens, Some(128_000));
-    for mut info in [
-        discovered,
-        maka_agent_facts::configuration::ModelInfo::new("gpt-6-luna"),
-    ] {
-        info.context_window = Some(272_000);
-        let model = provider
-            .resolve(Resolve {
-                connection: connection(),
-                model: info,
-                overrides: None,
-                thinking_level: None,
-            })
-            .await
-            .unwrap();
-        assert_eq!(model.info.max_output_tokens, Some(128_000));
-        assert_eq!(model.info.context_window, Some(272_000));
-    }
+    assert_eq!(discovered.codex_compaction_hash.as_deref(), Some("3000"));
+    let model = provider
+        .resolve(Resolve {
+            connection: connection(),
+            model: discovered,
+            overrides: None,
+            thinking_level: None,
+        })
+        .await
+        .unwrap();
+    assert_eq!(model.info.max_output_tokens, Some(128_000));
+    assert_eq!(model.info.context_window, Some(272_000));
+    assert_eq!(model.info.codex_compaction_hash.as_deref(), Some("3000"));
     assert!(
         maka_providers::codex::decode_model_inventory(
             br#"{"models":[{"slug":"unknown-future-model"}]}"#,
@@ -215,4 +211,20 @@ fn wire(model: &maka_agent_ports::provider::Model) -> serde_json::Value {
     }
     .encode()
     .unwrap()
+}
+
+#[test]
+fn subscription_inventory_rejects_invalid_compaction_hashes() {
+    for hash in [
+        json!(""),
+        json!("x".repeat(129)),
+        json!(" hash"),
+        json!("hash\n"),
+        json!(42),
+    ] {
+        let bytes =
+            serde_json::to_vec(&json!({"models":[{"slug":"fixture-model","comp_hash":hash}]}))
+                .unwrap();
+        assert!(maka_providers::codex::decode_model_inventory(&bytes).is_err());
+    }
 }

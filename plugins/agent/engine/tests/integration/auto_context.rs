@@ -36,6 +36,7 @@ mod background;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
     Some(ModelRequestContext {
+        codex: None,
         provider_id: "openai".into(),
         context_window: Some(170_000),
         model_context_window: Some(200_000),
