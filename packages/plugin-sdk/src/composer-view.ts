@@ -189,6 +189,12 @@ export interface ComposerComputerAccess {
   stop(operationId: string): Promise<void>;
 }
 
+/** A suggested draft is separate from the text the user is editing. */
+export interface ComposerPrediction {
+  current(): { sourceTurnId: string; text: string } | null;
+  dismiss(sourceTurnId: string): void;
+}
+
 export interface ComposerChecklistSource {
   read(offset: number): Promise<AgentChecklist>;
   watch(offset: number): Promise<UiSubscription<AgentChecklist>>;
@@ -210,6 +216,7 @@ export interface ComposerCompletionSource {
 /** A stable projection of the resident session, without its lifecycle or subscriptions. */
 export interface ComposerSession<Element = unknown> {
   readonly sessionId: string;
+  readonly prediction: ComposerPrediction;
   readonly queue: ComposerQueue;
   readonly attachments: ComposerAttachments<Element>;
   readonly permissions: ComposerPermissions;

@@ -18,13 +18,10 @@
  */
 
 //! Product-owned method publication uses the same policy on open and reconnect.
-use super::{HostError, Input, LoadedDeployment, RootStore, Selection, update};
+use super::{HostError, LoadedDeployment, RootStore, Selection};
 use maka_host_runtime::application::{host::Client, transport::HostEndpoint};
 use maka_plugin_core::{
-    composition::PackageUse,
     contract::{Contract, Interface, Transport},
-    deployment::management::ManagedDeployment,
-    package::PackageSelection,
     plan::Plan,
 };
 
@@ -115,7 +112,6 @@ pub(super) async fn synchronize(
 pub(crate) enum LivePublication {
     Current,
     Updated,
-    Restart,
 }
 
 /// Refresh only explicitly product-owned methods. Original calls keep their
@@ -135,19 +131,6 @@ pub(crate) async fn prepare_live_publication(
     if product_methods.is_empty() {
         return Ok(LivePublication::Current);
     }
-    if update::management_available(client, &publication.configuration, &["read"]) {
-        let metadata: ManagedDeployment = serde_json::from_value(
-            update::query_management(client, "read", serde_json::json!({})).await?,
-        )?;
-        if metadata.source.reference.state_domain != publication.source.state_domain
-            || metadata.source.reference.deployment != publication.source.deployment
-        {
-            return Err("Host management read returned another deployment".into());
-        }
-        if invalid_helper(&metadata.source.input)? {
-            return Ok(LivePublication::Restart);
-        }
-    }
     let mut desired = publication.configuration.clone();
     if refresh_methods(&mut desired, |name, _| {
         Ok(&client.catalogue().describe(name)?.contract)
@@ -160,35 +143,4 @@ pub(crate) async fn prepare_live_publication(
         .configure(publication.source, publication.configuration, desired)
         .await?;
     Ok(LivePublication::Updated)
-}
-
-fn invalid_helper(input: &Input) -> Result<bool, HostError> {
-    for name in ["workspace-processes", "coordinator-workspace-processes"] {
-        let Some(node) = input.instances.get(name) else {
-            continue;
-        };
-        let PackageSelection::Pinned { package } = &node.package else {
-            continue;
-        };
-        if package.id != "maka.agent.workspace-processes"
-            || node.use_package != PackageUse::Host
-            || !node.configuration.parameters.is_empty()
-        {
-            continue;
-        }
-        let settings: maka_workspace_api::processes::Configuration =
-            serde_json::from_value(serde_json::to_value(&node.configuration.values)?)?;
-        if settings
-            .helper
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute() || !path.is_file())
-        {
-            return Ok(true);
-        }
-        #[cfg(windows)]
-        if settings.helper.is_none() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
 }

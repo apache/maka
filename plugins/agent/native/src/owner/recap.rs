@@ -316,9 +316,12 @@ impl Owner {
                             .agent()
                             .filter(|invocation| invocation.session_id == session)
                             .and_then(|invocation| {
-                                scope
-                                    .execution()
-                                    .map(|execution| (execution.clone(), invocation.clone()))
+                                scope.execution().map(|execution| {
+                                    auxiliary::Execution::Invocation(
+                                        execution.clone(),
+                                        invocation.clone(),
+                                    )
+                                })
                             }),
                         binding: source.accepted.binding.clone(),
                         session_id: session,

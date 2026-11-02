@@ -191,6 +191,10 @@ function CompletionComposer(props: { details?: boolean }) {
     recovering: () => false,
     unconfirmed: () => [],
     invocation: () => null,
+    prediction: {
+      current: () => null,
+      dismiss: unexpected,
+    },
     stopping: () => false,
     resumable: () => null,
     resuming: () => false,

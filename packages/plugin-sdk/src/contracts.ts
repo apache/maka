@@ -12637,6 +12637,11 @@ export const contracts = {
               session: {
                 $ref: '#/$defs/AgentSession',
               },
+              lastCompletedTurnId: {
+                description:
+                  "Latest successful source turn at this observation's fence, or none while busy.",
+                type: ['string', 'null'],
+              },
               compacting: {
                 anyOf: [
                   {
@@ -12698,7 +12703,14 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['session', 'compacting', 'through', 'parts', 'toolSeeds'],
+            required: [
+              'session',
+              'lastCompletedTurnId',
+              'compacting',
+              'through',
+              'parts',
+              'toolSeeds',
+            ],
             $defs: {
               AgentSession: {
                 type: 'object',
@@ -13491,6 +13503,54 @@ export const contracts = {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        predictNextMessage: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentPredictNextMessage',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              expectedTurnId: {
+                type: 'string',
+              },
+              trigger: {
+                $ref: '#/$defs/AgentPredictionTrigger',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedTurnId', 'trigger'],
+            $defs: {
+              AgentPredictionTrigger: {
+                type: 'string',
+                enum: ['live', 'catch_up'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMessagePrediction',
+            type: 'object',
+            properties: {
+              sourceTurnId: {
+                type: 'string',
+              },
+              policyRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              suggestion: {
+                type: ['string', 'null'],
+              },
+            },
+            additionalProperties: false,
+            required: ['sourceTurnId', 'policyRevision'],
           },
           resources: {},
         },
@@ -37267,6 +37327,12 @@ export const contracts = {
             title: 'SettingsAssistantPreferences',
             type: 'object',
             properties: {
+              predictions: {
+                $ref: '#/$defs/MessagePredictionSettings',
+              },
+              defaultPredictionPrompt: {
+                type: 'string',
+              },
               language: {
                 anyOf: [
                   {
@@ -37306,6 +37372,8 @@ export const contracts = {
             },
             additionalProperties: false,
             required: [
+              'predictions',
+              'defaultPredictionPrompt',
               'language',
               'resolvedLanguage',
               'compactionPrompt',
@@ -37317,6 +37385,41 @@ export const contracts = {
               'shellTitles',
             ],
             $defs: {
+              MessagePredictionSettings: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  ordinarySessionsOnly: {
+                    type: 'boolean',
+                  },
+                  liveSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  catchUpSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  prompt: {
+                    description: 'None or blank selects the localized built-in instructions.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'enabled',
+                  'ordinarySessionsOnly',
+                  'liveSamplePercent',
+                  'catchUpSamplePercent',
+                  'prompt',
+                ],
+              },
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
@@ -41578,6 +41681,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'message_predictions',
+                      },
+                      settings: {
+                        $ref: '#/$defs/MessagePredictionSettings',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'settings'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'language',
                       },
                       preference: {
@@ -41657,6 +41774,40 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'enabled'],
                   },
+                ],
+              },
+              MessagePredictionSettings: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  ordinarySessionsOnly: {
+                    type: 'boolean',
+                  },
+                  liveSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  catchUpSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  prompt: {
+                    description: 'None or blank selects the localized built-in instructions.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'enabled',
+                  'ordinarySessionsOnly',
+                  'liveSamplePercent',
+                  'catchUpSamplePercent',
                 ],
               },
               LanguagePreference: {
@@ -46588,6 +46739,18 @@ export const contracts = {
                   'Durable deployment input. Plans are derived and never persisted as overrides.',
                 type: 'object',
                 properties: {
+                  base: {
+                    description:
+                      'Optional immutable root composition. Its children remain deployment roots,\nso selecting a baseline does not prepend a namespace to instance identities.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RootComposition',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   instances: {
                     type: 'object',
                     additionalProperties: {
@@ -46607,6 +46770,225 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['instances'],
+              },
+              RootComposition: {
+                description:
+                  'A composition selected at deployment scope, without introducing an instance.\nAdditional roots remain in Input.instances; inherited roots are edited with overrides.',
+                type: 'object',
+                properties: {
+                  package: {
+                    $ref: '#/$defs/PackageRef',
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  overrides: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Override',
+                    },
+                    default: [],
+                  },
+                  ui: {
+                    description: 'Absent inherits the template UI; null explicitly selects no UI.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UiTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['package'],
+              },
+              PackageRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+              Override: {
+                description:
+                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  remove: {
+                    description: 'A persistent deletion, distinct from disabling an instance.',
+                    type: 'boolean',
+                  },
+                  package: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  usePackage: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageUse',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configuration: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configurationFields: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ConfigurationField',
+                    },
+                  },
+                  bindings: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'array',
+                      items: {
+                        $ref: '#/$defs/Target',
+                      },
+                    },
+                    default: {},
+                  },
+                  disabled: {
+                    type: ['boolean', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              PackageUse: {
+                type: 'string',
+                enum: ['host', 'ui', 'composition'],
+              },
+              ConfigurationField: {
+                description:
+                  'An exact object-field edit. Missing value deletes the field; JSON null is a value.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  value: true,
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Target: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'export'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'import',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'name'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
+                      deployment: {
+                        type: 'string',
+                      },
+                      instance: {
+                        $ref: '#/$defs/InstanceId',
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'deployment', 'instance', 'export'],
+                  },
+                ],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              UiTarget: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'id'],
               },
               CompositionNode: {
                 type: 'object',
@@ -46691,23 +47073,6 @@ export const contracts = {
                   },
                 ],
               },
-              PackageRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
-              },
-              PackageUse: {
-                type: 'string',
-                enum: ['host', 'ui', 'composition'],
-              },
               Configuration: {
                 type: 'object',
                 properties: {
@@ -46727,147 +47092,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              Target: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          type: 'string',
-                        },
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'export'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'import',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'name'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
-                      },
-                      deployment: {
-                        type: 'string',
-                      },
-                      instance: {
-                        $ref: '#/$defs/InstanceId',
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'deployment', 'instance', 'export'],
-                  },
-                ],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              Override: {
-                description:
-                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  package: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageRef',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  usePackage: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageUse',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  parameters: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  configuration: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  bindings: {
-                    type: 'object',
-                    additionalProperties: {
-                      type: 'array',
-                      items: {
-                        $ref: '#/$defs/Target',
-                      },
-                    },
-                    default: {},
-                  },
-                  disabled: {
-                    type: ['boolean', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['path'],
-              },
-              UiTarget: {
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  id: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['path', 'id'],
               },
               RemoteObservation: {
                 description:
@@ -47956,6 +48180,18 @@ export const contracts = {
                   'Durable deployment input. Plans are derived and never persisted as overrides.',
                 type: 'object',
                 properties: {
+                  base: {
+                    description:
+                      'Optional immutable root composition. Its children remain deployment roots,\nso selecting a baseline does not prepend a namespace to instance identities.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RootComposition',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   instances: {
                     type: 'object',
                     additionalProperties: {
@@ -47975,6 +48211,225 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['instances'],
+              },
+              RootComposition: {
+                description:
+                  'A composition selected at deployment scope, without introducing an instance.\nAdditional roots remain in Input.instances; inherited roots are edited with overrides.',
+                type: 'object',
+                properties: {
+                  package: {
+                    $ref: '#/$defs/PackageRef',
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  overrides: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Override',
+                    },
+                    default: [],
+                  },
+                  ui: {
+                    description: 'Absent inherits the template UI; null explicitly selects no UI.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UiTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['package'],
+              },
+              PackageRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+              Override: {
+                description:
+                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  remove: {
+                    description: 'A persistent deletion, distinct from disabling an instance.',
+                    type: 'boolean',
+                  },
+                  package: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  usePackage: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageUse',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configuration: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configurationFields: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ConfigurationField',
+                    },
+                  },
+                  bindings: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'array',
+                      items: {
+                        $ref: '#/$defs/Target',
+                      },
+                    },
+                    default: {},
+                  },
+                  disabled: {
+                    type: ['boolean', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              PackageUse: {
+                type: 'string',
+                enum: ['host', 'ui', 'composition'],
+              },
+              ConfigurationField: {
+                description:
+                  'An exact object-field edit. Missing value deletes the field; JSON null is a value.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  value: true,
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Target: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'export'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'import',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'name'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
+                      deployment: {
+                        type: 'string',
+                      },
+                      instance: {
+                        $ref: '#/$defs/InstanceId',
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'deployment', 'instance', 'export'],
+                  },
+                ],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              UiTarget: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'id'],
               },
               CompositionNode: {
                 type: 'object',
@@ -48059,23 +48514,6 @@ export const contracts = {
                   },
                 ],
               },
-              PackageRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
-              },
-              PackageUse: {
-                type: 'string',
-                enum: ['host', 'ui', 'composition'],
-              },
               Configuration: {
                 type: 'object',
                 properties: {
@@ -48095,147 +48533,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              Target: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          type: 'string',
-                        },
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'export'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'import',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'name'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
-                      },
-                      deployment: {
-                        type: 'string',
-                      },
-                      instance: {
-                        $ref: '#/$defs/InstanceId',
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'deployment', 'instance', 'export'],
-                  },
-                ],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              Override: {
-                description:
-                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  package: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageRef',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  usePackage: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageUse',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  parameters: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  configuration: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  bindings: {
-                    type: 'object',
-                    additionalProperties: {
-                      type: 'array',
-                      items: {
-                        $ref: '#/$defs/Target',
-                      },
-                    },
-                    default: {},
-                  },
-                  disabled: {
-                    type: ['boolean', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['path'],
-              },
-              UiTarget: {
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  id: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['path', 'id'],
               },
               RemoteObservation: {
                 description:

@@ -2431,6 +2431,7 @@ function projectComposerSession(
 ): ComposerSession<JSX.Element> {
   return {
     sessionId: owner.sessionId,
+    prediction: owner.prediction,
     computerAccess: owner.computerAccess,
     completion: {
       files: (query, directory) =>

@@ -35,15 +35,18 @@ import { SessionPermissionsSelect } from '../../../../products/maka/workbench/ap
 import type { AgentExecution } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
 import type {
   ComposerBackend,
+  ComposerSession,
   ComposerViewInput,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import {
   C,
   bodyTextStyle,
+  captionTextStyle,
   compact,
+  controlFocusStyle,
+  controlHoverStyle,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
-import { goalStatusLabel } from '../../../../products/maka/workbench/app/GoalDialog';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
@@ -72,6 +75,81 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     session: props.session,
     commands: props.commands,
     active: props.active,
+  });
+  const predictionEditor = signal<{ owner: ComposerSession; node: InputRef } | null>(null);
+  const suggestedMessage = () => {
+    const owner = props.session();
+    if (
+      !owner ||
+      !props.active() ||
+      props.blocked?.() ||
+      !owner.connected() ||
+      !owner.editable() ||
+      owner.loading() ||
+      owner.recovering() ||
+      owner.resuming() ||
+      owner.invocation() !== null ||
+      owner.draft() !== '' ||
+      owner.attachments.files().length > 0 ||
+      completion.composing() ||
+      completion.opened() !== null
+    )
+      return null;
+    return owner.prediction.current();
+  };
+  const acceptSuggestedMessage = (offered: {
+    sessionId: string;
+    sourceTurnId: string;
+    text: string;
+  }) => {
+    const owner = props.session();
+    const suggestion = suggestedMessage();
+    const editor = predictionEditor();
+    if (
+      !owner ||
+      owner.sessionId !== offered.sessionId ||
+      editor?.owner !== owner ||
+      suggestion?.sourceTurnId !== offered.sourceTurnId ||
+      suggestion.text !== offered.text
+    )
+      return;
+    editor.node.focus();
+    editor.node.replaceRange({
+      start: 0,
+      end: 0,
+      text: offered.text,
+      expectedText: '',
+      expectedSelection: { start: 0, end: 0 },
+    });
+    owner.prediction.dismiss(offered.sourceTurnId);
+  };
+  effect(() => {
+    const owner = props.session();
+    const suggestion = suggestedMessage();
+    const editor = predictionEditor();
+    if (!owner || !suggestion || editor?.owner !== owner) return;
+    const offered = {
+      sessionId: owner.sessionId,
+      sourceTurnId: suggestion.sourceTurnId,
+      text: suggestion.text,
+    };
+    const bindings = ['tab', 'right', 'enter'].map((key) =>
+      keymap.bind(key, () => acceptSuggestedMessage(offered), {
+        when: 'always',
+        within: editor.node,
+      }),
+    );
+    bindings.push(
+      keymap.bind(
+        'escape',
+        () => {
+          if (props.session() === owner && suggestedMessage() === suggestion)
+            owner.prediction.dismiss(suggestion.sourceTurnId);
+        },
+        { when: 'always', within: editor.node },
+      ),
+    );
+    return () => bindings.forEach((unbind) => unbind());
   });
   // Files dropped on the conversation attach as they do on the field.
   props.dropFiles?.((event) => {
@@ -392,56 +470,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             const owner = session();
             return (
               <View>
-                <If when={owner.goal?.view()?.current}>
-                  <Button
-                    accessibilityLabel={`${tr('Goal progress')}: ${owner.goal!.view()!.current!.objective}. ${tr(goalStatusLabel(owner.goal!.view()!.current!.status))}`}
-                    tooltip={textTooltip(() => owner.goal!.view()!.current!.objective)}
-                    onPress={inputAction(
-                      () =>
-                        props
-                          .commands()
-                          .find((command) => command.trigger === 'goal')
-                          ?.run(),
-                      null,
-                    )}
-                    style={{
-                      ...controlStyle,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.surface }}
-                    focusStyle={{ backgroundColor: C.surface }}
-                  >
-                    <If when={owner.goal!.view()!.current!.status === 'active'}>
-                      <LoadingIndicator color={C.secondary} />
-                    </If>
-                    <If when={owner.goal!.view()!.current!.status !== 'active'}>
-                      <Icon
-                        name={
-                          owner.goal!.view()!.current!.status === 'achieved'
-                            ? 'statusSuccess'
-                            : owner.goal!.view()!.current!.status === 'blocked'
-                              ? 'statusUnknown'
-                              : 'statusStopped'
-                        }
-                        color={C.secondary}
-                      />
-                    </If>
-                    <Text
-                      style={[
-                        { ...bodyTextStyle, flex: 1, color: C.secondary },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {owner.goal!.view()!.current!.objective}
-                    </Text>
-                    <Text style={{ color: C.muted }}>
-                      {tr(goalStatusLabel(owner.goal!.view()!.current!.status))}
-                    </Text>
-                    <Icon name="right" color={C.muted} />
-                  </Button>
-                </If>
                 <ProjectMcp owner={owner.projectMcp} />
                 <ComposerDetails session={owner} />
               </View>
@@ -580,108 +608,169 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         </Button>
                       </If>
                     </If>
-                    <Input
-                      ref={(node) => {
-                        editor.set(node);
-                        props.attach(node);
-                        completion.attach(owner?.sessionId ?? null, node);
-                      }}
-                      testID="message"
-                      accessibilityLabel={tr('Message composer')}
-                      autoFocus={owner !== null || local !== null}
-                      multiline
-                      submitBehavior="submit"
-                      tokens={skillTokens()}
-                      value={owner?.draft() ?? local?.draft() ?? ''}
-                      readonly={owner ? !owner.editable() : !local || local.sending()}
-                      onChange={
-                        owner
-                          ? ({ value }) => completion.change(owner, value)
-                          : local
-                            ? ({ value }) => local.changeDraft(value)
-                            : undefined
-                      }
-                      onPaste={
-                        owner
-                          ? (event) => completion.paste(owner, event)
-                          : local
-                            ? (event) => paste?.paste(local, event)
-                            : undefined
-                      }
-                      onFileDrop={
-                        owner
-                          ? (event) => {
-                              draggingOverEditor.set(false);
-                              completion.drop(owner, event);
-                            }
-                          : local
+                    <View>
+                      <Input
+                        ref={(node) => {
+                          editor.set(node);
+                          props.attach(node);
+                          completion.attach(owner?.sessionId ?? null, node);
+                          predictionEditor.set(owner ? { owner, node } : null);
+                        }}
+                        testID="message"
+                        accessibilityLabel={tr('Message composer')}
+                        autoFocus={owner !== null || local !== null}
+                        multiline
+                        submitBehavior="submit"
+                        tokens={skillTokens()}
+                        value={owner?.draft() ?? local?.draft() ?? ''}
+                        readonly={owner ? !owner.editable() : !local || local.sending()}
+                        onChange={
+                          owner
+                            ? ({ value }) => completion.change(owner, value)
+                            : local
+                              ? ({ value }) => local.changeDraft(value)
+                              : undefined
+                        }
+                        onPaste={
+                          owner
+                            ? (event) => completion.paste(owner, event)
+                            : local
+                              ? (event) => paste?.paste(local, event)
+                              : undefined
+                        }
+                        onFileDrop={
+                          owner
                             ? (event) => {
                                 draggingOverEditor.set(false);
-                                paste?.drop(local, event);
+                                completion.drop(owner, event);
                               }
-                            : undefined
-                      }
-                      onFileDragEnter={
-                        owner || local ? () => draggingOverEditor.set(true) : undefined
-                      }
-                      onFileDragLeave={
-                        owner || local ? () => draggingOverEditor.set(false) : undefined
-                      }
-                      onFocus={
-                        owner
-                          ? () => completion.pasteFocus(owner)
-                          : local
-                            ? () => paste?.focus(local)
-                            : undefined
-                      }
-                      onBlur={
-                        owner
-                          ? () => completion.pasteBlur(owner)
-                          : local
-                            ? () => paste?.blur(local)
-                            : undefined
-                      }
-                      onSelectionChange={
-                        owner
-                          ? (event) => completion.selection(owner, event)
-                          : local
+                            : local
+                              ? (event) => {
+                                  draggingOverEditor.set(false);
+                                  paste?.drop(local, event);
+                                }
+                              : undefined
+                        }
+                        onFileDragEnter={
+                          owner || local ? () => draggingOverEditor.set(true) : undefined
+                        }
+                        onFileDragLeave={
+                          owner || local ? () => draggingOverEditor.set(false) : undefined
+                        }
+                        onFocus={
+                          owner
+                            ? () => completion.pasteFocus(owner)
+                            : local
+                              ? () => paste?.focus(local)
+                              : undefined
+                        }
+                        onBlur={
+                          owner
+                            ? () => completion.pasteBlur(owner)
+                            : local
+                              ? () => paste?.blur(local)
+                              : undefined
+                        }
+                        onSelectionChange={
+                          owner
+                            ? (event) => completion.selection(owner, event)
+                            : local
+                              ? (event) => {
+                                  selection.set({ ...event });
+                                }
+                              : undefined
+                        }
+                        onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
+                        onCompositionChange={
+                          owner || local
                             ? (event) => {
-                                selection.set({ ...event });
+                                if (owner || pending() === local)
+                                  completion.composition(owner, event);
                               }
                             : undefined
-                      }
-                      onCaretMove={owner ? (event) => completion.caret(owner, event) : undefined}
-                      onCompositionChange={
-                        owner || local
-                          ? (event) => {
-                              if (owner || pending() === local)
-                                completion.composition(owner, event);
-                            }
-                          : undefined
-                      }
-                      onSubmit={
-                        owner
-                          ? (event) => completion.submit(owner, event)
-                          : local
-                            ? (event) => submitPending(local, event.text)
-                            : undefined
-                      }
-                      placeholder={
-                        owner || local
-                          ? tr('Message or run a task…')
-                          : tr('Choose a workspace to begin…')
-                      }
-                      style={[
-                        {
-                          minHeight: hero() && !compact() ? 40 : 24,
-                          maxHeight: compact() ? 64 : 144,
-                          color: C.text,
-                          placeholderColor: C.muted,
-                          ...bodyTextStyle,
-                        },
-                        { pointerEvents: owner || local ? 'auto' : 'none' },
-                      ]}
-                    />
+                        }
+                        onSubmit={
+                          owner
+                            ? (event) => {
+                                const suggestion = suggestedMessage();
+                                if (suggestion && event.text === '')
+                                  acceptSuggestedMessage({
+                                    sessionId: owner.sessionId,
+                                    sourceTurnId: suggestion.sourceTurnId,
+                                    text: suggestion.text,
+                                  });
+                                else completion.submit(owner, event);
+                              }
+                            : local
+                              ? (event) => submitPending(local, event.text)
+                              : undefined
+                        }
+                        placeholder={
+                          suggestedMessage() !== null
+                            ? ''
+                            : owner || local
+                              ? tr('Message or run a task…')
+                              : tr('Choose a workspace to begin…')
+                        }
+                        style={[
+                          {
+                            minHeight: hero() && !compact() ? 40 : 24,
+                            maxHeight: compact() ? 64 : 144,
+                            color: C.text,
+                            placeholderColor: C.muted,
+                            ...bodyTextStyle,
+                            ...(owner !== null && suggestedMessage() !== null
+                              ? {
+                                  position: 'absolute',
+                                  top: 0,
+                                  bottom: 0,
+                                  left: 0,
+                                  right: 0,
+                                }
+                              : {}),
+                          },
+                          { pointerEvents: owner || local ? 'auto' : 'none' },
+                        ]}
+                      />
+                      <If when={owner !== null && suggestedMessage() !== null}>
+                        <Text
+                          accessibilityLabel={tr('Suggested message: {message}', {
+                            message: suggestedMessage()!.text,
+                          })}
+                          style={[
+                            { ...bodyTextStyle, color: `${C.muted}80`, minHeight: 24 },
+                            { pointerEvents: 'box-none' },
+                          ]}
+                        >
+                          {suggestedMessage()!.text}{' '}
+                          <Button
+                            accessibilityLabel={tr('Use suggested message')}
+                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
+                            onPress={inputAction(acceptSuggestedMessage, {
+                              sessionId: owner!.sessionId,
+                              sourceTurnId: suggestedMessage()!.sourceTurnId,
+                              text: suggestedMessage()!.text,
+                            })}
+                            style={{
+                              height: 24,
+                              paddingHorizontal: 8,
+                              borderRadius: 4,
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              backgroundColor: `${C.text}08`,
+                              verticalAlign: 'middle',
+                              pointerEvents: 'auto',
+                            }}
+                            hoverStyle={controlHoverStyle()}
+                            focusStyle={controlFocusStyle()}
+                          >
+                            <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
+                              {tr('Press Tab to accept')}
+                            </Text>
+                          </Button>
+                        </Text>
+                      </If>
+                    </View>
                   </View>
                 </>
               );

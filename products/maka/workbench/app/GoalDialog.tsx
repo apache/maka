@@ -16,7 +16,19 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { cleanup, signal, Text, View, Scroll, inputAction, platform } from 'nsh';
+import {
+  batch,
+  cleanup,
+  effect,
+  keymap,
+  signal,
+  Text,
+  View,
+  Scroll,
+  inputAction,
+  platform,
+} from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
@@ -26,6 +38,7 @@ import { LoadingIndicator, LoadingState } from './Loading';
 import { Icon } from './Icon';
 import {
   C,
+  compact,
   bodyTextStyle,
   captionTextStyle,
   controlStyle,
@@ -48,6 +61,44 @@ export const goalStatusLabel = (status: GoalStatus): MessageKey =>
     }) as const
   )[status];
 export function GoalDialog(props: { goal: ComposerGoal; objective?: string; close(): void }) {
+  const content = createGoalContent(props);
+  return (
+    <Dialog
+      animation="none"
+      onCancel={props.close}
+      onOpenChange={({ open }) => {
+        if (!open) props.close();
+      }}
+      style={{
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 16,
+        backgroundColor: C.scrim,
+      }}
+    >
+      <View
+        style={{
+          width: '100%',
+          maxWidth: 640,
+          maxHeight: '90%',
+          minHeight: 0,
+          backgroundColor: C.surface,
+          borderRadius: 12,
+          padding: 24,
+        }}
+      >
+        {content()}
+      </View>
+    </Dialog>
+  );
+}
+
+export function createGoalContent(props: {
+  goal: ComposerGoal;
+  objective?: string;
+  close?: () => void;
+}) {
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -57,7 +108,22 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
   const editing = signal(false);
   const changingBudget = signal(false);
   const validation = signal(false);
+  const resetEditing = () =>
+    batch(() => {
+      objective.set('');
+      budget.set('');
+      editing.set(false);
+      changingBudget.set(false);
+      validation.set(false);
+    });
   const current = () => props.goal.view()?.current ?? null;
+  let goalId = current()?.id ?? null;
+  effect(() => {
+    const next = current()?.id ?? null;
+    if (next === goalId) return;
+    goalId = next;
+    resetEditing();
+  });
   const creating = () => editing() || props.goal.view()?.current === null;
   const ended = () => current()?.status === 'achieved' || current()?.status === 'cancelled';
   const parsedBudget = () => (budget().trim() === '' ? null : Number(budget().trim()));
@@ -67,11 +133,13 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
     validation.set(true);
     if (!objective().trim() || !validBudget() || props.goal.pending()) return;
     if ((await props.goal.create(objective().trim(), parsedBudget())) && alive) {
-      editing.set(false);
-      objective.set('');
-      budget.set('');
-      validation.set(false);
+      resetEditing();
     }
+  };
+  const cancelEditing = () => {
+    if (props.goal.pending()) return;
+    if (!current() && props.close) props.close();
+    else resetEditing();
   };
   const editBudget = () => {
     budget.set(current()?.tokenBudget?.toString() ?? '');
@@ -108,71 +176,55 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
       <Text style={{ color: primary ? C.background : C.text }}>{tr(label)}</Text>
     </Button>
   );
-  return (
-    <Dialog
-      animation="none"
-      onCancel={props.close}
-      onOpenChange={({ open }) => {
-        if (!open) props.close();
-      }}
-      style={{
-        flex: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 16,
-        backgroundColor: C.scrim,
-      }}
-    >
-      <View
-        style={{
-          width: '100%',
-          maxWidth: 640,
-          maxHeight: '90%',
-          minHeight: 0,
-          backgroundColor: C.surface,
-          borderRadius: 12,
-          padding: 24,
-          gap: 16,
-        }}
-      >
-        <View
-          style={{
-            flexDirection: 'row',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-          }}
-        >
-          <Text
+  return () => {
+    const root = signal<ViewRef | null>(null);
+    effect(() => {
+      const node = root();
+      if (node && (creating() || changingBudget()))
+        return keymap.bind('escape', cancelEditing, { when: 'always', within: node });
+    });
+    return (
+      <View ref={(node) => root.set(node)} style={{ minHeight: 0, flexShrink: 1, gap: 16 }}>
+        <If when={!!props.close}>
+          <View
             style={{
-              ...bodyTextStyle,
-              fontSize: 18,
-              fontWeight: '600',
-              color: C.text,
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
             }}
           >
-            {tr(creating() ? 'New Goal' : 'Goal')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Close Goal')}
-            tooltip={textTooltip(() => tr('Close Goal'))}
-            onPress={inputAction(props.close, null)}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-            activeStyle={{ backgroundColor: C.line }}
-          >
-            <Icon name="close" color={C.secondary} />
-          </Button>
-        </View>
+            <Text
+              style={{
+                ...bodyTextStyle,
+                fontSize: 18,
+                fontWeight: '600',
+                color: C.text,
+              }}
+            >
+              {tr(creating() ? 'New Goal' : 'Goal')}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Close Goal')}
+              tooltip={textTooltip(() => tr('Close Goal'))}
+              onPress={inputAction(() => props.close!(), null)}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+              activeStyle={{ backgroundColor: C.line }}
+            >
+              <Icon name="close" color={C.secondary} />
+            </Button>
+          </View>
+        </If>
         <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
           <View style={{ gap: 16 }}>
             <If when={!props.goal.view()}>
               <LoadingState />
             </If>
             <If when={creating()}>
-              <View style={{ gap: 8, height: platform.isTerminal ? 96 : 160 }}>
+              <View style={{ gap: 8, height: platform.isTerminal ? 96 : compact() ? 120 : 160 }}>
                 <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Objective')}</Text>
                 <SettingsEditor
                   label={tr('Objective')}
@@ -257,7 +309,8 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
                   placeholder={tr('No limit')}
                   value={budget()}
                   change={(value) => budget.set(value)}
-                  disabled={props.goal.pending()}
+                  autoFocus={changingBudget() && !creating()}
+                  disabled={props.goal.pending() || (!creating() && ended())}
                 />
                 <Text
                   style={{
@@ -290,15 +343,15 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
           <If when={props.goal.pending()}>
             <LoadingIndicator />
           </If>
+          <If when={creating() || changingBudget()}>{action('Cancel editing', cancelEditing)}</If>
           <If when={creating()}>{action('Start Goal', submit, true)}</If>
-          <If when={!!current() && !creating() && ended()}>
+          <If when={!!current() && !creating() && !changingBudget() && ended()}>
             {action('New Goal', () => {
+              resetEditing();
               editing.set(true);
-              budget.set('');
             })}
           </If>
           <If when={!!current() && !creating() && !ended()}>
-            {action('Change budget', editBudget)}
             <If when={changingBudget()}>
               {action(
                 current()?.status === 'budget_limited' ? 'Apply and resume' : 'Apply budget',
@@ -307,6 +360,7 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
               )}
             </If>
             <If when={!changingBudget()}>
+              {action('Change budget', editBudget)}
               {action('Cancel Goal', () => props.goal.change('cancel'))}
               <If when={!current()!.pending}>
                 {action('Complete Goal', () => props.goal.change('complete'))}
@@ -321,6 +375,6 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
           </If>
         </View>
       </View>
-    </Dialog>
-  );
+    );
+  };
 }

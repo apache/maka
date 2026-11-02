@@ -7378,6 +7378,7 @@ dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
+ "fastrand",
  "futures-util",
  "hex",
  "image",
