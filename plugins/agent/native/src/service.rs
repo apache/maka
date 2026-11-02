@@ -1159,6 +1159,10 @@ impl Handler for Agent {
 async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, String> {
     let selection = match &input.scope {
         SessionListScope::All => CatalogSelection::All,
+        SessionListScope::Children { session_id } => {
+            owner.require_session(session_id).await?;
+            CatalogSelection::Children(session_id.clone())
+        }
         SessionListScope::Project { project_id } => CatalogSelection::Project(*project_id),
         SessionListScope::Workspace { session_id } => CatalogSelection::Workspace {
             session_id: session_id.clone(),
@@ -1180,7 +1184,7 @@ async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, Stri
 fn catalog_filter(input: &List) -> maka_event_log::sessions::CatalogFilter {
     maka_event_log::sessions::CatalogFilter {
         archived_only: matches!(input.filter, SessionFilter::Archived),
-        include_archived: matches!(input.filter, SessionFilter::Archived),
+        include_archived: input.include_archived || matches!(input.filter, SessionFilter::Archived),
         pending_only: matches!(input.filter, SessionFilter::NeedsYou),
     }
 }

@@ -281,3 +281,44 @@ async fn pages_keep_the_root_default_independent_of_the_visible_page_and_fence_o
     );
     first.finish().await;
 }
+
+#[tokio::test]
+async fn model_search_returns_executable_selections_and_effective_thinking_metadata() {
+    let fixture = Fixture::new().await;
+    let first = fixture
+        .add(
+            "first",
+            "Local Lab",
+            vec!["reasoner-v1".into(), "plain-v1".into()],
+            json!({
+                "reasoner-v1": {"displayName":"Deep Reasoner", "thinkingLevels":["low","high"],
+                    "defaultThinkingLevel":"high", "contextWindow":64000, "inputLimit":48000,
+                    "maxOutputTokens":8000}
+            }),
+        )
+        .await;
+    fixture
+        .add("other", "Other", vec!["reasoner-v1".into()], json!({}))
+        .await;
+    let page = fixture
+        .models(json!({"kind":"start", "query":"LAB deep V1", "connectionId":first.connection_id}))
+        .await
+        .unwrap();
+    assert_eq!(page["choices"].as_array().unwrap().len(), 1);
+    let choice = &page["choices"][0];
+    assert_eq!(
+        choice["selection"],
+        json!({"connectionId":first.connection_id,"revision":first.revision,"modelId":"reasoner-v1"})
+    );
+    assert_eq!(choice["thinkingLevels"], json!(["low", "high"]));
+    assert_eq!(choice["defaultThinkingLevel"], "high");
+    assert_eq!(choice["limits"]["contextWindow"], 64000);
+    assert_eq!(choice["limits"]["inputLimit"], 48000);
+    assert_eq!(choice["limits"]["overrides"]["maxOutputTokens"], 8000);
+    let empty = fixture
+        .models(json!({"kind":"start","query":"not-in-the-catalog"}))
+        .await
+        .unwrap();
+    assert_eq!(empty["choices"], json!([]));
+    fixture.finish().await;
+}

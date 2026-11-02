@@ -1697,3 +1697,99 @@ async fn desktop_loading_indicator_keeps_rotating_after_scrolling_away_and_back(
     desktop.close().await;
     fixture.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandchild() {
+    use maka_agent_api::session::StoredSessionConfiguration;
+    let mut fixture = Fixture::open().await;
+    let original = fixture
+        .store
+        .session(&fixture.session)
+        .await
+        .unwrap()
+        .get_session::<StoredSessionConfiguration>(&fixture.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
+    let prefix = fixture.session.rsplit_once('_').unwrap().0;
+    let child = format!("{prefix}_{}", Uuid::new_v4().simple());
+    let grandchild = format!("{prefix}_{}", Uuid::new_v4().simple());
+    for (id, parent, title) in [
+        (&child, &fixture.session, "Archived worker"),
+        (&grandchild, &child, "Verification worker"),
+    ] {
+        let mut configuration = original.clone();
+        configuration.parent_session_id = Some(parent.clone());
+        configuration.title = title.into();
+        configuration.backend = Some(
+            serde_json::from_value(json!({
+                "kind":"model", "connectionId":fixture.selection["connectionId"],
+                "modelId":fixture.selection["modelId"], "thinkingLevel":null,
+            }))
+            .unwrap(),
+        );
+        fixture
+            .store
+            .create_session(id, id, &configuration, 1)
+            .await
+            .unwrap();
+    }
+    fixture
+        .store
+        .session(&child)
+        .await
+        .unwrap()
+        .change_session_archived::<StoredSessionConfiguration>(&child, None, true, 2)
+        .await
+        .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let width = if layout == "narrow" { 640 } else { width };
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    if !desktop.controls("Expand session browser").is_empty() {
+        desktop.press("Expand session browser").await;
+    }
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Child conversations").await;
+    let first = desktop.control("Open Archived worker").await;
+    desktop.press("Expand Archived worker").await;
+    let last = desktop.control("Open Verification worker").await;
+    assert!(
+        last.left() > first.left(),
+        "a grandchild must be visibly nested beneath its parent"
+    );
+    assert_eq!(first.size.width - last.size.width, px(16.0));
+    assert!(
+        last.right() <= px(width as f32 - 16.0),
+        "deep rows stay inside the dialog's viewport"
+    );
+    desktop.artifact(&format!("child-conversations-{theme}-{layout}"));
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Open Verification worker").await;
+    desktop.target_after(previous).await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("OPENED_TREE_GRANDCHILD").await;
+    desktop.press("Send message").await;
+    desktop.request(&mut fixture).await.finish().await;
+    let history = desktop
+        .client
+        .query(
+            "agent",
+            "history",
+            json!({"sessionId":grandchild,"position":{"kind":"start"}}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        history.to_string().contains("OPENED_TREE_GRANDCHILD"),
+        "opening a descendant must navigate to that conversation"
+    );
+    desktop.close().await;
+    fixture.finish().await;
+}

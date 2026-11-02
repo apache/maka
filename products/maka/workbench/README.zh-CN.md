@@ -49,6 +49,10 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 
 在会话操作菜单中选择 **置顶会话**，会话会出现在列表顶部的 **已置顶** 分组；选择 **取消置顶** 可恢复普通列表位置。Host 持久化这一选择，并在不同界面和重启后保持一致的分页顺序。
 
+侧栏操作菜单中的**子会话**打开独立树形窗口，不让深层级挤占侧栏。展开箭头按需加载子会话，包括归档会话和其他工作区中的子会话；点击标题打开对应会话。分支沿用现有会话目录分页，层级较深时可横向滚动。创建关系来自 `parentSessionId`，与 fork 的历史来源独立。
+
+![包含归档祖先的子会话树，由真实 Host 的 GPUI 桌面测试截取。](screenshots/child-conversations-dark-wide.png)
+
 **设置 → 技能**可从 GitHub `owner/repository`、Git URL、GitHub 子目录 URL，或所连接 Host 上的目录发现技能。选择技能后，可安装到全局或项目的 `.agents/skills`、`.maka/skills`。同名技能按项目 `.maka`、项目 `.agents`、全局 `.maka`、全局 `.agents` 的顺序整体覆盖；卡片保留每个位置的实例并标明是否生效。删除高优先级实例后，下一层自动生效。
 
 只有通过 Maka 安装的技能显示更新按钮。更新从登记的来源替换整个目录及其资源，并覆盖本地修改。四个标准目录中的其他技能同样可以查看和删除。来源登记保存在 Host 数据库中，不创建 npx lockfile 或另一套私有技能副本。

@@ -27,6 +27,10 @@
 - [src/composition.ts](src/composition.ts)构造实例、绑定和安装身份。
 - [scripts/build.mjs](scripts/build.mjs)将包内容与组合生成代码输出到 `dist`。
 
+默认安装提供 `ModelList` 工具，与设置界面共用模型目录。以 `{ "kind": "start", "query": "...", "connectionId": "..." }` 开始查询（两个筛选项均可省略）。每项包含可直接用于 `SessionSend` / `SessionResume` 的 `selection`、支持与默认推理档位，以及有效限制。使用 `{ "kind": "continue", "revision": page.revision, "cursor": page.next }` 翻页；目录变化时重新查询。仅列出已启用连接中已启用且受运行时支持的模型，不保证远端连通性、凭证或额度可用；结果不包含凭证、URL 或请求覆盖内容。
+
+侧栏会话菜单中的**子会话**在独立、适应窗口大小的弹窗中显示后代树。展开箭头按需读取直接子会话，跨工作区且包含归档会话；点击标题打开对应会话。树沿用不可变的 `parentSessionId` 创建关系，而非 fork 的历史来源。深层树可横向滚动，长分支通过现有会话目录分页加载。
+
 ## 运行与开发
 
 在仓库根目录运行：

@@ -616,6 +616,11 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
             })),
           }
         : {}),
+      ...(configuration.agent.tools.some(
+        (tool) => tool.target.kind === 'import' && tool.target.name === 'settings',
+      )
+        ? { settings: [local('settings', 'Settings')] }
+        : {}),
       ...(computerMethods.length ? { computer: [local('workspace-computer', 'computer')] } : {}),
       ...(webMethods.length ? { web: [local('workspace-web', 'web')] } : {}),
       ...(skillCalls.length ? { skills: [local('skills', 'skills')] } : {}),
