@@ -27,6 +27,10 @@ This directory selects the Host and UI plugin packages shipped with Maka and bin
 - [src/composition.ts](src/composition.ts) builds instances, bindings and installation identities.
 - [scripts/build.mjs](scripts/build.mjs) emits package bytes and authoring code into `dist`.
 
+The default installation exposes `ModelList`, backed by the same model directory as Settings. Start with `{ "kind": "start", "query": "...", "connectionId": "..." }` (both filters are optional). Each choice includes a `selection` accepted by `SessionSend` / `SessionResume`, supported and default thinking levels, and effective limits. Continue with `{ "kind": "continue", "revision": page.revision, "cursor": page.next }`; restart if the directory changed. Only enabled connections and enabled models supported by the runtime are listed. Catalog availability does not guarantee provider reachability, credentials or quota. Credentials, URLs and request overlays are not returned.
+
+The sidebar conversation menu opens **Child conversations** in a separate, window-sized dialog. Disclosure arrows load direct children across workspaces, including archived conversations; titles open the requested conversation. The outline uses immutable `parentSessionId` creation ancestry, not fork-source history. Deep trees scroll horizontally and long branches page through the existing session directory.
+
 ## Run and develop
 
 From the repository root:

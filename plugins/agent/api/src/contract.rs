@@ -235,6 +235,9 @@ pub fn configuration_schema() -> Value {
 #[schemars(rename = "AgentList")]
 pub struct List {
     pub filter: SessionFilter,
+    /// Include archived conversations alongside active ones.
+    #[serde(default)]
+    pub include_archived: bool,
     pub position: SessionPosition,
     #[serde(default)]
     pub scope: SessionListScope,
@@ -255,6 +258,11 @@ pub enum SessionListScope {
     All,
     Project {
         project_id: uuid::Uuid,
+    },
+    /// Direct children of an owned session, across workspaces.
+    Children {
+        #[schemars(length(min = 1))]
+        session_id: String,
     },
     /// Resolve the exact workspace from an owned session, never a caller path.
     Workspace {

@@ -345,6 +345,11 @@ export const contracts = {
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
+              includeArchived: {
+                description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
+              },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
               },
@@ -461,6 +466,22 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'projectId'],
+                  },
+                  {
+                    description: 'Direct children of an owned session, across workspaces.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'children',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -10858,6 +10879,11 @@ export const contracts = {
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
+              includeArchived: {
+                description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
+              },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
               },
@@ -10974,6 +11000,22 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'projectId'],
+                  },
+                  {
+                    description: 'Direct children of an owned session, across workspaces.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'children',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:

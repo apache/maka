@@ -2291,6 +2291,10 @@ export type AgentSessionListScope =
       projectId: string;
     }
   | {
+      kind: 'children';
+      sessionId: string;
+    }
+  | {
       kind: 'workspace';
       sessionId: string;
     };
@@ -7205,6 +7209,10 @@ export interface SkillRequestFailure {
 }
 export interface AgentList {
   filter: AgentSessionFilter;
+  /**
+   * Include archived conversations alongside active ones.
+   */
+  includeArchived?: boolean;
   position: AgentSessionPosition;
   scope?: AgentSessionListScope;
   /**

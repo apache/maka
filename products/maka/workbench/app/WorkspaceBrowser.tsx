@@ -1014,6 +1014,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               close={closeActions}
               notice={(message) => navigationNotice.set({ kind: 'action', message })}
               change={(action) => props.changeSession(action, target.origin)}
+              openSession={(id) => {
+                void select({ id, origin: target.origin });
+              }}
               openBeside={
                 props.canOpenBeside?.() &&
                 target.session.id !== props.selected() &&
