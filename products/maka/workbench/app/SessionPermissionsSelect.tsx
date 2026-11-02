@@ -211,8 +211,8 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
             alignItems: 'center',
             gap: 4,
           }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
+          hoverStyle={{ backgroundColor: C.line }}
+          focusStyle={{ backgroundColor: C.line }}
           disabledStyle={controlDisabledStyle}
         >
           <Text

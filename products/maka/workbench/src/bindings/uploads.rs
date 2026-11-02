@@ -20,6 +20,7 @@
 //! Native intake snapshots files and images; upload observations contain only metadata.
 
 use super::{EDITOR, Owner, Scope, ScopedHost, execute};
+use maka_agent_facts::attachment::sniff_mime;
 use maka_app_client::Client;
 use maka_capabilities::call::ReadResource;
 use maka_ui_support::file::{FileSnapshot, read_selected};
@@ -75,6 +76,39 @@ impl StagedFile {
     pub fn metadata(&self) -> JsonValue {
         self.snapshot.metadata()
     }
+
+    /// Selects this snapshot's bytes for the renderer, so they stay out of the JS heap.
+    pub fn image_uri(&self) -> Option<String> {
+        is_image(&self.snapshot).then(|| format!("{STAGED_IMAGE_PREFIX}{}", self.id))
+    }
+}
+
+impl Drop for StagedFile {
+    fn drop(&mut self) {
+        self.owner
+            .staged_images
+            .lock()
+            .expect("staged images")
+            .remove(&self.id);
+    }
+}
+
+pub(super) const STAGED_IMAGE_PREFIX: &str = "asset:/staged-image/";
+
+fn is_image(snapshot: &FileSnapshot) -> bool {
+    sniff_mime(snapshot.contents()).is_some_and(|mime| mime.starts_with("image/"))
+}
+
+pub(super) fn staged_image(owner: &Owner, id: &str) -> Result<Vec<u8>, String> {
+    let id = Uuid::parse_str(id).map_err(|_| "Invalid staged image selector")?;
+    let snapshot = owner
+        .staged_images
+        .lock()
+        .expect("staged images")
+        .get(&id)
+        .cloned()
+        .ok_or("The staged image was removed")?;
+    Ok(snapshot.contents().to_vec())
 }
 
 pub(super) async fn stage_files(
@@ -95,8 +129,16 @@ pub(super) async fn stage_files(
 }
 
 pub(super) fn staged_file(owner: Arc<Owner>, snapshot: Arc<FileSnapshot>) -> Instance<StagedFile> {
+    let id = Uuid::new_v4();
+    if is_image(&snapshot) {
+        owner
+            .staged_images
+            .lock()
+            .expect("staged images")
+            .insert(id, snapshot.clone());
+    }
     Instance::new(StagedFile {
-        id: Uuid::new_v4(),
+        id,
         owner,
         snapshot,
     })

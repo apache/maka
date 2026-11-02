@@ -59,6 +59,7 @@ struct Owner {
     tasks: StdMutex<Option<TaskTracker>>,
     plugins: plugins::Packages,
     reload: crate::reload::UiReload,
+    staged_images: StdMutex<HashMap<Uuid, Arc<maka_ui_support::file::FileSnapshot>>>,
 }
 struct Scope {
     owner: Arc<Owner>,
@@ -141,6 +142,7 @@ impl Bindings {
                 tasks: StdMutex::new(Some(TaskTracker::new())),
                 plugins: Default::default(),
                 reload: Default::default(),
+                staged_images: Default::default(),
             }),
         }
     }

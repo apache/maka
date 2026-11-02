@@ -19,7 +19,7 @@
 
 import { textTooltip } from './ui';
 import { tr } from './locale';
-import { inputAction, Scroll, Text, View } from 'nsh';
+import { Image, inputAction, Scroll, Text, View } from 'nsh';
 import type { JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import type { AgentHistoryAttachment } from '../../../../packages/plugin-sdk/src/index.js';
@@ -68,6 +68,82 @@ const removeStyle = () =>
     borderColor: C.line,
   }) as const;
 
+function FileTile(props: { name: string; bytes: number }) {
+  return (
+    <View
+      tooltip={textTooltip(() => `${props.name}\n${size(props.bytes)}`)}
+      style={fileTileStyle()}
+    >
+      <Icon name="file" color={C.secondary} />
+      <View style={{ flex: 1, minWidth: 0, paddingRight: 24, gap: 4 }}>
+        <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
+          {props.name}
+        </Text>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>{size(props.bytes)}</Text>
+      </View>
+    </View>
+  );
+}
+
+/** Files selected before the conversation exists, which have no upload to read back. */
+export function StagedAttachments(props: {
+  files: { id: string; name: string; bytes: number; imageUri: string | null }[];
+  remove(id: string): void;
+}) {
+  return (
+    <If when={props.files.length > 0}>
+      <Scroll horizontal accessibilityLabel={tr('Draft attachments')} style={{ flexShrink: 0 }}>
+        <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: 8 }}>
+          <Each of={props.files} key={(file) => file.id}>
+            {(file) => {
+              const original = file();
+              return (
+                <View style={{ flexShrink: 0 }}>
+                  <If
+                    when={original.imageUri}
+                    else={<FileTile name={original.name} bytes={original.bytes} />}
+                  >
+                    <View
+                      tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)}`)}
+                      style={{
+                        width: 64,
+                        height: 64,
+                        backgroundColor: C.surface,
+                        borderWidth: 1,
+                        borderColor: C.line,
+                        borderRadius: 8,
+                        overflow: 'hidden',
+                      }}
+                    >
+                      <Image
+                        src={original.imageUri!}
+                        style={[{ width: 64, height: 64 }, { objectFit: 'cover' }]}
+                      />
+                    </View>
+                  </If>
+                  <Button
+                    accessibilityLabel={tr('Remove attachment {name}', { name: original.name })}
+                    tooltip={textTooltip(() => tr('Remove {name}', { name: original.name }))}
+                    onPress={inputAction(props.remove, original.id)}
+                    style={{
+                      ...removeStyle(),
+                      ...(original.imageUri ? { right: undefined, left: 36 } : {}),
+                    }}
+                    hoverStyle={{ backgroundColor: C.line }}
+                    focusStyle={{ borderColor: C.accent }}
+                  >
+                    <Icon name="close" color={C.secondary} />
+                  </Button>
+                </View>
+              );
+            }}
+          </Each>
+        </View>
+      </Scroll>
+    </If>
+  );
+}
+
 export function DraftAttachments(props: {
   draft: ComposerAttachments<JSX.Element>;
   preview(image: ImagePreview): void;
@@ -115,24 +191,7 @@ export function DraftAttachments(props: {
                   <View style={{ flexShrink: 0 }}>
                     <If
                       when={image(original.mimeType)}
-                      else={
-                        <View
-                          tooltip={textTooltip(() => `${original.name}\n${size(original.bytes)}`)}
-                          style={fileTileStyle()}
-                        >
-                          <Icon name="file" color={C.secondary} />
-                          <View style={{ flex: 1, minWidth: 0, paddingRight: 24, gap: 4 }}>
-                            <Text
-                              style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}
-                            >
-                              {original.name}
-                            </Text>
-                            <Text style={{ ...captionTextStyle, color: C.muted }}>
-                              {size(original.bytes)}
-                            </Text>
-                          </View>
-                        </View>
-                      }
+                      else={<FileTile name={original.name} bytes={original.bytes} />}
                     >
                       <ImageThumbnail
                         compact
