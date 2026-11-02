@@ -19,8 +19,7 @@
 //! Product-owned immutable defaults, separated from the deployment's user overrides.
 use super::{HostError, Input, Package, Sources, author_with_source, installation_with_source};
 use maka_host_runtime::DirectoryRootSpec;
-use maka_plugin_core::composition::{ConfigurationField, Override, RootComposition, Template};
-use maka_plugin_core::package::PackageSelection;
+use maka_plugin_core::composition::{RootComposition, Template};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::PathBuf};
@@ -72,6 +71,7 @@ pub(super) fn template(package: &Package) -> Result<&Template, HostError> {
         .ok_or_else(|| "product baseline must declare a composition".into())
 }
 
+#[cfg(test)]
 pub(super) fn flat(package: &Package) -> Result<Input, HostError> {
     let template = template(package)?;
     Ok(Input {
@@ -168,317 +168,41 @@ pub(super) async fn generate(
     Ok((sources, package))
 }
 
-pub(super) fn keys(input: &Input) -> BTreeMap<String, Uuid> {
-    input
-        .instances
-        .iter()
-        .map(|(name, node)| (name.clone(), node.key))
-        .collect()
-}
-
-fn differences(
-    old: Option<&Value>,
-    current: Option<&Value>,
-    next: Option<&Value>,
-    path: &mut Vec<String>,
-    fields: &mut Vec<ConfigurationField>,
-) {
-    if current == old || current == next {
-        return;
-    }
-    if let Some(Value::Object(object)) = current {
-        if matches!(next, Some(Value::Object(_))) {
-            let keys: std::collections::BTreeSet<_> = object
-                .keys()
-                .chain(
-                    old.and_then(Value::as_object)
-                        .into_iter()
-                        .flat_map(|object| object.keys()),
-                )
-                .collect();
-            for key in keys {
-                path.push(key.clone());
-                differences(
-                    old.and_then(|value| value.get(key)),
-                    object.get(key),
-                    next.and_then(|value| value.get(key)),
-                    path,
-                    fields,
-                );
-                path.pop();
-            }
-            return;
-        }
-    }
-    fields.push(ConfigurationField {
-        path: path.clone(),
-        value: current.cloned(),
-    });
-}
-
-fn same_family(left: &PackageSelection, right: &PackageSelection) -> bool {
-    match (left, right) {
-        (
-            PackageSelection::Pinned { package: left },
-            PackageSelection::Pinned { package: right },
-        ) => left.id == right.id,
-        (PackageSelection::Current, PackageSelection::Current) => true,
-        _ => false,
-    }
-}
-
-// Only initial migration needs a three-way comparison. Once a source selects a
-// baseline, the overrides themselves are its durable, explicit user intent.
-pub(super) fn migrate(
-    original: &Input,
-    current: &Input,
-    next: &Package,
-) -> Result<Input, HostError> {
-    let defaults = flat(next)?;
-    let mut result = wrapped(next);
-    for (name, before) in &original.instances {
-        let Some(default) = defaults.instances.get(name) else {
-            // Keep an independently changed retired component instead of dropping it.
-            if let Some((alias, node)) = current
-                .instances
-                .iter()
-                .find(|(_, node)| node.key == before.key)
-                && node != before
-            {
-                result.instances.insert(alias.clone(), node.clone());
-            }
-            continue;
-        };
-        let now = current
-            .instances
-            .iter()
-            .find(|(_, node)| node.key == before.key);
-        if now.is_none_or(|(alias, node)| {
-            alias != name
-                || !same_family(&node.package, &before.package)
-                || node.use_package != before.use_package
-        }) {
-            result.base.as_mut().unwrap().overrides.push(Override {
-                path: vec![name.clone()],
-                remove: true,
-                ..Override::default()
-            });
-            if let Some((alias, node)) = now {
-                result.instances.insert(alias.clone(), node.clone());
-            }
-            continue;
-        }
-        let now = now.unwrap().1;
-        let mut patch = Override {
-            path: vec![name.clone()],
-            ..Override::default()
-        };
-        // Same-family historical pins followed product releases. Component
-        // substitutions above are independent, complete user-selected roots.
-        let before_values = serde_json::to_value(&before.configuration.values)?;
-        let now_values = serde_json::to_value(&now.configuration.values)?;
-        let default_values = serde_json::to_value(&default.configuration.values)?;
-        differences(
-            Some(&before_values),
-            Some(&now_values),
-            Some(&default_values),
-            &mut Vec::new(),
-            &mut patch.configuration_fields,
-        );
-        for (key, value) in &now.parameters.values {
-            if before.parameters.values.get(key) != Some(value)
-                && default.parameters.values.get(key) != Some(value)
-            {
-                patch.parameters.insert(key.clone(), value.clone());
-            }
-        }
-        for key in before.bindings.keys().chain(now.bindings.keys()) {
-            let old = before.bindings.get(key);
-            let value = now.bindings.get(key);
-            if value != old && value != default.bindings.get(key) {
-                patch
-                    .bindings
-                    .insert(key.clone(), value.cloned().unwrap_or_default());
-            }
-        }
-        if now.disabled != before.disabled && now.disabled != default.disabled {
-            patch.disabled = Some(now.disabled);
-        }
-        if patch
-            != (Override {
-                path: vec![name.clone()],
-                ..Override::default()
-            })
-        {
-            result.base.as_mut().unwrap().overrides.push(patch);
-        }
-        for nested in &now.overrides {
-            if !before.overrides.contains(nested) && !default.overrides.contains(nested) {
-                let mut nested = nested.clone();
-                nested.path.insert(0, name.clone());
-                result.base.as_mut().unwrap().overrides.push(nested);
-            }
-        }
-    }
-    for (name, node) in &current.instances {
-        if original.instances.values().any(|old| old.key == node.key) {
-            continue;
-        }
-        if let Some(default) = defaults.instances.get(name) {
-            if default.key == node.key
-                && same_family(&default.package, &node.package)
-                && default.use_package == node.use_package
-            {
-                let mut patch = Override {
-                    path: vec![name.clone()],
-                    ..Override::default()
-                };
-                let values = serde_json::to_value(&node.configuration.values)?;
-                let defaults = serde_json::to_value(&default.configuration.values)?;
-                differences(
-                    None,
-                    Some(&values),
-                    Some(&defaults),
-                    &mut Vec::new(),
-                    &mut patch.configuration_fields,
-                );
-                for (key, targets) in &node.bindings {
-                    if default.bindings.get(key) != Some(targets) {
-                        patch.bindings.insert(key.clone(), targets.clone());
-                    }
-                }
-                if node.disabled != default.disabled {
-                    patch.disabled = Some(node.disabled);
-                }
-                if patch
-                    != (Override {
-                        path: vec![name.clone()],
-                        ..Override::default()
-                    })
-                {
-                    result.base.as_mut().unwrap().overrides.push(patch);
-                }
-                continue;
-            }
-        }
-        result.instances.insert(name.clone(), node.clone());
-    }
-    if current.ui != original.ui && current.ui != defaults.ui {
-        match &current.ui {
-            Some(ui) => result.ui = Some(ui.clone()),
-            None => result.base.as_mut().unwrap().ui = Some(None),
-        }
-    }
-    Ok(result)
-}
-
-pub(super) fn product_owned(configuration: &Value) -> bool {
-    configuration
-        .get("productMethods")
-        .and_then(Value::as_array)
-        .is_some_and(|methods| {
-            methods
-                .iter()
-                .any(|name| name == "agent" || name == "coordinator")
-        })
-}
-
 pub(super) async fn rebase(
     input: &Input,
     installed: &[Package],
-    original: Option<&Input>,
     bundled: &BTreeMap<String, Package>,
     deployment: Uuid,
     source: &str,
     release: &str,
 ) -> Result<Option<(Input, Package)>, HostError> {
-    let (mut environment, keys, legacy) = if let Some(base) = &input.base {
-        if base.package.id != ID {
-            return Ok(None);
-        }
-        let package = installed
-            .iter()
-            .find(|bytes| bytes.application_ref() == base.package)
-            .ok_or("installed product baseline bytes missing")?;
-        let metadata = metadata(package)?;
-        if metadata.release == release && metadata.environment.helper == std::env::current_exe()? {
-            return Ok(None);
-        }
-        (metadata.environment, metadata.identities, false)
-    } else {
-        let Some(original) = original else {
-            return Ok(None);
-        };
-        // Removing a baseline from an installation that already had one is an
-        // explicit source edit, not an old installation awaiting migration.
-        if original.base.is_some() {
-            return Ok(None);
-        }
-        let agent = original
-            .instances
-            .get("agent")
-            .ok_or("legacy product Agent missing")?;
-        if !matches!(&agent.package, PackageSelection::Pinned { package }
-            if Some(&package.id) == bundled.get("agent").map(|bytes| &bytes.manifest().id))
-        {
-            return Err("legacy product baseline no longer identifies the original Agent".into());
-        }
-        let values = &agent.configuration.values;
-        let roots: Vec<DirectoryRootSpec> = serde_json::from_value(
-            values
-                .get("workspaceRoots")
-                .cloned()
-                .ok_or("legacy product workspaces missing")?,
-        )?;
-        let home = values
-            .get("assistant")
-            .and_then(|value| value.get("home"))
-            .map(|value| serde_json::from_value(value.clone()))
-            .transpose()?;
-        let workspace = roots
-            .first()
-            .map(|root| root.path.clone())
-            .or_else(|| home.clone())
-            .or_else(|| {
-                values
-                    .get("importRoots")
-                    .and_then(Value::as_array)
-                    .and_then(|roots| roots.first())
-                    .and_then(|root| root.get("path"))
-                    .and_then(Value::as_str)
-                    .map(PathBuf::from)
-            })
-            .ok_or("legacy generation workspace missing")?;
-        let locale = values
-            .get("locale")
-            .and_then(Value::as_str)
-            .unwrap_or("auto")
-            .into();
-        let mut identities = keys(original);
-        for (name, key) in keys(input) {
-            identities.entry(name).or_insert(key);
-        }
-        (
-            Environment {
-                workspace,
-                roots,
-                home,
-                helper: std::env::current_exe()?,
-                locale,
-            },
-            identities,
-            true,
-        )
+    let Some(base) = &input.base else {
+        return Ok(None);
     };
+    if base.package.id != ID {
+        return Ok(None);
+    }
+    let package = installed
+        .iter()
+        .find(|bytes| bytes.application_ref() == base.package)
+        .ok_or("installed product baseline bytes missing")?;
+    let metadata = metadata(package)?;
+    if metadata.release == release && metadata.environment.helper == std::env::current_exe()? {
+        return Ok(None);
+    }
+    let mut environment = metadata.environment;
     environment.helper = std::env::current_exe()?;
-    let (_, package) = generate(environment, deployment, keys, bundled, source, release).await?;
-    let next = if legacy {
-        migrate(original.unwrap(), input, &package)?
-    } else {
-        let mut next = input.clone();
-        next.base.as_mut().unwrap().package = package.application_ref();
-        next
-    };
+    let (_, package) = generate(
+        environment,
+        deployment,
+        metadata.identities,
+        bundled,
+        source,
+        release,
+    )
+    .await?;
+    let mut next = input.clone();
+    next.base.as_mut().unwrap().package = package.application_ref();
     Ok(Some((next, package)))
 }
 

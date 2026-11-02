@@ -18,7 +18,6 @@
  */
 use super::*;
 use maka_event_log::applications::PreparedApplication;
-use maka_plugin_core::composition::Target;
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -76,32 +75,6 @@ impl Fixture {
         )
         .unwrap()
     }
-    fn legacy(&self) -> Input {
-        let mut input = flat(&self.package).unwrap();
-        for name in ["agent", "workhub"] {
-            let mut values =
-                serde_json::to_value(&input.instances[name].configuration.values).unwrap();
-            let agent = if name == "workhub" {
-                &mut values["agent"]
-            } else {
-                &mut values
-            };
-            agent["tools"]
-                .as_array_mut()
-                .unwrap()
-                .retain(|tool| tool["name"] != "ModelList");
-            agent["plans"] = json!(true);
-            input
-                .instances
-                .get_mut(name)
-                .unwrap()
-                .bindings
-                .remove("settings");
-            input.instances.get_mut(name).unwrap().configuration.values =
-                serde_json::from_value(values).unwrap();
-        }
-        input
-    }
 }
 
 #[tokio::test]
@@ -133,100 +106,23 @@ async fn generation_is_repeatable_and_adds_no_instance_namespace() {
 }
 
 #[tokio::test]
-async fn missed_default_updates_migrate_without_losing_nested_customizations_or_renamed_identities()
-{
+async fn rebase_preserves_explicit_overrides_independent_roots_and_identity() {
+    use maka_plugin_core::composition::ConfigurationField;
     let f = Fixture::new().await;
-    let original = f.legacy();
-    // Pins have already advanced; only source configuration was stranded by the old updater.
-    let mut current = original.clone();
-    current
-        .instances
-        .get_mut("agent")
-        .unwrap()
-        .configuration
-        .values
-        .insert("goals".into(), json!(false));
-    current
-        .instances
-        .get_mut("agent")
-        .unwrap()
-        .configuration
-        .values
-        .remove("recaps");
-    current
-        .instances
-        .get_mut("workhub")
-        .unwrap()
-        .configuration
-        .values
-        .get_mut("agent")
-        .unwrap()["goals"] = json!(false);
-    let mut extra = current.instances["host-logs"].clone();
+    let mut input = wrapped(&f.package);
+    input
+        .configure(
+            &["agent".into()],
+            vec![ConfigurationField {
+                path: vec!["goals".into()],
+                value: Some(json!(false)),
+            }],
+        )
+        .unwrap();
+    let mut extra = flat(&f.package).unwrap().instances["host-logs"].clone();
     extra.key = Uuid::new_v4();
-    current.instances.insert("my-log".into(), extra.clone());
-    let settings = current.instances.remove("settings").unwrap();
-    let settings_key = settings.key;
-    current.instances.insert("my-settings".into(), settings);
-    for node in current.instances.values_mut() {
-        for targets in node.bindings.values_mut() {
-            for target in targets {
-                if let Target::Instance { path, .. } = target
-                    && path.first().is_some_and(|name| name == "settings")
-                {
-                    path[0] = "my-settings".into();
-                }
-            }
-        }
-    }
-    current.instances.remove("workbench-ui");
-    current.ui = None;
-    let migrated = migrate(&original, &current, &f.package).unwrap();
-    let prepared = f.prepared(migrated.clone(), vec![]);
-    assert_eq!(migrated.instances["my-log"], extra);
-    assert!(prepared.plan().ui().is_none());
-    let instance = |name: &str| {
-        prepared
-            .plan()
-            .instances()
-            .values()
-            .find(|node| node.path == [name])
-            .unwrap()
-    };
-    assert_eq!(instance("agent").configuration["goals"], json!(false));
-    assert!(instance("agent").configuration.get("recaps").is_none());
-    assert_eq!(
-        instance("workhub").configuration["agent"]["goals"],
-        json!(false)
-    );
-    assert_eq!(instance("my-settings").identity.0, vec![settings_key]);
-    for name in ["agent", "workhub"] {
-        let config = if name == "workhub" {
-            &instance(name).configuration["agent"]
-        } else {
-            &instance(name).configuration
-        };
-        assert_eq!(
-            config["tools"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|tool| tool["name"] == "ModelList")
-                .count(),
-            1
-        );
-        assert_eq!(
-            instance(name).identity.0,
-            vec![original.instances[name].key]
-        );
-        assert!(!config.as_object().unwrap().contains_key("plans"));
-        assert_eq!(
-            instance(name).bindings["settings"][0].provider,
-            maka_plugin_core::plan::Provider::Local {
-                instance: instance("my-settings").identity.clone(),
-                export: "Settings".into()
-            }
-        );
-    }
+    input.instances.insert("my-log".into(), extra);
+    let before = f.prepared(input.clone(), vec![]);
     let installed: Vec<_> = f
         .bundled
         .values()
@@ -235,9 +131,8 @@ async fn missed_default_updates_migrate_without_losing_nested_customizations_or_
         .collect();
     assert!(
         rebase(
-            &migrated,
+            &input,
             &installed,
-            None,
             &f.bundled,
             f.deployment,
             &f.source,
@@ -247,72 +142,48 @@ async fn missed_default_updates_migrate_without_losing_nested_customizations_or_
         .unwrap()
         .is_none()
     );
-    let (rebased, next) = rebase(
-        &migrated,
+    let (next, package) = rebase(
+        &input,
         &installed,
-        None,
         &f.bundled,
         f.deployment,
         &f.source,
-        "another-release",
+        "next-release",
     )
     .await
     .unwrap()
     .unwrap();
     assert_eq!(
-        rebased.base.as_ref().unwrap().overrides,
-        migrated.base.as_ref().unwrap().overrides
+        next.base.as_ref().unwrap().overrides,
+        input.base.as_ref().unwrap().overrides
     );
-    assert_eq!(rebased.instances, migrated.instances);
-    let next = f.prepared(rebased, vec![next]);
-    assert_eq!(next.plan().instances(), prepared.plan().instances());
+    assert_eq!(next.instances, input.instances);
+    let next = f.prepared(next, vec![package]);
+    assert_eq!(next.plan().instances(), before.plan().instances());
+    for id in before.plan().instances().keys() {
+        assert_eq!(
+            next.plan().binding_basis(id).unwrap(),
+            before.plan().binding_basis(id).unwrap()
+        );
+    }
 }
 
 #[tokio::test]
-async fn component_substitutions_and_explicit_tool_selections_remain_independent_user_intent() {
+async fn explicit_flat_sources_do_not_opt_into_product_baselines() {
     let f = Fixture::new().await;
-    let original = f.legacy();
-    let mut current = original.clone();
-    let tools = current
-        .instances
-        .get_mut("agent")
+    let input = flat(&f.package).unwrap();
+    assert!(
+        rebase(
+            &input,
+            &[],
+            &f.bundled,
+            f.deployment,
+            &f.source,
+            "next-release"
+        )
+        .await
         .unwrap()
-        .configuration
-        .values
-        .get_mut("tools")
-        .unwrap()
-        .as_array_mut()
-        .unwrap();
-    tools.retain(|tool| tool["name"] != "Shell");
-    let selected = tools.clone();
-    let mut files = f.bundled["settings"].files().clone();
-    let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
-    manifest["id"] = json!("user.settings");
-    files.insert(
-        "maka.extension.json".into(),
-        serde_json::to_vec(&manifest).unwrap(),
+        .is_none()
     );
-    let custom = Package::new(files).unwrap();
-    let settings = current.instances.get_mut("settings").unwrap();
-    settings.package = custom.application_ref().into();
-    settings.configuration.values.clear();
-    let expected = settings.clone();
-    let migrated = migrate(&original, &current, &f.package).unwrap();
-    assert_eq!(migrated.instances["settings"], expected);
-    let prepared = f.prepared(migrated, vec![custom]);
-    let agent = prepared
-        .plan()
-        .instances()
-        .values()
-        .find(|node| node.path == ["agent"])
-        .unwrap();
-    assert_eq!(agent.configuration["tools"], json!(selected));
-    let settings = prepared
-        .plan()
-        .instances()
-        .values()
-        .find(|node| node.path == ["settings"])
-        .unwrap();
-    assert_eq!(settings.package.id, "user.settings");
-    assert_eq!(settings.configuration, json!({}));
+    assert!(input.base.is_none());
 }

@@ -50,19 +50,7 @@ pub(in super::super) async fn synchronize(
     } else {
         None
     };
-    let original = if let Some(reference) = legacy_reference(&record, current.as_ref()) {
-        Some(
-            store
-                .read_application_metadata_at(&reference)
-                .await?
-                .ok_or("initial product source missing")?
-                .source
-                .input,
-        )
-    } else {
-        None
-    };
-    synchronize_loaded(apply.then_some(store), record, current, base, original)
+    synchronize_loaded(apply.then_some(store), record, current, base)
         .await
         .map(|(outcome, _)| outcome)
 }
@@ -84,35 +72,7 @@ pub(in super::super) async fn preview(
     } else {
         None
     };
-    let original = if let Some(reference) = legacy_reference(&record, current.as_ref()) {
-        Some(
-            store
-                .read_application_metadata_at(&reference)
-                .await?
-                .ok_or("initial product source missing")?
-                .source
-                .input,
-        )
-    } else {
-        None
-    };
-    synchronize_loaded(None, record, current, base, original).await
-}
-
-fn legacy_reference(
-    record: &Launch,
-    current: Option<&maka_event_log::applications::LoadedDeployment>,
-) -> Option<maka_plugin_core::deployment::DeploymentRef> {
-    let current = current?;
-    if record.pending.is_some()
-        || current.source().input.base.is_some()
-        || !baseline::product_owned(&record.configuration)
-    {
-        return None;
-    }
-    let mut reference = current.source().reference.clone();
-    reference.revision = 1;
-    Some(reference)
+    synchronize_loaded(None, record, current, base).await
 }
 
 async fn synchronize_loaded(
@@ -120,7 +80,6 @@ async fn synchronize_loaded(
     record: Launch,
     current: Option<maka_event_log::applications::LoadedDeployment>,
     base: Option<maka_event_log::applications::LoadedDeployment>,
-    original: Option<Input>,
 ) -> Result<(Outcome, PreparedApplication), HostError> {
     let selection: Selection = serde_json::from_value(record.configuration.clone())?;
     selection.validate()?;
@@ -170,7 +129,6 @@ async fn synchronize_loaded(
         record,
         current.ok_or("public Host source missing")?,
         packages,
-        original,
     )
     .await
 }
@@ -287,18 +245,6 @@ pub(crate) async fn live_update_available(
     let authoring = super::super::authoring()?;
     super::super::verified_fingerprint(&authoring, &packages, &version)?;
     let replacements = bundled_replacements(&packages)?;
-    if metadata.source.input.base.is_none()
-        && baseline::product_owned(&serde_json::to_value(&publication.configuration)?)
-        && management_available(client, &publication.configuration, &["readDocument"])
-    {
-        // Only sources born before root baselines are eligible. Explicitly
-        // detaching a newer installation must not cause an update/restart loop.
-        let mut reference = metadata.source.reference.clone();
-        reference.revision = 1;
-        if live_document(client, &reference).await?.base.is_none() {
-            return Ok(true);
-        }
-    }
     if let Some(base) = &metadata.source.input.base
         && base.package.id == baseline::ID
     {
@@ -322,8 +268,6 @@ pub(crate) async fn live_update_available(
                 let saved = live_baseline(client, client.source(), &original.package).await?;
                 return Ok(saved.release != version || saved.environment.helper != helper);
             }
-            // A committed migration must not hide the still-flat incarnation.
-            return Ok(original.base.is_none());
         }
         return Ok(false);
     }
@@ -442,19 +386,7 @@ async fn synchronize_packages(
         .load_application(record.deployment)
         .await?
         .ok_or("public Host source missing")?;
-    let original = if let Some(reference) = legacy_reference(&record, Some(&loaded)) {
-        Some(
-            store
-                .read_application_metadata_at(&reference)
-                .await?
-                .ok_or("initial product source missing")?
-                .source
-                .input,
-        )
-    } else {
-        None
-    };
-    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled, original)
+    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled)
         .await
         .map(|(outcome, _)| outcome)
 }
@@ -464,7 +396,6 @@ async fn synchronize_loaded_packages(
     record: Launch,
     loaded: maka_event_log::applications::LoadedDeployment,
     bundled: BTreeMap<String, Package>,
-    original: Option<Input>,
 ) -> Result<(Outcome, PreparedApplication), HostError> {
     if !loaded.source().remote_exports.is_empty() {
         return Err("public Host source cannot use remote observations".into());
@@ -481,7 +412,6 @@ async fn synchronize_loaded_packages(
     let rebuilt = baseline::rebase(
         &loaded.source().input,
         loaded.packages(),
-        original.as_ref(),
         &bundled,
         record.deployment,
         &source,

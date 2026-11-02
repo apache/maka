@@ -31,7 +31,7 @@
 
 默认安装在 `input.base` 中保存固定版本的 `maka.product.installation` composition 引用、用户 `overrides`，并在 `input.instances` 中保存独立新增的根实例。不可变基线包包含生成后的默认装配和安装输入（包括稳定的逻辑实例身份），不是另一份可编辑部署。根级展开不增加结构实例或 UUID 命名空间，已有会话和插件状态继续使用原身份。
 
-启动与 `application update-defaults` 的预览、应用共用同一条经过校验的源更新路径。旧的产品默认扁平安装通过首次提交源、当前源和新默认值的一次性比较迁入，也覆盖“包引用已推进、配置却没更新”的安装。后续升级替换基线引用并保留显式差量。显式编写的部署仍按原有方式更新选中的包；已从基线脱离的安装不会被重新接管。
+启动与 `application update-defaults` 的预览、应用共用同一条经过校验的源更新路径。升级替换基线引用并保留显式差量。运行时不识别或自动转换旧的扁平默认安装：这类安装应在启动新版本前，显式使用[一次性外部迁移工具](https://gist.github.com/M4n5ter/407366c4943e412e84d06dad3a1c3643/058b24ca4c7450e4e3e5cb2fd882e4b8b00284e3#file-readme-md)迁移。显式编写的扁平部署仍按原有方式更新选中的包，不会自动接入产品基线。
 
 配置差量可以用 `configurationFields` 记录精确的对象字段路径：省略字段的 `value` 表示删除，JSON `null` 则仍是一个值。已有 `configuration` 覆盖继续表示整个顶层字段替换。数组（包括工具列表）是用户的完整选择，不按显示名隐式合并。独立新增实例及完整组件替换保留其选择的包和配置。源编辑写回这些决定的拥有者，不保存展开后的默认图。详见 [composition 类型](../../../platform/plugin-core/src/composition.rs)及[根级组合](../../../platform/plugin-core/src/composition/root.rs)。
 
