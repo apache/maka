@@ -75,6 +75,14 @@ const DEFAULT_CONFIG_OPTIONS: Array<Extract<SessionConfigOption, { type: 'select
   },
   {
     type: 'select',
+    id: 'model',
+    name: 'Model',
+    category: 'model',
+    currentValue: 'default',
+    options: [{ value: 'default', name: 'default' }],
+  },
+  {
+    type: 'select',
     id: 'thinking_level',
     name: 'Thinking level',
     category: 'thought_level',
@@ -5955,7 +5963,7 @@ describe('ACP Session registry', () => {
 
     assert.deepEqual(
       response.configOptions?.map(({ id }) => id),
-      ['permission_mode', 'collaboration_mode', 'orchestration_mode'],
+      ['permission_mode', 'model', 'collaboration_mode', 'orchestration_mode'],
     );
     await registry.dispose();
   });
