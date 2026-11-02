@@ -33,30 +33,54 @@ import type { ComposerSession } from '../../../../packages/plugin-sdk/src/compos
 import { createChecklist } from './Checklist';
 import { createComputerAppControls } from './ComputerAppControls';
 import { createQueueDock } from './QueueDock';
+import { createGoalContent, goalStatusLabel } from './GoalDialog';
+import { LoadingIndicator } from './Loading';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 
 export function ComposerDetails(props: {
-  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'queue' | 'connected'>;
+  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'queue' | 'connected' | 'goal'>;
 }) {
   const session = props.session;
   const height = () => windowSize().height / 4;
+  const goal = () => session.goal?.view()?.current;
+  const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
   const panels = {
+    goal: {
+      shown: () => !!goal(),
+      summary: () => tr(goalStatusLabel(goal()!.status)),
+      preview: () => goal()!.objective,
+      problem: () =>
+        !!session.goal?.error() ||
+        goal()?.status === 'blocked' ||
+        goal()?.status === 'budget_limited',
+      content: () => (
+        <View style={{ minHeight: 0, flexShrink: 1, padding: 16 }}>{renderGoal!()}</View>
+      ),
+    },
     todo: createChecklist(session.checklist, height),
     computer: createComputerAppControls(session.computerAccess, height),
     queue: createQueueDock(session.queue, height, session.connected),
   };
   type Panel = keyof typeof panels;
-  const keys: Panel[] = ['todo', 'computer', 'queue'];
+  const keys: Panel[] = ['goal', 'todo', 'computer', 'queue'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
   const labels = {
+    goal: () => tr('Goal'),
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
     queue: () => tr('Queued messages'),
   };
+  const icons = {
+    goal: 'statusPending',
+    todo: 'check',
+    computer: 'shield',
+    queue: 'queue',
+  } as const;
   const accessibilityLabels = {
+    goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
     queue: () => tr('Queued messages'),
@@ -109,10 +133,21 @@ export function ComposerDetails(props: {
                   hoverStyle={{ backgroundColor: C.raised }}
                   focusStyle={{ backgroundColor: C.line }}
                 >
-                  <Icon
-                    name={key === 'todo' ? 'check' : key === 'computer' ? 'shield' : 'queue'}
-                    color={panel.problem() ? C.warning : C.secondary}
-                  />
+                  <If
+                    when={key === 'goal' && goal()?.status === 'active'}
+                    else={
+                      <Icon
+                        name={
+                          key === 'goal' && goal()?.status === 'achieved'
+                            ? 'statusSuccess'
+                            : icons[key]
+                        }
+                        color={panel.problem() ? C.warning : C.secondary}
+                      />
+                    }
+                  >
+                    <LoadingIndicator color={C.secondary} />
+                  </If>
                   <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
                   <Text
                     style={{ ...captionTextStyle, color: panel.problem() ? C.warning : C.muted }}
@@ -152,7 +187,7 @@ export function ComposerDetails(props: {
               style={{
                 minHeight: 0,
                 flexShrink: 1,
-                maxHeight: height(),
+                maxHeight: selected() === 'goal' ? windowSize().height / 2 : height(),
                 borderTopWidth: 1,
                 borderTopColor: C.line,
               }}
