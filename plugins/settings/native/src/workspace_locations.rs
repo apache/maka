@@ -21,7 +21,7 @@ use maka_event_log::{RootStore, StoreError, applications::PreparedApplication};
 use maka_host_runtime::DirectoryRootSpec;
 use maka_packages::Package;
 use maka_plugin_core::{
-    composition::{Input, PackageUse},
+    composition::{ConfigurationField, Input, PackageUse},
     deployment::{
         DeploymentRef,
         management::{ManagementRejection, ManagementResult},
@@ -73,7 +73,7 @@ pub struct Update {
     pub roots: Vec<DirectoryRootSpec>,
 }
 
-pub fn configuration_values<'a>(
+fn configuration_values<'a>(
     input: &'a mut Input,
     packages: &[Package],
     name: &str,
@@ -104,8 +104,25 @@ pub fn replace(
     targets: &Configuration,
     roots: &[DirectoryRootSpec],
 ) -> Result<(), String> {
+    let mut declarations = maka_plugin_core::package::Packages::default();
+    for package in packages {
+        declarations
+            .insert_checked(
+                package.application_ref(),
+                package
+                    .manifest()
+                    .application
+                    .as_ref()
+                    .ok_or("application declaration missing")?
+                    .clone(),
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    let mut effective = input
+        .materialize(&declarations)
+        .map_err(|error| error.to_string())?;
     let agent = configuration_values(
-        input,
+        &mut effective,
         packages,
         &targets.agent,
         maka_agent_api::IMPLEMENTATION,
@@ -121,9 +138,14 @@ pub fn replace(
     let value = serde_json::to_value(roots).map_err(|error| error.to_string())?;
     agent.insert("workspaceRoots".into(), value.clone());
     if let Some(name) = &targets.skills {
-        configuration_values(input, packages, name, maka_skills_api::IMPLEMENTATION)
-            .ok_or("Workspace locations require the configured native skills service.")?
-            .insert("projectRoots".into(), value);
+        configuration_values(
+            &mut effective,
+            packages,
+            name,
+            maka_skills_api::IMPLEMENTATION,
+        )
+        .ok_or("Workspace locations require the configured native skills service.")?
+        .insert("projectRoots".into(), value);
     }
     if let Some(name) = &targets.processes {
         let previous_paths = previous
@@ -135,7 +157,7 @@ pub fn replace(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let filesystem = configuration_values(
-            input,
+            &mut effective,
             packages,
             name,
             maka_workspace_api::processes::IMPLEMENTATION,
@@ -163,6 +185,42 @@ pub fn replace(
             }
         }
     }
+    input
+        .configure(
+            &[targets.agent.clone()],
+            vec![ConfigurationField {
+                path: vec!["workspaceRoots".into()],
+                value: Some(serde_json::to_value(roots).map_err(|e| e.to_string())?),
+            }],
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(name) = &targets.skills {
+        input
+            .configure(
+                &[name.clone()],
+                vec![ConfigurationField {
+                    path: vec!["projectRoots".into()],
+                    value: Some(
+                        effective.instances[name].configuration.values["projectRoots"].clone(),
+                    ),
+                }],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    if let Some(name) = &targets.processes {
+        input
+            .configure(
+                &[name.clone()],
+                vec![ConfigurationField {
+                    path: vec!["filesystem".into(), "rules".into()],
+                    value: Some(
+                        effective.instances[name].configuration.values["filesystem"]["rules"]
+                            .clone(),
+                    ),
+                }],
+            )
+            .map_err(|error| error.to_string())?;
+    }
     Ok(())
 }
 
@@ -176,20 +234,20 @@ pub(crate) async fn read(
     let Some(targets) = targets else {
         return Ok(Value::Null);
     };
-    let metadata = store
-        .read_application_metadata(source.deployment)
+    let loaded = store
+        .load_application(source.deployment)
         .await
         .map_err(|error| error.to_string())?
-        .ok_or("Workspace configuration is unavailable.")?;
-    let roots = metadata
-        .source
-        .input
-        .instances
-        .get(&targets.agent)
-        .and_then(|node| node.configuration.values.get("workspaceRoots"))
+        .ok_or("Workspace locations are unavailable.")?;
+    let roots = loaded
+        .plan()
+        .instances()
+        .values()
+        .find(|node| node.path == [targets.agent.clone()])
+        .and_then(|node| node.configuration.get("workspaceRoots"))
         .ok_or("Workspace locations are unavailable.")?;
     let roots = serde_json::from_value(roots.clone()).map_err(|error| error.to_string())?;
-    super::connections::encode(Snapshot::new(metadata.source.reference, roots)?)
+    super::connections::encode(Snapshot::new(loaded.source().reference.clone(), roots)?)
 }
 
 pub(crate) async fn update(

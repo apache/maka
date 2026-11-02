@@ -205,27 +205,19 @@ impl Manager {
         {
             return rejected(ManagementRejection::ParentDisabled);
         }
-        let [root, path @ ..] = instance.path.as_slice() else {
-            return Err("invalid actual managed path".into());
-        };
-        let node = source
-            .input
-            .instances
-            .get_mut(root)
-            .ok_or("managed root disappeared")?;
-        if path.is_empty() {
-            node.disabled = !request.enabled;
+        if instance.path.len() == 1 && source.input.instances.contains_key(&instance.path[0]) {
+            source
+                .input
+                .instances
+                .get_mut(&instance.path[0])
+                .unwrap()
+                .disabled = !request.enabled;
         } else {
-            if let Some(patch) = node.overrides.iter_mut().find(|patch| patch.path == path) {
-                patch.disabled = Some(!request.enabled);
-            } else {
-                node.overrides
-                    .push(maka_plugin_core::composition::Override {
-                        path: path.to_vec(),
-                        disabled: Some(!request.enabled),
-                        ..Default::default()
-                    });
-            }
+            source
+                .input
+                .override_mut(&instance.path)
+                .map_err(|error| error.to_string())?
+                .disabled = Some(!request.enabled);
         }
         // Effective disabled may come from an ancestor. Persist the user's own
         // explicit intent even when that effective projection already matches.
