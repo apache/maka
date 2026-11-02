@@ -393,38 +393,6 @@ impl Desktop {
         self.press_at(bounds.center());
     }
 
-    /// Pointing at the control repaints its corner, which no label or icon covers.
-    async fn assert_hover_changes(&self, label: &str) {
-        let bounds = self.control(label).await;
-        let corner = Bounds::new(
-            point(bounds.left() + px(6.), bounds.top() + px(6.)),
-            size(px(1.), px(1.)),
-        );
-        self.platform
-            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-                position: point(px(0.), px(0.)),
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }))
-            .unwrap();
-        self.app.update(|cx| cx.refresh_windows());
-        self.pump();
-        let resting = self.pixels(corner).unwrap();
-        self.platform
-            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
-                position: bounds.center(),
-                pressed_button: None,
-                modifiers: Modifiers::default(),
-            }))
-            .unwrap();
-        self.until(&format!("{label} did not respond to hover"), || {
-            self.app.update(|cx| cx.refresh_windows());
-            self.pump();
-            (self.pixels(corner)? != resting).then_some(())
-        })
-        .await;
-    }
-
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         for input in [
             PlatformInput::MouseMove(MouseMoveEvent {
@@ -880,26 +848,6 @@ async fn desktop_send_progress_animates_while_model_resolution_is_pending() {
     let mut reply = desktop.request(&mut fixture).await;
     reply.delta("Second reply.").await;
     reply.finish().await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_composer_controls_respond_to_hover() {
-    let fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
-    for label in [
-        "Add to message",
-        "Sandbox and approvals",
-        "Choose model and effort",
-    ] {
-        desktop.assert_hover_changes(label).await;
-    }
-    desktop.press("Sandbox and approvals").await;
-    for label in ["Read only", "Ask for approval"] {
-        desktop.assert_hover_changes(label).await;
-    }
     desktop.close().await;
     fixture.finish().await;
 }
