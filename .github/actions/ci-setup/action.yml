@@ -116,6 +116,7 @@ runs:
       if: inputs.compile == 'true'
       with:
         path: |
+          target/CACHEDIR.TAG
           target/**/.fingerprint
           target/**/build
           target/**/deps/*.*
