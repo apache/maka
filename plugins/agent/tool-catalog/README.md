@@ -23,4 +23,6 @@
 
 Validates tool contributions and builds immutable request catalogs. `availability` determines which tools can be offered; `request` captures the selection for a request. Tool metadata describes an interface. Actual execution still needs the original call context and admission.
 
+Native Agent file editors are always visible by their bound operation, including custom tool names. The model’s editing policy selects structured writing/editing or patching without a separate tool search.
+
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)

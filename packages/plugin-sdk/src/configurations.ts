@@ -351,7 +351,7 @@ export const configurations = {
       },
       AgentWorkspaceAccess: {
         description:
-          'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+          'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
         type: 'string',
         enum: ['read_only', 'workspace_write', 'danger_full_access'],
       },
@@ -1021,7 +1021,7 @@ export const configurations = {
         type: 'string',
         enum: ['read_only', 'workspace_write', 'danger_full_access'],
         description:
-          'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+          'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
       },
       DirectoryRootSpec: {
         type: 'object',

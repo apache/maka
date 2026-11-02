@@ -309,16 +309,7 @@ fn invalid() -> ToolRejection {
 fn direct(name: &str) -> bool {
     matches!(
         name,
-        "Shell"
-            | "Read"
-            | "Write"
-            | "Edit"
-            | "Glob"
-            | "Grep"
-            | "AskUserQuestion"
-            | "StopBackgroundTask"
-            | "WriteStdin"
-            | "apply_patch"
+        "Shell" | "Read" | "Glob" | "Grep" | "AskUserQuestion" | "ProcessStop" | "ProcessInput"
     )
 }
 

@@ -87,12 +87,16 @@ impl Receipt {
         {
             return Err(super::failed("Native monitor permission boundary changed"));
         }
-        let global = store
-            .client_capability_grant(&self.invocation.session_id, &api::target())
-            .await
-            .map_err(|error| ToolError::Persistence(super::message(error)))?;
-        if global.is_none_or(|grant| grant.basis != Some(self.basis)) {
-            return Err(super::failed("Computer Use grant was revoked"));
+        if configuration.permissions.access
+            != maka_agent_api::contract::WorkspaceAccess::DangerFullAccess
+        {
+            let global = store
+                .client_capability_grant(&self.invocation.session_id, &api::target())
+                .await
+                .map_err(|error| ToolError::Persistence(super::message(error)))?;
+            if global.is_none_or(|grant| grant.basis != Some(self.basis)) {
+                return Err(super::failed("Computer Use grant was revoked"));
+            }
         }
         let target = app_access::target(&self.subject);
         if !store
@@ -410,5 +414,60 @@ impl Epoch {
                 drop(receipt.retire());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_api::contract::{WorkspaceAccess, WorkspacePermissions};
+    use maka_agent_facts::interaction::{
+        ComputerAppDisplay, ComputerAppIdentity, ComputerAppPlatform,
+    };
+
+    #[tokio::test]
+    async fn full_access_monitor_needs_no_consent_but_retires_with_its_turn() {
+        let fixture = super::super::browser_access::tests::Fixture::with_permissions(
+            false,
+            true,
+            WorkspacePermissions {
+                access: WorkspaceAccess::DangerFullAccess,
+                request_permissions: false,
+            },
+        )
+        .await;
+        let receipt = Receipt {
+            root: fixture.owner.store.clone(),
+            invocation: fixture.invocation.clone(),
+            operation: "native-monitor".into(),
+            basis: fixture.basis(),
+            subject: ComputerAppTarget {
+                identity: ComputerAppIdentity {
+                    platform: ComputerAppPlatform::Macos,
+                    application_id: "fixture.application".into(),
+                },
+                display: ComputerAppDisplay {
+                    name: "Fixture application".into(),
+                    app_path: "/Applications/Fixture.app".into(),
+                    risk: None,
+                    warning: None,
+                },
+                allow_always: false,
+                binding: None,
+            },
+            cleanup: Arc::default(),
+            vm: Arc::default(),
+            admission: Arc::default(),
+            resource: Mutex::new(None),
+            attaching: tokio::sync::Mutex::new(()),
+            retirement: Mutex::new(None),
+            tasks: fixture.owner.tasks.clone(),
+            stopping: fixture.owner.stopping.clone(),
+            changed: Arc::default(),
+        };
+        receipt.current().await.unwrap();
+        fixture.end().await;
+        assert!(receipt.current().await.is_err());
+        fixture.close().await;
     }
 }

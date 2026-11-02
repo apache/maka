@@ -276,6 +276,9 @@ duration ends capture; call stop to retrieve it. `await nodeRepl.emitAudio(bytes
 Reset and Session cleanup discard recordings and their local paths.
 
 Every operation uses current Host permissions; JS objects retain no grants.
+With the Session sandbox off, Computer Use, applications, browser sites, history,
+file transfers and audio need no additional Maka approval. Changing permissions
+or stopping the current operation still takes effect.
 In Ask mode, Computer Use approval happens before the REPL execution timeout starts.
 App, browser-site and audio consent waits pause the remaining budget. Native
 macOS/Windows waits also pause it; ordinary asynchronous waits and Linux native
@@ -315,7 +318,7 @@ future created tabs use the stored title. `cua.createBrowserTab(id, url,
 The current browser profile does not offer the visibility capability.
 
 `await browser.history({queries, limit, from, to})` reads profile-wide history
-through an extension that advertises the separate history transport. It requires
+through an extension that advertises the separate history transport. With sandboxing enabled, it requires
 independent `browser_history` consent for the actual browser ID and generation
 under the current Session permission boundary. Page and download grants do not
 authorize it. No history request is automatically granted by page-origin policy.

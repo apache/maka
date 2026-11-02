@@ -1124,6 +1124,30 @@ async fn audio_current(
         .session(session)
         .await
         .map_err(|error| ToolError::Persistence(message(error)))?;
+    let current = store
+        .get_session::<maka_agent_api::session::StoredSessionConfiguration>(session)
+        .await
+        .map_err(|error| ToolError::Persistence(message(error)))?;
+    let Some(current) = current.filter(|session| !session.archived) else {
+        return Ok(false);
+    };
+    let configuration = maka_agent_authority::permissions::resolve_session(current)
+        .map_err(|error| ToolError::Persistence(message(error)))?
+        .configuration;
+    if configuration.permission_basis() != receipt.basis
+        || configuration.permissions.access == maka_agent_api::contract::WorkspaceAccess::ReadOnly
+        || configuration
+            .tools
+            .as_ref()
+            .is_some_and(|tools| !tools.iter().any(|tool| tool == "cua_repl"))
+    {
+        return Ok(false);
+    }
+    if configuration.permissions.access
+        == maka_agent_api::contract::WorkspaceAccess::DangerFullAccess
+    {
+        return Ok(true);
+    }
     for target in
         std::iter::once(api::target()).chain(receipt.requires_audio_consent.then(api::audio_target))
     {
@@ -1171,12 +1195,16 @@ async fn preparation_current(
     {
         return Ok(PreparationAuthority::Revoked);
     }
-    let grant = store
-        .client_capability_grant(session, &api::target())
-        .await
-        .map_err(|error| ToolError::Persistence(message(error)))?;
-    if grant.is_none_or(|grant| grant.basis != Some(receipt.basis)) {
-        return Ok(PreparationAuthority::Revoked);
+    if configuration.permissions.access
+        != maka_agent_api::contract::WorkspaceAccess::DangerFullAccess
+    {
+        let grant = store
+            .client_capability_grant(session, &api::target())
+            .await
+            .map_err(|error| ToolError::Persistence(message(error)))?;
+        if grant.is_none_or(|grant| grant.basis != Some(receipt.basis)) {
+            return Ok(PreparationAuthority::Revoked);
+        }
     }
     // A different current turn is not evidence of a global permission change.
     if !current_turn {
@@ -1297,6 +1325,88 @@ mod tests {
             *kernel = Some(entry.fresh_kernel().unwrap());
         }
         kernel.as_ref().unwrap().epoch.clone()
+    }
+
+    #[tokio::test]
+    async fn full_access_retains_audio_and_browser_preparation_without_consent_records() {
+        use maka_agent_api::{
+            contract::{WorkspaceAccess, WorkspacePermissions},
+            session::StoredSessionConfiguration,
+        };
+        let fixture = super::super::browser_access::tests::Fixture::with_permissions(
+            false,
+            true,
+            WorkspacePermissions {
+                access: WorkspaceAccess::DangerFullAccess,
+                request_permissions: false,
+            },
+        )
+        .await;
+        let audio = AudioReceipt {
+            basis: fixture.basis(),
+            requires_audio_consent: true,
+        };
+        let preparation = BrowserPreparationReceipt {
+            basis: fixture.basis(),
+            turn: fixture.invocation.turn_id.clone(),
+            gate: Arc::default(),
+            cleanup: Arc::default(),
+            observation: Mutex::new(None),
+        };
+        let root = &fixture.owner.store;
+        assert!(audio_current(root, "session", &audio).await.unwrap());
+        assert!(matches!(
+            preparation_current(root, "session", &preparation)
+                .await
+                .unwrap(),
+            PreparationAuthority::Current
+        ));
+        preparation.gate.close_admission();
+        assert!(matches!(
+            preparation_current(root, "session", &preparation)
+                .await
+                .unwrap(),
+            PreparationAuthority::VmRetired
+        ));
+        fixture.end().await;
+        assert!(
+            audio_current(root, "session", &audio).await.unwrap(),
+            "Session audio remains available between turns"
+        );
+        assert!(matches!(
+            preparation_current(root, "session", &preparation)
+                .await
+                .unwrap(),
+            PreparationAuthority::TurnInactive
+        ));
+        let current = fixture
+            .store
+            .get::<StoredSessionConfiguration>()
+            .await
+            .unwrap()
+            .unwrap();
+        fixture
+            .store
+            .update_session_permissions::<StoredSessionConfiguration, _>(
+                "session",
+                current.revision,
+                10,
+                |configuration| {
+                    configuration.permissions.access = WorkspaceAccess::WorkspaceWrite;
+                    configuration.boundary_revision += 1;
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        assert!(!audio_current(root, "session", &audio).await.unwrap());
+        assert!(matches!(
+            preparation_current(root, "session", &preparation)
+                .await
+                .unwrap(),
+            PreparationAuthority::Revoked
+        ));
+        fixture.close().await;
     }
 
     #[tokio::test]

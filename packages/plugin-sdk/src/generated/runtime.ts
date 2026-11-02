@@ -687,7 +687,8 @@ export type McpTransport =
       };
     };
 /**
- * Session sandbox policy. Full access explicitly disables filesystem and process isolation.
+ * Session sandbox policy. Full access disables isolation and permits Computer Use
+ * without additional application, browser or audio consent.
  */
 export type AgentWorkspaceAccess = 'read_only' | 'workspace_write' | 'danger_full_access';
 export type AgentToolInput = ('json' | 'skill' | 'web') | 'shell';
