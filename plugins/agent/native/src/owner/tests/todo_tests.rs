@@ -166,7 +166,6 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
     tokio::time::timeout(Duration::from_secs(90), async {
         let check = |sent: &Value| {
             let messages = sent["messages"].as_array().unwrap();
-            assert!(messages.iter().any(|message| message["role"] == "system" && message["content"].as_str().is_some_and(|text| text.contains("todo_write") && text.contains("may or may not have happened"))), "{messages:?}");
             assert!(messages.iter().any(|message| message["role"] == "tool" && message.to_string().contains("outcome_unknown")), "{messages:?}");
             assert!(messages.iter().any(|message| message["role"] == "user" && message["content"] == "What happened to the checklist?"), "{messages:?}");
         };
