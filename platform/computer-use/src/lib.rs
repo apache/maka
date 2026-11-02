@@ -63,6 +63,7 @@ mod permission_subject;
 pub mod protocol;
 #[cfg(feature = "native-desktop")]
 mod session;
+pub mod system_permission;
 #[cfg(all(feature = "native-desktop", target_os = "windows"))]
 mod windows_permission_subject;
 

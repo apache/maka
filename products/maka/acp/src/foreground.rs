@@ -137,6 +137,8 @@ impl Foreground {
         self.refresh().await?;
         let mut callbacks = JoinSet::<Result<(), Error>>::new();
         let mut seen = HashSet::new();
+        // Callbacks by request, so one settled elsewhere can be dropped.
+        let mut live = HashMap::<String, tokio::task::AbortHandle>::new();
         let mut pending = Vec::<InteractionSummary>::new();
         let mut heartbeat = tokio::time::interval(Duration::from_secs(15));
         heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -179,7 +181,8 @@ impl Foreground {
                 let client = self.client.clone();
                 let peer = self.peer.clone();
                 let cancel = self.active.cancel.clone();
-                callbacks.spawn(async move {
+                let request_id = record.request_id.clone();
+                let handle = callbacks.spawn(async move {
                     let response = peer.request(callback, &cancel).await?;
                     let current: InteractionRecord = client.query("agent", "interaction", json!({"sessionId":record.session_id,"requestId":record.request_id})).await?;
                     if current.outcome.is_some() { return Ok(()); }
@@ -187,6 +190,7 @@ impl Foreground {
                     let result: InteractionResult = client.mutate("agent", "respond", json!({"sessionId":current.session_id,"requestId":current.request_id,"answer":answer}), Attachments::new()).await?;
                     match result { InteractionResult::Recorded { record } if record.outcome.is_some() => Ok(()), _ => Err("Host rejected interaction response".into()) }
                 });
+                live.insert(request_id, handle);
                 self.state(acp::StateUpdate::RequiresAction(
                     acp::RequiresActionStateUpdate::new(),
                 ))
@@ -206,7 +210,12 @@ impl Foreground {
                     },
                     result = &mut next => break Some(result?),
                     callback = callbacks.join_next(), if !callbacks.is_empty() => {
-                        callback.ok_or("ACP callback task missing")???;
+                        match callback.ok_or("ACP callback task missing")? {
+                            Ok(result) => result?,
+                            // Settled elsewhere; see `live`.
+                            Err(error) if error.is_cancelled() => {}
+                            Err(error) => return Err(error.into()),
+                        }
                         if callbacks.is_empty() { self.state(acp::StateUpdate::Running(acp::RunningStateUpdate::new())).await?; }
                     },
                     _ = heartbeat.tick() => {
@@ -219,7 +228,21 @@ impl Foreground {
                 continue;
             };
             match page {
-                DeliveryPage::Interactions { pending: update } => pending = update.entries,
+                DeliveryPage::Interactions { pending: update } => {
+                    // An interaction settled without this client, such as one
+                    // its producer resolved, no longer waits for its answer.
+                    live.retain(|request_id, handle| {
+                        let waiting = update
+                            .entries
+                            .iter()
+                            .any(|entry| &entry.request_id == request_id);
+                        if !waiting {
+                            handle.abort();
+                        }
+                        waiting
+                    });
+                    pending = update.entries;
+                }
                 page => self.frame(page).await?,
             }
         }

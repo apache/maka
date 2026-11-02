@@ -205,18 +205,44 @@ fn path_of(pid: libc::pid_t) -> Option<String> {
     String::from_utf8(buffer).ok()
 }
 
-pub(crate) fn require(grant: Grant) -> Result<(), ToolError> {
+impl From<maka_agent_facts::interaction::SystemPermissionGrant> for Grant {
+    fn from(grant: maka_agent_facts::interaction::SystemPermissionGrant) -> Self {
+        use maka_agent_facts::interaction::SystemPermissionGrant;
+        match grant {
+            SystemPermissionGrant::Accessibility => Self::Accessibility,
+            SystemPermissionGrant::ScreenRecording => Self::ScreenRecording,
+        }
+    }
+}
+
+/// Whether the grant is in effect, confirming it with a real call when it
+/// has not been confirmed yet. It blocks for the call.
+pub(crate) fn present(grant: Grant) -> bool {
     if grant.confirmed().load(Ordering::Relaxed) {
-        return Ok(());
+        return true;
     }
-    if grant.observed() {
+    let observed = grant.observed();
+    if observed {
         grant.confirmed().store(true, Ordering::Relaxed);
-        return Ok(());
     }
+    observed
+}
+
+/// Asks macOS to show its request for the grant, once per Host. Returns
+/// whether this call asked.
+pub(crate) fn ask(grant: Grant) -> bool {
     let asked = !grant.asked().swap(true, Ordering::Relaxed);
     if asked {
         grant.request();
     }
+    asked
+}
+
+pub(crate) fn require(grant: Grant) -> Result<(), ToolError> {
+    if present(grant) {
+        return Ok(());
+    }
+    let asked = ask(grant);
     Err(ToolError::Failed(message(
         grant,
         &responsible_application(),
@@ -253,6 +279,11 @@ fn suspect(error: &ToolError) -> Option<Grant> {
     }
 }
 
+/// The failure for a grant still missing after the user was asked.
+pub(crate) fn still_missing(grant: Grant, application: &str) -> String {
+    message(grant, application, false)
+}
+
 /// The tool error for a missing grant. `permission_required:` is the stable
 /// prefix; the rest tells the user which switch to turn on.
 fn message(grant: Grant, application: &str, asked: bool) -> String {
@@ -271,7 +302,7 @@ fn message(grant: Grant, application: &str, asked: bool) -> String {
 }
 
 /// The name macOS shows for the process that holds this Host's grants.
-fn responsible_application() -> String {
+pub(crate) fn responsible_application() -> String {
     responsible_path()
         .map(|path| application_name(&path))
         .unwrap_or_else(|| "the application that started Maka".into())

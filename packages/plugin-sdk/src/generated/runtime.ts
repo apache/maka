@@ -3271,7 +3271,8 @@ export type AgentInteractionKind =
   | 'permissions'
   | 'form'
   | 'client_capability'
-  | 'computer_app';
+  | 'computer_app'
+  | 'system_permission';
 export type InteractionAnswer =
   | {
       kind: 'service_approval';
@@ -3315,6 +3316,9 @@ export type InteractionAnswer =
     }
   | {
       kind: 'computer_app_cancel';
+    }
+  | {
+      kind: 'system_permission_cancel';
     };
 export type Decision = 'allow' | 'deny';
 export type Decision2 =
@@ -3385,6 +3389,20 @@ export type InteractionRequest =
       display: ComputerAppDisplay;
       allowAlways: boolean;
       authorityRevision: number;
+    }
+  | {
+      kind: 'system_permission';
+      toolUseId: string;
+      /**
+       * Distinct missing grants.
+       *
+       * @minItems 1
+       */
+      grants: [SystemPermissionGrant, ...SystemPermissionGrant[]];
+      /**
+       * The application name the operating system lists in its settings.
+       */
+      application: string;
     };
 export type FormField = {
   name: string;
@@ -3466,6 +3484,12 @@ export type GrantScope =
     };
 export type ComputerAppPlatform = 'macos' | 'windows';
 export type ComputerAppRisk = 'low' | 'high';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type SystemPermissionGrant = 'accessibility' | 'screen_recording';
 export type InteractionOutcome =
   | {
       kind: 'service_approval_decision';
@@ -3511,6 +3535,10 @@ export type InteractionOutcome =
   | {
       kind: 'computer_app_decision';
       decision: ComputerAppDecision;
+      committedAt: number;
+    }
+  | {
+      kind: 'system_permission_granted';
       committedAt: number;
     }
   | {

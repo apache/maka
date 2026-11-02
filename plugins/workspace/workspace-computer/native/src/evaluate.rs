@@ -372,6 +372,14 @@ impl Computer {
             }
             targets.push(api::audio_target());
         }
+        // Native desktop work needs the operating system's privacy grants;
+        // resolving an app below already uses them.
+        if !browser_command(&command)
+            && !matches!(command, maka_computer_use::protocol::Command::Documentation)
+        {
+            system_permission::ensure(self, &call, basis, &operation_id, &cancellation, &cell)
+                .await?;
+        }
         let subject = {
             let mut desktop = tokio::select! { biased;
                 () = cancellation.cancelled() => return Err(failed("Computer Use cancelled before app resolution").into()),

@@ -9648,6 +9648,37 @@ export const contracts = {
                       'authorityRevision',
                     ],
                   },
+                  {
+                    description:
+                      'Missing operating-system grants the waiting tool call needs. The producer\npolls the real grant state and commits `SystemPermissionGranted` itself;\nthe user can only cancel.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      grants: {
+                        description: 'Distinct missing grants.',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/SystemPermissionGrant',
+                        },
+                        minItems: 1,
+                      },
+                      application: {
+                        description:
+                          'The application name the operating system lists in its settings.',
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 256,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'grants', 'application'],
+                  },
                 ],
               },
               PermissionBasis: {
@@ -10212,6 +10243,23 @@ export const contracts = {
                 type: 'string',
                 enum: ['low', 'high'],
               },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
               InteractionOutcome: {
                 oneOf: [
                   {
@@ -10365,6 +10413,24 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
+                  },
+                  {
+                    description:
+                      'Producer-committed once every requested system grant is present; no answer maps here.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
                   },
                   {
                     type: 'object',
@@ -13500,6 +13566,7 @@ export const contracts = {
                   'form',
                   'client_capability',
                   'computer_app',
+                  'system_permission',
                 ],
               },
             },
@@ -15615,6 +15682,17 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_cancel',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
                 ],
               },
               Decision: {
@@ -16037,6 +16115,37 @@ export const contracts = {
                       'allowAlways',
                       'authorityRevision',
                     ],
+                  },
+                  {
+                    description:
+                      'Missing operating-system grants the waiting tool call needs. The producer\npolls the real grant state and commits `SystemPermissionGranted` itself;\nthe user can only cancel.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      grants: {
+                        description: 'Distinct missing grants.',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/SystemPermissionGrant',
+                        },
+                        minItems: 1,
+                      },
+                      application: {
+                        description:
+                          'The application name the operating system lists in its settings.',
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 256,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'grants', 'application'],
                   },
                 ],
               },
@@ -16602,6 +16711,23 @@ export const contracts = {
                 type: 'string',
                 enum: ['low', 'high'],
               },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
               InteractionOutcome: {
                 oneOf: [
                   {
@@ -16755,6 +16881,24 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision', 'committedAt'],
+                  },
+                  {
+                    description:
+                      'Producer-committed once every requested system grant is present; no answer maps here.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
                   },
                   {
                     type: 'object',
@@ -22555,6 +22699,7 @@ export const contracts = {
                   'form',
                   'client_capability',
                   'computer_app',
+                  'system_permission',
                 ],
               },
               AgentComputerApps: {

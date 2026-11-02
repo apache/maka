@@ -21,6 +21,9 @@ use super::*;
 use crate::capability::FormInput;
 
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+/// Upper bound for the operating-system application name shown on a system permission card;
+/// the wire schema declares the same bound.
+const MAX_SYSTEM_PERMISSION_APPLICATION_CHARS: usize = 256;
 
 pub fn entity_id(value: &str) -> Result<(), &'static str> {
     if value.is_empty()
@@ -249,6 +252,32 @@ impl InteractionRequest {
                     return Err("Invalid computer application authority revision");
                 }
             }
+            Self::SystemPermission {
+                tool_use_id,
+                grants,
+                application,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                if grants.is_empty() {
+                    return Err("System permission request requires a grant");
+                }
+                if grants
+                    .iter()
+                    .enumerate()
+                    .any(|(index, grant)| grants[..index].contains(grant))
+                {
+                    return Err("Duplicate system permission grant");
+                }
+                if application.trim().is_empty()
+                    || application.trim() != application
+                    || application.chars().count() > MAX_SYSTEM_PERMISSION_APPLICATION_CHARS
+                    || application.chars().any(char::is_control)
+                {
+                    return Err("Invalid system permission application name");
+                }
+            }
         }
         Ok(())
     }
@@ -286,7 +315,8 @@ impl InteractionOutcome {
                 | InteractionRequest::ServiceApproval { .. }
                 | InteractionRequest::Question { .. }
                 | InteractionRequest::Permissions { .. }
-                | InteractionRequest::ComputerApp { .. },
+                | InteractionRequest::ComputerApp { .. }
+                | InteractionRequest::SystemPermission { .. },
                 Self::Closure {
                     reason: ClosureReason::TimedOut,
                     ..
@@ -317,6 +347,7 @@ impl InteractionOutcome {
             ) => question::validate_answer_count(answers, questions),
             (_, Self::Closure { .. })
             | (InteractionRequest::ServiceApproval { .. }, Self::ServiceApprovalDecision { .. })
+            | (InteractionRequest::SystemPermission { .. }, Self::SystemPermissionGranted { .. })
             | (
                 InteractionRequest::ClientCapability { .. },
                 Self::ClientCapabilityDecision { .. },
@@ -387,7 +418,10 @@ impl InteractionAnswer {
                 Self::ComputerApp { decision },
                 InteractionRequest::ComputerApp { allow_always, .. },
             ) => decision.validate_for(*allow_always),
-            (Self::ComputerAppCancel {}, InteractionRequest::ComputerApp { .. }) => Ok(()),
+            (Self::ComputerAppCancel {}, InteractionRequest::ComputerApp { .. })
+            | (Self::SystemPermissionCancel {}, InteractionRequest::SystemPermission { .. }) => {
+                Ok(())
+            }
             _ => Err("Interaction answer does not match request"),
         }
     }
