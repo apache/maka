@@ -194,6 +194,11 @@ export const workspaceMessages = {
   ],
   Idle: ['Idle', '空闲', '閒置'],
   Image: msg_imageTitle,
+  'Workspace preview is unavailable.': [
+    'Workspace preview is unavailable.',
+    '工作区预览不可用。',
+    '工作區預覽無法使用。',
+  ],
   'Image unavailable': ['Image unavailable', '图片不可用', '圖片無法使用'],
   'Image viewport': ['Image viewport', '图片视口', '圖片檢視區'],
   Input: ['Input', '输入', '輸入'],

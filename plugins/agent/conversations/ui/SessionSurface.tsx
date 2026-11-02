@@ -32,6 +32,7 @@ import {
   windowSize,
   platform,
   type ViewRef,
+  type Signal,
   type JSX,
 } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
@@ -180,11 +181,18 @@ type PendingDraft = {
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
   revision: number;
 };
+export type ConversationWindow = {
+  workspace: Signal<WorkspaceViewHandle | null>;
+  sessions(): readonly string[];
+  command(id: string): void;
+};
+
 // A pane opened beside the main one shares its catalog read and leaves the
 // window title, notifications, menu and app-wide shortcuts to the main pane.
 export function createConversationUi(
   context: UiContext<UiHost, JSX.Element>,
   host: Host,
+  window: ConversationWindow,
   side?: { browsing: Browsing },
 ) {
   const runtime = context.runtime;
@@ -198,12 +206,16 @@ export function createConversationUi(
   const selected = () => shell()?.sessionId() ?? null;
   const overlay = signal<Overlay | null>(null);
   const reloading = () => runtime.reloading() || (shell()?.blocked() ?? false);
-  const workspace = signal<WorkspaceViewHandle | null>(null);
+  const workspace = window.workspace;
+  const requireWorkspace = () => {
+    const current = workspace();
+    if (!current) throw new UiError('Workspace preview is unavailable.');
+    return current;
+  };
   const resources = {
     shown: () => workspace()?.shown() ?? false,
     hide: () => workspace()?.hide(),
     openFiles: (target: { sessionId: string }) => workspace()?.openFiles(target),
-    openImage: (image: ImagePreview) => workspace()?.openImage(image),
     attachOpener: (sessionId: string, node: ViewRef) => workspace()?.attachOpener(sessionId, node),
     focused: () => workspace()?.focused() ?? false,
   };
@@ -1210,7 +1222,11 @@ export function createConversationUi(
   };
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!alive || selected() !== sessionId || overlay()) return;
-    await workspace()?.openLink(sessionId, target, restoreFocus);
+    try {
+      await requireWorkspace().openLink(sessionId, target, restoreFocus);
+    } catch (reason) {
+      report(reason);
+    }
   };
   const commandLatest = (context: ActionContext & { turnId: string | null }) => {
     if (closeCommand(context)) handle()?.jumpLatest(context.turnId);
@@ -1473,6 +1489,7 @@ export function createConversationUi(
     }
   };
   let sideKeys: ViewRef | undefined;
+  let paneRoot: ViewRef | undefined;
   if (!side) {
     bindKeys();
     windowTitle(() => handle()?.title() ?? null);
@@ -1586,7 +1603,11 @@ export function createConversationUi(
   const previewImage = (image: ImagePreview) => {
     if (!alive || selected() !== image.source.read.sessionId || overlay()) return;
     browserFocus.set(false);
-    resources.openImage(image);
+    try {
+      requireWorkspace().openImage(image);
+    } catch (reason) {
+      report(reason);
+    }
   };
   const closeSidebar = () => {
     if (!alive || !(shell()?.visible() ?? false) || overlay()) return;
@@ -1633,10 +1654,10 @@ export function createConversationUi(
       chooseWorkspace: () => invokeOwn('workspace'),
       sessions: () => invokeOwn('browse'),
       search: () => invokeOwn('sessions'),
-      find: () => invokeOwn('find'),
-      commands: () => invokeOwn('commands'),
-      models: () => invokeOwn('models'),
-      latest: () => invokeOwn('latest'),
+      find: () => window.command('find'),
+      commands: () => window.command('commands'),
+      models: () => window.command('models'),
+      latest: () => window.command('latest'),
       nextSession: () => stepSession(1),
       previousSession: () => stepSession(-1),
       settings: () => invokeOwn('settings'),
@@ -1869,6 +1890,8 @@ export function createConversationUi(
   };
   return {
     sessionId: selected,
+    focused: () => paneRoot !== undefined && keymap.focusedWithin(paneRoot),
+    command: invokeOwn,
     browsing,
     navigation(input: ConversationNavigationInput) {
       bind(input.shell);
@@ -1881,8 +1904,8 @@ export function createConversationUi(
         context.configuration.workspace as UiTarget,
         workspaceViewContract,
         {
-          selected,
-          blocked: () => overlay() !== null || reloading() || !(shell()?.visible() ?? false),
+          sessions: window.sessions,
+          blocked: () => reloading() || !(shell()?.visible() ?? false),
           get docked() {
             return input.docked;
           },
@@ -1903,6 +1926,7 @@ export function createConversationUi(
         <viewRuntimeContext.Provider value={runtime}>
           <View
             ref={(node) => {
+              paneRoot = node;
               if (!side || sideKeys === node) return;
               sideKeys = node;
               bindKeys(node);
