@@ -225,6 +225,8 @@ export function Disclosure(props: {
           flex: 1,
           minWidth: 0,
           flexDirection: 'row',
+          // The row spans its container; the chevron and label start at its edge.
+          justifyContent: 'flex-start',
           alignItems: 'center',
           gap: 8,
         }}
