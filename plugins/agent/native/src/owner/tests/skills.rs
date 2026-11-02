@@ -41,7 +41,7 @@ async fn next(listener: &TcpListener) -> (TcpStream, Value) {
     (socket, result)
 }
 #[tokio::test]
-async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_http() {
+async fn selected_skill_tools_use_actual_agent_context_without_duplicate_grants_over_http() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("selected");
@@ -83,47 +83,42 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
             }
             tool(&mut socket, "SkillSearch", json!({"query":"Review"})).await;
             let (mut socket, result) = next(&listener).await;
-            if granted {
-                assert_eq!(result["totalEligible"], 1, "{result}");
-                assert_eq!(result["matches"][0]["ref"], "source:fixture:review");
-                let revision = result["revision"].clone();
-                tool(&mut socket, "Skill", json!({"name":"source:fixture:review","revision":revision})).await;
-                let (mut loaded_socket, loaded) = next(&listener).await;
-                assert_eq!(loaded["kind"], "loaded", "{loaded}");
-                assert!(loaded["instructions"].as_str().unwrap().contains("references/guide.txt"));
-                assert_eq!(loaded["declaredTools"], json!(["Superuser"]));
-                assert_eq!(loaded["receipt"]["success"], true);
-                let mut complete = loaded["instructions"].as_str().unwrap().to_owned();
-                let mut continuation = loaded["next"].clone();
-                assert!(!continuation.is_null());
-                while !continuation.is_null() {
-                    tool(&mut loaded_socket, "Skill", continuation).await;
-                    let (next_socket, page) = next(&listener).await;
-                    assert_eq!(page["kind"], "loaded");
-                    assert_eq!(page["instructionOffset"], complete.len());
-                    complete.push_str(page["instructions"].as_str().unwrap());
-                    continuation = page["next"].clone();
-                    loaded_socket = next_socket;
-                }
-                assert_eq!(complete, instructions);
-                tool(&mut loaded_socket, "Skill", json!({"name":"source:fixture:review","revision":revision,"resource":{"path":"references/guide.txt"}})).await;
-                let (mut resource_socket, resource) = next(&listener).await;
-                assert_eq!(resource["kind"], "resource", "{resource}");
-                assert!(!resource["next"].is_null());
-                tool(&mut resource_socket, "Skill", resource["next"].clone()).await;
-                let (mut continued_socket, continued) = next(&listener).await;
-                assert_eq!(continued["kind"], "resource");
-                assert_eq!(continued["revision"], revision);
-                assert_ne!(continued["next"], resource["next"]);
-                tool(&mut continued_socket, "SkillSearch", json!({"query":"Review","tools":["Superuser"]})).await;
-                let (last_socket, rejected) = next(&listener).await;
-                assert_ne!(rejected["totalEligible"], 2, "{rejected}");
-                assert!(rejected.to_string().to_lowercase().contains("invalid"), "{rejected}");
-                socket = last_socket;
-            } else {
-                assert_eq!(result, "native service invocation is not granted");
-                assert!(result.get("revision").is_none());
+            assert_eq!(result["totalEligible"], 1, "{result}");
+            assert_eq!(result["matches"][0]["ref"], "source:fixture:review");
+            let revision = result["revision"].clone();
+            tool(&mut socket, "Skill", json!({"name":"source:fixture:review","revision":revision})).await;
+            let (mut loaded_socket, loaded) = next(&listener).await;
+            assert_eq!(loaded["kind"], "loaded", "{loaded}");
+            assert!(loaded["instructions"].as_str().unwrap().contains("references/guide.txt"));
+            assert_eq!(loaded["declaredTools"], json!(["Superuser"]));
+            assert_eq!(loaded["receipt"]["success"], true);
+            let mut complete = loaded["instructions"].as_str().unwrap().to_owned();
+            let mut continuation = loaded["next"].clone();
+            assert!(!continuation.is_null());
+            while !continuation.is_null() {
+                tool(&mut loaded_socket, "Skill", continuation).await;
+                let (next_socket, page) = next(&listener).await;
+                assert_eq!(page["kind"], "loaded");
+                assert_eq!(page["instructionOffset"], complete.len());
+                complete.push_str(page["instructions"].as_str().unwrap());
+                continuation = page["next"].clone();
+                loaded_socket = next_socket;
             }
+            assert_eq!(complete, instructions);
+            tool(&mut loaded_socket, "Skill", json!({"name":"source:fixture:review","revision":revision,"resource":{"path":"references/guide.txt"}})).await;
+            let (mut resource_socket, resource) = next(&listener).await;
+            assert_eq!(resource["kind"], "resource", "{resource}");
+            assert!(!resource["next"].is_null());
+            tool(&mut resource_socket, "Skill", resource["next"].clone()).await;
+            let (mut continued_socket, continued) = next(&listener).await;
+            assert_eq!(continued["kind"], "resource");
+            assert_eq!(continued["revision"], revision);
+            assert_ne!(continued["next"], resource["next"]);
+            tool(&mut continued_socket, "SkillSearch", json!({"query":"Review","tools":["Superuser"]})).await;
+            let (last_socket, rejected) = next(&listener).await;
+            assert_ne!(rejected["totalEligible"], 2, "{rejected}");
+            assert!(rejected.to_string().to_lowercase().contains("invalid"), "{rejected}");
+            socket = last_socket;
             response(&mut socket).await;
             f.drained().await;
             if granted {

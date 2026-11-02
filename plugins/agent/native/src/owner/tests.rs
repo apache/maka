@@ -192,7 +192,13 @@ fn entry(provider: bool) -> EntryDeclaration {
             json!({"type":"object","additionalProperties":false}).into()
         },
         imports: if provider {
-            BTreeMap::new()
+            BTreeMap::from([(
+                "settings".into(),
+                Import {
+                    contract: maka_settings_native::contract::contract(),
+                    cardinality: Cardinality::One,
+                },
+            )])
         } else {
             BTreeMap::from([
                 (
@@ -310,6 +316,7 @@ fn application_input(
         ..node(key, &consumer)
     };
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             (
@@ -319,6 +326,28 @@ fn application_input(
                         values: serde_json::from_value(serde_json::to_value(settings).unwrap())
                             .unwrap(),
                         parameters: Default::default(),
+                    },
+                    bindings: if provider
+                        .manifest()
+                        .application
+                        .as_ref()
+                        .unwrap()
+                        .declaration()
+                        .host
+                        .as_ref()
+                        .unwrap()
+                        .imports
+                        .contains_key("settings")
+                    {
+                        BTreeMap::from([(
+                            "settings".into(),
+                            vec![Target::Instance {
+                                path: vec!["settings".into()],
+                                export: maka_settings_native::EXPORT.into(),
+                            }],
+                        )])
+                    } else {
+                        BTreeMap::new()
                     },
                     ..node(1, &provider)
                 },
@@ -709,16 +738,13 @@ impl Fixture {
             FixtureApplication::Agent => match peer {
                 Some(peer) => (peer.issuer(), peer),
                 None => {
-                    let native = tooling.as_ref().map(service_tools::Setup::policy).or_else(|| {
-                        let methods = settings.tools.iter().filter(|tool|
-                            matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Export { name } if name == EXPORT)
-                        ).map(|tool| tool.method.clone()).collect::<std::collections::BTreeSet<_>>();
-                        (!methods.is_empty()).then(|| Arc::new(maka_transport::transport::PeerPolicy::with_native_grants(vec![
-                            maka_transport::transport::NativeGrant {
-                                origin: id(1), consumer: id(1), provider: id(1), export: EXPORT.into(), methods, recovery: true,
-                            }
-                        ]).unwrap()))
-                    });
+                    let native = tooling
+                        .as_ref()
+                        .map(service_tools::Setup::policy)
+                        .or_else(|| {
+                            (!settings.tools.is_empty())
+                                .then(|| Arc::new(maka_transport::transport::PeerPolicy::default()))
+                        });
                     let issuer = native
                         .as_ref()
                         .map(|policy| policy.issuer())

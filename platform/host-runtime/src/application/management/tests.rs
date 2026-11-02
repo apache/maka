@@ -1152,6 +1152,7 @@ async fn fixed_target_factory_requires_the_original_root_owner() {
                 activation: activation.clone(),
                 persistence: Some(NativePersistence { source, store }),
                 services: NativeServices {
+                    selected_method: None,
                     activation,
                     exports: Arc::default(),
                     imports: Arc::new(BTreeMap::new()),
