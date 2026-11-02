@@ -96,6 +96,7 @@ import {
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
+import { BotRestart } from '../../../../products/maka/workbench/app/BotRestart';
 import {
   MessageRow,
   originLabel,
@@ -250,6 +251,8 @@ type ConversationProps = {
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
   stopAction(): () => void;
+  /** Starts the Bot over; offered only on the Bot's own conversation. */
+  restartBot?(): Promise<void>;
 };
 type LivePart = {
   invocationId: string | null;
@@ -2564,6 +2567,11 @@ export function Conversation(props: ConversationProps) {
         browser={props.browser()}
         files={props.files}
         filesOpener={props.filesOpener}
+        actions={
+          bot.identity() === 'bot' && props.restartBot ? (
+            <BotRestart restart={props.restartBot} />
+          ) : undefined
+        }
       />
       <If when={transcriptStatus() === 'failed' && !props.connectionLost()}>
         <View

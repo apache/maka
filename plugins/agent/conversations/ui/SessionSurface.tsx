@@ -1204,6 +1204,32 @@ export function createConversationUi(
       }
     })();
   };
+  // Archives the current Bot and opens a new one, which is how a Bot gets the tools a newer
+  // build offers. The new Bot starts empty: the old one's checklist and schedule stay behind.
+  const restartBot = async () => {
+    const current = botSession();
+    const owner = handle();
+    if (!alive || !current || owner?.sessionId !== current) return;
+    const observed = await host.query('agent', 'observe', { sessionId: current });
+    const archived = await control('changeSession', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      action: 'archive',
+    });
+    if (archived.kind !== 'changed')
+      throw new UiError('The current Bot could not be archived: {reason}', {
+        reason: archived.reason ?? archived.kind,
+      });
+    const result = await control('openBot', {});
+    if (!alive) return;
+    if (result.kind !== 'opened')
+      throw new UiError('Bot could not be opened: {reason}', {
+        reason: result.reason ?? result.kind,
+      });
+    botSession.set(result.sessionId);
+    await switchSession(result.sessionId, { sessionId: current, instance: null });
+    await browsing.refresh();
+  };
   const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
   };
@@ -2015,6 +2041,7 @@ export function createConversationUi(
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
                   focusComposer={focusComposer}
                   stopAction={stopAction}
+                  restartBot={restartBot}
                   attach={(next) => {
                     handle.set(next);
                     const request = pendingReveal;
