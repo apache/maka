@@ -62,6 +62,7 @@ pub(super) fn metadata(package: &Package) -> Result<Metadata, HostError> {
     )?)
 }
 
+#[cfg(test)]
 pub(super) fn template(package: &Package) -> Result<&Template, HostError> {
     package
         .manifest()
