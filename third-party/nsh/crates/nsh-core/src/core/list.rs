@@ -1234,6 +1234,11 @@ impl ListState {
         }
         self.count = count;
         for slot in &mut self.slots {
+            // As in `splice`: a freed cell's item is gone, not waiting at its index.
+            if slot.index.is_none() && slot.requested.is_some_and(|index| index >= count) {
+                slot.requested = None;
+                slot.rendered = None;
+            }
             if slot.index.is_some() && matches!(slot.native, NativeCell::Retiring(_)) {
                 slot.native = NativeCell::Mounted;
                 self.native_ops
@@ -2784,6 +2789,22 @@ mod tests {
         l.update_window(&mut binds, None);
         // The same index now names another item, which the cell never showed.
         l.splice(4, 1, 1);
+        l.viewport = 100.0;
+        l.update_window(&mut binds, None);
+        assert_eq!(binds, [(4, 4)]);
+    }
+
+    #[test]
+    fn a_freed_cell_binds_again_when_the_count_removed_its_item() {
+        let mut l = list(10, 50.0, 100.0);
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        l.viewport = 75.0;
+        binds.clear();
+        l.update_window(&mut binds, None);
+        assert_eq!(l.slots[4].index, None);
+        l.set_count(4);
+        l.set_count(10);
         l.viewport = 100.0;
         l.update_window(&mut binds, None);
         assert_eq!(binds, [(4, 4)]);
