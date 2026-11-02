@@ -260,7 +260,7 @@ export function executor(root, worker = {}) {
     groups.push(
       ...buckets.map((bucket, index) => ({
         group: `rest-${index + 1}`,
-        shards: 1,
+        shards: 2,
         binaries: bucket.binaries,
       })),
     );
