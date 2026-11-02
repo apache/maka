@@ -24,7 +24,7 @@ use maka_agent_facts::interaction::{
     ComputerAppDisplay, ComputerAppPlatform, Decision, GrantCapability,
 };
 use maka_agent_facts::workspace::BindingStamp;
-use serde_json::json;
+use serde_json::{Value, json};
 use tokio::sync::oneshot;
 
 #[tokio::test]
@@ -1027,5 +1027,110 @@ async fn windows_app_session_consent_is_canonical_and_does_not_cross_platform_id
             .await
             .unwrap()
     );
+    root.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn full_access_dispatch_uses_policy_without_grants_and_preserves_app_stop_and_revocation() {
+    let (_dir, _owner, root, store, invocation, basis) = fixture().await;
+    let current = store.get::<Value>().await.unwrap().unwrap();
+    store
+        .update_session_permissions::<Value, _>(store.id(), current.revision, 2, |configuration| {
+            configuration["permissions"] =
+                json!({"access":"danger_full_access","requestPermissions":true});
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let app = target("fixture.unrestricted");
+    let display = activity_display();
+    let targets: Vec<_> = [
+        GrantCapability::ComputerUse,
+        GrantCapability::ComputerAudio,
+        GrantCapability::Browser,
+        GrantCapability::BrowserHistory,
+        GrantCapability::BrowserDownload,
+        GrantCapability::BrowserUpload,
+    ]
+    .into_iter()
+    .map(|capability| {
+        let scope = match capability {
+            GrantCapability::Browser
+            | GrantCapability::BrowserDownload
+            | GrantCapability::BrowserUpload => GrantScope::BrowserOrigin {
+                origin: "https://fixture.example".into(),
+            },
+            GrantCapability::BrowserHistory => GrantScope::BrowserProfile {
+                browser_id: "fixture".into(),
+                generation: "generation".into(),
+            },
+            _ => GrantScope::Capability {},
+        };
+        GrantTarget {
+            capability,
+            scope,
+            ..app.clone()
+        }
+    })
+    .collect();
+    let dispatch = native_dispatch(&invocation, "unrestricted-effect");
+    store
+        .append_computer_app_dispatch(&[], &dispatch, &targets, &app, &display, &basis)
+        .await
+        .unwrap();
+    let (restricted, restricted_invocation, restricted_basis) = session(&root, "restricted").await;
+    assert!(
+        !restricted
+            .computer_app_granted(
+                &restricted_invocation,
+                "restricted-effect",
+                &app,
+                &restricted_basis
+            )
+            .await
+            .unwrap(),
+        "full access cannot create consent for another Session"
+    );
+    settle_native(&store, &invocation, "unrestricted-effect").await;
+    assert_eq!(store.computer_apps(store.id()).await.unwrap().len(), 1);
+    assert!(
+        store
+            .stop_computer_app_operation("unrestricted-effect", 4)
+            .await
+            .unwrap()
+    );
+    assert!(matches!(
+        store
+            .append_computer_app_dispatch(
+                &[],
+                &native_dispatch(&invocation, "stopped-effect"),
+                &targets,
+                &app,
+                &display,
+                &basis
+            )
+            .await,
+        Err(CommitError::PermissionRevoked)
+    ));
+    let current = store.get::<Value>().await.unwrap().unwrap();
+    store
+        .update_session_permissions::<Value, _>(store.id(), current.revision, 5, |configuration| {
+            configuration["permissions"]["access"] = json!("workspace_write");
+            configuration["boundary_revision"] = json!(1);
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .append_capability_dispatch(
+                &[],
+                &native_dispatch(&invocation, "revoked-effect"),
+                &targets,
+                &basis
+            )
+            .await,
+        Err(CommitError::PermissionRevoked)
+    ));
     root.shutdown().await.unwrap();
 }

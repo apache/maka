@@ -17,6 +17,10 @@
  * under the License.
  */
 
+import type {
+  AgentProject,
+  AgentWorkspaceSelection,
+} from '../../../../packages/plugin-sdk/src/index.js';
 import { nestCreated } from './sessionNesting.ts';
 
 type Groupable = {
@@ -99,4 +103,20 @@ export function browserOrder(
   return groups.flatMap((group) =>
     collapsed.has(group.key) ? group.sessions.filter((id) => id === current) : group.sessions,
   );
+}
+
+/** Resolve creation through an owned workspace, never a display path. */
+export function groupWorkspace(
+  group: ConversationGroup<
+    Pick<AgentProject, 'reference' | 'archived' | 'available' | 'selection'>
+  >,
+): AgentWorkspaceSelection | null {
+  if (group.pinned) return null;
+  if (group.project) {
+    const project = group.project;
+    if (project.archived || !project.available || !project.selection) return null;
+    return { kind: 'project', project: project.reference, selection: project.selection };
+  }
+  const sessionId = group.sessions[0];
+  return sessionId ? { kind: 'session', sessionId } : null;
 }

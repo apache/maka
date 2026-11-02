@@ -52,6 +52,7 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "workhub_tasks",
     "Skill",
     "SkillSearch",
+    "ModelList",
     // Reading the user's conversations is open to the Bot. Tools that change or
     // message a conversation are deliberately absent until their confirmation
     // tiers and ownership checks exist.
@@ -953,6 +954,12 @@ const ABILITIES: &[Ability] = &[
         "{}（只读地查看用户的会话）",
         "{}（唯讀地查看使用者的會話）",
         "{} (read the user's conversations, read-only)",
+    ),
+    (
+        &["ModelList"],
+        "{}（查找可派发的模型及推理档位）",
+        "{}（尋找可派發的模型及推理檔位）",
+        "{} (find selectable models and thinking levels for delegation)",
     ),
     (
         &["SessionCreate", "SessionSend", "SessionStop"],

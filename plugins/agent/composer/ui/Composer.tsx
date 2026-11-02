@@ -26,7 +26,10 @@ import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
 import { keymap } from 'nsh';
-import { DraftAttachments } from '../../../../products/maka/workbench/app/Attachments';
+import {
+  DraftAttachments,
+  StagedAttachments,
+} from '../../../../products/maka/workbench/app/Attachments';
 import { ComposerDetails } from '../../../../products/maka/workbench/app/ComposerDetails';
 import { SessionPermissionsSelect } from '../../../../products/maka/workbench/app/SessionPermissionsSelect';
 import { PlanModeToggle } from '../../../../products/maka/workbench/app/PlanModeToggle';
@@ -553,28 +556,10 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                       <DraftAttachments draft={owner!.attachments} preview={owner!.previewImage} />
                     </If>
                     <If when={local !== null}>
-                      <Each of={local?.files() ?? []} key={(file) => file.id}>
-                        {(file) => (
-                          <View
-                            style={{
-                              flexDirection: 'row',
-                              alignItems: 'center',
-                              gap: 8,
-                            }}
-                          >
-                            <Text style={{ color: C.secondary }}>{file().name}</Text>
-                            <Button
-                              accessibilityLabel={tr('Remove attachment {name}', {
-                                name: file().name,
-                              })}
-                              onPress={() => local?.removeFile(file().id)}
-                              style={controlStyle}
-                            >
-                              <Icon name="close" color={C.secondary} />
-                            </Button>
-                          </View>
-                        )}
-                      </Each>
+                      <StagedAttachments
+                        files={local?.files() ?? []}
+                        remove={(id) => local?.removeFile(id)}
+                      />
                       <If when={local?.picking()}>
                         <Input
                           accessibilityLabel={tr('Attachment path')}

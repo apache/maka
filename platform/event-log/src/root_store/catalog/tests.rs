@@ -425,3 +425,69 @@ async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursor
     );
     root.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn child_pages_cross_partitions_and_keep_archived_parents_traversable() {
+    use crate::sessions::CatalogSelection;
+    let (_dir, root) = fixture().await;
+    for (id, parent, archived) in [
+        ("owned_root", None, false),
+        ("owned_child_a", Some("owned_root"), false),
+        ("owned_child_b", Some("owned_root"), true),
+        ("owned_child_c", Some("owned_root"), false),
+        ("owned_grandchild", Some("owned_child_b"), false),
+        ("owned_unrelated", None, false),
+        ("foreign_child", Some("owned_root"), false),
+    ] {
+        root.create_session(id, id, &json!({"title":id,"parentSessionId":parent}), 1)
+            .await
+            .unwrap();
+        if archived {
+            root.session(id)
+                .await
+                .unwrap()
+                .change_session_archived::<Value>(id, None, true, 2)
+                .await
+                .unwrap();
+        }
+    }
+    let scope = |parent: &str| CatalogScope::Owned {
+        id_prefix: "owned_".into(),
+        selection: CatalogSelection::Children(parent.into()),
+        title_query: String::new(),
+    };
+    let first = root
+        .root_session_page::<Value>(
+            scope("owned_root"),
+            None,
+            SessionPosition::Start,
+            2,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&first), ["owned_child_a", "owned_child_b"]);
+    let next = root
+        .root_session_page::<Value>(
+            scope("owned_root"),
+            Some(&first.revision),
+            SessionPosition::After(first.next_cursor.as_deref().unwrap()),
+            2,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&next), ["owned_child_c"]);
+    let grandchild = root
+        .root_session_page::<Value>(
+            scope("owned_child_b"),
+            None,
+            SessionPosition::Start,
+            2,
+            filter(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&grandchild), ["owned_grandchild"]);
+    root.drain().await;
+}

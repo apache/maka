@@ -22,6 +22,7 @@ use maka_agent_facts::event::CommitFuture;
 use maka_agent_facts::event::EventSink;
 use maka_agent_facts::event::EventWrite;
 use maka_agent_facts::event::Fact;
+use maka_agent_facts::interaction::GrantCapability;
 use sqlx::{Connection, SqliteConnection};
 
 use crate::{EventLog, StoreError, sequence_number};
@@ -213,14 +214,31 @@ impl EventLog {
                                 )
                                 .await?;
                             }
+                            let full_access = crate::workspace_bindings::full_access(
+                                &mut transaction,
+                                &event.event().invocation.session_id,
+                                basis,
+                            )
+                            .await?;
                             for target in targets {
-                                if crate::interactions::capability_grant(
-                                    &mut transaction,
-                                    &event.event().invocation.session_id,
-                                    target,
-                                )
-                                .await?
-                                .is_none_or(|grant| grant.basis != Some(*basis))
+                                let unrestricted = full_access
+                                    && matches!(
+                                        target.capability,
+                                        GrantCapability::ComputerUse
+                                            | GrantCapability::ComputerAudio
+                                            | GrantCapability::Browser
+                                            | GrantCapability::BrowserHistory
+                                            | GrantCapability::BrowserDownload
+                                            | GrantCapability::BrowserUpload
+                                    );
+                                if !unrestricted
+                                    && crate::interactions::capability_grant(
+                                        &mut transaction,
+                                        &event.event().invocation.session_id,
+                                        target,
+                                    )
+                                    .await?
+                                    .is_none_or(|grant| grant.basis != Some(*basis))
                                 {
                                     return Err(StoreError::PermissionRevoked);
                                 }

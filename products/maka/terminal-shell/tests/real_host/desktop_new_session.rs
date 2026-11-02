@@ -409,6 +409,38 @@ impl Desktop {
         card
     }
 
+    /// Pointing at the control repaints its corner, which no label or icon covers.
+    async fn assert_hover_changes(&self, label: &str) {
+        let bounds = self.control(label).await;
+        let corner = Bounds::new(
+            point(bounds.left() + px(6.), bounds.top() + px(6.)),
+            size(px(1.), px(1.)),
+        );
+        self.platform
+            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(px(0.), px(0.)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }))
+            .unwrap();
+        self.app.update(|cx| cx.refresh_windows());
+        self.pump();
+        let resting = self.pixels(corner).unwrap();
+        self.platform
+            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+                position: bounds.center(),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }))
+            .unwrap();
+        self.until(&format!("{label} did not respond to hover"), || {
+            self.app.update(|cx| cx.refresh_windows());
+            self.pump();
+            (self.pixels(corner)? != resting).then_some(())
+        })
+        .await;
+    }
+
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         for input in [
             PlatformInput::MouseMove(MouseMoveEvent {
@@ -929,6 +961,81 @@ async fn desktop_composer_keeps_one_inset_light_narrow() {
         "light-narrow",
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_controls_respond_to_hover() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    for label in [
+        "Add to message",
+        "Sandbox and approvals",
+        "Choose model and effort",
+    ] {
+        desktop.assert_hover_changes(label).await;
+    }
+    desktop.press("Sandbox and approvals").await;
+    for label in ["Read only", "Ask for approval"] {
+        desktop.assert_hover_changes(label).await;
+    }
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_shows_a_staged_image() {
+    let fixture = images_fixture().await;
+    let (path, _) = image_file(&fixture);
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let remove = desktop.control(&format!("Remove attachment {name}")).await;
+    // Below the remove button, inside the thumbnail it sits 36 points into.
+    let sample = Bounds::new(
+        point(remove.left() - px(20.), remove.top() + px(44.)),
+        size(px(1.), px(1.)),
+    );
+    let surface = [0x20, 0x21, 0x23];
+    desktop
+        .until("the staged image did not paint", || {
+            desktop.app.update(|cx| cx.refresh_windows());
+            desktop.pump();
+            let pixel = desktop.pixels(sample)?;
+            (pixel[..3] != surface).then_some(())
+        })
+        .await;
+    desktop.artifact("staged-image");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image() {
+    let fixture = images_fixture().await;
+    let path = fixture.directory.path().join("corrupt.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nnot an image").unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    let start = desktop.control("Add to message").await.left();
+    let label = "Remove attachment corrupt.png";
+    desktop
+        .until("the undecodable image stayed a thumbnail", || {
+            let found = desktop.controls(label);
+            // The file tile keeps its remove button past the thumbnail's 64 points.
+            (found.len() == 1 && found[0].left() - start > px(64.)).then_some(())
+        })
+        .await;
+    desktop.press(label).await;
+    desktop
+        .until("the undecodable image was not removed", || {
+            desktop.controls(label).is_empty().then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -1765,7 +1872,8 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.control("Pause Goal").await;
     desktop.artifact(&format!("goal-running-{theme}-{layout}"));
     desktop.press("Pause Goal").await;
-    desktop.control("Resume Goal").await;
+    // A paused Goal can still be cancelling its iteration.
+    desktop.control("Complete Goal").await;
     desktop.press("Resume Goal").await;
     desktop.control("Pause Goal").await;
     let running = desktop.request(&mut fixture).await;
@@ -1796,6 +1904,101 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.key("enter", false);
     desktop.control("New Goal").await;
     drop(first);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandchild() {
+    use maka_agent_api::session::StoredSessionConfiguration;
+    let mut fixture = Fixture::open().await;
+    let original = fixture
+        .store
+        .session(&fixture.session)
+        .await
+        .unwrap()
+        .get_session::<StoredSessionConfiguration>(&fixture.session)
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
+    let prefix = fixture.session.rsplit_once('_').unwrap().0;
+    let child = format!("{prefix}_{}", Uuid::new_v4().simple());
+    let grandchild = format!("{prefix}_{}", Uuid::new_v4().simple());
+    for (id, parent, title) in [
+        (&child, &fixture.session, "Archived worker"),
+        (&grandchild, &child, "Verification worker"),
+    ] {
+        let mut configuration = original.clone();
+        configuration.parent_session_id = Some(parent.clone());
+        configuration.title = title.into();
+        configuration.backend = Some(
+            serde_json::from_value(json!({
+                "kind":"model", "connectionId":fixture.selection["connectionId"],
+                "modelId":fixture.selection["modelId"], "thinkingLevel":null,
+            }))
+            .unwrap(),
+        );
+        fixture
+            .store
+            .create_session(id, id, &configuration, 1)
+            .await
+            .unwrap();
+    }
+    fixture
+        .store
+        .session(&child)
+        .await
+        .unwrap()
+        .change_session_archived::<StoredSessionConfiguration>(&child, None, true, 2)
+        .await
+        .unwrap();
+    let (theme, appearance, layout, width, height) = visual_case();
+    let width = if layout == "narrow" { 640 } else { width };
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    if !desktop.controls("Expand session browser").is_empty() {
+        desktop.press("Expand session browser").await;
+    }
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Child conversations").await;
+    let first = desktop.control("Open Archived worker").await;
+    desktop.press("Expand Archived worker").await;
+    let last = desktop.control("Open Verification worker").await;
+    assert!(
+        last.left() > first.left(),
+        "a grandchild must be visibly nested beneath its parent"
+    );
+    assert!(
+        last.right() <= px(width as f32 - 16.0),
+        "deep rows stay inside the dialog's viewport"
+    );
+    desktop.artifact(&format!("child-conversations-{theme}-{layout}"));
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Open Verification worker").await;
+    desktop.target_after(previous).await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("OPENED_TREE_GRANDCHILD").await;
+    desktop.press("Send message").await;
+    desktop.request(&mut fixture).await.finish().await;
+    let history = desktop
+        .client
+        .query(
+            "agent",
+            "history",
+            json!({"sessionId":grandchild,"position":{"kind":"start"}}),
+        )
+        .await
+        .unwrap();
+    assert!(
+        history.to_string().contains("OPENED_TREE_GRANDCHILD"),
+        "opening a descendant must navigate to that conversation"
+    );
     desktop.close().await;
     fixture.finish().await;
 }

@@ -59,11 +59,7 @@ export function effortCaption(backend: BackendIdentity, details: ModelDetails): 
     details.kind === 'ready' && sameRoute(backend, details.choice.selection)
       ? details.choice
       : null;
-  if (backend?.thinkingLevel == null)
-    return (
-      choice?.defaultThinkingLevel ??
-      (choice && choice.thinkingLevels.length > 0 ? tr('Provider controlled') : '')
-    );
+  if (backend?.thinkingLevel == null) return choice?.defaultThinkingLevel ?? '';
   return choice && !choice.thinkingLevels.includes(backend.thinkingLevel)
     ? tr('{level} · Unavailable', { level: backend.thinkingLevel })
     : backend.thinkingLevel;
