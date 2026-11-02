@@ -766,6 +766,9 @@ impl ReplyGate {
     pub fn resume(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "resume", "mutation")
     }
+    pub fn send(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "send", "mutation")
+    }
     pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "settings", "resolveModel", "finished")
     }
