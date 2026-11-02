@@ -38,6 +38,10 @@ import {
   type StorageRootLease,
 } from './root-authority.js';
 import { openInteractiveRuntimePolicyStoresForWrite } from './runtime-policy-stores.js';
+import {
+  openRuntimePageReclamation,
+  type RuntimePageReclamation,
+} from './runtime-page-reclamation.js';
 import { openInteractiveScheduledTaskStoreForWrite } from './scheduled-task-store.js';
 import { openInteractiveSessionTodoStoreForWrite } from './session-todo-authority.js';
 import { openInteractiveShellRunStoreForWrite } from './shell-run-authority.js';
@@ -84,6 +88,7 @@ export interface StorageWriterComposition {
   readonly usage: Awaited<ReturnType<typeof openInteractiveUsageStoresForWrite>>;
   readonly shellRuns: Awaited<ReturnType<typeof openInteractiveShellRunStoreForWrite>>;
   readonly footprint: InteractiveStorageFootprintReader;
+  readonly runtimePageReclamation: RuntimePageReclamation;
   /** The archived-task retention document, bound to the composition's write lease. */
   readonly archiveRetention: InteractiveArchiveRetentionStore;
   close(): Promise<void>;
@@ -239,6 +244,7 @@ async function createComposition(
     usage,
     shellRuns,
     footprint,
+    runtimePageReclamation: openRuntimePageReclamation(lease),
     archiveRetention: openArchiveRetentionStore(lease),
     close,
   });
