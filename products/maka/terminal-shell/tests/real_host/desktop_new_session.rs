@@ -1222,7 +1222,10 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     let off = desktop.control("Default effort off").await;
     let capabilities = desktop.control("Model capabilities").await;
     assert_eq!(provider.left(), off.left());
-    assert!(provider.right() < capabilities.center().x, "{provider:?} {capabilities:?}");
+    assert!(
+        provider.right() < capabilities.center().x,
+        "{provider:?} {capabilities:?}"
+    );
     desktop.press("Associate catalog model").await;
     desktop.control("openai / gpt-4.1").await;
     desktop.artifact(&format!("connection-model-catalog-{theme}-{layout}"));
