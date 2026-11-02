@@ -1926,10 +1926,11 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop
         .retry(
             "/goal did not open the Goal dialog",
-            || desktop.controls("New Goal").len() == 1,
+            || !desktop.controls("Close Goal").is_empty(),
             || desktop.key("enter", false),
         )
         .await;
+    desktop.control("New Goal").await;
     desktop.key("escape", false);
     desktop
         .until("the Goal dialog did not close", || {
