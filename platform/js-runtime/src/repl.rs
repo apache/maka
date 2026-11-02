@@ -403,10 +403,12 @@ async fn serve(
         } else {
             Ok(complete(result, scope.calls()))
         };
-        // Publish terminal state before waking the observer. The Session still
-        // owns and joins this worker on reset/close, but it cannot be reused.
+        // An abort during native settlement still requires reset.
+        if result.is_err() {
+            stopped.cancel();
+        }
         let _ = request.reply.send(result);
-        if poisoned {
+        if stopped.is_cancelled() {
             break;
         }
         // Release inspector's completion-value references, not user bindings.

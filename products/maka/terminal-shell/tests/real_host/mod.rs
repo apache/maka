@@ -213,15 +213,22 @@ async fn product_composition_sends_streams_and_restores_history_with_a_later_dra
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn provider_failure_is_visible_and_does_not_consume_the_next_draft() {
     let mut fixture = Fixture::open().await;
-    let client = fixture.client().await;
+    let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
+    let client = fixture.client_at(&gate.address).await;
     support::mutate(&client,"selectBackend",json!({"sessionId":fixture.session,"backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model","thinkingLevel":null}})).await;
     let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
     wait_editable_composer(&mut view).await;
     view.handle_event(Event::Paste("Show the provider failure".into()));
+    gate.arm();
     support::click_button(&mut view, "Send message").await;
     let request = fixture.next_request().await;
+    tokio::time::timeout(Duration::from_secs(20), gate.held.notified())
+        .await
+        .expect("the send acknowledgement did not reach the gate");
     tab_to_label(&mut view, "Message composer").await;
     view.handle_event(Event::Paste("My next draft".into()));
+    commit_native_events(&mut view).await;
+    gate.release();
     request.http_error(json!({"error":{"type":"invalid_request_error","message":"The selected model is unavailable"}})).await;
     fixture.idle(&client, &fixture.session).await;
     wait_view(&mut view, |screen| {
@@ -232,5 +239,7 @@ async fn provider_failure_is_visible_and_does_not_consume_the_next_draft() {
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
     drop(view);
     bindings.close().await.unwrap();
+    client.close().await.unwrap();
+    drop(gate);
     fixture.finish().await;
 }
