@@ -31,6 +31,18 @@ use maka_agent_facts::configuration::validation::revision;
 use sqlx::SqliteConnection;
 
 impl ConfigurationStore {
+    pub async fn set_message_predictions(
+        &self,
+        expected_revision: u64,
+        settings: maka_agent_facts::configuration::policy::MessagePredictionSettings,
+    ) -> Result<RuntimePolicyMutationResult> {
+        settings.validate().map_err(ConfigError::Invalid)?;
+        self.update_policy(expected_revision, move |policy| {
+            policy.predictions = settings
+        })
+        .await
+    }
+
     pub async fn set_language(
         &self,
         expected_revision: u64,

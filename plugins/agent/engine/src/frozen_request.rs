@@ -119,6 +119,35 @@ pub(super) struct FrozenReplay {
 struct CheckedFrozen(maka_event_log::context::FrozenModelRequest);
 
 impl FrozenReplay {
+    pub(super) fn for_prediction(
+        log: Arc<maka_event_log::root_store::SessionStore>,
+        resources: maka_model::ModelPreparationResources,
+        input: &crate::PredictionInput,
+        adapter: maka_agent_ports::model::Binding,
+    ) -> Self {
+        Self {
+            log,
+            resources,
+            invocation: input.frozen.request.event.invocation.clone(),
+            original: input.frozen.request.event.id.clone(),
+            provider: Arc::new(input.provider.clone()),
+            adapter,
+            revision: input.model_revision.clone(),
+        }
+    }
+
+    pub(super) async fn prepare_frozen(
+        &self,
+        frozen: maka_event_log::context::FrozenModelRequest,
+        cancellation: &CancellationToken,
+    ) -> Result<PreparedPrompt, RunError> {
+        if cancellation.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        self.prepare_checked(self.check(frozen)?, cancellation)
+            .await
+    }
+
     pub fn new(
         inner: &RunContext,
         input: &RunSettings,
@@ -266,6 +295,7 @@ impl FrozenReplay {
             source_capture.prior_unknown,
             system,
             ModelPurpose::Main,
+            None,
         )
         .await?;
         let prepared = async {

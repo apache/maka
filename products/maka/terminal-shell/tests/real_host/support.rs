@@ -150,6 +150,7 @@ pub struct Fixture {
 #[derive(Default)]
 pub struct Options {
     pub images: bool,
+    pub predictions: bool,
 }
 
 impl Fixture {
@@ -181,6 +182,7 @@ impl Fixture {
             owner.clone(),
             &format!("http://{}/v1", listener.local_addr().unwrap()),
             options.images,
+            options.predictions,
         )
         .await;
         let store = Arc::new(RootStore::open(owner).await.unwrap());
@@ -376,7 +378,12 @@ impl Fixture {
         assert!(self.provider.await.unwrap_err().is_cancelled());
     }
 }
-pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -> Value {
+pub(crate) async fn configure(
+    owner: Arc<RootOwner>,
+    base: &str,
+    vision: bool,
+    predictions: bool,
+) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
         maka_config::ConfigurationStore::for_root(owner)
@@ -410,6 +417,20 @@ pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -
     assert!(matches!(config.set_default_target(serde_json::from_value(json!({"expectedCatalogRevision":config.catalog().await.unwrap().revision,"target":{"connectionId":connection.connection_id,"modelId":"fixture-model"}})).unwrap()).await.unwrap(), CatalogMutationResult::Committed {..}));
     let connection = config.catalog().await.unwrap().connections.remove(0);
     let selection = json!({"connectionId":connection.connection_id,"revision":connection.revision,"modelId":"fixture-model"});
+    assert!(matches!(
+        config
+            .set_message_predictions(
+                config.runtime_policy().await.unwrap().revision,
+                maka_agent_facts::configuration::policy::MessagePredictionSettings {
+                    enabled: predictions,
+                    catch_up_sample_percent: 100.0,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap(),
+        maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
+    ));
     config.shutdown().await.unwrap();
     selection
 }

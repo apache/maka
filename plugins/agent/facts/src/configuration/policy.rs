@@ -21,10 +21,12 @@
 mod codec;
 pub mod network_test;
 pub mod network_update;
+mod predictions;
 mod settings;
 use crate::execution::SandboxMode;
 use crate::language::LanguagePreference;
 pub use codec::{decode_canonical_snapshot, normalize_mutation};
+pub use predictions::{MessagePredictionSettings, default_prediction_prompt};
 use serde::{Deserialize, Serialize};
 pub use settings::*;
 
@@ -42,9 +44,10 @@ impl Default for ChatDefaults {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RuntimePolicy {
+    pub predictions: MessagePredictionSettings,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub compaction_prompt: Option<String>,
     pub network_proxy: NetworkProxy,
@@ -74,6 +77,7 @@ pub struct ExternalAgent {
 impl Default for RuntimePolicy {
     fn default() -> Self {
         Self {
+            predictions: MessagePredictionSettings::default(),
             network_proxy: NetworkProxy {
                 enabled: false,
                 protocol: ProxyProtocol::Http,
@@ -117,7 +121,7 @@ impl Default for RuntimePolicy {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimePolicySnapshot {
     pub revision: u64,

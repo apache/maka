@@ -217,7 +217,7 @@ impl Desktop {
         let frame = guard.as_ref().unwrap();
         let size = frame.size();
         let mut ppm = format!("P6\n{} {}\n255\n", size.width.0, size.height.0).into_bytes();
-        for pixel in frame.pixels().chunks_exact(4) {
+        for pixel in frame.pixels().as_chunks::<4>().0 {
             ppm.extend_from_slice(&pixel[..3]);
         }
         std::fs::write(directory.join(format!("{name}.ppm")), ppm).unwrap();
@@ -387,6 +387,31 @@ impl Desktop {
         .await
     }
 
+    async fn reveal_settings_control(&self, label: &str) -> Bounds<gpui::Pixels> {
+        let header = self.control("Close settings").await.bottom();
+        self.until(&format!("{label} did not scroll into view"), || {
+            let controls = self.controls(label);
+            let [bounds] = controls.as_slice() else {
+                return None;
+            };
+            let height = self.frame.lock().unwrap().as_ref()?.size().height.0 as f32;
+            if bounds.top() >= header && bounds.bottom() <= px(height) {
+                return Some(*bounds);
+            }
+            let middle = (header + px(height)) / 2.;
+            self.platform
+                .dispatch_input(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+                    position: point(bounds.center().x, middle),
+                    delta: gpui::ScrollDelta::Pixels(point(px(0.), middle - bounds.center().y)),
+                    modifiers: Modifiers::default(),
+                    touch_phase: gpui::TouchPhase::Moved,
+                }))
+                .unwrap();
+            None
+        })
+        .await
+    }
+
     /// Clicks the one control labelled `label` once the window shows it.
     async fn press(&self, label: &str) {
         let bounds = self.control(label).await;
@@ -466,8 +491,142 @@ impl Desktop {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_prediction_preserves_the_request_and_inserts_an_undoable_draft() {
+    let mut fixture = Fixture::configured(Options {
+        predictions: true,
+        ..Default::default()
+    })
+    .await;
+    let (_, appearance, _, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    if !desktop.controls("Expand session browser").is_empty() {
+        desktop.press("Expand session browser").await;
+    }
+    desktop.press("Open settings").await;
+    desktop.press("Settings section General").await;
+    let configure = desktop
+        .reveal_settings_control("Configure message predictions")
+        .await;
+    desktop.press_at(configure.center());
+    desktop.press("Only for regular conversations: Off").await;
+    desktop.control("Only for regular conversations: On").await;
+    desktop.artifact("prediction-settings-scope");
+    let save = desktop
+        .reveal_settings_control("Save prediction settings")
+        .await;
+    desktop.press_at(save.center());
+    desktop.press("Close settings").await;
+    assert_eq!(
+        desktop
+            .client
+            .query("settings", "assistantPreferences", json!({}))
+            .await
+            .unwrap()["predictions"]["ordinarySessionsOnly"],
+        true,
+    );
+    desktop.control("Focus message composer").await;
+    desktop.new_draft().await;
+    desktop.type_text("Review the patch.").await;
+    desktop.key("enter", false);
+    let mut reply = desktop.request(&mut fixture).await;
+    let original = reply.body.clone();
+    let session = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|entry| entry["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    desktop.control("Pause response").await;
+    reply.delta("The patch needs a regression test.").await;
+    reply.finish().await;
+    desktop
+        .wait(
+            "the reply did not finish",
+            fixture.idle(&desktop.client, &session),
+        )
+        .await;
+    let observe = || {
+        desktop
+            .client
+            .query("agent", "observe", json!({"sessionId":session}))
+    };
+    let before = observe().await.unwrap()["through"].as_u64().unwrap();
+    let mut prediction = desktop.request(&mut fixture).await;
+    assert!(
+        prediction.body["messages"]
+            .as_array()
+            .unwrap()
+            .starts_with(original["messages"].as_array().unwrap())
+    );
+    let mut parameters = original;
+    parameters.as_object_mut().unwrap().remove("messages");
+    let mut predicted_parameters = prediction.body.clone();
+    predicted_parameters
+        .as_object_mut()
+        .unwrap()
+        .remove("messages");
+    assert_eq!(
+        predicted_parameters, parameters,
+        "model, reasoning and tools must remain unchanged"
+    );
+    prediction.thinking("Review the current goal.").await;
+    prediction
+        .delta(r#"{"suggestion":"Add a regression test."}"#)
+        .await;
+    prediction.finish().await;
+    desktop.control("Use suggested message").await;
+    desktop.artifact("prediction-composer");
+    desktop.press("Use suggested message").await;
+    desktop.control("Send message").await;
+    desktop.expect_text("Add a regression test.").await;
+    assert_eq!(
+        fixture.request_count.load(Ordering::SeqCst),
+        2,
+        "accepting must not send"
+    );
+    let after = observe().await.unwrap()["through"].as_u64().unwrap();
+    // The fence also includes auxiliary accounting; compare only this conversation's events.
+    let appended = fixture
+        .store
+        .session(&session)
+        .await
+        .unwrap()
+        .session_events(&session, before, after, 1, usize::MAX)
+        .await
+        .unwrap();
+    assert!(
+        appended.events.is_empty(),
+        "prediction must not append conversation events: {:?}",
+        appended
+            .events
+            .iter()
+            .map(|event| event.event.fact.kind())
+            .collect::<Vec<_>>(),
+    );
+    desktop.key("end", false);
+    desktop.key("z", true);
+    desktop.platform.paste("Write a focused test.").unwrap();
+    desktop.expect_text("Write a focused test.").await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn images_fixture() -> Fixture {
-    Fixture::configured(Options { images: true }).await
+    Fixture::configured(Options {
+        images: true,
+        ..Default::default()
+    })
+    .await
 }
 
 fn image_file(fixture: &Fixture) -> (std::path::PathBuf, Vec<u8>) {
@@ -688,108 +847,53 @@ async fn desktop_retries_a_failed_turn_in_place() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_opens_a_conversation_beside_the_current_one() {
-    let mut fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.type_text("BASE_SIDE_DRAFT").await;
-    desktop.new_draft().await;
-    desktop.type_text("MAIN_PANE_MESSAGE").await;
-    desktop.key("enter", false);
-    desktop.request(&mut fixture).await.finish().await;
+async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1440), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop.type_text("MAIN_DRAFT").await;
     let roots = desktop
         .client
         .query("agent", "directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    for index in 0..4 {
-        super::support::mutate(
-            &desktop.client,
-            "create",
-            json!({
-                "title":format!("Side {index}"),"labels":[],
-                "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}
-            }),
-        )
-        .await;
-    }
-    let resize = |width| {
-        desktop
-            .platform
-            .resize(size(gpui::DevicePixels(width), gpui::DevicePixels(640)))
-            .unwrap();
-        desktop.pump();
-    };
-    resize(3072);
-    for index in 0..4 {
-        let original = desktop.platform.text_input_target();
-        desktop.press(&format!("Actions for Side {index}")).await;
-        desktop.press("Open to the side").await;
-        desktop
-            .until("the additional conversation did not open", || {
-                (desktop.controls("Focus message composer").len() == index + 2).then_some(())
-            })
-            .await;
-        desktop.target_after(original).await;
-    }
-    desktop.type_text("KEEP_RIGHT_DRAFT").await;
-    let mut closes = desktop.controls("Close side pane");
-    closes.sort_by_key(|bounds| bounds.origin.x);
-    desktop.press_at(closes[1].center());
-    desktop
-        .until(
-            "closing the middle pane did not keep the other panes",
-            || (desktop.controls("Focus message composer").len() == 4).then_some(()),
-        )
-        .await;
-    resize(1100);
-    desktop
-        .until("side panes did not hide in the narrower window", || {
-            (desktop.controls("Focus message composer").len() == 2).then_some(())
-        })
-        .await;
+    super::support::mutate(
+        &desktop.client,
+        "create",
+        json!({
+            "title":"Side conversation","labels":[],
+            "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}
+        }),
+    )
+    .await;
     let original = desktop.platform.text_input_target();
-    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Actions for Side conversation").await;
     desktop.press("Open to the side").await;
     desktop.target_after(original).await;
-    assert_eq!(
-        desktop.input_text().await,
-        "BASE_SIDE_DRAFT",
-        "the requested conversation must replace a visible pane"
-    );
-    resize(3072);
+    desktop.type_text("SIDE_DRAFT").await;
+    desktop.press("Close side pane").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("MAIN_DRAFT").await;
+    assert_eq!(desktop.controls("Focus message composer").len(), 1);
+
+    let original = desktop.platform.text_input_target();
+    desktop.press("Actions for Side conversation").await;
+    desktop.press("Open to the side").await;
+    desktop.target_after(original).await;
     desktop
-        .until("hidden conversations did not return", || {
-            (desktop.controls("Focus message composer").len() == 4).then_some(())
+        .until("both restored drafts did not become sendable", || {
+            (desktop.controls("Send message").len() == 2).then_some(())
         })
         .await;
-    let right = desktop
-        .controls("Focus message composer")
-        .into_iter()
-        .max_by_key(|bounds| bounds.origin.x)
-        .unwrap();
-    desktop.press_at(right.center());
-    assert_eq!(desktop.input_text().await, "KEEP_RIGHT_DRAFT");
-    while let Some(close) = desktop.controls("Close side pane").first().copied() {
-        let remaining = desktop.controls("Close side pane").len() - 1;
-        desktop.press_at(close.center());
-        desktop
-            .until("the side pane did not close", || {
-                (desktop.controls("Close side pane").len() == remaining).then_some(())
-            })
-            .await;
-    }
-    assert_eq!(desktop.controls("Focus message composer").len(), 1);
+    desktop.expect_text("SIDE_DRAFT").await;
+    assert_eq!(desktop.controls("Focus message composer").len(), 2);
     desktop.close().await;
     fixture.finish().await;
-}
-
-fn tool_names(request: &ModelRequest) -> Vec<String> {
-    request.body["tools"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|tool| tool["function"]["name"].as_str().map(str::to_owned))
-        .collect()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -960,7 +1064,7 @@ async fn disconnected_desktop(
             let directory = std::path::PathBuf::from(directory);
             std::fs::create_dir_all(&directory).unwrap();
             let mut ppm = format!("P6\n{} {}\n255\n", width, height).into_bytes();
-            for pixel in frame.pixels().chunks_exact(4) {
+            for pixel in frame.pixels().as_chunks::<4>().0 {
                 ppm.extend_from_slice(&pixel[..3]);
             }
             std::fs::write(
@@ -1448,7 +1552,9 @@ async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
         let pixels = desktop.pixels(crop)?;
         let background = &pixels[..3];
         let contrast: Vec<_> = pixels
-            .chunks_exact(4)
+            .as_chunks::<4>()
+            .0
+            .iter()
             .map(|pixel| {
                 (0..3)
                     .map(|channel| pixel[channel].abs_diff(background[channel]))
@@ -1565,7 +1671,15 @@ async fn desktop_loading_indicator_keeps_rotating_after_scrolling_away_and_back(
     )
     .await;
     let icon = Bounds::new(point(px(0.), px(60.)), size(px(24.), px(24.)));
-    let painted = |pixels: &[u8]| pixels.chunks_exact(4).filter(|rgba| rgba[0] > 80).count() > 10;
+    let painted = |pixels: &[u8]| {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .filter(|rgba| rgba[0] > 80)
+            .count()
+            > 10
+    };
     let mut first = desktop
         .until("initial loading indicator was not painted", || {
             desktop.pixels(icon).filter(|pixels| painted(pixels))

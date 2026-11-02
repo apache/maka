@@ -676,43 +676,84 @@ async fn a_live_slow_creator_keeps_its_claim() {
 }
 
 #[tokio::test]
-async fn sleep_ends_the_turn_and_the_next_message_starts_a_new_one() {
+async fn bot_sleep_allows_prediction_without_waking_or_speaking() {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
         f.send(&bot).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
-        let sent = request(&mut socket).await;
-        assert!(
-            tool_names(&sent).contains(&"sleep".to_owned()),
-            "{:?}",
-            tool_names(&sent)
-        );
-        // sleep takes no duration.
-        let schema = sent["tools"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|tool| tool["function"]["name"] == "sleep")
-            .unwrap()["function"]["parameters"]
-            .clone();
-        assert!(
-            schema["properties"]
-                .as_object()
-                .is_none_or(|properties| properties.is_empty()),
-            "{schema}"
-        );
+        request(&mut socket).await;
+        service_tools::named_tool_response(
+            &mut socket,
+            "SendUser",
+            json!({"messageId":"status","messages":[{"text":"CI is green."}]}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut original = request(&mut socket).await;
         service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
-
-        // The Turn is over: no further model request follows the sleep.
         idle(&f, &bot).await;
-        assert!(
-            tokio::time::timeout(Duration::from_millis(500), listener.accept())
-                .await
-                .is_err(),
-            "the model must not be called again after sleep"
+
+        let before = f.query("observe", json!({"sessionId":bot})).await.unwrap();
+        assert!(before["run"].is_null());
+        let messages = outbox(&f).await;
+        assert_eq!(messages["messages"][0]["text"], "CI is green.");
+        let prediction = f.mutation(
+            2,
+            "predictNextMessage",
+            json!({"sessionId":bot,"expectedTurnId":before["lastCompletedTurnId"],"trigger":"live"}),
+            Uuid::new_v4(),
         );
+        tokio::pin!(prediction);
+        let (mut socket, _) = tokio::select! {
+            result = &mut prediction => panic!("prediction ended before dispatch: {result:?}"),
+            accepted = listener.accept() => accepted.unwrap(),
+        };
+        let mut predicted = request(&mut socket).await;
+        assert!(predicted["messages"].as_array().unwrap().starts_with(
+            original["messages"].as_array().unwrap()
+        ));
+        original.as_object_mut().unwrap().remove("messages");
+        predicted.as_object_mut().unwrap().remove("messages");
+        assert_eq!(predicted, original, "Bot model, reasoning and tools must be reused");
+        response_with_thinking(
+            &mut socket,
+            r#"{"suggestion":"Check the deployment."}"#,
+            Some("Consider the user's next step."),
+        )
+        .await;
+        let result = prediction.await.unwrap();
+        assert_eq!(result["suggestion"], "Check the deployment.");
+        assert_eq!(outbox(&f).await, messages, "prediction must not call SendUser");
+        let after = f.query("observe", json!({"sessionId":bot})).await.unwrap();
+        let appended = f.session(&bot).await.session_events(
+            &bot, before["through"].as_u64().unwrap(), after["through"].as_u64().unwrap(),
+            1, usize::MAX,
+        ).await.unwrap();
+        assert!(appended.events.is_empty(), "prediction must not append conversation events");
+        assert_eq!(after["lastCompletedTurnId"], before["lastCompletedTurnId"]);
+        assert!(after["run"].is_null());
+
+        let policy = f.config.runtime_policy().await.unwrap();
+        f.config.set_message_predictions(
+            policy.revision,
+            maka_agent_facts::configuration::policy::MessagePredictionSettings {
+                ordinary_sessions_only: true,
+                ..policy.policy.predictions
+            },
+        ).await.unwrap();
+        let restricted = f.mutation(
+            2, "predictNextMessage",
+            json!({"sessionId":bot,"expectedTurnId":before["lastCompletedTurnId"],"trigger":"live"}),
+            Uuid::new_v4(),
+        );
+        tokio::pin!(restricted);
+        let restricted = tokio::select! {
+            result = &mut restricted => result.unwrap(),
+            _ = listener.accept() => panic!("regular-conversations-only must not dispatch for the Bot"),
+        };
+        assert_eq!(restricted["suggestion"], Value::Null);
 
         // A later message wakes the Bot into a new Turn that still remembers the sleep.
         f.mutation(
@@ -1111,6 +1152,19 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         request(&mut socket).await;
         response(&mut socket).await;
         idle(&f, &bot).await;
+        let completed = f.query("observe", json!({"sessionId":worker})).await.unwrap();
+        assert!(completed["lastCompletedTurnId"].is_string());
+        let prediction = f.mutation(
+            2, "predictNextMessage",
+            json!({"sessionId":worker,"expectedTurnId":completed["lastCompletedTurnId"],"trigger":"live"}),
+            Uuid::new_v4(),
+        );
+        tokio::pin!(prediction);
+        let prediction = tokio::select! {
+            result = &mut prediction => result.unwrap(),
+            _ = listener.accept() => panic!("Agent-created conversations must never dispatch predictions"),
+        };
+        assert_eq!(prediction["suggestion"], Value::Null);
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

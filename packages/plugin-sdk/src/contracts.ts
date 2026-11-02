@@ -12637,6 +12637,11 @@ export const contracts = {
               session: {
                 $ref: '#/$defs/AgentSession',
               },
+              lastCompletedTurnId: {
+                description:
+                  "Latest successful source turn at this observation's fence, or none while busy.",
+                type: ['string', 'null'],
+              },
               compacting: {
                 anyOf: [
                   {
@@ -12698,7 +12703,14 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['session', 'compacting', 'through', 'parts', 'toolSeeds'],
+            required: [
+              'session',
+              'lastCompletedTurnId',
+              'compacting',
+              'through',
+              'parts',
+              'toolSeeds',
+            ],
             $defs: {
               AgentSession: {
                 type: 'object',
@@ -13491,6 +13503,54 @@ export const contracts = {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        predictNextMessage: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentPredictNextMessage',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+              },
+              expectedTurnId: {
+                type: 'string',
+              },
+              trigger: {
+                $ref: '#/$defs/AgentPredictionTrigger',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedTurnId', 'trigger'],
+            $defs: {
+              AgentPredictionTrigger: {
+                type: 'string',
+                enum: ['live', 'catch_up'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMessagePrediction',
+            type: 'object',
+            properties: {
+              sourceTurnId: {
+                type: 'string',
+              },
+              policyRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              suggestion: {
+                type: ['string', 'null'],
+              },
+            },
+            additionalProperties: false,
+            required: ['sourceTurnId', 'policyRevision'],
           },
           resources: {},
         },
@@ -37267,6 +37327,12 @@ export const contracts = {
             title: 'SettingsAssistantPreferences',
             type: 'object',
             properties: {
+              predictions: {
+                $ref: '#/$defs/MessagePredictionSettings',
+              },
+              defaultPredictionPrompt: {
+                type: 'string',
+              },
               language: {
                 anyOf: [
                   {
@@ -37306,6 +37372,8 @@ export const contracts = {
             },
             additionalProperties: false,
             required: [
+              'predictions',
+              'defaultPredictionPrompt',
               'language',
               'resolvedLanguage',
               'compactionPrompt',
@@ -37317,6 +37385,41 @@ export const contracts = {
               'shellTitles',
             ],
             $defs: {
+              MessagePredictionSettings: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  ordinarySessionsOnly: {
+                    type: 'boolean',
+                  },
+                  liveSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  catchUpSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  prompt: {
+                    description: 'None or blank selects the localized built-in instructions.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'enabled',
+                  'ordinarySessionsOnly',
+                  'liveSamplePercent',
+                  'catchUpSamplePercent',
+                  'prompt',
+                ],
+              },
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
@@ -41578,6 +41681,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'message_predictions',
+                      },
+                      settings: {
+                        $ref: '#/$defs/MessagePredictionSettings',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'settings'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'language',
                       },
                       preference: {
@@ -41657,6 +41774,40 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'enabled'],
                   },
+                ],
+              },
+              MessagePredictionSettings: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  ordinarySessionsOnly: {
+                    type: 'boolean',
+                  },
+                  liveSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  catchUpSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  prompt: {
+                    description: 'None or blank selects the localized built-in instructions.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'enabled',
+                  'ordinarySessionsOnly',
+                  'liveSamplePercent',
+                  'catchUpSamplePercent',
                 ],
               },
               LanguagePreference: {

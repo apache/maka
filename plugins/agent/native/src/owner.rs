@@ -46,6 +46,7 @@ mod git;
 mod global_instructions;
 mod mcp;
 mod patches;
+mod predictions;
 mod queue;
 mod recall;
 mod recap;
@@ -368,7 +369,7 @@ impl Owner {
         // Match Codex's five-minute stream idle allowance for slow model steps.
         let models = ModelExecutor::for_source(Duration::from_secs(300), revision.clone())
             .map_err(|_| "agent_executor_unavailable")?;
-        let auxiliary = auxiliary::Auxiliary::new(revision.clone())?;
+        let auxiliary = auxiliary::Auxiliary::new(models.clone());
         let configured_locale = LanguagePreference::from_locale(&settings.locale);
         let native_language = maka_config::language::native_language();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;

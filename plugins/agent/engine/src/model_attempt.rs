@@ -121,6 +121,7 @@ pub(super) async fn prompt<W>(
         prior_unknown,
         system,
         purpose,
+        None,
     )
     .await
 }
@@ -137,6 +138,7 @@ pub(super) async fn prompt_with_resources(
     prior_unknown: bool,
     system: Option<Arc<String>>,
     purpose: ModelPurpose,
+    instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
     let route = digest(settings.provider)?;
     let mut selection = source.selection.clone();
@@ -151,7 +153,7 @@ pub(super) async fn prompt_with_resources(
     let overlay_bytes = PreparedPrompt::overlay_plan_bytes(
         system.is_some(),
         source.baseline.is_some(),
-        purpose == ModelPurpose::Summary,
+        usize::from(purpose == ModelPurpose::Summary) + usize::from(instruction.is_some()),
     );
     let body = history::prepare_view(
         log,
@@ -182,6 +184,7 @@ pub(super) async fn prompt_with_resources(
             source.clone(),
             label,
             purpose == ModelPurpose::Summary,
+            instruction,
         )
         .await
     {

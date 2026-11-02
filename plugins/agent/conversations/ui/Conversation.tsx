@@ -81,6 +81,7 @@ import { Preview } from '../../../../products/maka/workbench/app/preview';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
+  ComposerPrediction,
   ComposerQueue,
   ComposerSendAction as SendAction,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -107,6 +108,10 @@ import type { SessionAction } from '../../../../products/maka/workbench/app/sess
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
 import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
+import {
+  createMessagePrediction,
+  predictionTrigger,
+} from '../../../../products/maka/workbench/app/messagePrediction';
 import {
   TurnPanel,
   TurnSummary,
@@ -716,6 +721,7 @@ export function Conversation(props: ConversationProps) {
   let latestKnown = 0;
   let watchLast = 0;
   let runThrough = 0;
+  let predictionTriggerTurn: string | null = null;
   let followTask: Promise<void> | null = null;
   let followAgain = false;
   let historyIdentity: object = {};
@@ -988,11 +994,24 @@ export function Conversation(props: ConversationProps) {
     permissions.observe(observed.session);
     backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
     if (observed.through >= runThrough) {
+      const completedTurn = observed.lastCompletedTurnId;
+      const trigger = predictionTrigger({
+        completedTurnId: completedTurn,
+        activeTurnId: observed.run?.turnId ?? null,
+        previousActiveTurnId: runTurn(),
+        completedEventTurnId: predictionTriggerTurn,
+      });
+      if (trigger === 'live') predictionTriggerTurn = completedTurn;
       metrics.set(observed.metrics ?? null);
       run.set(observed.run?.state ?? 'idle');
       compacting.set(observed.compacting);
       invocation.set(observed.run?.invocationId ?? null);
       runTurn.set(observed.run?.turnId ?? null);
+      messagePrediction.source(
+        observed.session.parentSessionId === null ? completedTurn : null,
+        trigger,
+        JSON.stringify(backendIdentity(backend())),
+      );
       if (!observed.run) stoppingRun.set(null);
       runThrough = observed.through;
     }
@@ -1146,6 +1165,8 @@ export function Conversation(props: ConversationProps) {
       switch (fact.kind) {
         case 'opened':
           if (event.sequence > runThrough) {
+            predictionTriggerTurn = null;
+            messagePrediction.source(null, 'live');
             run.set('running');
             invocation.set(event.invocationId);
             runTurn.set(event.turnId);
@@ -1215,6 +1236,7 @@ export function Conversation(props: ConversationProps) {
           closeLive(event.sequence, event.invocationId);
           parts.set(parts().filter((part) => part.invocationId !== event.invocationId));
           if (event.sequence > runThrough) {
+            predictionTriggerTurn = fact.failed ? null : event.turnId;
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
             compacting.set(null);
@@ -2080,6 +2102,31 @@ export function Conversation(props: ConversationProps) {
     void send(text, expectedBackend);
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
+  const messagePrediction = createMessagePrediction({
+    sessionId,
+    preferences: () => host.query('settings', 'assistantPreferences', {}),
+    begin: (input) => host.beginControl('predictNextMessage', input),
+    changed: (value) => predictedMessage.set(value),
+    report: (reason) => console.warn('Message prediction failed:', reason),
+  });
+  const prediction: ComposerPrediction = {
+    current: predictedMessage,
+    dismiss: messagePrediction.presentation.dismiss,
+  };
+  effect(() => {
+    const eligible =
+      ready() &&
+      props.visible() &&
+      connected() &&
+      !archived() &&
+      invocation() === null &&
+      (queued()?.entries.length ?? 0) === 0 &&
+      !sending() &&
+      !recovering() &&
+      !confirmingContinuation();
+    untracked(() => messagePrediction.eligible(eligible));
+  });
   const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
@@ -2099,6 +2146,7 @@ export function Conversation(props: ConversationProps) {
   };
   const ownHandle: ConversationHandle = {
     sessionId,
+    prediction,
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
@@ -2451,6 +2499,7 @@ export function Conversation(props: ConversationProps) {
     });
   });
   cleanup(() => {
+    messagePrediction.dispose();
     alive = false;
     bot.close();
     historyIdentity = {};
