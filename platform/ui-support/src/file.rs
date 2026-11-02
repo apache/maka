@@ -116,6 +116,11 @@ impl Write for FileSnapshotWriter {
         self.file.flush()
     }
 }
+impl FileSnapshot {
+    pub fn contents(&self) -> &[u8] {
+        self.mapping.as_deref().unwrap_or_default()
+    }
+}
 impl ReadResource for FileSnapshot {
     fn resource_type(&self) -> maka_plugin_core::contract::ResourceType {
         binary_resource_type()
