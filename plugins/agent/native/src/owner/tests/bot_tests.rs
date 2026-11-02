@@ -1231,3 +1231,36 @@ async fn stale_model(f: &Fixture) -> Value {
     model["revision"] = json!(model["revision"].as_u64().unwrap() + 40);
     model
 }
+
+#[tokio::test]
+async fn a_user_can_start_a_conversation_in_the_workspace_of_an_archived_one() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let archived = f.create("To be archived").await;
+        let changed = f
+            .mutation(
+                2,
+                "changeSession",
+                json!({"sessionId":archived,"expectedRevision":1,"action":"archive"}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(changed["session"]["archived"], true);
+        let created = f
+            .mutation(
+                2,
+                "create",
+                json!({"title":"Fresh","labels":[],"workspace":{"kind":"session","sessionId":archived}}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created["kind"], "created", "{created}");
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

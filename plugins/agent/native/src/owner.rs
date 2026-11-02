@@ -828,7 +828,9 @@ impl Owner {
                     });
                 };
                 let session = resolve_session(session)?;
-                if session.archived
+                // A user may start a conversation in the workspace of one they archived;
+                // an Agent may not derive from a conversation that was put away.
+                if (session.archived && scope.identity.agent().is_some())
                     || !self
                         .project_accepts_session(&session.configuration.workspace)
                         .await?
