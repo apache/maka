@@ -88,6 +88,7 @@ pub(crate) struct Selection {
     project: Option<String>,
     workspace_identity: Option<String>,
     title_query: String,
+    parent: Option<String>,
     filter: CatalogFilter,
 }
 impl Selection {
@@ -100,6 +101,7 @@ impl Selection {
             project: None,
             workspace_identity: None,
             title_query: String::new(),
+            parent: None,
             filter,
         };
         match scope {
@@ -122,6 +124,10 @@ impl Selection {
                 selection.title_query.clone_from(title_query);
                 match scope {
                     CatalogSelection::All => {}
+                    CatalogSelection::Children(id) => {
+                        validate_id(id)?;
+                        selection.parent = Some(id.clone());
+                    }
                     CatalogSelection::Project(project) => {
                         selection.project = Some(project.to_string());
                     }
@@ -159,8 +165,13 @@ impl Selection {
         } else {
             ""
         };
+        let parent = if self.parent.is_some() {
+            "AND json_extract(configuration, '$.parentSessionId') = ?14"
+        } else {
+            ""
+        };
         let sql = format!(
-            "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility}
+            "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility} {parent}
             AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?12, ?13, ?9)
             ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?10"
         );
@@ -179,10 +190,16 @@ impl Selection {
             .bind(&self.title_query)
             .bind(cursor)
             .bind(limit as i64);
-        let mut ids: Vec<_> = query
+        let query = query
             .bind(self.root_partition.map(|partition| partition as i64))
             .bind(unpinned)
-            .bind(recency)
+            .bind(recency);
+        let query = if let Some(parent) = &self.parent {
+            query.bind(parent)
+        } else {
+            query
+        };
+        let mut ids: Vec<_> = query
             .fetch_all(connection)
             .await?
             .into_iter()
@@ -204,7 +221,13 @@ impl Selection {
         } else {
             ""
         };
-        let sql = format!("SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility}");
+        let parent = if self.parent.is_some() {
+            "AND json_extract(configuration, '$.parentSessionId') = ?10"
+        } else {
+            ""
+        };
+        let sql =
+            format!("SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility} {parent}");
         let query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(if self.filter.archived_only {
                 2
@@ -218,8 +241,13 @@ impl Selection {
             .bind(&self.project)
             .bind(&self.workspace_identity)
             .bind(&self.title_query);
-        let query = if let Some(partition) = self.root_partition {
-            query.bind(partition as i64)
+        let query = if self.root_partition.is_some() || self.parent.is_some() {
+            query.bind(self.root_partition.map(|partition| partition as i64))
+        } else {
+            query
+        };
+        let query = if let Some(parent) = &self.parent {
+            query.bind(parent)
         } else {
             query
         };

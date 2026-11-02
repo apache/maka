@@ -51,7 +51,7 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
-import { groupConversations, type ConversationGroup } from './conversationGroups';
+import { groupWorkspace, groupConversations, type ConversationGroup } from './conversationGroups';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -597,13 +597,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const initialGroup = groupsById().get(key());
               if (initialGroup) {
                 const group = () => groupsById().get(key()) ?? initialGroup;
-                const hovered = signal(false);
                 const open = () => !collapsed().has(group().key);
-                const project = () => group().project;
+                const workspace = () => groupWorkspace(group());
                 return (
                   <View
-                    onMouseEnter={() => hovered.set(true)}
-                    onMouseLeave={() => hovered.set(false)}
                     style={{
                       flexDirection: 'row',
                       height: rowHeight(),
@@ -639,11 +636,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         {group().name}
                       </Text>
                     </Button>
-                    <If
-                      when={
-                        project()?.selection && !project()?.archived && browser.filter() === 'all'
-                      }
-                    >
+                    <If when={workspace() !== null && browser.filter() === 'all'}>
                       <Button
                         accessibilityLabel={tr('New conversation in {name}', {
                           name: group().name,
@@ -651,25 +644,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         tooltip={textTooltip(() =>
                           tr('New conversation in {name}', { name: group().name }),
                         )}
-                        disabled={props.switching() || !project()?.available}
+                        disabled={props.switching()}
                         onPress={inputAction(createWorkspace, {
-                          workspace: {
-                            kind: 'project',
-                            project: project()!.reference,
-                            selection: project()!.selection!,
-                          },
+                          workspace: workspace()!,
                           origin: props.selected(),
-                          label: project()!.path ?? project()!.name,
+                          label: group().project?.path ?? group().name,
                         })}
                         style={{
                           width: 32,
                           alignItems: 'center',
                           justifyContent: 'center',
                           borderRadius: 8,
-                          opacity: hovered() ? 1 : 0,
                         }}
                         hoverStyle={controlHoverStyle()}
-                        focusStyle={{ opacity: 1 }}
+                        focusStyle={controlFocusStyle()}
                         disabledStyle={controlDisabledStyle}
                       >
                         <Icon name="plus" color={C.muted} />
@@ -1023,6 +1011,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               close={closeActions}
               notice={(message) => navigationNotice.set({ kind: 'action', message })}
               change={(action) => props.changeSession(action, target.origin)}
+              openSession={(id) => {
+                void select({ id, origin: target.origin });
+              }}
               openBeside={
                 props.canOpenBeside?.() &&
                 target.session.id !== props.selected() &&

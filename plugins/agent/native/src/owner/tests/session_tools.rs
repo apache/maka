@@ -307,6 +307,11 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
         let listed = fixture.query("list", json!({"filter":"all","position":{"kind":"start"}})).await.unwrap();
         assert_eq!(listed["sessions"].as_array().unwrap().iter()
             .find(|session| session["id"] == child).unwrap()["parentSessionId"], caller);
+        let children = fixture.query("list", json!({
+            "filter":"all", "includeArchived":true, "scope":{"kind":"children","sessionId":caller},
+            "position":{"kind":"start"}
+        })).await.unwrap();
+        assert_eq!(children["sessions"].as_array().unwrap().iter().map(|session| session["id"].as_str().unwrap()).collect::<Vec<_>>(), vec![child]);
         service_tools::named_tool_response(&mut socket, "SessionSend", json!({
             "sessionId":target, "message":"Continue the existing task", "model":fixture.selection().await,
         })).await;

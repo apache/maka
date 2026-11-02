@@ -83,6 +83,27 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  'Child conversations': ['Child conversations', '子会话', '子對話'],
+  'Close child conversations': ['Close child conversations', '关闭子会话', '關閉子對話'],
+  'No child conversations.': ['No child conversations.', '没有子会话。', '沒有子對話。'],
+  'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
+  'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
+  'Load more children of {name}': [
+    'Load more children of {name}',
+    '加载 {name} 的更多子会话',
+    '載入 {name} 的更多子對話',
+  ],
+  'Refresh children of {name}': [
+    'Refresh children of {name}',
+    '刷新 {name} 的子会话',
+    '重新整理 {name} 的子對話',
+  ],
+  'The conversation list changed. Refresh to continue.': [
+    'The conversation list changed. Refresh to continue.',
+    '会话列表已变化，请刷新后继续。',
+    '對話清單已變更，請重新整理後繼續。',
+  ],
+
   'Edit conversation compaction prompt': [
     'Edit conversation compaction prompt',
     '编辑会话压缩提示词',

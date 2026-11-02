@@ -123,6 +123,7 @@ pub enum CatalogScope {
 #[derive(Clone, Debug, Serialize)]
 pub enum CatalogSelection {
     All,
+    Children(String),
     Project(uuid::Uuid),
     Workspace {
         /// The original owned anchor also participates in continuation identity.

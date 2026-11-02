@@ -155,3 +155,27 @@ test('native Web tools freeze their display contract while retaining explicit cu
     { kind: 'instance', path: ['workspace-web'], export: 'web' },
   ]);
 });
+
+test('the default ModelList tool binds the settings model directory without a client gateway', async () => {
+  const { composition, installation, instanceNames, packageNames } = await import(
+    '../dist/authoring/composition.mjs'
+  );
+  const defaults = installation({ workspace: '/workspace', helper: '/helper', home: '/home' });
+  const tools = defaults.agent.tools.filter(({ name }) => name === 'ModelList');
+  assert.equal(tools.length, 1);
+  assert.deepEqual(tools[0].target, { kind: 'import', name: 'settings' });
+  assert.equal(tools[0].method, 'models');
+  assert.equal(tools[0].confirmation, 'preapproved');
+  const { host } = composition({
+    ...defaults,
+    hostDeployment: 'host',
+    keys: Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`])),
+    packages: Object.fromEntries(
+      packageNames.map((name) => [name, { id: name, revision: 'a'.repeat(64) }]),
+    ),
+  });
+  assert.deepEqual(host.instances.agent.bindings.settings, [
+    { kind: 'instance', path: ['settings'], export: 'Settings' },
+  ]);
+  assert.deepEqual(host.instances.settings.bindings, {});
+});

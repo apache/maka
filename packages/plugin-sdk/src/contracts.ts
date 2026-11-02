@@ -345,6 +345,11 @@ export const contracts = {
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
+              includeArchived: {
+                description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
+              },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
               },
@@ -461,6 +466,22 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'projectId'],
+                  },
+                  {
+                    description: 'Direct children of an owned session, across workspaces.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'children',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -842,7 +863,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -1160,7 +1181,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -1526,7 +1547,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -2055,7 +2076,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -3442,7 +3463,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -5458,7 +5479,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -6038,7 +6059,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -8620,7 +8641,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -9685,7 +9706,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -10858,6 +10879,11 @@ export const contracts = {
               filter: {
                 $ref: '#/$defs/AgentSessionFilter',
               },
+              includeArchived: {
+                description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
+              },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
               },
@@ -10974,6 +11000,22 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'projectId'],
+                  },
+                  {
+                    description: 'Direct children of an owned session, across workspaces.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'children',
+                      },
+                      sessionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -11355,7 +11397,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -12148,7 +12190,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -12513,7 +12555,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -12903,7 +12945,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -13430,7 +13472,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -16273,7 +16315,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -18789,7 +18831,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -19620,7 +19662,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -20481,7 +20523,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -21426,7 +21468,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -25346,7 +25388,7 @@ export const contracts = {
               },
               AgentWorkspaceAccess: {
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
               },
@@ -27063,7 +27105,7 @@ export const contracts = {
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
               },
               BindingStamp: {
                 type: 'object',
@@ -28605,7 +28647,7 @@ export const contracts = {
                 type: 'string',
                 enum: ['read_only', 'workspace_write', 'danger_full_access'],
                 description:
-                  'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
               },
               BindingStamp: {
                 type: 'object',
