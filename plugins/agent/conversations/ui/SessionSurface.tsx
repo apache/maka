@@ -165,6 +165,7 @@ type PendingFile = {
   id: string;
   name: string;
   bytes: number;
+  imageUri: string | null;
   file: StagedFile;
 };
 type PendingDraft = {
@@ -810,6 +811,7 @@ export function createConversationUi(
                 id: file.id,
                 name: metadata.name,
                 bytes: metadata.bytes,
+                imageUri: file.imageUri(),
                 file,
               };
             }),

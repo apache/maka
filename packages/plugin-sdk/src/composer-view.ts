@@ -258,7 +258,7 @@ export interface ComposerViewInput<Element = unknown> {
     submit(text: string, expected?: string): void;
     sending(): boolean;
     ready(): boolean;
-    files(): { id: string; name: string; bytes: number }[];
+    files(): { id: string; name: string; bytes: number; imageUri: string | null }[];
     picking(): boolean;
     selectFiles(files: string[]): void;
     pasteClipboard(onText: (text: string) => void): void;

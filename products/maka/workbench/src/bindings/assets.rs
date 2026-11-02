@@ -72,6 +72,9 @@ impl Assets for HostAssets {
         if let Some(encoded) = uri.strip_prefix("asset:/plugin/") {
             return super::plugins::asset(&self.0, encoded);
         }
+        if let Some(id) = uri.strip_prefix(super::uploads::STAGED_IMAGE_PREFIX) {
+            return super::uploads::staged_image(&self.0, id);
+        }
         let scoped: Option<ScopedAsset> = uri
             .strip_prefix(SCOPED_PREFIX)
             .map(|encoded| {

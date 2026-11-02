@@ -409,6 +409,38 @@ impl Desktop {
         card
     }
 
+    /// Pointing at the control repaints its corner, which no label or icon covers.
+    async fn assert_hover_changes(&self, label: &str) {
+        let bounds = self.control(label).await;
+        let corner = Bounds::new(
+            point(bounds.left() + px(6.), bounds.top() + px(6.)),
+            size(px(1.), px(1.)),
+        );
+        self.platform
+            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+                position: point(px(0.), px(0.)),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }))
+            .unwrap();
+        self.app.update(|cx| cx.refresh_windows());
+        self.pump();
+        let resting = self.pixels(corner).unwrap();
+        self.platform
+            .dispatch_input(PlatformInput::MouseMove(MouseMoveEvent {
+                position: bounds.center(),
+                pressed_button: None,
+                modifiers: Modifiers::default(),
+            }))
+            .unwrap();
+        self.until(&format!("{label} did not respond to hover"), || {
+            self.app.update(|cx| cx.refresh_windows());
+            self.pump();
+            (self.pixels(corner)? != resting).then_some(())
+        })
+        .await;
+    }
+
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
         for input in [
             PlatformInput::MouseMove(MouseMoveEvent {
@@ -929,6 +961,81 @@ async fn desktop_composer_keeps_one_inset_light_narrow() {
         "light-narrow",
     )
     .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_controls_respond_to_hover() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    for label in [
+        "Add to message",
+        "Sandbox and approvals",
+        "Choose model and effort",
+    ] {
+        desktop.assert_hover_changes(label).await;
+    }
+    desktop.press("Sandbox and approvals").await;
+    for label in ["Read only", "Ask for approval"] {
+        desktop.assert_hover_changes(label).await;
+    }
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_shows_a_staged_image() {
+    let fixture = images_fixture().await;
+    let (path, _) = image_file(&fixture);
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    let name = path.file_name().unwrap().to_str().unwrap();
+    let remove = desktop.control(&format!("Remove attachment {name}")).await;
+    // Below the remove button, inside the thumbnail it sits 36 points into.
+    let sample = Bounds::new(
+        point(remove.left() - px(20.), remove.top() + px(44.)),
+        size(px(1.), px(1.)),
+    );
+    let surface = [0x20, 0x21, 0x23];
+    desktop
+        .until("the staged image did not paint", || {
+            desktop.app.update(|cx| cx.refresh_windows());
+            desktop.pump();
+            let pixel = desktop.pixels(sample)?;
+            (pixel[..3] != surface).then_some(())
+        })
+        .await;
+    desktop.artifact("staged-image");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_falls_back_to_a_file_for_an_undecodable_image() {
+    let fixture = images_fixture().await;
+    let path = fixture.directory.path().join("corrupt.png");
+    std::fs::write(&path, b"\x89PNG\r\n\x1a\nnot an image").unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    let start = desktop.control("Add to message").await.left();
+    let label = "Remove attachment corrupt.png";
+    desktop
+        .until("the undecodable image stayed a thumbnail", || {
+            let found = desktop.controls(label);
+            // The file tile keeps its remove button past the thumbnail's 64 points.
+            (found.len() == 1 && found[0].left() - start > px(64.)).then_some(())
+        })
+        .await;
+    desktop.press(label).await;
+    desktop
+        .until("the undecodable image was not removed", || {
+            desktop.controls(label).is_empty().then_some(())
+        })
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 async fn disconnected_desktop(
