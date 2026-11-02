@@ -257,7 +257,9 @@ impl Desktop {
                     return value;
                 }
                 tokio::task::yield_now().await;
-                self.wake.notified().await;
+                // A key sent before focus lands is lost and produces no wake, so
+                // a read that sends keys has to run again on its own.
+                let _ = tokio::time::timeout(Duration::from_millis(50), self.wake.notified()).await;
             }
         })
         .await
@@ -315,40 +317,34 @@ impl Desktop {
         .await;
     }
 
-    async fn input_text(&self) -> String {
-        let _ = self.platform.take_clipboard_write();
+    fn copy_input(&self) -> Option<String> {
         self.key("a", true);
         self.key("c", true);
-        self.until("the editor did not copy its contents", || {
-            self.platform
-                .take_clipboard_write()
-                .and_then(|item| item.text())
-        })
-        .await
+        self.platform
+            .take_clipboard_write()
+            .and_then(|item| item.text())
+    }
+
+    async fn input_text(&self) -> String {
+        let _ = self.platform.take_clipboard_write();
+        self.until("the editor did not copy its contents", || self.copy_input())
+            .await
     }
 
     async fn type_text(&self, text: &str) {
-        self.wait("the editor did not accept the draft", async {
-            loop {
-                self.key("a", true);
-                self.platform.paste(text).unwrap();
-                if self.input_text().await == text {
-                    return;
-                }
-                self.wake.notified().await;
-            }
+        let _ = self.platform.take_clipboard_write();
+        self.until("the editor did not accept the draft", || {
+            self.key("a", true);
+            self.platform.paste(text).unwrap();
+            self.copy_input().filter(|copied| copied == text)
         })
         .await;
     }
 
     async fn expect_text(&self, text: &str) {
-        self.wait("the expected draft did not appear in the editor", async {
-            loop {
-                if self.input_text().await == text {
-                    return;
-                }
-                self.wake.notified().await;
-            }
+        let _ = self.platform.take_clipboard_write();
+        self.until("the expected draft did not appear in the editor", || {
+            self.copy_input().filter(|copied| copied == text)
         })
         .await;
     }
@@ -1221,7 +1217,14 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
     desktop.type_text("no-such-provider-1793500567423").await;
     desktop.key("enter", false);
     desktop.control("Clear provider search").await;
-    assert!(desktop.controls("Connect Alibaba (China)").is_empty());
+    desktop
+        .until("search retained a provider it does not match", || {
+            desktop
+                .controls("Connect Alibaba (China)")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.artifact(&format!("provider-empty-{theme}-{layout}"));
     desktop.key("escape", false);
     desktop.control("Connect ChatGPT Subscription").await;
@@ -1679,8 +1682,19 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.press("Pause Goal").await;
     // A paused Goal can still be cancelling its iteration.
     desktop.control("Complete Goal").await;
-    desktop.press("Resume Goal").await;
-    desktop.control("Pause Goal").await;
+    // A press this soon after the pause settles can be lost before it reaches
+    // the dialog, so it repeats until the Goal resumes.
+    desktop
+        .until("Resume Goal did not resume", || {
+            if desktop.controls("Pause Goal").len() == 1 {
+                return Some(());
+            }
+            if let [resume] = desktop.controls("Resume Goal")[..] {
+                desktop.press_at(resume.center());
+            }
+            None
+        })
+        .await;
     let running = desktop.request(&mut fixture).await;
     running
         .tool_call(
@@ -1692,6 +1706,11 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.control("New Goal").await;
     desktop.artifact(&format!("goal-completed-{theme}-{layout}"));
     desktop.press("Close Goal").await;
+    desktop
+        .until("the Goal dialog did not close", || {
+            desktop.controls("Close Goal").is_empty().then_some(())
+        })
+        .await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_MY_DRAFT").await;
     desktop.type_text("/goal Finish the follow-up").await;
@@ -1787,8 +1806,21 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     let previous = desktop.platform.text_input_target();
     desktop.press("Open Verification worker").await;
     desktop.target_after(previous).await;
-    desktop.press("Focus message composer").await;
-    desktop.type_text("OPENED_TREE_GRANDCHILD").await;
+    let _ = desktop.platform.take_clipboard_write();
+    // A conversation that just opened ignores the press until its editor is ready.
+    desktop
+        .until("the composer did not accept the draft", || {
+            let [composer] = desktop.controls("Focus message composer")[..] else {
+                return None;
+            };
+            desktop.press_at(composer.center());
+            desktop.key("a", true);
+            desktop.platform.paste("OPENED_TREE_GRANDCHILD").unwrap();
+            desktop
+                .copy_input()
+                .filter(|copied| copied == "OPENED_TREE_GRANDCHILD")
+        })
+        .await;
     desktop.press("Send message").await;
     desktop.request(&mut fixture).await.finish().await;
     let history = desktop
