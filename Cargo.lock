@@ -7972,6 +7972,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-host-shell"
+version = "0.2.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "maka-insights"
 version = "0.2.0"
 dependencies = [

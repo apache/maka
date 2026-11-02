@@ -49,6 +49,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       'maka.exe',
       'maka-desktop-shell',
       'maka-desktop-shell.exe',
+      'maka-host-shell',
       'maka-service.exe',
       'maka-python-worker',
       'maka-python-worker.exe',
@@ -85,6 +86,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
         assert.match(plist, /<key>CFBundleIdentifier<\/key>\n  <string>org.apache.maka.desktop<\/string>/);
         assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n  <string>0.2.0<\/string>/);
         assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Resources/Maka.icns']).subarray(0, 4).toString(), 'icns');
+        assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Helpers/Maka Host.app/Contents/MacOS/maka-host-shell'], {encoding:'utf8'}), 'maka-host-shell bytes');
       }
       for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt']) {
         assert.equal(execFileSync('tar', ['-xOf', archive, 'package/' + name], {encoding:'utf8'}), 'reviewed ' + name);

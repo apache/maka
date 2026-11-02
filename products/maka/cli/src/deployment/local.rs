@@ -213,9 +213,15 @@ async fn connect_inner(
                         if let Some(generation) = update_attempt.generation().await? {
                             arguments.extend(["--generation", generation]);
                         }
+                        let (program, leading) = super::host_identity::command(launcher).await;
+                        let arguments = leading
+                            .iter()
+                            .map(String::as_str)
+                            .chain(arguments)
+                            .collect::<Vec<_>>();
                         child = Some(
                             detached::spawn(
-                                launcher,
+                                &program,
                                 &arguments,
                                 Some(capture),
                             )
