@@ -263,8 +263,8 @@ export function executor(root, worker = {}) {
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
-    // Balance measured fixture execution time against producer and transfer time.
-    const partitions = Math.min(4, count);
+    // Four shards spent 12–15 minutes executing; eight halve that serial fixture work.
+    const partitions = Math.min(8, count);
     return Array.from({ length: partitions }, (_, index) => ({
       partition: `slice:${index + 1}/${partitions}`,
     }));

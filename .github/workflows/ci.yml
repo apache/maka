@@ -37,15 +37,12 @@ defaults:
 
 env:
   CARGO_INCREMENTAL: "0"
-  MBX_GC_AUTO: "1"
-  MBX_TARGET_VIEWS: "0"
-  MBX_CACHE_LINKS: "0"
-  MBX_SHARE_OUT_DIR: "0"
 
 jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
+      tooling: ${{ steps.plan.outputs.tooling }}
       root: ${{ steps.plan.outputs.root }}
       workers: ${{ steps.plan.outputs.workers }}
       artifact: ${{ steps.upload.outputs.artifact-id }}
@@ -53,10 +50,10 @@ jobs:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - uses: actions/setup-node@v7
         with:
-          role: plan
-          compile: "false"
+          node-version: "26"
+          package-manager-cache: false
       - id: plan
         run: node scripts/ci.mjs plan
       - uses: actions/upload-artifact@v7
@@ -67,6 +64,8 @@ jobs:
           if-no-files-found: error
 
   tooling:
+    needs: plan
+    if: needs.plan.outputs.tooling == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -116,14 +115,6 @@ jobs:
           path: ${{ runner.temp }}/root-tests.tar.zst
           compression-level: 0
           if-no-files-found: error
-      - uses: ./.github/actions/ci-cache
-        with:
-          compiled_key: ${{ steps.setup.outputs.compiled_key }}
-          compiled_hit: ${{ steps.setup.outputs.compiled_hit }}
-          compiled_writer: ${{ steps.setup.outputs.compiled_writer }}
-          downloads_key: ${{ steps.setup.outputs.downloads_key }}
-          downloads_hit: ${{ steps.setup.outputs.downloads_hit }}
-          downloads_writer: ${{ steps.setup.outputs.downloads_writer }}
       - name: Report producer storage
         if: always()
         run: |
@@ -187,14 +178,6 @@ jobs:
           merge-multiple: true
       - name: Compile selected suites
         run: node scripts/ci.mjs prepare '${{ matrix.id }}'
-      - uses: ./.github/actions/ci-cache
-        with:
-          compiled_key: ${{ steps.setup.outputs.compiled_key }}
-          compiled_hit: ${{ steps.setup.outputs.compiled_hit }}
-          compiled_writer: ${{ steps.setup.outputs.compiled_writer }}
-          downloads_key: ${{ steps.setup.outputs.downloads_key }}
-          downloads_hit: ${{ steps.setup.outputs.downloads_hit }}
-          downloads_writer: ${{ steps.setup.outputs.downloads_writer }}
       - name: Verify selected suites
         run: node scripts/ci.mjs verify '${{ matrix.id }}'
       - name: Report worker storage
@@ -213,7 +196,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: latest
+          node-version: "26"
+          package-manager-cache: false
       - name: Require a successful plan
         if: needs.plan.result != 'success'
         run: node -e 'throw new Error("CI planning did not succeed")'

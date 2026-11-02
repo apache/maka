@@ -17,20 +17,18 @@
  * under the License.
  */
 
-import { createHash } from 'node:crypto';
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { appendFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { command } from './command.mjs';
 import { manifests } from './suites.mjs';
 
 const role = process.env.MAKA_CI_ROLE;
 const workspace = process.env.MAKA_CI_WORKSPACE;
-const hash = (input) => createHash('sha256').update(input).digest('hex');
 const version = process.env.MAKA_CI_NEXTEST;
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
-    : ['root', 'replay', 'variants', 'termina', 'nsh', 'gpui'].includes(role)
+    : ['root', 'replay', 'bridge', 'desktop', 'termina', 'nsh', 'gpui'].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
 
@@ -45,61 +43,9 @@ function output(values) {
 
 async function main(action) {
   if (action === 'tool-list') {
-    output({ tools: tools.join(' ') });
+    output({ tools: tools.join(' '), workspace: dirname(manifests[workspace ?? 'root']) });
   } else if (action === 'tools') {
-    await command('cargo', ['binstall', '--no-confirm', '--force', 'cargo-binstall']);
     await command('cargo', ['binstall', '--no-confirm', '--force', ...tools]);
-  } else if (action === 'keys') {
-    const lock = readFileSync(join(dirname(manifests[workspace]), 'Cargo.lock'));
-    const compiler = await command('rustc', ['-vV'], { capture: true });
-    const sharedRoot = ['root', 'variants', 'clippy', 'product'].includes(role);
-    const base = `rust-target-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${sharedRoot ? 'root' : role}`;
-    const downloads = `cargo-${process.env.RUNNER_OS}-${workspace}-${hash(lock)}`;
-    const writer =
-      workspace !== 'root' ||
-      role === 'root' ||
-      (process.env.RUNNER_OS !== 'Linux' && role.startsWith('native-'));
-    output({
-      compiled: `${base}-${hash(lock)}`,
-      compiled_prefix: base,
-      compiled_writer: !sharedRoot || role === 'root',
-      downloads,
-      downloads_prefix: `cargo-${process.env.RUNNER_OS}-${workspace}`,
-      downloads_writer: writer,
-    });
-  } else if (action === 'mbx') {
-    const release = JSON.parse(
-      await command('gh', ['api', 'repos/jdx/mr-boxington/releases/latest'], { capture: true }),
-    );
-    if (!release.immutable) throw new Error('The mbx release must be immutable');
-    const asset = release.assets.find(
-      (entry) => entry.name === 'mbx-x86_64-unknown-linux-gnu.tar.gz',
-    );
-    if (!asset) throw new Error('The mbx Linux release asset is missing');
-    const temporary = process.env.RUNNER_TEMP;
-    const archive = join(temporary, 'mbx.tar.gz');
-    const bin = join(temporary, 'mbx-bin');
-    const data = join(temporary, 'mbx-data');
-    mkdirSync(bin, { recursive: true });
-    await command('curl', [
-      '--fail',
-      '--silent',
-      '--show-error',
-      '--location',
-      '--retry',
-      '3',
-      asset.browser_download_url,
-      '--output',
-      archive,
-    ]);
-    if (asset.digest !== `sha256:${hash(readFileSync(archive))}`)
-      throw new Error('mbx release asset digest mismatch');
-    await command('tar', ['-xzf', archive, '-C', bin]);
-    await command(join(bin, 'mbx'), ['--version']);
-    await command(join(bin, 'mbx'), ['setup', '--yes'], {
-      env: { ...process.env, XDG_DATA_HOME: data },
-    });
-    appendFileSync(process.env.GITHUB_PATH, `${bin}\n${join(data, 'mbx/bin')}\n`);
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
     const shared = [
