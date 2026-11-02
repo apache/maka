@@ -28,6 +28,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+// Cold lifecycle fixtures reached 20s in CI; leave room before declaring a hung startup.
+const STARTUP_WAIT: Duration = Duration::from_secs(60);
+
 #[cfg(unix)]
 mod crash;
 mod owned;
@@ -348,18 +351,17 @@ async fn verify_takeover(root: &Path, registration: &Value, client: &mut Client)
 // One bounded reader owns this exact child's pipe. Timeout kills/reaps that
 // child and joins the reader before reporting failure, never leaving a waiter.
 fn read_ready(fixture: &mut CandidateFixture) -> Value {
-    use std::io::{BufRead, Read};
+    use std::io::BufRead;
     let stdout = fixture.child.as_mut().unwrap().stdout.take().unwrap();
     let (send, receive) = std::sync::mpsc::channel();
     let reader = std::thread::spawn(move || {
         let mut line = String::new();
         let result = std::io::BufReader::new(stdout)
-            .take(8192)
             .read_line(&mut line)
             .map(|_| line);
         let _ = send.send(result);
     });
-    let result = receive.recv_timeout(Duration::from_secs(15));
+    let result = receive.recv_timeout(STARTUP_WAIT);
     if result.is_err() {
         let child = fixture.child.as_mut().unwrap();
         let _ = child.kill();
@@ -418,7 +420,7 @@ impl CandidateFixture {
     }
 
     pub fn wait_for_registration(&mut self) -> Value {
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + STARTUP_WAIT;
         loop {
             if let Ok(bytes) = fs::read(&self.registration) {
                 return serde_json::from_slice(&bytes).unwrap();
