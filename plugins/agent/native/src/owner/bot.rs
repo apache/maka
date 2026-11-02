@@ -41,6 +41,8 @@ pub(super) const SLEEP: &str = "sleep";
 /// granted by Bot identity rather than by this list.
 pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "ScheduledTask",
+    "CreateGoal",
+    "GetGoal",
     "GoalStatus",
     "Recall",
     "RecallMaterial",
@@ -914,10 +916,10 @@ const ABILITIES: &[Ability] = &[
         "ScheduledTask (schedule a wake-up, which the user must approve)",
     ),
     (
-        &["GoalStatus"],
-        "GoalStatus（目标）",
-        "GoalStatus（目標）",
-        "GoalStatus (goals)",
+        &["CreateGoal", "GetGoal", "GoalStatus"],
+        "{}（目标）",
+        "{}（目標）",
+        "{} (goals)",
     ),
     (
         &["Recall", "RecallMaterial", "RecallMore"],

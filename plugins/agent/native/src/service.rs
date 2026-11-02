@@ -185,19 +185,27 @@ impl Handler for Agent {
                 "watchGoal" => {
                     let input: GoalRead = decode(input)?;
                     let mut changes = owner.goal_changes();
-                    let mut revision = None;
+                    let mut store_changes = owner.store.subscribe_changes();
+                    let mut previous = None;
                     loop {
                         changes.borrow_and_update();
+                        store_changes.borrow_and_update();
                         let page = owner.goal(input.clone()).await?;
-                        let next = page.current.as_ref().map(|goal| goal.revision);
-                        if revision != Some(next) {
-                            revision = Some(next);
-                            context.emit(encode(page)?).await?;
+                        let running = page
+                            .current
+                            .as_ref()
+                            .is_some_and(|goal| goal.status == GoalStatus::Active || goal.pending);
+                        let value = encode(page)?;
+                        if previous.as_ref() != Some(&value) {
+                            previous = Some(value.clone());
+                            context.emit(value).await?;
                         }
                         tokio::select! {
                             biased;
                             _ = context.scope().cancellation.cancelled() => return Err("goal_observation_cancelled".into()),
                             result = changes.changed() => result.map_err(|_| "goal_observation_closed")?,
+                            result = store_changes.changed() => result.map_err(|_| "goal_observation_closed")?,
+                            _ = tokio::time::sleep(std::time::Duration::from_secs(1)), if running => {},
                         }
                     }
                 }

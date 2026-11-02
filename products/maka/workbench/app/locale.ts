@@ -18,6 +18,7 @@
  */
 
 import { signal } from 'nsh';
+import { goalMessages } from './locale-goal';
 import { composerMessages } from './locale-composer';
 import type { DisplayText, LanguagePreference } from '../../../../packages/plugin-sdk/src/index.js';
 import { createCopy, languageIndex, resolveLocale } from '../../../../plugins/shared/locale.js';
@@ -35,6 +36,7 @@ export const currentLocale = signal(resolveLocale('auto', nativeLocale));
 let observedRevision = -1;
 const copy = createCopy({
   ...commonMessages,
+  ...goalMessages,
   ...conversationMessages,
   ...composerMessages,
   ...settingsMessages,

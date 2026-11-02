@@ -48,7 +48,9 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     views.navigation(props.input);
   const Session = (props: { input: ConversationSessionInput }) => {
     if (!props.input.shell.closePane) return views.session(props.input);
-    const side = createConversationUi(context, host, { browsing: views.browsing });
+    const side = createConversationUi(context, host, {
+      browsing: views.browsing,
+    });
     sides.set([...sides(), side]);
     cleanup(() => sides.set(sides().filter((pane) => pane !== side)));
     return side.session(props.input);
@@ -67,6 +69,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
       'settings',
       'files',
       'compact',
+      'goal',
       'latest',
       'history-focus',
       'activity-focus',

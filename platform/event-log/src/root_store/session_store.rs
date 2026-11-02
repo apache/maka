@@ -177,6 +177,11 @@ impl SessionStore {
             .await
     }
 
+    pub async fn cancel_handoff(&self, source: &Invocation) -> Result<TurnBoundary, StoreError> {
+        self.check_session(&source.session_id)?;
+        self.scoped().await?.cancel_handoff(source).await
+    }
+
     pub async fn check_handoff(
         &self,
         invocation: &maka_agent_facts::event::Invocation,

@@ -131,7 +131,7 @@ impl Owner {
             return Err("agent_session_configuration_changed".into());
         }
         if session.configuration.collaboration_mode == CollaborationMode::Plan
-            && !matches!(kind, BackgroundKind::Plan(_))
+            && !matches!(kind, BackgroundKind::Plan(_) | BackgroundKind::Goal(_))
         {
             return Err("agent_planning_does_not_authorize_background_execution".into());
         }
