@@ -37,28 +37,29 @@ defaults:
 
 env:
   CARGO_INCREMENTAL: "0"
-  MBX_GC_AUTO: "1"
-  MBX_TARGET_VIEWS: "0"
-  MBX_CACHE_LINKS: "0"
-  MBX_SHARE_OUT_DIR: "0"
 
 jobs:
   plan:
     runs-on: ubuntu-latest
     outputs:
+      tooling: ${{ steps.plan.outputs.tooling }}
       root: ${{ steps.plan.outputs.root }}
+      desktop: ${{ steps.plan.outputs.desktop }}
       workers: ${{ steps.plan.outputs.workers }}
       artifact: ${{ steps.upload.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: ./.github/actions/ci-setup
+      - uses: actions/setup-node@v7
         with:
-          role: plan
-          compile: "false"
+          node-version: "26"
+          package-manager-cache: false
       - id: plan
         run: node scripts/ci.mjs plan
+      - name: Check documentation source headers
+        if: steps.plan.outputs.tooling != 'true'
+        run: node scripts/asf-license-headers.mjs check
       - uses: actions/upload-artifact@v7
         id: upload
         with:
@@ -67,6 +68,8 @@ jobs:
           if-no-files-found: error
 
   tooling:
+    needs: plan
+    if: needs.plan.outputs.tooling == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 180
     steps:
@@ -89,7 +92,13 @@ jobs:
       partitions: ${{ steps.archive.outputs.partitions }}
       has_tests: ${{ steps.archive.outputs.has_tests }}
       nextest: ${{ steps.archive.outputs.nextest }}
-      artifact: ${{ steps.upload.outputs.artifact-id }}
+      filter: ${{ steps.archive.outputs.filter }}
+      native: ${{ steps.upload-native.outputs.artifact-id }}
+      cli: ${{ steps.upload-cli.outputs.artifact-id }}
+      rest-1: ${{ steps.upload-rest-1.outputs.artifact-id }}
+      rest-2: ${{ steps.upload-rest-2.outputs.artifact-id }}
+      rest-3: ${{ steps.upload-rest-3.outputs.artifact-id }}
+      rest-4: ${{ steps.upload-rest-4.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -109,21 +118,58 @@ jobs:
         id: archive
         run: node scripts/ci.mjs archive
       - uses: actions/upload-artifact@v7
-        id: upload
+        id: upload-native
         if: steps.archive.outputs.has_tests == 'true'
         with:
-          name: root-tests-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests.tar.zst
+          name: root-tests-native-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-native.tar.zst
           compression-level: 0
-          if-no-files-found: error
-      - uses: ./.github/actions/ci-cache
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-cli
+        if: steps.archive.outputs.has_tests == 'true'
         with:
-          compiled_key: ${{ steps.setup.outputs.compiled_key }}
-          compiled_hit: ${{ steps.setup.outputs.compiled_hit }}
-          compiled_writer: ${{ steps.setup.outputs.compiled_writer }}
-          downloads_key: ${{ steps.setup.outputs.downloads_key }}
-          downloads_hit: ${{ steps.setup.outputs.downloads_hit }}
-          downloads_writer: ${{ steps.setup.outputs.downloads_writer }}
+          name: root-tests-cli-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-cli.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-1
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-1-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-1.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-2
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-2-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-2.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-3
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-3-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-3.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest-4
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-4-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest-4.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: ./.github/actions/ci-cache
+        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
+        with:
+          key: ${{ steps.setup.outputs.compiled_key }}
+          hit: ${{ steps.setup.outputs.compiled_hit }}
       - name: Report producer storage
         if: always()
         run: |
@@ -152,11 +198,84 @@ jobs:
           nextest: ${{ needs.root-build.outputs.nextest }}
       - uses: actions/download-artifact@v8
         with:
-          artifact-ids: ${{ needs.root-build.outputs.artifact }}
+          artifact-ids: ${{ needs.root-build.outputs[matrix.group] }}
           path: ${{ runner.temp }}
           merge-multiple: true
       - name: Execute the produced test partition
-        run: node scripts/ci.mjs replay '${{ matrix.partition }}'
+        env:
+          MAKA_CI_FILTER: ${{ needs.root-build.outputs.filter }}
+        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -E "$MAKA_CI_FILTER"
+
+  desktop-build:
+    needs: plan
+    if: needs.plan.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    outputs:
+      partitions: ${{ steps.archive.outputs.partitions }}
+      nextest: ${{ steps.archive.outputs.nextest }}
+      filter: ${{ steps.archive.outputs.filter }}
+      artifact: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        id: setup
+        with:
+          role: desktop
+          dependencies: headless
+          javascript: "true"
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.plan.outputs.artifact }}
+          path: ${{ runner.temp }}
+          merge-multiple: true
+      - name: Build and archive selected tests
+        id: archive
+        run: node scripts/ci.mjs archive desktop
+      - uses: actions/upload-artifact@v7
+        id: upload
+        with:
+          name: desktop-tests-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-cli.tar.zst
+          compression-level: 0
+          if-no-files-found: error
+      - uses: ./.github/actions/ci-cache
+        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
+        with:
+          key: ${{ steps.setup.outputs.compiled_key }}
+          hit: ${{ steps.setup.outputs.compiled_hit }}
+
+  desktop-tests:
+    needs: desktop-build
+    if: needs.desktop-build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.desktop-build.outputs.partitions) }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/ci-setup
+        with:
+          role: replay
+          dependencies: headless
+          javascript: "true"
+          compile: "false"
+          nextest: ${{ needs.desktop-build.outputs.nextest }}
+      - uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.desktop-build.outputs.artifact }}
+          path: ${{ runner.temp }}
+          merge-multiple: true
+      - name: Execute the produced test partition
+        env:
+          MAKA_CI_FILTER: ${{ needs.desktop-build.outputs.filter }}
+        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}' -j 1 -E "$MAKA_CI_FILTER"
 
   suites:
     needs: plan
@@ -186,17 +305,16 @@ jobs:
           path: ${{ runner.temp }}
           merge-multiple: true
       - name: Compile selected suites
+        id: compile
         run: node scripts/ci.mjs prepare '${{ matrix.id }}'
-      - uses: ./.github/actions/ci-cache
-        with:
-          compiled_key: ${{ steps.setup.outputs.compiled_key }}
-          compiled_hit: ${{ steps.setup.outputs.compiled_hit }}
-          compiled_writer: ${{ steps.setup.outputs.compiled_writer }}
-          downloads_key: ${{ steps.setup.outputs.downloads_key }}
-          downloads_hit: ${{ steps.setup.outputs.downloads_hit }}
-          downloads_writer: ${{ steps.setup.outputs.downloads_writer }}
       - name: Verify selected suites
         run: node scripts/ci.mjs verify '${{ matrix.id }}'
+      - uses: ./.github/actions/ci-cache
+        if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}
+        with:
+          key: ${{ steps.setup.outputs.compiled_key }}
+          hit: ${{ steps.setup.outputs.compiled_hit }}
+          workspace: ${{ matrix.workspace }}
       - name: Report worker storage
         if: always()
         run: |
@@ -204,7 +322,7 @@ jobs:
           if [ -d target ]; then du -sh target; fi
 
   test:
-    needs: [plan, tooling, root-build, root-tests, suites]
+    needs: [plan, tooling, root-build, root-tests, desktop-build, desktop-tests, suites]
     if: always()
     runs-on: ubuntu-latest
     steps:
@@ -213,7 +331,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: latest
+          node-version: "26"
+          package-manager-cache: false
       - name: Require a successful plan
         if: needs.plan.result != 'success'
         run: node -e 'throw new Error("CI planning did not succeed")'

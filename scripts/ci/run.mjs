@@ -24,6 +24,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -209,11 +210,11 @@ export function executor(root, worker = {}) {
     }
   }
 
-  async function archive(plan, output) {
-    const args = suites.root.cargoArgs;
+  async function archive(plan, output, id = 'root') {
+    const args = suites[id].cargoArgs;
     const listing = JSON.parse(
       await cargo(
-        ['nextest', 'list', ...args, '-E', plan.suites.root.filter, '--message-format', 'json'],
+        ['nextest', 'list', ...args, '-E', plan.suites[id].filter, '--message-format', 'json'],
         { capture: true },
       ),
     );
@@ -225,49 +226,95 @@ export function executor(root, worker = {}) {
     const count = selected
       .flatMap((suite) => Object.values(suite.testcases))
       .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
-    console.log(`Selected ${count} root tests for archive replay`);
-    if (!count && plan.suites.root.filter === 'all()')
+    console.log(`Selected ${count} ${id} tests for archive replay`);
+    if (!count && plan.suites[id].filter === 'all()')
       throw new Error('The full root test selection was unexpectedly empty');
     if (!count) return [];
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
-    const runtimePackages = new Set(
-      selected
-        .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
-        .map((suite) => suite['package-id']),
-    );
-    const includes = [];
-    for (const [id, path] of Object.entries(listing['rust-build-meta']['build-script-out-dirs'])) {
-      if (runtimePackages.has(id)) includes.push(`${path}/product`);
+    const groups = [];
+    for (const [group, shards, name] of [
+      ['native', 8, 'maka-agent-native'],
+      ['cli', id === 'desktop' ? 4 : 6, 'maka-cli'],
+    ]) {
+      groups.push({
+        group,
+        shards,
+        binaries: selected.filter((suite) => suite['package-name'] === name),
+      });
     }
-    const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
-    try {
-      const configFile = join(temporary, 'nextest.toml');
-      writeFileSync(
-        configFile,
-        `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
+    const remaining = selected
+      .filter((binary) => !['maka-agent-native', 'maka-cli'].includes(binary['package-name']))
+      .map((binary) => ({ binary, bytes: statSync(binary['binary-path']).size }))
+      .sort(
+        (a, b) => b.bytes - a.bytes || a.binary['binary-id'].localeCompare(b.binary['binary-id']),
       );
-      mkdirSync(dirname(output), { recursive: true });
-      await cargo([
-        'nextest',
-        'archive',
-        ...args,
-        '--profile',
-        'ci',
-        '--config-file',
-        configFile,
-        '-E',
-        plan.suites.root.filter,
-        '--archive-file',
-        output,
-      ]);
+    const buckets = Array.from({ length: Math.min(4, remaining.length) }, () => ({
+      bytes: 0,
+      binaries: [],
+    }));
+    for (const entry of remaining) {
+      const bucket = buckets.reduce((a, b) => (a.bytes <= b.bytes ? a : b));
+      bucket.bytes += entry.bytes;
+      bucket.binaries.push(entry.binary);
+    }
+    groups.push(
+      ...buckets.map((bucket, index) => ({
+        group: `rest-${index + 1}`,
+        shards: 2,
+        binaries: bucket.binaries,
+      })),
+    );
+    const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
+    const partitions = [];
+    try {
+      // Balance the binaries each machine must download
+      // and extract, instead of sending their entire archive to every shard.
+      for (const { group, shards, binaries } of groups) {
+        if (!binaries.length) continue;
+        // Archives select binaries; the consumers retain the original test filter.
+        const filter = binaries.map((suite) => `binary_id(=${suite['binary-id']})`).join(' | ');
+        const runtimePackages = new Set(
+          binaries
+            .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
+            .map((suite) => suite['package-id']),
+        );
+        const includes = [];
+        for (const [id, path] of Object.entries(
+          listing['rust-build-meta']['build-script-out-dirs'],
+        )) {
+          if (runtimePackages.has(id)) includes.push(`${path}/product`);
+        }
+        const configFile = join(temporary, 'nextest.toml');
+        writeFileSync(
+          configFile,
+          `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
+        );
+        mkdirSync(dirname(output), { recursive: true });
+        await cargo([
+          'nextest',
+          'archive',
+          ...args,
+          '--profile',
+          'ci',
+          '--config-file',
+          configFile,
+          '-E',
+          filter,
+          '--archive-file',
+          join(dirname(output), `root-tests-${group}.tar.zst`),
+        ]);
+        const tests = binaries
+          .flatMap((suite) => Object.values(suite.testcases))
+          .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
+        const total = Math.min(shards, tests);
+        for (let index = 1; index <= total; index++)
+          partitions.push({ group, partition: `slice:${index}/${total}` });
+        console.log(`Archived ${tests} ${group} tests for ${total} partitions`);
+      }
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
-    // Balance measured fixture execution time against producer and transfer time.
-    const partitions = Math.min(4, count);
-    return Array.from({ length: partitions }, (_, index) => ({
-      partition: `slice:${index + 1}/${partitions}`,
-    }));
+    return partitions;
   }
 
   return { prepare, verify, check, archive, run, target };

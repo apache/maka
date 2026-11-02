@@ -239,7 +239,14 @@ async fn catalog_observes_metadata_pending_and_removal_at_its_original_location(
             )
             .await
             .unwrap();
-        let updated = next(&mut stream).await;
+        let updated = loop {
+            let updated = next(&mut stream).await;
+            // Earlier changes may still have a valid pending snapshot queued.
+            if request == "background-second" && updated["needsYouCount"] == 1 {
+                continue;
+            }
+            break updated;
+        };
         assert_eq!(
             updated["needsYouCount"],
             if request == "background" { 1 } else { 0 }

@@ -182,13 +182,22 @@ export const suites = {
 
 export const workers = [
   {
-    id: 'variants',
-    suites: ['bridge', 'desktop', 'native-build'],
+    id: 'bridge',
+    suites: ['bridge'],
     runner: 'ubuntu-latest',
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
     compile: true,
+  },
+  {
+    id: 'packaging',
+    suites: ['native-build'],
+    runner: 'ubuntu-latest',
+    workspace: 'root',
+    dependencies: 'headless',
+    javascript: true,
+    compile: false,
   },
   {
     id: 'clippy',
@@ -206,7 +215,7 @@ export const workers = [
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
-    compile: true,
+    compile: false,
   },
   {
     id: 'termina',
