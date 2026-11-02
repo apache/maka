@@ -428,7 +428,6 @@ mod tests {
     #[tokio::test]
     async fn full_access_monitor_needs_no_consent_but_retires_with_its_turn() {
         let fixture = super::super::browser_access::tests::Fixture::with_permissions(
-            false,
             true,
             WorkspacePermissions {
                 access: WorkspaceAccess::DangerFullAccess,

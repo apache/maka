@@ -1334,7 +1334,6 @@ mod tests {
             session::StoredSessionConfiguration,
         };
         let fixture = super::super::browser_access::tests::Fixture::with_permissions(
-            false,
             true,
             WorkspacePermissions {
                 access: WorkspaceAccess::DangerFullAccess,

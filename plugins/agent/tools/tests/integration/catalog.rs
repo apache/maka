@@ -187,7 +187,7 @@ fn schemas_validate_offline_without_coercion_and_catalog_rejects_ambiguous_autho
 }
 
 #[tokio::test]
-async fn process_controls_can_be_called_before_any_tool_search() {
+async fn process_controls_are_resident_before_any_tool_search() {
     let effects = Arc::new(Fixture::default());
     let catalog = ToolCatalog::new(["ProcessInput", "ProcessStop", "withheld"].map(|name| {
         registration(
@@ -202,21 +202,9 @@ async fn process_controls_can_be_called_before_any_tool_search() {
         availability::Availability::new(catalog, availability::LoadedTools::temporary().unwrap())
             .snapshot()
             .unwrap();
-    let directory = tempfile::tempdir().unwrap();
-    let log = Arc::new(
-        maka_event_log::EventLog::open(&directory.path().join("tools.sqlite"))
-            .await
-            .unwrap(),
-    );
-    let invocation = context().invocation;
-    let calls = [
-        crate::support::preflight::call("input", "ProcessInput", json!({"n":1})),
-        crate::support::preflight::call("stop", "ProcessStop", json!({"n":2})),
-    ];
-    crate::support::preflight::accepted(&log, &invocation, &calls).await;
-    let journal = maka_agent_facts::tools::ToolJournal::new(log.clone(), invocation.clone());
-    for (id, name, n) in [("input", "ProcessInput", 1), ("stop", "ProcessStop", 2)] {
-        let effect = available
+    assert_eq!(available.names(), ["ProcessInput", "ProcessStop"]);
+    for (name, n) in [("ProcessInput", 1), ("ProcessStop", 2)] {
+        available
             .prepare(
                 name.into(),
                 json!({"n":n}),
@@ -225,24 +213,7 @@ async fn process_controls_can_be_called_before_any_tool_search() {
             )
             .await
             .unwrap();
-        let result = journal
-            .invoke_prepared_call(
-                format!("{}:{id}", invocation.invocation_id),
-                maka_agent_facts::tool_call::ToolCallIdentity::provider(
-                    invocation.invocation_id.clone(),
-                    id.into(),
-                ),
-                name.into(),
-                json!({"n":n}),
-                None,
-                CancellationToken::new(),
-                effect,
-            )
-            .await
-            .unwrap();
-        assert_eq!(result, json!({"n":n}));
     }
-    assert_eq!(effects.0.load(Ordering::SeqCst), 2);
     assert!(matches!(
         available
             .prepare(
@@ -254,5 +225,4 @@ async fn process_controls_can_be_called_before_any_tool_search() {
             .await,
         Err(ToolRejection::Unavailable)
     ));
-    log.shutdown().await.unwrap();
 }

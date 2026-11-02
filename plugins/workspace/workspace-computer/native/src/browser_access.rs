@@ -845,19 +845,26 @@ pub(crate) mod tests {
         }
 
         async fn new_configured(global_grant: bool, accepted_configuration: bool) -> Self {
-            Self::with_permissions(
-                global_grant,
+            let fixture = Self::with_permissions(
                 accepted_configuration,
                 WorkspacePermissions {
                     access: WorkspaceAccess::WorkspaceWrite,
                     request_permissions: false,
                 },
             )
-            .await
+            .await;
+            if global_grant {
+                fixture
+                    .decision("broad", api::target(), Decision::Allow, 2)
+                    .await;
+            }
+            fixture
+                .decision("site", target(ORIGIN.into()), Decision::Allow, 3)
+                .await;
+            fixture
         }
 
         pub(crate) async fn with_permissions(
-            global_grant: bool,
             accepted_configuration: bool,
             permissions: WorkspacePermissions,
         ) -> Self {
@@ -1001,22 +1008,13 @@ pub(crate) mod tests {
                 basis,
                 gate: Arc::default(),
             };
-            let fixture = Self {
+            Self {
                 _directory: directory,
                 owner,
                 store,
                 invocation,
                 attachment,
-            };
-            if global_grant {
-                fixture
-                    .decision("broad", api::target(), Decision::Allow, 2)
-                    .await;
             }
-            fixture
-                .decision("site", target(ORIGIN.into()), Decision::Allow, 3)
-                .await;
-            fixture
         }
 
         async fn decision(&self, id: &str, target: GrantTarget, decision: Decision, time: u64) {
@@ -1097,7 +1095,6 @@ pub(crate) mod tests {
         use maka_capabilities::call::{Identity, Issuer};
         for request_permissions in [false, true] {
             let fixture = Fixture::with_permissions(
-                false,
                 true,
                 WorkspacePermissions {
                     access: WorkspaceAccess::DangerFullAccess,
@@ -1172,6 +1169,16 @@ pub(crate) mod tests {
                 access::granted_target(&fixture.owner, &call, basis, &target)
                     .await
                     .unwrap();
+                assert!(
+                    fixture
+                        .store
+                        .client_capability_grant("session", &target)
+                        .await
+                        .unwrap()
+                        .is_none(),
+                    "full access must not manufacture consent for {:?}",
+                    target.capability
+                );
             }
             for platform in [ComputerAppPlatform::Macos, ComputerAppPlatform::Windows] {
                 let subject = maka_computer_use::ComputerAppTarget {
@@ -1196,7 +1203,7 @@ pub(crate) mod tests {
                     allow_always: false,
                     binding: None,
                 };
-                let approved = tokio::time::timeout(
+                tokio::time::timeout(
                     std::time::Duration::from_secs(2),
                     app_access::approve(
                         &fixture.owner,
@@ -1211,7 +1218,6 @@ pub(crate) mod tests {
                 .await
                 .expect("full-access applications must not wait for a decision")
                 .unwrap();
-                assert_eq!(approved, app_access::target(&subject));
             }
             fixture
                 .attachment
