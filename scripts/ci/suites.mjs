@@ -196,7 +196,7 @@ export const workers = [
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
-    compile: true,
+    compile: false,
   },
   {
     id: 'clippy',
@@ -214,7 +214,7 @@ export const workers = [
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
-    compile: true,
+    compile: false,
   },
   {
     id: 'termina',
