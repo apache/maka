@@ -242,25 +242,20 @@ export function executor(root, worker = {}) {
         binaries: selected.filter((suite) => suite['package-name'] === name),
       });
     }
-    const packages = new Map();
-    for (const binary of selected) {
-      const name = binary['package-name'];
-      if (['maka-agent-native', 'maka-cli'].includes(name)) continue;
-      if (!packages.has(name)) packages.set(name, { name, bytes: 0, binaries: [] });
-      const entry = packages.get(name);
-      entry.bytes += statSync(binary['binary-path']).size;
-      entry.binaries.push(binary);
-    }
-    const buckets = Array.from({ length: Math.min(4, packages.size) }, () => ({
+    const remaining = selected
+      .filter((binary) => !['maka-agent-native', 'maka-cli'].includes(binary['package-name']))
+      .map((binary) => ({ binary, bytes: statSync(binary['binary-path']).size }))
+      .sort(
+        (a, b) => b.bytes - a.bytes || a.binary['binary-id'].localeCompare(b.binary['binary-id']),
+      );
+    const buckets = Array.from({ length: Math.min(4, remaining.length) }, () => ({
       bytes: 0,
       binaries: [],
     }));
-    for (const entry of [...packages.values()].sort(
-      (a, b) => b.bytes - a.bytes || a.name.localeCompare(b.name),
-    )) {
+    for (const entry of remaining) {
       const bucket = buckets.reduce((a, b) => (a.bytes <= b.bytes ? a : b));
       bucket.bytes += entry.bytes;
-      bucket.binaries.push(...entry.binaries);
+      bucket.binaries.push(entry.binary);
     }
     groups.push(
       ...buckets.map((bucket, index) => ({
@@ -272,13 +267,12 @@ export function executor(root, worker = {}) {
     const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
     const partitions = [];
     try {
-      // Balance the remaining packages by the binaries each machine must download
+      // Balance the binaries each machine must download
       // and extract, instead of sending their entire archive to every shard.
       for (const { group, shards, binaries } of groups) {
         if (!binaries.length) continue;
-        const packages = [...new Set(binaries.map((suite) => suite['package-name']))];
         // Archives select binaries; the consumers retain the original test filter.
-        const filter = packages.map((name) => `package(=${name})`).join(' | ');
+        const filter = binaries.map((suite) => `binary_id(=${suite['binary-id']})`).join(' | ');
         const runtimePackages = new Set(
           binaries
             .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))

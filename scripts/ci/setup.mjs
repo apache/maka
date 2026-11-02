@@ -57,37 +57,33 @@ async function main(action) {
     );
     const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
     output({
-      compiled: `${compiled}-${lock}`,
+      compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
       compiled_prefix: `${compiled}-`,
       downloads: `cargo-sources-${workspace}-${lock}`,
       downloads_prefix: `cargo-sources-${workspace}-`,
       downloads_writer: role === 'tooling' || workspace !== 'root',
     });
   } else if (action === 'prune') {
-    const metadata = JSON.parse(
+    const packages = JSON.parse(
       await command(
-        'cargo',
+        process.platform === 'win32' ? 'python' : 'python3',
         [
-          'metadata',
-          '--locked',
-          '--no-deps',
-          '--format-version',
-          '1',
-          '--manifest-path',
-          manifests[workspace],
+          '-c',
+          'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
+          join(dirname(manifests[workspace]), 'Cargo.lock'),
         ],
         { capture: true },
       ),
     );
-    // Checkout gives workspace sources new mtimes, so their outputs rebuild on
-    // the next runner anyway. Keep dependencies, not those large local outputs.
+    // Local path dependencies rebuild after checkout just like workspace members.
+    // Keep the immutable registry/Git dependencies instead of those large outputs.
     await command('cargo', [
       'clean',
       '--manifest-path',
       manifests[workspace],
       '--target-dir',
       'target',
-      ...metadata.packages.flatMap((pkg) => ['--package', pkg.name]),
+      ...packages.flatMap((name) => ['--package', name]),
     ]);
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
