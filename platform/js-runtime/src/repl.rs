@@ -309,10 +309,15 @@ async fn serve(
         } else {
             "REPL interrupted; reset required"
         };
+        let heap_message = if admission.is_some() {
+            "JavaScript heap"
+        } else {
+            "JavaScript heap; reset required"
+        };
         let result = tokio::select! {
             biased;
             _ = interrupted.cancelled() => Err(CellDiagnostic::limit(interrupted_message)),
-            _ = heap_exhausted.cancelled() => Err(CellDiagnostic::limit(if admission.is_some() { "JavaScript heap" } else { "JavaScript heap; reset required" })),
+            _ = heap_exhausted.cancelled() => Err(CellDiagnostic::limit(heap_message)),
             result = async {
                 let mut event_loop = std::pin::pin!(runtime.run_event_loop(Default::default()));
                 std::future::poll_fn(|cx| {
@@ -342,6 +347,8 @@ async fn serve(
         let result = if budget.is_expired() {
             interrupted.cancel();
             Err(CellDiagnostic::limit(interrupted_message))
+        } else if heap_exhausted.is_cancelled() {
+            Err(CellDiagnostic::limit(heap_message))
         } else {
             result
         };
