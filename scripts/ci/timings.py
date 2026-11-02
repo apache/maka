@@ -50,7 +50,7 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     runs = gh("run", "list", "--repo", args.repo, "--branch", args.branch,
               "--limit", str(args.limit), "--json",
-              "databaseId,workflowName,headSha,status,conclusion,createdAt,updatedAt,url")
+              "databaseId,attempt,workflowName,headSha,status,conclusion,createdAt,startedAt,updatedAt,url")
     (args.output / "runs.json").write_text(json.dumps(runs, indent=2) + "\n")
 
     def jobs(run):
@@ -95,16 +95,16 @@ def main():
                            (job["name"] == "clippy" or job["name"].startswith("native-"))) else "preparation"
                     if phase == "execution":
                         execution += duration
-                    step_rows.append(dict(run=run["databaseId"], job=job["name"],
+                    step_rows.append(dict(run=run["databaseId"], attempt=run["attempt"], job=job["name"],
                                           step=step["name"], phase=phase, seconds=duration))
                 # nextest archive extraction lives inside the replay step; its own
                 # summary isolates actual test execution from that preparation.
                 execution = job.get("test_seconds", execution)
                 total = seconds(job["started_at"], job["completed_at"])
-                rows.append(dict(run=run["databaseId"], workflow=run["workflowName"],
+                rows.append(dict(run=run["databaseId"], attempt=run["attempt"], workflow=run["workflowName"],
                                  sha=run["headSha"], run_result=run["conclusion"],
                                  job=job["name"], result=job["conclusion"],
-                                 dependency_s=seconds(run["createdAt"], job["created_at"]),
+                                 dependency_s=seconds(run["startedAt"], job["created_at"]),
                                  queue_s=seconds(job["created_at"], job["started_at"]),
                                  preparation_s=max(0, total-execution), execution_s=execution,
                                  total_s=total, test_count=job.get("test_count"),
