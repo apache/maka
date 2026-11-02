@@ -917,6 +917,16 @@ fn operation_id(context: &ToolCallContext) -> Uuid {
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     Uuid::from_bytes(bytes)
 }
+/// A recorded diagnostic is a short machine code. Only a code-shaped one is shown to
+/// the model; free text from a plugin is never forwarded.
+fn model_diagnostic(diagnostic: &str) -> Option<&str> {
+    (!diagnostic.is_empty()
+        && diagnostic.len() <= 80
+        && diagnostic
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"_.:-".contains(&byte)))
+    .then_some(diagnostic)
+}
 fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSuccess, ToolError> {
     let unknown = match language {
         Language::En => {
@@ -928,12 +938,22 @@ fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSucc
     match &reply.receipt {
         Receipt::Recorded { outcome, .. } => match outcome {
             OperationOutcome::Returned { .. } => Ok(ToolOutput::Operation(Box::new(reply)).into()),
-            OperationOutcome::Unknown { .. } | OperationOutcome::Unresolved => {
+            OperationOutcome::Unknown { diagnostic } => {
+                // The result stays unknown, but the recorded reason is what lets the model
+                // tell a refusal it can fix (a bad argument) from a fault it cannot.
+                let message = match model_diagnostic(diagnostic) {
+                    Some(reason) => format!("{unknown} [{reason}]"),
+                    None => unknown.into(),
+                };
                 Err(ToolError::OperationUnknown {
-                    message: unknown.into(),
+                    message,
                     observation: Box::new(reply),
                 })
             }
+            OperationOutcome::Unresolved => Err(ToolError::OperationUnknown {
+                message: unknown.into(),
+                observation: Box::new(reply),
+            }),
         },
         Receipt::Unavailable { .. } => Err(ToolError::OperationUnknown {
             message: unknown.into(),
@@ -1066,6 +1086,12 @@ mod tests {
                 cleanup: OperationCleanup::Confirmed,
             },
             Receipt::Recorded {
+                outcome: OperationOutcome::Unknown {
+                    diagnostic: "agent_model_unavailable".into(),
+                },
+                cleanup: OperationCleanup::Confirmed,
+            },
+            Receipt::Recorded {
                 outcome: OperationOutcome::Unresolved,
                 cleanup: OperationCleanup::Confirmed,
             },
@@ -1086,8 +1112,38 @@ mod tests {
                     panic!("uncertain receipt must remain an unknown operation");
                 };
                 assert!(!message.is_empty());
+                // Free text is never forwarded; a recorded code is, so the model can
+                // tell a refusal it can fix from a fault it cannot.
+                assert!(!message.contains("原始"), "{message}");
+                assert_eq!(
+                    message.contains("agent_model_unavailable"),
+                    matches!(
+                        &original.receipt,
+                        Receipt::Recorded {
+                            outcome: OperationOutcome::Unknown { diagnostic },
+                            ..
+                        } if diagnostic == "agent_model_unavailable"
+                    ),
+                    "{message}"
+                );
                 assert_eq!(*observation, original);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod diagnostic_tests {
+    use super::model_diagnostic;
+
+    #[test]
+    fn only_code_shaped_diagnostics_reach_the_model() {
+        assert_eq!(
+            model_diagnostic("agent_model_unavailable"),
+            Some("agent_model_unavailable")
+        );
+        assert_eq!(model_diagnostic(""), None);
+        assert_eq!(model_diagnostic("/Users/me/secret path failed"), None);
+        assert_eq!(model_diagnostic(&"a".repeat(81)), None);
     }
 }
