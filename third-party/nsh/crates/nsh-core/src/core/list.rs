@@ -638,6 +638,10 @@ impl ListState {
         self.by_index.clear();
         for (slot, s) in self.slots.iter_mut().enumerate() {
             let Some(new) = s.index.and_then(shift) else {
+                // The index a freed cell last bound names another item now,
+                // so landing on it again must not skip the bind.
+                s.requested = None;
+                s.rendered = None;
                 continue;
             };
             if matches!(s.native, NativeCell::Retiring(_)) {
@@ -2760,6 +2764,29 @@ mod tests {
                 .iter()
                 .all(|&(slot, index)| l.slots[slot as usize].index == Some(index))
         );
+    }
+
+    #[test]
+    fn a_freed_cell_binds_again_when_a_splice_replaced_its_item() {
+        let mut l = list(10, 50.0, 100.0);
+        let mut binds = Vec::new();
+        l.update_window(&mut binds, None);
+        assert_eq!(binds.last(), Some(&(4, 4)));
+        l.viewport = 75.0;
+        binds.clear();
+        l.update_window(&mut binds, None);
+        assert_eq!(l.slots[4].index, None);
+        // Back in the window with the same content, the cell needs no bind.
+        l.viewport = 100.0;
+        l.update_window(&mut binds, None);
+        assert_eq!(binds, []);
+        l.viewport = 75.0;
+        l.update_window(&mut binds, None);
+        // The same index now names another item, which the cell never showed.
+        l.splice(4, 1, 1);
+        l.viewport = 100.0;
+        l.update_window(&mut binds, None);
+        assert_eq!(binds, [(4, 4)]);
     }
 
     #[test]
