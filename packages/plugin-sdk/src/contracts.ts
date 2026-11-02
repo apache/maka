@@ -959,11 +959,6 @@ export const contracts = {
                   objective: {
                     type: 'string',
                   },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
                   tokenBudget: {
                     type: ['integer', 'null'],
                     format: 'uint64',
@@ -977,7 +972,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'sessionId', 'objective', 'maxIterations', 'start', 'approval'],
+                required: ['kind', 'sessionId', 'objective', 'start', 'approval'],
               },
               {
                 type: 'object',
@@ -1000,6 +995,17 @@ export const contracts = {
                   },
                   action: {
                     $ref: '#/$defs/GoalControl',
+                  },
+                  budget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGoalBudget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    default: null,
                   },
                   approval: {
                     description:
@@ -1203,7 +1209,18 @@ export const contracts = {
               },
               GoalControl: {
                 type: 'string',
-                enum: ['pause', 'resume', 'cancel', 'complete'],
+                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget'],
+              },
+              AgentGoalBudget: {
+                type: 'object',
+                properties: {
+                  tokenBudget: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
             },
           },
@@ -6543,12 +6560,7 @@ export const contracts = {
                   },
                   iterations: {
                     type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
+                    format: 'uint64',
                     minimum: 0,
                   },
                   tokenBudget: {
@@ -6558,6 +6570,26 @@ export const contracts = {
                   },
                   consumed: {
                     $ref: '#/$defs/GoalMeter',
+                  },
+                  remainingTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  elapsedSeconds: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  retryAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                   pending: {
                     type: 'boolean',
@@ -6583,8 +6615,9 @@ export const contracts = {
                   'objective',
                   'status',
                   'iterations',
-                  'maxIterations',
                   'consumed',
+                  'elapsedSeconds',
+                  'createdAt',
                   'pending',
                   'note',
                 ],
@@ -6595,14 +6628,9 @@ export const contracts = {
                   'armed',
                   'active',
                   'paused',
-                  'waiting',
                   'achieved',
-                  'impossible',
                   'cancelled',
-                  'cancellation_unknown',
-                  'max_iterations',
                   'budget_limited',
-                  'budget_unknown',
                   'blocked',
                 ],
               },
@@ -6637,7 +6665,7 @@ export const contracts = {
               },
               GoalReportKind: {
                 type: 'string',
-                enum: ['progress', 'achieved', 'waiting', 'impossible'],
+                enum: ['progress', 'achieved', 'blocked', 'paused'],
               },
             },
           },
@@ -7248,6 +7276,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -7270,6 +7315,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -7618,6 +7697,18 @@ export const contracts = {
                     type: 'string',
                     maxLength: 96,
                   },
+                  origin: {
+                    description:
+                      "The Host's attribution of the Turn's opening message, when it generated it.",
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/MessageOrigin',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                 },
                 additionalProperties: false,
                 required: ['turnId', 'position', 'lastPosition', 'label'],
@@ -7642,6 +7733,91 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['sourceSequence', 'itemIndex'],
+              },
+              MessageOrigin: {
+                description:
+                  'Trusted producer attribution, preserved independently of editable content.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_task',
+                      },
+                      taskId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'taskId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'workhub_graph',
+                      },
+                      graphId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
+                  },
+                ],
               },
             },
           },
@@ -15206,6 +15382,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -15228,6 +15421,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -21949,6 +22176,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -21971,6 +22215,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -23274,6 +23552,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -23296,6 +23591,40 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
+                  },
+                  {
+                    description:
+                      "The opening message of an approved Plan execution. `title` is the\napproved Plan's title when the execution was frozen, not the current Plan.",
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      executionId: {
+                        type: 'string',
+                      },
+                      title: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'executionId', 'title'],
                   },
                 ],
               },
@@ -23964,12 +24293,7 @@ export const contracts = {
                   },
                   iterations: {
                     type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
+                    format: 'uint64',
                     minimum: 0,
                   },
                   tokenBudget: {
@@ -23979,6 +24303,26 @@ export const contracts = {
                   },
                   consumed: {
                     $ref: '#/$defs/GoalMeter',
+                  },
+                  remainingTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  elapsedSeconds: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  retryAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                   pending: {
                     type: 'boolean',
@@ -24004,8 +24348,9 @@ export const contracts = {
                   'objective',
                   'status',
                   'iterations',
-                  'maxIterations',
                   'consumed',
+                  'elapsedSeconds',
+                  'createdAt',
                   'pending',
                   'note',
                 ],
@@ -24016,14 +24361,9 @@ export const contracts = {
                   'armed',
                   'active',
                   'paused',
-                  'waiting',
                   'achieved',
-                  'impossible',
                   'cancelled',
-                  'cancellation_unknown',
-                  'max_iterations',
                   'budget_limited',
-                  'budget_unknown',
                   'blocked',
                 ],
               },
@@ -24058,7 +24398,7 @@ export const contracts = {
               },
               GoalReportKind: {
                 type: 'string',
-                enum: ['progress', 'achieved', 'waiting', 'impossible'],
+                enum: ['progress', 'achieved', 'blocked', 'paused'],
               },
             },
           },

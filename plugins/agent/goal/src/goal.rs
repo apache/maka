@@ -34,10 +34,6 @@ pub enum Error {
     Invalid(String),
     #[error(transparent)]
     Storage(#[from] StoreError),
-    #[error(transparent)]
-    Authority(#[from] maka_capabilities::authorization::CommandError),
-    #[error(transparent)]
-    Resource(#[from] maka_agent_facts::tools::ToolError),
 }
 pub fn invalid(e: impl std::fmt::Display) -> Error {
     Error::Invalid(e.to_string())
@@ -50,22 +46,15 @@ pub struct Arm<A = Id> {
     pub operation_id: Uuid,
     pub objective: String,
     pub grant: A,
-    pub max_iterations: u32,
     pub token_budget: Option<u64>,
     #[serde(default)]
     pub start: bool,
 }
 impl<A> Arm<A> {
     pub fn validate(&self) -> Result<(), Error> {
-        if self.objective.trim().is_empty()
-            || self.objective.len() > 8192
-            || !(1..=100).contains(&self.max_iterations)
-            || self
-                .token_budget
-                .is_some_and(|n| n == 0 || n > 1_000_000_000)
-        {
+        if self.objective.trim().is_empty() || self.token_budget.is_some_and(|n| n == 0) {
             return Err(invalid(
-                "Use an objective of 1–8192 bytes, 1–100 iterations and a positive token threshold up to 1 billion",
+                "Provide a nonempty objective and a positive optional token budget",
             ));
         }
         Ok(())
@@ -78,28 +67,14 @@ pub enum Status {
     Armed,
     Active,
     Paused,
-    Waiting,
     Achieved,
-    Impossible,
     Cancelled,
-    CancellationUnknown,
-    MaxIterations,
     BudgetLimited,
-    BudgetUnknown,
     Blocked,
 }
 impl Status {
     pub fn terminal(self) -> bool {
-        matches!(
-            self,
-            Self::Achieved
-                | Self::Impossible
-                | Self::Cancelled
-                | Self::CancellationUnknown
-                | Self::MaxIterations
-                | Self::BudgetLimited
-                | Self::BudgetUnknown
-        )
+        matches!(self, Self::Achieved | Self::Cancelled)
     }
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, schemars::JsonSchema)]
@@ -110,6 +85,7 @@ pub enum Control {
     Resume,
     Cancel,
     Complete,
+    SetBudget,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, Default, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -124,8 +100,8 @@ pub struct Meter {
 pub enum ReportKind {
     Progress,
     Achieved,
-    Waiting,
-    Impossible,
+    Blocked,
+    Paused,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -135,9 +111,40 @@ pub struct Report {
     pub note: String,
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct Pending {
-    pub request: Submit,
-    pub dispatched: bool,
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Pending {
+    Existing {
+        invocation: maka_agent_facts::event::Invocation,
+    },
+    Dispatch {
+        request: Submit,
+        dispatched: bool,
+    },
+}
+impl Pending {
+    pub fn invocation(&self) -> maka_agent_facts::event::Invocation {
+        match self {
+            Self::Existing { invocation } => invocation.clone(),
+            Self::Dispatch { request, .. } => {
+                use sha2::{Digest, Sha256};
+                let id = hex::encode(Sha256::digest(request.operation_id.as_bytes()));
+                maka_agent_facts::event::Invocation {
+                    session_id: request.session_id.clone(),
+                    turn_id: format!("t_{id}"),
+                    run_id: format!("r_{id}"),
+                    invocation_id: format!("i_{id}"),
+                }
+            }
+        }
+    }
+}
+pub fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("system time follows Unix epoch")
+        .as_millis()
+        .try_into()
+        .expect("timestamp fits u64")
 }
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -146,11 +153,15 @@ pub struct Goal<A = Id> {
     pub session_id: String,
     pub arm: Arm<A>,
     pub status: Status,
-    pub iterations: u32,
+    pub iterations: u64,
     pub baseline: Meter,
     pub consumed: Meter,
     pub pending: Option<Pending>,
-    pub last_operation_id: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+    pub active_since: Option<u64>,
+    pub elapsed_ms: u64,
+    pub retry_at: Option<u64>,
     pub report: Option<Report>,
     pub note: String,
     pub authority_blocked: bool,
@@ -159,161 +170,127 @@ impl<A> Goal<A> {
     pub fn keeps_host_awake(&self) -> bool {
         !self.authority_blocked
             && (self.status == Status::Active
-                || (self.status == Status::Cancelled && self.pending.is_some()))
+                || (matches!(self.status, Status::Cancelled | Status::Achieved)
+                    && self.pending.is_some()))
     }
 
     pub fn control(&mut self, action: Control) -> Result<(), Error> {
         match action {
-            Control::Pause if !self.status.terminal() => {
-                self.status = Status::Paused;
-                self.note = (match self.arm.language {
-                    Language::En => "Paused by user; accepted execution may finish",
-                    Language::ZhCn => "用户已暂停；已接纳的执行可能继续完成",
-                    Language::ZhTw => "使用者已暫停；已接納的執行可能繼續完成",
-                })
-                .into();
-            }
+            Control::Pause if !self.status.terminal() => self.status = Status::Paused,
             Control::Resume
                 if matches!(
                     self.status,
-                    Status::Armed | Status::Paused | Status::Waiting | Status::Blocked
+                    Status::Armed | Status::Paused | Status::Blocked | Status::BudgetLimited
                 ) =>
             {
                 self.status = Status::Active;
                 self.report = None;
-                self.note = (match self.arm.language {
-                    Language::En => "Resumed by user",
-                    Language::ZhCn => "用户已恢复",
-                    Language::ZhTw => "使用者已恢復",
-                })
-                .into();
             }
-            Control::Cancel
-                if !self.status.terminal()
-                    || matches!(self.status, Status::Cancelled | Status::CancellationUnknown) =>
-            {
+            Control::Cancel if !self.status.terminal() || self.status == Status::Cancelled => {
                 self.status = Status::Cancelled;
                 self.report = None;
-                self.note = (match self.arm.language { Language::En => "Cancellation requested; a committed dispatch may still be admitted before exact cancellation settles", Language::ZhCn => "已请求取消；精确取消确认前，已提交的派发仍可能被接纳", Language::ZhTw => "已請求取消；精確取消確認前，已提交的派發仍可能被接納" })
-                    .into();
             }
-            Control::Complete if !self.status.terminal() && self.pending.is_none() => {
-                self.status = Status::Achieved;
-                self.note = (match self.arm.language {
-                    Language::En => "Marked complete by user",
-                    Language::ZhCn => "用户标记为完成",
-                    Language::ZhTw => "使用者標記為完成",
-                })
-                .into();
-            }
+            Control::Complete if !self.status.terminal() => self.status = Status::Achieved,
+            Control::SetBudget if !self.status.terminal() => {}
             _ => return Err(invalid("Control is not valid in the current Goal state")),
         }
         Ok(())
+    }
+    pub fn pause_for_settings(&mut self) {
+        self.status = Status::Paused;
+        self.authority_blocked = true;
+        self.note = match self.arm.language {
+            Language::En => {
+                "Review the model connection and conversation settings, then resume the Goal."
+            }
+            Language::ZhCn => "请检查模型连接和对话设置，然后继续目标。",
+            Language::ZhTw => "請檢查模型連線和對話設定，然後繼續目標。",
+        }
+        .into();
     }
     pub fn settled(
         &mut self,
         outcome: maka_agent_facts::event::InvocationOutcome,
         usage: Result<Meter, String>,
     ) {
-        self.last_operation_id = self
-            .pending
-            .take()
-            .map(|pending| pending.request.operation_id);
-        if matches!(self.status, Status::Cancelled | Status::CancellationUnknown) {
-            self.status = Status::Cancelled;
-            self.note = (match self.arm.language {
-                Language::En => "Cancellation settled; the accepted execution is no longer running",
-                Language::ZhCn => "取消已确认；已接纳的执行不再运行",
-                Language::ZhTw => "取消已確認；已接納的執行不再執行",
-            })
-            .into();
-        }
-        if self.status == Status::Active {
-            match outcome {
-                maka_agent_facts::event::InvocationOutcome::Completed => {
-                    if let Some(report) = self.report.take() {
-                        self.note = report.note;
-                        self.status = match report.status {
-                            ReportKind::Progress => Status::Active,
-                            ReportKind::Achieved => Status::Achieved,
-                            ReportKind::Waiting => Status::Waiting,
-                            ReportKind::Impossible => Status::Impossible,
-                        };
+        self.pending = None;
+        if let maka_agent_facts::event::InvocationOutcome::Failed {
+            model_failure: Some(cause),
+            ..
+        } = &outcome
+        {
+            use maka_agent_facts::model::error::{ModelFailureCause, ProviderFailureReason};
+            self.retry_at = match cause {
+                ModelFailureCause::Provider {
+                    retry_at_unix_ms, ..
+                } => retry_at_unix_ms.filter(|deadline| *deadline > now_ms()),
+                _ => None,
+            };
+            if self.status == Status::Active
+                && self.retry_at.is_none()
+                && matches!(
+                    cause,
+                    ModelFailureCause::Http {
+                        status: 401 | 403 | 404
+                    } | ModelFailureCause::Provider {
+                        reason: ProviderFailureReason::QuotaExhausted,
+                        ..
                     }
-                }
-                _ => {
-                    self.status = Status::Blocked;
-                    self.note = (match self.arm.language { Language::En => "Goal execution did not complete normally; inspect the Session before resuming", Language::ZhCn => "目标执行未正常完成；恢复前检查会话", Language::ZhTw => "目標執行未正常完成；恢復前檢查工作階段" })
-                        .into();
-                }
+                )
+            {
+                self.status = Status::Paused;
+                self.authority_blocked = true;
+                self.note = match self.arm.language {
+                    Language::En => "Check the model connection or available quota, then resume the Goal. You can also choose another model.",
+                    Language::ZhCn => "请检查模型连接或剩余额度，再继续目标，也可以选择其他模型。",
+                    Language::ZhTw => "請檢查模型連線或剩餘額度，再繼續目標，也可以選擇其他模型。",
+                }.into();
             }
         }
-        match usage {
-            Ok(total) => self.meter(total),
-            Err(_) => {
-                if self.status == Status::Active {
-                    self.status = if self.arm.token_budget.is_some() {
-                        Status::BudgetUnknown
-                    } else {
-                        Status::Blocked
-                    };
-                }
-                self.note.push_str(match self.arm.language {
-                    Language::En => {
-                        " Usage could not be refreshed; no further iteration was scheduled."
-                    }
-                    Language::ZhCn => " 无法刷新用量；未安排后续迭代。",
-                    Language::ZhTw => " 無法重新整理用量；未安排後續迭代。",
-                });
-            }
+        if self.status == Status::Active
+            && matches!(&outcome, maka_agent_facts::event::InvocationOutcome::Failed { class, .. } if class == "message_prerequisite_changed")
+        {
+            self.pause_for_settings();
+        }
+        if let Ok(total) = usage {
+            self.meter(total);
         }
     }
-    pub fn handoff_paused(&mut self) {
-        self.last_operation_id = self
-            .pending
-            .take()
-            .map(|pending| pending.request.operation_id);
-        self.report = None;
-        if matches!(self.status, Status::Cancelled | Status::CancellationUnknown) {
-            self.status = Status::Cancelled;
-            self.note = (match self.arm.language { Language::En => "Goal cancellation recorded; Host handoff is sealed and no continuation was scheduled", Language::ZhCn => "已记录目标取消；Host 交接已封存，未安排继续执行", Language::ZhTw => "已記錄目標取消；Host 交接已封存，未安排繼續執行" }).into();
-        } else {
-            self.status = Status::Blocked;
-            self.note = (match self.arm.language { Language::En => "Host handoff is paused. Resume it through Session controls, then explicitly resume the Goal; no automatic continuation was submitted.", Language::ZhCn => "Host 交接已暂停。先通过会话控件恢复，再明确恢复目标；未提交自动继续请求。", Language::ZhTw => "Host 交接已暫停。先透過工作階段控制項恢復，再明確恢復目標；未提交自動繼續請求。" })
-                .into();
-        }
+    pub fn report(&mut self, report: Report) {
+        self.note = report.note.clone();
+        self.status = match report.status {
+            ReportKind::Progress => Status::Active,
+            ReportKind::Achieved => Status::Achieved,
+            ReportKind::Blocked => Status::Blocked,
+            ReportKind::Paused => Status::Paused,
+        };
+        self.report = Some(report);
     }
-    pub fn reserve(&mut self) -> Result<(), Error> {
+    pub fn reserve(&mut self) -> Result<bool, Error> {
         if self.status != Status::Active || self.pending.is_some() {
             return Err(invalid("Goal is not ready to continue"));
         }
-        if self.iterations >= self.arm.max_iterations {
-            self.status = Status::MaxIterations;
-            self.note = (match self.arm.language {
-                Language::En => "Iteration limit reached",
-                Language::ZhCn => "已达迭代上限",
-                Language::ZhTw => "已達迭代上限",
-            })
-            .into();
-            return Ok(());
+        if self.retry_at.is_some_and(|deadline| deadline > now_ms()) {
+            return Ok(false);
         }
+        self.retry_at = None;
         self.iterations += 1;
         self.report = None;
         let content = match self.arm.language {
             Language::En => format!(
-                "Continue this explicitly authorized goal (iteration {} of {}):\n{}\n\nGoalStatus records iteration progress or changes goal status; an answer alone does not mark achievement. A configured token budget is a retrospective scheduling threshold, not a hard request limit. Previous checkpoint: {}",
-                self.iterations, self.arm.max_iterations, self.arm.objective, self.note
+                "Continue this explicitly authorized goal (iteration {}):\n{}\n\nGoalStatus records iteration progress or changes goal status; an answer alone does not mark achievement. A configured token budget is a retrospective scheduling threshold, not a hard request limit. Previous checkpoint: {}",
+                self.iterations, self.arm.objective, self.note
             ),
             Language::ZhCn => format!(
-                "继续此已明确授权的目标（第 {} 次，共 {} 次迭代）：\n{}\n\nGoalStatus 记录迭代进度或改变目标状态；普通回答不会将目标标记为完成。配置的 token 预算是事后调度阈值，不是单次请求的硬限制。上次检查点：{}",
-                self.iterations, self.arm.max_iterations, self.arm.objective, self.note
+                "继续此已明确授权的目标（第 {} 次迭代）：\n{}\n\nGoalStatus 记录迭代进度或改变目标状态；普通回答不会将目标标记为完成。配置的 token 预算是事后调度阈值，不是单次请求的硬限制。上次检查点：{}",
+                self.iterations, self.arm.objective, self.note
             ),
             Language::ZhTw => format!(
-                "繼續此已明確授權的目標（第 {} 次，共 {} 次迭代）：\n{}\n\nGoalStatus 記錄迭代進度或改變目標狀態；一般回答不會將目標標記為完成。設定的 token 預算是事後排程門檻，不是單次請求的硬限制。上次檢查點：{}",
-                self.iterations, self.arm.max_iterations, self.arm.objective, self.note
+                "繼續此已明確授權的目標（第 {} 次迭代）：\n{}\n\nGoalStatus 記錄迭代進度或改變目標狀態；一般回答不會將目標標記為完成。設定的 token 預算是事後排程門檻，不是單次請求的硬限制。上次檢查點：{}",
+                self.iterations, self.arm.objective, self.note
             ),
         };
-        self.pending = Some(Pending {
+        self.pending = Some(Pending::Dispatch {
             dispatched: false,
             request: Submit {
                 operation_id: format!("goal-{}-{}", self.id, self.iterations),
@@ -322,36 +299,27 @@ impl<A> Goal<A> {
                 content: content.into(),
             },
         });
-        Ok(())
+        Ok(true)
     }
-    pub fn meter(&mut self, total: Meter) {
-        self.consumed = Meter {
+    pub fn observed_usage(&self, total: Meter) -> Meter {
+        Meter {
             known: total.known.saturating_sub(self.baseline.known),
             missing: total.missing.saturating_sub(self.baseline.missing),
-        };
+        }
+    }
+    pub fn meter(&mut self, total: Meter) {
+        self.consumed = self.observed_usage(total);
         if let Some(limit) = self.arm.token_budget
             && self.status == Status::Active
+            && self.consumed.known >= limit
         {
-            if total.known < self.baseline.known
-                || total.missing < self.baseline.missing
-                || self.consumed.missing > 0
-            {
-                self.status = Status::BudgetUnknown;
-                self.note = (match self.arm.language {
-                    Language::En => "Token usage is incomplete; continuation stopped",
-                    Language::ZhCn => "Token 用量不完整；已停止继续执行",
-                    Language::ZhTw => "Token 用量不完整；已停止繼續執行",
-                })
-                .into();
-            } else if self.consumed.known >= limit {
-                self.status = Status::BudgetLimited;
-                self.note = (match self.arm.language {
-                    Language::En => "Observed token threshold reached",
-                    Language::ZhCn => "已达观测到的 token 阈值",
-                    Language::ZhTw => "已達觀測到的 token 門檻",
-                })
-                .into();
-            }
+            self.status = Status::BudgetLimited;
+            self.note = (match self.arm.language {
+                Language::En => "Token budget reached",
+                Language::ZhCn => "已达 Token 预算",
+                Language::ZhTw => "已達 Token 預算",
+            })
+            .into();
         }
     }
 }
@@ -398,7 +366,7 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
         self.store.read(key(session)).await?.map(decode).transpose()
     }
     pub async fn arm(&self, session: &str, arm: Arm<A>, baseline: Meter) -> Result<Goal<A>, Error> {
-        self.arm_with(session, arm, baseline, vec![]).await
+        self.arm_with(session, arm, baseline, None, vec![]).await
     }
     /// Commit caller receipts in the same transaction as the original arming.
     pub async fn arm_with(
@@ -406,6 +374,7 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
         session: &str,
         arm: Arm<A>,
         baseline: Meter,
+        pending: Option<Pending>,
         mut receipts: Vec<Mutation>,
     ) -> Result<Goal<A>, Error> {
         arm.validate()?;
@@ -442,11 +411,15 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 Status::Armed
             },
             arm: arm.clone(),
-            iterations: 0,
+            iterations: u64::from(pending.is_some()),
             baseline,
             consumed: Meter::default(),
-            pending: None,
-            last_operation_id: None,
+            pending,
+            created_at: now_ms(),
+            updated_at: now_ms(),
+            active_since: arm.start.then(now_ms),
+            elapsed_ms: 0,
+            retry_at: None,
             report: None,
             note: String::new(),
             authority_blocked: false,
@@ -472,9 +445,20 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
     /// State transitions and their caller receipts share the original CAS.
     pub async fn save_with(
         &self,
-        saved: Saved<A>,
+        mut saved: Saved<A>,
         mut receipts: Vec<Mutation>,
     ) -> Result<(), Error> {
+        saved.goal.updated_at = now_ms();
+        if saved.goal.status == Status::Active {
+            if saved.goal.active_since.is_none() {
+                saved.goal.active_since = Some(saved.goal.updated_at);
+            }
+        } else if let Some(start) = saved.goal.active_since.take() {
+            saved.goal.elapsed_ms = saved
+                .goal
+                .elapsed_ms
+                .saturating_add(saved.goal.updated_at.saturating_sub(start));
+        }
         receipts.push(Mutation {
             key: key(&saved.goal.session_id),
             expected_revision: Some(saved.revision),
@@ -496,8 +480,8 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 .await?;
             for entry in page.entries {
                 let saved = decode(entry.record)?;
-                if !saved.goal.authority_blocked
-                    && (saved.goal.status == Status::Active || saved.goal.pending.is_some())
+                if (saved.goal.status == Status::Active && !saved.goal.authority_blocked)
+                    || saved.goal.pending.is_some()
                 {
                     result.push(saved);
                 }
@@ -595,7 +579,6 @@ mod tests {
             operation_id: Uuid::new_v4(),
             objective: "Verify the feature".into(),
             grant: maka_capabilities::authorization::Id(Uuid::new_v4()),
-            max_iterations: 2,
             token_budget: Some(100),
             start: true,
         }
@@ -615,6 +598,7 @@ mod tests {
                 "session",
                 arm(),
                 Meter::default(),
+                None,
                 vec![receipt("create-receipt")]
             )
             .await,
@@ -690,119 +674,64 @@ mod tests {
         assert_eq!(repo.read("session").await.unwrap().unwrap().goal.id, new.id);
     }
     #[tokio::test]
-    async fn iteration_reservations_are_bounded_and_budget_missing_fails_closed() {
+    async fn incomplete_usage_does_not_stop_progress_and_budget_can_be_raised() {
         let repo = Repository::new(Arc::new(Store::default()));
-        let mut goal = repo
-            .arm(
-                "session",
-                arm(),
-                Meter {
-                    known: 10,
+        let mut goal = repo.arm("session", arm(), Meter::default()).await.unwrap();
+        for _ in 0..101 {
+            goal.reserve().unwrap();
+            goal.settled(
+                maka_agent_facts::event::InvocationOutcome::Completed,
+                Ok(Meter {
+                    known: 20,
                     missing: 1,
-                },
-            )
-            .await
-            .unwrap();
-        goal.reserve().unwrap();
-        let first = goal.pending.take().unwrap();
-        goal.reserve().unwrap();
-        let second = goal.pending.take().unwrap();
-        assert_ne!(first.request.operation_id, second.request.operation_id);
-        goal.reserve().unwrap();
-        assert_eq!(goal.status, Status::MaxIterations);
-        assert!(goal.pending.is_none());
-        assert_eq!(goal.iterations, 2);
-        goal.status = Status::Active;
-        goal.meter(Meter {
-            known: 109,
-            missing: 1,
-        });
+                }),
+            );
+        }
+        assert_eq!(goal.iterations, 101);
         assert_eq!(goal.status, Status::Active);
+        assert_eq!(
+            goal.consumed,
+            Meter {
+                known: 20,
+                missing: 1
+            }
+        );
         goal.meter(Meter {
-            known: 110,
+            known: 100,
             missing: 1,
         });
         assert_eq!(goal.status, Status::BudgetLimited);
-        goal.status = Status::Active;
-        goal.meter(Meter {
-            known: 11,
-            missing: 2,
-        });
-        assert_eq!(goal.status, Status::BudgetUnknown);
+        goal.arm.token_budget = Some(200);
+        goal.control(Control::Resume).unwrap();
+        goal.reserve().unwrap();
+        assert_eq!(goal.status, Status::Active);
+        assert_eq!(goal.iterations, 102);
     }
-
     #[tokio::test]
-    async fn terminal_controls_and_usage_failure_cannot_rewrite_execution_facts() {
+    async fn failed_execution_and_usage_observation_do_not_block_the_goal() {
         let repo = Repository::new(Arc::new(Store::default()));
         let mut goal = repo.arm("session", arm(), Meter::default()).await.unwrap();
         goal.reserve().unwrap();
-        goal.report = Some(Report {
+        goal.settled(
+            maka_agent_facts::event::InvocationOutcome::Failed {
+                class: "network".into(),
+                message: Some("connection reset".into()),
+                model_failure: None,
+            },
+            Err("temporary database error".into()),
+        );
+        goal.reserve().unwrap();
+        assert_eq!(goal.iterations, 2);
+        goal.report(Report {
             status: ReportKind::Achieved,
-            note: "Evidence verified".into(),
+            note: "Verified the result".into(),
         });
         goal.settled(
             maka_agent_facts::event::InvocationOutcome::Completed,
             Err("usage unavailable".into()),
         );
         assert_eq!(goal.status, Status::Achieved);
-        assert!(goal.pending.is_none());
-        for action in [
-            Control::Cancel,
-            Control::Complete,
-            Control::Pause,
-            Control::Resume,
-        ] {
-            assert!(goal.control(action).is_err());
-            assert_eq!(goal.status, Status::Achieved);
-        }
-        goal.status = Status::Active;
-        goal.reserve().unwrap();
-        goal.settled(
-            maka_agent_facts::event::InvocationOutcome::Completed,
-            Err("usage unavailable".into()),
-        );
-        assert_eq!(goal.status, Status::BudgetUnknown);
-        assert!(goal.pending.is_none());
-    }
-    #[tokio::test]
-    async fn sealed_handoff_and_unknown_cancellation_do_not_pin_background_work() {
-        let repo = Repository::new(Arc::new(Store::default()));
-        repo.arm("session", arm(), Meter::default()).await.unwrap();
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.reserve().unwrap();
-        let operation = saved
-            .goal
-            .pending
-            .as_ref()
-            .unwrap()
-            .request
-            .operation_id
-            .clone();
-        saved.goal.handoff_paused();
-        assert_eq!(
-            saved.goal.last_operation_id.as_deref(),
-            Some(operation.as_str())
-        );
-        repo.save(saved).await.unwrap();
-        assert!(repo.sessions().await.unwrap().is_empty());
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.status = Status::Active;
-        saved.goal.reserve().unwrap();
-        saved.goal.status = Status::CancellationUnknown;
-        saved.goal.pending.as_mut().unwrap().dispatched = true;
-        repo.save(saved).await.unwrap();
-        let sessions = repo.sessions().await.unwrap();
-        assert_eq!(sessions.len(), 1);
-        assert_eq!(sessions[0].goal.session_id, "session");
-        assert!(!sessions[0].goal.keeps_host_awake());
-
-        let mut saved = repo.read("session").await.unwrap().unwrap();
-        saved.goal.status = Status::Paused;
-        for dispatched in [false, true] {
-            saved.goal.pending.as_mut().unwrap().dispatched = dispatched;
-            assert!(!saved.goal.keeps_host_awake());
-        }
-        saved.goal.control(Control::Resume).unwrap();
-        assert!(saved.goal.keeps_host_awake());
+        assert_eq!(goal.note, "Verified the result");
+        assert!(goal.control(Control::Resume).is_err());
     }
 }

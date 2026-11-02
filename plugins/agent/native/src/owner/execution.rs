@@ -353,6 +353,8 @@ impl Owner {
         runs.controls.insert(
             invocation.session_id.clone(),
             Control {
+                #[cfg(test)]
+                handoff: running.handoff().cloned(),
                 preview: running.preview(),
                 compacting: false,
                 invocation: invocation.clone(),
@@ -374,6 +376,137 @@ impl Owner {
             execution: project(boundary),
         })
     }
+    pub(super) async fn resume_goal_handoff(
+        self: &Arc<Self>,
+        source: &Invocation,
+        basis: Arc<MessageBasis>,
+    ) -> Result<(), RunError> {
+        let runs = self.runs.lock().await;
+        if runs.closing || self.stop.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if runs.busy(&source.session_id)
+            || self
+                .has_parked_invocation(&source.session_id)
+                .await
+                .map_err(RunError::Internal)?
+        {
+            return Ok(());
+        }
+        let session = self
+            .session(&source.session_id)
+            .await
+            .map_err(RunError::Internal)?;
+        drop(runs);
+        let store = self
+            .store
+            .session(&source.session_id)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?;
+        let prefix = store
+            .run_source(&source.session_id, &source.run_id, None)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?
+            .ok_or_else(|| RunError::Internal("agent_execution_unavailable".into()))?;
+        if prefix.boundary.invocation != *source {
+            return Err(RunError::ReconciliationRequired(
+                "agent_execution_changed".into(),
+            ));
+        }
+        let Fact::InvocationEnded {
+            outcome: InvocationOutcome::HandoffPaused { pause },
+        } = prefix.last.event.fact
+        else {
+            return Err(RunError::ReconciliationRequired(
+                "agent_execution_not_paused".into(),
+            ));
+        };
+        if store
+            .continuation_for_source(&prefix.boundary)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        let continuation = self
+            .prepare_frozen_retry(source, basis.clone(), &self.stop)
+            .await?;
+        let mut runs = self.runs.lock().await;
+        let current = self
+            .session(&source.session_id)
+            .await
+            .map_err(RunError::Internal)?;
+        if current.configuration != session.configuration || current.archived {
+            return Err(RunError::InvalidInput(
+                "agent_session_configuration_changed".into(),
+            ));
+        }
+        if runs.closing || self.stop.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if runs.busy(&source.session_id)
+            || self
+                .has_parked_invocation(&source.session_id)
+                .await
+                .map_err(RunError::Internal)?
+        {
+            return Ok(());
+        }
+        if store
+            .continuation_for_source(&prefix.boundary)
+            .await
+            .map_err(|error| RunError::Internal(error.to_string()))?
+            .is_some()
+        {
+            return Ok(());
+        }
+        // The seal owns successor identity and settings. Engine verifies the
+        // original configuration, route, tool catalog and replay before admission.
+        let settings = continuation.settings;
+        let run = RunInput {
+            invocation: pause.intent.successor(source),
+            request_fingerprint: None,
+            model_source: settings.model_source,
+            model_revision: settings.model_revision,
+            provider_id: settings.provider_id,
+            context: settings.context,
+            provider: settings.provider,
+            provider_options: settings.provider_options,
+            main_output_limit: settings.main_output_limit,
+            supports_vision: settings.supports_vision,
+            native_activation_basis: settings.native_activation_basis,
+            configuration: settings.configuration,
+            work: RunWork::Handoff {
+                source: prefix.boundary,
+                pause: Box::new(pause),
+                tools: continuation.tools,
+            },
+        };
+        let running = match async {
+            let prepared = self
+                .engine
+                .prepare_continuation(store, run, &self.stop)
+                .await?;
+            self.engine
+                .start_continuation(prepared, self.stop.child_token())
+                .await
+        }
+        .await
+        {
+            Ok(running) => running,
+            Err(error) => {
+                if error.is_cleanup_unconfirmed() {
+                    runs.retained_cleanup.insert(source.session_id.clone());
+                }
+                return Err(error);
+            }
+        };
+        self.publish(&mut runs, &running, basis);
+        self.workers.spawn(self.clone().drive(running));
+        Ok(())
+    }
+
     async fn prepare_resume(
         self: &Arc<Self>,
         input: Resume,

@@ -94,7 +94,7 @@ pub struct Configuration {
     /// Enable model proposals and approved scheduled work for this Agent.
     #[serde(default)]
     pub scheduled_tasks: bool,
-    /// Enable explicitly approved, bounded Goal continuation.
+    /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
     /// Enable planning, reviewed approval and execution progress.
@@ -1326,6 +1326,9 @@ pub struct HistoryLandmark {
     pub last_position: RowPosition,
     #[schemars(length(max = 96))]
     pub label: String,
+    /// The Host's attribution of the Turn's opening message, when it generated it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<maka_agent_facts::message::MessageOrigin>,
 }
 
 #[derive(Deserialize, JsonSchema)]

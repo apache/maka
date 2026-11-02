@@ -66,7 +66,7 @@ export const configurations = {
         default: false,
       },
       goals: {
-        description: 'Enable explicitly approved, bounded Goal continuation.',
+        description: 'Enable explicitly approved Goal continuation.',
         type: 'boolean',
         default: false,
       },
@@ -735,7 +735,7 @@ export const configurations = {
           },
           goals: {
             type: 'boolean',
-            description: 'Enable explicitly approved, bounded Goal continuation.',
+            description: 'Enable explicitly approved Goal continuation.',
             default: false,
           },
           plans: {

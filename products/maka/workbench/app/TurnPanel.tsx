@@ -281,7 +281,7 @@ function ActivityLog(props: {
             state.following.set(!away);
             props.reading(away);
           }}
-          contentStyle={{ paddingRight: 8 }}
+          contentStyle={{ paddingLeft: platform.isTerminal ? 0 : 8, paddingRight: 8 }}
           ref={(node) => {
             ownList = node;
             state.list = node;
@@ -296,7 +296,7 @@ function ActivityLog(props: {
               node.focus();
             }
           }}
-          style={{ height: bodyHeight() }}
+          style={{ height: bodyHeight(), marginLeft: platform.isTerminal ? 0 : -8 }}
         >
           {(id) => (
             <Each of={[id()]} key={(key: string) => key}>

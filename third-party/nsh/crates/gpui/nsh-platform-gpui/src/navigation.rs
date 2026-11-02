@@ -1460,6 +1460,7 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     if nav.modals.get(&id).is_some_and(|m| m.view.is_some()) {
         if nav.reinserted(view) {
             view.insert_before(&surface.root, None);
+            crate::transition::resume(surface, view);
             set_shift(view, (0.0, 0.0));
             set_fade(view, 1.0);
             nav.size_modal(surface, id);
@@ -1489,6 +1490,7 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     m.closed = false;
     m.reported = Reported::default();
     view.insert_before(&surface.root, None);
+    crate::transition::resume(surface, view);
     nav.order.push(id);
     nav.size_modal(surface, id);
     // Shown at the end of the batch, as the options it brings say (its

@@ -256,6 +256,7 @@ impl Desktop {
                 if let Some(value) = read() {
                     return value;
                 }
+                tokio::task::yield_now().await;
                 self.wake.notified().await;
             }
         })
@@ -988,6 +989,19 @@ async fn desktop_plans_first_then_runs_the_approved_plan() {
             }
         })
         .await;
+    // The Host wrote the execution's opening message: the conversation names the
+    // Plan there, and only the message the user typed can be copied or edited.
+    desktop
+        .until(
+            "the Plan execution message offered the user's actions",
+            || {
+                (desktop.controls("Copy user message").len() == 1
+                    && desktop.controls("Edit and resend in a fork").len() == 1)
+                    .then_some(())
+            },
+        )
+        .await;
+    desktop.artifact("plan-execution");
     // Approving runs the Plan without leaving planning mode.
     let observed = desktop
         .client
@@ -1611,6 +1625,174 @@ async fn desktop_context_tooltip_includes_output_speed() {
         })
         .await;
     desktop.artifact("context-tooltip-output-speed");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_loading_indicator_keeps_rotating_after_scrolling_away_and_back() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/loading_preview.tsx");
+    let output = fixture.directory.path().join("loading-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(640), gpui::DevicePixels(400)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Bottom")),
+    )
+    .await;
+    let icon = Bounds::new(point(px(0.), px(60.)), size(px(24.), px(24.)));
+    let painted = |pixels: &[u8]| pixels.chunks_exact(4).filter(|rgba| rgba[0] > 80).count() > 10;
+    let mut first = desktop
+        .until("initial loading indicator was not painted", || {
+            desktop.pixels(icon).filter(|pixels| painted(pixels))
+        })
+        .await;
+    for _ in 0..3 {
+        first = desktop
+            .until(
+                "loading indicator did not rotate on initial display",
+                || {
+                    desktop
+                        .pixels(icon)
+                        .filter(|pixels| painted(pixels) && *pixels != first)
+                },
+            )
+            .await;
+    }
+    desktop.press("Bottom").await;
+    desktop.control("Row 199").await;
+    desktop.press("Top").await;
+    desktop.control("Row 0").await;
+    let mut returned = desktop
+        .until("returned loading indicator was not painted", || {
+            desktop.pixels(icon).filter(|pixels| painted(pixels))
+        })
+        .await;
+    for _ in 0..3 {
+        returned = desktop
+            .until(
+                "loading indicator stopped after returning to its row",
+                || {
+                    desktop
+                        .pixels(icon)
+                        .filter(|pixels| painted(pixels) && *pixels != returned)
+                },
+            )
+            .await;
+    }
+    if std::env::var_os("MAKA_UI_ARTIFACT_DIR").is_some() {
+        for frame in 0..12 {
+            desktop
+                .wait(
+                    "loading animation recording",
+                    tokio::time::sleep(Duration::from_millis(80)),
+                )
+                .await;
+            desktop.artifact(&format!("loading-after-scroll-{frame:02}"));
+        }
+    }
+    desktop.artifact("loading-after-scroll");
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the_draft() {
+    let mut fixture = Fixture::open().await;
+    let (theme, appearance, layout, width, height) = visual_case();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        appearance,
+    )
+    .await;
+    desktop.new_draft().await;
+    desktop.type_text("KEEP_MY_DRAFT").await;
+    desktop.press("Add to message").await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("Goal").await;
+    desktop.target_after(previous).await;
+    desktop.artifact("goal-before-objective");
+    desktop.app.update(|cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+            "Read the project\nFix the actual problem and verify it".into(),
+        ))
+    });
+    desktop.key("v", true);
+    desktop.artifact("goal-objective-entered");
+    let start = desktop.control("Start Goal").await;
+    let close = desktop.control("Close Goal").await;
+    assert_eq!(
+        start.right(),
+        close.right(),
+        "Goal actions share the trailing edge"
+    );
+    assert!(start.right() <= px(width as f32) && start.bottom() <= px(height as f32));
+    desktop.artifact(&format!("goal-create-{theme}-{layout}"));
+    desktop.press("Start Goal").await;
+    desktop
+        .control(
+            "Goal progress: Read the project\nFix the actual problem and verify it. Goal active",
+        )
+        .await;
+    let first = desktop.request(&mut fixture).await;
+    assert!(
+        first.body["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(
+                |message| message["content"].as_str().is_some_and(|content| content
+                    .contains("Read the project\nFix the actual problem and verify it"))
+            )
+    );
+    desktop
+        .press("Goal progress: Read the project\nFix the actual problem and verify it. Goal active")
+        .await;
+    desktop.control("Pause Goal").await;
+    desktop.artifact(&format!("goal-running-{theme}-{layout}"));
+    desktop.press("Pause Goal").await;
+    desktop.control("Resume Goal").await;
+    desktop.press("Resume Goal").await;
+    desktop.control("Pause Goal").await;
+    let running = desktop.request(&mut fixture).await;
+    running
+        .tool_call(
+            "GoalStatus",
+            json!({"status":"achieved", "note":"Verified the requested result"}),
+        )
+        .await;
+    desktop.request(&mut fixture).await.finish().await;
+    desktop.control("New Goal").await;
+    desktop.artifact(&format!("goal-completed-{theme}-{layout}"));
+    desktop.press("Close Goal").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("KEEP_MY_DRAFT").await;
+    desktop.type_text("/goal Finish the follow-up").await;
+    desktop.key("enter", false);
+    let next = desktop.request(&mut fixture).await;
+    assert!(next.body.to_string().contains("Finish the follow-up"));
+    next.tool_call(
+        "GoalStatus",
+        json!({"status":"achieved", "note":"Follow-up verified"}),
+    )
+    .await;
+    desktop.request(&mut fixture).await.finish().await;
+    desktop.press("Focus message composer").await;
+    desktop.type_text("/goal").await;
+    desktop.key("enter", false);
+    desktop.control("New Goal").await;
+    drop(first);
     desktop.close().await;
     fixture.finish().await;
 }

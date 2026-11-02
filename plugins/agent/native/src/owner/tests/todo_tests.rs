@@ -166,8 +166,11 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
     tokio::time::timeout(Duration::from_secs(90), async {
         let check = |sent: &Value| {
             let messages = sent["messages"].as_array().unwrap();
-            assert!(messages.iter().any(|message| message["role"] == "system" && message["content"].as_str().is_some_and(|text| text.contains("todo_write") && text.contains("may or may not have happened"))), "{messages:?}");
-            assert!(messages.iter().any(|message| message["role"] == "tool" && message.to_string().contains("outcome_unknown")), "{messages:?}");
+            assert!(messages.iter().any(|message| message["role"] == "tool"
+                && message["tool_call_id"] == "counter-call"
+                && message["content"].as_str().is_some_and(|text|
+                    text.starts_with("outcome_unknown:")
+                        && text.contains("Inspect current state before repeating it."))), "{messages:?}");
             assert!(messages.iter().any(|message| message["role"] == "user" && message["content"] == "What happened to the checklist?"), "{messages:?}");
         };
         for queued in [false, true] {
@@ -210,7 +213,7 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             f.send(&session).await.unwrap();
             let (mut socket, _) = listener.accept().await.unwrap();
             let sent = request(&mut socket).await;
-            assert!(sent["messages"].as_array().unwrap().iter().any(|message| message["role"] == "tool" && message.to_string().contains("outcome_unknown")));
+            check(&sent);
             response(&mut socket).await;
             while !f.query("observe", json!({"sessionId":session})).await.unwrap()["run"].is_null() { tokio::task::yield_now().await; }
             assert_eq!(page(&f, &session, 0).await["items"][0]["content"], "durable side effect");

@@ -86,6 +86,61 @@ async fn propose(f: &Fixture, session: &str, listener: &TcpListener) {
         "pending_approval"
     );
 }
+/// Each user message's origin in history order, and whether its text is the frozen Plan request.
+async fn user_origins(f: &Fixture, session: &str) -> Vec<(Value, bool)> {
+    let mut origins = Vec::new();
+    let mut request = json!({"sessionId":session,"position":{"kind":"start"}});
+    loop {
+        let page = f.query("history", request.clone()).await.unwrap();
+        assert_eq!(page["kind"], "ready", "{page}");
+        request["through"] = page["through"].clone();
+        origins.extend(
+            page["chunks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|chunk| {
+                    chunk["role"] == "user" && chunk["field"] == "body" && chunk["offset"] == 0
+                })
+                .map(|chunk| {
+                    (
+                        chunk["origin"].clone(),
+                        chunk["text"]
+                            .as_str()
+                            .unwrap()
+                            .starts_with("Execute the user-approved plan."),
+                    )
+                }),
+        );
+        if page["after"].is_null() {
+            return origins;
+        }
+        request["position"] = json!({"kind":"after","cursor":page["after"]});
+    }
+}
+/// Each Turn landmark's origin, in order.
+async fn landmark_origins(f: &Fixture, session: &str) -> Vec<Value> {
+    let page = f
+        .query(
+            "history",
+            json!({"sessionId":session,"position":{"kind":"start"}}),
+        )
+        .await
+        .unwrap();
+    let landmarks = f
+        .query(
+            "historyLandmarks",
+            json!({"sessionId":session,"through":page["through"]}),
+        )
+        .await
+        .unwrap();
+    landmarks["landmarks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|landmark| landmark["origin"].clone())
+        .collect()
+}
 async fn progress(socket: &mut TcpStream, code: bool) {
     let input = json!({"steps":[{"id":"change","status":"completed","note":"File exists"},{"id":"verify","status":"completed","note":"Original result verified"}]});
     if code {
@@ -157,7 +212,11 @@ async fn plan_real_direct_and_code_mode_require_review_then_native_effect_and_ca
             assert_eq!(current(&f,&sibling).await["revision"],0);
             assert!(f.query("plan",json!({"sessionId":"foreign-session"})).await.is_err());
             f.drained().await;
+            let expected = json!({"kind":"plan","executionId":completed["execution"]["id"],"title":artifact()["title"]});
+            assert_eq!(user_origins(&f,&session).await,vec![(Value::Null,false),(expected.clone(),true)]);
             todo_tests::reopen(&mut f).await;
+            assert_eq!(user_origins(&f,&session).await,vec![(Value::Null,false),(expected.clone(),true)],"the origin is durable history, not a live annotation");
+            assert_eq!(landmark_origins(&f,&session).await,vec![Value::Null,expected]);
             assert_eq!(current(&f,&session).await,completed);
             assert_eq!(f.mutation(2,"changePlan",input,id).await.unwrap(),approved);
             let history = f.query("planHistory",json!({"sessionId":session,"throughRevision":completed["revision"],"after":0})).await.unwrap();

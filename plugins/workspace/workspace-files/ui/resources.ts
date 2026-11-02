@@ -57,7 +57,7 @@ type ImageViewerState = { tab: ResourceTab; image: ViewerImage; close(): void };
 export function createResources(
   host: Host,
   options: {
-    selected(): string | null;
+    sessions(): readonly string[];
     blocked(): boolean;
     report(reason: unknown): void;
   },
@@ -69,17 +69,18 @@ export function createResources(
   const instance = signal(0);
   const imageViewer = signal<ImageViewerState | null>(null);
   let nextInstance = 0;
-  let session: string | null = null;
+  const session = signal<string | null>(null);
+  let pendingLink: { sessionId: string } | null = null;
   let alive = true;
   let root: ViewRef | undefined;
-  let header: { sessionId: string; node: WorkspaceFocusTarget } | undefined;
+  const headers = new Map<string, WorkspaceFocusTarget>();
   let opener: (() => boolean) | undefined;
   const dispose = (tab: ResourceTab) => {
     if (tab.kind !== 'image') tab.model.dispose();
   };
-  const adopt = () => {
-    const selected = options.selected();
-    if (selected !== session) {
+  const adopt = (selected: string | null) => {
+    pendingLink = null;
+    if (selected !== session()) {
       imageViewer.set(null);
       tabs().forEach(dispose);
       tabs.set([]);
@@ -87,17 +88,20 @@ export function createResources(
       active.set('files');
       focusRequest.set(false);
       instance.set(instance() + 1);
-      session = selected;
+      session.set(selected);
       opener = undefined;
-      header = undefined;
     }
   };
   effect(() => {
-    options.selected();
-    untracked(adopt);
+    const sessions = options.sessions();
+    untracked(() => {
+      if (session() !== null && !sessions.includes(session()!)) adopt(null);
+      if (pendingLink && !sessions.includes(pendingLink.sessionId)) pendingLink = null;
+      for (const id of headers.keys()) if (!sessions.includes(id)) headers.delete(id);
+    });
   });
   const admits = (sessionId: string) =>
-    alive && !options.blocked() && options.selected() === sessionId;
+    alive && !options.blocked() && options.sessions().includes(sessionId);
   const reveal = () => {
     if (!shown()) {
       instance.set(instance() + 1);
@@ -117,7 +121,7 @@ export function createResources(
   };
   const open = (sessionId: string, identity: string, build: (instance: number) => ResourceTab) => {
     if (!admits(sessionId)) return;
-    adopt();
+    adopt(sessionId);
     imageViewer.set(null);
     let tab = tabs().find((candidate) => candidate.identity === identity);
     if (!tab) {
@@ -144,17 +148,16 @@ export function createResources(
     }
   };
   const headerOpener = (sessionId: string) => {
-    const original = header;
+    const original = headers.get(sessionId);
     return () => {
       if (
         !alive ||
-        options.selected() !== sessionId ||
+        !options.sessions().includes(sessionId) ||
         !original ||
-        original.sessionId !== sessionId ||
-        header !== original
+        headers.get(sessionId) !== original
       )
         return false;
-      original.node.focus();
+      original.focus();
       return true;
     };
   };
@@ -177,19 +180,23 @@ export function createResources(
   };
   const openLink = async (sessionId: string, target: string, restoreFocus: () => boolean) => {
     if (!admits(sessionId)) return;
+    const request = { sessionId };
+    pendingLink = request;
     try {
       const link = await host.openLink(target);
-      if (link && admits(sessionId)) {
+      if (link && pendingLink === request && admits(sessionId)) {
         openFile({ sessionId, ...link, title: host.pathLabel(link.path) }, restoreFocus);
       }
     } catch (reason) {
-      if (alive && options.selected() === sessionId)
+      if (admits(sessionId))
         options.report(new UiError('Could not open link: {reason}', { reason: errorText(reason) }));
+    } finally {
+      if (pendingLink === request) pendingLink = null;
     }
   };
   const inventory = (target: { sessionId: string; kind: 'files' | 'terminals' }) => {
     if (!admits(target.sessionId)) return;
-    adopt();
+    adopt(target.sessionId);
     imageViewer.set(null);
     active.set(target.kind);
     reveal();
@@ -205,6 +212,7 @@ export function createResources(
     focusRequest.set(true);
   };
   const hide = () => {
+    pendingLink = null;
     imageViewer.set(null);
     shown.set(false);
     focusRequest.set(false);
@@ -235,7 +243,7 @@ export function createResources(
       tab,
       image: target.image,
       close() {
-        if (!alive || imageViewer() !== state || options.selected() !== tab.sessionId) return;
+        if (!alive || imageViewer() !== state || session() !== tab.sessionId) return;
         imageViewer.set(null);
         if (!restoreFocus()) focusRequest.set(true);
       },
@@ -243,7 +251,7 @@ export function createResources(
     imageViewer.set(state);
   };
   const terminals = createTerminals(host, {
-    sessionId: options.selected,
+    sessionId: session,
     active: () =>
       shown() &&
       (active() === 'terminals' ||
@@ -262,7 +270,7 @@ export function createResources(
     },
   });
   const files = createWorkspaceFiles(host, {
-    sessionId: options.selected,
+    sessionId: session,
     active: () => shown() && active() === 'files',
     openFile,
   });
@@ -302,7 +310,7 @@ export function createResources(
     hide,
     close,
     instance,
-    sessionId: options.selected,
+    sessionId: session,
     activeTab: () => tabs().find((tab) => tab.instance === active()),
     attach(node: ViewRef) {
       root = node;
@@ -311,7 +319,7 @@ export function createResources(
     focusRequest,
     focusHandled: () => focusRequest.set(false),
     attachOpener(sessionId: string, node: WorkspaceFocusTarget) {
-      if (alive && options.selected() === sessionId) header = { sessionId, node };
+      if (alive && options.sessions().includes(sessionId)) headers.set(sessionId, node);
     },
   };
 }

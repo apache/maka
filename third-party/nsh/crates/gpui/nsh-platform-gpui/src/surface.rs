@@ -932,7 +932,7 @@ mod tests {
             const incrementOutside = () => outsideAction.set(outsideAction() + 1);
             mount(() => View({style: {flex: 1}, children: [
                 Popover({get open() { return open(); }, popupStyle: {width: 240},
-                    onOpenChange: next => { open.set(next); if (!next) outside.set(outside() + 1); },
+                    onOpenChange: ({open: next}) => { open.set(next); if (!next) outside.set(outside() + 1); },
                     trigger: Button({accessibilityLabel: 'Open popup',
                         style: {width: 160, height: 40}, children: Text({children: 'Open popup'})}),
                     children: Button({accessibilityLabel: 'Inside action', tooltip: 'Inside hint',
@@ -953,7 +953,7 @@ mod tests {
             }
             view.with_children(|children| children.iter().find_map(|view| target(view, label)))
         }
-        fn wait(surface: &Rc<Surface>, ready: impl Fn() -> bool) {
+        fn wait(surface: &Rc<Surface>, stage: &str, ready: impl Fn() -> bool) {
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
                 let (tx, rx) = crossbeam_channel::bounded(1);
@@ -965,7 +965,10 @@ mod tests {
                 if ready() {
                     return;
                 }
-                assert!(Instant::now() < deadline, "real Popover did not settle");
+                assert!(
+                    Instant::now() < deadline,
+                    "real Popover did not settle: {stage}"
+                );
             }
         }
         cx.executor().allow_parking();
@@ -992,7 +995,7 @@ mod tests {
             );
             (surface, app)
         });
-        wait(&surface, || {
+        wait(&surface, "popup ready", || {
             target(&surface.root, "Inside action").is_some_and(|view| {
                 view.state().events.contains(EventKind::Press)
                     && view.state().frame.size.height.0 > 0.0
@@ -1041,7 +1044,7 @@ mod tests {
                 },
             );
         }
-        wait(&surface, || {
+        wait(&surface, "inside button pressed", || {
             target(&surface.root, "Inside count 1").is_some()
         });
         assert!(target(&surface.root, "Outside count 0").is_some());
@@ -1072,7 +1075,7 @@ mod tests {
                 },
             );
         }
-        wait(&surface, || {
+        wait(&surface, "outside button pressed", || {
             target(&surface.root, "Outside count 1").is_some()
                 && target(&surface.root, "Outside action count 1").is_some()
                 && target(&surface.root, "Popup open false").is_some()

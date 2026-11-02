@@ -18,13 +18,14 @@
  */
 
 import { tr } from './locale';
-import { CompactionDivider } from './CompactionDivider';
+import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform } from 'nsh';
 import { TextView, type TextViewDocument } from 'nsh/base';
 import { Icon } from './Icon';
 import { messageKey, type Row } from './history';
+import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
 import {
@@ -40,6 +41,13 @@ import type { ToolActivity } from './toolActivity';
 import { ToolCard } from './ToolCard';
 import { MessageCopy } from './MessageCopy';
 import type { ImagePreview } from './ImageThumbnail';
+
+/** What names a message the Host generated in place of its text; null for the user's own. */
+export function originLabel(origin: MessageOrigin | null | undefined): string | null {
+  if (origin?.kind === 'goal')
+    return tr('Pursuing Goal: {objective}', { objective: origin.objective });
+  return origin?.kind === 'plan' ? tr('Executing plan: {title}', { title: origin.title }) : null;
+}
 
 export type MessageViewState = {
   expanded: Signal<boolean>;
@@ -97,6 +105,10 @@ export function MessageRow({
           return (
             <CompactionDivider state="completed" durationMs={() => row().compaction!.durationMs} />
           );
+        // Host-generated execution prompts retain their full model input;
+        // the conversation names the user-approved work.
+        const note = () => (row().role === 'user' ? originLabel(row().origin) : null);
+        if (note()) return <NoteDivider label={note()!} />;
         // A failure is a notice about the run, not an answer: one quiet line, with
         // no source view since its source is the same text.
         if (row().role === 'failure')

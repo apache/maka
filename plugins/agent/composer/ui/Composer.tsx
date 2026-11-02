@@ -21,7 +21,7 @@ import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
-import { Input } from 'nsh/base';
+import { Input, Popover } from 'nsh/base';
 import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
@@ -41,6 +41,7 @@ import {
   compact,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
+import { goalStatusLabel } from '../../../../products/maka/workbench/app/GoalDialog';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
@@ -54,12 +55,17 @@ import logo from '../../../../products/maka/workbench/app/assets/maka.png';
 const skillTokens = () => [
   {
     pattern: String.raw`(?:^|[\t-\r \u{00a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}])(?P<token>/skill:[A-Za-z0-9._-]+)`,
-    style: { color: C.accent, backgroundColor: `${C.accent}20`, borderRadius: 4 },
+    style: {
+      color: C.accent,
+      backgroundColor: `${C.accent}20`,
+      borderRadius: 4,
+    },
     atomic: true,
   },
 ];
 
 export function Composer(props: ComposerViewInput<JSX.Element>) {
+  const pendingAdd = signal(false);
   const completion = createComposerCompletion({
     session: props.session,
     commands: props.commands,
@@ -78,8 +84,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
   type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput<JSX.Element>['pending']>>>;
-  let pendingCommand: { owner: Pending; text: string; confirmation: string; id: string } | null =
-    null;
+  let pendingCommand: {
+    owner: Pending;
+    text: string;
+    confirmation: string;
+    id: string;
+  } | null = null;
   const submitPending = (owner: Pending, text: string, expected?: string) => {
     if (
       pending() !== owner ||
@@ -133,9 +143,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     expected: string;
   }) => {
     submitPending(owner, text, expected);
-  };
-  const togglePendingPicker = ({ owner, open }: { owner: Pending; open: boolean }) => {
-    if (pending() === owner && owner.picking() === open) owner.openPicker(!open);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
@@ -311,7 +318,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   <Button
                     accessibilityLabel={tr('Connections & models')}
                     onPress={props.settings}
-                    style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+                    style={{
+                      ...controlStyle,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
                     hoverStyle={{ backgroundColor: C.surface }}
                     focusStyle={{ backgroundColor: C.raised }}
                   >
@@ -334,7 +346,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   hoverStyle={{ backgroundColor: C.accentHover }}
                   focusStyle={{ backgroundColor: C.accentHover }}
                 >
-                  <Text style={{ color: C.background, fontSize: 13, fontWeight: '600' }}>
+                  <Text
+                    style={{
+                      color: C.background,
+                      fontSize: 13,
+                      fontWeight: '600',
+                    }}
+                  >
                     {tr('Add a model connection')}
                   </Text>
                 </Button>
@@ -372,6 +390,56 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             const owner = session();
             return (
               <View>
+                <If when={owner.goal?.view()?.current}>
+                  <Button
+                    accessibilityLabel={`${tr('Goal progress')}: ${owner.goal!.view()!.current!.objective}. ${tr(goalStatusLabel(owner.goal!.view()!.current!.status))}`}
+                    tooltip={textTooltip(() => owner.goal!.view()!.current!.objective)}
+                    onPress={inputAction(
+                      () =>
+                        props
+                          .commands()
+                          .find((command) => command.trigger === 'goal')
+                          ?.run(),
+                      null,
+                    )}
+                    style={{
+                      ...controlStyle,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      gap: 8,
+                    }}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                    focusStyle={{ backgroundColor: C.surface }}
+                  >
+                    <If when={owner.goal!.view()!.current!.status === 'active'}>
+                      <LoadingIndicator color={C.secondary} />
+                    </If>
+                    <If when={owner.goal!.view()!.current!.status !== 'active'}>
+                      <Icon
+                        name={
+                          owner.goal!.view()!.current!.status === 'achieved'
+                            ? 'statusSuccess'
+                            : owner.goal!.view()!.current!.status === 'blocked'
+                              ? 'statusUnknown'
+                              : 'statusStopped'
+                        }
+                        color={C.secondary}
+                      />
+                    </If>
+                    <Text
+                      style={[
+                        { ...bodyTextStyle, flex: 1, color: C.secondary },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {owner.goal!.view()!.current!.objective}
+                    </Text>
+                    <Text style={{ color: C.muted }}>
+                      {tr(goalStatusLabel(owner.goal!.view()!.current!.status))}
+                    </Text>
+                    <Icon name="right" color={C.muted} />
+                  </Button>
+                </If>
                 <ProjectMcp owner={owner.projectMcp} />
                 <ComposerDetails session={owner} />
               </View>
@@ -404,7 +472,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             borderWidth: 1,
             borderColor: fileDragging() ? C.accent : C.line,
             ...(platform.isTerminal
-              ? { paddingHorizontal: 16, paddingTop: 12, paddingBottom: 8, gap: 12 }
+              ? {
+                  paddingHorizontal: 16,
+                  paddingTop: 12,
+                  paddingBottom: 8,
+                  gap: 12,
+                }
               : { padding: 8, gap: 8 }),
             minHeight: hero() && !compact() ? 120 : undefined,
           }}
@@ -450,7 +523,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     onPress={
                       owner || local ? inputAction(focusEditor, null) : props.chooseWorkspace
                     }
-                    style={{ position: 'absolute', left: 0, right: 0, top: 0, bottom: 0 }}
+                    style={{
+                      position: 'absolute',
+                      left: 0,
+                      right: 0,
+                      top: 0,
+                      bottom: 0,
+                    }}
                     focusStyle={{
                       borderWidth: 1,
                       borderColor: C.accent,
@@ -461,7 +540,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     style={[
                       platform.isTerminal
                         ? { gap: 8 }
-                        : { gap: 8, flexGrow: 1, paddingHorizontal: 8, paddingTop: 4 },
+                        : {
+                            gap: 8,
+                            flexGrow: 1,
+                            paddingHorizontal: 8,
+                            paddingTop: 4,
+                          },
                       { pointerEvents: 'box-none' },
                     ]}
                   >
@@ -471,7 +555,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     <If when={local !== null}>
                       <Each of={local?.files() ?? []} key={(file) => file.id}>
                         {(file) => (
-                          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                          <View
+                            style={{
+                              flexDirection: 'row',
+                              alignItems: 'center',
+                              gap: 8,
+                            }}
+                          >
                             <Text style={{ color: C.secondary }}>{file().name}</Text>
                             <Button
                               accessibilityLabel={tr('Remove attachment {name}', {
@@ -615,42 +705,91 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           </Each>
           <View
             style={[
-              { flexDirection: 'row', alignItems: 'center', gap: platform.isTerminal ? 8 : 4 },
+              {
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: platform.isTerminal ? 8 : 4,
+              },
               { pointerEvents: 'box-none' },
             ]}
           >
-            <Button
-              ref={completion.addButton}
-              onPress={
-                pending()
-                  ? inputAction(togglePendingPicker, {
-                      owner: pending()!,
-                      open: pending()!.picking(),
-                    })
-                  : inputAction(completion.toggleAdd, {
-                      sessionId: props.session()?.sessionId ?? null,
-                    })
-              }
-              accessibilityLabel={tr('Add to message')}
-              tooltip={textTooltip(() => tr('Add to message'))}
-              disabled={
-                pending()
-                  ? pending()!.sending() || !pending()!.ready()
-                  : !props.session()?.editable() || completion.composing()
-              }
-              style={{
-                width: 32,
-                height: 32,
-                alignItems: 'center',
-                justifyContent: 'center',
-                borderRadius: 16,
+            <Popover
+              open={pending() !== null && pendingAdd()}
+              onOpenChange={({ open }) => pendingAdd.set(open)}
+              placement="top"
+              align="start"
+              offset={8}
+              margin={8}
+              popupStyle={{
+                width: 240,
+                padding: 8,
+                backgroundColor: C.surface,
+                borderRadius: 12,
               }}
-              hoverStyle={{ backgroundColor: C.line }}
-              focusStyle={{ backgroundColor: C.line }}
-              activeStyle={{ backgroundColor: C.surface }}
+              trigger={
+                <Button
+                  ref={completion.addButton}
+                  onPress={
+                    pending()
+                      ? inputAction(() => pendingAdd.set(!pendingAdd()), null)
+                      : inputAction(completion.toggleAdd, {
+                          sessionId: props.session()?.sessionId ?? null,
+                        })
+                  }
+                  accessibilityLabel={tr('Add to message')}
+                  tooltip={textTooltip(() => tr('Add to message'))}
+                  disabled={
+                    pending()
+                      ? pending()!.sending() || !pending()!.ready()
+                      : !props.session()?.editable() || completion.composing()
+                  }
+                  style={{
+                    width: 32,
+                    height: 32,
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    borderRadius: 16,
+                  }}
+                  hoverStyle={{ backgroundColor: C.line }}
+                  focusStyle={{ backgroundColor: C.line }}
+                  activeStyle={{ backgroundColor: C.surface }}
+                >
+                  <Icon name="plus" color={C.secondary} />
+                </Button>
+              }
             >
-              <Icon name="plus" color={C.secondary} />
-            </Button>
+              <Button
+                accessibilityLabel={tr('Attach files')}
+                onPress={inputAction(() => {
+                  pendingAdd.set(false);
+                  pending()?.openPicker(true);
+                }, null)}
+                style={controlStyle}
+                hoverStyle={{ backgroundColor: C.raised }}
+                focusStyle={{ backgroundColor: C.raised }}
+              >
+                <Text style={{ color: C.text }}>{tr('Attach files')}</Text>
+              </Button>
+              <Each
+                of={props.commands().filter((command) => command.trigger === 'goal')}
+                key={(command) => command.id}
+              >
+                {(item) => (
+                  <Button
+                    accessibilityLabel={item().title}
+                    onPress={inputAction(() => {
+                      pendingAdd.set(false);
+                      return item().run();
+                    }, null)}
+                    style={controlStyle}
+                    hoverStyle={{ backgroundColor: C.raised }}
+                    focusStyle={{ backgroundColor: C.raised }}
+                  >
+                    <Text style={{ color: C.text }}>{item().title}</Text>
+                  </Button>
+                )}
+              </Each>
+            </Popover>
             <SessionPermissionsSelect
               owner={props.session()?.permissions ?? null}
               pending={pending()?.permissions ?? null}

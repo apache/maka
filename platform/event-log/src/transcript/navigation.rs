@@ -19,7 +19,9 @@
 
 use super::read::{row_position, sql_position};
 use crate::{EventLog, StoreError, sequence_number, sessions};
-use maka_agent_facts::{configuration::validation::MAX_SAFE_INTEGER, history::RowPosition};
+use maka_agent_facts::{
+    configuration::validation::MAX_SAFE_INTEGER, history::RowPosition, message::MessageOrigin,
+};
 use maka_presentation::navigation::{
     RecordedTurnState, TurnContribution, TurnLandmark, TurnStateMessage, truncate,
 };
@@ -198,16 +200,20 @@ impl EventLog {
                         let bounds: Option<(i64, i64, i64, i64)> = sqlx::query_as(queries::BOUNDS)
                             .bind(&session).bind(&turn).bind(through_sql).fetch_optional(&mut *tx).await?;
                         let Some((first_source, first_index, last_source, last_index)) = bounds else { return Ok(vec![]); };
-                        let prompt: Option<(i64,i64)> = sqlx::query_as(
-                            "SELECT row.source_sequence,row.item_index FROM transcript_directory row JOIN runtime_events source ON source.sequence=row.source_sequence
+                        let prompt: Option<(i64,i64,Option<String>)> = sqlx::query_as(
+                            "SELECT row.source_sequence,row.item_index,row.user_origin FROM transcript_directory row JOIN runtime_events source ON source.sequence=row.source_sequence
                              WHERE row.session_id=?1 AND row.turn_id=?2 AND row.source_sequence<=?3 AND row.role='user'
                              AND source.kind IN ('invocation_opened','message_steered') ORDER BY row.source_sequence,row.item_index LIMIT 1")
                             .bind(&session).bind(&turn).bind(through_sql).fetch_optional(&mut *tx).await?;
-                        let label = if let Some((source,item)) = prompt { preview(tx,&session,row_position(source,item)?,96).await? } else { None };
+                        let (label, origin) = match prompt {
+                            Some((source,item,origin)) => (preview(tx,&session,row_position(source,item)?,96).await?, decode_origin(origin)?),
+                            None => (None, None),
+                        };
 
                         return Ok(vec![TurnLandmark {
                             turn_id: turn, position: row_position(first_source, first_index)?, last_position: row_position(last_source, last_index)?,
                             label: label.unwrap_or_default(),
+                            origin,
                         }]);
                     }
                     let selected: Vec<String> = sqlx::query_scalar(queries::LANDMARKS)
@@ -235,6 +241,7 @@ impl EventLog {
                                     last_position: row_position(last_source, last_index)?,
                                     turn_id,
                                     label,
+                                    origin: decode_origin(row.try_get(3)?)?,
                                 });
                             }
                         }
@@ -245,6 +252,12 @@ impl EventLog {
             })
             .await
     }
+}
+
+fn decode_origin(origin: Option<String>) -> Result<Option<MessageOrigin>, StoreError> {
+    Ok(origin
+        .map(|value| serde_json::from_str(&value))
+        .transpose()?)
 }
 
 async fn preview(

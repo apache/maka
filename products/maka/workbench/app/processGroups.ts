@@ -32,6 +32,7 @@ export type ProcessRow = Pick<
   | 'turnId'
   | 'timing'
   | 'finalOutput'
+  | 'origin'
   | 'metadataThrough'
   | 'sequence'
   | 'startSequence'

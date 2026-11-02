@@ -63,7 +63,7 @@ JOIN samples ON rank = CASE WHEN ?3 = 1 THEN total - 1 ELSE n * (total - 1) / (?
 ORDER BY sequence";
 
 pub(super) const PROMPT: &str = "
-SELECT row.turn_id,row.source_sequence,row.item_index
+SELECT row.turn_id,row.source_sequence,row.item_index,row.user_origin
 FROM runtime_events source JOIN transcript_directory row ON row.source_sequence=source.sequence
 WHERE source.invocation_id=?2 AND source.kind IN ('invocation_opened','message_steered')
 AND row.role='user' AND row.session_id=?1 AND row.source_sequence<=?3
