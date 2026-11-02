@@ -198,6 +198,8 @@ export type ConversationHandle = Omit<
   focusActivity(turnId: string | null): void;
   /** The title its header shows. */
   title(): string;
+  /** Whether the Host last reported this conversation as archived. */
+  archived(): boolean;
 };
 // What the user can do about each reason the Host declined to continue.
 const continuationParked: Record<AgentResumeParkReason, MessageKey> = {
@@ -2124,6 +2126,7 @@ export function Conversation(props: ConversationProps) {
     goal,
     projectMcp,
     workspace,
+    archived: () => archived(),
     empty: () =>
       ready() &&
       invocation() === null &&

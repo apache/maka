@@ -774,7 +774,9 @@ export function createConversationUi(
   };
   const newConversation = (sessionId: string | null) => {
     if (!alive || selected() !== sessionId) return;
-    if (sessionId) void create({ kind: 'session', sessionId }, sessionId);
+    // An archived conversation cannot be the workspace source of a draft: the Host
+    // refuses it when the first message is sent, after the user has typed it.
+    if (sessionId && !handle()?.archived()) void create({ kind: 'session', sessionId }, sessionId);
     else if (pendingWorkspace()) focusComposer();
     else open({ kind: 'workspaces', sessionId });
   };
