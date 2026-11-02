@@ -688,8 +688,8 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const parent = session()?.parentSessionId;
                 return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
               };
-              // The Bot is not in this list, so its workers cannot nest under it; say where
-              // they came from instead.
+              // The Bot is not in this list, so its workers cannot nest under it; mark them
+              // with the Bot's own icon (a text caption would shorten the title).
               const botWorker = () => {
                 const parent = session()?.parentSessionId;
                 return parent != null && parent === props.botSession?.();
@@ -699,7 +699,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const current = session();
                 if (!current) return '';
                 return [
-                  botWorker() ? tr('Maka Bot') : '',
                   props.connectionLost() || browser.error()
                     ? ''
                     : current.activity === 'working' || current.activity === 'waiting'
@@ -843,6 +842,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             >
                               {desktopCaption()}
                             </Text>
+                          </If>
+                          <If when={!platform.isTerminal && botWorker()}>
+                            <Icon name="activity" color={C.muted} />
                           </If>
                           <If when={session()?.hasUnread}>
                             <Icon name="unread" color={C.accent} />
