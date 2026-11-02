@@ -26,6 +26,7 @@ pub(crate) mod mouse;
 pub(crate) mod page_scroll;
 pub(crate) mod pasteboard;
 pub(crate) mod permission_subject;
+pub(crate) mod tcc;
 use crate::protocol::*;
 use core_foundation::{
     base::{CFEqual, CFGetTypeID, CFRange, CFRelease, TCFType},
@@ -79,7 +80,7 @@ pub(crate) fn require_desktop() -> Result<(), ToolError> {
             ));
         }
     }
-    Ok(())
+    tcc::require(tcc::Grant::Accessibility)
 }
 
 pub(crate) struct Target {

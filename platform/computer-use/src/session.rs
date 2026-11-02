@@ -352,8 +352,12 @@ impl Session {
         }
         #[cfg(not(target_os = "windows"))]
         {
-            self.invoke_in_turn(command, invocation, cancellation, language)
-                .await
+            let result = self
+                .invoke_in_turn(command, invocation, cancellation, language)
+                .await;
+            #[cfg(target_os = "macos")]
+            let result = result.map_err(crate::macos::tcc::explain);
+            result
         }
     }
 
@@ -1039,6 +1043,9 @@ impl Session {
         language: Language,
     ) -> Result<Value, ToolError> {
         self.verify(handle, session, cancellation, language).await?;
+        // A macOS observation always captures the window image.
+        #[cfg(target_os = "macos")]
+        crate::macos::tcc::require(crate::macos::tcc::Grant::ScreenRecording)?;
         let ax = !matches!(kind, ObservationKind::Screenshot);
         let screenshot = !matches!(kind, ObservationKind::Ax);
         let capture_image = screenshot || cfg!(target_os = "macos");
