@@ -133,9 +133,11 @@ export abstract class WsBridgeBase extends BaseBotAdapter {
     }
     this.ws = ws;
     ws.addEventListener('open', () => {
+      if (this.ws !== ws || this.explicitlyStopped) return;
       this.onWsOpen();
     });
     ws.addEventListener('message', (event: { data: unknown }) => {
+      if (this.ws !== ws || this.explicitlyStopped) return;
       const data = event.data;
       this.handleWsMessage(typeof data === 'string' ? data : String(data));
     });
