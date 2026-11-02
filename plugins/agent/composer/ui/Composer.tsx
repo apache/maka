@@ -47,7 +47,6 @@ import {
   controlHoverStyle,
   controlStyle,
 } from '../../../../products/maka/workbench/app/ui';
-import { goalStatusLabel } from '../../../../products/maka/workbench/app/GoalDialog';
 import { LoadingIndicator } from '../../../../products/maka/workbench/app/Loading';
 import { Icon } from '../../../../products/maka/workbench/app/Icon';
 import { ContextGauge } from '../../../../products/maka/workbench/app/ContextGauge';
@@ -471,56 +470,6 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             const owner = session();
             return (
               <View>
-                <If when={owner.goal?.view()?.current}>
-                  <Button
-                    accessibilityLabel={`${tr('Goal progress')}: ${owner.goal!.view()!.current!.objective}. ${tr(goalStatusLabel(owner.goal!.view()!.current!.status))}`}
-                    tooltip={textTooltip(() => owner.goal!.view()!.current!.objective)}
-                    onPress={inputAction(
-                      () =>
-                        props
-                          .commands()
-                          .find((command) => command.trigger === 'goal')
-                          ?.run(),
-                      null,
-                    )}
-                    style={{
-                      ...controlStyle,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.surface }}
-                    focusStyle={{ backgroundColor: C.surface }}
-                  >
-                    <If when={owner.goal!.view()!.current!.status === 'active'}>
-                      <LoadingIndicator color={C.secondary} />
-                    </If>
-                    <If when={owner.goal!.view()!.current!.status !== 'active'}>
-                      <Icon
-                        name={
-                          owner.goal!.view()!.current!.status === 'achieved'
-                            ? 'statusSuccess'
-                            : owner.goal!.view()!.current!.status === 'blocked'
-                              ? 'statusUnknown'
-                              : 'statusStopped'
-                        }
-                        color={C.secondary}
-                      />
-                    </If>
-                    <Text
-                      style={[
-                        { ...bodyTextStyle, flex: 1, color: C.secondary },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {owner.goal!.view()!.current!.objective}
-                    </Text>
-                    <Text style={{ color: C.muted }}>
-                      {tr(goalStatusLabel(owner.goal!.view()!.current!.status))}
-                    </Text>
-                    <Icon name="right" color={C.muted} />
-                  </Button>
-                </If>
                 <ProjectMcp owner={owner.projectMcp} />
                 <ComposerDetails session={owner} />
               </View>

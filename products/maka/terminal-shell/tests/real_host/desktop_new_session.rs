@@ -1769,11 +1769,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     assert!(start.right() <= px(width as f32) && start.bottom() <= px(height as f32));
     desktop.artifact(&format!("goal-create-{theme}-{layout}"));
     desktop.press("Start Goal").await;
-    desktop
-        .control(
-            "Goal progress: Read the project\nFix the actual problem and verify it. Goal active",
-        )
-        .await;
+    desktop.control("Goal progress").await;
     let first = desktop.request(&mut fixture).await;
     assert!(
         first.body["messages"]
@@ -1785,9 +1781,27 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
                     .contains("Read the project\nFix the actual problem and verify it"))
             )
     );
-    desktop
-        .press("Goal progress: Read the project\nFix the actual problem and verify it. Goal active")
+    first
+        .tool_call("tool_search", json!({"query":"todo_write"}))
         .await;
+    let first = desktop.request(&mut fixture).await;
+    first
+        .tool_call(
+            "todo_write",
+            json!({"todos":[{"content":"Verify the Goal and Todo tabs", "status":"in_progress"}]}),
+        )
+        .await;
+    let first = desktop.request(&mut fixture).await;
+    desktop.press("Goal progress").await;
+    desktop.control("Pause Goal").await;
+    desktop.press("Toggle conversation todo").await;
+    desktop
+        .until("Goal controls remained visible in the Todo tab", || {
+            desktop.controls("Pause Goal").is_empty().then_some(())
+        })
+        .await;
+    desktop.artifact(&format!("goal-todo-tabs-{theme}-{layout}"));
+    desktop.press("Goal progress").await;
     desktop.control("Pause Goal").await;
     desktop.artifact(&format!("goal-running-{theme}-{layout}"));
     desktop.press("Pause Goal").await;
@@ -1805,7 +1819,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.request(&mut fixture).await.finish().await;
     desktop.control("New Goal").await;
     desktop.artifact(&format!("goal-completed-{theme}-{layout}"));
-    desktop.press("Close Goal").await;
+    desktop.press("Goal progress").await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_MY_DRAFT").await;
     desktop.type_text("/goal Finish the follow-up").await;
