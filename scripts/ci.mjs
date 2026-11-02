@@ -51,10 +51,10 @@ export async function plan({ baseline = null, event = process.env.GITHUB_EVENT_N
     baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).before;
     if (/^0+$/.test(baseline)) baseline = null;
   }
-  if (baseline !== null || event === 'pull_request') {
-    if (event === 'pull_request')
-      baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request.base
-        .sha;
+  if (event === 'pull_request')
+    baseline = JSON.parse(readFileSync(process.env.GITHUB_EVENT_PATH, 'utf8')).pull_request.base
+      .sha;
+  if (baseline !== null && ['push', 'pull_request'].includes(event)) {
     await command('git', ['fetch', '--no-tags', '--depth=1', 'origin', baseline], { cwd: root });
   }
   let changes =
@@ -107,6 +107,7 @@ async function main(args) {
       writeFileSync(planFile, JSON.stringify(result));
       output({
         root: Boolean(result.suites.root),
+        desktop: Boolean(result.suites.desktop),
         tooling: Boolean(result.suites.tooling),
         workers: result.workers,
       });
@@ -144,11 +145,17 @@ async function main(args) {
     const partitions = await executor(root).archive(
       selected,
       join(temporary, 'root-tests.tar.zst'),
+      rest[0] ?? 'root',
     );
     const version = (await command('cargo', ['nextest', '--version'], { capture: true }))
       .trim()
       .split(/\s+/)[1];
-    output({ partitions, has_tests: partitions.length > 0, nextest: version });
+    output({
+      partitions,
+      has_tests: partitions.length > 0,
+      nextest: version,
+      filter: selected.suites[rest[0] ?? 'root'].filter,
+    });
     return;
   }
   if (action === 'replay') {
@@ -167,6 +174,7 @@ async function main(args) {
         'ci',
         '--partition',
         rest[1],
+        ...rest.slice(2),
       ],
       { cwd: root },
     );

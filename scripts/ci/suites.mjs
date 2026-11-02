@@ -190,15 +190,6 @@ export const workers = [
     compile: true,
   },
   {
-    id: 'desktop',
-    suites: ['desktop'],
-    runner: 'ubuntu-latest',
-    workspace: 'root',
-    dependencies: 'headless',
-    javascript: true,
-    compile: true,
-  },
-  {
     id: 'packaging',
     suites: ['native-build'],
     runner: 'ubuntu-latest',

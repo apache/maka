@@ -162,10 +162,9 @@ test('documentation is cheap while shared and unknown source inputs request full
 test('the aggregate accepts only successful planned work, including every selected matrix', () => {
   const full = createPlan({ root, revision: 'head' });
   const results = Object.fromEntries(
-    ['plan', 'tooling', 'suites', 'root-build', 'root-tests'].map((id) => [
-      id,
-      { result: 'success' },
-    ]),
+    ['plan', 'tooling', 'suites', 'root-build', 'root-tests', 'desktop-build', 'desktop-tests'].map(
+      (id) => [id, { result: 'success' }],
+    ),
   );
   checkResults(full, results, true);
   for (const id of Object.keys(results)) {

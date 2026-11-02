@@ -60,7 +60,7 @@ def main():
         path.write_text(json.dumps(pages, indent=2) + "\n")
         for page in pages:
             for job in page["jobs"]:
-                if job["name"].startswith("root-tests") and job["conclusion"] in {"success", "failure"}:
+                if job["name"].startswith(("root-tests", "desktop-tests")) and job["conclusion"] in {"success", "failure"}:
                     log = args.output / f"job-{job['id']}.log"
                     if not log.exists():
                         with log.open("wb") as file:

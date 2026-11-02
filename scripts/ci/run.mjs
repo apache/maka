@@ -209,11 +209,11 @@ export function executor(root, worker = {}) {
     }
   }
 
-  async function archive(plan, output) {
-    const args = suites.root.cargoArgs;
+  async function archive(plan, output, id = 'root') {
+    const args = suites[id].cargoArgs;
     const listing = JSON.parse(
       await cargo(
-        ['nextest', 'list', ...args, '-E', plan.suites.root.filter, '--message-format', 'json'],
+        ['nextest', 'list', ...args, '-E', plan.suites[id].filter, '--message-format', 'json'],
         { capture: true },
       ),
     );
@@ -225,8 +225,8 @@ export function executor(root, worker = {}) {
     const count = selected
       .flatMap((suite) => Object.values(suite.testcases))
       .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
-    console.log(`Selected ${count} root tests for archive replay`);
-    if (!count && plan.suites.root.filter === 'all()')
+    console.log(`Selected ${count} ${id} tests for archive replay`);
+    if (!count && plan.suites[id].filter === 'all()')
       throw new Error('The full root test selection was unexpectedly empty');
     if (!count) return [];
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
@@ -237,15 +237,20 @@ export function executor(root, worker = {}) {
     try {
       // Measured native/CLI fixtures consume 1143s/895s per full run. Separate
       // archives avoid transferring every test binary to every test machine.
-      for (const [group, shards] of [
-        ['native', 8],
-        ['cli', 6],
-        ['rest', 4],
-      ]) {
+      const groups =
+        id === 'desktop'
+          ? [['cli', 4]]
+          : [
+              ['native', 8],
+              ['cli', 6],
+              ['rest', 4],
+            ];
+      for (const [group, shards] of groups) {
         const binaries = selected.filter((suite) => bucket(suite['package-name']) === group);
         if (!binaries.length) continue;
         const packages = [...new Set(binaries.map((suite) => suite['package-name']))];
-        const filter = `(${plan.suites.root.filter}) & (${packages.map((name) => `package(=${name})`).join(' | ')})`;
+        // Archives select binaries; the consumers retain the original test filter.
+        const filter = packages.map((name) => `package(=${name})`).join(' | ');
         const runtimePackages = new Set(
           binaries
             .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))

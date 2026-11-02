@@ -164,6 +164,7 @@ export function checkResults(plan, results, hasRootTests) {
   const required = ['plan'];
   if (plan.suites.tooling) required.push('tooling');
   if (plan.workers.length) required.push('suites');
+  if (plan.suites.desktop) required.push('desktop-build', 'desktop-tests');
   if (plan.suites.root) {
     if (typeof hasRootTests !== 'boolean')
       throw new Error('Root producer did not report whether tests were selected');
