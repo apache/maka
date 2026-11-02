@@ -359,6 +359,14 @@ pub(crate) fn catalog(
         })
         .collect::<Result<Vec<_>, String>>()?;
     let mut catalog = ToolCatalog::new(registrations.into_iter().chain(additional))
+        .and_then(|tools| {
+            tools.with_always_visible(
+                &editing
+                    .iter()
+                    .map(|(name, _)| name.as_str())
+                    .collect::<Vec<_>>(),
+            )
+        })
         .map_err(|_| "agent_tool_catalog_invalid")?;
     for (name, binding) in skill_bindings {
         catalog = catalog

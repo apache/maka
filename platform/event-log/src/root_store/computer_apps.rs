@@ -77,6 +77,13 @@ async fn revision(connection: &mut SqliteConnection, key: &str) -> Result<u64, S
         .ok_or_else(|| invalid("invalid computer app authority revision"))
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SourceAccess {
+    Inactive,
+    Managed,
+    FullAccess,
+}
+
 #[derive(Clone)]
 struct Source {
     session: String,
@@ -196,7 +203,7 @@ impl SessionStore {
         source: Source,
         operation: impl for<'c> FnOnce(
             &'c mut SqliteConnection,
-            bool,
+            SourceAccess,
         ) -> BoxFuture<'c, Result<T, StoreError>>
         + Send
         + 'static,
@@ -225,10 +232,23 @@ impl SessionStore {
                             "interaction ID already belongs to the Session partition",
                         ));
                     }
-                    let live = source.live(&mut tx).await?;
+                    // Session policy belongs to this source fence, not the profile database.
+                    let access = if !source.live(&mut tx).await? {
+                        SourceAccess::Inactive
+                    } else if crate::workspace_bindings::full_access(
+                        &mut tx,
+                        &source.session,
+                        &source.basis,
+                    )
+                    .await?
+                    {
+                        SourceAccess::FullAccess
+                    } else {
+                        SourceAccess::Managed
+                    };
                     let result = control
                         .connection
-                        .run(move |connection| operation(connection, live))
+                        .run(move |connection| operation(connection, access))
                         .await;
                     tx.rollback().await?;
                     result
@@ -261,7 +281,7 @@ impl SessionStore {
         }
         let source = Source::request(request, Some(invocation))?;
         let request = request.clone();
-        self.app_control(source, move |connection, live| {
+        self.app_control(source, move |connection, access| {
             Box::pin(async move {
                 let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                 if let Some(mut record) = read(&mut tx, &request.request_id).await? {
@@ -273,7 +293,7 @@ impl SessionStore {
                     record.outcome = outcome;
                     return Ok(InteractionCommit { matches, record });
                 }
-                if !live {
+                if access == SourceAccess::Inactive {
                     return Err(invalid("computer app invocation is no longer active"));
                 }
                 let InteractionRequest::ComputerApp {
@@ -323,7 +343,7 @@ impl SessionStore {
             });
         }
         let source = Source::request(&record, None)?;
-        self.app_control(source, move |connection, live| {
+        self.app_control(source, move |connection, access| {
             Box::pin(async move {
                 let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
                 let mut actual = read(&mut tx, &record.request_id)
@@ -363,7 +383,7 @@ impl SessionStore {
                         ..
                     }
                 ) && revision(&mut tx, &key).await? != *authority_revision;
-                let selected = if allows && (!live || stale_profile) {
+                let selected = if allows && (access == SourceAccess::Inactive || stale_profile) {
                     InteractionOutcome::Closure {
                         reason: ClosureReason::ProducerCancelled,
                         committed_at: outcome.committed_at(),
@@ -432,8 +452,8 @@ impl SessionStore {
         .await
     }
 
-    /// This is an observation, never dispatch authority. Admission below checks
-    /// the immutable decision again while fencing profile revocation through T1.
+    /// Observe current Session policy or recorded consent, never dispatch authority.
+    /// Admission below rechecks the permission basis and profile consent at T1.
     pub async fn computer_app_granted(
         &self,
         invocation: &Invocation,
@@ -448,10 +468,13 @@ impl SessionStore {
         let invocation = invocation.clone();
         let operation = native_operation_id.to_owned();
         let basis = *basis;
-        self.app_control(source, move |connection, live| {
+        self.app_control(source, move |connection, access| {
             Box::pin(async move {
-                if !live {
+                if access == SourceAccess::Inactive {
                     return Ok(false);
+                }
+                if access == SourceAccess::FullAccess {
+                    return Ok(true);
                 }
                 let mut tx = connection.begin().await?;
                 let granted =

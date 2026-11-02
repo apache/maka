@@ -528,6 +528,9 @@ impl BrowserAuthorization for Access {
 }
 
 async fn workspace_network(configuration: &ResolvedConfiguration) -> Result<Network, ToolError> {
+    if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+        return Ok(Network::Allowed);
+    }
     let workspace = configuration.workspace.clone();
     tokio::task::spawn_blocking(move || {
         let path = std::path::PathBuf::from(&workspace.path);
@@ -647,6 +650,9 @@ impl Attachment {
                 "Computer Use tool is outside the current Session ceiling",
             ));
         }
+        if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+            return Ok(configuration);
+        }
         let grant = store
             .client_capability_grant(&self.session, &api::target())
             .await
@@ -709,6 +715,9 @@ impl Attachment {
             .session(&self.session)
             .await
             .map_err(|error| ToolError::Persistence(message(error)))?;
+        if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+            return Ok(configuration);
+        }
         if store
             .browser_origin_decision(&self.session, &target(origin.to_owned()), &self.basis)
             .await
@@ -836,6 +845,22 @@ pub(crate) mod tests {
         }
 
         async fn new_configured(global_grant: bool, accepted_configuration: bool) -> Self {
+            Self::with_permissions(
+                global_grant,
+                accepted_configuration,
+                WorkspacePermissions {
+                    access: WorkspaceAccess::WorkspaceWrite,
+                    request_permissions: false,
+                },
+            )
+            .await
+        }
+
+        pub(crate) async fn with_permissions(
+            global_grant: bool,
+            accepted_configuration: bool,
+            permissions: WorkspacePermissions,
+        ) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let workspace_path = directory.path().join("workspace");
             std::fs::create_dir(&workspace_path).unwrap();
@@ -895,10 +920,7 @@ pub(crate) mod tests {
                 pinned: false,
                 labels: vec![],
                 workspace: reference,
-                permissions: WorkspacePermissions {
-                    access: WorkspaceAccess::WorkspaceWrite,
-                    request_permissions: false,
-                },
+                permissions: permissions.clone(),
                 boundary_revision: 0,
             };
             let store = root
@@ -928,8 +950,11 @@ pub(crate) mod tests {
                                     workspace_binding: Some(basis.binding),
                                     workspace_origin:
                                         maka_agent_facts::execution::WorkspaceOrigin::Selected,
-                                    sandbox_mode:
-                                        maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+                                    sandbox_mode: match permissions.access {
+                                        WorkspaceAccess::ReadOnly => maka_agent_facts::execution::SandboxMode::ReadOnly,
+                                        WorkspaceAccess::WorkspaceWrite => maka_agent_facts::execution::SandboxMode::WorkspaceWrite,
+                                        WorkspaceAccess::DangerFullAccess => maka_agent_facts::execution::SandboxMode::DangerFullAccess,
+                                    },
                                     approval_policy:
                                         maka_agent_facts::execution::ApprovalPolicy::OnRequest,
                                     boundary_revision: 0,
@@ -1060,6 +1085,176 @@ pub(crate) mod tests {
             self.owner.resources.settle().await.unwrap();
             self.owner.sessions.close().await.unwrap();
             self.owner.store.shutdown().await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn sandbox_off_admits_computer_scopes_without_prompts_and_restricting_it_revokes_access()
+    {
+        use maka_agent_facts::interaction::{
+            ComputerAppDisplay, ComputerAppIdentity, ComputerAppPlatform, ComputerAppRisk,
+        };
+        use maka_capabilities::call::{Identity, Issuer};
+        for request_permissions in [false, true] {
+            let fixture = Fixture::with_permissions(
+                false,
+                true,
+                WorkspacePermissions {
+                    access: WorkspaceAccess::DangerFullAccess,
+                    request_permissions,
+                },
+            )
+            .await;
+            let basis = fixture.basis();
+            let prepared = fixture.store.execution_scope(Some(basis)).await.unwrap();
+            let (parent, effects) = prepared
+                .accept_invocation(fixture.invocation.clone(), CancellationToken::new())
+                .unwrap();
+            let source = parent.store();
+            let call = Issuer::default()
+                .issue_with_execution(
+                    Identity::Agent {
+                        invocation: fixture.invocation.clone(),
+                        operation_id: Some("full-access".into()),
+                    },
+                    (),
+                    CancellationToken::new(),
+                    source.execution_custody().unwrap(),
+                )
+                .unwrap();
+            let (configuration, _) = access::current(&fixture.owner, &call, "cua_repl")
+                .await
+                .unwrap();
+            let cell = maka_code_runtime::CellContext::new(
+                maka_code_runtime::CellStore::temporary().unwrap(),
+                vec![],
+            )
+            .unwrap();
+            for capability in [
+                GrantCapability::ComputerUse,
+                GrantCapability::ComputerAudio,
+                GrantCapability::Browser,
+                GrantCapability::BrowserHistory,
+                GrantCapability::BrowserDownload,
+                GrantCapability::BrowserUpload,
+            ] {
+                let scope = match capability {
+                    GrantCapability::Browser
+                    | GrantCapability::BrowserDownload
+                    | GrantCapability::BrowserUpload => GrantScope::BrowserOrigin {
+                        origin: ORIGIN.into(),
+                    },
+                    GrantCapability::BrowserHistory => GrantScope::BrowserProfile {
+                        browser_id: "fixture".into(),
+                        generation: "generation".into(),
+                    },
+                    _ => GrantScope::Capability {},
+                };
+                let target = GrantTarget {
+                    capability,
+                    scope,
+                    ..api::target()
+                };
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    access::approve_target(
+                        &fixture.owner,
+                        &call,
+                        &configuration,
+                        &call.cancellation,
+                        target.clone(),
+                        Some(&cell),
+                    ),
+                )
+                .await
+                .expect("sandbox off must not wait for a decision")
+                .unwrap();
+                access::granted_target(&fixture.owner, &call, basis, &target)
+                    .await
+                    .unwrap();
+            }
+            for platform in [ComputerAppPlatform::Macos, ComputerAppPlatform::Windows] {
+                let subject = maka_computer_use::ComputerAppTarget {
+                    identity: ComputerAppIdentity {
+                        platform,
+                        application_id: match platform {
+                            ComputerAppPlatform::Macos => "fixture.application",
+                            ComputerAppPlatform::Windows => r"C:\Fixture\application.exe",
+                        }
+                        .into(),
+                    },
+                    display: ComputerAppDisplay {
+                        name: "Fixture application".into(),
+                        app_path: match platform {
+                            ComputerAppPlatform::Macos => "/Applications/Fixture.app",
+                            ComputerAppPlatform::Windows => r"C:\Fixture\application.exe",
+                        }
+                        .into(),
+                        risk: Some(ComputerAppRisk::High),
+                        warning: None,
+                    },
+                    allow_always: false,
+                    binding: None,
+                };
+                let approved = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    app_access::approve(
+                        &fixture.owner,
+                        &call,
+                        basis,
+                        &subject,
+                        "native-effect",
+                        &call.cancellation,
+                        &cell,
+                    ),
+                )
+                .await
+                .expect("full-access applications must not wait for a decision")
+                .unwrap();
+                assert_eq!(approved, app_access::target(&subject));
+            }
+            fixture
+                .attachment
+                .check(
+                    BrowserAttachmentOrigin::Site("https://new.example".into()),
+                    CancellationToken::new(),
+                )
+                .await
+                .unwrap();
+            assert!(
+                fixture
+                    .store
+                    .pending_interactions("session")
+                    .await
+                    .unwrap()
+                    .is_empty()
+            );
+            let session = fixture
+                .store
+                .get::<StoredSessionConfiguration>()
+                .await
+                .unwrap()
+                .unwrap();
+            fixture
+                .store
+                .update_session_permissions::<StoredSessionConfiguration, _>(
+                    "session",
+                    session.revision,
+                    10,
+                    |configuration| {
+                        configuration.permissions.access = WorkspaceAccess::WorkspaceWrite;
+                        configuration.boundary_revision += 1;
+                        Ok(())
+                    },
+                )
+                .await
+                .unwrap();
+            assert!(access::granted(&fixture.owner, &call, basis).await.is_err());
+            assert!(fixture.check().await.is_err());
+            fixture.end().await;
+            effects.settle().await.unwrap();
+            parent.finish();
+            fixture.close().await;
         }
     }
 

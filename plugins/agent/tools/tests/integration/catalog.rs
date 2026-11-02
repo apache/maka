@@ -33,7 +33,9 @@ use tokio_util::sync::CancellationToken;
 struct Fixture(AtomicUsize);
 impl ToolExecutor for Fixture {
     fn names(&self) -> Vec<String> {
-        ["echo", "direct", "withheld"].map(String::from).into()
+        ["echo", "direct", "withheld", "ProcessInput", "ProcessStop"]
+            .map(String::from)
+            .into()
     }
     fn invoke(&self, _: String, value: Value, _: CancellationToken) -> ToolFuture {
         self.0.fetch_add(1, Ordering::SeqCst);
@@ -182,4 +184,75 @@ fn schemas_validate_offline_without_coercion_and_catalog_rejects_ambiguous_autho
         ));
     }
     assert_eq!(effects.0.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test]
+async fn process_controls_can_be_called_before_any_tool_search() {
+    let effects = Arc::new(Fixture::default());
+    let catalog = ToolCatalog::new(["ProcessInput", "ProcessStop", "withheld"].map(|name| {
+        registration(
+            name,
+            json!({"type":"object","properties":{"n":{"type":"integer"}},"required":["n"]}),
+            effects.clone(),
+        )
+    }))
+    .unwrap()
+    .with_discovery();
+    let available =
+        availability::Availability::new(catalog, availability::LoadedTools::temporary().unwrap())
+            .snapshot()
+            .unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        maka_event_log::EventLog::open(&directory.path().join("tools.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let invocation = context().invocation;
+    let calls = [
+        crate::support::preflight::call("input", "ProcessInput", json!({"n":1})),
+        crate::support::preflight::call("stop", "ProcessStop", json!({"n":2})),
+    ];
+    crate::support::preflight::accepted(&log, &invocation, &calls).await;
+    let journal = maka_agent_facts::tools::ToolJournal::new(log.clone(), invocation.clone());
+    for (id, name, n) in [("input", "ProcessInput", 1), ("stop", "ProcessStop", 2)] {
+        let effect = available
+            .prepare(
+                name.into(),
+                json!({"n":n}),
+                context(),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        let result = journal
+            .invoke_prepared_call(
+                format!("{}:{id}", invocation.invocation_id),
+                maka_agent_facts::tool_call::ToolCallIdentity::provider(
+                    invocation.invocation_id.clone(),
+                    id.into(),
+                ),
+                name.into(),
+                json!({"n":n}),
+                None,
+                CancellationToken::new(),
+                effect,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, json!({"n":n}));
+    }
+    assert_eq!(effects.0.load(Ordering::SeqCst), 2);
+    assert!(matches!(
+        available
+            .prepare(
+                "withheld".into(),
+                json!({"n":3}),
+                context(),
+                CancellationToken::new()
+            )
+            .await,
+        Err(ToolRejection::Unavailable)
+    ));
+    log.shutdown().await.unwrap();
 }
