@@ -1765,7 +1765,8 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.control("Pause Goal").await;
     desktop.artifact(&format!("goal-running-{theme}-{layout}"));
     desktop.press("Pause Goal").await;
-    desktop.control("Resume Goal").await;
+    // A paused Goal can still be cancelling its iteration.
+    desktop.control("Complete Goal").await;
     desktop.press("Resume Goal").await;
     desktop.control("Pause Goal").await;
     let running = desktop.request(&mut fixture).await;
