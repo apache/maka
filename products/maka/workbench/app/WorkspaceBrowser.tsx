@@ -700,11 +700,18 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const parent = session()?.parentSessionId;
                 return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
               };
+              // The Bot is not in this list, so its workers cannot nest under it; say where
+              // they came from instead.
+              const botWorker = () => {
+                const parent = session()?.parentSessionId;
+                return parent != null && parent === props.botSession?.();
+              };
               // The desktop names the workspace only where the group does not.
               const desktopCaption = () => {
                 const current = session();
                 if (!current) return '';
                 return [
+                  botWorker() ? tr('Maka Bot') : '',
                   props.connectionLost() || browser.error()
                     ? ''
                     : current.activity === 'working' || current.activity === 'waiting'
@@ -796,7 +803,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   ? tr('From {title}', {
                                       title: creator()!.title || tr('Untitled conversation'),
                                     })
-                                  : undefined,
+                                  : botWorker()
+                                    ? tr('From {title}', { title: tr('Maka Bot') })
+                                    : undefined,
                               )
                         }
                         onPress={inputAction(select, { id: key(), origin: props.selected() })}
