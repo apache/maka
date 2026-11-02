@@ -1217,6 +1217,15 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     desktop.press("Edit model gpt-4.1").await;
     let associate = desktop.control("Associate catalog model").await;
     desktop.artifact(&format!("connection-model-editor-{theme}-{layout}"));
+    // A choice spans its content, not the editor, so it starts where its siblings do.
+    let provider = desktop.control("Provider default (medium)").await;
+    let off = desktop.control("Default effort off").await;
+    let capabilities = desktop.control("Model capabilities").await;
+    assert_eq!(provider.left(), off.left());
+    assert!(
+        provider.right() < capabilities.center().x,
+        "{provider:?} {capabilities:?}"
+    );
     desktop.press("Associate catalog model").await;
     desktop.control("openai / gpt-4.1").await;
     desktop.artifact(&format!("connection-model-catalog-{theme}-{layout}"));

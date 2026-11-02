@@ -117,7 +117,13 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                 value: inherited(model().defaults?.defaultThinkingLevel),
               })}
               onPress={inputAction(owner.defaultThinking, { ...owner.modelAction(), level: null })}
-              style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
+              style={{
+                ...controlStyle,
+                alignSelf: 'flex-start',
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+              }}
               activeStyle={{ backgroundColor: C.line }}
               hoverStyle={controlHoverStyle()}
               focusStyle={controlFocusStyle()}
@@ -305,7 +311,13 @@ export function ConnectionModel(props: { settings: ModelSettingsOwner }) {
                     value: inherited(model().defaults?.thinkingLevels.join(', ') || tr('None')),
                   })}
                   onPress={inputAction(owner.useProviderThinking, owner.modelAction())}
-                  style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 12 }}
+                  style={{
+                    ...controlStyle,
+                    alignSelf: 'flex-start',
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 8,
+                  }}
                   activeStyle={{ backgroundColor: C.line }}
                   hoverStyle={controlHoverStyle()}
                   focusStyle={controlFocusStyle()}
