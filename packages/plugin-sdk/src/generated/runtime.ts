@@ -2371,22 +2371,16 @@ export type GoalStatus =
   | 'armed'
   | 'active'
   | 'paused'
-  | 'waiting'
   | 'achieved'
-  | 'impossible'
   | 'cancelled'
-  | 'cancellation_unknown'
-  | 'max_iterations'
   | 'budget_limited'
-  | 'budget_unknown'
   | 'blocked';
-export type GoalReportKind = 'progress' | 'achieved' | 'waiting' | 'impossible';
+export type GoalReportKind = 'progress' | 'achieved' | 'blocked' | 'paused';
 export type AgentGoalChange =
   | {
       kind: 'create';
       sessionId: string;
       objective: string;
-      maxIterations: number;
       tokenBudget?: number | null;
       start: boolean;
       approval: AgentGoalApproval;
@@ -2397,12 +2391,13 @@ export type AgentGoalChange =
       goalId: string;
       revision: number;
       action: GoalControl;
+      budget?: AgentGoalBudget | null;
       /**
        * Explicit renewed model and session authority, only for Resume without a pending iteration.
        */
       approval?: AgentGoalApproval | null;
     };
-export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete';
+export type GoalControl = 'pause' | 'resume' | 'cancel' | 'complete' | 'set_budget';
 export type AgentGoalResult =
   | {
       kind: 'committed';
@@ -4089,12 +4084,21 @@ export type HistoryView = 'text' | 'conversation';
  */
 export type MessageOrigin =
   | {
+      kind: 'goal';
+      goalId: string;
+      objective: string;
+    }
+  | {
       kind: 'workhub_task';
       taskId: string;
     }
   | {
       kind: 'workhub_graph';
       graphId: string;
+    }
+  | {
+      kind: 'bot_worker';
+      sessionId: string;
     }
   | {
       kind: 'plan';
@@ -5112,7 +5116,7 @@ export interface AgentConfiguration {
    */
   scheduledTasks?: boolean;
   /**
-   * Enable explicitly approved, bounded Goal continuation.
+   * Enable explicitly approved Goal continuation.
    */
   goals?: boolean;
   /**
@@ -7339,9 +7343,12 @@ export interface AgentGoalDetail {
   objective: string;
   status: GoalStatus;
   iterations: number;
-  maxIterations: number;
   tokenBudget?: number | null;
   consumed: GoalMeter;
+  remainingTokens?: number | null;
+  elapsedSeconds: number;
+  retryAt?: number | null;
+  createdAt: number;
   pending: boolean;
   report?: GoalReport | null;
   note: string;
@@ -7359,6 +7366,9 @@ export interface AgentGoalApproval {
   target: AgentScheduledTarget;
   model: ModelSelection;
   thinkingLevel?: ThinkingLevel | null;
+}
+export interface AgentGoalBudget {
+  tokenBudget?: number | null;
 }
 export interface AgentGoalReceiptRead {
   reference: RecoveryRef;

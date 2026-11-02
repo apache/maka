@@ -36,7 +36,10 @@ export default {
   displayName: 'Conversations',
   description: 'Browse conversations, read history and coordinate session work.',
   localizations: {
-    'zh-CN': { displayName: '会话', description: '浏览会话、阅读历史并协调会话任务。' },
+    'zh-CN': {
+      displayName: '会话',
+      description: '浏览会话、阅读历史并协调会话任务。',
+    },
   },
   application: {
     ui: {
@@ -55,13 +58,34 @@ export default {
         management: one(contracts.deploymentManager),
         receipts: one(contracts.receiptReader),
         hostLogs: one(contracts.hostLogs),
-        terminal: { contract: contracts.terminal, cardinality: { kind: 'optional' } },
-        coordinator: { contract: contracts.agent, cardinality: { kind: 'optional' } },
-        workhub: { contract: contracts.workhubCoordinator, cardinality: { kind: 'optional' } },
-        coordinatorTerminal: { contract: contracts.terminal, cardinality: { kind: 'optional' } },
-        jev: { contract: contracts.workspaceJev, cardinality: { kind: 'optional' } },
-        web: { contract: contracts.workspaceWeb, cardinality: { kind: 'optional' } },
-        skills: { contract: contracts.skillLibrary, cardinality: { kind: 'optional' } },
+        terminal: {
+          contract: contracts.terminal,
+          cardinality: { kind: 'optional' },
+        },
+        coordinator: {
+          contract: contracts.agent,
+          cardinality: { kind: 'optional' },
+        },
+        workhub: {
+          contract: contracts.workhubCoordinator,
+          cardinality: { kind: 'optional' },
+        },
+        coordinatorTerminal: {
+          contract: contracts.terminal,
+          cardinality: { kind: 'optional' },
+        },
+        jev: {
+          contract: contracts.workspaceJev,
+          cardinality: { kind: 'optional' },
+        },
+        web: {
+          contract: contracts.workspaceWeb,
+          cardinality: { kind: 'optional' },
+        },
+        skills: {
+          contract: contracts.skillLibrary,
+          cardinality: { kind: 'optional' },
+        },
       },
       contributions: {
         navigation: {
@@ -96,7 +120,10 @@ export default {
         },
         sessions: {
           kind: 'command',
-          title: { fallback: 'Sessions', translations: { 'zh-CN': '对话', 'zh-TW': '對話' } },
+          title: {
+            fallback: 'Sessions',
+            translations: { 'zh-CN': '对话', 'zh-TW': '對話' },
+          },
           description: {
             fallback: 'Resume a conversation',
             translations: { 'zh-CN': '继续对话', 'zh-TW': '繼續對話' },
@@ -113,12 +140,15 @@ export default {
           },
           description: {
             fallback: 'Search the messages in this conversation',
-            translations: { 'zh-CN': '搜索此对话中的消息', 'zh-TW': '搜尋此對話中的訊息' },
+            translations: {
+              'zh-CN': '搜索此对话中的消息',
+              'zh-TW': '搜尋此對話中的訊息',
+            },
           },
           order: 15,
           trigger: 'find',
         },
-        'new': {
+        new: {
           kind: 'command',
           title: {
             fallback: 'New conversation',
@@ -126,7 +156,10 @@ export default {
           },
           description: {
             fallback: 'A fresh start in your workspace',
-            translations: { 'zh-CN': '在工作区中开启新对话', 'zh-TW': '在工作區中開啟新對話' },
+            translations: {
+              'zh-CN': '在工作区中开启新对话',
+              'zh-TW': '在工作區中開啟新對話',
+            },
           },
           order: 20,
           shortcut: 'mod+n',
@@ -156,17 +189,26 @@ export default {
           },
           description: {
             fallback: 'Start a conversation in another folder',
-            translations: { 'zh-CN': '在其他文件夹中开始对话', 'zh-TW': '在其他資料夾中開始對話' },
+            translations: {
+              'zh-CN': '在其他文件夹中开始对话',
+              'zh-TW': '在其他資料夾中開始對話',
+            },
           },
           order: 30,
           trigger: 'workspace',
         },
         models: {
           kind: 'command',
-          title: { fallback: 'Models', translations: { 'zh-CN': '模型', 'zh-TW': '模型' } },
+          title: {
+            fallback: 'Models',
+            translations: { 'zh-CN': '模型', 'zh-TW': '模型' },
+          },
           description: {
             fallback: 'Choose the model for this conversation',
-            translations: { 'zh-CN': '为此对话选择模型', 'zh-TW': '為此對話選擇模型' },
+            translations: {
+              'zh-CN': '为此对话选择模型',
+              'zh-TW': '為此對話選擇模型',
+            },
           },
           order: 40,
           shortcut: 'mod+g',
@@ -190,7 +232,10 @@ export default {
         },
         files: {
           kind: 'command',
-          title: { fallback: 'Files', translations: { 'zh-CN': '文件', 'zh-TW': '檔案' } },
+          title: {
+            fallback: 'Files',
+            translations: { 'zh-CN': '文件', 'zh-TW': '檔案' },
+          },
           description: {
             fallback: 'Browse workspace files and current changes',
             translations: {
@@ -201,11 +246,31 @@ export default {
           order: 60,
           trigger: 'files',
         },
+        goal: {
+          kind: 'command',
+          title: {
+            fallback: 'Goal',
+            translations: { 'zh-CN': '目标', 'zh-TW': '目標' },
+          },
+          description: {
+            fallback: 'Manage a Goal, or start one with /goal followed by an objective',
+            translations: {
+              'zh-CN': '管理目标，或输入 /goal 加目标内容直接开始',
+              'zh-TW': '管理目標，或輸入 /goal 加目標內容直接開始',
+            },
+          },
+          order: 65,
+          trigger: 'goal',
+          takesArgument: true,
+        },
         compact: {
           kind: 'command',
           title: {
             fallback: 'Compact conversation',
-            translations: { 'zh-CN': '压缩对话上下文', 'zh-TW': '壓縮對話上下文' },
+            translations: {
+              'zh-CN': '压缩对话上下文',
+              'zh-TW': '壓縮對話上下文',
+            },
           },
           description: {
             fallback: 'Summarize context for the next request',
@@ -254,7 +319,10 @@ export default {
           },
           description: {
             fallback: 'Read this turn’s independent activity panel',
-            translations: { 'zh-CN': '阅读本轮独立的活动面板', 'zh-TW': '閱讀本輪獨立的活動面板' },
+            translations: {
+              'zh-CN': '阅读本轮独立的活动面板',
+              'zh-TW': '閱讀本輪獨立的活動面板',
+            },
           },
           order: 100,
           shortcut: 'alt+down',
@@ -262,7 +330,10 @@ export default {
         },
         stop: {
           kind: 'command',
-          title: { fallback: 'Stop', translations: { 'zh-CN': '停止', 'zh-TW': '停止' } },
+          title: {
+            fallback: 'Stop',
+            translations: { 'zh-CN': '停止', 'zh-TW': '停止' },
+          },
           description: {
             fallback: 'Cancel the current run',
             translations: { 'zh-CN': '停止当前执行', 'zh-TW': '停止目前執行' },

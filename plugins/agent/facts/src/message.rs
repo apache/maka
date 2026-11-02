@@ -34,11 +34,19 @@ use std::collections::HashSet;
     deny_unknown_fields
 )]
 pub enum MessageOrigin {
+    Goal {
+        goal_id: String,
+        objective: String,
+    },
     WorkhubTask {
         task_id: String,
     },
     WorkhubGraph {
         graph_id: String,
+    },
+    /// A worker conversation created by the Bot finished a run.
+    BotWorker {
+        session_id: String,
     },
     /// The opening message of an approved Plan execution. `title` is the
     /// approved Plan's title when the execution was frozen, not the current Plan.
@@ -50,8 +58,16 @@ pub enum MessageOrigin {
 impl MessageOrigin {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::Goal { goal_id, objective } => {
+                crate::interaction::entity_id(goal_id)?;
+                if objective.trim().is_empty() {
+                    return Err("Goal objective is empty");
+                }
+                Ok(())
+            }
             Self::WorkhubTask { task_id } => crate::interaction::entity_id(task_id),
             Self::WorkhubGraph { graph_id } => crate::interaction::entity_id(graph_id),
+            Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
             Self::Plan {
                 execution_id,
                 title,

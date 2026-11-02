@@ -980,11 +980,6 @@ export const contracts = {
                   objective: {
                     type: 'string',
                   },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
                   tokenBudget: {
                     type: ['integer', 'null'],
                     format: 'uint64',
@@ -998,7 +993,7 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['kind', 'sessionId', 'objective', 'maxIterations', 'start', 'approval'],
+                required: ['kind', 'sessionId', 'objective', 'start', 'approval'],
               },
               {
                 type: 'object',
@@ -1021,6 +1016,17 @@ export const contracts = {
                   },
                   action: {
                     $ref: '#/$defs/GoalControl',
+                  },
+                  budget: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentGoalBudget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                    default: null,
                   },
                   approval: {
                     description:
@@ -1224,7 +1230,18 @@ export const contracts = {
               },
               GoalControl: {
                 type: 'string',
-                enum: ['pause', 'resume', 'cancel', 'complete'],
+                enum: ['pause', 'resume', 'cancel', 'complete', 'set_budget'],
+              },
+              AgentGoalBudget: {
+                type: 'object',
+                properties: {
+                  tokenBudget: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
               },
             },
           },
@@ -6564,12 +6581,7 @@ export const contracts = {
                   },
                   iterations: {
                     type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
+                    format: 'uint64',
                     minimum: 0,
                   },
                   tokenBudget: {
@@ -6579,6 +6591,26 @@ export const contracts = {
                   },
                   consumed: {
                     $ref: '#/$defs/GoalMeter',
+                  },
+                  remainingTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  elapsedSeconds: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  retryAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                   pending: {
                     type: 'boolean',
@@ -6604,8 +6636,9 @@ export const contracts = {
                   'objective',
                   'status',
                   'iterations',
-                  'maxIterations',
                   'consumed',
+                  'elapsedSeconds',
+                  'createdAt',
                   'pending',
                   'note',
                 ],
@@ -6616,14 +6649,9 @@ export const contracts = {
                   'armed',
                   'active',
                   'paused',
-                  'waiting',
                   'achieved',
-                  'impossible',
                   'cancelled',
-                  'cancellation_unknown',
-                  'max_iterations',
                   'budget_limited',
-                  'budget_unknown',
                   'blocked',
                 ],
               },
@@ -6658,7 +6686,7 @@ export const contracts = {
               },
               GoalReportKind: {
                 type: 'string',
-                enum: ['progress', 'achieved', 'waiting', 'impossible'],
+                enum: ['progress', 'achieved', 'blocked', 'paused'],
               },
             },
           },
@@ -7269,6 +7297,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -7291,6 +7336,21 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -7704,6 +7764,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -7726,6 +7803,21 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -15332,6 +15424,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -15354,6 +15463,21 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -22094,6 +22218,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -22116,6 +22257,21 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -23438,6 +23594,23 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'goal',
+                      },
+                      goalId: {
+                        type: 'string',
+                      },
+                      objective: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'goalId', 'objective'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'workhub_task',
                       },
                       taskId: {
@@ -23460,6 +23633,21 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'graphId'],
+                  },
+                  {
+                    description: 'A worker conversation created by the Bot finished a run.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'bot_worker',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'sessionId'],
                   },
                   {
                     description:
@@ -24147,12 +24335,7 @@ export const contracts = {
                   },
                   iterations: {
                     type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  maxIterations: {
-                    type: 'integer',
-                    format: 'uint32',
+                    format: 'uint64',
                     minimum: 0,
                   },
                   tokenBudget: {
@@ -24162,6 +24345,26 @@ export const contracts = {
                   },
                   consumed: {
                     $ref: '#/$defs/GoalMeter',
+                  },
+                  remainingTokens: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  elapsedSeconds: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  retryAt: {
+                    type: ['integer', 'null'],
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                  createdAt: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
                   },
                   pending: {
                     type: 'boolean',
@@ -24187,8 +24390,9 @@ export const contracts = {
                   'objective',
                   'status',
                   'iterations',
-                  'maxIterations',
                   'consumed',
+                  'elapsedSeconds',
+                  'createdAt',
                   'pending',
                   'note',
                 ],
@@ -24199,14 +24403,9 @@ export const contracts = {
                   'armed',
                   'active',
                   'paused',
-                  'waiting',
                   'achieved',
-                  'impossible',
                   'cancelled',
-                  'cancellation_unknown',
-                  'max_iterations',
                   'budget_limited',
-                  'budget_unknown',
                   'blocked',
                 ],
               },
@@ -24241,7 +24440,7 @@ export const contracts = {
               },
               GoalReportKind: {
                 type: 'string',
-                enum: ['progress', 'achieved', 'waiting', 'impossible'],
+                enum: ['progress', 'achieved', 'blocked', 'paused'],
               },
             },
           },

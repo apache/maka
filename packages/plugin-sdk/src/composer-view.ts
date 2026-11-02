@@ -25,6 +25,8 @@ import type {
   AgentQueue,
   AgentExecution,
   AgentPlanView,
+  AgentGoalView,
+  GoalControl,
   AgentResumable,
   AgentQueueAction,
   AgentQueueMessageResult,
@@ -175,6 +177,14 @@ export type ComposerPlanAction =
   | { kind: 'resume'; executionId: string }
   | { kind: 'cancel'; executionId: string };
 
+export interface ComposerGoal {
+  view(): AgentGoalView | null;
+  pending(): boolean;
+  error(): string;
+  create(objective: string, tokenBudget: number | null): Promise<boolean>;
+  change(action: GoalControl, budget?: { tokenBudget: number | null }): Promise<boolean>;
+}
+
 export interface ComposerPlan {
   /** Null until the first read; `enabled` says whether this Agent plans at all. */
   view(): AgentPlanView | null;
@@ -232,6 +242,7 @@ export interface ComposerSession<Element = unknown> {
   readonly projectMcp: ComposerProjectMcp;
   readonly checklist: ComposerChecklistSource;
   readonly plan: ComposerPlan;
+  readonly goal?: ComposerGoal;
   readonly computerAccess: ComposerComputerAccess;
   readonly completion: ComposerCompletionSource;
   draft(): string;

@@ -119,8 +119,12 @@ export function createComposerCompletion(options: Options) {
   let fileRead: FileRead | null = null;
   let directoryHint: { prefix: string; path: WorkspacePath } | null = null;
   let textVersion = 0;
-  let pendingCommand: { owner: ComposerSession; text: string; version: number; id: string } | null =
-    null;
+  let pendingCommand: {
+    owner: ComposerSession;
+    text: string;
+    version: number;
+    id: string;
+  } | null = null;
 
   const releaseFile = (read: FileRead) => (read.closing ??= read.close());
   const stopFile = () => {
@@ -134,7 +138,10 @@ export function createComposerCompletion(options: Options) {
       return { query: value.slice(slash + 1), directory: directoryHint.path };
     let binary = '';
     for (const byte of new TextEncoder().encode(prefix)) binary += String.fromCharCode(byte);
-    return { query: value.slice(slash + 1), directory: { bytesBase64: btoa(binary) } };
+    return {
+      query: value.slice(slash + 1),
+      directory: { bytesBase64: btoa(binary) },
+    };
   };
 
   const owns = (read: Read) =>
@@ -183,7 +190,9 @@ export function createComposerCompletion(options: Options) {
     dismiss: close,
   });
   const row = <T extends Omit<Row, 'action'>>(read: Read, value: T): Row =>
-    Object.assign(value, { action: { read: read.serial, id: value.id } }) as Row;
+    Object.assign(value, {
+      action: { read: read.serial, id: value.id },
+    }) as Row;
   const commandRows = (read: Read) =>
     read.commands
       .filter(
@@ -241,6 +250,19 @@ export function createComposerCompletion(options: Options) {
           detail: '/',
           icon: 'code',
         }),
+        ...options
+          .commands()
+          .filter((command) => command.trigger === 'goal')
+          .map((command) =>
+            row(read, {
+              id: `command:${command.id}`,
+              kind: 'command',
+              command,
+              title: command.title,
+              detail: '/goal',
+              icon: 'command',
+            }),
+          ),
         row(read, {
           id: 'add:commands',
           kind: 'source',
@@ -267,7 +289,10 @@ export function createComposerCompletion(options: Options) {
       const stream = await read.owner.completion.files(read.query, read.directory);
       const active: FileRead = { close: () => stream.close(), closing: null };
       fileRead = active;
-      const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+      const decoder = new TextDecoder('utf-8', {
+        fatal: true,
+        ignoreBOM: true,
+      });
       const seen = new Set<string>();
       try {
         while (current === read && owns(read)) {
@@ -313,7 +338,12 @@ export function createComposerCompletion(options: Options) {
                     directory: entry.path,
                     icon: 'folder',
                   })
-                : row(read, { ...common, kind: 'insert', insert: insert ?? '', icon: 'file' });
+                : row(read, {
+                    ...common,
+                    kind: 'insert',
+                    insert: insert ?? '',
+                    icon: 'file',
+                  });
             });
           appendRows(read, matches);
         }
@@ -836,7 +866,9 @@ export function ComposerCompletion(props: { state: ComposerCompletionState }) {
             value={state.query()}
             onChange={({ value: text }) => state.query.set(text)}
             onSelectionChange={state.querySelection}
-            onSubmit={inputAction(state.acceptSelected, { read: state.opened()!.serial })}
+            onSubmit={inputAction(state.acceptSelected, {
+              read: state.opened()!.serial,
+            })}
             onCompositionChange={state.queryComposition}
             placeholder={state.queryPlaceholder()}
             accessibilityLabel={state.queryPlaceholder()}

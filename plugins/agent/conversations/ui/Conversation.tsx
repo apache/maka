@@ -106,6 +106,7 @@ import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
+import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
 import { createSessionPlan } from '../../../../products/maka/workbench/app/sessionPlan';
 import {
   TurnPanel,
@@ -169,7 +170,9 @@ type HistoryNavigation =
   | { kind: 'start' | 'tail' }
   | { kind: 'turn'; item: TurnNavigationItem }
   | { kind: 'message'; anchor: ConversationAnchor };
-type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & { identity: object };
+type HistoryWindow = Pick<AgentHistoryPage, 'through' | 'before' | 'after'> & {
+  identity: object;
+};
 
 export type Control = (method: string, input: any) => Promise<any>;
 export type ConversationHandle = Omit<
@@ -177,6 +180,7 @@ export type ConversationHandle = Omit<
   'attachments' | 'modelDetails' | 'permissions' | 'projectMcp' | 'completion' | 'checklist'
 > & {
   attachments: AttachmentDraft;
+  goal: ReturnType<typeof createSessionGoal>;
   modelDetails(): ModelDetails;
   permissions: ReturnType<typeof createSessionPermissions>;
   projectMcp: ReturnType<typeof createProjectMcp>;
@@ -227,9 +231,12 @@ type ConversationProps = {
     send: boolean,
   ): Promise<boolean>;
   /** Text for an empty draft once it loads, taken once (a fork made to edit or regenerate). */
-  takePrefill?(
-    available: boolean,
-  ): { text: string; send: boolean; files?: StagedFile[]; first?: boolean } | null;
+  takePrefill?(available: boolean): {
+    text: string;
+    send: boolean;
+    files?: StagedFile[];
+    first?: boolean;
+  } | null;
   commands(): void;
   connectionLost(): boolean;
   visible(): boolean;
@@ -337,11 +344,15 @@ export function Conversation(props: ConversationProps) {
   const stopping = () => invocation() !== null && stoppingRun() === invocation();
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
+  const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
   const plan = createSessionPlan(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
-  const interactions = signal<AgentPendingInteractions>({ revision: -1, entries: [] });
+  const interactions = signal<AgentPendingInteractions>({
+    revision: -1,
+    entries: [],
+  });
   const computerApps = signal<AgentComputerApps>({ entries: [] });
   let interactionsFromStream = false;
   const error = createText();
@@ -548,7 +559,12 @@ export function Conversation(props: ConversationProps) {
       if (openTurn !== undefined) {
         working(openTurn);
         const sent = bot.forTurn(openTurn).length > 0;
-        if (sent) result.push({ kind: 'bot', key: `bot/${openTurn}`, turnId: openTurn });
+        if (sent)
+          result.push({
+            kind: 'bot',
+            key: `bot/${openTurn}`,
+            turnId: openTurn,
+          });
         // Silence is valid and gets no marker; a Turn that neither sent nor slept would
         // look the same, so say so.
         const turn = projection().turns.get(openTurn);
@@ -559,9 +575,18 @@ export function Conversation(props: ConversationProps) {
         );
         if (
           turn &&
-          botTurnEnding({ finished, outcome: turnOutcome(turn), sent, slept }) === 'unanswered'
+          botTurnEnding({
+            finished,
+            outcome: turnOutcome(turn),
+            sent,
+            slept,
+          }) === 'unanswered'
         )
-          result.push({ kind: 'botNote', key: `bot/${openTurn}/note`, turnId: openTurn });
+          result.push({
+            kind: 'botNote',
+            key: `bot/${openTurn}/note`,
+            turnId: openTurn,
+          });
       }
       openTurn = undefined;
     };
@@ -597,19 +622,27 @@ export function Conversation(props: ConversationProps) {
         // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
         // failure is a failure row, which this does not hide.
         if (botChat && row.role === 'assistant') continue;
+        // A message the Host wrote on the user's behalf (a worker finishing, a task
+        // result) is not something the user said. It stays in Trajectory.
+        if (botChat && row.role === 'user' && row.origin) continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
         if (
           reading() === 'trajectory' &&
-          (row.role === 'user' ||
+          ((row.role === 'user' && !row.origin) ||
             (row.finalOutput && bot.identity() === 'ordinary') ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))
         )
           continue;
-        result.push({ kind: 'row', key: entry.key, rowId: entry.rowId, repeats: entry.repeats });
+        result.push({
+          kind: 'row',
+          key: entry.key,
+          rowId: entry.rowId,
+          repeats: entry.repeats,
+        });
       }
     }
     if (botChat) {
@@ -689,14 +722,22 @@ export function Conversation(props: ConversationProps) {
   let followAgain = false;
   let historyIdentity: object = {};
   let windowTask: Promise<boolean> | null = null;
-  let historyDestination: { position: HistoryPosition; explicit: boolean; failed: boolean } = {
+  let historyDestination: {
+    position: HistoryPosition;
+    explicit: boolean;
+    failed: boolean;
+  } = {
     position: { kind: 'tail' },
     explicit: false,
     failed: false,
   };
   let olderTask: Promise<boolean> | null = null;
   let newerTask: Promise<boolean> | null = null;
-  let attemptedRead: { revision: number; messageId: string; exposure: object } | null = null;
+  let attemptedRead: {
+    revision: number;
+    messageId: string;
+    exposure: object;
+  } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
   let editEpoch = 0;
@@ -1389,7 +1430,11 @@ export function Conversation(props: ConversationProps) {
   const navigateStart = async () => {
     if (!alive) return;
     const target: HistoryNavigation = { kind: 'start' };
-    historyDestination = { position: { kind: 'start' }, explicit: true, failed: false };
+    historyDestination = {
+      position: { kind: 'start' },
+      explicit: true,
+      failed: false,
+    };
     navigation.set(target);
     try {
       const observed = await observe();
@@ -1413,7 +1458,11 @@ export function Conversation(props: ConversationProps) {
     reading.set('chat');
     if (row.turnId) {
       const turn = projection().turns.get(row.turnId);
-      if (turn) turnState(turn.turnId).expanded.set({ open: true, answerKey: turn.answerKey });
+      if (turn)
+        turnState(turn.turnId).expanded.set({
+          open: true,
+          answerKey: turn.answerKey,
+        });
     }
     const id = stableRowId(row);
     const entry = display().find((item) =>
@@ -1456,7 +1505,11 @@ export function Conversation(props: ConversationProps) {
     if (!current()) throw new UiError('History navigation was cancelled.');
     const target: HistoryNavigation = { kind: 'message', anchor };
     const destination = {
-      position: { kind: 'row' as const, position: anchor.position, field: 'body' as const },
+      position: {
+        kind: 'row' as const,
+        position: anchor.position,
+        field: 'body' as const,
+      },
       explicit: true,
       failed: false,
     };
@@ -1507,7 +1560,10 @@ export function Conversation(props: ConversationProps) {
     if (!alive) return;
     const target: HistoryNavigation = { kind: 'turn', item };
     historyDestination = {
-      position: { kind: 'event', sequence: item.anchor.position.sourceSequence },
+      position: {
+        kind: 'event',
+        sequence: item.anchor.position.sourceSequence,
+      },
       explicit: true,
       failed: false,
     };
@@ -1689,7 +1745,9 @@ export function Conversation(props: ConversationProps) {
               ? { kind: 'ready', choice: result.choice }
               : {
                   kind: 'unavailable',
-                  message: uiMessage('Model unavailable: {model}.', { model: captured.modelId }),
+                  message: uiMessage('Model unavailable: {model}.', {
+                    model: captured.modelId,
+                  }),
                 },
         });
       } catch (reason) {
@@ -1725,7 +1783,10 @@ export function Conversation(props: ConversationProps) {
       throw new UiError('Model unavailable: {model}. Choose another model.', {
         model: backend.modelId,
       });
-    return { model: resolved.choice.selection, thinkingLevel: backend.thinkingLevel ?? null };
+    return {
+      model: resolved.choice.selection,
+      thinkingLevel: backend.thinkingLevel ?? null,
+    };
   };
 
   const resumeBasis = computed(() =>
@@ -2027,7 +2088,11 @@ export function Conversation(props: ConversationProps) {
     running: () => connected() && invocation() !== null && !stopping(),
     async read(messageId, expectedRevision) {
       if (!alive) throw new UiError('This conversation is closed.');
-      return host.query('agent', 'queueMessage', { sessionId, messageId, expectedRevision });
+      return host.query('agent', 'queueMessage', {
+        sessionId,
+        messageId,
+        expectedRevision,
+      });
     },
     async change(expectedRevision, edit) {
       if (!alive) throw new UiError('This conversation is closed.');
@@ -2056,6 +2121,7 @@ export function Conversation(props: ConversationProps) {
     refreshModel,
     permissions,
     plan,
+    goal,
     projectMcp,
     workspace,
     empty: () =>
@@ -2183,7 +2249,11 @@ export function Conversation(props: ConversationProps) {
         return;
       }
       const target: HistoryNavigation = { kind: 'tail' };
-      historyDestination = { position: { kind: 'tail' }, explicit: true, failed: false };
+      historyDestination = {
+        position: { kind: 'tail' },
+        explicit: true,
+        failed: false,
+      };
       navigation.set(target);
       props.focusComposer();
       void (async () => {
@@ -2226,7 +2296,9 @@ export function Conversation(props: ConversationProps) {
       });
       if (!alive) return;
       if (result.kind !== 'started')
-        throw new UiError('Context compaction rejected: {reason}', { reason: result.reason });
+        throw new UiError('Context compaction rejected: {reason}', {
+          reason: result.reason,
+        });
       await observe();
       ownHandle.jumpLatest(null, true);
     },
@@ -2287,7 +2359,13 @@ export function Conversation(props: ConversationProps) {
       };
     }
     if (innerReader() !== null) return null;
-    return { kind: 'row' as const, observed, exposure, tail, identity: historyIdentity };
+    return {
+      kind: 'row' as const,
+      observed,
+      exposure,
+      tail,
+      identity: historyIdentity,
+    };
   };
   effect(() => {
     if (!props.visible() || !props.foreground()) {
@@ -2352,7 +2430,9 @@ export function Conversation(props: ConversationProps) {
       const result = reply.receipt.outcome.value as AgentMarkReadResult;
       if (!alive) return;
       if (result.kind === 'rejected')
-        throw new UiError('Read confirmation rejected: {reason}', { reason: result.reason });
+        throw new UiError('Read confirmation rejected: {reason}', {
+          reason: result.reason,
+        });
       acceptReadState(result.session);
     })()
       .catch(report)
@@ -2526,7 +2606,10 @@ export function Conversation(props: ConversationProps) {
           accessibilityLabel={tr('Chat')}
           selected={reading() === 'chat'}
           style={toolbarControlStyle}
-          onPress={inputAction(chooseReading, { owner: sessionId, mode: 'chat' })}
+          onPress={inputAction(chooseReading, {
+            owner: sessionId,
+            mode: 'chat',
+          })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
           activeStyle={{ backgroundColor: C.line }}
@@ -2545,7 +2628,10 @@ export function Conversation(props: ConversationProps) {
           accessibilityLabel={tr('Trajectory')}
           selected={reading() === 'trajectory'}
           style={toolbarControlStyle}
-          onPress={inputAction(chooseReading, { owner: sessionId, mode: 'trajectory' })}
+          onPress={inputAction(chooseReading, {
+            owner: sessionId,
+            mode: 'trajectory',
+          })}
           hoverStyle={{ backgroundColor: C.surface }}
           focusStyle={{ backgroundColor: C.raised }}
           activeStyle={{ backgroundColor: C.line }}
@@ -2571,7 +2657,14 @@ export function Conversation(props: ConversationProps) {
           paddingRight: railInset(),
         }}
       >
-        <View style={{ flex: 1, flexDirection: 'column', minHeight: 0, width: '100%' }}>
+        <View
+          style={{
+            flex: 1,
+            flexDirection: 'column',
+            minHeight: 0,
+            width: '100%',
+          }}
+        >
           <View style={{ flex: 1, minHeight: 0, flexDirection: 'row' }}>
             <List
               ref={list}
@@ -2840,7 +2933,13 @@ export function Conversation(props: ConversationProps) {
             <If when={platform.isTerminal && railShown()}>{rail()}</If>
             <View
               style={[
-                { position: 'absolute', top: 0, bottom: 0, left: railInset(), right: 0 },
+                {
+                  position: 'absolute',
+                  top: 0,
+                  bottom: 0,
+                  left: railInset(),
+                  right: 0,
+                },
                 { pointerEvents: 'box-none' },
               ]}
             >
@@ -2865,7 +2964,15 @@ export function Conversation(props: ConversationProps) {
           </Each>
         </View>
         <If when={!platform.isTerminal && railShown()}>
-          <View style={{ position: 'absolute', top: 0, bottom: 0, right: 8, flexDirection: 'row' }}>
+          <View
+            style={{
+              position: 'absolute',
+              top: 0,
+              bottom: 0,
+              right: 8,
+              flexDirection: 'row',
+            }}
+          >
             {rail()}
           </View>
         </If>

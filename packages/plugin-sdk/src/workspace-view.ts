@@ -51,7 +51,8 @@ export interface WorkspaceViewHandle extends WorkspaceActions {
 }
 
 export interface WorkspaceViewInput {
-  selected(): string | null;
+  /** Mounted conversation identities; each resource request carries its own source. */
+  sessions(): readonly string[];
   blocked(): boolean;
   readonly surface: 'pane' | 'overlays';
   readonly docked: boolean;
