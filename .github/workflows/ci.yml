@@ -88,7 +88,9 @@ jobs:
       partitions: ${{ steps.archive.outputs.partitions }}
       has_tests: ${{ steps.archive.outputs.has_tests }}
       nextest: ${{ steps.archive.outputs.nextest }}
-      artifact: ${{ steps.upload.outputs.artifact-id }}
+      native: ${{ steps.upload-native.outputs.artifact-id }}
+      cli: ${{ steps.upload-cli.outputs.artifact-id }}
+      rest: ${{ steps.upload-rest.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -108,13 +110,34 @@ jobs:
         id: archive
         run: node scripts/ci.mjs archive
       - uses: actions/upload-artifact@v7
-        id: upload
+        id: upload-native
         if: steps.archive.outputs.has_tests == 'true'
         with:
-          name: root-tests-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/root-tests.tar.zst
+          name: root-tests-native-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-native.tar.zst
           compression-level: 0
-          if-no-files-found: error
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-cli
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-cli-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-cli.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v7
+        id: upload-rest
+        if: steps.archive.outputs.has_tests == 'true'
+        with:
+          name: root-tests-rest-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/root-tests-rest.tar.zst
+          compression-level: 0
+          if-no-files-found: ignore
+      - uses: ./.github/actions/ci-cache
+        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
+        with:
+          key: ${{ steps.setup.outputs.compiled_key }}
+          hit: ${{ steps.setup.outputs.compiled_hit }}
       - name: Report producer storage
         if: always()
         run: |
@@ -143,11 +166,11 @@ jobs:
           nextest: ${{ needs.root-build.outputs.nextest }}
       - uses: actions/download-artifact@v8
         with:
-          artifact-ids: ${{ needs.root-build.outputs.artifact }}
+          artifact-ids: ${{ needs.root-build.outputs[matrix.group] }}
           path: ${{ runner.temp }}
           merge-multiple: true
       - name: Execute the produced test partition
-        run: node scripts/ci.mjs replay '${{ matrix.partition }}'
+        run: node scripts/ci.mjs replay '${{ matrix.group }}' '${{ matrix.partition }}'
 
   suites:
     needs: plan
@@ -177,9 +200,16 @@ jobs:
           path: ${{ runner.temp }}
           merge-multiple: true
       - name: Compile selected suites
+        id: compile
         run: node scripts/ci.mjs prepare '${{ matrix.id }}'
       - name: Verify selected suites
         run: node scripts/ci.mjs verify '${{ matrix.id }}'
+      - uses: ./.github/actions/ci-cache
+        if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}
+        with:
+          key: ${{ steps.setup.outputs.compiled_key }}
+          hit: ${{ steps.setup.outputs.compiled_hit }}
+          workspace: ${{ matrix.workspace }}
       - name: Report worker storage
         if: always()
         run: |

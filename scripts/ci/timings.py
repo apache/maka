@@ -22,6 +22,7 @@ import argparse
 import concurrent.futures
 import csv
 import json
+import re
 import statistics
 import subprocess
 from collections import defaultdict
@@ -54,12 +55,25 @@ def main():
 
     def jobs(run):
         path = args.output / f"{run['databaseId']}.json"
-        # Refresh unfinished runs; completed snapshots are reproducible offline inputs.
-        if not path.exists() or run["status"] != "completed":
-            pages = gh("api", f"repos/{args.repo}/actions/runs/{run['databaseId']}/jobs?per_page=100",
-                       "--paginate", "--slurp")
-            path.write_text(json.dumps(pages, indent=2) + "\n")
-        return run, [job for page in json.loads(path.read_text()) for job in page["jobs"]]
+        pages = gh("api", f"repos/{args.repo}/actions/runs/{run['databaseId']}/jobs?per_page=100",
+                   "--paginate", "--slurp")
+        path.write_text(json.dumps(pages, indent=2) + "\n")
+        for page in pages:
+            for job in page["jobs"]:
+                if job["name"].startswith("root-tests") and job["conclusion"] in {"success", "failure"}:
+                    log = args.output / f"job-{job['id']}.log"
+                    if not log.exists():
+                        with log.open("wb") as file:
+                            subprocess.run(["gh", "api", "--allow-escape-sequences",
+                                            f"repos/{args.repo}/actions/jobs/{job['id']}/logs"],
+                                           stdout=file, check=True)
+                    text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", log.read_text())
+                    summary = re.search(r"Summary \[\s*([0-9.]+)s\]\s+(\d+) tests run: (\d+) passed", text)
+                    if summary:
+                        job["test_seconds"] = float(summary[1])
+                        job["test_count"] = int(summary[2])
+                        job["passed"] = int(summary[3])
+        return run, [job for page in pages for job in page["jobs"]]
 
     rows = []
     step_rows = []
@@ -77,11 +91,15 @@ def main():
                         "Verify selected suites", "Execute the produced test partition",
                         "Run node scripts/ci.mjs run", "Run cargo test", "Run cargo nextest",
                         "Run npm test", "Check native computer-use library",
-                    )) else "preparation"
+                    )) or (step["name"] == "Compile selected suites" and
+                           (job["name"] == "clippy" or job["name"].startswith("native-"))) else "preparation"
                     if phase == "execution":
                         execution += duration
                     step_rows.append(dict(run=run["databaseId"], job=job["name"],
                                           step=step["name"], phase=phase, seconds=duration))
+                # nextest archive extraction lives inside the replay step; its own
+                # summary isolates actual test execution from that preparation.
+                execution = job.get("test_seconds", execution)
                 total = seconds(job["started_at"], job["completed_at"])
                 rows.append(dict(run=run["databaseId"], workflow=run["workflowName"],
                                  sha=run["headSha"], run_result=run["conclusion"],
@@ -89,7 +107,8 @@ def main():
                                  dependency_s=seconds(run["createdAt"], job["created_at"]),
                                  queue_s=seconds(job["created_at"], job["started_at"]),
                                  preparation_s=max(0, total-execution), execution_s=execution,
-                                 total_s=total, url=job["html_url"]))
+                                 total_s=total, test_count=job.get("test_count"),
+                                 passed=job.get("passed"), url=job["html_url"]))
     for name, data in [("jobs.csv", rows), ("steps.csv", step_rows)]:
         if data:
             with (args.output / name).open("w", newline="") as file:
@@ -101,7 +120,7 @@ def main():
         if row["result"] == "success":
             groups[row["job"]].append(row)
     print(f"{len(runs)} runs; {len(rows)} completed jobs (cancelled jobs kept in CSV)")
-    print("job | n | dependency wait | runner queue | preparation | execution | total (median seconds)")
+    print("job | n | pre-job wait (scheduling/needs) | runner queue | preparation | execution | total (median seconds)")
     for name, data in sorted(groups.items()):
         values = [round(statistics.median(row[key] for row in data)) for key in
                   ["dependency_s", "queue_s", "preparation_s", "execution_s", "total_s"]]

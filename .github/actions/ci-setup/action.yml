@@ -36,6 +36,13 @@ inputs:
   nextest:
     description: Producer version for archive consumers; otherwise resolve latest.
     default: ""
+outputs:
+  compiled_key:
+    description: Compiler cache key.
+    value: ${{ steps.keys.outputs.compiled }}
+  compiled_hit:
+    description: Whether the exact compiler cache was restored.
+    value: ${{ steps.compiled.outputs.cache-hit }}
 runs:
   using: composite
   steps:
@@ -73,14 +80,48 @@ runs:
       env:
         MAKA_CI_DEPENDENCIES: ${{ inputs.dependencies }}
       run: node scripts/ci/setup.mjs native
-    - name: Cache Rust dependencies
+    - name: Identify Cargo caches
+      id: keys
       if: inputs.role != 'replay'
-      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      shell: bash
+      env:
+        MAKA_CI_ROLE: ${{ inputs.role }}
+        MAKA_CI_WORKSPACE: ${{ inputs.workspace }}
+      run: node scripts/ci/setup.mjs keys
+    - name: Cache shared Cargo downloads
+      uses: actions/cache@v6
+      if: inputs.role != 'replay' && steps.keys.outputs.downloads_writer == 'true'
       with:
-        shared-key: ${{ inputs.role }}
-        workspaces: ${{ steps.tools.outputs.workspace }} -> ${{ github.workspace }}/target
-        cache-targets: ${{ inputs.compile }}
-        cache-bin: false
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.keys.outputs.downloads }}
+        restore-keys: ${{ steps.keys.outputs.downloads_prefix }}
+        enableCrossOsArchive: true
+    - name: Restore shared Cargo downloads
+      uses: actions/cache/restore@v6
+      if: inputs.role != 'replay' && steps.keys.outputs.downloads_writer != 'true'
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+        key: ${{ steps.keys.outputs.downloads }}
+        restore-keys: ${{ steps.keys.outputs.downloads_prefix }}
+        enableCrossOsArchive: true
+    - name: Restore reusable compiler outputs
+      uses: actions/cache/restore@v6
+      id: compiled
+      if: inputs.compile == 'true'
+      with:
+        path: |
+          target/**/.fingerprint
+          target/**/build
+          target/**/deps/*.*
+          !target/**/deps/*.exe
+        key: ${{ steps.keys.outputs.compiled }}
+        restore-keys: ${{ steps.keys.outputs.compiled_prefix }}
     - uses: actions/cache@v6
       if: inputs.javascript == 'true'
       with:

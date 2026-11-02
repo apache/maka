@@ -230,44 +230,64 @@ export function executor(root, worker = {}) {
       throw new Error('The full root test selection was unexpectedly empty');
     if (!count) return [];
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
-    const runtimePackages = new Set(
-      selected
-        .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
-        .map((suite) => suite['package-id']),
-    );
-    const includes = [];
-    for (const [id, path] of Object.entries(listing['rust-build-meta']['build-script-out-dirs'])) {
-      if (runtimePackages.has(id)) includes.push(`${path}/product`);
-    }
+    const bucket = (pkg) =>
+      pkg === 'maka-agent-native' ? 'native' : pkg === 'maka-cli' ? 'cli' : 'rest';
     const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
+    const partitions = [];
     try {
-      const configFile = join(temporary, 'nextest.toml');
-      writeFileSync(
-        configFile,
-        `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
-      );
-      mkdirSync(dirname(output), { recursive: true });
-      await cargo([
-        'nextest',
-        'archive',
-        ...args,
-        '--profile',
-        'ci',
-        '--config-file',
-        configFile,
-        '-E',
-        plan.suites.root.filter,
-        '--archive-file',
-        output,
-      ]);
+      // Measured native/CLI fixtures consume 1143s/895s per full run. Separate
+      // archives avoid transferring every test binary to every test machine.
+      for (const [group, shards] of [
+        ['native', 8],
+        ['cli', 6],
+        ['rest', 4],
+      ]) {
+        const binaries = selected.filter((suite) => bucket(suite['package-name']) === group);
+        if (!binaries.length) continue;
+        const packages = [...new Set(binaries.map((suite) => suite['package-name']))];
+        const filter = `(${plan.suites.root.filter}) & (${packages.map((name) => `package(=${name})`).join(' | ')})`;
+        const runtimePackages = new Set(
+          binaries
+            .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
+            .map((suite) => suite['package-id']),
+        );
+        const includes = [];
+        for (const [id, path] of Object.entries(
+          listing['rust-build-meta']['build-script-out-dirs'],
+        )) {
+          if (runtimePackages.has(id)) includes.push(`${path}/product`);
+        }
+        const configFile = join(temporary, 'nextest.toml');
+        writeFileSync(
+          configFile,
+          `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
+        );
+        mkdirSync(dirname(output), { recursive: true });
+        await cargo([
+          'nextest',
+          'archive',
+          ...args,
+          '--profile',
+          'ci',
+          '--config-file',
+          configFile,
+          '-E',
+          filter,
+          '--archive-file',
+          join(dirname(output), `root-tests-${group}.tar.zst`),
+        ]);
+        const tests = binaries
+          .flatMap((suite) => Object.values(suite.testcases))
+          .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
+        const total = Math.min(shards, tests);
+        for (let index = 1; index <= total; index++)
+          partitions.push({ group, partition: `slice:${index}/${total}` });
+        console.log(`Archived ${tests} ${group} tests for ${total} partitions`);
+      }
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
-    // Four shards spent 12–15 minutes executing; eight halve that serial fixture work.
-    const partitions = Math.min(8, count);
-    return Array.from({ length: partitions }, (_, index) => ({
-      partition: `slice:${index + 1}/${partitions}`,
-    }));
+    return partitions;
   }
 
   return { prepare, verify, check, archive, run, target };

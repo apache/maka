@@ -139,7 +139,12 @@ test('embedded Markdown remains an input even when it belongs to another Cargo p
 
 test('documentation is cheap while shared and unknown source inputs request full validation', () => {
   const select = fixture();
-  const docs = select(['docs/guide.md', 'README.md', 'platform/host/README.md']);
+  const docs = select([
+    'docs/guide.md',
+    'README.md',
+    'platform/host/README.md',
+    'products/maka/workbench/README.md',
+  ]);
   assert.deepEqual(Object.keys(docs.suites), []);
   assert.deepEqual(docs.workers, []);
   for (const path of [

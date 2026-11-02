@@ -17,8 +17,9 @@
  * under the License.
  */
 
-import { appendFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
+import { appendFileSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { command } from './command.mjs';
 import { manifests } from './suites.mjs';
 
@@ -43,9 +44,51 @@ function output(values) {
 
 async function main(action) {
   if (action === 'tool-list') {
-    output({ tools: tools.join(' '), workspace: dirname(manifests[workspace ?? 'root']) });
+    output({ tools: tools.join(' ') });
   } else if (action === 'tools') {
     await command('cargo', ['binstall', '--no-confirm', '--force', ...tools]);
+  } else if (action === 'keys') {
+    const hash = (input) => createHash('sha256').update(input).digest('hex');
+    const compiler = await command('rustc', ['-vV'], { capture: true });
+    const manifest = manifests[workspace];
+    const lock = hash(readFileSync(join(dirname(manifest), 'Cargo.lock')));
+    const configuration = hash(
+      Buffer.concat([readFileSync(manifest), readFileSync('.cargo/config.toml')]),
+    );
+    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
+    output({
+      compiled: `${compiled}-${lock}`,
+      compiled_prefix: `${compiled}-`,
+      downloads: `cargo-sources-${workspace}-${lock}`,
+      downloads_prefix: `cargo-sources-${workspace}-`,
+      downloads_writer: role === 'tooling' || workspace !== 'root',
+    });
+  } else if (action === 'prune') {
+    const metadata = JSON.parse(
+      await command(
+        'cargo',
+        [
+          'metadata',
+          '--locked',
+          '--no-deps',
+          '--format-version',
+          '1',
+          '--manifest-path',
+          manifests[workspace],
+        ],
+        { capture: true },
+      ),
+    );
+    // Checkout gives workspace sources new mtimes, so their outputs rebuild on
+    // the next runner anyway. Keep dependencies, not those large local outputs.
+    await command('cargo', [
+      'clean',
+      '--manifest-path',
+      manifests[workspace],
+      '--target-dir',
+      'target',
+      ...metadata.packages.flatMap((pkg) => ['--package', pkg.name]),
+    ]);
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
     const shared = [

@@ -18,7 +18,7 @@
  */
 
 import { dirname, relative, resolve } from 'node:path';
-import { productInputs, suites, workers } from './suites.mjs';
+import { suites, workers } from './suites.mjs';
 
 export function contains(directory, path) {
   return path === directory || path.startsWith(`${directory}/`);
@@ -46,9 +46,7 @@ export function documentation(path) {
     contains('docs', path) ||
     contains('website', path) ||
     (/\.md$/.test(path) &&
-      ![...productInputs, 'skills', 'platform/computer-use/skills'].some((entry) =>
-        contains(entry, path),
-      ))
+      !['skills', 'platform/computer-use/skills'].some((entry) => contains(entry, path)))
   );
 }
 
