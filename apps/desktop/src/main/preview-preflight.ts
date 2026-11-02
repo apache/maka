@@ -383,58 +383,70 @@ export function buildPreviewPreflightTools(
     // capability, whose descriptor carries neither, and the Runtime Host
     // assigns both itself. Declaring them here would only mislead a reader.
     impl: async ({ origin: rawOrigin }, { sessionId, abortSignal }) => {
-      abortSignal.throwIfAborted();
-      // Validate before probing so a malformed origin is an argument error the
-      // caller can fix, not an `unknown` capability that reads like a finding.
-      const origin = rawOrigin === undefined ? undefined : assertLoopbackOrigin(rawOrigin);
-
-      const guiSurface = classifyGuiSurface(
-        await observe(abortSignal, () => authority.guiSurfaceAvailable()),
-      );
-      const urlSchemes = classifyUrlSchemes(probeNavigableSchemes());
-      // Skip the drive check when there is demonstrably no view host: asking
-      // would throw, and an exception dressed as `unknown` would hide the
-      // settled `unsupported` answer the caller needs. Desktop, the only
-      // publisher today, registers its host before any offer is published, so
-      // this branch is unreachable there; it is kept because GUI availability
-      // is part of the classification #5235 builds on, and that contract must
-      // answer correctly for a publisher without a view host rather than throw.
-      const browserView =
-        guiSurface.status === 'unsupported'
-          ? BROWSER_VIEW_WITHOUT_HOST
-          : classifyBrowserView(
-              await observe(abortSignal, () =>
-                authority.browserDrivable({ sessionId, signal: abortSignal }),
-              ),
-            );
-      const loopbackEndpoint =
-        origin === undefined
-          ? undefined
-          : classifyLoopbackEndpoint({
-              origin,
-              observed: await observe(abortSignal, () =>
-                authority.probeLoopback({ origin, signal: abortSignal }),
-              ),
-            });
-
-      const capabilities = [
-        guiSurface,
-        urlSchemes,
-        browserView,
-        ...(loopbackEndpoint ? [loopbackEndpoint] : []),
-      ];
-      const surface = derivePreviewSurface({ guiSurface, browserView });
-      const endpoint: PreviewEndpointStatus = loopbackEndpoint?.status ?? 'not_checked';
-      const covered = surface === 'verified' && endpoint === 'verified';
-      return {
-        kind: 'preview_preflight',
-        surface,
-        endpoint,
-        capabilities,
-        summary: summarizePreviewPreflight({ capabilities, surface, endpoint }),
-        ...(covered ? {} : { alternative: ARTIFACT_PREVIEW_HANDOFF }),
-      };
+      return runPreviewPreflight(authority, { origin: rawOrigin, sessionId, abortSignal });
     },
   };
   return [preflight as MakaTool];
+}
+
+/** Shared execution: callers consume the same classification and reasons as the tool. */
+export async function runPreviewPreflight(
+  authority: PreviewPreflightAuthority,
+  { origin: rawOrigin, sessionId, abortSignal }: {
+    origin?: string;
+    sessionId: string;
+    abortSignal: AbortSignal;
+  },
+): Promise<PreviewPreflightResult> {
+  abortSignal.throwIfAborted();
+  // Validate before probing so a malformed origin is an argument error the
+  // caller can fix, not an `unknown` capability that reads like a finding.
+  const origin = rawOrigin === undefined ? undefined : assertLoopbackOrigin(rawOrigin);
+
+  const guiSurface = classifyGuiSurface(
+    await observe(abortSignal, () => authority.guiSurfaceAvailable()),
+  );
+  const urlSchemes = classifyUrlSchemes(probeNavigableSchemes());
+  // Skip the drive check when there is demonstrably no view host: asking
+  // would throw, and an exception dressed as `unknown` would hide the
+  // settled `unsupported` answer the caller needs. Desktop, the only
+  // publisher today, registers its host before any offer is published, so
+  // this branch is unreachable there; it is kept because GUI availability
+  // is part of the classification #5235 builds on, and that contract must
+  // answer correctly for a publisher without a view host rather than throw.
+  const browserView =
+    guiSurface.status === 'unsupported'
+      ? BROWSER_VIEW_WITHOUT_HOST
+      : classifyBrowserView(
+          await observe(abortSignal, () =>
+            authority.browserDrivable({ sessionId, signal: abortSignal }),
+          ),
+        );
+  const loopbackEndpoint =
+    origin === undefined
+      ? undefined
+      : classifyLoopbackEndpoint({
+          origin,
+          observed: await observe(abortSignal, () =>
+            authority.probeLoopback({ origin, signal: abortSignal }),
+          ),
+        });
+
+  const capabilities = [
+    guiSurface,
+    urlSchemes,
+    browserView,
+    ...(loopbackEndpoint ? [loopbackEndpoint] : []),
+  ];
+  const surface = derivePreviewSurface({ guiSurface, browserView });
+  const endpoint: PreviewEndpointStatus = loopbackEndpoint?.status ?? 'not_checked';
+  const covered = surface === 'verified' && endpoint === 'verified';
+  return {
+    kind: 'preview_preflight',
+    surface,
+    endpoint,
+    capabilities,
+    summary: summarizePreviewPreflight({ capabilities, surface, endpoint }),
+    ...(covered ? {} : { alternative: ARTIFACT_PREVIEW_HANDOFF }),
+  };
 }
