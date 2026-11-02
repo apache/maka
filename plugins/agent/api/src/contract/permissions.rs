@@ -20,7 +20,8 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-/// Session sandbox policy. Full access explicitly disables filesystem and process isolation.
+/// Session sandbox policy. Full access disables isolation and permits Computer Use
+/// without additional application, browser or audio consent.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentWorkspaceAccess")]

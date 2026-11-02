@@ -295,6 +295,24 @@ pub(crate) async fn permission_basis(
     effective_boundary(&configuration, &binding).map(Some)
 }
 
+pub(crate) async fn full_access(
+    connection: &mut SqliteConnection,
+    session: &str,
+    basis: &PermissionBasis,
+) -> Result<bool, StoreError> {
+    let raw: Option<String> = sqlx::query_scalar(
+        "SELECT configuration FROM session_control WHERE id=? AND archived=0 AND json_extract(configuration,'$.permissions.access')='danger_full_access'",
+    ).bind(session).fetch_optional(&mut *connection).await?;
+    let Some(raw) = raw else {
+        return Ok(false);
+    };
+    let configuration = serde_json::from_str(&raw)?;
+    let Some(binding) = resolve(connection, &configuration).await? else {
+        return Ok(false);
+    };
+    Ok(effective_boundary(&configuration, &binding)? == *basis)
+}
+
 /// Before a metadata closure or rebind, materialize both effective counters and
 /// reset the old attachment baselines. The closure then operates on current bases.
 pub(crate) fn normalize(

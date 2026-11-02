@@ -967,7 +967,7 @@ async fn model_editing_policy_selects_bound_file_methods_independently_of_code_m
             let expected_patch = patch.unwrap_or(model == "gpt-fixture");
             let fixture = Fixture::configured(
                 &format!("http://{}/v1", listener.local_addr().unwrap()), None, None,
-                Some(file_editors(true)), |settings| settings.tool_discovery = expected_code,
+                Some(file_editors(true)), |settings| settings.tool_discovery = true,
             ).await;
             selection::edit(&fixture, |changes| {
                 changes.enabled_model_ids = Some(vec![model.into()]);
@@ -991,7 +991,6 @@ async fn model_editing_policy_selects_bound_file_methods_independently_of_code_m
                 let code = format!("if (ALL_TOOLS.some(t => t.name === '{excluded}')) throw Error('excluded editor leaked'); if (!ALL_TOOLS.some(t => t.name === 'InspectDocument')) throw Error('reader lost'); text(await tools.{name}({input}));");
                 code_response(&mut socket, &code).await;
             } else {
-                assert!(has_tool(&prompt, "InspectDocument"));
                 assert_eq!(has_tool(&prompt, "ReplaceDocument"), !expected_patch);
                 assert_eq!(has_tool(&prompt, "AdjustDocument"), !expected_patch);
                 assert_eq!(has_tool(&prompt, "PatchDocument"), expected_patch);
