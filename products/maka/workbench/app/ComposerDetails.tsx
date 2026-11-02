@@ -33,7 +33,7 @@ import type { ComposerSession } from '../../../../packages/plugin-sdk/src/compos
 import { createChecklist } from './Checklist';
 import { createComputerAppControls } from './ComputerAppControls';
 import { createQueueDock } from './QueueDock';
-import { GoalContent, goalStatusLabel } from './GoalDialog';
+import { createGoalContent, goalStatusLabel } from './GoalDialog';
 import { LoadingIndicator } from './Loading';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -45,6 +45,7 @@ export function ComposerDetails(props: {
   const session = props.session;
   const height = () => windowSize().height / 4;
   const goal = () => session.goal?.view()?.current;
+  const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
   const panels = {
     goal: {
       shown: () => !!goal(),
@@ -55,9 +56,7 @@ export function ComposerDetails(props: {
         goal()?.status === 'blocked' ||
         goal()?.status === 'budget_limited',
       content: () => (
-        <View style={{ minHeight: 0, flexShrink: 1, padding: 16 }}>
-          <GoalContent goal={session.goal!} />
-        </View>
+        <View style={{ minHeight: 0, flexShrink: 1, padding: 16 }}>{renderGoal!()}</View>
       ),
     },
     todo: createChecklist(session.checklist, height),
@@ -81,7 +80,7 @@ export function ComposerDetails(props: {
     queue: 'queue',
   } as const;
   const accessibilityLabels = {
-    goal: () => tr('Goal progress'),
+    goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
     queue: () => tr('Queued messages'),
@@ -188,7 +187,7 @@ export function ComposerDetails(props: {
               style={{
                 minHeight: 0,
                 flexShrink: 1,
-                maxHeight: selected() === 'goal' ? windowSize().height / 3 : height(),
+                maxHeight: selected() === 'goal' ? windowSize().height / 2 : height(),
                 borderTopWidth: 1,
                 borderTopColor: C.line,
               }}

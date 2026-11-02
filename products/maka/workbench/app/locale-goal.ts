@@ -44,6 +44,7 @@ export const goalMessages = {
   'Pause Goal': ['Pause Goal', '暂停目标', '暫停目標'],
   'Resume Goal': ['Resume Goal', '继续目标', '繼續目標'],
   'Cancel Goal': ['Cancel Goal', '取消目标', '取消目標'],
+  'Cancel editing': ['Cancel editing', '取消编辑', '取消編輯'],
   'Complete Goal': ['Complete Goal', '标记完成', '標記完成'],
   'Goal active': ['Working', '正在推进', '正在推進'],
   'Goal paused': ['Paused', '已暂停', '已暫停'],

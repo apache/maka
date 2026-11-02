@@ -1745,6 +1745,8 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         appearance,
     )
     .await;
+    let active_goal = "Goal progress: Working";
+    let finished_goal = "Goal progress: Achieved";
     desktop.new_draft().await;
     desktop.type_text("KEEP_MY_DRAFT").await;
     desktop.press("Add to message").await;
@@ -1769,7 +1771,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     assert!(start.right() <= px(width as f32) && start.bottom() <= px(height as f32));
     desktop.artifact(&format!("goal-create-{theme}-{layout}"));
     desktop.press("Start Goal").await;
-    desktop.control("Goal progress").await;
+    desktop.control(active_goal).await;
     let first = desktop.request(&mut fixture).await;
     assert!(
         first.body["messages"]
@@ -1792,7 +1794,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         )
         .await;
     let first = desktop.request(&mut fixture).await;
-    desktop.press("Goal progress").await;
+    desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.press("Toggle conversation todo").await;
     desktop
@@ -1801,15 +1803,26 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         })
         .await;
     desktop.artifact(&format!("goal-todo-tabs-{theme}-{layout}"));
-    desktop.press("Goal progress").await;
+    desktop.press(active_goal).await;
     desktop.control("Pause Goal").await;
     desktop.artifact(&format!("goal-running-{theme}-{layout}"));
+    desktop.press("Change budget").await;
+    desktop.target_after(None).await;
+    desktop.type_text("250000").await;
+    desktop.press("Toggle conversation todo").await;
+    desktop.press(active_goal).await;
+    desktop.target_after(None).await;
+    desktop.expect_text("250000").await;
+    desktop.artifact(&format!("goal-budget-editor-{theme}-{layout}"));
+    desktop.key("escape", false);
     desktop.press("Pause Goal").await;
     // A paused Goal can still be cancelling its iteration.
     desktop.control("Complete Goal").await;
     desktop.press("Resume Goal").await;
     desktop.control("Pause Goal").await;
     let running = desktop.request(&mut fixture).await;
+    desktop.press("Change budget").await;
+    desktop.control("Cancel editing").await;
     running
         .tool_call(
             "GoalStatus",
@@ -1817,15 +1830,42 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         )
         .await;
     desktop.request(&mut fixture).await.finish().await;
+    desktop
+        .until("a finished Goal still offers budget updates", || {
+            desktop.controls("Apply budget").is_empty().then_some(())
+        })
+        .await;
+    desktop.press("Cancel editing").await;
     desktop.control("New Goal").await;
     desktop.artifact(&format!("goal-completed-{theme}-{layout}"));
-    desktop.press("Goal progress").await;
+    desktop.press("New Goal").await;
+    desktop.target_after(None).await;
+    desktop
+        .type_text("Keep this unfinished Goal objective")
+        .await;
+    desktop.press("Toggle conversation todo").await;
+    desktop.press(finished_goal).await;
+    desktop.target_after(None).await;
+    desktop
+        .expect_text("Keep this unfinished Goal objective")
+        .await;
+    desktop.artifact(&format!("goal-draft-preserved-{theme}-{layout}"));
+    desktop.press("Cancel editing").await;
+    desktop.press("New Goal").await;
+    desktop.target_after(None).await;
+    desktop
+        .type_text("Unsubmitted draft for the previous Goal")
+        .await;
+    desktop.press(finished_goal).await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_MY_DRAFT").await;
     desktop.type_text("/goal Finish the follow-up").await;
     desktop.key("enter", false);
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
+    desktop.press(active_goal).await;
+    desktop.control("Pause Goal").await;
+    desktop.press(active_goal).await;
     next.tool_call(
         "GoalStatus",
         json!({"status":"achieved", "note":"Follow-up verified"}),
@@ -1836,6 +1876,12 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.type_text("/goal").await;
     desktop.key("enter", false);
     desktop.control("New Goal").await;
+    desktop.key("escape", false);
+    desktop
+        .until("the Goal dialog did not close", || {
+            desktop.controls("Close Goal").is_empty().then_some(())
+        })
+        .await;
     drop(first);
     desktop.close().await;
     fixture.finish().await;

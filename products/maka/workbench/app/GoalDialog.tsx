@@ -16,7 +16,19 @@
  * specific language governing permissions and limitations
  * under the License.
  */
-import { cleanup, signal, Text, View, Scroll, inputAction, platform } from 'nsh';
+import {
+  batch,
+  cleanup,
+  effect,
+  keymap,
+  signal,
+  Text,
+  View,
+  Scroll,
+  inputAction,
+  platform,
+} from 'nsh';
+import type { ViewRef } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
@@ -26,6 +38,7 @@ import { LoadingIndicator, LoadingState } from './Loading';
 import { Icon } from './Icon';
 import {
   C,
+  compact,
   bodyTextStyle,
   captionTextStyle,
   controlStyle,
@@ -48,6 +61,7 @@ export const goalStatusLabel = (status: GoalStatus): MessageKey =>
     }) as const
   )[status];
 export function GoalDialog(props: { goal: ComposerGoal; objective?: string; close(): void }) {
+  const content = createGoalContent(props);
   return (
     <Dialog
       animation="none"
@@ -74,13 +88,17 @@ export function GoalDialog(props: { goal: ComposerGoal; objective?: string; clos
           padding: 24,
         }}
       >
-        <GoalContent {...props} />
+        {content()}
       </View>
     </Dialog>
   );
 }
 
-export function GoalContent(props: { goal: ComposerGoal; objective?: string; close?: () => void }) {
+export function createGoalContent(props: {
+  goal: ComposerGoal;
+  objective?: string;
+  close?: () => void;
+}) {
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -90,7 +108,22 @@ export function GoalContent(props: { goal: ComposerGoal; objective?: string; clo
   const editing = signal(false);
   const changingBudget = signal(false);
   const validation = signal(false);
+  const resetEditing = () =>
+    batch(() => {
+      objective.set('');
+      budget.set('');
+      editing.set(false);
+      changingBudget.set(false);
+      validation.set(false);
+    });
   const current = () => props.goal.view()?.current ?? null;
+  let goalId = current()?.id ?? null;
+  effect(() => {
+    const next = current()?.id ?? null;
+    if (next === goalId) return;
+    goalId = next;
+    resetEditing();
+  });
   const creating = () => editing() || props.goal.view()?.current === null;
   const ended = () => current()?.status === 'achieved' || current()?.status === 'cancelled';
   const parsedBudget = () => (budget().trim() === '' ? null : Number(budget().trim()));
@@ -100,11 +133,13 @@ export function GoalContent(props: { goal: ComposerGoal; objective?: string; clo
     validation.set(true);
     if (!objective().trim() || !validBudget() || props.goal.pending()) return;
     if ((await props.goal.create(objective().trim(), parsedBudget())) && alive) {
-      editing.set(false);
-      objective.set('');
-      budget.set('');
-      validation.set(false);
+      resetEditing();
     }
+  };
+  const cancelEditing = () => {
+    if (props.goal.pending()) return;
+    if (!current() && props.close) props.close();
+    else resetEditing();
   };
   const editBudget = () => {
     budget.set(current()?.tokenBudget?.toString() ?? '');
@@ -141,195 +176,205 @@ export function GoalContent(props: { goal: ComposerGoal; objective?: string; clo
       <Text style={{ color: primary ? C.background : C.text }}>{tr(label)}</Text>
     </Button>
   );
-  return (
-    <View style={{ minHeight: 0, flexShrink: 1, gap: 16 }}>
-      <If when={!!props.close}>
+  return () => {
+    const root = signal<ViewRef | null>(null);
+    effect(() => {
+      const node = root();
+      if (node && (creating() || changingBudget()))
+        return keymap.bind('escape', cancelEditing, { when: 'always', within: node });
+    });
+    return (
+      <View ref={(node) => root.set(node)} style={{ minHeight: 0, flexShrink: 1, gap: 16 }}>
+        <If when={!!props.close}>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: 12,
+            }}
+          >
+            <Text
+              style={{
+                ...bodyTextStyle,
+                fontSize: 18,
+                fontWeight: '600',
+                color: C.text,
+              }}
+            >
+              {tr(creating() ? 'New Goal' : 'Goal')}
+            </Text>
+            <Button
+              accessibilityLabel={tr('Close Goal')}
+              tooltip={textTooltip(() => tr('Close Goal'))}
+              onPress={inputAction(() => props.close!(), null)}
+              style={controlStyle}
+              hoverStyle={controlHoverStyle()}
+              focusStyle={controlFocusStyle()}
+              disabledStyle={controlDisabledStyle}
+              activeStyle={{ backgroundColor: C.line }}
+            >
+              <Icon name="close" color={C.secondary} />
+            </Button>
+          </View>
+        </If>
+        <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
+          <View style={{ gap: 16 }}>
+            <If when={!props.goal.view()}>
+              <LoadingState />
+            </If>
+            <If when={creating()}>
+              <View style={{ gap: 8, height: platform.isTerminal ? 96 : compact() ? 120 : 160 }}>
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Objective')}</Text>
+                <SettingsEditor
+                  label={tr('Objective')}
+                  placeholder={tr('What should the Agent accomplish?')}
+                  value={objective()}
+                  change={(value) => objective.set(value)}
+                  autoFocus
+                  disabled={props.goal.pending()}
+                />
+              </View>
+            </If>
+            <If when={!!current() && !creating()}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <If when={current()?.status === 'active'}>
+                  <LoadingIndicator color={C.secondary} />
+                </If>
+                <If when={current()?.status !== 'active'}>
+                  <Icon
+                    name={
+                      current()?.status === 'achieved'
+                        ? 'statusSuccess'
+                        : current()?.status === 'blocked'
+                          ? 'statusUnknown'
+                          : 'statusStopped'
+                    }
+                    color={C.secondary}
+                  />
+                </If>
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr(goalStatusLabel(current()!.status))} ·{' '}
+                  {tr('Iteration {count}', { count: current()!.iterations })}
+                </Text>
+              </View>
+              <Text style={{ ...bodyTextStyle, color: C.text }}>{current()!.objective}</Text>
+              <If
+                when={
+                  current()?.status === 'active' &&
+                  current()?.retryAt &&
+                  current()!.retryAt! > Date.now()
+                }
+              >
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>
+                  {tr('Retrying at {time}', {
+                    time: new Date(current()!.retryAt!).toLocaleString(),
+                  })}
+                </Text>
+              </If>
+              <If when={current()?.note}>
+                <Text style={{ ...captionTextStyle, color: C.secondary }}>{current()!.note}</Text>
+              </If>
+              <View style={{ flexDirection: 'row', gap: 24, flexWrap: 'wrap' }}>
+                <View style={{ gap: 4 }}>
+                  <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Known tokens')}</Text>
+                  <Text style={{ ...bodyTextStyle, color: C.text }}>
+                    {current()!.consumed.missing ? '≥' : ''}
+                    {current()!.consumed.known.toLocaleString()}
+                  </Text>
+                </View>
+                <If when={current()?.tokenBudget !== null}>
+                  <View style={{ gap: 4 }}>
+                    <Text style={{ ...captionTextStyle, color: C.muted }}>
+                      {tr('Remaining tokens')}
+                    </Text>
+                    <Text style={{ ...bodyTextStyle, color: C.text }}>
+                      {current()!.remainingTokens?.toLocaleString() ?? tr('Usage incomplete')}
+                    </Text>
+                  </View>
+                </If>
+                <View style={{ gap: 4 }}>
+                  <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Elapsed time')}</Text>
+                  <Text style={{ ...bodyTextStyle, color: C.text }}>
+                    {Math.floor(current()!.elapsedSeconds / 60)}:
+                    {String(current()!.elapsedSeconds % 60).padStart(2, '0')}
+                  </Text>
+                </View>
+              </View>
+            </If>
+            <If when={creating() || changingBudget()}>
+              <View style={{ gap: 8 }}>
+                <SettingsField
+                  label={tr('Token budget (optional)')}
+                  placeholder={tr('No limit')}
+                  value={budget()}
+                  change={(value) => budget.set(value)}
+                  autoFocus={changingBudget() && !creating()}
+                  disabled={props.goal.pending() || (!creating() && ended())}
+                />
+                <Text
+                  style={{
+                    ...captionTextStyle,
+                    color: validation() && !validBudget() ? C.danger : C.muted,
+                  }}
+                >
+                  {tr(
+                    validation() && !validBudget()
+                      ? 'Enter a positive whole number or leave the budget empty.'
+                      : 'The budget is checked between turns; a running turn can exceed it.',
+                  )}
+                </Text>
+              </View>
+            </If>
+            <If when={props.goal.error()}>
+              <Text style={{ ...captionTextStyle, color: C.danger }}>{props.goal.error()}</Text>
+            </If>
+          </View>
+        </Scroll>
         <View
           style={{
             flexDirection: 'row',
+            justifyContent: 'flex-end',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
+            gap: 8,
+            flexWrap: 'wrap',
           }}
         >
-          <Text
-            style={{
-              ...bodyTextStyle,
-              fontSize: 18,
-              fontWeight: '600',
-              color: C.text,
-            }}
-          >
-            {tr(creating() ? 'New Goal' : 'Goal')}
-          </Text>
-          <Button
-            accessibilityLabel={tr('Close Goal')}
-            tooltip={textTooltip(() => tr('Close Goal'))}
-            onPress={inputAction(() => props.close!(), null)}
-            style={controlStyle}
-            hoverStyle={controlHoverStyle()}
-            focusStyle={controlFocusStyle()}
-            disabledStyle={controlDisabledStyle}
-            activeStyle={{ backgroundColor: C.line }}
-          >
-            <Icon name="close" color={C.secondary} />
-          </Button>
-        </View>
-      </If>
-      <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-        <View style={{ gap: 16 }}>
-          <If when={!props.goal.view()}>
-            <LoadingState />
+          <If when={props.goal.pending()}>
+            <LoadingIndicator />
           </If>
-          <If when={creating()}>
-            <View style={{ gap: 8, height: platform.isTerminal ? 96 : 160 }}>
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Objective')}</Text>
-              <SettingsEditor
-                label={tr('Objective')}
-                placeholder={tr('What should the Agent accomplish?')}
-                value={objective()}
-                change={(value) => objective.set(value)}
-                autoFocus
-                disabled={props.goal.pending()}
-              />
-            </View>
+          <If when={creating() || changingBudget()}>{action('Cancel editing', cancelEditing)}</If>
+          <If when={creating()}>{action('Start Goal', submit, true)}</If>
+          <If when={!!current() && !creating() && !changingBudget() && ended()}>
+            {action('New Goal', () => {
+              resetEditing();
+              editing.set(true);
+            })}
           </If>
-          <If when={!!current() && !creating()}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <If when={current()?.status === 'active'}>
-                <LoadingIndicator color={C.secondary} />
-              </If>
-              <If when={current()?.status !== 'active'}>
-                <Icon
-                  name={
-                    current()?.status === 'achieved'
-                      ? 'statusSuccess'
-                      : current()?.status === 'blocked'
-                        ? 'statusUnknown'
-                        : 'statusStopped'
-                  }
-                  color={C.secondary}
-                />
-              </If>
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {tr(goalStatusLabel(current()!.status))} ·{' '}
-                {tr('Iteration {count}', { count: current()!.iterations })}
-              </Text>
-            </View>
-            <Text style={{ ...bodyTextStyle, color: C.text }}>{current()!.objective}</Text>
-            <If
-              when={
-                current()?.status === 'active' &&
-                current()?.retryAt &&
-                current()!.retryAt! > Date.now()
-              }
-            >
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>
-                {tr('Retrying at {time}', {
-                  time: new Date(current()!.retryAt!).toLocaleString(),
-                })}
-              </Text>
+          <If when={!!current() && !creating() && !ended()}>
+            <If when={changingBudget()}>
+              {action(
+                current()?.status === 'budget_limited' ? 'Apply and resume' : 'Apply budget',
+                applyBudget,
+                true,
+              )}
             </If>
-            <If when={current()?.note}>
-              <Text style={{ ...captionTextStyle, color: C.secondary }}>{current()!.note}</Text>
-            </If>
-            <View style={{ flexDirection: 'row', gap: 24, flexWrap: 'wrap' }}>
-              <View style={{ gap: 4 }}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Known tokens')}</Text>
-                <Text style={{ ...bodyTextStyle, color: C.text }}>
-                  {current()!.consumed.missing ? '≥' : ''}
-                  {current()!.consumed.known.toLocaleString()}
-                </Text>
-              </View>
-              <If when={current()?.tokenBudget !== null}>
-                <View style={{ gap: 4 }}>
-                  <Text style={{ ...captionTextStyle, color: C.muted }}>
-                    {tr('Remaining tokens')}
-                  </Text>
-                  <Text style={{ ...bodyTextStyle, color: C.text }}>
-                    {current()!.remainingTokens?.toLocaleString() ?? tr('Usage incomplete')}
-                  </Text>
-                </View>
+            <If when={!changingBudget()}>
+              {action('Change budget', editBudget)}
+              {action('Cancel Goal', () => props.goal.change('cancel'))}
+              <If when={!current()!.pending}>
+                {action('Complete Goal', () => props.goal.change('complete'))}
               </If>
-              <View style={{ gap: 4 }}>
-                <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Elapsed time')}</Text>
-                <Text style={{ ...bodyTextStyle, color: C.text }}>
-                  {Math.floor(current()!.elapsedSeconds / 60)}:
-                  {String(current()!.elapsedSeconds % 60).padStart(2, '0')}
-                </Text>
-              </View>
-            </View>
-          </If>
-          <If when={creating() || changingBudget()}>
-            <View style={{ gap: 8 }}>
-              <SettingsField
-                label={tr('Token budget (optional)')}
-                placeholder={tr('No limit')}
-                value={budget()}
-                change={(value) => budget.set(value)}
-                disabled={props.goal.pending()}
-              />
-              <Text
-                style={{
-                  ...captionTextStyle,
-                  color: validation() && !validBudget() ? C.danger : C.muted,
-                }}
-              >
-                {tr(
-                  validation() && !validBudget()
-                    ? 'Enter a positive whole number or leave the budget empty.'
-                    : 'The budget is checked between turns; a running turn can exceed it.',
-                )}
-              </Text>
-            </View>
-          </If>
-          <If when={props.goal.error()}>
-            <Text style={{ ...captionTextStyle, color: C.danger }}>{props.goal.error()}</Text>
+              <If when={current()!.status === 'active'}>
+                {action('Pause Goal', () => props.goal.change('pause'), true)}
+              </If>
+              <If when={current()!.status !== 'active' && current()!.status !== 'budget_limited'}>
+                {action('Resume Goal', () => props.goal.change('resume'), true)}
+              </If>
+            </If>
           </If>
         </View>
-      </Scroll>
-      <View
-        style={{
-          flexDirection: 'row',
-          justifyContent: 'flex-end',
-          alignItems: 'center',
-          gap: 8,
-          flexWrap: 'wrap',
-        }}
-      >
-        <If when={props.goal.pending()}>
-          <LoadingIndicator />
-        </If>
-        <If when={creating()}>{action('Start Goal', submit, true)}</If>
-        <If when={!!current() && !creating() && ended()}>
-          {action('New Goal', () => {
-            editing.set(true);
-            budget.set('');
-          })}
-        </If>
-        <If when={!!current() && !creating() && !ended()}>
-          {action('Change budget', editBudget)}
-          <If when={changingBudget()}>
-            {action(
-              current()?.status === 'budget_limited' ? 'Apply and resume' : 'Apply budget',
-              applyBudget,
-              true,
-            )}
-          </If>
-          <If when={!changingBudget()}>
-            {action('Cancel Goal', () => props.goal.change('cancel'))}
-            <If when={!current()!.pending}>
-              {action('Complete Goal', () => props.goal.change('complete'))}
-            </If>
-            <If when={current()!.status === 'active'}>
-              {action('Pause Goal', () => props.goal.change('pause'), true)}
-            </If>
-            <If when={current()!.status !== 'active' && current()!.status !== 'budget_limited'}>
-              {action('Resume Goal', () => props.goal.change('resume'), true)}
-            </If>
-          </If>
-        </If>
       </View>
-    </View>
-  );
+    );
+  };
 }
