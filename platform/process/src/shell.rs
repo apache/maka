@@ -30,6 +30,8 @@ pub(crate) enum ShellPlan {
     WindowsPowerShell(PathBuf),
     #[cfg(windows)]
     Cmd(PathBuf),
+    #[cfg(windows)]
+    GitBash(PathBuf),
 }
 
 impl ShellPlan {
@@ -47,6 +49,13 @@ impl ShellPlan {
                 let _ = terminal;
                 let mut command = Command::new(path, cwd);
                 command.args([if login { "-lc" } else { "-c" }, source]);
+                command
+            }
+            #[cfg(windows)]
+            Self::GitBash(path) => {
+                let mut command = Command::new(path, cwd);
+                let _ = login;
+                command.args(["-c", source]);
                 command
             }
             #[cfg(windows)]
@@ -81,6 +90,12 @@ impl ShellPlan {
                 let mut command = PtyCommand::new(path, cwd);
                 command.arg("-l").env("SHELL", path);
                 (source.into(), command)
+            }
+            #[cfg(windows)]
+            Self::GitBash(path) => {
+                let mut command = PtyCommand::new(path, cwd);
+                command.arg("-l");
+                (format!("\"{}\" -l", path.display()), command)
             }
             #[cfg(windows)]
             Self::Pwsh(path) | Self::WindowsPowerShell(path) => {
@@ -157,6 +172,8 @@ impl ShellPlan {
             Self::WindowsPowerShell(_) => {
                 "Commands use Windows PowerShell 5.1; write PowerShell 5.1-compatible syntax. Set login=false to skip profiles.".into()
             }
+            #[cfg(windows)]
+            Self::GitBash(path) => format!("Commands use Git Bash ({}); write Bash syntax.", path.display()),
             #[cfg(windows)]
             Self::Cmd(_) => "Commands use cmd.exe; write cmd syntax, not bash syntax.".into(),
         }

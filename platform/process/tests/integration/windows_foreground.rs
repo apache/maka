@@ -224,3 +224,29 @@ async fn normal_shell_exit_preserves_background_descendants_but_bounds_pipe_drai
     assert!(!child.stopped());
     // LiveProcess Drop terminates only this deliberately preserved fixture.
 }
+
+#[tokio::test]
+async fn explicit_git_bash_runs_posix_commands_and_advertises_the_same_dialect() {
+    let candidates = [
+        std::env::var_os("MAKA_TEST_GIT_BASH").map(std::path::PathBuf::from),
+        std::env::var_os("USERPROFILE").map(|root| {
+            std::path::PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")
+        }),
+        std::env::var_os("ProgramFiles")
+            .map(|root| std::path::PathBuf::from(root).join(r"Git\bin\bash.exe")),
+    ];
+    let Some(bash) = candidates.into_iter().flatten().find(|path| path.is_file()) else {
+        eprintln!("Git Bash not installed on this Windows runner");
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let auto = ShellExecutor::new(dir.path(), maka_sandbox::Sandbox::Disabled).unwrap();
+    assert!(auto.description().contains("PowerShell"));
+    let executor = auto.with_git_bash(&bash).unwrap();
+    assert!(executor.description().contains("Git Bash"));
+    assert!(executor.description().contains("Bash syntax"));
+    let result = invoke(&executor, "printf '你好 %s' Bash; exit 17").await;
+    assert_eq!(result["status"], "failed", "{result}");
+    assert_eq!(result["exitCode"], 17, "{result}");
+    assert_eq!(result["output"]["stdout"], "你好 Bash", "{result}");
+}

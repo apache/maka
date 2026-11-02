@@ -189,6 +189,20 @@ impl ShellExecutor {
         })
     }
 
+    /// Select an explicit Git for Windows Bash instead of the Windows auto plan.
+    #[cfg(windows)]
+    pub fn with_git_bash(mut self, executable: &Path) -> Result<Self, ToolError> {
+        let path = dunce::canonicalize(executable).map_err(|e| failed(e.to_string()))?;
+        if !path.is_file()
+            || !path
+                .file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("bash.exe"))
+        {
+            return Err(failed("Git Bash must be an existing bash.exe"));
+        }
+        self.shell = shell::ShellPlan::GitBash(path);
+        Ok(self)
+    }
     pub fn description(&self) -> String {
         format!("{SHELL_DESCRIPTION} {}", self.shell.guidance())
     }

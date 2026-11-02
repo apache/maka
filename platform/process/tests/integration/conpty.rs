@@ -242,3 +242,93 @@ async fn drain(io: &PtyIo) -> Vec<u8> {
         assert!(output.len() < 65536);
     }
 }
+
+#[tokio::test]
+async fn git_bash_command_uses_conpty_and_preserves_exit_status() {
+    let candidates = [
+        std::env::var_os("MAKA_TEST_GIT_BASH").map(PathBuf::from),
+        std::env::var_os("USERPROFILE")
+            .map(|root| PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")),
+        std::env::var_os("ProgramFiles").map(|root| PathBuf::from(root).join(r"Git\bin\bash.exe")),
+    ];
+    let Some(bash) = candidates.into_iter().flatten().find(|path| path.is_file()) else {
+        eprintln!("Git Bash not installed on this Windows runner");
+        return;
+    };
+    let cwd = tempfile::tempdir().unwrap();
+    let executor = maka_process::ShellExecutor::new(cwd.path(), maka_sandbox::Sandbox::Disabled)
+        .unwrap()
+        .with_git_bash(&bash)
+        .unwrap();
+    let command = executor
+        .command_pty("printf 'pty-git-bash'; exit 23")
+        .unwrap();
+    let (mut child, io) = pty::spawn(command, TerminalSize::new(80, 24).unwrap())
+        .await
+        .unwrap();
+    let (status, output) = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::join!(
+            async {
+                let status = child.wait().await.unwrap();
+                child.close().await.unwrap();
+                status
+            },
+            drain(&io)
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(status.code(), Some(23));
+    assert!(String::from_utf8_lossy(&output).contains("pty-git-bash"));
+}
+
+#[tokio::test]
+async fn git_bash_interactive_terminal_keeps_workspace_cwd() {
+    let bash = std::env::var_os("MAKA_TEST_GIT_BASH")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .map(|root| PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe"))
+        })
+        .or_else(|| {
+            std::env::var_os("ProgramFiles")
+                .map(|root| PathBuf::from(root).join(r"Git\bin\bash.exe"))
+        });
+    let Some(bash) = bash.filter(|path| path.is_file()) else {
+        eprintln!("Git Bash not installed on this Windows runner");
+        return;
+    };
+    let cwd = tempfile::tempdir().unwrap();
+    let executor = maka_process::ShellExecutor::new(cwd.path(), maka_sandbox::Sandbox::Disabled)
+        .unwrap()
+        .with_git_bash(&bash)
+        .unwrap();
+    let (_, command) = executor.interactive_pty().unwrap();
+    let (mut child, io) = pty::spawn(command, TerminalSize::new(80, 24).unwrap())
+        .await
+        .unwrap();
+    write(&io, b"printf 'cwd:%s:done\\n' \"$PWD\"; exit\r").await;
+    let (status, output) = tokio::time::timeout(Duration::from_secs(15), async {
+        tokio::join!(
+            async {
+                let status = child.wait().await.unwrap();
+                child.close().await.unwrap();
+                status
+            },
+            drain(&io)
+        )
+    })
+    .await
+    .unwrap();
+    assert_eq!(status.code(), Some(0));
+    let output = String::from_utf8_lossy(&output)
+        .replace('\\', "/")
+        .to_lowercase();
+    let name = cwd
+        .path()
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .to_lowercase();
+    assert!(output.contains(&format!("/{name}:done")), "{output}");
+}

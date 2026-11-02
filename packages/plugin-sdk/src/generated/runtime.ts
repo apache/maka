@@ -1501,6 +1501,7 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+export type ShellPreference = 'auto' | 'git_bash';
 export type ProxyProtocol = 'http' | 'https' | 'socks5';
 export type CredentialLocator =
   | {
@@ -1568,6 +1569,10 @@ export type SettingsPreferencesMutation =
   | {
       kind: 'shell_titles';
       enabled: boolean;
+    }
+  | {
+      kind: 'shell';
+      value: ShellPolicy;
     };
 export type SettingsPreferencesUpdated =
   | {
@@ -6587,6 +6592,12 @@ export interface SettingsAssistantPreferences {
   workspaceInstructions: boolean;
   incognitoActive: boolean;
   shellTitles: boolean;
+  shell: ShellPolicy;
+}
+export interface ShellPolicy {
+  preference: ShellPreference;
+  executable: string;
+  titles: boolean;
 }
 export interface SettingsNetworkSnapshot {
   revision: number;

@@ -32,6 +32,33 @@ pub(super) fn schema(mut input: Value, titles: bool) -> Value {
     input
 }
 
+fn guidance(
+    input: &mut Value,
+    shell: &maka_agent_facts::configuration::policy::ShellPolicy,
+    available: bool,
+) {
+    #[cfg(windows)]
+    {
+        use maka_agent_facts::configuration::policy::ShellPreference;
+        let dialect = match shell.preference {
+            ShellPreference::Auto => {
+                "On Windows, commands use the automatically selected PowerShell (or cmd fallback); write PowerShell syntax unless the Host selects cmd."
+            }
+            ShellPreference::GitBash if available => {
+                "Commands use the configured Git Bash; write Bash syntax, not PowerShell syntax."
+            }
+            ShellPreference::GitBash => {
+                "The configured Git Bash is unavailable. Repair the shell setting; commands fail rather than falling back to PowerShell."
+            }
+        };
+        if let Some(description) = input["properties"]["command"]["description"].as_str() {
+            input["properties"]["command"]["description"] =
+                serde_json::json!(format!("{description} {dialect}"));
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (input, shell, available);
+}
 pub(super) fn title(input: &Value) -> Option<Text> {
     input["title"]
         .as_str()
@@ -50,18 +77,33 @@ impl RequestBinding for Binding {
         let configuration = self.configuration.clone();
         let input = self.input.clone();
         Box::pin(async move {
-            let titles = configuration
+            let shell = configuration
                 .runtime_policy()
                 .await
                 .map_err(|error| ToolError::Failed(error.to_string()))?
                 .policy
-                .shell
-                .titles;
+                .shell;
+            let titles = shell.titles;
+            let mut input = schema(input, titles);
+            #[cfg(windows)]
+            let available = if shell.preference
+                == maka_agent_facts::configuration::policy::ShellPreference::GitBash
+            {
+                let path = std::path::PathBuf::from(&shell.executable);
+                tokio::task::spawn_blocking(move || path.is_file())
+                    .await
+                    .map_err(|error| ToolError::Failed(error.to_string()))?
+            } else {
+                true
+            };
+            #[cfg(not(windows))]
+            let available = true;
+            guidance(&mut input, &shell, available);
             Ok(BTreeMap::from([(
                 service.selection.name.clone(),
                 BoundTool::Input {
                     handler: Arc::new(service),
-                    schema: schema(input, titles),
+                    schema: input,
                 },
             )]))
         })
@@ -71,6 +113,33 @@ impl RequestBinding for Binding {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[test]
+    fn shell_command_schema_declares_selected_host_dialect() {
+        use maka_agent_facts::configuration::policy::{ShellPolicy, ShellPreference};
+        let mut input =
+            serde_json::json!({"properties":{"command":{"description":"Run command."}}});
+        let mut policy = ShellPolicy {
+            preference: ShellPreference::GitBash,
+            executable: r"C:\Git\bin\bash.exe".into(),
+            titles: true,
+        };
+        guidance(&mut input, &policy, true);
+        assert!(
+            input["properties"]["command"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("write Bash syntax")
+        );
+        policy.preference = ShellPreference::Auto;
+        guidance(&mut input, &policy, true);
+        assert!(
+            input["properties"]["command"]["description"]
+                .as_str()
+                .unwrap()
+                .contains("PowerShell")
+        );
+    }
     #[test]
     fn command_labels_preserve_complete_sanitized_text_with_command_fallback() {
         assert_eq!(title(&serde_json::json!({"command":"printf actual", "title":"  检查\n构建\u{202e}\u{0000}  "})).unwrap().fallback, "检查 构建");

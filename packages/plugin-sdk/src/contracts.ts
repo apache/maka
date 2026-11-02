@@ -38813,6 +38813,9 @@ export const contracts = {
               shellTitles: {
                 type: 'boolean',
               },
+              shell: {
+                $ref: '#/$defs/ShellPolicy',
+              },
             },
             additionalProperties: false,
             required: [
@@ -38825,6 +38828,7 @@ export const contracts = {
               'workspaceInstructions',
               'incognitoActive',
               'shellTitles',
+              'shell',
             ],
             $defs: {
               LanguagePreference: {
@@ -38834,6 +38838,26 @@ export const contracts = {
               Language: {
                 type: 'string',
                 enum: ['en', 'zh-CN', 'zh-TW'],
+              },
+              ShellPolicy: {
+                type: 'object',
+                properties: {
+                  preference: {
+                    $ref: '#/$defs/ShellPreference',
+                  },
+                  executable: {
+                    type: 'string',
+                  },
+                  titles: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['preference', 'executable', 'titles'],
+              },
+              ShellPreference: {
+                type: 'string',
+                enum: ['auto', 'git_bash'],
               },
             },
           },
@@ -43167,11 +43191,45 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'enabled'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'shell',
+                      },
+                      value: {
+                        $ref: '#/$defs/ShellPolicy',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
                 ],
               },
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
+              },
+              ShellPolicy: {
+                type: 'object',
+                properties: {
+                  preference: {
+                    $ref: '#/$defs/ShellPreference',
+                  },
+                  executable: {
+                    type: 'string',
+                  },
+                  titles: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['preference', 'executable', 'titles'],
+              },
+              ShellPreference: {
+                type: 'string',
+                enum: ['auto', 'git_bash'],
               },
             },
           },

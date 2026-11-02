@@ -893,6 +893,7 @@ export interface ServiceMethods {
         workspaceInstructions: boolean;
         incognitoActive: boolean;
         shellTitles: boolean;
+        shell: Runtime.ShellPolicy;
       };
     };
     catalogModels: {

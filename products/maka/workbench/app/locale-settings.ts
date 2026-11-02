@@ -323,6 +323,14 @@ export const settingsMessages = {
     '自动绕过：{domains}',
     '自動略過：{domains}',
   ],
+  'Bash tool shell': ['Bash tool shell', 'Bash 工具 shell', 'Bash 工具 shell'],
+  'Git Bash': ['Git Bash', 'Git Bash', 'Git Bash'],
+  'Git Bash executable': ['Git Bash executable', 'Git Bash 可执行文件', 'Git Bash 執行檔'],
+  'Automatic uses PowerShell first on Windows. Git Bash overrides only this Runtime Host.': [
+    'Automatic uses PowerShell first on Windows. Git Bash overrides only this Runtime Host.',
+    '自动模式在 Windows 上优先使用 PowerShell；Git Bash 仅覆盖当前 Runtime Host。',
+    '自動模式在 Windows 上優先使用 PowerShell；Git Bash 僅覆蓋目前的 Runtime Host。',
+  ],
   'Automatic shell titles': [
     'Automatic shell titles',
     '自动生成 Shell 标题',

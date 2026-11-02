@@ -44,6 +44,7 @@ pub struct Preferences {
     pub workspace_instructions: bool,
     pub incognito_active: bool,
     pub shell_titles: bool,
+    pub shell: maka_agent_facts::configuration::policy::ShellPolicy,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -62,12 +63,27 @@ pub struct Update {
 )]
 #[schemars(rename = "SettingsPreferencesMutation")]
 pub enum Mutation {
-    Language { preference: LanguagePreference },
-    CompactionPrompt { prompt: Option<String> },
-    Personalization { display_name: String },
-    WorkspaceInstructions { enabled: bool },
-    Privacy { incognito_active: bool },
-    ShellTitles { enabled: bool },
+    Language {
+        preference: LanguagePreference,
+    },
+    CompactionPrompt {
+        prompt: Option<String>,
+    },
+    Personalization {
+        display_name: String,
+    },
+    WorkspaceInstructions {
+        enabled: bool,
+    },
+    Privacy {
+        incognito_active: bool,
+    },
+    ShellTitles {
+        enabled: bool,
+    },
+    Shell {
+        value: maka_agent_facts::configuration::policy::ShellPolicy,
+    },
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(
@@ -117,6 +133,7 @@ pub(crate) async fn read(
         workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         incognito_active: snapshot.policy.privacy.incognito_active,
         shell_titles: snapshot.policy.shell.titles,
+        shell: snapshot.policy.shell,
     })
 }
 pub(crate) async fn update(
@@ -136,6 +153,12 @@ pub(crate) async fn update(
             store
                 .set_compaction_prompt(input.expected_revision, prompt)
                 .await
+        }
+        Mutation::Shell { value } => {
+            if !validate_shell(&value).await {
+                return super::connections::encode(Updated::Rejected);
+            }
+            store.set_shell(input.expected_revision, value).await
         }
         Mutation::ShellTitles { enabled } => {
             store
@@ -171,4 +194,105 @@ pub(crate) async fn update(
         Err(_) => return Err("settings_effect_unknown".into()),
     };
     super::connections::encode(result)
+}
+
+async fn validate_shell(value: &maka_agent_facts::configuration::policy::ShellPolicy) -> bool {
+    use maka_agent_facts::configuration::policy::ShellPreference;
+    match value.preference {
+        ShellPreference::Auto => true,
+        ShellPreference::GitBash => {
+            #[cfg(not(windows))]
+            {
+                false
+            }
+            #[cfg(windows)]
+            {
+                let path = std::path::Path::new(&value.executable);
+                if !path.is_absolute()
+                    || !path
+                        .file_name()
+                        .is_some_and(|name| name.eq_ignore_ascii_case("bash.exe"))
+                {
+                    return false;
+                }
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    tokio::process::Command::new(path)
+                        .arg("--version")
+                        .kill_on_drop(true)
+                        .output(),
+                )
+                .await
+                .is_ok_and(|result| {
+                    result.is_ok_and(|output| {
+                        output.status.success()
+                            && String::from_utf8_lossy(&output.stdout).contains("GNU bash")
+                    })
+                })
+            }
+        }
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+    use maka_event_log::root::{RootNamespaces, RootOwner};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn shell_setting_rejects_invalid_bash_and_persists_valid_host_choice() {
+        let temp = tempfile::tempdir().unwrap();
+        let owner = Arc::new(
+            RootOwner::create(
+                &temp.path().join("root"),
+                &RootNamespaces {
+                    ownership: temp.path().join("owners"),
+                    control: temp.path().join("control"),
+                },
+            )
+            .unwrap(),
+        );
+        let store = maka_config::ConfigurationStore::for_root(owner.clone())
+            .await
+            .unwrap();
+        let bash = std::env::var_os("MAKA_TEST_GIT_BASH")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("USERPROFILE").map(|root| {
+                    std::path::PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")
+                })
+            })
+            .or_else(|| {
+                std::env::var_os("ProgramFiles")
+                    .map(|root| std::path::PathBuf::from(root).join(r"Git\bin\bash.exe"))
+            });
+        let invalid = update(&store, serde_json::json!({
+            "expectedRevision":0,
+            "mutation":{"kind":"shell","value":{"preference":"git_bash","executable":r"C:\no-such-git-bash\bash.exe","titles":true}}
+        })).await.unwrap();
+        assert_eq!(invalid["kind"], "rejected");
+        assert_eq!(store.runtime_policy().await.unwrap().revision, 0);
+        if let Some(path) = bash.filter(|path| path.is_file()) {
+            let saved = update(&store, serde_json::json!({
+                "expectedRevision":0,
+                "mutation":{"kind":"shell","value":{"preference":"git_bash","executable":path.to_string_lossy(),"titles":true}}
+            })).await.unwrap();
+            assert_eq!(saved["kind"], "committed");
+            store.shutdown().await.unwrap();
+            let reopened = maka_config::ConfigurationStore::for_root(owner)
+                .await
+                .unwrap();
+            assert_eq!(
+                reopened
+                    .runtime_policy()
+                    .await
+                    .unwrap()
+                    .policy
+                    .shell
+                    .preference,
+                maka_agent_facts::configuration::policy::ShellPreference::GitBash
+            );
+        }
+    }
 }
