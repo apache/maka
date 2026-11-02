@@ -688,6 +688,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                 const parent = session()?.parentSessionId;
                 return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
               };
+              // The Bot is not in this list, so its workers cannot nest under it; mark them
+              // with the Bot's own icon (a text caption would shorten the title).
+              const botWorker = () => {
+                const parent = session()?.parentSessionId;
+                return parent != null && parent === props.botSession?.();
+              };
               // The desktop names the workspace only where the group does not.
               const desktopCaption = () => {
                 const current = session();
@@ -784,7 +790,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   ? tr('From {title}', {
                                       title: creator()!.title || tr('Untitled conversation'),
                                     })
-                                  : undefined,
+                                  : botWorker()
+                                    ? tr('From {title}', { title: tr('Maka Bot') })
+                                    : undefined,
                               )
                         }
                         onPress={inputAction(select, { id: key(), origin: props.selected() })}
@@ -834,6 +842,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             >
                               {desktopCaption()}
                             </Text>
+                          </If>
+                          <If when={!platform.isTerminal && botWorker()}>
+                            <Icon name="activity" color={C.muted} />
                           </If>
                           <If when={session()?.hasUnread}>
                             <Icon name="unread" color={C.accent} />
