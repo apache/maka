@@ -88,7 +88,6 @@ export const suites = {
       'integration',
     ],
     filter: 'test(terminal::desktop_new_session)',
-    profile: 'ci',
     extraInputs: embeddedInputs,
   },
   'native-build': {
