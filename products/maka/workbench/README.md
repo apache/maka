@@ -53,8 +53,6 @@ Use **Pin conversation** in a conversation’s action menu to keep it in the **P
 
 **Child conversations** in the sidebar action menu opens a separate outline, so deep ancestry does not consume the sidebar. Expand a disclosure arrow to load children, including archived conversations and children in other workspaces; click a title to open that conversation. Branches page through the existing session directory and the outline scrolls horizontally when needed. Creation ancestry comes from `parentSessionId`, independently of fork-source history.
 
-![Child conversations with an archived ancestor, captured by the real-Host GPUI desktop test.](screenshots/child-conversations-light-narrow.png)
-
 **Settings → Skills** discovers skills from a GitHub `owner/repository`, a Git URL or GitHub subdirectory URL, or a directory on the connected Host. Select the skills and their installation location: global or project `.agents/skills` or `.maka/skills`. Same-named skills resolve in this order: project `.maka`, project `.agents`, global `.maka`, global `.agents`. Cards retain every physical instance and indicate which one is effective. Deleting an override reveals the next instance.
 
 Only skills installed through Maka have an update button. Updating replaces their entire directory from the recorded source, including resources, and overwrites local edits. Other skills in the four standard directories can still be inspected and deleted. The source registry lives in the Host database; no npx lockfile or private copy of the skills is created.
@@ -64,7 +62,5 @@ Only skills installed through Maka have an update button. Updating replaces thei
 **Settings → Connections & models** keeps provider sign-in, connection details and the model list together. A new or edited connection can be saved and signed in with one action. Device sign-in opens the browser and keeps the code, copy controls and cancellation available in the dialog. Model discovery can be retried independently after successful sign-in. Advanced connection and model options stay behind disclosures; saved connections can be reloaded after external changes, and Back asks before discarding edits.
 
 The provider picker separates account sign-in, custom endpoints and named API services, with alphabetical choices within each section. Search accepts multiple terms, supports arrow keys and Enter, and Escape clears the query before returning. Returning from a new connection preserves the provider search and selection; adding another connection suggests an unused ID among the loaded connections.
-
-![Provider picker, rendered in the desktop test fixture against the built-in catalog.](screenshots/provider-picker-light.png)
 
 Built-in subscription, compatible-endpoint and region labels follow the interface language. Provider search matches both the original and localized labels. Saved connection names, brand names, model IDs and reasoning-effort values keep their original spelling.
