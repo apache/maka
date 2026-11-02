@@ -1379,10 +1379,10 @@ pub(crate) fn park_retired_root(surface: &Rc<Surface>, view: &NshView) {
     }
     for motion in nav.transitions.take(|motion| match motion {
         Motion::Push { stack, entering, below, .. } => inside(stack) || inside(entering)
-            || below.as_ref().is_some_and(&inside),
+            || below.as_ref().is_some_and(inside),
         Motion::Pop { leaving_id, stack, leaving, below, .. } => *leaving_id == id || inside(stack)
             || matches!(leaving, Leaving::View(leaving) | Leaving::Image(leaving) if inside(leaving))
-            || below.as_ref().is_some_and(&inside),
+            || below.as_ref().is_some_and(inside),
         Motion::ModalIn { view, .. } => inside(view),
         Motion::ModalOut { id: owner, .. } => *owner == id,
     }) {

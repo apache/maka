@@ -51,3 +51,38 @@ just build
 窗口打开期间如果 Host 停止（崩溃，或在仍有客户端时被强制退役），shell 会在几秒内察觉，连接该 Root 的下一个 Host（没有运行中的 Host 时像 `maka desktop` 一样经由启动器启动），并在同一个窗口里重新加载工作台。工作台从头开始，与打开桌面时相同；停止的 Host 正在执行的那一轮显示为已停止。连上下一个 Host 之前，窗口保留原来的工作台，其中的操作都会失败；shell 按逐步拉长的间隔重试，最长 30 秒。只有当它打开的那个 Root 仍在原路径时才会重连：被移走或删除的 Root 不会被重新初始化。
 
 在 macOS 上，把 `MAKA_APPKIT` 设为非空值后，工作台改用 NSH 的 AppKit 后端运行，而不是 GPUI。这个后端仍在实验阶段，也不是默认后端。它把窗口框架保存在应用的 defaults 里，而不是 `clients/desktop-window.json`，也不保存全屏状态。Host 停止后，窗口保留原来的工作台，不会重连。需要重载界面的插件改动会被拒绝，也不发送系统通知。
+
+## Windows Direct2D
+
+![Windows Direct2D workbench](screenshots/windows-direct2d.png)
+
+在普通 PowerShell 终端中，从仓库根目录执行：
+
+```powershell
+npm ci
+cargo build -p maka-cli -p maka-desktop-shell --features maka-desktop-shell/direct2d-experiment
+.\target\debug\maka.exe desktop --root "$env:USERPROFILE\.maka\direct2d"
+```
+
+Windows Rust/MSVC 环境要求见[原生构建工具](../../../scripts/rust/README.zh-CN.md)和 [NSH Windows 指南](../../../third-party/nsh/docs/dev/windows.md)。构建前须安装 lockfile 中的 JavaScript 依赖：否则缺失的 npm 包可能成为生成插件包中的未解析运行时导入。补齐不完整的依赖安装后，需要重新构建 CLI 内嵌的 UI 包。
+
+该 feature 只在 Windows 上选择 Direct2D，其他平台保留现有后端。原生目录选择器运行在独立的 COM apartment 线程上。此入口在窗口存活期间连接已获准的 Host，不实现 GPUI 的 Host 重连流程。
+
+去掉 feature 重新构建即可恢复 GPUI：
+
+```powershell
+cargo build -p maka-cli -p maka-desktop-shell
+.\target\debug\maka.exe desktop --root "$env:USERPROFILE\.maka\gpui"
+```
+
+## 验证
+
+```powershell
+cargo test -p maka-desktop-shell --features direct2d-experiment
+cargo test --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows --lib
+cargo clippy --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows --all-targets -- -D warnings
+```
+
+性能对比须采用相同 release 配置、Host 可执行文件、窗口尺寸和初始数据。桌面壳启动与 Host 接入分别计时，不应将错误边界页面与完整加载的工作台进行比较。
+
+[本地 Windows 对比结果与验证范围](benchmarks/windows-2026-11-02.md)。

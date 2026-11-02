@@ -411,7 +411,10 @@ impl Surface {
         let mut path = Vec::new();
         while let Some(view) = current {
             let state = view.state();
-            if state.style.hidden || state.concealed || state.props.pointer_events == nsh_core::PointerEvents::None {
+            if state.style.hidden
+                || state.concealed
+                || state.props.pointer_events == nsh_core::PointerEvents::None
+            {
                 return Vec::new();
             }
             drop(state);

@@ -526,7 +526,7 @@ pub(crate) fn retire_cell(surface: &Rc<Surface>, cell: &NshView) {
                 })
                 || p.candidates.iter().any(|(view, _)| inside(view))
                 || p.pressed.iter().any(&inside)
-                || p.pinch.as_ref().is_some_and(&inside)
+                || p.pinch.as_ref().is_some_and(inside)
                 || p.gate.as_ref().is_some_and(|gate| ids.contains(&gate.id()))
                 || (p.reporting && p.path.iter().any(|id| ids.contains(id)))
                 || match &p.mode {
@@ -1161,10 +1161,9 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     handled
 }
 
-/// Tab and Shift + Tab move the keyboard focus between the text fields, in
-/// tree order (GTK's focus chain does this on Linux), within the newest
-/// modal: the views under it never get the focus. The field reached has
-/// its text selected, as in Windows' dialogs.
+/// Tab and Shift + Tab move focus through text inputs and explicitly
+/// focusable views in tree order, within the newest modal. An input reached
+/// this way has its text selected, as in Windows' dialogs.
 fn tab(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     let m = event.modifiers;
     if event.vk != VK_TAB || m.ctrl || m.alt || m.meta {
@@ -1185,7 +1184,7 @@ fn tab(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     true
 }
 
-/// The enabled text fields shown under `view`, in tree order.
+/// The enabled focus stops shown under `view`, in tree order.
 fn collect_fields(view: &NshView, out: &mut Vec<NshView>) {
     {
         let s = view.state();
@@ -2495,6 +2494,42 @@ mod tests {
     }
 
     use crate::geom::rect;
+
+    #[test]
+    fn tab_moves_between_focusable_views_and_skips_disabled_controls() {
+        let surface = Surface::new(Default::default());
+        let first = view(&surface.root, 2, ViewKind::View, rect(0.0, 0.0, 50.0, 20.0));
+        first.state_mut().props.focusable = Some(true);
+        let disabled = view(
+            &surface.root,
+            3,
+            ViewKind::View,
+            rect(0.0, 20.0, 50.0, 20.0),
+        );
+        disabled.state_mut().props.focusable = Some(true);
+        disabled.state_mut().props.accessibility.state.disabled = true;
+        let second = view(
+            &surface.root,
+            4,
+            ViewKind::View,
+            rect(0.0, 40.0, 50.0, 20.0),
+        );
+        second.state_mut().props.focusable = Some(true);
+        let mut event = KeyEvent {
+            vk: 0x09,
+            down: true,
+            repeat: false,
+            modifiers: Modifiers::default(),
+        };
+        assert!(tab(&surface, &event));
+        assert_eq!(surface.focus_path(), vec![first.id(), ROOT_ID]);
+        assert!(tab(&surface, &event));
+        assert_eq!(surface.focus_path(), vec![second.id(), ROOT_ID]);
+        event.modifiers.shift = true;
+        assert!(tab(&surface, &event));
+        assert_eq!(surface.focus_path(), vec![first.id(), ROOT_ID]);
+        crate::text_input::blur_all(&surface);
+    }
 
     #[test]
     fn picks_the_innermost_topmost_view() {

@@ -53,3 +53,38 @@ The window opens on the display, at the position and size, and in the full-scree
 If the Host stops while the window is open (it crashed, or was retired over its clients), the shell notices within a few seconds, connects to the Root's next Host, starting one through the launcher as `maka desktop` does, and loads the workbench again in the same window. The workbench starts over, as when the desktop opens; a turn the stopped Host was running shows as stopped. Until a Host is reached the window keeps the last workbench, whose actions fail, and the shell retries with growing pauses of up to 30 seconds. It reconnects only while the Root it opened is still at its path: a moved or deleted Root is not initialized afresh.
 
 On macOS, a non-empty `MAKA_APPKIT` runs the workbench on NSH's AppKit backend instead of GPUI. This backend is experimental and not the default. It saves the window's frame in the application's defaults rather than in `clients/desktop-window.json`, without the full-screen state. If the Host stops, the window keeps the last workbench and does not reconnect. It refuses plugin changes that need a UI reload, and it posts no system notifications.
+
+## Windows Direct2D
+
+![Windows Direct2D workbench](screenshots/windows-direct2d.png)
+
+Run in an ordinary PowerShell terminal, from the repository root:
+
+```powershell
+npm ci
+cargo build -p maka-cli -p maka-desktop-shell --features maka-desktop-shell/direct2d-experiment
+.\target\debug\maka.exe desktop --root "$env:USERPROFILE\.maka\direct2d"
+```
+
+Use the Windows Rust/MSVC prerequisites in [native build tooling](../../../scripts/rust/README.md) and [NSH's Windows guide](../../../third-party/nsh/docs/dev/windows.md). Install the lockfile's JavaScript dependencies before building: missing npm packages can otherwise survive as unresolved runtime imports in generated plugin bundles. Rebuild the CLI's embedded UI packages after correcting an incomplete dependency installation.
+
+The feature selects Direct2D on Windows only; other platforms retain their existing backend. Its native directory chooser runs on a dedicated COM apartment thread. This runner connects to the admitted Host for the lifetime of its window; it does not implement GPUI's Host-reconnection workflow.
+
+To return to GPUI, rebuild without the feature:
+
+```powershell
+cargo build -p maka-cli -p maka-desktop-shell
+.\target\debug\maka.exe desktop --root "$env:USERPROFILE\.maka\gpui"
+```
+
+## Verification
+
+```powershell
+cargo test -p maka-desktop-shell --features direct2d-experiment
+cargo test --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows --lib
+cargo clippy --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows --all-targets -- -D warnings
+```
+
+For performance comparisons, build both shells with the same release profile and use the same Host executable, viewport and initial data. Measure shell startup separately from Host admission. Do not compare an error-boundary screen against a fully loaded workbench.
+
+[Local Windows comparison and verification limits](benchmarks/windows-2026-11-02.md).
