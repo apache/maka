@@ -81,6 +81,7 @@ impl Owner {
         self.start_plans();
         self.start_goals();
         self.start_schedules();
+        self.start_bot_wake();
         self.start_activation_wake();
         let owner = self.clone();
         self.workers.spawn(async move { owner.schedule().await });

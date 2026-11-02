@@ -622,13 +622,16 @@ export function Conversation(props: ConversationProps) {
         // deliberately silent Turn's conclusion, stays internal in Trajectory; a real
         // failure is a failure row, which this does not hide.
         if (botChat && row.role === 'assistant') continue;
+        // A message the Host wrote on the user's behalf (a worker finishing, a task
+        // result) is not something the user said. It stays in Trajectory.
+        if (botChat && row.role === 'user' && row.origin) continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
         if (row.role === 'failure' && turn && !turnExpanded(turn)) continue;
         if (
           reading() === 'trajectory' &&
-          (row.role === 'user' ||
+          ((row.role === 'user' && !row.origin) ||
             (row.finalOutput && bot.identity() === 'ordinary') ||
             row.role === 'compaction' ||
             (!row.turnId && row.role !== 'failure'))

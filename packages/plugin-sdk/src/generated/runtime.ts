@@ -4093,6 +4093,10 @@ export type MessageOrigin =
       graphId: string;
     }
   | {
+      kind: 'bot_worker';
+      sessionId: string;
+    }
+  | {
       kind: 'plan';
       executionId: string;
       title: string;

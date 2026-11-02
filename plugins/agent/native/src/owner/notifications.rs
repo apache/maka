@@ -29,6 +29,11 @@ pub(crate) struct ReturnRoute {
     pub(crate) workspace: Workspace,
     pub(crate) binding: maka_agent_facts::workspace::BindingStamp,
 }
+impl ReturnRoute {
+    pub(crate) fn binding_model(&self) -> &maka_agent_facts::execution::ModelBinding {
+        &self.model.binding
+    }
+}
 impl Owner {
     pub(crate) fn background<F, Fut>(&self, task: F)
     where

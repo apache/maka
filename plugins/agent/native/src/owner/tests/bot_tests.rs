@@ -1084,7 +1084,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+            json!({"sessionId":worker,"message":"Do the task","model":stale_model(&f).await}),
         )
         .await;
         let mut worker_socket = None;
@@ -1102,11 +1102,132 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         }
         response(&mut bot_socket.expect("the Bot resumes")).await;
         response(&mut worker_socket.expect("the worker runs")).await;
-        idle(&f, &bot).await;
         idle(&f, &worker).await;
+        // The finished worker wakes the Bot; serve that Turn before checking idle.
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
+            .await
+            .expect("the Bot is woken")
+            .unwrap();
+        request(&mut socket).await;
+        response(&mut socket).await;
+        idle(&f, &bot).await;
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
     .await
     .unwrap();
+}
+
+async fn worker_wake(worker_first: bool) {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.tools = vec![
+                    session_tool("create", "SessionCreate"),
+                    session_tool("send", "SessionSend"),
+                ];
+            },
+        )
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        f.send(&bot).await.unwrap();
+
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionCreate",
+            json!({"title":"Research task","labels":[],"workspace":{"kind":"session","sessionId":bot}}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let created: Value = serde_json::from_str(&last_tool_result(&sent)).unwrap();
+        let created = match created {
+            Value::String(text) => serde_json::from_str(&text).unwrap(),
+            other => other,
+        };
+        let worker = created["session"]["id"].as_str().unwrap().to_owned();
+        service_tools::named_tool_response(
+            &mut socket,
+            "SessionSend",
+            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+        )
+        .await;
+        let mut worker_socket = None;
+        let mut bot_socket = None;
+        for _ in 0..2 {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let sent = request(&mut socket).await;
+            if sent["messages"].as_array().unwrap().iter().any(|message| message["role"] == "tool") {
+                bot_socket = Some(socket);
+            } else {
+                worker_socket = Some(socket);
+            }
+        }
+        // Either the Bot ends its Turn first, or the worker finishes while the Bot is
+        // still running; the report waits for the Bot in that case.
+        let mut bot_socket = bot_socket.expect("the Bot resumes");
+        let mut worker_socket = worker_socket.expect("the worker runs");
+        if worker_first {
+            response(&mut worker_socket).await;
+            idle(&f, &worker).await;
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            response(&mut bot_socket).await;
+            idle(&f, &bot).await;
+        } else {
+            response(&mut bot_socket).await;
+            idle(&f, &bot).await;
+            response(&mut worker_socket).await;
+            idle(&f, &worker).await;
+        }
+
+        // The finished worker wakes the Bot with a new Turn that names it.
+        let (mut socket, _) = tokio::time::timeout(Duration::from_secs(20), listener.accept())
+            .await
+            .expect("the Bot is woken")
+            .unwrap();
+        let sent = request(&mut socket).await;
+        let text = sent["messages"].to_string();
+        assert!(
+            text.contains("Research task") && text.contains(&worker) && text.contains("finished its latest run"),
+            "{text}"
+        );
+        response(&mut socket).await;
+        idle(&f, &bot).await;
+
+        // The same finished run is never reported twice.
+        assert!(
+            tokio::time::timeout(Duration::from_secs(6), listener.accept()).await.is_err(),
+            "a reported run wakes the Bot only once"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn the_bot_is_woken_once_when_its_worker_finishes() {
+    worker_wake(false).await;
+}
+
+#[tokio::test]
+async fn a_report_for_a_worker_that_finished_while_the_bot_ran_waits_for_the_bot() {
+    worker_wake(true).await;
+}
+
+/// The selection a Bot can produce: the right connection and model but a revision
+/// it has no way to know.
+async fn stale_model(f: &Fixture) -> Value {
+    let mut model = serde_json::to_value(f.selection().await).unwrap();
+    model["revision"] = json!(model["revision"].as_u64().unwrap() + 40);
+    model
 }

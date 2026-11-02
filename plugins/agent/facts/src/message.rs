@@ -44,6 +44,10 @@ pub enum MessageOrigin {
     WorkhubGraph {
         graph_id: String,
     },
+    /// A worker conversation created by the Bot finished a run.
+    BotWorker {
+        session_id: String,
+    },
     /// The opening message of an approved Plan execution. `title` is the
     /// approved Plan's title when the execution was frozen, not the current Plan.
     Plan {
@@ -63,6 +67,7 @@ impl MessageOrigin {
             }
             Self::WorkhubTask { task_id } => crate::interaction::entity_id(task_id),
             Self::WorkhubGraph { graph_id } => crate::interaction::entity_id(graph_id),
+            Self::BotWorker { session_id } => crate::interaction::entity_id(session_id),
             Self::Plan {
                 execution_id,
                 title,
