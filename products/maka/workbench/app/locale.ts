@@ -104,7 +104,7 @@ export function localizedPresentation<T extends { displayName: string; descripti
   return (
     translations?.[locale] ??
     translations?.[locale.split('-')[0]!] ??
-    translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
+    translations?.[(['en', 'zh-CN', 'zh-TW', 'ko'] as const)[languageIndex(locale)]] ??
     presentation
   );
 }
@@ -115,7 +115,7 @@ export function displayText(text: DisplayText): string {
   return (
     text.translations?.[locale] ??
     text.translations?.[locale.split('-')[0]!] ??
-    text.translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
+    text.translations?.[(['en', 'zh-CN', 'zh-TW', 'ko'] as const)[languageIndex(locale)]] ??
     text.fallback
   );
 }
