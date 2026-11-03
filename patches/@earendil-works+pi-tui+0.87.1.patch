@@ -1,5 +1,5 @@
 diff --git a/node_modules/@earendil-works/pi-tui/dist/components/editor.js b/node_modules/@earendil-works/pi-tui/dist/components/editor.js
-index 7eae102..9d00340 100644
+index 7eae102..bcdcf6c 100644
 --- a/node_modules/@earendil-works/pi-tui/dist/components/editor.js
 +++ b/node_modules/@earendil-works/pi-tui/dist/components/editor.js
 @@ -2,7 +2,6 @@ import { getKeybindings } from "../keybindings.js";
@@ -43,3 +43,29 @@ index 7eae102..9d00340 100644
      }
      undo() {
          this.exitHistoryBrowsing();
+diff --git a/node_modules/@earendil-works/pi-tui/dist/utils.js b/node_modules/@earendil-works/pi-tui/dist/utils.js
+index 31bb2e1..484c89e 100644
+--- a/node_modules/@earendil-works/pi-tui/dist/utils.js
++++ b/node_modules/@earendil-works/pi-tui/dist/utils.js
+@@ -803,10 +803,10 @@ function wrapSingleLine(line, width) {
+     let currentVisibleLength = 0;
+     for (const token of tokens) {
+         const tokenVisibleLength = visibleWidth(token);
+-        const isWhitespace = token.trim() === "";
++        const isWhitespace = stripTerminalSequences(token).trim() === "";
+         // Token itself is too long - break it character by character
+         if (tokenVisibleLength > width && !isWhitespace) {
+-            if (currentLine) {
++            if (stripTerminalSequences(currentLine)) {
+                 // Add specific reset for underline only (preserves background)
+                 const lineEndReset = tracker.getLineEndReset();
+                 if (lineEndReset) {
+@@ -852,7 +852,7 @@ function wrapSingleLine(line, width) {
+         }
+         updateTrackerFromText(token, tracker);
+     }
+-    if (currentLine) {
++    if (stripTerminalSequences(currentLine)) {
+         // No reset at end of final line - let caller handle it
+         wrapped.push(currentLine);
+     }

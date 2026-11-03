@@ -31,7 +31,9 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { describe, test } from 'node:test';
 import {
+  CLI_HIGHLIGHT_JS_LANGUAGE_MODULES,
   collectWorkspaceDependencyClosure,
+  isCliThirdPartyReleasePath,
   isCurrentDevelopmentJavaScript,
   isMakaDevelopmentArtifact,
   isThirdPartyDevelopmentArtifact,
@@ -206,6 +208,43 @@ describe('CLI release file policy', () => {
     ]) {
       assert.equal(isThirdPartyDevelopmentArtifact(path), false, path);
     }
+  });
+
+  test('keeps only the reviewed highlight.js runtime closure in CLI artifacts', () => {
+    for (const path of [
+      'package.json',
+      'LICENSE',
+      'es',
+      'es/core.js',
+      'es/package.json',
+      'es/languages',
+      'es/languages/typescript.js',
+      'lib',
+      'lib/core.js',
+    ]) {
+      assert.equal(isCliThirdPartyReleasePath('highlight.js@11.12.0', path), true, path);
+    }
+    for (const path of [
+      'README.md',
+      'es/index.js',
+      'es/languages/ada.js',
+      'lib/languages/typescript.js',
+      'styles/github.css',
+      'types/index.d.ts',
+    ]) {
+      assert.equal(isCliThirdPartyReleasePath('highlight.js@11.12.0', path), false, path);
+    }
+
+    assert.equal(isCliThirdPartyReleasePath('another-package@1.0.0', 'README.md'), true);
+
+    const highlighterSource = readFileSync(
+      resolve(import.meta.dirname, '../packages/cli/src/tui-syntax-highlight.ts'),
+      'utf8',
+    );
+    const importedLanguages = [
+      ...highlighterSource.matchAll(/from 'highlight\.js\/lib\/languages\/([^']+)'/gu),
+    ].map((match) => match[1]);
+    assert.deepEqual(importedLanguages.sort(), [...CLI_HIGHLIGHT_JS_LANGUAGE_MODULES].sort());
   });
 
   test('keeps the stricter Maka-owned package boundary', () => {
