@@ -20,6 +20,37 @@
 use super::*;
 
 #[tokio::test]
+async fn server_side_compaction_requires_connection_opt_in() {
+    let provider = Codex::new(Arc::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
+    let discovered = maka_providers::codex::decode_model_inventory(
+        br#"{"models":[{"slug":"gpt-6-luna","comp_hash":"3000"}]}"#,
+    )
+    .unwrap()
+    .remove(0);
+    for (setting, expected) in [(None, false), (Some(true), true), (Some(false), false)] {
+        let mut connection = connection();
+        if let Some(enabled) = setting {
+            connection.configuration["serverSideCompaction"] = json!(enabled);
+        }
+        let model = provider
+            .resolve(Resolve {
+                connection,
+                model: discovered.clone(),
+                overrides: None,
+                thinking_level: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            model.info.capabilities.unwrap().native_compaction,
+            Some(expected)
+        );
+    }
+}
+
+#[tokio::test]
 async fn subscription_discovery_preserves_capacity_and_compaction_hash() {
     let provider = Codex::new(Arc::new(
         maka_providers::catalog::Snapshot::bundled().unwrap(),

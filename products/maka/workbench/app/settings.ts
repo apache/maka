@@ -56,10 +56,17 @@ export type ConnectionEditor = {
   name: string;
   slug: string;
   baseUrl: string;
+  serverSideCompaction: boolean;
   enabled: boolean;
   overlay: string;
   apiKey: string;
 };
+function supportsServerSideCompaction(provider: SettingsProvider) {
+  const schema = provider.descriptor.configurationSchema as {
+    properties?: { serverSideCompaction?: { type?: string } };
+  };
+  return schema?.properties?.serverSideCompaction?.type === 'boolean';
+}
 export type ConnectionAction = { editor: number; revision: number | null };
 export type ModelAction = ConnectionAction & {
   modelId: string;
@@ -431,6 +438,7 @@ export function createModelSettings(
         overlay: 'null',
         apiKey: '',
         baseUrl: typeof configuration?.baseUrl === 'string' ? configuration.baseUrl : '',
+        serverSideCompaction: configuration?.serverSideCompaction === true,
       });
       credential.set(null);
       discovery.set('idle');
@@ -507,6 +515,7 @@ export function createModelSettings(
           typeof detail.target.configuration.baseUrl === 'string'
             ? detail.target.configuration.baseUrl
             : '',
+        serverSideCompaction: detail.target.configuration.serverSideCompaction === true,
         overlay: pretty(detail.editing!.requestBodyOverlay),
         apiKey: '',
       });
@@ -531,6 +540,11 @@ export function createModelSettings(
         (form.provider.descriptor.configurationDefaults as Record<string, unknown>)),
     };
     if ('baseUrl' in value || form.baseUrl) value.baseUrl = form.baseUrl;
+    if (
+      supportsServerSideCompaction(form.provider) &&
+      (form.serverSideCompaction || 'serverSideCompaction' in value)
+    )
+      value.serverSideCompaction = form.serverSideCompaction;
     return value;
   };
   const dirty = () => {
@@ -579,6 +593,7 @@ export function createModelSettings(
       name: detail.name,
       slug: detail.target.slug,
       enabled: detail.enabled,
+      serverSideCompaction: detail.target.configuration.serverSideCompaction === true,
       overlay: pretty(detail.editing!.requestBodyOverlay),
       baseUrl:
         typeof detail.target.configuration.baseUrl === 'string'
@@ -630,7 +645,7 @@ export function createModelSettings(
         if (form.enabled !== original.enabled) changes.enabled = form.enabled;
         if (!sameValue(config, original.target.configuration)) {
           changes.configuration = config;
-          // A connection endpoint change resets discovery in Host. Preserve the
+          // A provider configuration change resets discovery in Host. Preserve the
           // explicit per-model choices from the exact editing baseline.
           changes.modelOverrides = original.editing!.modelOverrides;
         }
@@ -751,6 +766,11 @@ export function createModelSettings(
   const toggleEnabled = (request: ConnectionAction & { enabled: boolean }) => {
     const form = editor();
     if (current(request) && form && !busy()) editor.set({ ...form, enabled: request.enabled });
+  };
+  const toggleServerSideCompaction = (request: ConnectionAction & { enabled: boolean }) => {
+    const form = editor();
+    if (current(request) && form && !busy())
+      editor.set({ ...form, serverSideCompaction: request.enabled });
   };
   const fetchModels = async (form: ConnectionEditor & { baseline: Detail }) => {
     discovery.set('fetching');
@@ -1322,6 +1342,8 @@ export function createModelSettings(
     edit,
     saveConnection,
     toggleEnabled,
+    supportsServerSideCompaction: () => supportsServerSideCompaction(editor()!.provider),
+    toggleServerSideCompaction,
     discover,
     editModel,
     changeModel,
