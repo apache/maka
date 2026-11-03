@@ -6629,11 +6629,6 @@ export interface SettingsAssistantPreferences {
   shellTitles: boolean;
   shell: ShellPolicy;
 }
-export interface ShellPolicy {
-  preference: ShellPreference;
-  executable: string;
-  titles: boolean;
-}
 export interface MessagePredictionSettings {
   enabled: boolean;
   ordinarySessionsOnly: boolean;
@@ -6643,6 +6638,11 @@ export interface MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt?: string | null;
+}
+export interface ShellPolicy {
+  preference: ShellPreference;
+  executable: string;
+  titles: boolean;
 }
 export interface SettingsNetworkSnapshot {
   revision: number;
