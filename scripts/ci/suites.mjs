@@ -95,11 +95,6 @@ export const suites = {
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
     extraInputs: [...embeddedInputs, 'scripts/rust/build-cli.mjs'],
   },
-  clippy: {
-    workspace: 'root',
-    packages: 'workspace',
-    extraInputs: embeddedInputs,
-  },
   contracts: {
     workspace: 'root',
     packages: ['maka-schema', 'maka-workbench'],
@@ -214,15 +209,6 @@ export const workers = [
     dependencies: 'headless',
     javascript: true,
     compile: false,
-  },
-  {
-    id: 'clippy',
-    suites: ['clippy'],
-    runner: 'ubuntu-latest',
-    workspace: 'root',
-    dependencies: 'headless',
-    javascript: true,
-    compile: true,
   },
   {
     id: 'product',

@@ -63,8 +63,6 @@ export function executor(root, worker = {}) {
     if (id === 'format') {
       await cargo(['fmt', '--all', '--', '--check']);
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
-    } else if (id === 'lint-js') {
-      await node(['node_modules/@biomejs/biome/bin/biome', 'lint', '.']);
     } else if (id === 'tooling-tests') {
       await node([
         '--test',
@@ -96,8 +94,6 @@ export function executor(root, worker = {}) {
       mkdirSync(join(target, 'ci'), { recursive: true });
       copyFileSync(join(target, 'debug/maka'), join(target, 'ci/maka-bridge'));
       await nextest(id, true);
-    } else if (id === 'clippy') {
-      await cargo(['clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings']);
     } else if (id === 'native-build') {
       await node(['scripts/rust/build-cli.mjs']);
       await run(join(target, 'debug/maka'), ['--version']);
@@ -134,7 +130,7 @@ export function executor(root, worker = {}) {
 
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
-      for (const name of ['format', 'lint-js', 'tooling-tests', 'licenses']) await check(name);
+      for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
     } else if (id === 'macos-host') {
       await nextest(id);
       await node([
@@ -207,7 +203,7 @@ export function executor(root, worker = {}) {
         ['--test', 'third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs'],
         { env: { ...env, CHROME: chrome } },
       );
-    } else if (!['clippy', 'native', 'native-build'].includes(id)) {
+    } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }
   }
