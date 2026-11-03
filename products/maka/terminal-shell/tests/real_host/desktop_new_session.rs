@@ -1414,35 +1414,26 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_available() {
-    let mut fixture = Fixture::open().await;
+async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
+    let fixture = Fixture::open().await;
     let (theme, appearance, layout, width, height) = visual_case();
-    let desktop = Desktop::open_at(
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/mermaid_preview.tsx");
+    let output = fixture.directory.path().join("mermaid-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
+        Some((source, "en", "Show diagram source")),
     )
     .await;
-    desktop.new_draft().await;
-    desktop
-        .type_text("Show how Maka renders Mermaid diagrams locally.")
-        .await;
-    desktop.key("enter", false);
-    desktop.artifact("mermaid-submitted");
-    let mut reply = desktop.request(&mut fixture).await;
-    reply.delta("### Mermaid diagrams in Maka\n\nRendered locally, with Chinese labels and colors that follow the workbench theme.\n\n```mermaid\nflowchart LR\n  A[Mermaid 源码] --> B[Pele 渲染]\n  B --> C[字体转路径]\n  C --> D[NSH 显示]\n  style D fill:#1d745a,stroke:#24c483,color:#ffffff\n```\n").await;
-    reply.finish().await;
-    let sessions = desktop.sessions().await;
-    let session = sessions
-        .iter()
-        .find(|session| session["id"] != fixture.session)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    fixture.idle(&desktop.client, &session).await;
-    desktop.control("Show diagram source").await;
     desktop
         .until(
             "the diagram's image never reached the desktop frame",
@@ -1463,7 +1454,23 @@ async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_avail
     desktop.artifact(&format!("mermaid-workbench-{theme}-{layout}"));
     desktop.press("Show diagram source").await;
     desktop.control("Hide diagram source").await;
+    desktop.press("Copy code block").await;
+    let copied = desktop
+        .until("the diagram source was not copied", || {
+            desktop
+                .platform
+                .take_clipboard_write()
+                .and_then(|item| item.text())
+        })
+        .await;
+    assert_eq!(
+        copied,
+        "flowchart LR\n  A[源码] --> B[图表]\n  style B fill:#1d745a,stroke:#24c483,color:#ffffff"
+    );
     desktop.artifact(&format!("mermaid-workbench-source-{theme}-{layout}"));
+    desktop.press("Hide diagram source").await;
+    desktop.control("Show diagram source").await;
+    assert!(desktop.controls("Copy code block").is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
