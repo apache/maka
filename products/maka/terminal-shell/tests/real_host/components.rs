@@ -192,6 +192,109 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_tab_accepts_prediction_as_an_undoable_draft_then_navigates() {
+    let mut view = component("composer-prediction").await;
+    wait_editable_composer(&mut view).await;
+    wait_enabled_node(&mut view, "Use suggested message").await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("No command")
+            && view
+                .surface()
+                .input_context()
+                .is_some_and(|input| input.text.as_deref() == Some("Review the changes."))
+            && !view
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == "Use suggested message")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    )));
+    wait_focused_input(&mut view, "Message composer").await;
+    shortcut(&mut view, 'z');
+    wait_view_state(&mut view, |view, _| {
+        view.surface()
+            .input_context()
+            .is_some_and(|input| input.text.as_deref() == Some(""))
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_prediction_preserves_reverse_tab_and_escape_restores_forward_tab() {
+    let mut view = component("composer-prediction").await;
+    wait_editable_composer(&mut view).await;
+    wait_enabled_node(&mut view, "Use suggested message").await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_focused_input(&mut view, "Message composer").await;
+    assert_eq!(
+        view.surface().input_context().unwrap().text.as_deref(),
+        Some("")
+    );
+    wait_enabled_node(&mut view, "Use suggested message").await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Use suggested message")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thinking_disclosure_renders_inline_markdown_and_keeps_formatted_body() {
     let mut view = component("thinking-markdown").await;
     let title = "Thinking · Opening Reddit homepage";
