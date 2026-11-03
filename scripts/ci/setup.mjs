@@ -29,7 +29,9 @@ const version = process.env.MAKA_CI_NEXTEST;
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
-    : ['root', 'replay', 'bridge', 'desktop', 'termina', 'nsh', 'gpui'].includes(role)
+    : ['root', 'replay', 'bridge', 'desktop', 'termina', 'nsh', 'gpui', 'native-macos'].includes(
+          role,
+        )
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
 

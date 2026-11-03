@@ -18,6 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
 
@@ -221,5 +226,27 @@ test('Host identity inputs execute real macOS tests, including changes outside C
     assert.equal(runners.length, 1, path);
     assert.equal(runners[0].runner, 'macos-latest', path);
     assert.equal(runners[0].javascript, true, path);
+  }
+});
+
+test('native macOS behavior verification selects nextest during runner setup', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
+  try {
+    for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
+      const output = join(temporary, role);
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
+        {
+          env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
+        },
+      );
+      assert.equal(
+        readFileSync(output, 'utf8'),
+        role === 'native-macos' ? 'tools=cargo-nextest\n' : 'tools=\n',
+      );
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
   }
 });
