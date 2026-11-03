@@ -166,7 +166,12 @@ export interface RuntimeExecutionConnection {
   defaultApiProtocol?: ModelApiProtocol;
   defaultModel: string;
   models?: ModelInfo[];
-  /** Host-only timestamp of the fetched Codex compatibility metadata snapshot. */
+  /**
+   * Host-only freshness stamp of the Codex compatibility metadata snapshot this
+   * execution target resolved. Stamped when a backend resolves the connection
+   * (#6402), so the gate answers for the catalog in use rather than for the
+   * last manual model refresh.
+   */
   codexCompactionMetadataFetchedAt?: number;
   /** User model parameters, retained independently of the enabled selection. */
   modelOverrides?: ModelOverrides;
