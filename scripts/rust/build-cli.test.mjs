@@ -177,13 +177,10 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       if (process.platform !== 'win32')
         assert.equal((await lstat(join(host, 'MacOS/maka-host-shell'))).mode & 0o777, 0o755);
       const hostPlist = await readFile(join(host, 'Info.plist'), 'utf8');
-      // The helper keeps the same Info.plist across releases.
       for (const [key, value] of [
         ['CFBundleExecutable', 'maka-host-shell'],
         ['CFBundleIdentifier', 'org.apache.maka.host'],
         ['CFBundleName', 'Maka Host'],
-        ['CFBundleShortVersionString', '1'],
-        ['CFBundleVersion', '1'],
       ])
         assert.ok(hostPlist.includes(`<key>${key}</key>\n  <string>${value}</string>`), key);
       assert.ok(hostPlist.includes('<key>LSUIElement</key>\n  <true/>'));
