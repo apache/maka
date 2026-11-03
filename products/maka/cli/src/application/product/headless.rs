@@ -33,7 +33,7 @@ use maka_host_runtime::{
 };
 pub(crate) use publication::{LivePublication, prepare_live_publication};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
@@ -527,6 +527,7 @@ async fn replace_workspace_locations(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn configuration<'a>(loaded: &'a LoadedDeployment, name: &str) -> &'a Value {
         &loaded

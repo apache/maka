@@ -310,6 +310,7 @@ fn application_input(
         ..node(key, &consumer)
     };
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             (
