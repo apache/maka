@@ -323,6 +323,10 @@ function PreferenceToggle(props: {
 function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: GeneralAction }) {
   const owner = props.owner;
   const request = props.request;
+  const shellEditor = () => {
+    const editor = owner.editor();
+    return editor?.kind === 'shell' ? editor : null;
+  };
   const name = () => {
     const editor = owner.editor();
     return editor?.kind === 'personalization' ? editor.displayName : '';
@@ -353,9 +357,7 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
           >
             {(option) => (
               <Button
-                selected={
-                  owner.editor()?.kind === 'shell' && owner.editor()?.preference === option().value
-                }
+                selected={shellEditor()?.preference === option().value}
                 disabled={owner.disabled()}
                 onPress={inputAction(owner.editShell, {
                   request,
@@ -371,10 +373,10 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
             )}
           </Each>
         </View>
-        <If when={owner.editor()?.kind === 'shell' && owner.editor()?.preference === 'git_bash'}>
+        <If when={shellEditor()?.preference === 'git_bash'}>
           <SettingsField
             label={tr('Git Bash executable')}
-            value={owner.editor()?.kind === 'shell' ? owner.editor()?.executable : ''}
+            value={shellEditor()?.executable ?? ''}
             change={(text) => owner.editShell({ request, change: { executable: text } })}
             disabled={owner.disabled()}
           />

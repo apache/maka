@@ -331,6 +331,16 @@ export const settingsMessages = {
     '自动模式在 Windows 上优先使用 PowerShell；Git Bash 仅覆盖当前 Runtime Host。',
     '自動模式在 Windows 上優先使用 PowerShell；Git Bash 僅覆蓋目前的 Runtime Host。',
   ],
+  'Git Bash must be an existing GNU Bash executable on this Windows Runtime Host.': [
+    'Git Bash must be an existing GNU Bash executable on this Windows Runtime Host.',
+    'Git Bash 必须是此 Windows Runtime Host 上现有的 GNU Bash 可执行文件。',
+    'Git Bash 必須是此 Windows Runtime Host 上現有的 GNU Bash 執行檔。',
+  ],
+  'Select a Git Bash executable.': [
+    'Select a Git Bash executable.',
+    '请选择 Git Bash 可执行文件。',
+    '請選擇 Git Bash 執行檔。',
+  ],
   'Automatic shell titles': [
     'Automatic shell titles',
     '自动生成 Shell 标题',
