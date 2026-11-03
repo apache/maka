@@ -80,12 +80,12 @@ impl Peer {
         tokio::select! {
             _ = self.stop.cancelled() => Err("ACP connection closed".into()),
             _ = cancel.cancelled() => Err("ACP interaction cancelled".into()),
-            result = tokio::time::timeout(Duration::from_secs(300), async {
+            result = async {
                 Ok::<_, Error>(match callback {
                     Callback::Permission(request) => Response::Permission(self.connection.send_request(request).block_task().await?),
                     Callback::Elicitation(request) => Response::Elicitation(self.connection.send_request(request).block_task().await?),
                 })
-            }) => result?,
+            } => result,
         }
     }
 }

@@ -95,7 +95,7 @@ async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal()
             let result=request.into_step(step)
                 .prepare(call,CancellationToken::new()).await.unwrap()
                 .publish(&[]).await.unwrap()
-                .completion.await.unwrap();
+                .start().await.unwrap();
             assert_eq!(result["state"],"completed","{result}");
             assert_eq!(result["result"]["ok"],true,"{result}");
             assert_eq!(result["content"],expected);

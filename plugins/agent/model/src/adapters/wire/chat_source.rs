@@ -646,6 +646,78 @@ fn text_part(text: TextSource) -> ContentRecipe {
         provider_options: None,
     }
 }
+struct NotificationContent {
+    head: TextSource,
+    output: Arc<dyn RecipeSource<ContentRecipe>>,
+}
+struct NotificationCursor {
+    head: Option<TextSource>,
+    output: Box<dyn RecipeCursor<ContentRecipe>>,
+}
+impl RecipeSource<ContentRecipe> for NotificationContent {
+    fn len(&self) -> usize {
+        1 + self.output.len()
+    }
+    fn open(&self, start: usize) -> Box<dyn RecipeCursor<ContentRecipe>> {
+        Box::new(NotificationCursor {
+            head: (start == 0).then(|| self.head.clone()),
+            output: self.output.open(start.saturating_sub(1)),
+        })
+    }
+}
+impl RecipeCursor<ContentRecipe> for NotificationCursor {
+    fn next(&mut self) -> NextRecipe<'_, ContentRecipe> {
+        Box::pin(async move {
+            if let Some(head) = self.head.take() {
+                return Ok(Some(text_part(head)));
+            }
+            self.output.next().await
+        })
+    }
+}
+pub(super) fn notification_content(
+    result: ToolResultRecipe,
+    language: Language,
+    budget: Arc<dyn SourceBudget>,
+    owned: &mut usize,
+) -> Result<Arc<dyn RecipeSource<ContentRecipe>>, ModelError> {
+    let (prefix, suffix) = match language {
+        Language::En => ("[Notification from tool ", "]\n"),
+        Language::ZhCn => ("[来自工具 ", " 的通知]\n"),
+        Language::ZhTw => ("[來自工具 ", " 的通知]\n"),
+    };
+    let failed = matches!(
+        &result.output,
+        ToolOutputRecipe::ErrorText(_) | ToolOutputRecipe::ErrorJson(_)
+    );
+    let head = combined(
+        vec![
+            generated(prefix),
+            result.tool_call_id,
+            generated(suffix),
+            generated(if failed { "Error: " } else { "" }),
+        ],
+        budget,
+        owned,
+    )?;
+    let output = match result.output {
+        ToolOutputRecipe::Text(text) | ToolOutputRecipe::ErrorText(text) => {
+            *owned += parts_metadata::<ContentRecipe>(1)?;
+            parts(vec![text_part(text)])
+        }
+        ToolOutputRecipe::Json(value) | ToolOutputRecipe::ErrorJson(value) => {
+            *owned += parts_metadata::<ContentRecipe>(1)?;
+            parts(vec![text_part(TextSource::new(
+                value.into_bytes(),
+                TextEncoding::Utf8,
+            ))])
+        }
+        ToolOutputRecipe::Content(content) => content,
+    };
+    *owned += std::mem::size_of::<NotificationContent>() + 2 * std::mem::size_of::<usize>();
+    Ok(Arc::new(NotificationContent { head, output }))
+}
+
 async fn audio_fallback(
     part: ContentRecipe,
     language: Language,
@@ -942,36 +1014,25 @@ impl Compiler {
         while let Some(mut result) = cursor.next().await.map_err(error)? {
             tokio::task::yield_now().await;
             if result.kind == ToolResultKind::Notification {
-                if let ToolOutputRecipe::Text(value) = result.output {
-                    self.flush(budget.clone(), &mut items).await?;
-                    let (prefix, suffix) = match self.language {
-                        Language::En => ("[Notification from exec ", "]\n"),
-                        Language::ZhCn => ("[来自 exec ", " 的通知]\n"),
-                        Language::ZhTw => ("[來自 exec ", " 的通知]\n"),
-                    };
-                    let text = combined(
-                        vec![
-                            generated(prefix),
-                            result.tool_call_id,
-                            generated(suffix),
-                            value,
-                        ],
+                self.flush(budget.clone(), &mut items).await?;
+                let content = notification_content(
+                    result,
+                    self.language,
+                    budget.clone(),
+                    &mut self.owned_bytes,
+                )?;
+                items.extend(
+                    encode(
+                        MessageRecipe::User {
+                            content,
+                            provider_options: None,
+                        },
+                        &self.options,
+                        self.language,
                         budget.clone(),
-                        &mut self.owned_bytes,
-                    )?;
-                    items.extend(
-                        encode(
-                            MessageRecipe::User {
-                                content: parts(vec![text_part(text)]),
-                                provider_options: None,
-                            },
-                            &self.options,
-                            self.language,
-                            budget.clone(),
-                        )
-                        .await?,
-                    );
-                }
+                    )
+                    .await?,
+                );
                 continue;
             }
             if self.projection == Projection::Generated

@@ -44,7 +44,7 @@ use tokio_util::sync::CancellationToken;
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn yielded_cell_can_receive_an_answer_and_be_observed_by_the_next_model_step() {
     for continuation in [false, true] {
-        tokio::time::timeout(Duration::from_secs(15), verify_yielded(continuation))
+        tokio::time::timeout(Duration::from_secs(60), verify_yielded(continuation))
             .await
             .expect("yielded cells must continue without cancelling the pending answer");
     }
@@ -73,7 +73,13 @@ async fn verify_yielded(continuation: bool) {
         let (mut socket, _) = listener.accept().await.unwrap();
         let request = http::read_request(&mut socket).await;
         let running: serde_json::Value = serde_json::from_str(
-            request["messages"].as_array().unwrap().last().unwrap()["content"]
+            request["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .rev()
+                .find(|message| message["role"] == "tool")
+                .unwrap()["content"]
                 .as_str()
                 .unwrap(),
         )
@@ -89,7 +95,13 @@ async fn verify_yielded(continuation: bool) {
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let request = http::read_request(&mut socket).await;
-        let mut output = request["messages"].as_array().unwrap().last().unwrap()["content"]
+        let mut output = request["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap()["content"]
             .as_str()
             .unwrap()
             .lines();

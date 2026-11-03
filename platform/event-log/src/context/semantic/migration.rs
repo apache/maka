@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Startup-only conversion from the former JSON directory representation.
+//! Startup-only conversion of persisted semantic metadata.
 use super::directory::codec;
 use crate::StoreError;
 use maka_agent_facts::history::semantic::directory::{
@@ -28,6 +28,53 @@ use rusqlite::{
     functions::{Context, FunctionFlags},
 };
 use serde::de::DeserializeOwned;
+use serde_json::Value;
+
+#[cfg(test)]
+mod steering_tests;
+
+fn conversion_error(error: impl std::error::Error + Send + Sync + 'static) -> rusqlite::Error {
+    rusqlite::Error::UserFunctionError(Box::new(error))
+}
+
+fn output_kind(value: &mut Value) {
+    for variant in ["ToolResult", "UnknownTool"] {
+        if let Some(Value::Object(fields)) = value.get_mut(variant) {
+            fields
+                .entry("kind")
+                .or_insert_with(|| Value::String("output".into()));
+        }
+    }
+}
+
+fn steering_frontier(context: &Context<'_>) -> rusqlite::Result<String> {
+    let mut value: Value =
+        serde_json::from_slice(context.get_raw(0).as_bytes()?).map_err(conversion_error)?;
+    let observe = |call: &mut Value| {
+        if let Value::Object(fields) = call {
+            fields.entry("yielded").or_insert(Value::Bool(false));
+        }
+    };
+    if let Some(Value::Object(calls)) = value.get_mut("calls") {
+        for call in calls.values_mut() {
+            observe(call);
+        }
+    }
+    if let Some(Value::Object(requests)) = value.get_mut("requests") {
+        for request in requests.values_mut() {
+            if let Some(Value::Object(recorded)) = request.get_mut("recorded") {
+                for record in recorded.values_mut() {
+                    if let Some(call) = record.pointer_mut("/kind/Call") {
+                        observe(call);
+                    }
+                }
+            }
+        }
+    }
+    let frontier: maka_agent_facts::history::semantic::Frontier =
+        serde_json::from_value(value).map_err(conversion_error)?;
+    serde_json::to_string(&frontier).map_err(conversion_error)
+}
 
 fn transcode<T: DeserializeOwned>(
     context: &Context<'_>,
@@ -40,13 +87,23 @@ fn transcode<T: DeserializeOwned>(
 pub(crate) fn register(db: &Connection) -> Result<(), StoreError> {
     let flags = FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DETERMINISTIC;
     db.create_scalar_function("maka_directory_row", 1, flags, |context| {
-        transcode::<RowDirectory>(context, codec::encode)
+        let mut value: Value =
+            serde_json::from_slice(context.get_raw(0).as_bytes()?).map_err(conversion_error)?;
+        output_kind(&mut value);
+        let row: RowDirectory = serde_json::from_value(value).map_err(conversion_error)?;
+        codec::encode(&row).map_err(conversion_error)
     })?;
     db.create_scalar_function("maka_directory_payload", 1, flags, |context| {
         transcode::<PayloadDirectory>(context, codec::encode)
     })?;
     db.create_scalar_function("maka_directory_child", 1, flags, |context| {
         transcode::<ChildDirectory>(context, codec::encode)
+    })?;
+    db.create_scalar_function("maka_steering_frontier", 1, flags, steering_frontier)?;
+    db.create_scalar_function("maka_steering_row_directory", 1, flags, |context| {
+        let json = context.get_raw(0).as_str()?;
+        let row = super::directory::row(json).map_err(conversion_error)?;
+        codec::encode(&row).map_err(conversion_error)
     })?;
     Ok(())
 }
@@ -55,6 +112,8 @@ pub(crate) fn unregister(db: &Connection) -> Result<(), StoreError> {
         "maka_directory_row",
         "maka_directory_payload",
         "maka_directory_child",
+        "maka_steering_frontier",
+        "maka_steering_row_directory",
     ] {
         db.remove_function(name, 1)?;
     }

@@ -603,9 +603,7 @@ impl Owner {
         else {
             return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable));
         };
-        if configuration.model.is_none()
-            || configuration.orchestration_mode.as_str() == plan::EXECUTION
-        {
+        if configuration.model.is_none() {
             return Ok(ResumePreparation::Unavailable(Reason::SourceNotResumable));
         }
         drop(runs);

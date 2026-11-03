@@ -98,6 +98,7 @@ fn every_row_kind_preserves_positions_measures_and_independent_flags() {
             payload: PartSource::Complete(position),
         },
         RowDirectory::ToolResult {
+            kind: maka_agent_facts::model::prompt_source::source::ToolResultKind::Output,
             payload: position,
             call_id: text(11),
             name: text(13),
@@ -106,6 +107,7 @@ fn every_row_kind_preserves_positions_measures_and_independent_flags() {
             archived: false,
         },
         RowDirectory::ToolResult {
+            kind: maka_agent_facts::model::prompt_source::source::ToolResultKind::Output,
             payload: position,
             call_id: text(17),
             name: text(19),
@@ -114,6 +116,7 @@ fn every_row_kind_preserves_positions_measures_and_independent_flags() {
             archived: false,
         },
         RowDirectory::ToolResult {
+            kind: maka_agent_facts::model::prompt_source::source::ToolResultKind::Output,
             payload: position,
             call_id: text(23),
             name: text(29),
@@ -127,6 +130,7 @@ fn every_row_kind_preserves_positions_measures_and_independent_flags() {
             custom: true,
         },
         RowDirectory::UnknownTool {
+            kind: maka_agent_facts::model::prompt_source::source::ToolResultKind::Output,
             call_id: text(37),
             name: text(41),
             custom: false,

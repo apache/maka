@@ -34,10 +34,91 @@ export type AgentCompactOutput_AgentCompactRejection =
   | 'archived'
   | 'backend_unavailable'
   | 'workspace_changed';
+/**
+ * Hierarchical, stable source keys. Display aliases never become data identities.
+ */
+export type AgentHistoryCheckpointReceiptInput_InstanceId = string[];
+export type AgentHistoryCheckpointReceiptInput_Transport = 'local' | 'remote';
+export type AgentHistoryCheckpointReceiptInput_RecoveryProtocol = 'journal_v1';
+/**
+ * Hierarchical, stable source keys. Display aliases never become data identities.
+ */
+export type AgentHistoryCheckpointReceiptOutput_InstanceId = string[];
+export type AgentHistoryCheckpointReceiptOutput_Transport = 'local' | 'remote';
+export type AgentHistoryCheckpointReceiptOutput_RecoveryProtocol = 'journal_v1';
+/**
+ * Unresolved means no durable result is known, including after process loss.
+ */
+export type AgentHistoryCheckpointReceiptOutput_OperationOutcome =
+  | {
+      kind: 'unresolved';
+    }
+  | {
+      kind: 'returned';
+      value: unknown;
+    }
+  | {
+      kind: 'unknown';
+      diagnostic: string;
+    };
+export type AgentHistoryCheckpointReceiptOutput_OperationCleanup =
+  | {
+      kind: 'unconfirmed';
+    }
+  | {
+      kind: 'confirmed';
+    }
+  | {
+      kind: 'failed';
+      diagnostic: string;
+    };
+export type AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointState =
+  | {
+      kind: 'capturing';
+    }
+  | {
+      kind: 'prepared';
+    }
+  | {
+      kind: 'published';
+      head: AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointHead;
+    }
+  | {
+      kind: 'conflict';
+      actual?: string | null;
+    }
+  | {
+      kind: 'interrupted';
+    }
+  | {
+      kind: 'unavailable';
+    };
 export type AgentOpenBotOutput_AgentBotRejection =
   | 'disabled'
   | 'creation_rejected'
   | 'no_workspace';
+export type AgentPredictNextMessageInput_AgentPredictionTrigger = 'live' | 'catch_up';
+export type AgentPublishHistoryCheckpointOutput_AgentHistoryCheckpointState =
+  | {
+      kind: 'capturing';
+    }
+  | {
+      kind: 'prepared';
+    }
+  | {
+      kind: 'published';
+      head: AgentPublishHistoryCheckpointOutput_AgentHistoryCheckpointHead;
+    }
+  | {
+      kind: 'conflict';
+      actual?: string | null;
+    }
+  | {
+      kind: 'interrupted';
+    }
+  | {
+      kind: 'unavailable';
+    };
 /**
  * All parts are subscription items; only End admits a complete preview.
  * Offsets and byte counts refer to original bytes, not Base64 or UTF-16 lengths.
@@ -84,6 +165,23 @@ export type AgentReadFileOutput_AgentFileContent =
       mimeType: string;
     };
 export type AgentReadFileOutput_AgentFileKind = 'file' | 'directory' | 'symlink' | 'other';
+export type AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointFrame =
+  | {
+      kind: 'native_history_v1';
+      head: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead;
+      inventory: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointInventory;
+      bundle: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
+    }
+  | {
+      kind: 'chunk';
+      offset: number;
+      data: string;
+    }
+  | {
+      kind: 'end';
+      digest: string;
+      bytes: number;
+    };
 export type AgentSkillCandidatesInput_AgentSkillCandidatesBackend =
   | {
       kind: 'model';
@@ -103,6 +201,12 @@ export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+export type SettingsAssistantPreferencesOutput_LanguagePreference =
+  | 'auto'
+  | 'en'
+  | 'zh-CN'
+  | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
@@ -238,6 +342,7 @@ export type SettingsUsageOutput_UsageToolResult =
  * Refusal category without input-derived explanation text.
  */
 export type SettingsUsageOutput_RejectionKind =
+  | 'superseded'
   | 'unavailable'
   | 'invalid_input'
   | 'policy_denied'
@@ -342,11 +447,6 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentGoalChange;
       output: Runtime.AgentGoalResult;
-    };
-    changePlan: {
-      mode: 'mutation';
-      input: Runtime.AgentPlanChange;
-      output: Runtime.AgentPlanResult;
     };
     changeSession: {
       mode: 'mutation';
@@ -489,6 +589,32 @@ export interface ServiceMethods {
       input: Runtime.AgentHistoryRead;
       output: Runtime.AgentHistoryPage;
     };
+    historyCheckpointHead: {
+      mode: 'query';
+      input: Runtime.AgentSessionRead;
+      output: AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead | null;
+    };
+    historyCheckpointReceipt: {
+      mode: 'query';
+      input: {
+        reference: AgentHistoryCheckpointReceiptInput_RecoveryRef;
+        /**
+         * The exact original input. Changed input cannot select another publication.
+         */
+        input: AgentHistoryCheckpointReceiptInput_AgentHistoryCheckpointPublish;
+      };
+      output: {
+        /**
+         * Original Host observation. Domain success never fabricates Host cleanup confirmation.
+         */
+        operation?: AgentHistoryCheckpointReceiptOutput_OperationObservation | null;
+        /**
+         * Authoritative domain result even when the Host response was lost.
+         * Absence is not permission to recapture under a replacement operation.
+         */
+        publication?: AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointPublication | null;
+      };
+    };
     historyLandmarks: {
       mode: 'query';
       input: Runtime.AgentHistoryLandmarksRead;
@@ -583,20 +709,27 @@ export interface ServiceMethods {
       input: Runtime.AgentSessionRead;
       output: Runtime.AgentPendingInteractions;
     };
-    plan: {
-      mode: 'query';
-      input: Runtime.AgentPlanRead;
-      output: Runtime.AgentPlanView;
+    predictNextMessage: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        expectedTurnId: string;
+        trigger: AgentPredictNextMessageInput_AgentPredictionTrigger;
+      };
+      output: {
+        sourceTurnId: string;
+        policyRevision: number;
+        suggestion?: string | null;
+      };
     };
-    planHistory: {
+    previewHistoryCheckpoint: {
       mode: 'query';
-      input: Runtime.AgentPlanHistoryRead;
-      output: Runtime.AgentPlanHistory;
-    };
-    planReceipt: {
-      mode: 'query';
-      input: Runtime.AgentPlanReceiptRead;
-      output: Runtime.AgentPlanResult | null;
+      input: Runtime.AgentSessionRead;
+      output: {
+        rootSessionId: string;
+        subtreeDigest: string;
+        sessions: AgentPreviewHistoryCheckpointOutput_AgentHistoryCheckpointSession[];
+      };
     };
     project: {
       mode: 'mutation';
@@ -626,6 +759,24 @@ export interface ServiceMethods {
       input: Runtime.AgentProjectsRead;
       output: Runtime.AgentProjectsPage;
     };
+    publishHistoryCheckpoint: {
+      mode: 'mutation';
+      input: {
+        sessionId: string;
+        expectedRevision: string | null;
+        /**
+         * Membership confirmation returned by previewHistoryCheckpoint, not a live revision.
+         */
+        confirmedSubtreeDigest: string;
+      };
+      output: {
+        state: AgentPublishHistoryCheckpointOutput_AgentHistoryCheckpointState;
+        /**
+         * Cleanup failure does not undo a successful publication.
+         */
+        cleanupPending: boolean;
+      };
+    };
     queue: {
       mode: 'query';
       input: Runtime.AgentSessionRead;
@@ -647,6 +798,17 @@ export interface ServiceMethods {
         expectedVersion?: string | null;
       };
       output: AgentReadFileOutput_AgentFileReadPart | null;
+    };
+    readHistoryCheckpoint: {
+      mode: 'subscription';
+      input: {
+        sessionId: string;
+        /**
+         * Only the exact currently retained revision is readable; no latest fallback.
+         */
+        revision: string;
+      };
+      output: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointFrame | null;
     };
     readPatch: {
       mode: 'query';
@@ -863,11 +1025,6 @@ export interface ServiceMethods {
       input: Runtime.AgentGoalRead;
       output: Runtime.AgentGoalView;
     };
-    watchPlan: {
-      mode: 'subscription';
-      input: Runtime.AgentPlanRead;
-      output: Runtime.AgentPlanView;
-    };
     watchSchedules: {
       mode: 'subscription';
       input: Runtime.AgentScheduleRead;
@@ -884,8 +1041,10 @@ export interface ServiceMethods {
       mode: 'query';
       input: {};
       output: {
-        language: Runtime.LanguagePreference | null;
-        resolvedLanguage: Runtime.Language;
+        predictions: SettingsAssistantPreferencesOutput_MessagePredictionSettings;
+        defaultPredictionPrompt: string;
+        language: SettingsAssistantPreferencesOutput_LanguagePreference | null;
+        resolvedLanguage: SettingsAssistantPreferencesOutput_Language;
         compactionPrompt: string;
         defaultCompactionPrompt: string;
         revision: number;
@@ -1603,6 +1762,96 @@ export interface AgentCompactOutput_AgentExecution {
   highWater: number;
   state: AgentCompactOutput_AgentExecutionState;
 }
+export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
+  revision: string;
+  manifest: AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointObject {
+  digest: string;
+  bytes: number;
+}
+export interface AgentHistoryCheckpointReceiptInput_RecoveryRef {
+  source: AgentHistoryCheckpointReceiptInput_DeploymentRef;
+  namespace: AgentHistoryCheckpointReceiptInput_InstanceId;
+  export: string;
+  method: string;
+  operation: string;
+  fingerprint: string;
+  contract: AgentHistoryCheckpointReceiptInput_RecoveryContract;
+  recovery: AgentHistoryCheckpointReceiptInput_RecoveryProtocol;
+}
+export interface AgentHistoryCheckpointReceiptInput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+/**
+ * Contract identity for a journal lookup. The original request retains the
+ * complete contract; a receipt carries only its digest.
+ */
+export interface AgentHistoryCheckpointReceiptInput_RecoveryContract {
+  name: string;
+  version: number;
+  transport: AgentHistoryCheckpointReceiptInput_Transport;
+  digest: string;
+}
+export interface AgentHistoryCheckpointReceiptInput_AgentHistoryCheckpointPublish {
+  sessionId: string;
+  expectedRevision: string | null;
+  /**
+   * Membership confirmation returned by previewHistoryCheckpoint, not a live revision.
+   */
+  confirmedSubtreeDigest: string;
+}
+export interface AgentHistoryCheckpointReceiptOutput_OperationObservation {
+  reference: AgentHistoryCheckpointReceiptOutput_RecoveryRef;
+  outcome: AgentHistoryCheckpointReceiptOutput_OperationOutcome;
+  cleanup: AgentHistoryCheckpointReceiptOutput_OperationCleanup;
+}
+export interface AgentHistoryCheckpointReceiptOutput_RecoveryRef {
+  source: AgentHistoryCheckpointReceiptOutput_DeploymentRef;
+  namespace: AgentHistoryCheckpointReceiptOutput_InstanceId;
+  export: string;
+  method: string;
+  operation: string;
+  fingerprint: string;
+  contract: AgentHistoryCheckpointReceiptOutput_RecoveryContract;
+  recovery: AgentHistoryCheckpointReceiptOutput_RecoveryProtocol;
+}
+export interface AgentHistoryCheckpointReceiptOutput_DeploymentRef {
+  stateDomain: string;
+  deployment: string;
+  revision: number;
+}
+/**
+ * Contract identity for a journal lookup. The original request retains the
+ * complete contract; a receipt carries only its digest.
+ */
+export interface AgentHistoryCheckpointReceiptOutput_RecoveryContract {
+  name: string;
+  version: number;
+  transport: AgentHistoryCheckpointReceiptOutput_Transport;
+  digest: string;
+}
+export interface AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointPublication {
+  state: AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointState;
+  /**
+   * Cleanup failure does not undo a successful publication.
+   */
+  cleanupPending: boolean;
+}
+export interface AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointHead {
+  revision: string;
+  manifest: AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentHistoryCheckpointReceiptOutput_AgentHistoryCheckpointObject {
+  digest: string;
+  bytes: number;
+}
+export interface AgentPreviewHistoryCheckpointOutput_AgentHistoryCheckpointSession {
+  id: string;
+  revision: number;
+}
 /**
  * Displayed only to the user. Credentials are omitted, but their values remain
  * part of the revision that is explicitly confirmed.
@@ -1614,6 +1863,31 @@ export interface AgentProjectMcpOutput_AgentMcpServerView {
   headers: string[];
   preapproved: boolean;
   readOnlyTools: string[];
+}
+export interface AgentPublishHistoryCheckpointOutput_AgentHistoryCheckpointHead {
+  revision: string;
+  manifest: AgentPublishHistoryCheckpointOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentPublishHistoryCheckpointOutput_AgentHistoryCheckpointObject {
+  digest: string;
+  bytes: number;
+}
+export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointHead {
+  revision: string;
+  manifest: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject;
+}
+export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointObject {
+  digest: string;
+  bytes: number;
+}
+export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointInventory {
+  rootSessionId: string;
+  subtreeDigest: string;
+  sessions: AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSession[];
+}
+export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSession {
+  id: string;
+  revision: number;
 }
 /**
  * Exact public selection observed by a caller, checked once at run admission.
@@ -1667,6 +1941,16 @@ export interface AgentWatchBotOutboxOutput_AgentBotMessage {
    * Turn's reply.
    */
   turnId?: string | null;
+}
+export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
+  enabled: boolean;
+  ordinarySessionsOnly: boolean;
+  liveSamplePercent: number;
+  catchUpSamplePercent: number;
+  /**
+   * None or blank selects the localized built-in instructions.
+   */
+  prompt: string | null;
 }
 export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
   reference: SettingsCatalogModelsOutput_CatalogModelReference;

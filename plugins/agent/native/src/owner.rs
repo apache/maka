@@ -26,6 +26,7 @@ use maka_agent_engine::{Engine, RunError, RunInput, RunWork};
 mod assistant;
 mod attachments;
 mod auxiliary;
+mod checkpoints;
 mod compaction;
 mod computer_apps;
 mod context;
@@ -38,7 +39,6 @@ mod imports;
 mod interactions;
 mod lifecycle;
 mod notifications;
-mod plan;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
@@ -47,12 +47,14 @@ mod git;
 mod global_instructions;
 mod mcp;
 mod patches;
+mod predictions;
 mod queue;
 mod recall;
 mod recap;
 mod runs;
 mod scheduler;
 mod skills;
+mod steering;
 mod title;
 mod todo;
 mod work;
@@ -143,6 +145,8 @@ enum BackgroundKind {
     #[default]
     Schedule,
     Goal(Uuid),
+    /// Planning mode is gone, but a checkpoint parked while executing an approved
+    /// plan still carries this. It must read back so that its recovery can end it.
     Plan(String),
 }
 impl BackgroundKind {
@@ -151,7 +155,7 @@ impl BackgroundKind {
     }
 }
 enum Selection {
-    Model(ModelSelection, Option<ThinkingLevel>),
+    Model(Option<ModelSelection>, Option<ThinkingLevel>),
     Executor(maka_agent_api::executor::Selection),
 }
 struct Submission {
@@ -159,6 +163,8 @@ struct Submission {
     text: String,
     attachments: Vec<String>,
     selection: Selection,
+    delivery: maka_agent_api::contract::SendDelivery,
+    expected_invocation_id: Option<String>,
 }
 enum PreparedBackend {
     Model(Box<(crate::model::Source, maka_agent_engine::PreparedModel)>),
@@ -196,7 +202,6 @@ pub(crate) struct Owner {
     todo: Arc<todo::Todo>,
     bot: Arc<bot::Bot>,
     goals: Arc<goal::Goals>,
-    plans: Arc<plan::Plans>,
     recap_storage: Arc<maka_host_runtime::storage::Storage>,
     auxiliary: auxiliary::Auxiliary,
     titles: title::Registry,
@@ -368,7 +373,7 @@ impl Owner {
         // Match Codex's five-minute stream idle allowance for slow model steps.
         let models = ModelExecutor::for_source(Duration::from_secs(300), revision.clone())
             .map_err(|_| "agent_executor_unavailable")?;
-        let auxiliary = auxiliary::Auxiliary::new(revision.clone())?;
+        let auxiliary = auxiliary::Auxiliary::new(models.clone());
         let configured_locale = LanguagePreference::from_locale(&settings.locale);
         let native_language = maka_config::language::native_language();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
@@ -403,13 +408,6 @@ impl Owner {
         ));
         if settings.scheduled_tasks {
             additional.extend(scheduler.tools());
-        }
-        let plans = Arc::new(plan::Plans::new(
-            persistence.store().clone(),
-            prefix.clone(),
-        ));
-        if settings.plans {
-            additional.extend(plans.tools());
         }
         let goals = Arc::new(goal::Goals::new(
             persistence.store().clone(),
@@ -474,23 +472,6 @@ impl Owner {
             workers.clone(),
         )
         .and_then(|mut catalog| {
-            catalog.planning.extend(mcp.planning.iter().cloned());
-            if settings.plans {
-                catalog.planning.push("SubmitPlan".into());
-                catalog.tools = catalog
-                    .tools
-                    .with_always_visible(&["SubmitPlan", "update_plan", "cancel_plan"])
-                    .and_then(|tools| {
-                        tools.with_request_binding(
-                            ["SubmitPlan", "update_plan", "cancel_plan"]
-                                .into_iter()
-                                .map(str::to_owned)
-                                .collect(),
-                            plans.clone(),
-                        )
-                    })
-                    .map_err(|error| error.to_string())?;
-            }
             if graphs.as_ref().is_some_and(|graphs| graphs.enabled()) {
                 catalog.tools = catalog
                     .tools
@@ -521,9 +502,6 @@ impl Owner {
                     .map_err(|error| error.to_string())?;
             }
             if settings.recall {
-                catalog
-                    .planning
-                    .extend(["Recall", "RecallMore", "RecallMaterial"].map(str::to_owned));
                 catalog.tools = catalog
                     .tools
                     .with_request_binding(
@@ -540,7 +518,6 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
-            planning: planning_tools,
             executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
@@ -579,7 +556,6 @@ impl Owner {
                 tools: tools.clone(),
                 definitions: Arc::new(internal_tools),
                 bindings: Arc::new(internal_bindings),
-                planning: planning_tools.clone(),
             },
             prefix.clone(),
             mcp.names.clone(),
@@ -597,7 +573,6 @@ impl Owner {
         ));
         Ok(Arc::new(Self {
             graphs,
-            plans,
             goals,
             auxiliary,
             todo,
@@ -828,7 +803,9 @@ impl Owner {
                     });
                 };
                 let session = resolve_session(session)?;
-                if session.archived
+                // A user may start a conversation in the workspace of one they archived;
+                // an Agent may not derive from a conversation that was put away.
+                if (session.archived && scope.identity.agent().is_some())
                     || !self
                         .project_accepts_session(&session.configuration.workspace)
                         .await?
@@ -991,34 +968,10 @@ impl Owner {
             });
         }
         use maka_event_log::sessions::SessionMutation;
-        let mode_changed = input
-            .collaboration_mode
-            .is_some_and(|mode| mode != session.configuration.collaboration_mode);
-        if mode_changed {
-            if self.graph_selected(&input.session_id).await? {
-                return Ok(MetadataResult::Rejected {
-                    reason: Rejection::Busy,
-                });
-            }
-            if input.collaboration_mode == Some(CollaborationMode::Plan) && !self.settings.plans {
-                return Ok(MetadataResult::Rejected {
-                    reason: Rejection::ToolsUnavailable,
-                });
-            }
-            if runs.busy(&input.session_id)
-                || self.has_parked_invocation(&input.session_id).await?
-                || !self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.message_queue(&input.session_id).await.map_err(|_| "agent_queue_unavailable")?.entries.is_empty()
-                || self.store.session(&input.session_id).await.map_err(|error| error.to_string())?.latest_turn_boundary(&input.session_id).await.map_err(|_| "agent_execution_unavailable")?
-                    .is_some_and(|boundary| matches!(boundary.state, maka_event_log::turns::InvocationState::Ended { outcome: maka_agent_facts::event::InvocationOutcome::HandoffPaused { .. }, .. })) {
-                return Ok(MetadataResult::Rejected { reason: Rejection::Busy });
-            }
-        }
-        let permissions = input.permissions.is_some() || mode_changed;
+        let permissions = input.permissions.is_some();
         let update = move |configuration: &mut StoredSessionConfiguration| {
             // Policy changes do not turn an automatic title into a manual title.
-            if (input.collaboration_mode.is_none()
-                && input.permissions.is_none()
-                && input.pinned.is_none())
+            if (input.permissions.is_none() && input.pinned.is_none())
                 || configuration.title != input.title
             {
                 configuration.title_is_manual = true;
@@ -1028,11 +981,9 @@ impl Owner {
             if let Some(pinned) = input.pinned {
                 configuration.pinned = pinned;
             }
-            if mode_changed
-                || input.permissions.as_ref().is_some_and(|change| {
-                    change.settings != configuration.permissions || change.revoke_grants
-                })
-            {
+            if input.permissions.as_ref().is_some_and(|change| {
+                change.settings != configuration.permissions || change.revoke_grants
+            }) {
                 configuration.boundary_revision = configuration
                     .boundary_revision
                     .checked_add(1)
@@ -1045,9 +996,6 @@ impl Owner {
             }
             if let Some(change) = input.permissions {
                 configuration.permissions = change.settings;
-            }
-            if let Some(mode) = input.collaboration_mode {
-                configuration.collaboration_mode = mode;
             }
             Ok(())
         };
@@ -1100,10 +1048,10 @@ impl Owner {
             Some(catalog) => catalog.clone(),
             None => self.mcp_projects.catalog(basis.mcp_revision.as_deref())?,
         };
-        let selected = plan::select(&catalog.tools, basis, &catalog.planning);
         // SendUser and sleep are granted by Bot identity, independent of the tool list.
         let bot = self.bot.is(session);
-        let excluded: Vec<_> = selected
+        let excluded: Vec<_> = catalog
+            .tools
             .definitions()
             .map(|definition| definition.name.as_str())
             .filter(|name| {
@@ -1121,7 +1069,7 @@ impl Owner {
                     })
             })
             .collect();
-        let selected = selected.excluding(&excluded);
+        let selected = catalog.tools.excluding(&excluded);
         let selected = if discovery {
             selected.with_discovery()
         } else {
@@ -1141,6 +1089,8 @@ impl Owner {
             model: selection,
             thinking_level,
             attachments,
+            delivery,
+            expected_invocation_id,
         } = input;
         self.submit(
             Submission {
@@ -1148,6 +1098,8 @@ impl Owner {
                 text,
                 attachments,
                 selection: Selection::Model(selection, thinking_level),
+                delivery,
+                expected_invocation_id,
             },
             operation,
             parent,
@@ -1166,6 +1118,8 @@ impl Owner {
                 text: input.message,
                 attachments: input.attachments,
                 selection: Selection::Executor(input.executor),
+                delivery: maka_agent_api::contract::SendDelivery::Queue,
+                expected_invocation_id: None,
             },
             operation,
             parent,
@@ -1183,11 +1137,29 @@ impl Owner {
             text,
             attachments,
             selection,
+            delivery,
+            expected_invocation_id,
         } = input;
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;
+        if let Some(expected) = expected_invocation_id
+            && self
+                .store
+                .session(&id)
+                .await
+                .map_err(|error| error.to_string())?
+                .invocation_stopped(&expected)
+                .await
+                .map_err(|error| error.to_string())?
+        {
+            return Ok(SendResult::Rejected {
+                session_id: id,
+                reason: SendRejection::TurnStopped,
+                skills: None,
+            });
+        }
         let queued = {
             let runs = admission.state().await;
             if runs.closing {
@@ -1196,36 +1168,91 @@ impl Owner {
             let current = runs.controls.get(&id);
             current.map(|control| control.invocation.clone())
         };
-        let queued = match queued {
-            Some(invocation) => Some(invocation),
-            None => self
-                .store
+        let parked = if queued.is_none() {
+            self.store
                 .session(&id)
                 .await
                 .map_err(|error| error.to_string())?
                 .activation_checkpoint(&id)
                 .await
                 .map_err(|_| "agent_execution_unavailable")?
-                .map(|parked| parked.checkpoint.invocation),
+        } else {
+            None
         };
+        let queued = queued.or_else(|| {
+            parked
+                .as_ref()
+                .map(|parked| parked.checkpoint.invocation.clone())
+        });
         let session = self.session(&id).await?;
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
+        if matches!(delivery, maka_agent_api::contract::SendDelivery::Steer) {
+            let control = admission.state().await.controls.get(&id).cloned();
+            if let Some(control) = control.filter(|control| control.basis.executor.is_none()) {
+                return self
+                    .steer_message(
+                        text,
+                        attachments,
+                        &control.invocation,
+                        &control.basis,
+                        operation,
+                        parent,
+                    )
+                    .await;
+            }
+            if let Some(parked) = parked {
+                let mut basis: MessageBasis =
+                    serde_json::from_value(parked.checkpoint.native_basis)
+                        .map_err(|error| format!("invalid parked execution basis: {error}"))?;
+                basis.mcp_catalog = Some(self.mcp_projects.catalog(basis.mcp_revision.as_deref())?);
+                let result = self
+                    .steer_message(
+                        text,
+                        attachments,
+                        &parked.checkpoint.invocation,
+                        &basis,
+                        operation,
+                        parent,
+                    )
+                    .await?;
+                if matches!(result, SendResult::Queued { .. }) {
+                    self.store
+                        .session(&id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .close_run_interactions(
+                            &parked.checkpoint.invocation,
+                            maka_agent_facts::interaction::ClosureReason::Steered,
+                            now(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                return Ok(result);
+            }
+        }
         let backend = match selection {
-            Selection::Model(selection, thinking_level) => PreparedBackend::Model(Box::new(
-                crate::model::Source::select(
-                    self.configuration.clone(),
-                    self.catalog.clone(),
-                    self.credentials.clone(),
-                    selection,
-                    thinking_level,
-                    id.clone(),
-                    self.revision.clone(),
-                )
-                .await
-                .map_err(public_error)?,
-            )),
+            Selection::Model(selection, thinking_level) => {
+                let (selection, thinking_level) = match selection {
+                    Some(selection) => (selection, thinking_level),
+                    None => self.saved_model(&session.configuration).await?,
+                };
+                PreparedBackend::Model(Box::new(
+                    crate::model::Source::select(
+                        self.configuration.clone(),
+                        self.catalog.clone(),
+                        self.credentials.clone(),
+                        selection,
+                        thinking_level,
+                        id.clone(),
+                        self.revision.clone(),
+                    )
+                    .await
+                    .map_err(public_error)?,
+                ))
+            }
             Selection::Executor(selection) => {
                 if session.configuration.tools.is_some() {
                     return Err("agent_executor_cannot_enforce_tool_selection".into());
@@ -1244,11 +1271,6 @@ impl Owner {
         )
         .await?;
         let external = executor.is_some();
-        if session.configuration.collaboration_mode == CollaborationMode::Plan
-            && (!self.settings.plans || external)
-        {
-            return Err("agent_planning_unavailable".into());
-        }
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -1342,7 +1364,6 @@ impl Owner {
                 self.tool_basis.clone()
             },
         };
-        self.prepare_plan_behavior(&id, &mut basis).await?;
         self.prepare_graph_behavior(&id, &mut basis, queued.is_none())
             .await?;
         let identity = self.operation_id(operation);
@@ -1512,7 +1533,6 @@ impl Owner {
             || !self.workers.is_empty()
             || self.auxiliary.resources.has_pending()
             || self.goals.keeps_host_awake()
-            || self.plans.keeps_host_awake()
             || self
                 .graphs
                 .as_ref()
@@ -1548,7 +1568,6 @@ impl Owner {
             let todo = owner.todo.finish().await;
             let bot = owner.bot.finish().await;
             let goals = owner.goals.finish().await;
-            let plans = owner.plans.finish().await;
             let graph = match &owner.graphs {
                 Some(graphs) => graphs.finish().await,
                 None => Ok(()),
@@ -1573,7 +1592,6 @@ impl Owner {
             todo?;
             bot?;
             goals?;
-            plans?;
             graph?;
             recap?;
             auxiliary.map_err(|error| error.to_string())?;

@@ -38,7 +38,7 @@ enum Service {
     Skills(Skills),
     Images(images::Source),
     Web,
-    Jev,
+    DecisionsApi,
 }
 struct Skills {
     path: std::path::PathBuf,
@@ -67,10 +67,6 @@ impl Setup {
             nestable: false,
             confirmation: contract::ToolConfirmation::Preapproved,
         }
-    }
-    pub(in crate::owner::tests) fn named(mut self, name: &'static str) -> Self {
-        self.tool_name = Some(name);
-        self
     }
     pub(super) fn javascript() -> Self {
         Self::new(Service::Counter {
@@ -162,8 +158,8 @@ impl Setup {
     pub(in crate::owner::tests) fn protocol() -> Self {
         Self::new(Service::Protocol)
     }
-    pub(in crate::owner::tests) fn jev() -> Self {
-        Self::new(Service::Jev)
+    pub(in crate::owner::tests) fn decisions_api() -> Self {
+        Self::new(Service::DecisionsApi)
     }
     pub(super) fn computer(handler: Arc<Counter>) -> Self {
         Self::new(Service::Computer(handler))
@@ -477,7 +473,7 @@ impl Service {
             Self::Skills(_) => maka_skills_api::contract(),
             Self::Images(source) => source.contract(),
             Self::Web => maka_web_api::contract(),
-            Self::Jev => maka_workspace_api::jev::contract(),
+            Self::DecisionsApi => maka_workspace_api::decisions_api::contract(),
         }
     }
     fn export(&self) -> &str {
@@ -493,7 +489,7 @@ impl Service {
             Self::Skills(_) => maka_skills_api::EXPORT,
             Self::Images(_) => "Images",
             Self::Web => maka_web_api::EXPORT,
-            Self::Jev => maka_workspace_api::jev::EXPORT,
+            Self::DecisionsApi => maka_workspace_api::decisions_api::EXPORT,
         }
     }
     fn method(&self) -> &str {
@@ -510,7 +506,7 @@ impl Service {
             Self::Skills(_) => "search",
             Self::Images(_) => "produce",
             Self::Web => "fetch",
-            Self::Jev => "evaluate",
+            Self::DecisionsApi => "evaluate",
         }
     }
     fn implementation(&self) -> Value {
@@ -531,13 +527,13 @@ impl Service {
                 return json!({"kind":"javascript","module":"images.mjs","realm":"shared"});
             }
             Self::Web => maka_web_api::IMPLEMENTATION,
-            Self::Jev => maka_workspace_api::jev::IMPLEMENTATION,
+            Self::DecisionsApi => maka_workspace_api::decisions_api::IMPLEMENTATION,
         };
         json!({"kind":"native","implementation":name})
     }
     fn schema(&self) -> Value {
         match self {
-            Self::Jev => maka_workspace_api::jev::configuration_schema(),
+            Self::DecisionsApi => maka_workspace_api::decisions_api::configuration_schema(),
             Self::Web => maka_web_api::configuration_schema(),
             Self::Skills(_) => maka_skills_api::configuration_schema(),
             Self::Processes { .. } => maka_workspace_api::processes::configuration_schema(),
@@ -548,7 +544,7 @@ impl Service {
     }
     fn configuration(&self, roots: Value) -> Value {
         match self {
-            Self::Web | Self::Jev => json!({"network":"allowed"}),
+            Self::Web | Self::DecisionsApi => json!({"network":"allowed"}),
             Self::Skills(skills) => {
                 json!({"bundled":false,"home":skills.standard.then_some(&skills.path),"projectRoots":if skills.standard{roots}else{json!([])},
                 "sources":if skills.standard{json!([])}else{json!([{"id":"fixture","label":"Fixture","path":skills.path}])},"manage":false,"preferences":false})
@@ -641,7 +637,7 @@ impl Service {
             Self::Protocol => maka_processes_native::provide(registry).unwrap(),
             Self::Images(_) => {}
             Self::Web => maka_web::provide(registry).unwrap(),
-            Self::Jev => maka_jev_native::provide(registry).unwrap(),
+            Self::DecisionsApi => maka_decisions_api_native::provide(registry).unwrap(),
             Self::Skills(Skills {
                 preparation:
                     Some(Preparation {

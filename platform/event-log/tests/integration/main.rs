@@ -64,6 +64,7 @@ mod steering;
 mod stream_delivery;
 mod streaming_usage;
 mod support;
+mod system_permission_interactions;
 mod tool_ancestry;
 mod tool_payloads;
 mod tool_rejection;

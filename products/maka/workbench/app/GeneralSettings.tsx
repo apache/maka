@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { inputAction, platform, Scroll, signal, Text, View } from 'nsh';
+import { effect, inputAction, platform, Scroll, signal, Text, View, type ScrollRef } from 'nsh';
 import { tr } from './locale';
 import { Button, Slider } from 'nsh/base';
 import {
@@ -27,6 +27,7 @@ import {
 } from './generalSettingsState.ts';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { UiScaleSettings } from './UiScaleSettings';
+import { PredictionPreferences, PredictionSettings } from './PredictionSettings';
 import { uiScale } from './uiScale';
 import { appearance, colorThemes, paletteIds, textSizes, type ColorTheme } from './appearance';
 import { accentSwatches, paletteTokens, presetRecipes, type PaletteId } from './colorPalette';
@@ -46,8 +47,21 @@ import {
 
 export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
   const owner = props.owner;
+  let scroll: ScrollRef | undefined;
+  let previousEditor: number | undefined;
+  effect(() => {
+    const editor = owner.editor()?.id;
+    if (editor === undefined || editor === previousEditor) return;
+    previousEditor = editor;
+    scroll?.scrollTo({ x: 0, y: 0, animated: false });
+  });
   return (
-    <Scroll style={{ flex: 1, minHeight: 0 }}>
+    <Scroll
+      ref={(node) => {
+        scroll = node;
+      }}
+      style={{ flex: 1, minHeight: 0 }}
+    >
       <View
         style={{
           padding: 8,
@@ -71,6 +85,8 @@ export function GeneralSettings(props: { owner: GeneralSettingsOwner }) {
             if (request.kind === 'root') return <GeneralRoot owner={owner} request={request} />;
             if (request.kind === 'globalInstructions')
               return <GlobalInstructionsEditor owner={owner} request={request} />;
+            if (request.kind === 'predictions')
+              return <PredictionSettings owner={owner} request={request} />;
             return <PreferenceEditor owner={owner} request={request} />;
           }}
         </Each>
@@ -160,6 +176,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
             </Each>
           </View>
         </View>
+        <PredictionPreferences owner={owner} request={request} />
         <View style={{ gap: 8 }}>
           <PreferenceToggle
             owner={owner}

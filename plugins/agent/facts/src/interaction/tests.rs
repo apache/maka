@@ -128,5 +128,161 @@ fn browser_download_consent_is_origin_scoped_and_distinct_from_page_access() {
     }
 }
 
-// Append inside plugins/agent/facts/src/interaction/tests.rs. Uses the real
-// canonical request decoder, decisions and serializer on every build host.
+fn system_permission_request() -> Value {
+    json!({
+        "kind": "system_permission",
+        "toolUseId": "tool_123",
+        "grants": ["accessibility", "screen_recording"],
+        "application": "Maka Host"
+    })
+}
+
+#[test]
+fn system_permission_request_round_trips_and_validates_grants_and_application() {
+    let request: InteractionRequest = serde_json::from_value(system_permission_request()).unwrap();
+    assert_eq!(
+        request,
+        InteractionRequest::SystemPermission {
+            tool_use_id: "tool_123".into(),
+            grants: vec![
+                SystemPermissionGrant::Accessibility,
+                SystemPermissionGrant::ScreenRecording
+            ],
+            application: "Maka Host".into(),
+        }
+    );
+    assert_eq!(
+        serde_json::to_value(&request).unwrap(),
+        system_permission_request()
+    );
+    let mut single = system_permission_request();
+    single["grants"] = json!(["screen_recording"]);
+    assert!(serde_json::from_value::<InteractionRequest>(single).is_ok());
+
+    for grants in [
+        json!([]),
+        json!(["accessibility", "accessibility"]),
+        json!(["microphone"]),
+        json!(null),
+    ] {
+        let mut input = system_permission_request();
+        input["grants"] = grants;
+        assert!(serde_json::from_value::<InteractionRequest>(input).is_err());
+    }
+    for application in [
+        json!(""),
+        json!(" "),
+        json!(" Maka Host"),
+        json!("Maka\nHost"),
+        json!("Maka\0Host"),
+        json!(null),
+    ] {
+        let mut input = system_permission_request();
+        input["application"] = application;
+        assert!(serde_json::from_value::<InteractionRequest>(input).is_err());
+    }
+    let mut input = system_permission_request();
+    input["toolUseId"] = json!("");
+    assert!(serde_json::from_value::<InteractionRequest>(input).is_err());
+    let mut input = system_permission_request();
+    input["extra"] = json!(true);
+    assert!(serde_json::from_value::<InteractionRequest>(input).is_err());
+    let mut input = system_permission_request();
+    input.as_object_mut().unwrap().remove("application");
+    assert!(serde_json::from_value::<InteractionRequest>(input).is_err());
+}
+
+#[test]
+fn system_permission_cancel_closes_as_producer_cancelled_only_for_its_request() {
+    let answer: InteractionAnswer =
+        serde_json::from_value(json!({"kind": "system_permission_cancel"})).unwrap();
+    assert_eq!(answer, InteractionAnswer::SystemPermissionCancel {});
+    assert_eq!(
+        serde_json::to_value(&answer).unwrap(),
+        json!({"kind": "system_permission_cancel"})
+    );
+    assert!(
+        serde_json::from_value::<InteractionAnswer>(
+            json!({"kind": "system_permission_cancel", "extra": 1})
+        )
+        .is_err()
+    );
+    let outcome = answer.clone().into_outcome(7);
+    assert_eq!(
+        outcome,
+        InteractionOutcome::Closure {
+            reason: ClosureReason::ProducerCancelled,
+            committed_at: 7,
+        }
+    );
+    assert!(answer.matches_outcome(&outcome));
+    assert!(
+        !answer.matches_outcome(&InteractionOutcome::SystemPermissionGranted { committed_at: 7 })
+    );
+
+    let request: InteractionRequest = serde_json::from_value(system_permission_request()).unwrap();
+    let computer_app: InteractionRequest = serde_json::from_value(computer_app_request()).unwrap();
+    assert_eq!(answer.validate_for_request(&request), Ok(()));
+    assert!(answer.validate_for_request(&computer_app).is_err());
+    assert!(
+        InteractionAnswer::ComputerAppCancel {}
+            .validate_for_request(&request)
+            .is_err()
+    );
+}
+
+#[test]
+fn system_permission_granted_is_producer_committed_and_only_for_its_request() {
+    let outcome: InteractionOutcome =
+        serde_json::from_value(json!({"kind": "system_permission_granted", "committedAt": 42}))
+            .unwrap();
+    assert_eq!(
+        outcome,
+        InteractionOutcome::SystemPermissionGranted { committed_at: 42 }
+    );
+    assert_eq!(outcome.committed_at(), 42);
+    assert_eq!(
+        serde_json::to_value(&outcome).unwrap(),
+        json!({"kind": "system_permission_granted", "committedAt": 42})
+    );
+    for invalid in [
+        json!({"kind": "system_permission_granted"}),
+        json!({"kind": "system_permission_granted", "committedAt": 42, "grants": []}),
+        json!({"kind": "system_permission_granted", "committedAt": MAX_SAFE_INTEGER + 1}),
+    ] {
+        assert!(serde_json::from_value::<InteractionOutcome>(invalid).is_err());
+    }
+    assert!(
+        serde_json::from_value::<InteractionAnswer>(json!({"kind": "system_permission_granted"}))
+            .is_err(),
+        "no user answer may claim the grant"
+    );
+
+    let request: InteractionRequest = serde_json::from_value(system_permission_request()).unwrap();
+    let computer_app: InteractionRequest = serde_json::from_value(computer_app_request()).unwrap();
+    assert_eq!(outcome.validate_for_request(&request), Ok(()));
+    assert!(outcome.validate_for_request(&computer_app).is_err());
+    let question: InteractionRequest = serde_json::from_value(json!({
+        "kind": "question",
+        "toolUseId": "tool_123",
+        "questions": [{"question": "Continue?", "options": [{"label": "Yes"}, {"label": "No"}]}]
+    }))
+    .unwrap();
+    assert!(outcome.validate_for_request(&question).is_err());
+    assert_eq!(
+        InteractionOutcome::Closure {
+            reason: ClosureReason::ProducerCancelled,
+            committed_at: 1,
+        }
+        .validate_for_request(&request),
+        Ok(())
+    );
+    assert!(
+        InteractionOutcome::ComputerAppDecision {
+            decision: ComputerAppDecision::Once,
+            committed_at: 1,
+        }
+        .validate_for_request(&request)
+        .is_err()
+    );
+}

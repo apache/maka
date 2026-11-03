@@ -26,6 +26,7 @@ pub(crate) mod mouse;
 pub(crate) mod page_scroll;
 pub(crate) mod pasteboard;
 pub(crate) mod permission_subject;
+pub(crate) mod tcc;
 use crate::protocol::*;
 use core_foundation::{
     base::{CFEqual, CFGetTypeID, CFRange, CFRelease, TCFType},
@@ -55,7 +56,13 @@ unsafe extern "C" {
     fn CGSessionCopyCurrentDictionary() -> core_foundation::dictionary::CFDictionaryRef;
 }
 
-pub(crate) fn require_desktop() -> Result<(), ToolError> {
+pub(crate) async fn require_desktop() -> Result<(), ToolError> {
+    tokio::task::spawn_blocking(require_desktop_blocking)
+        .await
+        .map_err(failed)?
+}
+
+pub(crate) fn require_desktop_blocking() -> Result<(), ToolError> {
     use core_foundation::{
         boolean::{CFBooleanGetTypeID, kCFBooleanTrue},
         dictionary::CFDictionaryGetValue,
@@ -79,7 +86,7 @@ pub(crate) fn require_desktop() -> Result<(), ToolError> {
             ));
         }
     }
-    Ok(())
+    tcc::require(tcc::Grant::Accessibility)
 }
 
 pub(crate) struct Target {

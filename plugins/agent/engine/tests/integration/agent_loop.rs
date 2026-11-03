@@ -130,7 +130,6 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
                 .start(log.store(), first, CancellationToken::new())
                 .await
                 .unwrap();
-            let steering_invocation = admitted.invocation().clone();
             assert_eq!(admitted.invocation().invocation_id, "invocation-first");
             assert!(
                 log.prefix(100, 128 * 1024)
@@ -158,7 +157,6 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
                     .await,
                 Err(RunError::Busy)
             ));
-            fixture::enqueue(&log, steering_invocation).await;
             release.notify_one();
             running.await.unwrap().unwrap();
             assert_eq!(
@@ -170,12 +168,6 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
             assert!(log.pending_messages("session").await.unwrap().is_empty());
             assert!(
                 log.root_message("session", "user-first")
-                    .await
-                    .unwrap()
-                    .is_some()
-            );
-            assert!(
-                log.steering_message("session", "steer-first")
                     .await
                     .unwrap()
                     .is_some()
@@ -251,10 +243,6 @@ async fn loop_commits_before_effects_replays_history_after_reopen_and_rejects_du
             vec![json!({"role":"user","content":"question first"})]
         );
         let second = conversation(&requests[1]);
-        assert!(second.iter().any(|m| m["role"] == "user"
-            && m["content"].as_str().is_some_and(|text| {
-                text.contains("<user_query>\nA queued correction\n</user_query>")
-            })));
         let result = second
             .iter()
             .find(|message| message["role"] == "tool")

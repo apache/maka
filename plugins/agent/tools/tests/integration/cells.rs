@@ -116,7 +116,7 @@ async fn invoke_result(
         .await?
         .publish(&[])
         .await?
-        .completion
+        .start()
         .await
 }
 

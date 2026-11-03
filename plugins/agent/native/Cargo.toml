@@ -23,6 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+fastrand.workspace = true
 unicode-normalization = "0.1.25"
 maka-code-runtime.workspace = true
 hex.workspace = true
@@ -100,4 +101,4 @@ maka-processes-native.workspace = true
 
 maka-interactions-native.workspace = true
 
-maka-jev-native.workspace = true
+maka-decisions-api-native.workspace = true

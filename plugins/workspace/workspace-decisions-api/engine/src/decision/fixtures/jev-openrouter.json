@@ -1,0 +1,40 @@
+{
+  "model": "typesafe/jev-1.14-20261014",
+  "answers": {
+    "duplicate": {
+      "type": "noul",
+      "noul": 0.98
+    },
+    "route": {
+      "type": "choice",
+      "choice": "billing",
+      "probabilities": {
+        "billing": 1,
+        "technical": 0
+      },
+      "confidence": 1
+    },
+    "urgency": {
+      "type": "score",
+      "score": 1,
+      "legend": {
+        "0": "Routine question without payment impact",
+        "1": "Duplicate payment, customer can still use service",
+        "2": "Customer cannot use service"
+      },
+      "probabilities": {
+        "0": 0,
+        "1": 1,
+        "2": 0
+      },
+      "confidence": 1
+    }
+  },
+  "usage": {
+    "input_tokens": 423,
+    "output_tokens": 62,
+    "cost": 1.7766e-5
+  },
+  "id": "gen-dec-1793673929-4GZ4dhl4GJIWdBpF3aNs",
+  "provider": "TypeSafe"
+}

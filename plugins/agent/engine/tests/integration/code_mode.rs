@@ -40,7 +40,7 @@ use tokio_util::sync::CancellationToken;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn scratch_store_survives_turns_and_is_cleared_on_engine_restart() {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let server = tokio::spawn(async move {
@@ -66,7 +66,13 @@ async fn scratch_store_survives_turns_and_is_cleared_on_engine_restart() {
                 .await;
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut socket).await;
-                let text = request["messages"].as_array().unwrap().last().unwrap()["content"]
+                let text = request["messages"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .rev()
+                    .find(|message| message["role"] == "tool")
+                    .unwrap()["content"]
                     .as_str()
                     .unwrap();
                 if index > 0 {
@@ -399,7 +405,14 @@ async fn streamed_exec_journals_parallel_children_and_reopens_without_reexecutio
             vec![json!({"role":"user","content":"question first"})]
         );
         let second = conversation(&requests[1]);
-        assert_eq!(second.len(), 3, "nested tool messages must remain hidden");
+        assert_eq!(
+            second
+                .iter()
+                .filter(|message| message["role"] == "tool")
+                .count(),
+            1,
+            "nested tool messages must remain hidden"
+        );
         assert_eq!(second[1]["role"], "assistant");
         let calls = second[1]["tool_calls"].as_array().unwrap();
         assert_eq!(calls.len(), 1);

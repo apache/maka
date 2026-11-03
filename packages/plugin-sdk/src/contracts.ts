@@ -562,10 +562,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -815,10 +811,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -1303,353 +1295,6 @@ export const contracts = {
           },
           resources: {},
         },
-        changePlan: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanChange',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-              revision: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-              },
-              action: {
-                $ref: '#/$defs/AgentPlanAction',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'revision', 'action'],
-            $defs: {
-              AgentPlanAction: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'approve',
-                      },
-                      proposalId: {
-                        type: 'string',
-                      },
-                      proposalRevision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                      approval: {
-                        $ref: '#/$defs/AgentPlanApproval',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'proposalId', 'proposalRevision', 'approval'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'revise',
-                      },
-                      proposalId: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'proposalId'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'abandon',
-                      },
-                      proposalId: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'proposalId'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'resume',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      approval: {
-                        $ref: '#/$defs/AgentPlanApproval',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'approval'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'cancel',
-                      },
-                      executionId: {
-                        type: 'string',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'executionId', 'reason'],
-                  },
-                ],
-              },
-              AgentPlanApproval: {
-                type: 'object',
-                properties: {
-                  target: {
-                    $ref: '#/$defs/AgentScheduledTarget',
-                  },
-                  model: {
-                    $ref: '#/$defs/ModelSelection',
-                  },
-                  thinkingLevel: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ThinkingLevel',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['target', 'model'],
-              },
-              AgentScheduledTarget: {
-                description:
-                  'Exact observed source boundary. This data is checked against the original\nSession; passing it never grants execution by itself.',
-                type: 'object',
-                properties: {
-                  sessionId: {
-                    type: 'string',
-                  },
-                  workspace: {
-                    $ref: '#/$defs/AgentWorkspace',
-                  },
-                  permissions: {
-                    $ref: '#/$defs/AgentWorkspacePermissions',
-                  },
-                  boundaryRevision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  binding: {
-                    $ref: '#/$defs/BindingStamp',
-                  },
-                },
-                additionalProperties: false,
-                required: ['sessionId', 'workspace', 'permissions', 'boundaryRevision', 'binding'],
-              },
-              AgentWorkspace: {
-                type: 'object',
-                properties: {
-                  worktree: {
-                    description:
-                      'Native owner allocation; never accepted from a caller as workspace authority.',
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Binding',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  projectId: {
-                    description: "Optional membership in this Agent's canonical Project catalog.",
-                    type: ['string', 'null'],
-                    format: 'uuid',
-                  },
-                  path: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  directoryIdentity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  identity: {
-                    type: 'string',
-                    pattern: '^workspace:v1:[A-Fa-f0-9-]{36}$',
-                  },
-                },
-                additionalProperties: false,
-                required: ['path', 'directoryIdentity', 'identity'],
-              },
-              Binding: {
-                description: 'Immutable allocation intent, not the current child branch or HEAD.',
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  common_dir: {
-                    type: 'string',
-                  },
-                  source: {
-                    type: 'string',
-                  },
-                  source_identity: {
-                    type: 'string',
-                    pattern: '^sha256:[a-f0-9]{64}$',
-                  },
-                  base_commit: {
-                    type: 'string',
-                  },
-                  directory: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'common_dir',
-                  'source',
-                  'source_identity',
-                  'base_commit',
-                  'directory',
-                ],
-              },
-              AgentWorkspacePermissions: {
-                type: 'object',
-                properties: {
-                  access: {
-                    $ref: '#/$defs/AgentWorkspaceAccess',
-                  },
-                  requestPermissions: {
-                    type: 'boolean',
-                  },
-                },
-                additionalProperties: false,
-                required: ['access', 'requestPermissions'],
-              },
-              AgentWorkspaceAccess: {
-                description:
-                  'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
-                type: 'string',
-                enum: ['read_only', 'workspace_write', 'danger_full_access'],
-              },
-              BindingStamp: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  permissionEpoch: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'permissionEpoch'],
-              },
-              ModelSelection: {
-                description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanResult',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'committed',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'revision'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'conflict',
-                  },
-                  actual: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'actual'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  reason: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'reason'],
-              },
-            ],
-          },
-          resources: {},
-        },
         changeSession: {
           mode: 'mutation',
           input: {
@@ -1774,10 +1419,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -2028,10 +1669,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -3162,10 +2799,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -3415,10 +3048,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -3891,7 +3520,7 @@ export const contracts = {
                 oneOf: [
                   {
                     type: 'string',
-                    enum: ['cancelled', 'timed_out', 'failed'],
+                    enum: ['steered', 'cancelled', 'timed_out', 'failed'],
                   },
                   {
                     description:
@@ -4368,7 +3997,7 @@ export const contracts = {
                     type: 'string',
                   },
                   reason: {
-                    $ref: '#/$defs/AgentSkillInputRejection',
+                    $ref: '#/$defs/AgentSendRejection',
                   },
                   skills: {
                     anyOf: [
@@ -4444,9 +4073,9 @@ export const contracts = {
               },
             ],
             $defs: {
-              AgentSkillInputRejection: {
+              AgentSendRejection: {
                 type: 'string',
-                enum: ['skills_unavailable'],
+                enum: ['skills_unavailable', 'turn_stopped'],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -5178,10 +4807,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -5431,10 +5056,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -5758,10 +5379,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -6011,10 +5628,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -7656,6 +7269,567 @@ export const contracts = {
           },
           resources: {},
         },
+        historyCheckpointHead: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentHistoryCheckpointHead',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentHistoryCheckpointHead',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
+        historyCheckpointReceipt: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointReceiptRead',
+            type: 'object',
+            properties: {
+              reference: {
+                $ref: '#/$defs/RecoveryRef',
+              },
+              input: {
+                description:
+                  'The exact original input. Changed input cannot select another publication.',
+                $ref: '#/$defs/AgentHistoryCheckpointPublish',
+              },
+            },
+            additionalProperties: false,
+            required: ['reference', 'input'],
+            $defs: {
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              AgentHistoryCheckpointPublish: {
+                type: 'object',
+                properties: {
+                  sessionId: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  expectedRevision: {
+                    type: ['string', 'null'],
+                    format: 'uuid',
+                  },
+                  confirmedSubtreeDigest: {
+                    description:
+                      'Membership confirmation returned by previewHistoryCheckpoint, not a live revision.',
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                },
+                additionalProperties: false,
+                required: ['sessionId', 'expectedRevision', 'confirmedSubtreeDigest'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointReceipt',
+            type: 'object',
+            properties: {
+              operation: {
+                description:
+                  'Original Host observation. Domain success never fabricates Host cleanup confirmation.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/OperationObservation',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+              publication: {
+                description:
+                  'Authoritative domain result even when the Host response was lost.\nAbsence is not permission to recapture under a replacement operation.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentHistoryCheckpointPublication',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
+            },
+            additionalProperties: false,
+            $defs: {
+              OperationObservation: {
+                type: 'object',
+                properties: {
+                  reference: {
+                    $ref: '#/$defs/RecoveryRef',
+                  },
+                  outcome: {
+                    $ref: '#/$defs/OperationOutcome',
+                  },
+                  cleanup: {
+                    $ref: '#/$defs/OperationCleanup',
+                  },
+                },
+                additionalProperties: false,
+                required: ['reference', 'outcome', 'cleanup'],
+              },
+              RecoveryRef: {
+                type: 'object',
+                properties: {
+                  source: {
+                    $ref: '#/$defs/DeploymentRef',
+                  },
+                  namespace: {
+                    $ref: '#/$defs/InstanceId',
+                  },
+                  export: {
+                    type: 'string',
+                  },
+                  method: {
+                    type: 'string',
+                  },
+                  operation: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  fingerprint: {
+                    type: 'string',
+                  },
+                  contract: {
+                    $ref: '#/$defs/RecoveryContract',
+                  },
+                  recovery: {
+                    $ref: '#/$defs/RecoveryProtocol',
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'source',
+                  'namespace',
+                  'export',
+                  'method',
+                  'operation',
+                  'fingerprint',
+                  'contract',
+                  'recovery',
+                ],
+              },
+              DeploymentRef: {
+                type: 'object',
+                properties: {
+                  stateDomain: {
+                    type: 'string',
+                  },
+                  deployment: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                  },
+                },
+                additionalProperties: false,
+                required: ['stateDomain', 'deployment', 'revision'],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              RecoveryContract: {
+                description:
+                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
+                type: 'object',
+                properties: {
+                  name: {
+                    type: 'string',
+                  },
+                  version: {
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
+                  transport: {
+                    $ref: '#/$defs/Transport',
+                  },
+                  digest: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['name', 'version', 'transport', 'digest'],
+              },
+              Transport: {
+                type: 'string',
+                enum: ['local', 'remote'],
+              },
+              RecoveryProtocol: {
+                type: 'string',
+                enum: ['journal_v1'],
+              },
+              OperationOutcome: {
+                description:
+                  'Unresolved means no durable result is known, including after process loss.',
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unresolved',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'returned',
+                      },
+                      value: true,
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'value'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unknown',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              OperationCleanup: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unconfirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'confirmed',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'failed',
+                      },
+                      diagnostic: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'diagnostic'],
+                  },
+                ],
+              },
+              AgentHistoryCheckpointPublication: {
+                type: 'object',
+                properties: {
+                  state: {
+                    $ref: '#/$defs/AgentHistoryCheckpointState',
+                  },
+                  cleanupPending: {
+                    description: 'Cleanup failure does not undo a successful publication.',
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['state', 'cleanupPending'],
+              },
+              AgentHistoryCheckpointState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capturing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'prepared',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'published',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
+                      actual: {
+                        type: ['string', 'null'],
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interrupted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
         historyLandmarks: {
           mode: 'query',
           input: {
@@ -8340,10 +8514,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -8593,10 +8763,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -9405,10 +9571,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -9658,10 +9820,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -10050,6 +10208,36 @@ export const contracts = {
                       'allowAlways',
                       'authorityRevision',
                     ],
+                  },
+                  {
+                    description:
+                      'Missing operating-system grants the waiting tool call needs. The producer\npolls the real grant state and commits `SystemPermissionGranted` itself;\nthe user can only cancel.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      grants: {
+                        description: 'Distinct missing grants.',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/SystemPermissionGrant',
+                        },
+                        minItems: 1,
+                      },
+                      application: {
+                        description:
+                          'The application name the operating system lists in its settings.',
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'grants', 'application'],
                   },
                 ],
               },
@@ -10615,6 +10803,23 @@ export const contracts = {
                 type: 'string',
                 enum: ['low', 'high'],
               },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
               InteractionOutcome: {
                 oneOf: [
                   {
@@ -10770,6 +10975,24 @@ export const contracts = {
                     required: ['kind', 'decision', 'committedAt'],
                   },
                   {
+                    description:
+                      'Producer-committed once every requested system grant is present; no answer maps here.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
+                  },
+                  {
                     type: 'object',
                     properties: {
                       kind: {
@@ -10857,6 +11080,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -11095,10 +11319,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -11349,10 +11569,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -11889,10 +12105,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -12142,10 +12354,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -12474,18 +12682,6 @@ export const contracts = {
                 type: ['boolean', 'null'],
                 default: null,
               },
-              collaborationMode: {
-                description: 'Changing collaboration is only allowed while the Session is idle.',
-                anyOf: [
-                  {
-                    $ref: '#/$defs/CollaborationMode',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-                default: null,
-              },
               permissions: {
                 description: 'Omission leaves the permission boundary and its approvals unchanged.',
                 anyOf: [
@@ -12521,10 +12717,6 @@ export const contracts = {
             additionalProperties: false,
             required: ['sessionId', 'expectedRevision', 'title', 'labels'],
             $defs: {
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
-              },
               AgentPermissionChange: {
                 type: 'object',
                 properties: {
@@ -12643,10 +12835,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -12897,10 +13085,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -13080,6 +13264,11 @@ export const contracts = {
               session: {
                 $ref: '#/$defs/AgentSession',
               },
+              lastCompletedTurnId: {
+                description:
+                  "Latest successful source turn at this observation's fence, or none while busy.",
+                type: ['string', 'null'],
+              },
               compacting: {
                 anyOf: [
                   {
@@ -13141,7 +13330,14 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['session', 'compacting', 'through', 'parts', 'toolSeeds'],
+            required: [
+              'session',
+              'lastCompletedTurnId',
+              'compacting',
+              'through',
+              'parts',
+              'toolSeeds',
+            ],
             $defs: {
               AgentSession: {
                 type: 'object',
@@ -13170,10 +13366,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -13424,10 +13616,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -13939,21 +14127,71 @@ export const contracts = {
                   'form',
                   'client_capability',
                   'computer_app',
+                  'system_permission',
                 ],
               },
             },
           },
           resources: {},
         },
-        plan: {
-          mode: 'query',
+        predictNextMessage: {
+          mode: 'mutation',
           input: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanRead',
+            title: 'AgentPredictNextMessage',
             type: 'object',
             properties: {
               sessionId: {
                 type: 'string',
+              },
+              expectedTurnId: {
+                type: 'string',
+              },
+              trigger: {
+                $ref: '#/$defs/AgentPredictionTrigger',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedTurnId', 'trigger'],
+            $defs: {
+              AgentPredictionTrigger: {
+                type: 'string',
+                enum: ['live', 'catch_up'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentMessagePrediction',
+            type: 'object',
+            properties: {
+              sourceTurnId: {
+                type: 'string',
+              },
+              policyRevision: {
+                type: 'integer',
+                format: 'uint64',
+                minimum: 0,
+              },
+              suggestion: {
+                type: ['string', 'null'],
+              },
+            },
+            additionalProperties: false,
+            required: ['sourceTurnId', 'policyRevision'],
+          },
+          resources: {},
+        },
+        previewHistoryCheckpoint: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentSessionRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
               },
             },
             additionalProperties: false,
@@ -13961,732 +14199,40 @@ export const contracts = {
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanView',
+            title: 'AgentHistoryCheckpointInventory',
             type: 'object',
             properties: {
-              enabled: {
-                type: 'boolean',
-              },
-              current: {
-                $ref: '#/$defs/AgentPlanSnapshot',
-              },
-            },
-            additionalProperties: false,
-            required: ['enabled', 'current'],
-            $defs: {
-              AgentPlanSnapshot: {
-                description:
-                  'Public business data only; frozen execution authority remains with the owner.',
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  proposal: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanProposal',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  execution: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentPlanExecution',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision'],
-              },
-              PlanProposal: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  planId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanProposalStatus',
-                  },
-                  supersedes: {
-                    type: ['string', 'null'],
-                  },
-                  sourceExecutionId: {
-                    type: ['string', 'null'],
-                  },
-                  submittedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'planId',
-                  'revision',
-                  'turnId',
-                  'artifact',
-                  'status',
-                  'submittedAt',
-                ],
-              },
-              PlanArtifact: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                  },
-                  overview: {
-                    type: ['string', 'null'],
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanStep',
-                    },
-                    minItems: 1,
-                  },
-                  risks: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                },
-                additionalProperties: false,
-                required: ['title', 'steps'],
-              },
-              PlanStep: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    minLength: 1,
-                    pattern: '^[A-Za-z0-9_-]+$',
-                  },
-                  title: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                  files: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                  complexity: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanComplexity',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'title', 'description'],
-              },
-              PlanComplexity: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-              },
-              PlanProposalStatus: {
-                type: 'string',
-                enum: ['pending_approval', 'revision_requested', 'abandoned', 'approved'],
-              },
-              AgentPlanExecution: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  proposalId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanProgress',
-                    },
-                  },
-                  phase: {
-                    $ref: '#/$defs/AgentPlanPhase',
-                  },
-                  invocation: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Invocation',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  reason: {
-                    type: ['string', 'null'],
-                  },
-                  cancellation: {
-                    type: ['string', 'null'],
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'proposalId', 'artifact', 'steps', 'phase', 'updatedAt'],
-              },
-              PlanProgress: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanStepStatus',
-                  },
-                  note: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'status'],
-              },
-              PlanStepStatus: {
-                type: 'string',
-                enum: ['pending', 'in_progress', 'completed', 'skipped'],
-              },
-              AgentPlanPhase: {
-                type: 'string',
-                enum: ['awaiting_admission', 'active', 'interrupted', 'completed', 'cancelled'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
-              },
-            },
-          },
-          resources: {},
-        },
-        planHistory: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanHistoryRead',
-            type: 'object',
-            properties: {
-              sessionId: {
+              rootSessionId: {
                 type: 'string',
               },
-              throughRevision: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
+              subtreeDigest: {
+                type: 'string',
               },
-              after: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-                default: 0,
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId'],
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanHistory',
-            type: 'object',
-            properties: {
-              throughRevision: {
-                type: 'integer',
-                format: 'uint64',
-                minimum: 0,
-              },
-              snapshots: {
+              sessions: {
                 type: 'array',
                 items: {
-                  $ref: '#/$defs/AgentPlanSnapshot',
+                  $ref: '#/$defs/AgentHistoryCheckpointSession',
                 },
-              },
-              nextAfter: {
-                type: ['integer', 'null'],
-                format: 'uint64',
-                minimum: 0,
               },
             },
             additionalProperties: false,
-            required: ['throughRevision', 'snapshots'],
+            required: ['rootSessionId', 'subtreeDigest', 'sessions'],
             $defs: {
-              AgentPlanSnapshot: {
-                description:
-                  'Public business data only; frozen execution authority remains with the owner.',
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  proposal: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanProposal',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  execution: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentPlanExecution',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision'],
-              },
-              PlanProposal: {
+              AgentHistoryCheckpointSession: {
                 type: 'object',
                 properties: {
                   id: {
-                    type: 'string',
-                  },
-                  planId: {
                     type: 'string',
                   },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
                     minimum: 0,
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanProposalStatus',
-                  },
-                  supersedes: {
-                    type: ['string', 'null'],
-                  },
-                  sourceExecutionId: {
-                    type: ['string', 'null'],
-                  },
-                  submittedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
+                    maximum: 9007199254740991,
                   },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'planId',
-                  'revision',
-                  'turnId',
-                  'artifact',
-                  'status',
-                  'submittedAt',
-                ],
-              },
-              PlanArtifact: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                  },
-                  overview: {
-                    type: ['string', 'null'],
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanStep',
-                    },
-                    minItems: 1,
-                  },
-                  risks: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                },
-                additionalProperties: false,
-                required: ['title', 'steps'],
-              },
-              PlanStep: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    minLength: 1,
-                    pattern: '^[A-Za-z0-9_-]+$',
-                  },
-                  title: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                  files: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                  complexity: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanComplexity',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'title', 'description'],
-              },
-              PlanComplexity: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-              },
-              PlanProposalStatus: {
-                type: 'string',
-                enum: ['pending_approval', 'revision_requested', 'abandoned', 'approved'],
-              },
-              AgentPlanExecution: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  proposalId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanProgress',
-                    },
-                  },
-                  phase: {
-                    $ref: '#/$defs/AgentPlanPhase',
-                  },
-                  invocation: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Invocation',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  reason: {
-                    type: ['string', 'null'],
-                  },
-                  cancellation: {
-                    type: ['string', 'null'],
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'proposalId', 'artifact', 'steps', 'phase', 'updatedAt'],
-              },
-              PlanProgress: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanStepStatus',
-                  },
-                  note: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'status'],
-              },
-              PlanStepStatus: {
-                type: 'string',
-                enum: ['pending', 'in_progress', 'completed', 'skipped'],
-              },
-              AgentPlanPhase: {
-                type: 'string',
-                enum: ['awaiting_admission', 'active', 'interrupted', 'completed', 'cancelled'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
-              },
-            },
-          },
-          resources: {},
-        },
-        planReceipt: {
-          mode: 'query',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanReceiptRead',
-            type: 'object',
-            properties: {
-              reference: {
-                $ref: '#/$defs/RecoveryRef',
-              },
-            },
-            additionalProperties: false,
-            required: ['reference'],
-            $defs: {
-              RecoveryRef: {
-                type: 'object',
-                properties: {
-                  source: {
-                    $ref: '#/$defs/DeploymentRef',
-                  },
-                  namespace: {
-                    $ref: '#/$defs/InstanceId',
-                  },
-                  export: {
-                    type: 'string',
-                  },
-                  method: {
-                    type: 'string',
-                  },
-                  operation: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  fingerprint: {
-                    type: 'string',
-                  },
-                  contract: {
-                    $ref: '#/$defs/RecoveryContract',
-                  },
-                  recovery: {
-                    $ref: '#/$defs/RecoveryProtocol',
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'source',
-                  'namespace',
-                  'export',
-                  'method',
-                  'operation',
-                  'fingerprint',
-                  'contract',
-                  'recovery',
-                ],
-              },
-              DeploymentRef: {
-                type: 'object',
-                properties: {
-                  stateDomain: {
-                    type: 'string',
-                  },
-                  deployment: {
-                    type: 'string',
-                    format: 'uuid',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['stateDomain', 'deployment', 'revision'],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              RecoveryContract: {
-                description:
-                  'Contract identity for a journal lookup. The original request retains the\ncomplete contract; a receipt carries only its digest.',
-                type: 'object',
-                properties: {
-                  name: {
-                    type: 'string',
-                  },
-                  version: {
-                    type: 'integer',
-                    format: 'uint32',
-                    minimum: 0,
-                  },
-                  transport: {
-                    $ref: '#/$defs/Transport',
-                  },
-                  digest: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['name', 'version', 'transport', 'digest'],
-              },
-              Transport: {
-                type: 'string',
-                enum: ['local', 'remote'],
-              },
-              RecoveryProtocol: {
-                type: 'string',
-                enum: ['journal_v1'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'Nullable_AgentPlanResult',
-            anyOf: [
-              {
-                $ref: '#/$defs/AgentPlanResult',
-              },
-              {
-                type: 'null',
-              },
-            ],
-            $defs: {
-              AgentPlanResult: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'committed',
-                      },
-                      revision: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'revision'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'conflict',
-                      },
-                      actual: {
-                        type: 'integer',
-                        format: 'uint64',
-                        minimum: 0,
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'actual'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'rejected',
-                      },
-                      reason: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'reason'],
-                  },
-                ],
+                required: ['id', 'revision'],
               },
             },
           },
@@ -15353,6 +14899,159 @@ export const contracts = {
           },
           resources: {},
         },
+        publishHistoryCheckpoint: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointPublish',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              expectedRevision: {
+                type: ['string', 'null'],
+                format: 'uuid',
+              },
+              confirmedSubtreeDigest: {
+                description:
+                  'Membership confirmation returned by previewHistoryCheckpoint, not a live revision.',
+                type: 'string',
+                pattern: '^[a-f0-9]{64}$',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'expectedRevision', 'confirmedSubtreeDigest'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointPublication',
+            type: 'object',
+            properties: {
+              state: {
+                $ref: '#/$defs/AgentHistoryCheckpointState',
+              },
+              cleanupPending: {
+                description: 'Cleanup failure does not undo a successful publication.',
+                type: 'boolean',
+              },
+            },
+            additionalProperties: false,
+            required: ['state', 'cleanupPending'],
+            $defs: {
+              AgentHistoryCheckpointState: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'capturing',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'prepared',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'published',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'conflict',
+                      },
+                      actual: {
+                        type: ['string', 'null'],
+                        format: 'uuid',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'interrupted',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'unavailable',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+            },
+          },
+          resources: {},
+        },
         queue: {
           mode: 'query',
           input: {
@@ -15587,11 +15286,20 @@ export const contracts = {
                     type: 'string',
                     const: 'missing',
                   },
+                  reason: {
+                    $ref: '#/$defs/AgentQueueMessageMissingReason',
+                  },
                 },
-                required: ['kind'],
                 additionalProperties: false,
+                required: ['kind', 'reason'],
               },
             ],
+            $defs: {
+              AgentQueueMessageMissingReason: {
+                type: 'string',
+                enum: ['delivered', 'cancelled', 'unknown'],
+              },
+            },
           },
           resources: {},
         },
@@ -15806,6 +15514,176 @@ export const contracts = {
           },
           resources: {},
         },
+        readHistoryCheckpoint: {
+          mode: 'subscription',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentHistoryCheckpointRead',
+            type: 'object',
+            properties: {
+              sessionId: {
+                type: 'string',
+                minLength: 1,
+              },
+              revision: {
+                description:
+                  'Only the exact currently retained revision is readable; no latest fallback.',
+                type: 'string',
+                format: 'uuid',
+              },
+            },
+            additionalProperties: false,
+            required: ['sessionId', 'revision'],
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'Nullable_AgentHistoryCheckpointFrame',
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentHistoryCheckpointFrame',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            $defs: {
+              AgentHistoryCheckpointFrame: {
+                oneOf: [
+                  {
+                    description: 'The following bytes use the MAKA-SESSION v2 history format.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'native_history_v1',
+                      },
+                      head: {
+                        $ref: '#/$defs/AgentHistoryCheckpointHead',
+                      },
+                      inventory: {
+                        $ref: '#/$defs/AgentHistoryCheckpointInventory',
+                      },
+                      bundle: {
+                        $ref: '#/$defs/AgentHistoryCheckpointObject',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'head', 'inventory', 'bundle'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'chunk',
+                      },
+                      offset: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                      data: {
+                        type: 'string',
+                        minLength: 1,
+                        maxLength: 43692,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'offset', 'data'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'end',
+                      },
+                      digest: {
+                        type: 'string',
+                      },
+                      bytes: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                        maximum: 9007199254740991,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'digest', 'bytes'],
+                  },
+                ],
+              },
+              AgentHistoryCheckpointHead: {
+                type: 'object',
+                properties: {
+                  revision: {
+                    type: 'string',
+                    format: 'uuid',
+                  },
+                  manifest: {
+                    $ref: '#/$defs/AgentHistoryCheckpointObject',
+                  },
+                },
+                additionalProperties: false,
+                required: ['revision', 'manifest'],
+              },
+              AgentHistoryCheckpointObject: {
+                type: 'object',
+                properties: {
+                  digest: {
+                    type: 'string',
+                    pattern: '^[a-f0-9]{64}$',
+                  },
+                  bytes: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['digest', 'bytes'],
+              },
+              AgentHistoryCheckpointInventory: {
+                type: 'object',
+                properties: {
+                  rootSessionId: {
+                    type: 'string',
+                  },
+                  subtreeDigest: {
+                    type: 'string',
+                  },
+                  sessions: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentHistoryCheckpointSession',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['rootSessionId', 'subtreeDigest', 'sessions'],
+              },
+              AgentHistoryCheckpointSession: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+            },
+          },
+          resources: {},
+        },
         readPatch: {
           mode: 'query',
           input: {
@@ -16013,10 +15891,6 @@ export const contracts = {
                         type: 'null',
                       },
                     ],
-                  },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
                   },
                   tools: {
                     type: ['array', 'null'],
@@ -16267,10 +16141,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -16761,6 +16631,17 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_cancel',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
                 ],
               },
               Decision: {
@@ -17183,6 +17064,36 @@ export const contracts = {
                       'allowAlways',
                       'authorityRevision',
                     ],
+                  },
+                  {
+                    description:
+                      'Missing operating-system grants the waiting tool call needs. The producer\npolls the real grant state and commits `SystemPermissionGranted` itself;\nthe user can only cancel.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      grants: {
+                        description: 'Distinct missing grants.',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/SystemPermissionGrant',
+                        },
+                        minItems: 1,
+                      },
+                      application: {
+                        description:
+                          'The application name the operating system lists in its settings.',
+                        type: 'string',
+                        minLength: 1,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'grants', 'application'],
                   },
                 ],
               },
@@ -17748,6 +17659,23 @@ export const contracts = {
                 type: 'string',
                 enum: ['low', 'high'],
               },
+              SystemPermissionGrant: {
+                description:
+                  'A macOS privacy grant (TCC) that the Host process itself needs before native\nComputer Use can run. This is operating-system state the user changes in\nSystem Settings, not a Maka grant; the Host observes it and commits the outcome.',
+                oneOf: [
+                  {
+                    description: 'System Settings > Privacy & Security > Accessibility.',
+                    type: 'string',
+                    const: 'accessibility',
+                  },
+                  {
+                    description:
+                      'System Settings > Privacy & Security > Screen & System Audio Recording.',
+                    type: 'string',
+                    const: 'screen_recording',
+                  },
+                ],
+              },
               InteractionOutcome: {
                 oneOf: [
                   {
@@ -17903,6 +17831,24 @@ export const contracts = {
                     required: ['kind', 'decision', 'committedAt'],
                   },
                   {
+                    description:
+                      'Producer-committed once every requested system grant is present; no answer maps here.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'system_permission_granted',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'committedAt'],
+                  },
+                  {
                     type: 'object',
                     properties: {
                       kind: {
@@ -17990,6 +17936,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -20222,10 +20169,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -20475,10 +20418,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -20753,6 +20692,14 @@ export const contracts = {
             title: 'AgentSend',
             type: 'object',
             properties: {
+              delivery: {
+                $ref: '#/$defs/AgentSendDelivery',
+              },
+              expectedInvocationId: {
+                description:
+                  'An active send must not start new work after Stop fences its original Run.',
+                type: ['string', 'null'],
+              },
               attachments: {
                 description:
                   'IDs of immutable user uploads in this Session; metadata is resolved by the owner.',
@@ -20763,7 +20710,14 @@ export const contracts = {
                 default: [],
               },
               model: {
-                $ref: '#/$defs/ModelSelection',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ModelSelection',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
               },
               thinkingLevel: {
                 description: 'Omission/null uses the configured model default; `off` is explicit.',
@@ -20785,8 +20739,12 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['model', 'sessionId', 'message'],
+            required: ['sessionId', 'message'],
             $defs: {
+              AgentSendDelivery: {
+                type: 'string',
+                enum: ['steer', 'queue'],
+              },
               ModelSelection: {
                 description:
                   'Exact public selection observed by a caller, checked once at run admission.',
@@ -20831,7 +20789,7 @@ export const contracts = {
                     type: 'string',
                   },
                   reason: {
-                    $ref: '#/$defs/AgentSkillInputRejection',
+                    $ref: '#/$defs/AgentSendRejection',
                   },
                   skills: {
                     anyOf: [
@@ -20907,9 +20865,9 @@ export const contracts = {
               },
             ],
             $defs: {
-              AgentSkillInputRejection: {
+              AgentSendRejection: {
                 type: 'string',
-                enum: ['skills_unavailable'],
+                enum: ['skills_unavailable', 'turn_stopped'],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -21167,10 +21125,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -21420,10 +21374,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 description:
@@ -23717,6 +23667,7 @@ export const contracts = {
                   'form',
                   'client_capability',
                   'computer_app',
+                  'system_permission',
                 ],
               },
               AgentComputerApps: {
@@ -24441,278 +24392,6 @@ export const contracts = {
               GoalReportKind: {
                 type: 'string',
                 enum: ['progress', 'achieved', 'blocked', 'paused'],
-              },
-            },
-          },
-          resources: {},
-        },
-        watchPlan: {
-          mode: 'subscription',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanRead',
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId'],
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentPlanView',
-            type: 'object',
-            properties: {
-              enabled: {
-                type: 'boolean',
-              },
-              current: {
-                $ref: '#/$defs/AgentPlanSnapshot',
-              },
-            },
-            additionalProperties: false,
-            required: ['enabled', 'current'],
-            $defs: {
-              AgentPlanSnapshot: {
-                description:
-                  'Public business data only; frozen execution authority remains with the owner.',
-                type: 'object',
-                properties: {
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  proposal: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanProposal',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  execution: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/AgentPlanExecution',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['revision'],
-              },
-              PlanProposal: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  planId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                  turnId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanProposalStatus',
-                  },
-                  supersedes: {
-                    type: ['string', 'null'],
-                  },
-                  sourceExecutionId: {
-                    type: ['string', 'null'],
-                  },
-                  submittedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: [
-                  'id',
-                  'planId',
-                  'revision',
-                  'turnId',
-                  'artifact',
-                  'status',
-                  'submittedAt',
-                ],
-              },
-              PlanArtifact: {
-                type: 'object',
-                properties: {
-                  title: {
-                    type: 'string',
-                  },
-                  overview: {
-                    type: ['string', 'null'],
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanStep',
-                    },
-                    minItems: 1,
-                  },
-                  risks: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                },
-                additionalProperties: false,
-                required: ['title', 'steps'],
-              },
-              PlanStep: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                    minLength: 1,
-                    pattern: '^[A-Za-z0-9_-]+$',
-                  },
-                  title: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                  files: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                    default: [],
-                  },
-                  complexity: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PlanComplexity',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'title', 'description'],
-              },
-              PlanComplexity: {
-                type: 'string',
-                enum: ['low', 'medium', 'high'],
-              },
-              PlanProposalStatus: {
-                type: 'string',
-                enum: ['pending_approval', 'revision_requested', 'abandoned', 'approved'],
-              },
-              AgentPlanExecution: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  proposalId: {
-                    type: 'string',
-                  },
-                  artifact: {
-                    $ref: '#/$defs/PlanArtifact',
-                  },
-                  steps: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/PlanProgress',
-                    },
-                  },
-                  phase: {
-                    $ref: '#/$defs/AgentPlanPhase',
-                  },
-                  invocation: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/Invocation',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  reason: {
-                    type: ['string', 'null'],
-                  },
-                  cancellation: {
-                    type: ['string', 'null'],
-                  },
-                  updatedAt: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'proposalId', 'artifact', 'steps', 'phase', 'updatedAt'],
-              },
-              PlanProgress: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  status: {
-                    $ref: '#/$defs/PlanStepStatus',
-                  },
-                  note: {
-                    type: ['string', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'status'],
-              },
-              PlanStepStatus: {
-                type: 'string',
-                enum: ['pending', 'in_progress', 'completed', 'skipped'],
-              },
-              AgentPlanPhase: {
-                type: 'string',
-                enum: ['awaiting_admission', 'active', 'interrupted', 'completed', 'cancelled'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
               },
             },
           },
@@ -26803,10 +26482,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -27055,10 +26730,6 @@ export const contracts = {
                 },
                 description:
                   'Executor-owned model selection, independent of Host model connections.',
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 type: 'object',
@@ -28345,10 +28016,6 @@ export const contracts = {
                       },
                     ],
                   },
-                  collaborationMode: {
-                    $ref: '#/$defs/CollaborationMode',
-                    default: 'agent',
-                  },
                   tools: {
                     type: ['array', 'null'],
                     items: {
@@ -28597,10 +28264,6 @@ export const contracts = {
                 },
                 description:
                   'Executor-owned model selection, independent of Host model connections.',
-              },
-              CollaborationMode: {
-                type: 'string',
-                enum: ['agent', 'plan'],
               },
               AgentDataSource: {
                 type: 'object',
@@ -30580,6 +30243,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -30918,6 +30582,7 @@ export const contracts = {
               ClosureReason: {
                 type: 'string',
                 enum: [
+                  'steered',
                   'turn_stopped',
                   'turn_terminal',
                   'producer_cancelled',
@@ -38777,6 +38442,12 @@ export const contracts = {
             title: 'SettingsAssistantPreferences',
             type: 'object',
             properties: {
+              predictions: {
+                $ref: '#/$defs/MessagePredictionSettings',
+              },
+              defaultPredictionPrompt: {
+                type: 'string',
+              },
               language: {
                 anyOf: [
                   {
@@ -38819,6 +38490,8 @@ export const contracts = {
             },
             additionalProperties: false,
             required: [
+              'predictions',
+              'defaultPredictionPrompt',
               'language',
               'resolvedLanguage',
               'compactionPrompt',
@@ -38831,6 +38504,41 @@ export const contracts = {
               'shell',
             ],
             $defs: {
+              MessagePredictionSettings: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  ordinarySessionsOnly: {
+                    type: 'boolean',
+                  },
+                  liveSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  catchUpSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  prompt: {
+                    description: 'None or blank selects the localized built-in instructions.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'enabled',
+                  'ordinarySessionsOnly',
+                  'liveSamplePercent',
+                  'catchUpSamplePercent',
+                  'prompt',
+                ],
+              },
               LanguagePreference: {
                 type: 'string',
                 enum: ['auto', 'en', 'zh-CN', 'zh-TW'],
@@ -43112,6 +42820,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'message_predictions',
+                      },
+                      settings: {
+                        $ref: '#/$defs/MessagePredictionSettings',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'settings'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'language',
                       },
                       preference: {
@@ -43205,6 +42927,40 @@ export const contracts = {
                     additionalProperties: false,
                     required: ['kind', 'value'],
                   },
+                ],
+              },
+              MessagePredictionSettings: {
+                type: 'object',
+                properties: {
+                  enabled: {
+                    type: 'boolean',
+                  },
+                  ordinarySessionsOnly: {
+                    type: 'boolean',
+                  },
+                  liveSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  catchUpSamplePercent: {
+                    type: 'number',
+                    format: 'double',
+                    minimum: 0,
+                    maximum: 100,
+                  },
+                  prompt: {
+                    description: 'None or blank selects the localized built-in instructions.',
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: [
+                  'enabled',
+                  'ordinarySessionsOnly',
+                  'liveSamplePercent',
+                  'catchUpSamplePercent',
                 ],
               },
               LanguagePreference: {
@@ -45082,6 +44838,7 @@ export const contracts = {
                 description: 'Refusal category without input-derived explanation text.',
                 type: 'string',
                 enum: [
+                  'superseded',
                   'unavailable',
                   'invalid_input',
                   'policy_denied',
@@ -48156,6 +47913,18 @@ export const contracts = {
                   'Durable deployment input. Plans are derived and never persisted as overrides.',
                 type: 'object',
                 properties: {
+                  base: {
+                    description:
+                      'Optional immutable root composition. Its children remain deployment roots,\nso selecting a baseline does not prepend a namespace to instance identities.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RootComposition',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   instances: {
                     type: 'object',
                     additionalProperties: {
@@ -48175,6 +47944,225 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['instances'],
+              },
+              RootComposition: {
+                description:
+                  'A composition selected at deployment scope, without introducing an instance.\nAdditional roots remain in Input.instances; inherited roots are edited with overrides.',
+                type: 'object',
+                properties: {
+                  package: {
+                    $ref: '#/$defs/PackageRef',
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  overrides: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Override',
+                    },
+                    default: [],
+                  },
+                  ui: {
+                    description: 'Absent inherits the template UI; null explicitly selects no UI.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UiTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['package'],
+              },
+              PackageRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+              Override: {
+                description:
+                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  remove: {
+                    description: 'A persistent deletion, distinct from disabling an instance.',
+                    type: 'boolean',
+                  },
+                  package: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  usePackage: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageUse',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configuration: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configurationFields: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ConfigurationField',
+                    },
+                  },
+                  bindings: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'array',
+                      items: {
+                        $ref: '#/$defs/Target',
+                      },
+                    },
+                    default: {},
+                  },
+                  disabled: {
+                    type: ['boolean', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              PackageUse: {
+                type: 'string',
+                enum: ['host', 'ui', 'composition'],
+              },
+              ConfigurationField: {
+                description:
+                  'An exact object-field edit. Missing value deletes the field; JSON null is a value.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  value: true,
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Target: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'export'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'import',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'name'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
+                      deployment: {
+                        type: 'string',
+                      },
+                      instance: {
+                        $ref: '#/$defs/InstanceId',
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'deployment', 'instance', 'export'],
+                  },
+                ],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              UiTarget: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'id'],
               },
               CompositionNode: {
                 type: 'object',
@@ -48259,23 +48247,6 @@ export const contracts = {
                   },
                 ],
               },
-              PackageRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
-              },
-              PackageUse: {
-                type: 'string',
-                enum: ['host', 'ui', 'composition'],
-              },
               Configuration: {
                 type: 'object',
                 properties: {
@@ -48295,147 +48266,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              Target: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          type: 'string',
-                        },
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'export'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'import',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'name'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
-                      },
-                      deployment: {
-                        type: 'string',
-                      },
-                      instance: {
-                        $ref: '#/$defs/InstanceId',
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'deployment', 'instance', 'export'],
-                  },
-                ],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              Override: {
-                description:
-                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  package: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageRef',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  usePackage: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageUse',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  parameters: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  configuration: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  bindings: {
-                    type: 'object',
-                    additionalProperties: {
-                      type: 'array',
-                      items: {
-                        $ref: '#/$defs/Target',
-                      },
-                    },
-                    default: {},
-                  },
-                  disabled: {
-                    type: ['boolean', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['path'],
-              },
-              UiTarget: {
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  id: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['path', 'id'],
               },
               RemoteObservation: {
                 description:
@@ -49524,6 +49354,18 @@ export const contracts = {
                   'Durable deployment input. Plans are derived and never persisted as overrides.',
                 type: 'object',
                 properties: {
+                  base: {
+                    description:
+                      'Optional immutable root composition. Its children remain deployment roots,\nso selecting a baseline does not prepend a namespace to instance identities.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/RootComposition',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
                   instances: {
                     type: 'object',
                     additionalProperties: {
@@ -49543,6 +49385,225 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['instances'],
+              },
+              RootComposition: {
+                description:
+                  'A composition selected at deployment scope, without introducing an instance.\nAdditional roots remain in Input.instances; inherited roots are edited with overrides.',
+                type: 'object',
+                properties: {
+                  package: {
+                    $ref: '#/$defs/PackageRef',
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  overrides: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/Override',
+                    },
+                    default: [],
+                  },
+                  ui: {
+                    description: 'Absent inherits the template UI; null explicitly selects no UI.',
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/UiTarget',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['package'],
+              },
+              PackageRef: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'revision'],
+              },
+              Override: {
+                description:
+                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  remove: {
+                    description: 'A persistent deletion, distinct from disabling an instance.',
+                    type: 'boolean',
+                  },
+                  package: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageRef',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  usePackage: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PackageUse',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  parameters: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configuration: {
+                    type: 'object',
+                    additionalProperties: true,
+                    default: {},
+                  },
+                  configurationFields: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/ConfigurationField',
+                    },
+                  },
+                  bindings: {
+                    type: 'object',
+                    additionalProperties: {
+                      type: 'array',
+                      items: {
+                        $ref: '#/$defs/Target',
+                      },
+                    },
+                    default: {},
+                  },
+                  disabled: {
+                    type: ['boolean', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              PackageUse: {
+                type: 'string',
+                enum: ['host', 'ui', 'composition'],
+              },
+              ConfigurationField: {
+                description:
+                  'An exact object-field edit. Missing value deletes the field; JSON null is a value.',
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  value: true,
+                },
+                additionalProperties: false,
+                required: ['path'],
+              },
+              Target: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'instance',
+                      },
+                      path: {
+                        type: 'array',
+                        items: {
+                          type: 'string',
+                        },
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'path', 'export'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'import',
+                      },
+                      name: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'name'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'remote',
+                      },
+                      deployment: {
+                        type: 'string',
+                      },
+                      instance: {
+                        $ref: '#/$defs/InstanceId',
+                      },
+                      export: {
+                        type: 'string',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'deployment', 'instance', 'export'],
+                  },
+                ],
+              },
+              InstanceId: {
+                description:
+                  'Hierarchical, stable source keys. Display aliases never become data identities.',
+                type: 'array',
+                items: {
+                  type: 'string',
+                  format: 'uuid',
+                },
+              },
+              UiTarget: {
+                type: 'object',
+                properties: {
+                  path: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  id: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['path', 'id'],
               },
               CompositionNode: {
                 type: 'object',
@@ -49627,23 +49688,6 @@ export const contracts = {
                   },
                 ],
               },
-              PackageRef: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'revision'],
-              },
-              PackageUse: {
-                type: 'string',
-                enum: ['host', 'ui', 'composition'],
-              },
               Configuration: {
                 type: 'object',
                 properties: {
@@ -49663,147 +49707,6 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-              },
-              Target: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'instance',
-                      },
-                      path: {
-                        type: 'array',
-                        items: {
-                          type: 'string',
-                        },
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'path', 'export'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'import',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'name'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'remote',
-                      },
-                      deployment: {
-                        type: 'string',
-                      },
-                      instance: {
-                        $ref: '#/$defs/InstanceId',
-                      },
-                      export: {
-                        type: 'string',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'deployment', 'instance', 'export'],
-                  },
-                ],
-              },
-              InstanceId: {
-                description:
-                  'Hierarchical, stable source keys. Display aliases never become data identities.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                  format: 'uuid',
-                },
-              },
-              Override: {
-                description:
-                  'An override belongs to its containing structural instance. Missing paths fail;\nremoval/upgrade never guesses how to discard independent user intent.',
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  package: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageRef',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  usePackage: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PackageUse',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                  parameters: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  configuration: {
-                    type: 'object',
-                    additionalProperties: true,
-                    default: {},
-                  },
-                  bindings: {
-                    type: 'object',
-                    additionalProperties: {
-                      type: 'array',
-                      items: {
-                        $ref: '#/$defs/Target',
-                      },
-                    },
-                    default: {},
-                  },
-                  disabled: {
-                    type: ['boolean', 'null'],
-                  },
-                },
-                additionalProperties: false,
-                required: ['path'],
-              },
-              UiTarget: {
-                type: 'object',
-                properties: {
-                  path: {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                  id: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['path', 'id'],
               },
               RemoteObservation: {
                 description:
@@ -51624,8 +51527,8 @@ export const contracts = {
       },
     },
   },
-  workspaceJev: {
-    name: 'maka.workspace.Jev',
+  workspaceDecisionsApi: {
+    name: 'maka.workspace.DecisionsApi',
     version: 1,
     transport: 'remote',
     interface: {
@@ -51647,17 +51550,17 @@ export const contracts = {
                 minimum: 0,
               },
               target: {
-                $ref: '#/$defs/JevCredentialTarget',
+                $ref: '#/$defs/DecisionsApiCredentialTarget',
               },
               change: {
-                $ref: '#/$defs/JevCredentialChange',
+                $ref: '#/$defs/DecisionsApiCredentialChange',
               },
             },
             required: ['url', 'target', 'change'],
-            title: 'JevCredential',
+            title: 'DecisionsApiCredential',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevCredentialTarget: {
+              DecisionsApiCredentialTarget: {
                 oneOf: [
                   {
                     type: 'object',
@@ -51687,7 +51590,7 @@ export const contracts = {
                   },
                 ],
               },
-              JevCredentialChange: {
+              DecisionsApiCredentialChange: {
                 type: 'string',
                 enum: ['replace', 'remove'],
               },
@@ -51704,7 +51607,7 @@ export const contracts = {
                     const: 'updated',
                   },
                   snapshot: {
-                    $ref: '#/$defs/JevSnapshot',
+                    $ref: '#/$defs/DecisionsSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -51732,10 +51635,10 @@ export const contracts = {
                 additionalProperties: false,
               },
             ],
-            title: 'JevUpdate',
+            title: 'DecisionsApiUpdate',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSnapshot: {
+              DecisionsSnapshot: {
                 type: 'object',
                 properties: {
                   revision: {
@@ -51744,7 +51647,7 @@ export const contracts = {
                     minimum: 0,
                   },
                   settings: {
-                    $ref: '#/$defs/JevSettings',
+                    $ref: '#/$defs/DecisionsSettings',
                   },
                   credentialRevision: {
                     type: ['integer', 'null'],
@@ -51766,10 +51669,13 @@ export const contracts = {
                 },
                 required: ['settings', 'configured', 'apiKeyConfigured', 'headerNames'],
               },
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -51785,7 +51691,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },
@@ -51805,19 +51715,19 @@ export const contracts = {
             type: 'object',
             additionalProperties: false,
             properties: {
-              state: true,
+              input: true,
               questions: {
                 type: 'object',
                 additionalProperties: {
-                  $ref: '#/$defs/JevQuestion',
+                  $ref: '#/$defs/DecisionsQuestion',
                 },
               },
             },
-            required: ['state', 'questions'],
-            title: 'JevEvaluation',
+            required: ['input', 'questions'],
+            title: 'DecisionsEvaluation',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevQuestion: {
+              DecisionsQuestion: {
                 oneOf: [
                   {
                     type: 'object',
@@ -51825,7 +51735,7 @@ export const contracts = {
                     properties: {
                       type: {
                         type: 'string',
-                        const: 'noul',
+                        const: 'predicate',
                       },
                       instructions: true,
                       criteria: {
@@ -51844,12 +51754,14 @@ export const contracts = {
                         const: 'choice',
                       },
                       instructions: true,
-                      criteria: {
-                        type: 'object',
-                        additionalProperties: true,
+                      choices: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/DecisionsChoice',
+                        },
                       },
                     },
-                    required: ['type', 'instructions', 'criteria'],
+                    required: ['type', 'instructions', 'choices'],
                   },
                   {
                     type: 'object',
@@ -51860,14 +51772,48 @@ export const contracts = {
                         const: 'score',
                       },
                       instructions: true,
-                      criteria: {
+                      levels: {
                         type: 'array',
-                        items: true,
+                        items: {
+                          $ref: '#/$defs/DecisionsLevel',
+                        },
                       },
                     },
-                    required: ['type', 'instructions', 'criteria'],
+                    required: ['type', 'instructions', 'levels'],
                   },
                 ],
+              },
+              DecisionsChoice: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  value: {
+                    $ref: '#/$defs/DecisionsChoiceValue',
+                  },
+                  description: true,
+                },
+                required: ['value'],
+              },
+              DecisionsChoiceValue: {
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'boolean',
+                  },
+                ],
+              },
+              DecisionsLevel: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  description: true,
+                },
+                required: ['label'],
               },
             },
           },
@@ -51882,7 +51828,7 @@ export const contracts = {
                     const: 'completed',
                   },
                   value: {
-                    $ref: '#/$defs/JevEvaluationResult',
+                    $ref: '#/$defs/DecisionsEvaluationResult',
                   },
                 },
                 required: ['kind', 'value'],
@@ -51902,10 +51848,10 @@ export const contracts = {
                 required: ['kind', 'message'],
               },
             ],
-            title: 'JevResult',
+            title: 'DecisionsApiResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevEvaluationResult: {
+              DecisionsEvaluationResult: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
@@ -51915,16 +51861,16 @@ export const contracts = {
                   answers: {
                     type: 'object',
                     additionalProperties: {
-                      $ref: '#/$defs/JevAnswer',
+                      $ref: '#/$defs/DecisionsAnswer',
                     },
                   },
                   usage: {
-                    $ref: '#/$defs/JevUsage',
+                    $ref: '#/$defs/DecisionsUsage',
                   },
                 },
                 required: ['model', 'answers', 'usage'],
               },
-              JevAnswer: {
+              DecisionsAnswer: {
                 oneOf: [
                   {
                     type: 'object',
@@ -51932,14 +51878,14 @@ export const contracts = {
                     properties: {
                       type: {
                         type: 'string',
-                        const: 'noul',
+                        const: 'predicate',
                       },
-                      noul: {
+                      probability: {
                         type: 'number',
                         format: 'double',
                       },
                     },
-                    required: ['type', 'noul'],
+                    required: ['type', 'probability'],
                   },
                   {
                     type: 'object',
@@ -51950,17 +51896,16 @@ export const contracts = {
                         const: 'choice',
                       },
                       choice: {
-                        type: 'string',
+                        $ref: '#/$defs/DecisionsChoiceValue',
                       },
                       confidence: {
                         type: 'number',
                         format: 'double',
                       },
                       probabilities: {
-                        type: 'object',
-                        additionalProperties: {
-                          type: 'number',
-                          format: 'double',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/DecisionsChoiceProbability',
                         },
                       },
                     },
@@ -51983,24 +51928,75 @@ export const contracts = {
                         format: 'double',
                       },
                       probabilities: {
-                        type: 'object',
-                        additionalProperties: {
-                          type: 'number',
-                          format: 'double',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/DecisionsScoreProbability',
                         },
                       },
                       legend: {
                         type: 'object',
-                        additionalProperties: {
-                          type: 'string',
-                        },
+                        additionalProperties: true,
                       },
                     },
                     required: ['type', 'score', 'confidence', 'probabilities', 'legend'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'refusal',
+                      },
+                    },
+                    required: ['type'],
+                    additionalProperties: false,
+                  },
                 ],
               },
-              JevUsage: {
+              DecisionsChoiceValue: {
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'boolean',
+                  },
+                ],
+              },
+              DecisionsChoiceProbability: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  value: {
+                    $ref: '#/$defs/DecisionsChoiceValue',
+                  },
+                  probability: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                },
+                required: ['value', 'probability'],
+              },
+              DecisionsScoreProbability: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  value: {
+                    type: 'integer',
+                    format: 'uint',
+                    minimum: 0,
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  probability: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                },
+                required: ['value', 'label', 'probability'],
+              },
+              DecisionsUsage: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
@@ -52033,17 +52029,20 @@ export const contracts = {
                 minimum: 0,
               },
               settings: {
-                $ref: '#/$defs/JevSettings',
+                $ref: '#/$defs/DecisionsSettings',
               },
             },
             required: ['settings'],
-            title: 'JevSet',
+            title: 'DecisionsApiSet',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -52059,7 +52058,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },
@@ -52074,7 +52077,7 @@ export const contracts = {
                     const: 'updated',
                   },
                   snapshot: {
-                    $ref: '#/$defs/JevSnapshot',
+                    $ref: '#/$defs/DecisionsSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -52102,10 +52105,10 @@ export const contracts = {
                 additionalProperties: false,
               },
             ],
-            title: 'JevUpdate',
+            title: 'DecisionsApiUpdate',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSnapshot: {
+              DecisionsSnapshot: {
                 type: 'object',
                 properties: {
                   revision: {
@@ -52114,7 +52117,7 @@ export const contracts = {
                     minimum: 0,
                   },
                   settings: {
-                    $ref: '#/$defs/JevSettings',
+                    $ref: '#/$defs/DecisionsSettings',
                   },
                   credentialRevision: {
                     type: ['integer', 'null'],
@@ -52136,10 +52139,13 @@ export const contracts = {
                 },
                 required: ['settings', 'configured', 'apiKeyConfigured', 'headerNames'],
               },
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -52155,7 +52161,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },
@@ -52176,7 +52186,7 @@ export const contracts = {
                 minimum: 0,
               },
               settings: {
-                $ref: '#/$defs/JevSettings',
+                $ref: '#/$defs/DecisionsSettings',
               },
               credentialRevision: {
                 type: ['integer', 'null'],
@@ -52197,13 +52207,16 @@ export const contracts = {
               },
             },
             required: ['settings', 'configured', 'apiKeyConfigured', 'headerNames'],
-            title: 'JevSnapshot',
+            title: 'DecisionsSnapshot',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -52219,7 +52232,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },

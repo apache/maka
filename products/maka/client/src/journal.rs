@@ -125,6 +125,14 @@ pub struct Draft {
     pub attachments: Vec<DraftAttachment>,
 }
 
+/// A send owns this frozen content after the editor moves to its next draft.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct SendSnapshot {
+    pub draft: Draft,
+    pub selection: Value,
+}
+
 /// Display metadata for an immutable Host upload in this exact draft owner.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -240,6 +248,31 @@ impl Journal {
     }
     pub(crate) async fn reserve(&self, operation: &Operation) -> Result<()> {
         self.write(write::Command::Reserve(write::Reservation::new(operation)?))
+            .await
+            .map(|_| ())
+    }
+    pub(crate) async fn reserve_send(&self, operation: &Operation) -> Result<()> {
+        let draft = operation
+            .draft
+            .clone()
+            .ok_or("send requires a draft owner")?;
+        self.write(write::Command::ReserveSend {
+            reservation: write::Reservation::new(operation)?,
+            draft,
+        })
+        .await
+        .map(|_| ())
+    }
+    pub(crate) async fn retry_send(&self, original: Uuid, operation: &Operation) -> Result<()> {
+        self.write(write::Command::RetrySend {
+            original,
+            reservation: write::Reservation::new(operation)?,
+        })
+        .await
+        .map(|_| ())
+    }
+    pub(crate) async fn dismiss_send(&self, id: Uuid) -> Result<()> {
+        self.write(write::Command::DismissSend(id))
             .await
             .map(|_| ())
     }
@@ -380,6 +413,10 @@ impl Journal {
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending operations index: {error}"))?;
             sqlx::query("CREATE TABLE IF NOT EXISTS dismissed_controls (operation TEXT PRIMARY KEY REFERENCES operations(id))")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating dismissed controls table: {error}"))?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS pending_sends (operation TEXT PRIMARY KEY REFERENCES operations(id), owner TEXT NOT NULL)")
+                .execute(&mut *transaction).await.map_err(|error| format!("client journal creating pending sends table: {error}"))?;
+            sqlx::query("CREATE INDEX IF NOT EXISTS pending_sends_owner ON pending_sends(owner)")
+                .execute(&mut *transaction).await.map_err(|error| format!("client journal indexing pending sends: {error}"))?;
             for (name, index, remove) in recovery::INDEXES {
                 let previous: Option<String> = sqlx::query_scalar("SELECT sql FROM sqlite_schema WHERE type='index' AND name=?")
                     .bind(name).fetch_optional(&mut *transaction).await.map_err(error)?;
@@ -604,6 +641,38 @@ fn accepted_send(receipt: &Receipt, session: &str) -> bool {
                 .is_some_and(|revision| revision <= 9_007_199_254_740_991),
             _ => false,
         }
+}
+
+pub(crate) fn queued_send(operation: &Operation) -> Option<(&str, u64)> {
+    let receipt = operation.receipt.as_ref()?;
+    if !accepted_send(receipt, operation.session_id.as_deref()?) {
+        return None;
+    }
+    let Receipt::Recorded {
+        outcome: OperationOutcome::Returned { value },
+        ..
+    } = receipt
+    else {
+        return None;
+    };
+    (value["kind"] == "queued").then(|| {
+        (
+            value["messageId"]
+                .as_str()
+                .expect("accepted queued message identity"),
+            value["revision"]
+                .as_u64()
+                .expect("accepted queued message revision"),
+        )
+    })
+}
+
+pub(crate) fn retryable_send(operation: &Operation) -> bool {
+    operation.abandoned
+        || matches!(&operation.receipt,
+            Some(Receipt::Recorded {
+                outcome: OperationOutcome::Returned { value }, ..
+            }) if matches!(value.get("kind").and_then(Value::as_str), Some("rejected" | "not_your_worker")))
 }
 fn error(error: impl std::fmt::Display) -> String {
     error.to_string()

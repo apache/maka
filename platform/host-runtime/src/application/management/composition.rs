@@ -21,7 +21,9 @@
 use super::*;
 use maka_event_log::applications::LoadedDeployment;
 use maka_plugin_core::{
-    composition::{Configuration as Values, Node, PackageUse, Target},
+    composition::{
+        Configuration as Values, ConfigurationField, Node, Override, PackageUse, Target,
+    },
     contract::Availability,
     deployment::management::{
         BindingCandidate, BindingCandidatesPage, BindingCandidatesRead, BindingConsumer,
@@ -170,9 +172,26 @@ impl Manager {
         let plan = loaded.plan();
         let (entry, configuration, current) = match &request.consumer {
             BindingConsumer::Root { name } => {
-                let node = loaded
+                let mut declarations = maka_plugin_core::package::Packages::default();
+                for package in loaded.packages() {
+                    declarations
+                        .insert_checked(
+                            package.application_ref(),
+                            package
+                                .manifest()
+                                .application
+                                .as_ref()
+                                .ok_or("application declaration missing")?
+                                .clone(),
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
+                let effective = loaded
                     .source()
                     .input
+                    .materialize(&declarations)
+                    .map_err(|error| error.to_string())?;
+                let node = effective
                     .instances
                     .get(name)
                     .ok_or("consumer root unavailable")?;
@@ -371,11 +390,30 @@ impl Manager {
         }
         let loaded = self.source_at(Some(metadata.source.reference)).await?;
         let (mut source, packages, _, _) = loaded.into_parts();
+        let mut declarations = maka_plugin_core::package::Packages::default();
+        for package in &packages {
+            declarations
+                .insert_checked(
+                    package.application_ref(),
+                    package
+                        .manifest()
+                        .application
+                        .as_ref()
+                        .ok_or("application declaration missing")?
+                        .clone(),
+                )
+                .map_err(|error| error.to_string())?;
+        }
+
         let applied = (|| -> Result<()> {
             if request.edits.is_empty() {
                 return Err("no composition changes".into());
             }
             for change in request.edits {
+                let effective = source
+                    .input
+                    .materialize(&declarations)
+                    .map_err(|error| error.to_string())?;
                 match change {
                     CompositionChange::Insert {
                         name,
@@ -384,7 +422,7 @@ impl Manager {
                         settings: changes,
                         bindings,
                     } => {
-                        if source.input.instances.contains_key(&name) {
+                        if effective.instances.contains_key(&name) {
                             return Err("instance name already exists".into());
                         }
                         let declaration = declaration(&packages, &package)?;
@@ -426,27 +464,73 @@ impl Manager {
                         configuration,
                         bindings,
                     } => {
-                        let node = source
-                            .input
+                        let node = effective
                             .instances
-                            .get_mut(&name)
+                            .get(&name)
                             .ok_or("instance root unavailable")?;
-                        let values = match node.use_package {
-                            PackageUse::Composition => &mut node.parameters,
-                            PackageUse::Host | PackageUse::Ui => &mut node.configuration,
-                        };
-                        for (field, value) in configuration {
-                            values.parameters.remove(&field);
-                            values.values.insert(field, value);
+                        match node.use_package {
+                            PackageUse::Composition => {
+                                if let Some(local) = source.input.instances.get_mut(&name) {
+                                    for (field, value) in configuration {
+                                        local.parameters.parameters.remove(&field);
+                                        local.parameters.values.insert(field, value);
+                                    }
+                                } else if !configuration.is_empty() {
+                                    source
+                                        .input
+                                        .override_mut(std::slice::from_ref(&name))
+                                        .map_err(|error| error.to_string())?
+                                        .parameters
+                                        .extend(configuration);
+                                }
+                            }
+                            PackageUse::Host | PackageUse::Ui => {
+                                if !configuration.is_empty() {
+                                    source
+                                        .input
+                                        .configure(
+                                            std::slice::from_ref(&name),
+                                            configuration
+                                                .into_iter()
+                                                .map(|(key, value)| ConfigurationField {
+                                                    path: vec![key],
+                                                    value: Some(value),
+                                                })
+                                                .collect(),
+                                        )
+                                        .map_err(|error| error.to_string())?;
+                                }
+                            }
                         }
-                        node.bindings.extend(bindings);
+                        if let Some(local) = source.input.instances.get_mut(&name) {
+                            local.bindings.extend(bindings);
+                        } else if !bindings.is_empty() {
+                            source
+                                .input
+                                .override_mut(&[name])
+                                .map_err(|error| error.to_string())?
+                                .bindings
+                                .extend(bindings);
+                        }
                     }
                     CompositionChange::Remove { name } => {
-                        source
-                            .input
-                            .instances
-                            .remove(&name)
-                            .ok_or("instance root unavailable")?;
+                        if !effective.instances.contains_key(&name) {
+                            return Err("instance root unavailable".into());
+                        }
+                        if source.input.instances.remove(&name).is_none() {
+                            let base = source
+                                .input
+                                .base
+                                .as_mut()
+                                .ok_or("root baseline unavailable")?;
+                            base.overrides
+                                .retain(|patch| patch.path.first() != Some(&name));
+                            base.overrides.push(Override {
+                                path: vec![name],
+                                remove: true,
+                                ..Override::default()
+                            });
+                        }
                     }
                 }
             }

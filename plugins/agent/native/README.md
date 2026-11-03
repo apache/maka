@@ -21,13 +21,14 @@
 
 [简体中文](README.zh-CN.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) is an internal trusted-assembly
-coordinator for history-only checkpoints. It binds the native Session namespace
-and complete original `RecoveryRef`, then uses the Root-owned capture/publication
-and recovery implementation. It does not register a service method or model tool.
-A future service adapter must perform Host admission and settle the original
-operation from the durable publication receipt; callers cannot supply their own
-authority scope. Workspace capture and restore/activation are outside this API.
+[`HistoryCheckpointPublisher`](src/checkpoints.rs) binds the admitted native Session
+namespace and original `RecoveryRef` to Root-owned history capture and recovery.
+The [service adapter](src/owner/checkpoints.rs) exposes explicit management methods
+with Host admission, original receipt authorization and bounded subscription reads.
+Publication receipts resolve checkpoint success without fabricating generic Host
+cleanup confirmation. See the [API workflow](../api/README.md#history-checkpoint-management)
+and [manual baseline](src/owner/tests/checkpoints/benchmark.rs). Workspace capture,
+restore/activation and model tools are outside this API.
 
 `agent.fork` captures a source revision and an explicit `position`: `end`, `through_turn`, or `before_turn` with a logical Turn ID, or `start` for empty history. `before_turn` excludes the complete target Turn and accepts the first Turn to create an empty conversation. The Host resolves the boundary from canonical history in the copy transaction; clients do not need a preceding Turn or the sampled history landmarks. The returned branch retains that position, and the source conversation is unchanged.
 
@@ -81,8 +82,6 @@ The default composition enables `recaps`. The Session recap command reads cached
 
 The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Original operation identities and receipts survive restart, and sealed Host handoffs use their reserved successors rather than replaying effects. Incognito, archived Sessions and changed execution prerequisites require user action before further execution.
 
-The default composition enables `plans`. The Plan command switches an idle conversation into Planning mode, whose tool selection permits inspection, questions and `SubmitPlan` but no workspace mutation or autonomous delegation. Submission ends that Turn without executing. Approving the displayed proposal freezes its artifact, selected model, workspace and permission boundary; implementation enters the original Agent queue. `update_plan` also works in Code Mode and reports every frozen step, but completion requires both all steps completed/skipped and successful execution with physical cleanup. Explicit resume preserves the artifact and progress while obtaining a new approval. Cancel targets only the original Plan invocation. Durable decisions, bounded read-only history and original approval receipts survive restart; stale boundaries and Incognito prevent new execution.
-
 WorkHub coordinator conversations can select Graph or Swarm. Graph decisions and original WorkHub task assignments commit atomically; the existing task owner retains dispatch, dependency input capture, control receipts and cleanup. The five Graph tools expose published targets, bounded work/result/history reads, updates and yielding. Swarm wakes the supervisor for attention or a settled batch. Historical inputs must name selected final results from an earlier finished epoch; result inputs use bounded 16 KiB previews with complete result pagination available. Original session, epoch and permission boundaries remain enforced across stop, queueing and restart.
 
 WorkHub task and graph notifications retain their recorded source in history and have distinct message labels.
@@ -92,3 +91,5 @@ WorkHub tasks list newest accepted work first. Each task detail includes its rec
 Reusable WorkHub presets store an explicit connection and model. New ordinary and Graph tasks resolve that target against current settings, so unrelated connection edits do not invalidate the preset. Accepted tasks retain their captured selection and tools; changing or disabling a preset does not rewrite them. New routes report unavailable presets, connections or models before accepting work.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
+
+[Performance baseline](checkpoint-baseline.md)

@@ -227,7 +227,7 @@ async fn admit(client: &Client, args: &Value) -> Result<Value> {
         selection["thinkingLevel"] = level.clone();
     }
     let mutation = client
-        .send_draft(
+        .reserve_send_draft(
             operation_id(args)?,
             "agent",
             session,
@@ -235,6 +235,8 @@ async fn admit(client: &Client, args: &Value) -> Result<Value> {
             draft.revision,
             selection,
         )
+        .await?
+        .open()
         .await?;
     let accepted = commit(mutation).await?;
     if accepted["kind"] != "started" {
@@ -276,7 +278,7 @@ async fn send(client: &Client, args: &Value) -> Result<Value> {
     let result = async {
         let mut selection = json!({"model":model});
         if let Some(level) = args.get("thinkingLevel") { selection["thinkingLevel"] = level.clone(); }
-        let mutation = client.send_draft(operation_id(args)?,"agent",session,editor,draft.revision,selection).await?;
+        let mutation = client.reserve_send_draft(operation_id(args)?,"agent",session,editor,draft.revision,selection).await?.open().await?;
         let accepted = commit(mutation).await?;
         if accepted["kind"] != "started" { return Err(format!("send did not start a distinct idle-session invocation: {accepted}")); }
         let invocation = string(&accepted,"invocationId")?.to_owned();

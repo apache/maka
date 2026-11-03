@@ -64,7 +64,34 @@ pub(crate) struct QueueChange {
     pub retracted: Vec<PendingMessageAdmission>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MessageDelivery {
+    Delivered,
+    Cancelled,
+    Unknown,
+}
+
 impl EventLog {
+    pub async fn message_delivery(
+        &self,
+        session: &str,
+        message: &str,
+    ) -> Result<MessageDelivery, StoreError> {
+        self.validate_root()?;
+        self.check_bound_session(session)?;
+        let session = session.to_owned();
+        let message = message.to_owned();
+        self.connection.read(move |db| Box::pin(async move {
+            let state: String = sqlx::query_scalar("SELECT CASE WHEN EXISTS(SELECT 1 FROM message_cancellations WHERE session_id=?1 AND message_id=?2) THEN 'cancelled' WHEN EXISTS(SELECT 1 FROM message_sources WHERE session_id=?1 AND message_id=?2) THEN 'delivered' ELSE 'unknown' END")
+                .bind(session).bind(message).fetch_one(db).await?;
+            Ok(match state.as_str() {
+                "cancelled" => MessageDelivery::Cancelled,
+                "delivered" => MessageDelivery::Delivered,
+                _ => MessageDelivery::Unknown,
+            })
+        })).await
+    }
+
     /// Read the control revision without loading the potentially large pending bodies.
     pub async fn message_queue_revision(&self, session: &str) -> Result<u64, StoreError> {
         self.validate_root()?;

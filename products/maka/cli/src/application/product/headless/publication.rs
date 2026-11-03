@@ -17,16 +17,89 @@
  * under the License.
  */
 
-//! Product-owned method publication uses the same policy on open and reconnect.
-use super::{HostError, Input, LoadedDeployment, RootStore, Selection, update};
+//! Product routes may follow defaults; publication authority remains explicitly granted.
+use super::super::{Input, Package, baseline};
+use super::{HostError, LoadedDeployment, PreparedApplication, RootStore, Selection};
 use maka_host_runtime::application::{host::Client, transport::HostEndpoint};
 use maka_plugin_core::{
-    composition::PackageUse,
     contract::{Contract, Interface, Transport},
-    deployment::management::ManagedDeployment,
-    package::PackageSelection,
     plan::Plan,
 };
+use std::collections::BTreeMap;
+
+pub(super) fn rebase(
+    selection: &mut Selection,
+    previous: &LoadedDeployment,
+    target: &PreparedApplication,
+) -> Result<Vec<String>, HostError> {
+    let Some(previous) = baseline_endpoints(&previous.source().input, previous.packages())? else {
+        return Ok(Vec::new());
+    };
+    let Some(target) = baseline_endpoints(target.input(), target.packages())? else {
+        return Ok(Vec::new());
+    };
+    Ok(rebase_endpoints(selection, &previous, &target))
+}
+
+fn baseline_endpoints(
+    input: &Input,
+    packages: &[Package],
+) -> Result<Option<BTreeMap<String, HostEndpoint>>, HostError> {
+    let Some(base) = input
+        .base
+        .as_ref()
+        .filter(|base| base.package.id == baseline::ID)
+    else {
+        return Ok(None);
+    };
+    let package = packages
+        .iter()
+        .find(|package| package.application_ref() == base.package)
+        .ok_or("product publication baseline bytes missing")?;
+    Ok(Some(baseline::metadata(package)?.endpoints))
+}
+
+fn rebase_endpoints(
+    selection: &mut Selection,
+    previous: &BTreeMap<String, HostEndpoint>,
+    target: &BTreeMap<String, HostEndpoint>,
+) -> Vec<String> {
+    let Selection::PublicHost {
+        endpoints,
+        product_methods,
+        ..
+    } = selection;
+    let mut changes = Vec::new();
+    // A new default is not a grant. Only existing routes can follow their baseline.
+    for (name, before) in previous {
+        let Some(current) = endpoints.get_mut(name) else {
+            continue;
+        };
+        if current.consumer != before.consumer || current.import != before.import {
+            continue;
+        }
+        let path = name.replace('~', "~0").replace('/', "~1");
+        match target.get(name) {
+            Some(after) => {
+                if current.consumer != after.consumer || current.import != after.import {
+                    current.consumer = after.consumer.clone();
+                    current.import.clone_from(&after.import);
+                    changes.push(format!(
+                        "/publication/endpoints/{path}: follow current product binding"
+                    ));
+                }
+            }
+            None => {
+                endpoints.remove(name);
+                product_methods.remove(name);
+                changes.push(format!(
+                    "/publication/endpoints/{path}: remove obsolete product endpoint"
+                ));
+            }
+        }
+    }
+    changes
+}
 
 fn refresh_methods<'a>(
     selection: &mut Selection,
@@ -42,10 +115,10 @@ fn refresh_methods<'a>(
     for (name, endpoint) in endpoints {
         let contract = contract(name, endpoint)?;
         let Interface::Service { methods } = &contract.interface else {
-            return Err("public Host endpoint requires a service".into());
+            return Err(format!("public Host endpoint {name:?} requires a service").into());
         };
         if contract.transport != Transport::Remote || methods.is_empty() {
-            return Err("public Host endpoint requires a public service".into());
+            return Err(format!("public Host endpoint {name:?} requires a public service").into());
         }
         if !product_methods.contains(name) {
             if endpoint
@@ -54,7 +127,10 @@ fn refresh_methods<'a>(
                 .iter()
                 .any(|method| !methods.contains_key(method))
             {
-                return Err("explicit Host endpoint grants an unavailable method".into());
+                return Err(format!(
+                    "explicit Host endpoint grants an unavailable method: {name:?}"
+                )
+                .into());
             }
             continue;
         }
@@ -74,13 +150,18 @@ pub(super) fn refresh_from_plan(
     selection: &mut Selection,
     plan: &Plan,
 ) -> Result<Vec<String>, HostError> {
-    refresh_methods(selection, |_, endpoint| {
+    refresh_methods(selection, |name, endpoint| {
         let bindings = plan
             .instances()
             .get(&endpoint.consumer)
             .and_then(|consumer| consumer.bindings.get(&endpoint.import))
             .filter(|bindings| bindings.len() == 1)
-            .ok_or("public Host endpoint requires one service binding")?;
+            .ok_or_else(|| {
+                format!(
+                    "public Host endpoint {name:?} requires one service binding for consumer {:?}, import {:?}",
+                    endpoint.consumer, endpoint.import
+                )
+            })?;
         Ok(&bindings[0].declaration.contract)
     })
 }
@@ -115,7 +196,6 @@ pub(super) async fn synchronize(
 pub(crate) enum LivePublication {
     Current,
     Updated,
-    Restart,
 }
 
 /// Refresh only explicitly product-owned methods. Original calls keep their
@@ -135,19 +215,6 @@ pub(crate) async fn prepare_live_publication(
     if product_methods.is_empty() {
         return Ok(LivePublication::Current);
     }
-    if update::management_available(client, &publication.configuration, &["read"]) {
-        let metadata: ManagedDeployment = serde_json::from_value(
-            update::query_management(client, "read", serde_json::json!({})).await?,
-        )?;
-        if metadata.source.reference.state_domain != publication.source.state_domain
-            || metadata.source.reference.deployment != publication.source.deployment
-        {
-            return Err("Host management read returned another deployment".into());
-        }
-        if invalid_helper(&metadata.source.input)? {
-            return Ok(LivePublication::Restart);
-        }
-    }
     let mut desired = publication.configuration.clone();
     if refresh_methods(&mut desired, |name, _| {
         Ok(&client.catalogue().describe(name)?.contract)
@@ -162,33 +229,5 @@ pub(crate) async fn prepare_live_publication(
     Ok(LivePublication::Updated)
 }
 
-fn invalid_helper(input: &Input) -> Result<bool, HostError> {
-    for name in ["workspace-processes", "coordinator-workspace-processes"] {
-        let Some(node) = input.instances.get(name) else {
-            continue;
-        };
-        let PackageSelection::Pinned { package } = &node.package else {
-            continue;
-        };
-        if package.id != "maka.agent.workspace-processes"
-            || node.use_package != PackageUse::Host
-            || !node.configuration.parameters.is_empty()
-        {
-            continue;
-        }
-        let settings: maka_workspace_api::processes::Configuration =
-            serde_json::from_value(serde_json::to_value(&node.configuration.values)?)?;
-        if settings
-            .helper
-            .as_ref()
-            .is_some_and(|path| !path.is_absolute() || !path.is_file())
-        {
-            return Ok(true);
-        }
-        #[cfg(windows)]
-        if settings.helper.is_none() {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
+#[cfg(test)]
+mod tests;

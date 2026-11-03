@@ -24,11 +24,14 @@ import { errorText, message, UiError } from './text';
 import type {
   AgentGlobalInstructionsView,
   LanguagePreference,
+  MessagePredictionSettings,
   SettingsAssistantPreferences,
   SettingsPreferencesMutation,
   SettingsPreferencesUpdated,
 } from '../../../../packages/plugin-sdk/src/index.js';
 import type { SettingsOperations } from './settingsOperations';
+import { sameValue } from '../../../../plugins/shared/value';
+import { invalidatePredictionPreferences, observePredictionPreferences } from './messagePrediction';
 
 type PreferencesEditor =
   | {
@@ -50,7 +53,22 @@ type PreferencesEditor =
       basis: SettingsAssistantPreferences;
       prompt: string;
       useDefault: boolean;
+    }
+  | {
+      kind: 'predictions';
+      id: number;
+      basis: SettingsAssistantPreferences;
+      enabled: boolean;
+      ordinarySessionsOnly: boolean;
+      liveSamplePercent: string;
+      catchUpSamplePercent: string;
+      prompt: string;
+      useDefault: boolean;
     };
+export type PredictionEditor = Extract<PreferencesEditor, { kind: 'predictions' }>;
+export type PredictionEdit =
+  | { field: 'enabled' | 'ordinarySessionsOnly'; value: boolean }
+  | { field: 'liveSamplePercent' | 'catchUpSamplePercent' | 'prompt'; value: string };
 type GlobalInstructions = Extract<AgentGlobalInstructionsView, { kind: 'available' }>;
 type GlobalEditor = {
   kind: 'globalInstructions';
@@ -157,6 +175,7 @@ export function createGeneralSettings(
         'assistantPreferences',
         {},
       );
+      observePredictionPreferences(result);
       applyLanguagePreference(result.language ?? 'auto', result.revision);
       languageChanged?.(currentLocale());
       if (owns()) facts.set(result);
@@ -183,6 +202,7 @@ export function createGeneralSettings(
       if (!alive) return;
       switch (result.kind) {
         case 'committed':
+          invalidatePredictionPreferences(result.revision);
           if (mutation.kind === 'language') {
             applyLanguagePreference(mutation.preference, result.revision);
             languageChanged?.(currentLocale());
@@ -329,6 +349,32 @@ export function createGeneralSettings(
         : 'Source changed. Your draft is preserved. Reload the source before saving again.',
     );
   };
+  const predictionDraft = (
+    basis: SettingsAssistantPreferences,
+  ): Omit<PredictionEditor, 'kind' | 'id' | 'basis'> => ({
+    enabled: basis.predictions.enabled,
+    ordinarySessionsOnly: basis.predictions.ordinarySessionsOnly,
+    liveSamplePercent: String(basis.predictions.liveSamplePercent),
+    catchUpSamplePercent: String(basis.predictions.catchUpSamplePercent),
+    prompt: basis.predictions.prompt ?? basis.defaultPredictionPrompt,
+    useDefault: basis.predictions.prompt === null,
+  });
+  const samplePercent = (text: string) => {
+    const trimmed = text.trim();
+    const value = Number(trimmed);
+    if (!trimmed || !Number.isFinite(value) || value < 0 || value > 100)
+      throw new UiError('Enter a percentage from 0 to 100.');
+    return value;
+  };
+  const predictionSettings = (form: PredictionEditor): MessagePredictionSettings => {
+    return {
+      enabled: form.enabled,
+      ordinarySessionsOnly: form.ordinarySessionsOnly,
+      liveSamplePercent: samplePercent(form.liveSamplePercent),
+      catchUpSamplePercent: samplePercent(form.catchUpSamplePercent),
+      prompt: form.useDefault || !form.prompt.trim() ? null : form.prompt,
+    };
+  };
   const open = (request: GeneralAction, kind: PreferencesEditor['kind']) => {
     const basis = facts();
     if (!basis || request.kind !== 'root' || !current(request) || disabled()) return;
@@ -343,13 +389,10 @@ export function createGeneralSettings(
             executable: basis.shell.executable,
           }
         : kind === 'personalization'
-          ? {
-              kind,
-              id: view(),
-              basis,
-              displayName: basis.displayName,
-            }
-          : { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false },
+          ? { kind, id: view(), basis, displayName: basis.displayName }
+          : kind === 'compaction'
+            ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
+            : { kind, id: view(), basis, ...predictionDraft(basis) },
     );
   };
   const dirty = () => {
@@ -361,8 +404,24 @@ export function createGeneralSettings(
         : form?.kind === 'shell'
           ? form.preference !== form.basis.shell.preference ||
             form.executable !== form.basis.shell.executable
-          : !!form?.document &&
-            (!form.document.basis.exists || form.document.content !== form.document.basis.content);
+          : form?.kind === 'predictions'
+            ? !sameValue(
+                {
+                  enabled: form.enabled,
+                  ordinarySessionsOnly: form.ordinarySessionsOnly,
+                  liveSamplePercent: form.liveSamplePercent,
+                  catchUpSamplePercent: form.catchUpSamplePercent,
+                  prompt: form.useDefault ? null : form.prompt,
+                },
+                {
+                  ...form.basis.predictions,
+                  liveSamplePercent: String(form.basis.predictions.liveSamplePercent),
+                  catchUpSamplePercent: String(form.basis.predictions.catchUpSamplePercent),
+                },
+              )
+            : !!form?.document &&
+              (!form.document.basis.exists ||
+                form.document.content !== form.document.basis.content);
   };
   const back = () => {
     if (operations.busy()) return false;
@@ -381,6 +440,7 @@ export function createGeneralSettings(
     async initializeLanguage() {
       const result = await host.query('settings', 'assistantPreferences', {});
       if (!alive) return;
+      observePredictionPreferences(result);
       applyLanguagePreference(result.language ?? 'auto', result.revision);
       languageChanged?.(currentLocale());
     },
@@ -398,6 +458,10 @@ export function createGeneralSettings(
     disabled,
     blocked,
     globalDocument,
+    predictionEditor: () => {
+      const form = editor();
+      return form?.kind === 'predictions' ? form : null;
+    },
     saveDisabled: () => disabled() || !dirty() || !!globalDocument()?.conflict,
     dirty,
     activate() {
@@ -430,7 +494,9 @@ export function createGeneralSettings(
             ? tr('Global instructions')
             : editor()?.kind === 'compaction'
               ? tr('Compaction prompt')
-              : tr('General settings'),
+              : editor()?.kind === 'predictions'
+                ? tr('Message predictions')
+                : tr('General settings'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
     openGlobal(request: GeneralAction) {
@@ -480,7 +546,7 @@ export function createGeneralSettings(
       kind,
     }: {
       request: GeneralAction;
-      kind: 'instructions' | 'privacy' | 'titles';
+      kind: 'instructions' | 'privacy' | 'titles' | 'predictions';
     }) {
       const saved = facts();
       if (!saved || request.kind !== 'root') return;
@@ -490,7 +556,12 @@ export function createGeneralSettings(
           ? { kind: 'workspace_instructions', enabled: !saved.workspaceInstructions }
           : kind === 'privacy'
             ? { kind: 'privacy', incognitoActive: !saved.incognitoActive }
-            : { kind: 'shell_titles', enabled: !saved.shellTitles },
+            : kind === 'titles'
+              ? { kind: 'shell_titles', enabled: !saved.shellTitles }
+              : {
+                  kind: 'message_predictions',
+                  settings: { ...saved.predictions, enabled: !saved.predictions.enabled },
+                },
       );
     },
     language({ request, preference }: { request: GeneralAction; preference: LanguagePreference }) {
@@ -522,6 +593,33 @@ export function createGeneralSettings(
       const form = editor();
       if (!current(request) || disabled() || form?.kind !== 'compaction') return;
       editor.set({ ...form, prompt: form.basis.defaultCompactionPrompt, useDefault: true });
+    },
+    editPrediction(request: GeneralAction, change: PredictionEdit) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'predictions') return;
+      editor.set({
+        ...form,
+        [change.field]: change.value,
+        ...(change.field === 'prompt' ? { useDefault: false } : {}),
+      });
+    },
+    restorePredictionPrompt(request: GeneralAction) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'predictions') return;
+      editor.set({ ...form, prompt: form.basis.defaultPredictionPrompt, useDefault: true });
+    },
+    restorePredictions(request: GeneralAction) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'predictions') return;
+      editor.set({
+        ...form,
+        enabled: true,
+        ordinarySessionsOnly: false,
+        liveSamplePercent: '100',
+        catchUpSamplePercent: '50',
+        prompt: form.basis.defaultPredictionPrompt,
+        useDefault: true,
+      });
     },
     save(request: GeneralAction) {
       const form = editor();
@@ -567,6 +665,16 @@ export function createGeneralSettings(
           },
           form,
         );
+      }
+      if (form.kind === 'predictions') {
+        let settings: MessagePredictionSettings;
+        try {
+          settings = predictionSettings(form);
+        } catch (reason) {
+          operations.report(reason);
+          return;
+        }
+        return mutate(request, { kind: 'message_predictions', settings }, form);
       }
       if (!form.useDefault && !form.prompt.trim()) {
         operations.report(new UiError('Enter a compaction prompt or choose the Host default.'));

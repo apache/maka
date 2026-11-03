@@ -20,14 +20,12 @@
 //! Auxiliary requests retain their physical worker and original usage journal.
 use super::*;
 use maka_agent_facts::{
-    model::{
-        ModelEvent, ModelFinishReason, ModelGeneration, ModelPart, TextKind, error::ModelError,
-    },
+    model::{ModelEvent, ModelFinishReason, ModelGeneration, TextKind, error::ModelError},
     tools::ToolError,
 };
 use maka_capabilities::call::Resources;
 use maka_event_log::usage::{AuxiliarySource, Outcome};
-use maka_model::{ModelRequest, ModelStream, StepBuilder};
+use maka_model::{ModelRequest, ModelStream};
 
 pub(super) enum Error {
     Model(ModelError),
@@ -48,15 +46,20 @@ impl From<Error> for ToolError {
     }
 }
 
+pub(super) enum Execution {
+    Invocation(
+        Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
+        Invocation,
+    ),
+    Prepared(IdleLease),
+}
+
 pub(super) enum Admission {
     Source(AuxiliarySource),
     Operation {
         reference: Box<maka_plugin_core::operation::RecoveryRef>,
         scope: Box<maka_event_log::applications::operations::OperationDispatchScope>,
-        execution: Option<(
-            Arc<dyn maka_agent_facts::tools::ExecutionCustody>,
-            Invocation,
-        )>,
+        execution: Option<Execution>,
         binding: ModelBinding,
         session_id: String,
     },
@@ -66,12 +69,11 @@ pub(super) struct Auxiliary {
     pub resources: Arc<Resources>,
 }
 impl Auxiliary {
-    pub fn new(revision: SourceRevision) -> Result<Self, String> {
-        Ok(Self {
-            models: ModelExecutor::for_source(Duration::from_secs(30), revision)
-                .map_err(|_| "agent_auxiliary_unavailable")?,
+    pub fn new(models: ModelExecutor) -> Self {
+        Self {
+            models,
             resources: Arc::default(),
-        })
+        }
     }
     pub async fn generate(
         &self,
@@ -94,12 +96,15 @@ impl Auxiliary {
             } => {
                 let operation = log.operation(&reference).map_err(admission_error)?;
                 let lease = match execution {
-                    Some((custody, invocation)) => {
+                    Some(Execution::Invocation(custody, invocation)) => {
                         if invocation.session_id != session_id {
                             return Err(failed("Auxiliary execution Session mismatch").into());
                         }
                         log.fork_execution(custody.as_ref(), &invocation)
                             .map_err(admission_error)?
+                    }
+                    Some(Execution::Prepared(mut admission)) => {
+                        admission.0.take().expect("prepared auxiliary lease")
                     }
                     None => session_lease(log, &session_id).await?,
                 };
@@ -158,28 +163,11 @@ impl Auxiliary {
                 .await
                 .map_err(Error::Model)?;
             custody.phase = ProviderPhase::Active;
-            let step = receive(stream, &mut custody).await?;
-            if step.finish_reason == ModelFinishReason::ToolCalls {
+            let generation = receive(stream, &mut custody, model_id).await?;
+            if generation.finish_reason == ModelFinishReason::ToolCalls {
                 return Err(failed("Auxiliary generation cannot finish with tool calls").into());
             }
-            Ok(ModelGeneration {
-                text: step
-                    .parts
-                    .iter()
-                    .filter_map(|part| match part {
-                        ModelPart::Text {
-                            text_kind: TextKind::Text,
-                            text,
-                            ..
-                        } => Some(text),
-                        _ => None,
-                    })
-                    .flat_map(|text| text.chunks())
-                    .collect(),
-                model_id,
-                finish_reason: step.finish_reason,
-                usage: step.usage,
-            })
+            Ok(generation)
         }
         .await;
         // SQL uncertainty preserves the pending receipt. Physical custody is released
@@ -226,7 +214,7 @@ fn admission_error(error: maka_event_log::StoreError) -> Error {
         Error::Tool(persistence(error))
     }
 }
-async fn session_lease(
+pub(super) async fn session_lease(
     log: &RootStore,
     id: &str,
 ) -> Result<maka_event_log::root_store::SessionExecutionLease, Error> {
@@ -245,7 +233,14 @@ async fn session_lease(
 }
 // Only unstarted or confirmed-drained providers may use this release guard.
 // SQL actor work independently retains its own pins until completion.
-struct IdleLease(Option<maka_event_log::root_store::SessionExecutionLease>);
+pub(super) struct IdleLease(pub(super) Option<maka_event_log::root_store::SessionExecutionLease>);
+impl IdleLease {
+    pub(super) fn retain_unconfirmed(&mut self) {
+        if let Some(lease) = self.0.take() {
+            lease.retain_unconfirmed();
+        }
+    }
+}
 impl Drop for IdleLease {
     fn drop(&mut self) {
         if let Some(lease) = self.0.take() {
@@ -321,45 +316,48 @@ impl Journal {
 async fn receive(
     mut stream: ModelStream,
     custody: &mut JournalCustody,
-) -> Result<maka_agent_facts::model::ModelStep, Error> {
+    model_id: String,
+) -> Result<ModelGeneration, Error> {
     let journal = custody.journal();
     let result = async {
-        let mut builder = StepBuilder::default();
-        let mut bytes = 0usize;
-        let mut observed_usage = false;
+        let mut parts: Vec<(String, String)> = Vec::new();
+        let mut finished = None;
         while let Some(event) = stream.next().await {
             let maka_model::Emission {
                 event,
                 reservation: _reservation,
             } = event.map_err(Error::Model)?;
-            if let ModelEvent::Finished { usage, .. } = &event
-                && !observed_usage
-            {
-                journal.observe(usage.clone())
-                    .await
-                    .map_err(|error| {
+            match event {
+                ModelEvent::PartStarted { id, text_kind: TextKind::Text, .. } => {
+                    parts.push((id, String::new()));
+                }
+                ModelEvent::PartDelta { id, text, .. } => {
+                    if let Some((_, output)) = parts.iter_mut().find(|(part, _)| *part == id) {
+                        output.push_str(&text);
+                    }
+                }
+                ModelEvent::Finished { reason, usage, .. } => {
+                    journal.observe(usage.clone()).await.map_err(|error| {
                         tracing::error!(stage = "auxiliary_model_observation_failed", cause = crate::diagnostics::store_cause(&error),
                             sql_code = crate::diagnostics::store_sql_code(&error), request_id = %journal.id(), "Auxiliary model usage observation failed");
                         persistence(error)
                     })?;
-                observed_usage = true;
+                    finished = Some((reason, usage));
+                }
+                ModelEvent::ToolCall(_) | ModelEvent::ProviderToolResult { .. } => {
+                    return Err(failed("Auxiliary generation cannot call tools").into());
+                }
+                _ => {}
             }
-            bytes = bytes.saturating_add(
-                maka_agent_facts::model::budget::reservation(&event, 2 * 1024 * 1024 + 1)
-                    .map_err(failed)? as usize,
-            );
-            if bytes > 2 * 1024 * 1024 {
-                return Err(failed("Auxiliary generation exceeds 2 MiB stream limit").into());
-            }
-            if matches!(
-                event,
-                ModelEvent::ToolCall(_) | ModelEvent::ProviderToolResult { .. }
-            ) {
-                return Err(failed("Auxiliary generation cannot call tools").into());
-            }
-            builder.push(event).map_err(Error::Model)?;
         }
-        builder.finish().map_err(Error::Model)
+        let (finish_reason, usage) = finished
+            .ok_or_else(|| failed("Auxiliary generation ended without completion"))?;
+        Ok(ModelGeneration {
+            text: parts.into_iter().map(|(_, text)| text).collect(),
+            model_id,
+            finish_reason,
+            usage,
+        })
     }
     .await;
     stream

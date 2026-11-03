@@ -49,6 +49,7 @@ pub(super) enum Attempt<'a> {
 
 pub(super) enum AttemptOutput {
     Main(MainResponse),
+    Steered,
     Summary {
         step_id: String,
         summary: Result<
@@ -66,11 +67,15 @@ pub(super) struct MainResponse {
 
 pub(super) enum Outcome {
     Response(MainResponse),
+    Steered,
     FinishedByTool,
     ParkRetry(maka_agent_facts::model_retry::RetryPlan),
 }
 impl From<AttemptOutput> for Outcome {
     fn from(output: AttemptOutput) -> Self {
+        if matches!(output, AttemptOutput::Steered) {
+            return Self::Steered;
+        }
         let AttemptOutput::Main(output) = output else {
             unreachable!("Main request returns Main attempt output");
         };
@@ -121,6 +126,7 @@ pub(super) async fn prompt<W>(
         prior_unknown,
         system,
         purpose,
+        None,
     )
     .await
 }
@@ -137,6 +143,7 @@ pub(super) async fn prompt_with_resources(
     prior_unknown: bool,
     system: Option<Arc<String>>,
     purpose: ModelPurpose,
+    instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
     let route = digest(settings.provider)?;
     let mut selection = source.selection.clone();
@@ -151,7 +158,7 @@ pub(super) async fn prompt_with_resources(
     let overlay_bytes = PreparedPrompt::overlay_plan_bytes(
         system.is_some(),
         source.baseline.is_some(),
-        purpose == ModelPurpose::Summary,
+        usize::from(purpose == ModelPurpose::Summary) + usize::from(instruction.is_some()),
     );
     let body = history::prepare_view(
         log,
@@ -182,6 +189,7 @@ pub(super) async fn prompt_with_resources(
             source.clone(),
             label,
             purpose == ModelPurpose::Summary,
+            instruction,
         )
         .await
     {
@@ -374,6 +382,12 @@ async fn execute_retry_chain(
                 consumption.take(),
             )
             .await;
+            if tools.steering().is_cancelled()
+                && !cancellation.is_cancelled()
+                && matches!(&result, Err(RunError::Model(error)) if !error.cleanup_unconfirmed())
+            {
+                return Ok(Outcome::Steered);
+            }
             let (plan, durable, clock) = match &result {
                 Err(RunError::Model(maka_model::ModelError::Provider(failure)))
                     if failure.replay_safe() || (progressed && failure.retained_output_safe()) =>
@@ -460,6 +474,7 @@ async fn execute_retry_chain(
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+                _ = tools.steering().cancelled() => return Ok(Outcome::Steered),
                 waited = wait_retry_plan(&plan, clock) => { waited?; }
             }
         }
@@ -592,15 +607,37 @@ pub(super) async fn execute_once(
         }
         return Err(RunError::Cancelled);
     }
-    if let Err(error) = prepare_wire(
-        input,
-        &mut prompt,
-        &definitions,
-        surface.max_output_tokens,
-        cancellation,
-    )
-    .await
-    {
+    let steering = tools
+        .map(|tools| tools.steering().clone())
+        .unwrap_or_default();
+    let model_cancellation = cancellation.child_token();
+    let prepared_wire = {
+        let mut wire = Box::pin(prepare_wire(
+            input,
+            &mut prompt,
+            &definitions,
+            surface.max_output_tokens,
+            &model_cancellation,
+        ));
+        tokio::select! {
+            biased;
+            _ = steering.cancelled(), if !cancellation.is_cancelled() => {
+                model_cancellation.cancel();
+                wire.await
+            }
+            prepared = &mut wire => prepared,
+        }
+    };
+    if steering.is_cancelled() && !cancellation.is_cancelled() {
+        if purpose == ModelPurpose::Main {
+            prompt
+                .close()
+                .await
+                .map_err(crate::cleanup::preparation_failed)?;
+        }
+        return Ok(AttemptOutput::Steered);
+    }
+    if let Err(error) = prepared_wire {
         if purpose == ModelPurpose::Main {
             prompt
                 .close()
@@ -713,18 +750,24 @@ pub(super) async fn execute_once(
     };
     writer.fenced(sequence);
     let finalizer = inner.attempts.register(writer.snapshot(), item_acceptance);
-    let result = match inner
-        .shared
-        .model
-        .stream_with_source(
+    let started = {
+        let mut start = Box::pin(inner.shared.model.stream_with_source(
             prepared.request,
-            cancellation.clone(),
+            model_cancellation.clone(),
             lane,
             binding,
             model_source,
-        )
-        .await
-    {
+        ));
+        tokio::select! {
+            biased;
+            _ = steering.cancelled(), if !cancellation.is_cancelled() => {
+                model_cancellation.cancel();
+                start.await
+            }
+            started = &mut start => started,
+        }
+    };
+    let result = match started {
         Ok(stream) => {
             receive(
                 inner,
@@ -743,6 +786,11 @@ pub(super) async fn execute_once(
         }
         Err(error) => {
             close_materialization(&cleanup).await?;
+            if steering.is_cancelled() && !cancellation.is_cancelled() {
+                drop(writer);
+                record_steered(inner, &finalizer).await?;
+                return Ok(AttemptOutput::Steered);
+            }
             finish(
                 inner,
                 writer,
@@ -1008,6 +1056,12 @@ where
 {
     use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
     let tool_cancellation = cancellation.child_token();
+    let steering = tools
+        .as_ref()
+        .map(|tools| tools.steering().clone())
+        .or_else(|| completion_tools.map(|tools| tools.steering().clone()))
+        .unwrap_or_default();
+    let mut steered = false;
     let mut running = FuturesUnordered::new();
     let mut approvals = FuturesUnordered::new();
     let mut preparing = FuturesUnordered::new();
@@ -1017,6 +1071,8 @@ where
         loop {
             tokio::select! {
                 biased;
+                _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+                _ = steering.cancelled() => { steered = true; break; }
                 result = running.next(), if !running.is_empty() => { tool_result(result.unwrap())?; }
                 execution = approvals.next(), if !approvals.is_empty() => {
                     running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
@@ -1098,6 +1154,16 @@ where
         }
         Ok(())
     }.await;
+    if steered && !cancellation.is_cancelled() {
+        release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
+        let cleanup = stream.cancel_and_wait().await;
+        cleanup.map_err(|_| crate::cleanup::unconfirmed())?;
+        record_steered(inner, finalizer).await?;
+        drop(writer);
+        close_retry(retry).await?;
+        close_retry(&mut retired_prompt).await?;
+        return Ok(AttemptOutput::Steered);
+    }
     let mut result = result;
     if matches!(&result, Err(error) if !matches!(error, RunError::Model(_)) || error.is_cleanup_unconfirmed())
     {
@@ -1214,9 +1280,20 @@ where
     {
         tool_cancellation.cancel();
     }
+    if result.is_ok() && steering.is_cancelled() && !cancellation.is_cancelled() {
+        release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
+        close_retry(&mut retired_prompt).await?;
+        return Ok(AttemptOutput::Steered);
+    }
     while !preparing.is_empty() || !running.is_empty() || (result.is_err() && !approvals.is_empty())
     {
         tokio::select! {
+            biased;
+            _ = steering.cancelled(), if result.is_ok() && cleanup.is_ok() && !cancellation.is_cancelled() => {
+                release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
+                close_retry(&mut retired_prompt).await?;
+                return Ok(AttemptOutput::Steered);
+            }
             execution = approvals.next(), if !approvals.is_empty() => {
                 running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
             }
@@ -1273,6 +1350,11 @@ where
     }
     while !running.is_empty() || (result.is_err() && !approvals.is_empty()) {
         tokio::select! {
+            biased;
+            _ = steering.cancelled(), if result.is_ok() && !cancellation.is_cancelled() => {
+                release_foreground(inner, &binding.invocation, &mut preparing, &mut approvals).await?;
+                return Ok(AttemptOutput::Steered);
+            }
             ready = approvals.next(), if !approvals.is_empty() => {
                 running.push(catch_tool(ready.expect("nonempty approval set")).boxed());
             }
@@ -1288,6 +1370,48 @@ where
         response.approvals.extend(approvals);
     }
     result
+}
+
+async fn release_foreground(
+    inner: &RunContext,
+    invocation: &maka_agent_facts::event::Invocation,
+    preparing: &mut PreparingCalls<'_>,
+    approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
+) -> Result<(), RunError> {
+    use futures_util::StreamExt;
+    preparing.clear();
+    crate::steering::close_interactions(&inner.log, invocation).await?;
+    // Polling the closed approvals transfers their terminal journal writes to
+    // the run owner; dropping only the foreground observer cannot lose them.
+    while let Some(execution) = approvals.next().await {
+        drop(execution);
+    }
+    Ok(())
+}
+
+async fn record_steered(
+    inner: &RunContext,
+    finalizer: &crate::preview::Finalizer,
+) -> Result<(), RunError> {
+    let cut = finalizer.snapshot();
+    let write =
+        maka_agent_facts::event::EventWrite::plain(maka_agent_facts::event::RuntimeEvent::new(
+            cut.binding.invocation.clone(),
+            Fact::ModelInterrupted {
+                step_id: cut.binding.step_id.clone(),
+                status: ModelInterruption::Steered,
+                diagnostic: None,
+                model_failure: None,
+                partial: cut.partial(),
+            },
+        ))?;
+    let crate::preview::PublicationSelection::New(write) = finalizer.prepare(write) else {
+        return Err(crate::cleanup::unconfirmed());
+    };
+    let sequence = inner.log.append(&write).await?;
+    finalizer.receipt_terminal(&write, sequence);
+    inner.attempts.remove(&cut.binding.step_id);
+    Ok(())
 }
 
 type RunningCalls<'a> = futures_util::stream::FuturesUnordered<
@@ -1381,7 +1505,7 @@ fn install_call<'a>(
     approvals: &mut futures_util::stream::FuturesUnordered<maka_tools::PendingCall>,
 ) {
     use futures_util::FutureExt;
-    match published.completion {
+    match published.start() {
         maka_tools::CallContinuation::Executing(execution) => {
             running.push(catch_tool(execution).boxed())
         }
@@ -1635,6 +1759,7 @@ async fn finish(
     };
     if let Some(tools) = completion_tools {
         use futures_util::{FutureExt, StreamExt, stream::FuturesUnordered};
+        let input_invocation = output.binding.invocation.clone();
         let mut step = tools.clone().into_step(&step_id);
         let tool_cancellation = cancellation.child_token();
         let mut preparing = FuturesUnordered::new();
@@ -1706,6 +1831,11 @@ async fn finish(
             || (cleanup.is_err() && !approvals.is_empty())
         {
             tokio::select! {
+                biased;
+                _ = tools.steering().cancelled(), if cleanup.is_ok() && !cancellation.is_cancelled() => {
+                    release_foreground(inner, &input_invocation, &mut preparing, &mut approvals).await?;
+                    return Ok(AttemptOutput::Steered);
+                }
                 execution = approvals.next(), if !approvals.is_empty() => {
                     running.push(catch_tool(execution.expect("nonempty approval set")).boxed());
                 }
@@ -1779,7 +1909,7 @@ fn interruption(
             Fact::ModelInterrupted {
                 step_id: cut.binding.step_id.clone(),
                 status,
-                diagnostic: Some(error.to_string().chars().take(1024).collect()),
+                diagnostic: Some(error.to_string()),
                 model_failure: match error {
                     RunError::Model(error) => error.failure_cause(),
                     _ => None,

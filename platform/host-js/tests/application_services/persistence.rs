@@ -126,6 +126,7 @@ async fn stored_source_and_lease_survive_abandoned_query_resources_and_native_cl
         // A newer desired source can collect DB package bytes. Already accepted
         // execution still owns its original bytes and storage domain.
         let empty = Input {
+            base: None,
             ui: None,
             instances: BTreeMap::new(),
         };

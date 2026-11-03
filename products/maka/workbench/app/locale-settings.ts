@@ -376,6 +376,11 @@ export const settingsMessages = {
     '选择模型和推理强度',
     '選擇模型和推理強度',
   ],
+  'Model for queued and future messages': [
+    'Model for queued and future messages',
+    '队列消息和后续新消息使用的模型',
+    '佇列訊息和後續新訊息使用的模型',
+  ],
   'Choose plugin setting {value}': [
     'Choose plugin setting {value}',
     '选择插件设置 {value}',
@@ -1164,4 +1169,71 @@ export const settingsMessages = {
   ],
   'Background hue': ['Background hue', '底色色相', '底色色相'],
   'Background tint': ['Background tint', '底色浓淡', '底色濃淡'],
+  'Message predictions': ['Message predictions', '消息预测', '訊息預測'],
+  'Suggest your next message from the conversation.': [
+    'Suggest your next message from the conversation.',
+    '根据当前对话，建议你接下来想说的话。',
+    '根據目前的對話，建議你接下來想說的話。',
+  ],
+  'Configure message predictions': [
+    'Configure message predictions',
+    '配置消息预测',
+    '設定訊息預測',
+  ],
+  'Prediction settings…': ['Prediction settings…', '预测设置…', '預測設定…'],
+  'Message prediction settings': ['Message prediction settings', '消息预测设置', '訊息預測設定'],
+  'Uses the current conversation’s model and reasoning effort.': [
+    'Uses the current conversation’s model and reasoning effort.',
+    '使用当前对话的模型和推理强度。',
+    '使用目前對話的模型和推理強度。',
+  ],
+  'Predictions appear in an empty message box. Accepting one fills in a draft; it never sends a message.':
+    [
+      'Predictions appear in an empty message box. Accepting one fills in a draft; it never sends a message.',
+      '预测内容会显示在空输入框中。采纳后填入草稿，不会自动发送。',
+      '預測內容會顯示在空白輸入框中。採用後填入草稿，不會自動傳送。',
+    ],
+  Setting: ['Setting', '设置项', '設定項目'],
+  'Show predictions': ['Show predictions', '显示预测', '顯示預測'],
+  'Only for regular conversations': [
+    'Only for regular conversations',
+    '仅对普通会话生效',
+    '僅適用於一般對話',
+  ],
+  'After a reply': ['After a reply', '回复完成后', '回覆完成後'],
+  'When opening a conversation': ['When opening a conversation', '打开对话时', '開啟對話時'],
+  'How often to generate a prediction.': [
+    'How often to generate a prediction.',
+    '在这类情况下生成预测的概率。',
+    '在這類情況下產生預測的機率。',
+  ],
+  'Prediction instructions': ['Prediction instructions', '预测提示词', '預測提示詞'],
+  'Prediction instruction source': [
+    'Prediction instruction source',
+    '预测提示词来源',
+    '預測提示詞來源',
+  ],
+  'Built-in instructions': ['Built-in instructions', '内置提示词', '內建提示詞'],
+  'Custom instructions': ['Custom instructions', '自定义提示词', '自訂提示詞'],
+  'Built-in instructions follow the interface language. Suggestions match the conversation.': [
+    'Built-in instructions follow the interface language. Suggestions match the conversation.',
+    '内置提示词随界面语言切换，预测内容沿用对话中的语言。',
+    '內建提示詞會隨介面語言切換，預測內容沿用對話中的語言。',
+  ],
+  'Your instructions replace the built-in instructions for every conversation.': [
+    'Your instructions replace the built-in instructions for every conversation.',
+    '自定义提示词会替换内置提示词，并应用于所有对话。',
+    '自訂提示詞會取代內建提示詞，並套用至所有對話。',
+  ],
+  'Save prediction settings': ['Save prediction settings', '保存预测设置', '儲存預測設定'],
+  'Restore prediction defaults': [
+    'Restore prediction defaults',
+    '恢复预测默认设置',
+    '還原預測預設值',
+  ],
+  'Enter a percentage from 0 to 100.': [
+    'Enter a percentage from 0 to 100.',
+    '请输入 0 到 100 之间的百分比。',
+    '請輸入 0 到 100 之間的百分比。',
+  ],
 } as const satisfies Catalog;

@@ -22,7 +22,10 @@ import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { ContextGaugePreview } from './ContextGaugePreview';
 import { MessageRow } from '../../../workbench/app/MessageRow';
-import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  ComposerSendStatus,
+  ComposerSession,
+} from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
@@ -36,10 +39,7 @@ import type {
   AgentSession,
   AgentQueue,
   AgentComputerApps,
-  AgentPlanView,
-  CollaborationMode,
   InteractionRecord,
-  PlanArtifact,
 } from '../../../../../packages/plugin-sdk/src/index.js';
 
 function Sandbox() {
@@ -141,8 +141,9 @@ function Consent() {
   );
 }
 
-function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
+function CompletionComposer(props: { details?: boolean }) {
   const draft = signal('');
+  const sends = signal<ComposerSendStatus[]>([]);
   const action = signal('No command');
   const lookup = signal('No lookup');
   const queue = signal<AgentQueue>({
@@ -173,39 +174,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     },
   });
   const apps = signal<AgentComputerApps>({ entries: props.details ? [makeApp('one')] : [] });
-  const planArtifact: PlanArtifact = {
-    title: 'PLAN_TITLE',
-    overview: 'PLAN_OVERVIEW',
-    steps: [
-      {
-        id: 'one',
-        title: 'PLAN_STEP_ONE',
-        description: 'PLAN_STEP_ONE_DETAIL',
-        files: ['src/one.ts'],
-      },
-      { id: 'two', title: 'PLAN_STEP_TWO', description: 'PLAN_STEP_TWO_DETAIL' },
-    ],
-    risks: ['PLAN_RISK'],
-  };
-  const planView = signal<AgentPlanView>({
-    enabled: !!props.plan,
-    current: {
-      revision: 3,
-      proposal: props.plan
-        ? {
-            id: 'proposal-one',
-            planId: 'plan-one',
-            revision: 1,
-            turnId: 'original-turn',
-            artifact: planArtifact,
-            status: 'pending_approval',
-            submittedAt: 1,
-          }
-        : null,
-      execution: null,
-    },
-  });
-  const mode = signal<CollaborationMode>('agent');
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
@@ -223,10 +191,21 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     error: () => '',
     notice: () => '',
     metrics: () => '',
-    recoverable: () => false,
     recovering: () => false,
-    unconfirmed: () => [],
+    sends,
+    async retrySend(id) {
+      action.set(`retried:${id}`);
+      sends.set(sends().filter((item) => item.id !== id));
+    },
+    checkSend: unexpected,
+    async dismissSend(id) {
+      sends.set(sends().filter((item) => item.id !== id));
+    },
     invocation: () => null,
+    prediction: {
+      current: () => null,
+      dismiss: unexpected,
+    },
     stopping: () => false,
     resumable: () => null,
     resuming: () => false,
@@ -246,8 +225,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     previewImage: unexpected,
     submit: unexpected,
     sendRendered: unexpected,
-    recover: unexpected,
-    abandon: unexpected,
     stop: unexpected,
     permissions: {
       sessionId: 'original-session',
@@ -286,47 +263,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
           entries: apps().entries.map((entry) =>
             entry.activity.operationId === operationId ? { ...entry, stopped: true } : entry,
           ),
-        });
-      },
-    },
-    plan: {
-      view: planView,
-      mode,
-      pending: () => false,
-      error: () => '',
-      async selectMode(next) {
-        action.set(`mode:${next}`);
-        mode.set(next);
-      },
-      async change(input) {
-        if (input.kind === 'cancel') {
-          action.set(`plan:cancel:${input.executionId}`);
-          const current = planView().current;
-          planView.set({
-            enabled: true,
-            current: { ...current, execution: { ...current.execution!, phase: 'cancelled' } },
-          });
-          return;
-        }
-        if (input.kind !== 'approve') throw new Error('Unexpected plan action');
-        action.set(`plan:approve:${input.proposalId}:${input.proposalRevision}`);
-        planView.set({
-          enabled: true,
-          current: {
-            revision: 4,
-            proposal: { ...planView().current.proposal!, status: 'approved' },
-            execution: {
-              id: 'execution-one',
-              proposalId: input.proposalId,
-              artifact: planArtifact,
-              steps: [
-                { id: 'one', status: 'completed' },
-                { id: 'two', status: 'in_progress' },
-              ],
-              phase: 'active',
-              updatedAt: 2,
-            },
-          },
         });
       },
     },
@@ -381,10 +317,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
       dropFiles: unexpected,
       open: unexpected,
       remove: unexpected,
-      recover: unexpected,
-      abandon: unexpected,
-      inspect: unexpected,
-      retry: unexpected,
       reportError: unexpected,
       notify: unexpected,
       clearNotice() {},
@@ -423,7 +355,7 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
   return (
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
       <If when={props.details}>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           <Button
             accessibilityLabel="Add computer access"
             style={{ height: 32 }}
@@ -451,6 +383,25 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
             onPress={() => queue.set({ revision: queue().revision + 1, entries: [] })}
           >
             <Text>Drain queued messages</Text>
+          </Button>
+          <Button
+            accessibilityLabel="Fail outgoing message"
+            style={{ height: 32 }}
+            onPress={() =>
+              sends.set([
+                {
+                  id: 'failed-original',
+                  text: 'FAILED_MESSAGE',
+                  attachments: [],
+                  state: 'failed',
+                  detail: 'FIXTURE_SEND_FAILED',
+                  retryable: true,
+                  busy: false,
+                },
+              ])
+            }
+          >
+            <Text>Fail outgoing message</Text>
           </Button>
         </View>
       </If>
@@ -736,8 +687,6 @@ mount(() =>
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer-plan' ? (
-    <CompletionComposer plan />
   ) : scenario === 'composer-details' ? (
     <CompletionComposer details />
   ) : scenario === 'composer' ? (

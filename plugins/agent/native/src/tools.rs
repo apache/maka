@@ -114,8 +114,6 @@ pub(crate) struct Catalog {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
-    /// Planning eligibility follows the actual service contract and method.
-    pub planning: Vec<String>,
     pub executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
 }
 
@@ -144,8 +142,6 @@ pub(crate) fn catalog(
             Some((selection.name.clone(), style))
         })
         .collect();
-    let mut planning = Vec::new();
-    let questions_contract = maka_interactions_api::questions::contract();
     let web_contract = maka_web_api::contract();
     let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
@@ -197,18 +193,6 @@ pub(crate) fn catalog(
             } else {
                 None
             };
-            if (binding.contract() == &file_contract
-                && matches!(
-                    selection.method.as_str(),
-                    "readText" | "readImage" | "glob" | "grep"
-                ))
-                || (binding.contract() == &web_contract
-                    && matches!(selection.method.as_str(), "fetch" | "search"))
-                || (binding.contract() == &questions_contract && selection.method == "ask")
-            {
-                planning.push(selection.name.clone());
-            }
-
             if !method.resources.is_empty()
                 || match selection.result {
                     ToolResult::Json => method.mode == MethodMode::Subscription,
@@ -285,7 +269,7 @@ pub(crate) fn catalog(
                 binding: binding.execution_basis().into(),
             });
             let service = Service {
-                services: services.clone(),
+                services: services.select_method(&selection.target, &selection.method)?,
                 store: store.clone(),
                 binding: binding.execution_basis().into(),
                 target: format!(
@@ -397,7 +381,6 @@ pub(crate) fn catalog(
         tools: catalog,
         basis,
         editing,
-        planning,
         executor: Arc::new(ApprovalExecutor {
             services: native_services,
         }),
@@ -954,7 +937,7 @@ fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSucc
 }
 
 // Skills compare requirements with the actual workspace/request tool ceiling.
-// Keeping this on the request binding also respects plans and editing styles.
+// Keeping this on the request binding also respects editing styles.
 struct SkillBinding(Service);
 impl maka_tools::request::RequestBinding for SkillBinding {
     fn bind(

@@ -190,3 +190,31 @@ async fn real_commit_failure_is_unknown_and_cancelled_accepted_write_still_commi
     assert_eq!(reopened.runtime_policy().await.unwrap().revision, 1);
     reopened.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn prediction_settings_survive_reopening_the_store() {
+    let temp = tempfile::tempdir().unwrap();
+    let owner = root(temp.path());
+    let store = ConfigurationStore::for_root(owner.clone()).await.unwrap();
+    let settings = MessagePredictionSettings {
+        enabled: true,
+        ordinary_sessions_only: true,
+        live_sample_percent: 75.5,
+        catch_up_sample_percent: 0.5,
+        prompt: Some("Suggest one concrete next step.".into()),
+    };
+    assert!(matches!(
+        store
+            .set_message_predictions(0, settings.clone())
+            .await
+            .unwrap(),
+        RuntimePolicyMutationResult::Committed { .. }
+    ));
+    store.close().await.unwrap();
+    let reopened = ConfigurationStore::for_root(owner).await.unwrap();
+    assert_eq!(
+        reopened.runtime_policy().await.unwrap().policy.predictions,
+        settings
+    );
+    reopened.close().await.unwrap();
+}

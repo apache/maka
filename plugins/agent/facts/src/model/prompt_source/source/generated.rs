@@ -222,7 +222,7 @@ fn message_with_mcp(value: &Message, mcp: &mut std::collections::HashSet<String>
                         } => AssistantRecipe::ToolResult(ToolResultRecipe {
                             tool_call_id: text(tool_call_id.clone()),
                             tool_name: text(tool_name.clone()),
-                            kind: ToolResultKind::Settled,
+                            kind: ToolResultKind::Output,
                             call_kind: ToolCallKind::Function,
                             output: output(value),
                             parsed_error: parsed_error(value),
@@ -251,7 +251,7 @@ fn message_with_mcp(value: &Message, mcp: &mut std::collections::HashSet<String>
                         kind: if part.is_notification() {
                             ToolResultKind::Notification
                         } else {
-                            ToolResultKind::Settled
+                            ToolResultKind::Output
                         },
                         call_kind: if part.is_custom() {
                             ToolCallKind::Custom

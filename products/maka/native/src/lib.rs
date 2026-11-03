@@ -35,7 +35,7 @@ pub fn provide(
     maka_interactions_native::questions::provide(registry)?;
     maka_interactions_native::forms::provide(registry)?;
     maka_web::provide(registry)?;
-    maka_jev_native::provide(registry)?;
+    maka_decisions_api_native::provide(registry)?;
     maka_agent_native::workhub::provide(registry, catalog.clone())?;
     maka_settings_native::provide(registry, catalog)?;
     Ok(())

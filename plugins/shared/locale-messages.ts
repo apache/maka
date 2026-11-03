@@ -160,9 +160,9 @@ export const msg_graphBusy: Message = [
   '請先停止目前輪次，等待原工作及佇列訊息結束後再重新開始。',
 ];
 export const msg_graphConflict: Message = [
-  'Use an unarchived Agent conversation with no active Goal or Plan execution.',
-  '请使用未归档、没有活动 Goal 或 Plan 执行的 Agent 对话。',
-  '請使用未封存、沒有活動 Goal 或 Plan 執行的 Agent 對話。',
+  'Use an unarchived Agent conversation with no active Goal.',
+  '请使用未归档、没有活动 Goal 的 Agent 对话。',
+  '請使用未封存、沒有活動 Goal 的 Agent 對話。',
 ];
 export const msg_graphIncognito: Message = [
   'Graph and Swarm require persistent conversation history.',
@@ -231,125 +231,6 @@ export const msg_graphStatus_completed: Message = ['Completed', '已完成', '�
 export const msg_graphStatus_cancelled: Message = ['Cancelled', '已取消', '已取消'];
 export const msg_graphStatus_blocked: Message = ['Needs attention', '需要处理', '需要處理'];
 export const msg_graphStatus_superseded: Message = ['Replaced', '已替换', '已替換'];
-export const msg_planTitle: Message = ['Plan', '计划', '計劃'];
-export const msg_planLoading: Message = ['Loading Plan…', '正在读取计划…', '正在讀取計劃…'];
-export const msg_planUnavailable: Message = [
-  'Unable to read or update the Plan. Check its saved status.',
-  '无法读取或更新计划，请核对已保存的状态。',
-  '無法讀取或更新計劃，請核對已儲存的狀態。',
-];
-export const msg_planDisabled: Message = [
-  'Plans are unavailable in this Agent.',
-  '此 Agent 未启用计划。',
-  '此 Agent 未啟用計劃。',
-];
-export const msg_planChanged: Message = [
-  'The Plan or conversation changed. Review it again.',
-  '计划或会话已变化，请重新核对。',
-  '計劃或對話已變更，請重新核對。',
-];
-export const msg_planRejected: Message = [
-  'This Plan action was not accepted. Review the current state and permissions.',
-  '此计划操作未被接受，请核对当前状态和权限。',
-  '此計劃操作未被接受，請核對目前狀態與權限。',
-];
-export const msg_planModeBusy: Message = [
-  'Wait for the current execution and queued messages to finish before switching mode.',
-  '请等待当前执行和排队消息结束后切换模式。',
-  '請等待目前執行與排隊訊息結束後切換模式。',
-];
-export const msg_planPlanning: Message = ['Planning mode', '规划模式', '規劃模式'];
-export const msg_planAgent: Message = ['Agent mode', '执行模式', '執行模式'];
-export const msg_planModeNote: Message = [
-  'Planning can inspect and ask questions. Implementation starts only after you approve a submitted Plan.',
-  '规划模式仅检查和提问，提交的计划经你批准后才开始执行。',
-  '規劃模式僅檢查與提問，提交的計劃經你批准後才開始執行。',
-];
-export const msg_planSwitchAgent: Message = [
-  'Switch to Agent mode',
-  '切换到执行模式',
-  '切換至執行模式',
-];
-export const msg_planSwitchPlanning: Message = [
-  'Switch to Planning mode',
-  '切换到规划模式',
-  '切換至規劃模式',
-];
-export const msg_planEmpty: Message = [
-  'Switch to Planning mode, then describe the work in the conversation. The submitted Plan will appear here for review.',
-  '切换到规划模式后，在会话中描述任务。模型提交的计划将在这里等待审核。',
-  '切換至規劃模式後，在對話中描述任務。模型提交的計劃將在此等待審核。',
-];
-export const msg_planHistory: Message = ['Plan history', '计划历史', '計劃歷史'];
-export const msg_planCurrent: Message = ['Current Plan', '当前计划', '目前計劃'];
-export const msg_planRevision: Message = ['Revision', '修订', '修訂'];
-export const msg_planHistoryBack: Message = ['Previous revisions', '上一页修订', '上一頁修訂'];
-export const msg_planHistoryNext: Message = ['Next revisions', '下一页修订', '下一頁修訂'];
-export const msg_planRisks: Message = ['Risks', '风险', '風險'];
-export const msg_planCancelling: Message = [
-  'Cancellation requested; waiting for the original execution to stop.',
-  '已请求取消，正在等待原执行停止。',
-  '已請求取消，正在等待原執行停止。',
-];
-export const msg_planApproval: Message = [
-  'Approve this exact Plan and allow the selected model to execute it with these workspace permissions. Model charges may apply.',
-  '批准此版本计划，并允许所选模型使用以下工作区权限执行，可能产生模型费用。',
-  '批准此版本計劃，並允許所選模型使用以下工作區權限執行，可能產生模型費用。',
-];
-export const msg_planCancelNote: Message = [
-  'Stop only this Plan’s original execution. Completed effects remain.',
-  '仅停止此计划的原执行，已产生的效果会保留。',
-  '僅停止此計劃的原執行，已產生的效果會保留。',
-];
-export const msg_planDecisionNote: Message = [
-  'This decision updates the reviewed proposal without starting execution. Continue the planning conversation to request changes.',
-  '此操作仅更新审核中的提案，不会开始执行。需要修改时请继续规划对话。',
-  '此操作僅更新審核中的提案，不會開始執行。需要修改時請繼續規劃對話。',
-];
-export const msg_planConfirm: Message = ['Confirm Plan action', '确认计划操作', '確認計劃操作'];
-export const msg_planChooseModel: Message = [
-  'Select a model before approving execution.',
-  '批准执行前请选择模型。',
-  '批准執行前請選擇模型。',
-];
-export const msg_planAction_approve: Message = ['Approve and execute', '批准并执行', '批准並執行'];
-export const msg_planAction_revise: Message = ['Request revision', '要求修订', '要求修訂'];
-export const msg_planAction_abandon: Message = ['Abandon proposal', '放弃提案', '放棄提案'];
-export const msg_planAction_resume: Message = ['Resume Plan', '继续计划', '繼續計劃'];
-export const msg_planAction_cancel: Message = ['Cancel Plan', '取消计划', '取消計劃'];
-export const msg_planProposal_pending_approval: Message = [
-  'Awaiting approval',
-  '等待批准',
-  '等待批准',
-];
-export const msg_planProposal_revision_requested: Message = [
-  'Revision requested',
-  '已要求修订',
-  '已要求修訂',
-];
-export const msg_planProposal_abandoned: Message = [
-  'Proposal abandoned',
-  '提案已放弃',
-  '提案已放棄',
-];
-export const msg_planProposal_approved: Message = ['Proposal approved', '提案已批准', '提案已批准'];
-export const msg_planExecution_awaiting_admission: Message = [
-  'Waiting to execute',
-  '等待执行',
-  '等待執行',
-];
-export const msg_planExecution_active: Message = ['Executing Plan', '正在执行计划', '正在執行計劃'];
-export const msg_planExecution_interrupted: Message = [
-  'Plan interrupted',
-  '计划已中断',
-  '計劃已中斷',
-];
-export const msg_planExecution_completed: Message = ['Plan completed', '计划已完成', '計劃已完成'];
-export const msg_planExecution_cancelled: Message = ['Plan cancelled', '计划已取消', '計劃已取消'];
-export const msg_planStep_pending: Message = ['Pending', '待处理', '待處理'];
-export const msg_planStep_in_progress: Message = ['In progress', '进行中', '進行中'];
-export const msg_planStep_completed: Message = ['Reported complete', '已汇报完成', '已回報完成'];
-export const msg_planStep_skipped: Message = ['Skipped', '已跳过', '已略過'];
 export const msg_goalTitle: Message = ['Goal', '持续目标', '持續目標'];
 export const msg_goalConfirm: Message = ['Confirm Goal', '确认目标', '確認目標'];
 export const msg_goalLoading: Message = ['Loading Goal…', '正在读取目标…', '正在讀取目標…'];

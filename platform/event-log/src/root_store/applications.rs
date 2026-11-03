@@ -125,9 +125,15 @@ impl RootStore {
             .begin_application_restore(deployment, pending)
             .await
     }
-    pub async fn complete_application_launch(&self, deployment: Uuid) -> Result<(), StoreError> {
+    pub async fn complete_application_launch(
+        &self,
+        deployment: Uuid,
+        configuration: Value,
+    ) -> Result<(), StoreError> {
         self.require_open()?;
-        self.control.complete_application_launch(deployment).await
+        self.control
+            .complete_application_launch(deployment, configuration)
+            .await
     }
     pub fn subscribe_application(
         self: &Arc<Self>,

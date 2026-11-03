@@ -33,7 +33,7 @@ pub struct ServerConfiguration {
     /// Omitted selects all tools discovered from this explicitly trusted server.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
-    /// Explicitly permit these remote tools in read-only workspaces and plans.
+    /// Explicitly permit these remote tools in read-only workspaces.
     /// The server's readOnlyHint is descriptive and cannot grant this access.
     #[serde(default)]
     pub read_only_tools: Vec<String>,

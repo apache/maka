@@ -71,3 +71,23 @@ On macOS, active watches also compare direct-child metadata. Each scan is follow
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
 `metadata.pinned` sets or clears conversation pinning; omission preserves it. Session results include `pinned`. Catalog pages place pinned conversations first, then keep the existing ID order, with revision-bound forward and backward cursors. New conversations and forks start unpinned.
+
+## History checkpoint management
+
+The [checkpoint contract](src/contract/checkpoints.rs) exposes explicit, history-only management through the existing Agent endpoint:
+
+| Method | Mode | Result |
+| --- | --- | --- |
+| `previewHistoryCheckpoint` | Query | Session closure membership and live revisions |
+| `publishHistoryCheckpoint` | Mutation | Durable publication state and cleanup status |
+| `historyCheckpointReceipt` | Query | Original Host observation and domain publication receipt |
+| `historyCheckpointHead` | Query | Current checkpoint head, or null |
+| `readHistoryCheckpoint` | Subscription | Exact retained native history bundle |
+
+Preview the source, then publish with its `confirmedSubtreeDigest` and an explicit `expectedRevision` (null only for the first head). The digest confirms membership, not an earlier content revision; the manifest records the actual consistent cut. Busy sources fail instead of queuing. Live messages do not advance the checkpoint head. Publication uses ordinary Host mutation preparation/confirmation; retain the original `RecoveryRef` **and input** before confirmation. Never replace an uncertain operation with a new ID. A CAS conflict is terminal for that operation; a newly chosen expectation requires a new operation.
+
+`historyCheckpointReceipt` requires both endpoint access and original-operation recovery authorization. It performs a read-only lookup, including after Root reopen, and never recaptures current history. `publication.state.kind = published` confirms the checkpoint even if `operation.outcome` remains `unresolved` and its cleanup remains `unconfirmed`: these are separate transactions. The query does not forge Host completion or release original-operation custody. Null means no matching retained fact was found, not proof that execution cannot occur. `interrupted` identifies capture that could not complete; `prepared` is awaiting Root recovery, and `unavailable` needs investigation rather than recapture under the old operation. Publication cleanup failure does not undo an already committed head.
+
+For reads, first obtain a head, then request its exact revision. A moved head fails rather than selecting latest; old success receipts do not grant reads of old revisions. An admitted read retains its verified file and may finish if the head moves afterward. The subscription emits `native_history_v1` metadata, contiguous Base64 `chunk` frames (at most 32 KiB decoded), then `end` with the complete-object SHA-256 and byte length. The payload is native `MAKA-SESSION` v2, not tar.gz or the former TypeScript checkpoint format. Require matching metadata, contiguous offsets, digest, End, successful null completion and cleanup before accepting a download. Missing End is incomplete delivery. Backpressure bounds queued chunks; cancellation waits for the original reader to drain. No caller-provided file path is accepted.
+
+These are management methods, not model tools. Scope comes from the admitted Agent assembly; model-origin calls and foreign namespaces are rejected. The checkpoint includes only the native bundle's historical closure and referenced artifacts, not project files, all Memory/Goal state, execution authority or restore/activation. Publication currently requires the Root store's Unix implementation; unsupported platforms fail explicitly. Private immutable objects are conservatively retained; automatic triggers, UI, retention/GC and workspace capture remain separate work.

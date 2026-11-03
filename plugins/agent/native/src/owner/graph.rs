@@ -182,10 +182,7 @@ impl Owner {
             return Ok(());
         };
         self.graph_privacy().await?;
-        if basis.collaboration_mode != CollaborationMode::Agent
-            || basis.executor.is_some()
-            || basis.background.is_some()
-        {
+        if basis.executor.is_some() || basis.background.is_some() {
             return Err("graph_execution_conflict".into());
         }
         let epoch = if control.closed() {
@@ -430,8 +427,7 @@ impl Owner {
         if !graphs.enabled() {
             return Err("graph_workers_unavailable".into());
         }
-        if session.archived || session.configuration.collaboration_mode != CollaborationMode::Agent
-        {
+        if session.archived {
             return Err("graph_session_unavailable".into());
         }
         if runs.busy(&session.id)
@@ -468,22 +464,6 @@ impl Owner {
             })
         {
             return Err("graph_goal_conflict".into());
-        }
-        if self
-            .plan(PlanRead {
-                session_id: session.id.clone(),
-            })
-            .await?
-            .current
-            .execution
-            .is_some_and(|execution| {
-                matches!(
-                    execution.phase,
-                    PlanPhase::AwaitingAdmission | PlanPhase::Active
-                )
-            })
-        {
-            return Err("graph_plan_conflict".into());
         }
         Ok(())
     }

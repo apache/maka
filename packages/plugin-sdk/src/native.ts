@@ -172,10 +172,10 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     configuration: typeof configurations.workspaceWeb;
     exports: { web: typeof contracts.workspaceWeb };
   };
-  workspaceJev: {
+  workspaceDecisionsApi: {
     implementation: string;
-    configuration: typeof configurations.workspaceJev;
-    exports: { jev: typeof contracts.workspaceJev };
+    configuration: typeof configurations.workspaceDecisionsApi;
+    exports: { decisions_api: typeof contracts.workspaceDecisionsApi };
   };
   skillLibrary: {
     implementation: string;
@@ -436,10 +436,10 @@ export const nativeImplementations = /* @__PURE__ */ ((): {
     configuration: configurations.workspaceWeb,
     exports: { web: contracts.workspaceWeb },
   },
-  workspaceJev: {
-    implementation: 'maka.workspace.jev',
-    configuration: configurations.workspaceJev,
-    exports: { jev: contracts.workspaceJev },
+  workspaceDecisionsApi: {
+    implementation: 'maka.workspace.decisions_api',
+    configuration: configurations.workspaceDecisionsApi,
+    exports: { decisions_api: contracts.workspaceDecisionsApi },
   },
   skillLibrary: {
     implementation: 'maka.skills.library',

@@ -161,7 +161,7 @@ async fn nested_image_is_committed_before_js_and_explicit_output_projects_it() {
         .publish(&[])
         .await
         .unwrap()
-        .completion
+        .start()
         .await
         .unwrap();
     assert_eq!(result["result"]["ok"], true);

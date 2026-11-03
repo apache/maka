@@ -91,6 +91,7 @@ const listTextInset = {
 
 export function ModelSelect(props: {
   owner: ModelOwner;
+  running?(): boolean;
   instance(): number | null;
   current(): boolean;
   toggle(target: ModelTarget): void;
@@ -125,7 +126,7 @@ export function ModelSelect(props: {
       margin={8}
       style={{ minWidth: 0, alignItems: 'flex-end' }}
       popupStyle={{
-        width: 420,
+        width: platform.isTerminal ? 420 : 340,
         maxWidth: Math.max(0, windowSize().width - 16),
         maxHeight: Math.min(360, Math.max(0, windowSize().height - 16)),
         minHeight: 0,
@@ -137,11 +138,13 @@ export function ModelSelect(props: {
       }}
       trigger={
         <Button
-          accessibilityLabel={tr('Choose model and effort')}
+          accessibilityLabel={tr(
+            props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort',
+          )}
           tooltip={textTooltip(() =>
             props.instance() !== null
               ? undefined
-              : `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
+              : `${label()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
@@ -193,6 +196,19 @@ export function ModelSelect(props: {
         </Button>
       }
     >
+      <If when={props.running?.()}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: C.muted,
+            paddingHorizontal: controlStyle.paddingHorizontal,
+            paddingVertical: 8,
+            flexShrink: 0,
+          }}
+        >
+          {tr('Model for queued and future messages')}
+        </Text>
+      </If>
       <Each
         of={props.instance() === null ? [] : [props.instance()!]}
         key={(instance: number) => instance}
@@ -513,49 +529,51 @@ function ModelMenu(props: {
 
   return (
     <View style={{ minHeight: 0, flexShrink: 1, gap: 4 }}>
-      <View
-        style={{
-          flexDirection: 'row',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          gap: 8,
-        }}
-      >
-        <Text
+      <If when={platform.isTerminal || pane() !== 'root'}>
+        <View
           style={{
-            ...captionTextStyle,
-            color: C.secondary,
-            fontWeight: '600',
-            paddingHorizontal: 8,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 8,
           }}
         >
-          {pane() === 'connections' ? tr('Filter by connection') : tr('Models')}
-        </Text>
-        <Button
-          disabled={pending()}
-          accessibilityLabel={
-            pane() === 'root'
-              ? tr('Close model selection')
-              : pane() === 'connections'
-                ? tr('Back to models')
-                : tr('Back to model settings')
-          }
-          onPress={
-            pane() === 'connections'
-              ? back
-              : pane() === 'root'
-                ? inputAction(close, { instance: props.instance, from: pane() })
-                : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
-          }
-          tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
-          style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
-          hoverStyle={controlHoverStyle()}
-          focusStyle={controlFocusStyle()}
-          disabledStyle={controlDisabledStyle}
-        >
-          <Icon name={pane() === 'root' ? 'close' : 'back'} color={C.muted} />
-        </Button>
-      </View>
+          <Text
+            style={{
+              ...captionTextStyle,
+              color: C.secondary,
+              fontWeight: '600',
+              paddingHorizontal: 8,
+            }}
+          >
+            {pane() === 'connections' ? tr('Filter by connection') : tr('Models')}
+          </Text>
+          <Button
+            disabled={pending()}
+            accessibilityLabel={
+              pane() === 'root'
+                ? tr('Close model selection')
+                : pane() === 'connections'
+                  ? tr('Back to models')
+                  : tr('Back to model settings')
+            }
+            onPress={
+              pane() === 'connections'
+                ? back
+                : pane() === 'root'
+                  ? inputAction(close, { instance: props.instance, from: pane() })
+                  : inputAction(changePane, { instance: props.instance, from: pane(), to: 'root' })
+            }
+            tooltip={textTooltip(() => (pane() === 'root' ? tr('Close') : tr('Back')))}
+            style={{ ...controlStyle, width: 32, paddingHorizontal: 8, alignItems: 'center' }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name={pane() === 'root' ? 'close' : 'back'} color={C.muted} />
+          </Button>
+        </View>
+      </If>
       <If when={pane() === 'root'}>
         <Button
           ref={(node) => focusRoot('model', node)}
@@ -576,7 +594,7 @@ function ModelMenu(props: {
           focusStyle={{ backgroundColor: C.raised }}
           disabledStyle={controlDisabledStyle}
         >
-          <Text style={{ ...captionTextStyle, color: C.secondary }}>{tr('Model')}</Text>
+          <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Model')}</Text>
           <Text
             style={[
               {
@@ -613,9 +631,7 @@ function ModelMenu(props: {
             focusStyle={{ backgroundColor: C.raised }}
             disabledStyle={controlDisabledStyle}
           >
-            <Text style={{ ...captionTextStyle, color: C.secondary }}>
-              {tr('Reasoning effort')}
-            </Text>
+            <Text style={{ ...captionTextStyle, color: C.text }}>{tr('Reasoning effort')}</Text>
             <Text
               style={[
                 {
@@ -643,7 +659,7 @@ function ModelMenu(props: {
             focusStyle={{ backgroundColor: C.raised }}
             disabledStyle={controlDisabledStyle}
           >
-            <Text style={{ ...captionTextStyle, color: C.secondary, flex: 1 }}>
+            <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
               {tr('Model settings')}
             </Text>
             <Icon name="right" color={C.muted} />
@@ -958,18 +974,30 @@ function ModelMenu(props: {
           <Text style={{ ...captionTextStyle, color: C.accent }}>{tr('Retry')}</Text>
         </Button>
       </If>
+      <If when={!platform.isTerminal}>
+        <View style={{ height: 1, backgroundColor: C.line }} />
+      </If>
       <Button
         disabled={pending()}
         accessibilityLabel={tr('Manage connections and models')}
         onPress={inputAction(props.manage, null)}
-        style={controlStyle}
+        style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
         hoverStyle={controlHoverStyle()}
         focusStyle={controlFocusStyle()}
         disabledStyle={controlDisabledStyle}
       >
-        <Text style={{ ...captionTextStyle, color: C.accent }}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: platform.isTerminal ? C.accent : C.secondary,
+            flex: 1,
+          }}
+        >
           {tr('Manage connections & models')}
         </Text>
+        <If when={!platform.isTerminal}>
+          <Icon name="right" color={C.muted} />
+        </If>
       </Button>
       <If when={error()}>
         <Scroll
