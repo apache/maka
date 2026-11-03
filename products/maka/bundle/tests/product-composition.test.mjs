@@ -33,7 +33,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-test('own Session tools grant the original Agent service without an import cycle', async () => {
+test('Session tools select their own exports without duplicate native grants or an import cycle', async () => {
   const { composition, instanceNames, packageNames } = await import(
     '../dist/authoring/composition.mjs'
   );
@@ -60,20 +60,39 @@ test('own Session tools grant the original Agent service without an import cycle
     },
   });
   assert.deepEqual(host.instances.agent.bindings, {});
-  assert.deepEqual(native, [
-    {
-      origin: [keys.agent],
-      consumer: [keys.agent],
-      provider: [keys.agent],
-      export: 'agent',
-      methods: ['metadata'],
-      recovery: true,
-    },
-  ]);
+  assert.deepEqual(native, []);
   assert.deepEqual(host.instances.agent.configuration.values.tools[0].target, {
     kind: 'export',
     name: 'agent',
   });
+});
+
+test('Decisions API publishes its own package, instance and capability', async () => {
+  const { composition, instanceNames, installationNames, packageNames } = await import(
+    '../dist/authoring/composition.mjs'
+  );
+  const keys = Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`]));
+  keys['workspace-decisions-api'] = 'decision-instance';
+  const { host, endpoints } = composition({
+    locale: 'en',
+    hostDeployment: 'host',
+    keys,
+    packages: Object.fromEntries(
+      packageNames.map((name) => [name, { id: name, revision: 'a'.repeat(64) }]),
+    ),
+    agent: { workspaceRoots: [], tools: [] },
+    decisions_api: { network: 'allowed' },
+  });
+  assert.equal(host.instances['workspace-decisions-api'].key, 'decision-instance');
+  assert.equal(
+    host.instances['workspace-decisions-api'].package.package.id,
+    'workspace-decisions-api',
+  );
+  assert.deepEqual(host.instances.gateway.bindings.decisions_api, [
+    { kind: 'instance', path: ['workspace-decisions-api'], export: 'decisions_api' },
+  ]);
+  assert.ok(endpoints.decisions_api);
+  assert.ok(installationNames({}).includes('workspace-decisions-api'));
 });
 
 test('publishing plugin packages preserves unchanged files and removes obsolete bytes', async () => {
@@ -166,7 +185,7 @@ test('the default ModelList tool binds the settings model directory without a cl
   assert.deepEqual(tools[0].target, { kind: 'import', name: 'settings' });
   assert.equal(tools[0].method, 'models');
   assert.equal(tools[0].confirmation, 'preapproved');
-  const { host } = composition({
+  const { host, native } = composition({
     ...defaults,
     hostDeployment: 'host',
     keys: Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`])),
@@ -178,4 +197,15 @@ test('the default ModelList tool binds the settings model directory without a cl
     { kind: 'instance', path: ['settings'], export: 'Settings' },
   ]);
   assert.deepEqual(host.instances.settings.bindings, {});
+  for (const name of ['agent', 'workhub']) {
+    const agent = host.instances[name];
+    const grants = native.filter(
+      (grant) =>
+        grant.origin[0] === agent.key &&
+        grant.consumer[0] === agent.key &&
+        grant.provider[0] === host.instances.settings.key &&
+        grant.export === 'Settings',
+    );
+    assert.deepEqual(grants, []);
+  }
 });

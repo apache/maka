@@ -217,6 +217,7 @@ impl AttemptCut {
 
 #[derive(Clone, Debug)]
 pub struct CompletedAttempt {
+    pub compaction: Option<super::super::NativeCompaction>,
     pub binding: AttemptBinding,
     pub finish_reason: ModelFinishReason,
     pub usage: ModelUsage,
@@ -233,6 +234,7 @@ impl CompletedAttempt {
     }
     pub fn completion(&self) -> ModelCompletion {
         ModelCompletion {
+            compaction: self.compaction.clone(),
             parts: self
                 .parts
                 .iter()
@@ -584,12 +586,18 @@ impl AttemptWriter {
         self.snapshot().partial()
     }
     pub fn completed(&self) -> Result<CompletedAttempt, super::ModelError> {
-        let (finish_reason, usage, provider_options) = match &self.builder.state {
+        let (finish_reason, usage, provider_options, compaction) = match &self.builder.state {
             StepState::Finished {
+                compaction,
                 reason,
                 usage,
                 provider_options,
-            } => (*reason, usage.clone(), provider_options.clone()),
+            } => (
+                *reason,
+                usage.clone(),
+                provider_options.clone(),
+                compaction.clone(),
+            ),
             StepState::Assembling => return Err(invalid("model step missing finish")),
             StepState::Poisoned => return Err(invalid("model step previously failed")),
         };
@@ -606,6 +614,7 @@ impl AttemptWriter {
             })
             .collect();
         Ok(CompletedAttempt {
+            compaction,
             binding: self.binding.clone(),
             finish_reason,
             usage,
@@ -684,6 +693,7 @@ mod tests {
     }
     fn finished() -> ModelEvent {
         ModelEvent::Finished {
+            compaction: None,
             reason: ModelFinishReason::ToolCalls,
             usage: ModelUsage {
                 input_tokens: Some(7),

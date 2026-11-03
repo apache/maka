@@ -11,7 +11,7 @@
   "workhub": "plugins/workhub/workhub",
   "workspace-computer": "plugins/workspace/workspace-computer",
   "workspace-web": "plugins/workspace/workspace-web",
-  "workspace-jev": "plugins/workspace/workspace-jev",
+  "workspace-decisions-api": "plugins/workspace/workspace-decisions-api",
   "workspace-processes": "plugins/workspace/workspace-processes",
   "protocol-processes": "plugins/workspace/protocol-processes",
   "acp-executor": "plugins/agent/acp-executor",

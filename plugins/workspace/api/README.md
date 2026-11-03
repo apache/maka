@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-Defines the shared contracts for workspace files, processes, terminals, protocol processes and Jev. Native providers and authoring tools use the same declarations. Request paths and workspace identifiers describe a selection; the provider still checks the actual bound directory and call authority.
+Defines the shared contracts for workspace files, processes, terminals, protocol processes and Decisions API. Native providers and authoring tools use the same declarations. Request paths and workspace identifiers describe a selection; the provider still checks the actual bound directory and call authority.
 
 `Files.readText` reads workspace text and Session attachment or archived tool-result resources under the caller's original invocation authority. It accepts the complete returned `next` object for continuation; an address grants no access to another Session. Agent tool descriptions expose this capability under the selected tool's name. `readImage` does not read tool-result archives.
 

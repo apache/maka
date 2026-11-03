@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 fn request(base_url: &str) -> ModelRequest {
     ModelRequest {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
             image_input: None,
@@ -353,11 +354,11 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
         for (language, expected) in [
             (
                 Language::ZhCn,
-                "[来自 exec call-原文 的通知]\nworker result: Keep 原文",
+                "[来自工具 call-原文 的通知]",
             ),
             (
                 Language::ZhTw,
-                "[來自 exec call-原文 的通知]\nworker result: Keep 原文",
+                "[來自工具 call-原文 的通知]",
             ),
         ] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -385,7 +386,7 @@ async fn captured_language_reaches_native_notifications_without_becoming_provide
             stream.cancel_and_wait().await.unwrap();
             let wire = server.await.unwrap();
             assert_eq!(wire["messages"][0]["role"], "user");
-            assert_eq!(wire["messages"][0]["content"], expected);
+            assert_eq!(wire["messages"][0]["content"], json!([{ "type":"text", "text":expected }, { "type":"text", "text":"worker result: Keep 原文" }]));
             assert_eq!(wire.get("language"), None);
         }
     })

@@ -53,6 +53,7 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
         Fact::ModelCompleted {
             step_id: "step-images".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: completion_parts("step-images".into(), vec![ModelPart::ToolCall { call }]),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),

@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { updateToolActivity, latestToolActivity } from '../app/toolActivity.ts';
+import {
+  updateToolActivity,
+  latestToolActivity,
+  toolActivitySummary,
+} from '../app/toolActivity.ts';
 import { thinkingSummary } from '../app/thinkingSummary.ts';
 
 test('thinking summary retains the last nonempty paragraph and its Unicode text', () => {
@@ -40,6 +44,9 @@ test('thinking summary retains the last nonempty paragraph and its Unicode text'
 
 test('complete active tool identities survive 129 starts, updates and exact terminal removal', () => {
   let active = [];
+  const name = 'Shell';
+  const title = 'Run the workspace checks';
+  const progress = 'Workspace checks: ' + 'module/行为🦀 test passed; '.repeat(400) + 'all passed';
   const event = (index, fact, invocationId = 'invocation') => ({
     invocationId,
     turnId: 'turn',
@@ -53,7 +60,7 @@ test('complete active tool identities survive 129 starts, updates and exact term
       event(index, {
         kind: 'executor_tool_start',
         toolUseId: id(index),
-        name: 'echo',
+        name: index === 128 ? name : 'echo',
       }),
     );
   }
@@ -67,11 +74,15 @@ test('complete active tool identities survive 129 starts, updates and exact term
     event(130, {
       kind: 'executor_tool_progress',
       toolUseId: id(128),
-      text: 'original progress',
+      text: progress,
     }),
   );
   assert.equal(active.length, 129);
-  assert.equal(active[128].detail, 'original progress');
+  assert.equal(active[128].detail, progress);
+  assert.equal(
+    toolActivitySummary(active[128], 'Running', title),
+    `Running · ${name} · ${title} · ${progress}`,
+  );
   assert.equal(active[128].startSequence, 129);
   active = updateToolActivity(
     active,

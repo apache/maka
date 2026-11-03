@@ -193,6 +193,7 @@ async fn append_tool(
     writer.push(ModelEvent::ToolCall(serde_json::from_value(json!({"id":step,"name":"Read","input":{"kind":"json","data":{"path":"fixture"}},"provider_executed":false}))?),time)?;
     let observations = writer.push(
         ModelEvent::Finished {
+            compaction: None,
             reason: ModelFinishReason::ToolCalls,
             usage: Default::default(),
             provider_options: None,

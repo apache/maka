@@ -111,10 +111,6 @@ impl Provider for Codex {
                 Some(overrides) => overrides.apply(&reported),
                 None => reported,
             };
-            // Existing saved connections may predate discovery of this fact.
-            if info.max_output_tokens.is_none() {
-                info.max_output_tokens = super::inventory::output_capacity(&info.id)?;
-            }
             if info
                 .api_protocol
                 .is_some_and(|wire| wire != ApiProtocol::OpenaiResponses)
@@ -162,6 +158,7 @@ impl Provider for Codex {
             if summary || level.is_some() {
                 options["openai"]["forceReasoning"] = json!(true);
             }
+            info.capabilities.get_or_insert_default().native_compaction = Some(true);
             let model = Model {
                 main_output_limit: request
                     .overrides

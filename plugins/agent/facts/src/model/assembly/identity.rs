@@ -64,6 +64,7 @@ mod tests {
 
     fn finish() -> ModelEvent {
         ModelEvent::Finished {
+            compaction: None,
             reason: ModelFinishReason::ToolCalls,
             usage: ModelUsage::default(),
             provider_options: None,

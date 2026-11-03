@@ -159,6 +159,13 @@ pub(super) async fn browser_decision(
     basis: PermissionBasis,
     target: &maka_agent_facts::interaction::GrantTarget,
 ) -> Result<Option<Decision>, ToolError> {
+    let (configuration, _) = current(owner, call, "cua_repl").await?;
+    if configuration.permission_basis() != basis {
+        return Err(failed("Browser permission boundary changed"));
+    }
+    if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+        return Ok(Some(Decision::Allow));
+    }
     let invocation = call.identity.agent().expect("checked Agent");
     maka_agent_authority::permissions::execution(
         &owner.store,
@@ -179,6 +186,9 @@ pub(super) async fn granted_target(
     let (current, _) = current(owner, call, "cua_repl").await?;
     if current.permission_basis() != basis {
         return Err(failed("Computer Use permission boundary changed"));
+    }
+    if current.permissions.access == WorkspaceAccess::DangerFullAccess {
+        return Ok(());
     }
     let store = maka_agent_authority::permissions::execution(
         &owner.store,
@@ -243,6 +253,9 @@ pub(super) async fn approve_target(
     target: maka_agent_facts::interaction::GrantTarget,
     cell: Option<&maka_code_runtime::CellContext>,
 ) -> Result<(), ToolError> {
+    if configuration.permissions.access == WorkspaceAccess::DangerFullAccess {
+        return granted_target(owner, call, configuration.permission_basis(), &target).await;
+    }
     let context = ToolCallContext {
         execution: call.execution().cloned(),
         invocation: call.identity.agent().expect("checked Agent").clone(),
@@ -278,11 +291,7 @@ pub(super) async fn approve_target(
     {
         return Ok(());
     }
-    let unattended_browser = target.capability
-        == maka_agent_facts::interaction::GrantCapability::Browser
-        && configuration.permissions.access == WorkspaceAccess::DangerFullAccess
-        && !configuration.permissions.request_permissions;
-    if !configuration.permissions.request_permissions && !unattended_browser {
+    if !configuration.permissions.request_permissions {
         return Err(failed(format!(
             "Current policy does not allow requesting {} access",
             capability_name(&target)
@@ -319,18 +328,6 @@ pub(super) async fn approve_target(
             .map_err(|_| "Computer approval publication unavailable")?;
         if !committed.matches {
             return Err("Computer approval identity conflict");
-        }
-        if unattended_browser {
-            store
-                .commit_interaction_outcome(
-                    &record.request_id,
-                    InteractionOutcome::ClientCapabilityDecision {
-                        decision: Decision::Allow,
-                        committed_at: maka_agent_authority::now(),
-                    },
-                )
-                .await
-                .map_err(|_| "Browser policy decision unavailable")?;
         }
         let _timeout = cell.map(maka_code_runtime::CellContext::suspend_timeout);
         maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await

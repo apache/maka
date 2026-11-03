@@ -125,6 +125,7 @@ impl Fixture {
         Self {
             packages,
             input: Input {
+                base: None,
                 ui: None,
                 instances: BTreeMap::from([
                     ("p".into(), node("provider", 1, true)),
@@ -372,6 +373,7 @@ fn structural_routing_does_not_turn_a_child_dependency_into_whole_product_retire
                 host: None,
                 ui: None,
                 composition: Some(Template {
+                    ui: None,
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::from([(
                         "action".into(),
@@ -459,6 +461,7 @@ fn ui_root_switch_and_ui_only_upgrade_preserve_host_work_but_host_upgrade_retire
             host: None,
             ui: None,
             composition: Some(Template {
+                ui: None,
                 parameters: BTreeMap::new(),
                 imports: BTreeMap::new(),
                 exports: BTreeMap::new(),

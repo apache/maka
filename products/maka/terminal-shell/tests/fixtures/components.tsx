@@ -34,12 +34,7 @@ import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
 import type {
   AgentSession,
-  AgentQueue,
-  AgentComputerApps,
-  AgentPlanView,
-  CollaborationMode,
   InteractionRecord,
-  PlanArtifact,
 } from '../../../../../packages/plugin-sdk/src/index.js';
 
 function Sandbox() {
@@ -141,71 +136,10 @@ function Consent() {
   );
 }
 
-function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
+function CompletionComposer() {
   const draft = signal('');
   const action = signal('No command');
   const lookup = signal('No lookup');
-  const queue = signal<AgentQueue>({
-    revision: 1,
-    entries: props.details
-      ? [{ messageId: 'queued-original', kind: 'followup', preview: 'QUEUED_ORIGINAL' }]
-      : [],
-  });
-  const makeApp = (id: string) => ({
-    stopped: false,
-    activity: {
-      invocation: {
-        session_id: 'original-session',
-        turn_id: 'original-turn',
-        run_id: 'original-run',
-        invocation_id: 'original-invocation',
-      },
-      operationId: id,
-      target: {
-        providerId: 'computer',
-        contractId: 'computer',
-        serverId: 'computer',
-        toolName: 'cua_repl',
-        capability: 'computer_use' as const,
-        scope: { kind: 'computer_app' as const, applicationId: id },
-      },
-      display: { name: `Fixture App ${id}`, appPath: `/applications/${id}`, risk: null },
-    },
-  });
-  const apps = signal<AgentComputerApps>({ entries: props.details ? [makeApp('one')] : [] });
-  const planArtifact: PlanArtifact = {
-    title: 'PLAN_TITLE',
-    overview: 'PLAN_OVERVIEW',
-    steps: [
-      {
-        id: 'one',
-        title: 'PLAN_STEP_ONE',
-        description: 'PLAN_STEP_ONE_DETAIL',
-        files: ['src/one.ts'],
-      },
-      { id: 'two', title: 'PLAN_STEP_TWO', description: 'PLAN_STEP_TWO_DETAIL' },
-    ],
-    risks: ['PLAN_RISK'],
-  };
-  const planView = signal<AgentPlanView>({
-    enabled: !!props.plan,
-    current: {
-      revision: 3,
-      proposal: props.plan
-        ? {
-            id: 'proposal-one',
-            planId: 'plan-one',
-            revision: 1,
-            turnId: 'original-turn',
-            artifact: planArtifact,
-            status: 'pending_approval',
-            submittedAt: 1,
-          }
-        : null,
-      execution: null,
-    },
-  });
-  const mode = signal<CollaborationMode>('agent');
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
@@ -223,10 +157,16 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     error: () => '',
     notice: () => '',
     metrics: () => '',
-    recoverable: () => false,
     recovering: () => false,
-    unconfirmed: () => [],
+    sends: () => [],
+    retrySend: unexpected,
+    checkSend: unexpected,
+    dismissSend: unexpected,
     invocation: () => null,
+    prediction: {
+      current: () => null,
+      dismiss: unexpected,
+    },
     stopping: () => false,
     resumable: () => null,
     resuming: () => false,
@@ -246,8 +186,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     previewImage: unexpected,
     submit: unexpected,
     sendRendered: unexpected,
-    recover: unexpected,
-    abandon: unexpected,
     stop: unexpected,
     permissions: {
       sessionId: 'original-session',
@@ -258,16 +196,9 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
     },
     queue: {
       sessionId: 'original-session',
-      snapshot: queue,
+      snapshot: () => ({ revision: 1, entries: [] }),
       running: () => false,
-      async read() {
-        return {
-          kind: 'ready',
-          revision: queue().revision,
-          message: 'QUEUED_ORIGINAL',
-          hasAttachments: false,
-        };
-      },
+      read: unexpected,
       change: unexpected,
     },
     projectMcp: {
@@ -279,56 +210,8 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
       dismiss: unexpected,
     },
     computerAccess: {
-      snapshot: apps,
-      async stop(operationId) {
-        action.set(`stopped:${operationId}`);
-        apps.set({
-          entries: apps().entries.map((entry) =>
-            entry.activity.operationId === operationId ? { ...entry, stopped: true } : entry,
-          ),
-        });
-      },
-    },
-    plan: {
-      view: planView,
-      mode,
-      pending: () => false,
-      error: () => '',
-      async selectMode(next) {
-        action.set(`mode:${next}`);
-        mode.set(next);
-      },
-      async change(input) {
-        if (input.kind === 'cancel') {
-          action.set(`plan:cancel:${input.executionId}`);
-          const current = planView().current;
-          planView.set({
-            enabled: true,
-            current: { ...current, execution: { ...current.execution!, phase: 'cancelled' } },
-          });
-          return;
-        }
-        if (input.kind !== 'approve') throw new Error('Unexpected plan action');
-        action.set(`plan:approve:${input.proposalId}:${input.proposalRevision}`);
-        planView.set({
-          enabled: true,
-          current: {
-            revision: 4,
-            proposal: { ...planView().current.proposal!, status: 'approved' },
-            execution: {
-              id: 'execution-one',
-              proposalId: input.proposalId,
-              artifact: planArtifact,
-              steps: [
-                { id: 'one', status: 'completed' },
-                { id: 'two', status: 'in_progress' },
-              ],
-              phase: 'active',
-              updatedAt: 2,
-            },
-          },
-        });
-      },
+      snapshot: () => ({ entries: [] }),
+      stop: unexpected,
     },
     checklist: {
       read: unexpected,
@@ -340,20 +223,13 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
             first
               ? ((first = false),
                 Promise.resolve({
-                  enabled: !!props.details,
+                  enabled: false,
                   revision: 1,
-                  total: props.details ? 2 : 0,
+                  total: 0,
                   completed: 0,
-                  current: props.details
-                    ? { content: 'TODO_CURRENT', status: 'in_progress' }
-                    : null,
+                  current: null,
                   offset: 0,
-                  items: props.details
-                    ? [
-                        { content: 'TODO_CURRENT', status: 'in_progress' },
-                        { content: 'TODO_NEXT', status: 'pending' },
-                      ]
-                    : [],
+                  items: [],
                   nextOffset: null,
                 }))
               : new Promise<null>((resolve) => {
@@ -381,10 +257,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
       dropFiles: unexpected,
       open: unexpected,
       remove: unexpected,
-      recover: unexpected,
-      abandon: unexpected,
-      inspect: unexpected,
-      retry: unexpected,
       reportError: unexpected,
       notify: unexpected,
       clearNotice() {},
@@ -422,38 +294,6 @@ function CompletionComposer(props: { details?: boolean; plan?: boolean }) {
   };
   return (
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-      <If when={props.details}>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
-          <Button
-            accessibilityLabel="Add computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [...apps().entries, makeApp('two')] })}
-          >
-            <Text>Add computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Clear computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [] })}
-          >
-            <Text>Clear computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Restore computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [makeApp('one')] })}
-          >
-            <Text>Restore computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Drain queued messages"
-            style={{ height: 32 }}
-            onPress={() => queue.set({ revision: queue().revision + 1, entries: [] })}
-          >
-            <Text>Drain queued messages</Text>
-          </Button>
-        </View>
-      </If>
       <Text>{action()}</Text>
       <Text>{lookup()}</Text>
       <Composer
@@ -736,10 +576,6 @@ mount(() =>
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer-plan' ? (
-    <CompletionComposer plan />
-  ) : scenario === 'composer-details' ? (
-    <CompletionComposer details />
   ) : scenario === 'composer' ? (
     <CompletionComposer />
   ) : (

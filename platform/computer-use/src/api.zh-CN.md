@@ -154,7 +154,7 @@ macOS 滚动使用正的有限数字页数，默认一页，并拒绝 `{pixels}`
 
 Host 启用输出音频后，`await cua.computer.start_audio_recording({max_duration_ms?})` 开始录音并返回 undefined，其他调用可继续执行。时长默认 60000 ms，接受 100 到 300000 的整数。`await cua.computer.stop_audio_recording()` 返回已完成的双声道 24 kHz PCM16 WAV 的 `{filepath, bytes, data_url}`。达到时长后停止采集，再调用 stop 取回录音。`await nodeRepl.emitAudio(bytes | dataUrl | {bytes, mimeType})` 显式输出音频。未启用音频时，这些方法不存在。重置和 Session 清理会丢弃录音及其本地路径。
 
-每次操作都使用当前 Host 权限；JS 对象不保留授权。Ask 模式下，Computer Use 批准在 REPL 执行超时计时开始前完成。macOS 原生操作在屏幕锁定时报告 `desktop_locked`；已连接 CDP 提供方和纯 REPL 计算仍可独立使用。
+每次操作都使用当前 Host 权限；JS 对象不保留授权。关闭 Session 沙箱时，电脑、应用、浏览器站点与历史、文件传输和音频不需要额外的 Maka 审批；权限变更和停止当前操作仍然生效。Ask 模式下，Computer Use 批准在 REPL 执行超时计时开始前完成。macOS 原生操作在屏幕锁定时报告 `desktop_locked`；已连接 CDP 提供方和纯 REPL 计算仍可独立使用。
 
 应用、浏览器站点和音频授权等待会暂停剩余执行预算。macOS/Windows 原生等待也会暂停预算；普通异步等待和 Linux 原生操作继续计时。暂停不会重置预算，也不会禁用取消。
 每个 Session 有独立的 Maka 光标。输入操作自动显示光标。`cua.cursor.configure({label?, color?, enabled?, reducedMotion?})` 修改此 Session 的显示。颜色为 `blue`、`mint`、`violet`、`amber`、`rose`、`cyan`；标签最多 48 个字符。`cua.cursor.getState()` 报告设置及原生/浏览器可见性。处于 `idle` 的原生渲染器在首次原生指示时启动；`unavailable` 表示显示主机缺失或失败。重新配置可重试失败的渲染器。空闲光标保留至禁用或清理。光标不共享输入权限，也不移动系统指针。多个光标不能隔离物理键盘、应用焦点或输入法。
@@ -166,7 +166,7 @@ REPL 被取消、超时或耗尽堆内存后，需要 `cua_reset` 并重新绑�
 
 `await browser.nameSession(name)` 去除两端空白并保存托管标签组名称；`cua.createBrowserTab(id, url, {sessionName})` 先解析浏览器、等待命名成功，再创建标签页。当前公开 profile 不提供 visibility 能力。
 
-`await browser.history({queries, limit, from, to})` 通过真实声明历史传输能力的扩展读取当前浏览器 profile 的历史。它要求当前权限边界下针对实际浏览器 ID 和 generation 的独立 `browser_history` 批准；网页或下载批准不能授权历史读取，来源策略也不会自动批准。默认查询全部历史并限制为 100 条；多查询结果按访问时间倒序合并、按 URL 去重后再应用总条数限制。Maka 扩展声明 Chrome history 权限，旧扩展未具备权限时不声明支持。ChatGPT 和其他第三方适配器仍为尽力支持。
+`await browser.history({queries, limit, from, to})` 通过真实声明历史传输能力的扩展读取当前浏览器 profile 的历史。启用沙箱时，它要求当前权限边界下针对实际浏览器 ID 和 generation 的独立 `browser_history` 批准；网页或下载批准不能授权历史读取，来源策略也不会自动批准。默认查询全部历史并限制为 100 条；多查询结果按访问时间倒序合并、按 URL 去重后再应用总条数限制。Maka 扩展声明 Chrome history 权限，旧扩展未具备权限时不声明支持。ChatGPT 和其他第三方适配器仍为尽力支持。
 
 - `await browser.user.getTabContext(tabOrId)` 读取当前可见用户标签页的内容，不认领或激活标签页。Host 对当前实际 URL 授权，调用者不能指定替代 URL。隐私标签页和单次读取前后发生 URL 变化的页面会被拒绝。结果为 `{kind:'text',text,title,url,truncated}`，或 `{kind:'document',data,fileName,mimeType,title,url}`；`data` 为实际导出文件的 `Uint8Array`。Host 提供文件发布服务时，文档还包含本 Session 持有的真实 `path`。Google Workspace 可提供 Markdown、PDF 或 XLSX，普通页面可包含当前选择，YouTube 视频页可包含字幕。`maka` 实现固定读取，`chatgpt` 在支持时复用原版读取协议；第三方插件按实际能力尽力支持。
 

@@ -45,7 +45,7 @@ export function documentation(path) {
   return (
     contains('docs', path) ||
     contains('website', path) ||
-    (!path.includes('/') && (/\.md$/.test(path) || ['LICENSE', 'NOTICE'].includes(path)))
+    (/\.md$/.test(path) && (!path.includes('/') || /(^|\/)README(?:\.[^/]+)?\.md$/.test(path)))
   );
 }
 
@@ -151,7 +151,7 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
   if (full) {
     for (const [id, suite] of Object.entries(suites))
       selected[id] = { filter: suite.filter ?? 'all()', reason: fullReasons.join(', ') };
-  } else {
+  } else if (inputs.length) {
     selected.tooling = { filter: 'all()', reason: 'always checked' };
   }
   const matrix = workers.flatMap((worker) => {
@@ -162,8 +162,10 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
 }
 
 export function checkResults(plan, results, hasRootTests) {
-  const required = ['plan', 'tooling'];
+  const required = ['plan'];
+  if (plan.suites.tooling) required.push('tooling');
   if (plan.workers.length) required.push('suites');
+  if (plan.suites.desktop) required.push('desktop-build', 'desktop-tests');
   if (plan.suites.root) {
     if (typeof hasRootTests !== 'boolean')
       throw new Error('Root producer did not report whether tests were selected');

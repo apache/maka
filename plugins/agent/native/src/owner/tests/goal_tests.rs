@@ -371,7 +371,7 @@ async fn goal_sealed_handoff_recovers_once_and_cancel_releases_the_session() {
     use maka_agent_facts::handoff::HandoffIntent;
     use maka_goal::goal::Control;
     tokio::time::timeout(Duration::from_secs(90), async {
-        for action in ["automatic", "resume", "cancel", "settings_changed"] {
+        for action in ["automatic", "resume", "cancel", "route_changed"] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let mut f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
             let session = f.create("Handoff Goal").await;
@@ -419,20 +419,24 @@ async fn goal_sealed_handoff_recovers_once_and_cancel_releases_the_session() {
             owner.stop.cancel();
             drop(gate);
             todo_tests::reopen(&mut f).await;
-            if action == "settings_changed" {
+            if action == "route_changed" {
+                let replacement = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let replacement_base = format!("http://{}/v1", replacement.local_addr().unwrap());
                 selection::edit(&f, |changes| {
+                    changes.configuration = Some(json!({"baseUrl":replacement_base}));
                     changes.model_overrides = Patch::Set(BTreeMap::from([("fixture-model".into(), ModelOverride { max_output_tokens: Some(200), ..Default::default() })]));
                 }).await;
                 assert_eq!(control(&f, &session, "resume").await["kind"], "committed");
                 let paused = wait_status(&f, &session, "paused").await;
                 assert_eq!(paused["iterations"], 1);
                 assert!(tokio::time::timeout(Duration::from_millis(100), listener.accept()).await.is_err());
+                assert!(tokio::time::timeout(Duration::from_millis(100), replacement.accept()).await.is_err());
                 assert_eq!(f.mutation(2, "changeGoal", json!({"kind":"control", "sessionId":session, "goalId":paused["id"], "revision":paused["revision"], "action":"resume", "approval":approval(&f,&session).await}), Uuid::new_v4()).await.unwrap()["kind"], "committed");
-                let (mut resumed, _) = listener.accept().await.unwrap();
+                let (mut resumed, _) = replacement.accept().await.unwrap();
                 let sent = request(&mut resumed).await;
                 assert_eq!(sent["max_tokens"], 200);
                 report(&mut resumed, false, "achieved").await;
-                let (mut final_answer, _) = listener.accept().await.unwrap();
+                let (mut final_answer, _) = replacement.accept().await.unwrap();
                 request(&mut final_answer).await;
                 response(&mut final_answer).await;
                 let done = wait_status(&f, &session, "achieved").await;
@@ -483,31 +487,53 @@ async fn goal_sealed_handoff_recovers_once_and_cancel_releases_the_session() {
 }
 
 #[tokio::test]
-async fn changed_goal_model_settings_wait_for_reapproval_instead_of_retrying_the_old_basis() {
+async fn goal_default_edits_keep_approved_settings_and_new_messages_use_new_defaults() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
         let session = f.create("Goal settings change").await;
         create(&f, &session, true, None).await;
+        let original = current(&f, &session).await;
         let (mut first, _) = listener.accept().await.unwrap();
-        request(&mut first).await;
+        let approved_request = request(&mut first).await;
         selection::edit(&f, |changes| {
-            changes.model_overrides = Patch::Set(BTreeMap::from([("fixture-model".into(), ModelOverride { max_output_tokens: Some(200), ..Default::default() })]));
-        }).await;
+            changes.model_overrides = Patch::Set(BTreeMap::from([(
+                "fixture-model".into(),
+                ModelOverride {
+                    max_output_tokens: Some(200),
+                    ..Default::default()
+                },
+            )]));
+        })
+        .await;
         response(&mut first).await;
-        let paused = wait_status(&f, &session, "paused").await;
-        assert_eq!(paused["iterations"], 2);
-        assert_eq!(f.mutation(2, "changeGoal", json!({"kind":"control","sessionId":session,"goalId":paused["id"],"revision":paused["revision"],"action":"resume","approval":approval(&f,&session).await}), Uuid::new_v4()).await.unwrap()["kind"], "committed");
-        let (mut resumed, _) = listener.accept().await.unwrap();
-        let sent = request(&mut resumed).await;
-        assert_eq!(sent["max_tokens"], 200);
-        report(&mut resumed, false, "achieved").await;
+        let (mut continued, _) = listener.accept().await.unwrap();
+        let sent = request(&mut continued).await;
+        assert_eq!(
+            sent["max_tokens"], approved_request["max_tokens"],
+            "continuation uses its original approved settings"
+        );
+        assert_ne!(
+            sent["max_tokens"], 200,
+            "new defaults are not silently adopted by the Goal grant"
+        );
+        report(&mut continued, false, "achieved").await;
         let (mut final_answer, _) = listener.accept().await.unwrap();
-        request(&mut final_answer).await; response(&mut final_answer).await;
+        request(&mut final_answer).await;
+        response(&mut final_answer).await;
         let done = wait_status(&f, &session, "achieved").await;
-        assert_eq!(done["id"], paused["id"]);
+        assert_eq!(done["id"], original["id"]);
+        assert_eq!(done["iterations"], 2);
+        assert_eq!(f.send(&session).await.unwrap()["kind"], "started");
+        let (mut ordinary, _) = listener.accept().await.unwrap();
+        assert_eq!(request(&mut ordinary).await["max_tokens"], 200);
+        response(&mut ordinary).await;
+        f.drained().await;
         f.app.shutdown().await.unwrap();
-    }).await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }
 
 #[tokio::test]

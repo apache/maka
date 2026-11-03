@@ -63,12 +63,12 @@ export type RuntimeProtocol =
   | Export
   | CallerIntent
   | AgentConfiguration
-  | WorkspaceJevConfiguration
-  | JevSet
-  | JevCredential
-  | JevUpdate
-  | JevEvaluation
-  | JevResult
+  | WorkspaceDecisionsApiConfiguration
+  | DecisionsApiSet
+  | DecisionsApiCredential
+  | DecisionsApiUpdate
+  | DecisionsEvaluation
+  | DecisionsApiResult
   | WorkspaceWebConfiguration
   | WebCapture
   | WebCall_WebFetch
@@ -195,13 +195,6 @@ export type RuntimeProtocol =
   | SkillPreparationRecord
   | AgentList
   | AgentCreate
-  | AgentPlanRead
-  | AgentPlanView
-  | AgentPlanHistoryRead
-  | AgentPlanHistory
-  | AgentPlanChange
-  | AgentPlanResult
-  | AgentPlanReceiptRead
   | AgentGoalRead
   | AgentGoalView
   | AgentGoalChange
@@ -423,18 +416,6 @@ export type HostLogPage =
       hasMore: boolean;
     };
 export type HostLogReset = 'replaced' | 'truncated';
-/**
- * Templates can select an entry in their own immutable package without a
- * self-referential content hash. Deployment roots must select a pinned revision.
- */
-export type PackageSelection =
-  | {
-      source: 'pinned';
-      package: PackageRef;
-    }
-  | {
-      source: 'current';
-    };
 export type PackageUse = 'host' | 'ui' | 'composition';
 export type Target =
   | {
@@ -451,6 +432,18 @@ export type Target =
       deployment: string;
       instance: InstanceId;
       export: string;
+    };
+/**
+ * Templates can select an entry in their own immutable package without a
+ * self-referential content hash. Deployment roots must select a pinned revision.
+ */
+export type PackageSelection =
+  | {
+      source: 'pinned';
+      package: PackageRef;
+    }
+  | {
+      source: 'current';
     };
 export type Interface =
   | {
@@ -687,7 +680,8 @@ export type McpTransport =
       };
     };
 /**
- * Session sandbox policy. Full access explicitly disables filesystem and process isolation.
+ * Session sandbox policy. Full access disables isolation and permits Computer Use
+ * without additional application, browser or audio consent.
  */
 export type AgentWorkspaceAccess = 'read_only' | 'workspace_write' | 'danger_full_access';
 export type AgentToolInput = ('json' | 'skill' | 'web') | 'shell';
@@ -712,7 +706,8 @@ export type Network =
         destinations: Destination[];
       };
     };
-export type JevCredentialTarget =
+export type DecisionsProtocol = 'jev' | 'openai_decisions';
+export type DecisionsApiCredentialTarget =
   | {
       kind: 'api_key';
     }
@@ -720,11 +715,11 @@ export type JevCredentialTarget =
       kind: 'header';
       name: string;
     };
-export type JevCredentialChange = 'replace' | 'remove';
-export type JevUpdate =
+export type DecisionsApiCredentialChange = 'replace' | 'remove';
+export type DecisionsApiUpdate =
   | {
       kind: 'updated';
-      snapshot: JevSnapshot;
+      snapshot: DecisionsSnapshot;
     }
   | {
       kind: 'changed';
@@ -732,9 +727,9 @@ export type JevUpdate =
   | {
       kind: 'invalid';
     };
-export type JevQuestion =
+export type DecisionsQuestion =
   | {
-      type: 'noul';
+      type: 'predicate';
       instructions: unknown;
       criteria?: {
         [k: string]: unknown | undefined;
@@ -743,47 +738,45 @@ export type JevQuestion =
   | {
       type: 'choice';
       instructions: unknown;
-      criteria: {
-        [k: string]: unknown | undefined;
-      };
+      choices: DecisionsChoice[];
     }
   | {
       type: 'score';
       instructions: unknown;
-      criteria: unknown[];
+      levels: DecisionsLevel[];
     };
-export type JevResult =
+export type DecisionsChoiceValue = string | boolean;
+export type DecisionsApiResult =
   | {
       kind: 'completed';
-      value: JevEvaluationResult;
+      value: DecisionsEvaluationResult;
     }
   | {
       kind: 'failed';
       message: string;
     };
-export type JevAnswer =
+export type DecisionsAnswer =
   | {
-      type: 'noul';
-      noul: number;
+      type: 'predicate';
+      probability: number;
     }
   | {
       type: 'choice';
-      choice: string;
+      choice: DecisionsChoiceValue;
       confidence: number;
-      probabilities: {
-        [k: string]: number | undefined;
-      };
+      probabilities: DecisionsChoiceProbability[];
     }
   | {
       type: 'score';
       score: number;
       confidence: number;
-      probabilities: {
-        [k: string]: number | undefined;
-      };
+      probabilities: DecisionsScoreProbability[];
       legend: {
-        [k: string]: string | undefined;
+        [k: string]: unknown | undefined;
       };
+    }
+  | {
+      type: 'refusal';
     };
 export type WebSource = 'model' | 'tavily';
 export type WebUpdate =
@@ -1114,7 +1107,6 @@ export type AgentBackendPreference =
       kind: 'executor';
       selection: AgentExecutorSelection;
     };
-export type CollaborationMode = 'agent' | 'plan';
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentRejection =
   | 'title_invalid'
@@ -1424,6 +1416,7 @@ export type UsageToolResult =
  * Refusal category without input-derived explanation text.
  */
 export type RejectionKind =
+  | 'superseded'
   | 'unavailable'
   | 'invalid_input'
   | 'policy_denied'
@@ -1544,6 +1537,10 @@ export type NetworkProxyUpdateResult =
       actual: CredentialVersionBasis | null;
     };
 export type SettingsPreferencesMutation =
+  | {
+      kind: 'message_predictions';
+      settings: MessagePredictionSettings;
+    }
   | {
       kind: 'language';
       preference: LanguagePreference;
@@ -2315,57 +2312,6 @@ export type AgentWorkspaceSelection =
   | {
       kind: 'session';
       sessionId: string;
-    };
-export type PlanComplexity = 'low' | 'medium' | 'high';
-export type PlanProposalStatus =
-  | 'pending_approval'
-  | 'revision_requested'
-  | 'abandoned'
-  | 'approved';
-export type PlanStepStatus = 'pending' | 'in_progress' | 'completed' | 'skipped';
-export type AgentPlanPhase =
-  | 'awaiting_admission'
-  | 'active'
-  | 'interrupted'
-  | 'completed'
-  | 'cancelled';
-export type AgentPlanAction =
-  | {
-      kind: 'approve';
-      proposalId: string;
-      proposalRevision: number;
-      approval: AgentPlanApproval;
-    }
-  | {
-      kind: 'revise';
-      proposalId: string;
-    }
-  | {
-      kind: 'abandon';
-      proposalId: string;
-    }
-  | {
-      kind: 'resume';
-      executionId: string;
-      approval: AgentPlanApproval;
-    }
-  | {
-      kind: 'cancel';
-      executionId: string;
-      reason: string;
-    };
-export type AgentPlanResult =
-  | {
-      kind: 'committed';
-      revision: number;
-    }
-  | {
-      kind: 'conflict';
-      actual: number;
-    }
-  | {
-      kind: 'rejected';
-      reason: string;
     };
 export type GoalStatus =
   | 'armed'
@@ -3283,6 +3229,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
+export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
       kind: 'missing';
@@ -3325,7 +3272,8 @@ export type AgentInteractionKind =
   | 'permissions'
   | 'form'
   | 'client_capability'
-  | 'computer_app';
+  | 'computer_app'
+  | 'system_permission';
 export type InteractionAnswer =
   | {
       kind: 'service_approval';
@@ -3369,6 +3317,9 @@ export type InteractionAnswer =
     }
   | {
       kind: 'computer_app_cancel';
+    }
+  | {
+      kind: 'system_permission_cancel';
     };
 export type Decision = 'allow' | 'deny';
 export type Decision2 =
@@ -3439,6 +3390,20 @@ export type InteractionRequest =
       display: ComputerAppDisplay;
       allowAlways: boolean;
       authorityRevision: number;
+    }
+  | {
+      kind: 'system_permission';
+      toolUseId: string;
+      /**
+       * Distinct missing grants.
+       *
+       * @minItems 1
+       */
+      grants: [SystemPermissionGrant, ...SystemPermissionGrant[]];
+      /**
+       * The application name the operating system lists in its settings.
+       */
+      application: string;
     };
 export type FormField = {
   name: string;
@@ -3520,6 +3485,12 @@ export type GrantScope =
     };
 export type ComputerAppPlatform = 'macos' | 'windows';
 export type ComputerAppRisk = 'low' | 'high';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type SystemPermissionGrant = 'accessibility' | 'screen_recording';
 export type InteractionOutcome =
   | {
       kind: 'service_approval_decision';
@@ -3568,11 +3539,16 @@ export type InteractionOutcome =
       committedAt: number;
     }
   | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
       kind: 'closure';
       reason: ClosureReason;
       committedAt: number;
     };
 export type ClosureReason =
+  | 'steered'
   | 'turn_stopped'
   | 'turn_terminal'
   | 'producer_cancelled'
@@ -3837,7 +3813,7 @@ export type AgentSendResult =
   | {
       kind: 'rejected';
       sessionId: string;
-      reason: AgentSkillInputRejection;
+      reason: AgentSendRejection;
       skills?: SkillInvocationResult | null;
     }
   | {
@@ -3856,7 +3832,7 @@ export type AgentSendResult =
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSkillInputRejection = 'skills_unavailable';
+export type AgentSendRejection = 'skills_unavailable' | 'turn_stopped';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -4023,7 +3999,9 @@ export type ProviderFailureReason =
   | 'quota_exhausted'
   | 'provider_unavailable'
   | 'stream_truncated';
-export type ModelInterruption = ('cancelled' | 'timed_out' | 'failed') | 'retryable_failure';
+export type ModelInterruption =
+  | ('steered' | 'cancelled' | 'timed_out' | 'failed')
+  | 'retryable_failure';
 export type TitleFailureCause =
   | {
       kind: 'preparation';
@@ -4174,7 +4152,9 @@ export type AgentQueueMessageResult =
     }
   | {
       kind: 'missing';
+      reason: AgentQueueMessageMissingReason;
     };
+export type AgentQueueMessageMissingReason = 'delivered' | 'cancelled' | 'unknown';
 export type AgentQueueAction =
   | {
       kind: 'retract';
@@ -4663,10 +4643,69 @@ export interface HostLogRequest {
  * Durable deployment input. Plans are derived and never persisted as overrides.
  */
 export interface CompositionInput {
+  /**
+   * Optional immutable root composition. Its children remain deployment roots,
+   * so selecting a baseline does not prepend a namespace to instance identities.
+   */
+  base?: RootComposition | null;
   instances: {
     [k: string]: CompositionNode | undefined;
   };
   ui?: UiTarget | null;
+}
+/**
+ * A composition selected at deployment scope, without introducing an instance.
+ * Additional roots remain in Input.instances; inherited roots are edited with overrides.
+ */
+export interface RootComposition {
+  package: PackageRef;
+  parameters?: {
+    [k: string]: unknown | undefined;
+  };
+  overrides?: Override[];
+  /**
+   * Absent inherits the template UI; null explicitly selects no UI.
+   */
+  ui?: UiTarget | null;
+}
+export interface PackageRef {
+  id: string;
+  revision: string;
+}
+/**
+ * An override belongs to its containing structural instance. Missing paths fail;
+ * removal/upgrade never guesses how to discard independent user intent.
+ */
+export interface Override {
+  path: string[];
+  /**
+   * A persistent deletion, distinct from disabling an instance.
+   */
+  remove?: boolean;
+  package?: PackageRef | null;
+  usePackage?: PackageUse | null;
+  parameters?: {
+    [k: string]: unknown | undefined;
+  };
+  configuration?: {
+    [k: string]: unknown | undefined;
+  };
+  configurationFields?: ConfigurationField[];
+  bindings?: {
+    [k: string]: Target[] | undefined;
+  };
+  disabled?: boolean | null;
+}
+/**
+ * An exact object-field edit. Missing value deletes the field; JSON null is a value.
+ */
+export interface ConfigurationField {
+  path: string[];
+  value?: unknown;
+}
+export interface UiTarget {
+  path: string[];
+  id: string;
 }
 export interface CompositionNode {
   key: string;
@@ -4680,10 +4719,6 @@ export interface CompositionNode {
   disabled?: boolean;
   overrides?: Override[];
 }
-export interface PackageRef {
-  id: string;
-  revision: string;
-}
 export interface Configuration {
   values?: {
     [k: string]: unknown | undefined;
@@ -4694,29 +4729,6 @@ export interface Configuration {
   parameters?: {
     [k: string]: string | undefined;
   };
-}
-/**
- * An override belongs to its containing structural instance. Missing paths fail;
- * removal/upgrade never guesses how to discard independent user intent.
- */
-export interface Override {
-  path: string[];
-  package?: PackageRef | null;
-  usePackage?: PackageUse | null;
-  parameters?: {
-    [k: string]: unknown | undefined;
-  };
-  configuration?: {
-    [k: string]: unknown | undefined;
-  };
-  bindings?: {
-    [k: string]: Target[] | undefined;
-  };
-  disabled?: boolean | null;
-}
-export interface UiTarget {
-  path: string[];
-  id: string;
 }
 export interface Deployment {
   reference: DeploymentRef;
@@ -5065,6 +5077,10 @@ export interface UiEntry {
   };
 }
 export interface Template {
+  /**
+   * Default UI selection when this template is used at deployment scope.
+   */
+  ui?: UiTarget | null;
   parameters?: {
     [k: string]: Parameter | undefined;
   };
@@ -5120,7 +5136,8 @@ export interface AgentConfiguration {
    */
   goals?: boolean;
   /**
-   * Enable planning, reviewed approval and execution progress.
+   * Retired with planning mode and ignored. Package updates keep a saved
+   * installation's parameters, so this key must keep validating.
    */
   plans?: boolean;
   /**
@@ -5185,7 +5202,7 @@ export interface McpServerConfiguration {
    */
   tools?: string[] | null;
   /**
-   * Explicitly permit these remote tools in read-only workspaces and plans.
+   * Explicitly permit these remote tools in read-only workspaces.
    * The server's readOnlyHint is descriptive and cannot grant this access.
    */
   readOnlyTools?: string[];
@@ -5264,7 +5281,7 @@ export interface DisplayText {
     [k: string]: string | undefined;
   };
 }
-export interface WorkspaceJevConfiguration {
+export interface WorkspaceDecisionsApiConfiguration {
   network: Network;
 }
 /**
@@ -5275,45 +5292,63 @@ export interface Destination {
   host: string;
   port: number;
 }
-export interface JevSet {
+export interface DecisionsApiSet {
   revision?: number | null;
-  settings: JevSettings;
+  settings: DecisionsSettings;
 }
-export interface JevSettings {
+export interface DecisionsSettings {
+  protocol: DecisionsProtocol;
   enabled: boolean;
   url: string;
   model: string;
   timeoutMs: number;
 }
-export interface JevCredential {
+export interface DecisionsApiCredential {
   url: string;
   revision?: number | null;
-  target: JevCredentialTarget;
-  change: JevCredentialChange;
+  target: DecisionsApiCredentialTarget;
+  change: DecisionsApiCredentialChange;
 }
-export interface JevSnapshot {
+export interface DecisionsSnapshot {
   revision?: number | null;
-  settings: JevSettings;
+  settings: DecisionsSettings;
   credentialRevision?: number | null;
   configured: boolean;
   apiKeyConfigured: boolean;
   headerNames: string[];
   [k: string]: unknown | undefined;
 }
-export interface JevEvaluation {
-  state: unknown;
+export interface DecisionsEvaluation {
+  input: unknown;
   questions: {
-    [k: string]: JevQuestion | undefined;
+    [k: string]: DecisionsQuestion | undefined;
   };
 }
-export interface JevEvaluationResult {
+export interface DecisionsChoice {
+  value: DecisionsChoiceValue;
+  description?: unknown;
+}
+export interface DecisionsLevel {
+  label: string;
+  description?: unknown;
+}
+export interface DecisionsEvaluationResult {
   model: string;
   answers: {
-    [k: string]: JevAnswer | undefined;
+    [k: string]: DecisionsAnswer | undefined;
   };
-  usage: JevUsage;
+  usage: DecisionsUsage;
 }
-export interface JevUsage {
+export interface DecisionsChoiceProbability {
+  value: DecisionsChoiceValue;
+  probability: number;
+}
+export interface DecisionsScoreProbability {
+  value: number;
+  label: string;
+  probability: number;
+}
+export interface DecisionsUsage {
   input_tokens: number;
   output_tokens: number;
 }
@@ -5891,7 +5926,6 @@ export interface AgentSession {
   parentSessionId: string | null;
   branch: AgentSessionBranch | null;
   backend?: AgentBackendPreference | null;
-  collaborationMode?: CollaborationMode & string;
   tools?: string[] | null;
   dataSource: AgentDataSource;
   permissions: AgentWorkspacePermissions;
@@ -6577,6 +6611,8 @@ export interface PricingUpdate {
   mutation: PricingMutation;
 }
 export interface SettingsAssistantPreferences {
+  predictions: MessagePredictionSettings;
+  defaultPredictionPrompt: string;
   language?: LanguagePreference | null;
   resolvedLanguage: Language;
   compactionPrompt: string;
@@ -6586,6 +6622,16 @@ export interface SettingsAssistantPreferences {
   workspaceInstructions: boolean;
   incognitoActive: boolean;
   shellTitles: boolean;
+}
+export interface MessagePredictionSettings {
+  enabled: boolean;
+  ordinarySessionsOnly: boolean;
+  liveSamplePercent: number;
+  catchUpSamplePercent: number;
+  /**
+   * None or blank selects the localized built-in instructions.
+   */
+  prompt?: string | null;
 }
 export interface SettingsNetworkSnapshot {
   revision: number;
@@ -7238,98 +7284,6 @@ export interface AgentProjectRef {
   id: string;
   revision: string;
 }
-export interface AgentPlanRead {
-  sessionId: string;
-}
-export interface AgentPlanView {
-  enabled: boolean;
-  current: AgentPlanSnapshot;
-}
-/**
- * Public business data only; frozen execution authority remains with the owner.
- */
-export interface AgentPlanSnapshot {
-  revision: number;
-  proposal?: PlanProposal | null;
-  execution?: AgentPlanExecution | null;
-}
-export interface PlanProposal {
-  id: string;
-  planId: string;
-  revision: number;
-  turnId: string;
-  artifact: PlanArtifact;
-  status: PlanProposalStatus;
-  supersedes?: string | null;
-  sourceExecutionId?: string | null;
-  submittedAt: number;
-}
-export interface PlanArtifact {
-  title: string;
-  overview?: string | null;
-  /**
-   * @minItems 1
-   */
-  steps: [PlanStep, ...PlanStep[]];
-  risks?: string[];
-}
-export interface PlanStep {
-  id: string;
-  title: string;
-  description: string;
-  files?: string[];
-  complexity?: PlanComplexity | null;
-}
-export interface AgentPlanExecution {
-  id: string;
-  proposalId: string;
-  artifact: PlanArtifact;
-  steps: PlanProgress[];
-  phase: AgentPlanPhase;
-  invocation?: Invocation | null;
-  reason?: string | null;
-  cancellation?: string | null;
-  updatedAt: number;
-}
-export interface PlanProgress {
-  id: string;
-  status: PlanStepStatus;
-  note?: string | null;
-}
-export interface AgentPlanHistoryRead {
-  sessionId: string;
-  throughRevision?: number | null;
-  after?: number;
-}
-export interface AgentPlanHistory {
-  throughRevision: number;
-  snapshots: AgentPlanSnapshot[];
-  nextAfter?: number | null;
-}
-export interface AgentPlanChange {
-  sessionId: string;
-  revision: number;
-  action: AgentPlanAction;
-}
-export interface AgentPlanApproval {
-  target: AgentScheduledTarget;
-  model: ModelSelection;
-  thinkingLevel?: ThinkingLevel | null;
-}
-/**
- * Exact observed source boundary. This data is checked against the original
- * Session; passing it never grants execution by itself.
- */
-export interface AgentScheduledTarget {
-  sessionId: string;
-  workspace: AgentWorkspace;
-  permissions: AgentWorkspacePermissions;
-  boundaryRevision: number;
-  binding: BindingStamp;
-}
-export interface AgentPlanReceiptRead {
-  reference: RecoveryRef;
-}
 export interface AgentGoalRead {
   sessionId: string;
 }
@@ -7366,6 +7320,17 @@ export interface AgentGoalApproval {
   target: AgentScheduledTarget;
   model: ModelSelection;
   thinkingLevel?: ThinkingLevel | null;
+}
+/**
+ * Exact observed source boundary. This data is checked against the original
+ * Session; passing it never grants execution by itself.
+ */
+export interface AgentScheduledTarget {
+  sessionId: string;
+  workspace: AgentWorkspace;
+  permissions: AgentWorkspacePermissions;
+  boundaryRevision: number;
+  binding: BindingStamp;
 }
 export interface AgentGoalBudget {
   tokenBudget?: number | null;
@@ -7883,10 +7848,6 @@ export interface AgentMetadata {
    */
   pinned?: boolean | null;
   /**
-   * Changing collaboration is only allowed while the Session is idle.
-   */
-  collaborationMode?: CollaborationMode | null;
-  /**
    * Omission leaves the permission boundary and its approvals unchanged.
    */
   permissions?: AgentPermissionChange | null;
@@ -7912,11 +7873,16 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  delivery?: AgentSendDelivery;
+  /**
+   * An active send must not start new work after Stop fences its original Run.
+   */
+  expectedInvocationId?: string | null;
   /**
    * IDs of immutable user uploads in this Session; metadata is resolved by the owner.
    */
   attachments?: string[];
-  model: ModelSelection;
+  model?: ModelSelection | null;
   /**
    * Omission/null uses the configured model default; `off` is explicit.
    */
@@ -8368,6 +8334,10 @@ export interface AgentDelivery {
 }
 export interface AgentObservation {
   session: AgentSession;
+  /**
+   * Latest successful source turn at this observation's fence, or none while busy.
+   */
+  lastCompletedTurnId: string | null;
   compacting: AgentCompactionProgress | null;
   rememberedBackend?: AgentBackendPreference | null;
   metrics?: AgentSessionMetrics | null;

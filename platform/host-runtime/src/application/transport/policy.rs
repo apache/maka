@@ -336,6 +336,9 @@ impl Policy for PeerPolicy {
             e.approval.live()?;
         }
         if let Some(origin) = invocation.native_origin {
+            if invocation.selected_native_method.is_some() {
+                return Ok(());
+            }
             return self
                 .native
                 .read()
@@ -381,6 +384,9 @@ impl Policy for PeerPolicy {
             e.approval.live()?;
         }
         if let Some(origin) = invocation.native_origin {
+            if invocation.selected_native_method.is_some() {
+                return Ok(());
+            }
             return self
                 .native
                 .read()

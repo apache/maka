@@ -356,6 +356,8 @@ mod tests {
             connection_id: Some("connection".into()),
             checkpoint_event_id: None,
             context: Some(ModelRequestContext {
+                operation: maka_agent_facts::context::ModelOperation::Inference,
+                codex: None,
                 provider_id: "openai".into(),
                 context_window: Some(96000),
                 model_context_window: Some(128000),

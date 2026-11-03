@@ -93,6 +93,17 @@ impl HistoryCheckpointPublisher {
         })
     }
 
+    pub(crate) fn validate_request(
+        &self,
+        capture: &Capture,
+        operation: &RecoveryRef,
+    ) -> Result<(), StoreError> {
+        if !crate::owner::owns_session(&self.prefix, &capture.session_id) {
+            return Err(StoreError::SessionNotFound);
+        }
+        self.request(capture, operation).map(|_| ())
+    }
+
     pub async fn publish(
         &self,
         capture: Capture,

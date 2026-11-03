@@ -177,10 +177,12 @@ fn retained(event: &RuntimeEvent) -> Value {
             event: ModelObservation::Finished { usage, .. },
         } => json!({"step_id":step_id,"event":{"kind":"finished","data":{"usage":usage}}}),
         Fact::ToolDispatched { call, name, .. } => json!({"call":call,"name":name}),
+        Fact::ToolYielded { .. } => json!({}),
         Fact::ToolRejected {
             call, name, reason, ..
         } => {
             let kind = match reason {
+                ToolRejection::Superseded => RejectionKind::Superseded,
                 ToolRejection::Unavailable => RejectionKind::Unavailable,
                 ToolRejection::InvalidInput { .. } => RejectionKind::InvalidInput,
                 ToolRejection::PolicyDenied { .. } => RejectionKind::PolicyDenied,

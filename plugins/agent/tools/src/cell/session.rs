@@ -29,7 +29,7 @@ use maka_agent_facts::tools::ToolError;
 use maka_code_runtime::{
     CellAbort, CellContext, CellOutput, CellStore, NotificationGate, ToolMetadata,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
@@ -58,10 +58,10 @@ struct Cell {
     context: CellContext,
     cancellation: CancellationToken,
     observer: tokio::sync::Mutex<()>,
-    done: watch::Receiver<Option<Result<Value, ToolError>>>,
+    done: watch::Receiver<Option<Result<Observation, ToolError>>>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 enum Observation {
     Running {
@@ -131,6 +131,10 @@ impl Cells {
         }
     }
 
+    pub async fn has_unread_notifications(&self, observed: u64) -> bool {
+        *self.0.notification_high_water.lock().await > observed
+    }
+
     pub fn check(&self) -> Result<(), ToolError> {
         let failure = self.0.fatal.lock().unwrap().clone().or_else(|| {
             self.0
@@ -150,7 +154,16 @@ impl Cells {
     }
 
     pub fn is_idle(&self) -> bool {
-        self.0.tasks.is_empty()
+        self.0
+            .cells
+            .lock()
+            .unwrap()
+            .values()
+            .all(|cell| cell.done.borrow().is_some())
+    }
+
+    pub async fn changed(&self) {
+        self.0.notification_changed.notified().await;
     }
 
     pub async fn start(
@@ -158,6 +171,7 @@ impl Cells {
         tool: CellTool,
         language: Language,
         cancellation: CancellationToken,
+        steering: CancellationToken,
     ) -> Result<ToolSuccess, ToolError> {
         self.check()?;
         if self.0.cancellation.is_cancelled() || cancellation.is_cancelled() {
@@ -228,6 +242,7 @@ impl Cells {
             let result = std::panic::AssertUnwindSafe(async move {
                 let notifications = journal.clone();
                 let notification_id = root_id.clone();
+                let completion_id = root_id.clone();
                 let operation = journal.invoke_call_with(
                     root_id,
                     identity,
@@ -256,13 +271,13 @@ impl Cells {
                                 }
                             };
                             publish_notifications(&notification_state, &notifications, &notification_id, &effect_context, max_output_tokens).await?;
-                            result
-                                .map_err(abort)
-                                .and_then(|result| {
-                                    serde_json::to_value(result).map_err(|error| {
-                                        ToolError::CleanupUnconfirmed(error.to_string())
-                                    })
-                                })
+                            let result = serde_json::to_value(result.map_err(abort)?)
+                                .map_err(|error| ToolError::CleanupUnconfirmed(error.to_string()))?;
+                            Ok(project(Observation::Completed {
+                                cell_id: completion_id,
+                                content: effect_context.take_output(),
+                                result,
+                            }, max_output_tokens))
                         })
                     },
                 );
@@ -281,6 +296,13 @@ impl Cells {
                 Err(ToolError::CleanupUnconfirmed(
                     "code cell worker panicked".into(),
                 ))
+            });
+            let result = result.and_then(|value| {
+                match serde_json::from_value::<Observation>(value) {
+                    Ok(completion @ Observation::Completed { .. }) => Ok(completion),
+                    Ok(_) => Err(ToolError::CleanupUnconfirmed("cell completion has no result".into())),
+                    Err(error) => Err(ToolError::CleanupUnconfirmed(error.to_string())),
+                }
             });
             let result = match result {
                 Ok(result) => {
@@ -319,6 +341,7 @@ impl Cells {
             },
             language,
             cancellation,
+            steering,
         )
         .await
     }
@@ -328,6 +351,7 @@ impl Cells {
         request: WaitInput,
         language: Language,
         cancellation: CancellationToken,
+        steering: CancellationToken,
     ) -> Result<ToolSuccess, ToolError> {
         self.check()?;
         let cell = self.0.cells.lock().unwrap().get(&request.cell_id).cloned()
@@ -345,12 +369,21 @@ impl Cells {
         }
         let mut done = cell.done.clone();
         if done.borrow().is_none() {
+            let deadline = tokio::time::Instant::now()
+                .checked_add(Duration::from_millis(request.yield_time_ms));
+            let elapsed = async {
+                match deadline {
+                    Some(deadline) => tokio::time::sleep_until(deadline).await,
+                    None => std::future::pending::<()>().await,
+                }
+            };
             tokio::select! {
                 biased;
                 _ = cancellation.cancelled() => return Err(ToolError::Failed("cell observation cancelled".into())),
+                _ = steering.cancelled(), if !request.terminate => {},
                 _ = done.changed() => {},
                 _ = cell.context.yielded(), if !request.terminate => {},
-                _ = tokio::time::sleep(Duration::from_millis(request.yield_time_ms)) => {},
+                _ = elapsed => {},
             }
         }
         let result = done.borrow().clone();
@@ -368,26 +401,21 @@ impl Cells {
         // Fatal failures always escape before consuming output or permitting a
         // new model step, even if user code caught its own nested exception.
         self.check()?;
-        let content = cell.context.take_output();
         let observation = match result {
             None => Observation::Running {
                 cell_id: request.cell_id.clone(),
-                content,
+                content: cell.context.take_output(),
             },
-            Some(Ok(result)) => Observation::Completed {
-                cell_id: request.cell_id.clone(),
-                content,
-                result,
-            },
+            Some(Ok(completion)) => completion,
             Some(Err(ToolError::Failed(_))) if cell.cancellation.is_cancelled() => {
                 Observation::Terminated {
                     cell_id: request.cell_id.clone(),
-                    content,
+                    content: cell.context.take_output(),
                 }
             }
             Some(Err(error)) => Observation::Completed {
                 cell_id: request.cell_id.clone(),
-                content,
+                content: cell.context.take_output(),
                 result: json!({"ok":false,"error":error.to_string()}),
             },
         };

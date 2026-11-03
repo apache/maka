@@ -35,6 +35,8 @@ pub struct Read {}
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsAssistantPreferences")]
 pub struct Preferences {
+    pub predictions: maka_agent_facts::configuration::policy::MessagePredictionSettings,
+    pub default_prediction_prompt: String,
     pub language: Option<LanguagePreference>,
     pub resolved_language: Language,
     pub compaction_prompt: String,
@@ -62,12 +64,27 @@ pub struct Update {
 )]
 #[schemars(rename = "SettingsPreferencesMutation")]
 pub enum Mutation {
-    Language { preference: LanguagePreference },
-    CompactionPrompt { prompt: Option<String> },
-    Personalization { display_name: String },
-    WorkspaceInstructions { enabled: bool },
-    Privacy { incognito_active: bool },
-    ShellTitles { enabled: bool },
+    MessagePredictions {
+        settings: maka_agent_facts::configuration::policy::MessagePredictionSettings,
+    },
+    Language {
+        preference: LanguagePreference,
+    },
+    CompactionPrompt {
+        prompt: Option<String>,
+    },
+    Personalization {
+        display_name: String,
+    },
+    WorkspaceInstructions {
+        enabled: bool,
+    },
+    Privacy {
+        incognito_active: bool,
+    },
+    ShellTitles {
+        enabled: bool,
+    },
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(
@@ -105,6 +122,9 @@ pub(crate) async fn read(
         .unwrap_or(configured_locale)
         .resolve(native_language);
     super::connections::encode(Preferences {
+        default_prediction_prompt:
+            maka_agent_facts::configuration::policy::default_prediction_prompt(language).into(),
+        predictions: snapshot.policy.predictions,
         language: snapshot.policy.language,
         resolved_language: language,
         compaction_prompt: snapshot.policy.compaction_prompt.unwrap_or_else(|| {
@@ -127,6 +147,11 @@ pub(crate) async fn update(
         return super::connections::encode(Updated::Rejected);
     };
     let result = match input.mutation {
+        Mutation::MessagePredictions { settings } => {
+            store
+                .set_message_predictions(input.expected_revision, settings)
+                .await
+        }
         Mutation::Language { preference } => {
             store
                 .set_language(input.expected_revision, preference)

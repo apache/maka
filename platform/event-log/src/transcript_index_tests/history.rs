@@ -48,6 +48,7 @@ async fn history_pages_preserve_utf8_nul_suffixes_archive_and_frozen_fences() {
         Fact::ModelCompleted {
             step_id: "step-history".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: completion_parts("step-history".into(), vec![ModelPart::ToolCall { call }]),
                 finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
@@ -305,6 +306,7 @@ async fn tool_metadata_preserves_empty_calls_and_non_text_results_through_frozen
             Fact::ModelCompleted {
                 step_id: step.clone(),
                 output: ModelCompletion {
+                    compaction: None,
                     parts: completion_parts(step.clone(), vec![ModelPart::ToolCall { call }]),
                     finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
                     usage: ModelUsage::default(),
@@ -849,6 +851,7 @@ async fn response_models_follow_their_original_step_at_frozen_fences() {
             Fact::ModelCompleted {
                 step_id: format!("step-{id}"),
                 output: ModelCompletion {
+                    compaction: None,
                     parts: completion_parts(
                         format!("step-{id}"),
                         vec![ModelPart::Text {

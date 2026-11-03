@@ -68,6 +68,7 @@ async fn retirement_fences_new_effects_without_rejecting_accepted_results_or_exa
         .unwrap();
     assert_eq!(log.append(&accepted).await.unwrap(), sequence);
     let output = ModelCompletion {
+        compaction: None,
         parts: vec![model_part(
             "run",
             "step",

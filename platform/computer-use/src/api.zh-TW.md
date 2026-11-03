@@ -154,7 +154,7 @@ macOS 捲動使用正的有限數字頁數，預設一頁，並拒絕 `{pixels}`
 
 Host 啟用輸出音訊後，`await cua.computer.start_audio_recording({max_duration_ms?})` 開始錄音並傳回 undefined，其他呼叫可繼續執行。時長預設 60000 ms，接受 100 到 300000 的整數。`await cua.computer.stop_audio_recording()` 傳回已完成的雙聲道 24 kHz PCM16 WAV 的 `{filepath, bytes, data_url}`。達到時長後停止擷取，再呼叫 stop 取回錄音。`await nodeRepl.emitAudio(bytes | dataUrl | {bytes, mimeType})` 明確輸出音訊。未啟用音訊時，這些方法不存在。重設和 Session 清理會丟棄錄音及其本機路徑。
 
-每次操作都使用目前 Host 權限；JS 物件不保留授權。Ask 模式下，Computer Use 核准在 REPL 執行逾時計時開始前完成。macOS 原生操作在螢幕鎖定時回報 `desktop_locked`；已連線 CDP 提供者和純 REPL 計算仍可獨立使用。
+每次操作都使用目前 Host 權限；JS 物件不保留授權。關閉 Session 沙箱時，電腦、應用程式、瀏覽器網站與歷史、檔案傳輸和音訊不需要額外的 Maka 核准；權限變更和停止目前操作仍然生效。Ask 模式下，Computer Use 核准在 REPL 執行逾時計時開始前完成。macOS 原生操作在螢幕鎖定時回報 `desktop_locked`；已連線 CDP 提供者和純 REPL 計算仍可獨立使用。
 
 應用程式、瀏覽器網站和音訊授權等待會暫停剩餘執行預算。macOS/Windows 原生等待也會暫停預算；一般非同步等待和 Linux 原生操作繼續計時。暫停不會重設預算，也不會停用取消。
 每個 Session 有獨立的 Maka 游標。輸入操作自動顯示游標。`cua.cursor.configure({label?, color?, enabled?, reducedMotion?})` 修改此 Session 的顯示。顏色為 `blue`、`mint`、`violet`、`amber`、`rose`、`cyan`；標籤最多 48 個字元。`cua.cursor.getState()` 回報設定及原生/瀏覽器可見性。處於 `idle` 的原生繪製器在首次原生指示時啟動；`unavailable` 表示顯示主機缺少或失敗。重新設定可重試失敗的繪製器。閒置游標保留至停用或清理。游標不共享輸入權限，也不移動系統指標。多個游標不能隔離實體鍵盤、應用程式焦點或輸入法。
@@ -166,7 +166,7 @@ REPL 被取消、逾時或耗盡堆積記憶體後，需要 `cua_reset` 並重�
 
 `await browser.nameSession(name)` 移除兩端空白並保存受管分頁群組名稱；`cua.createBrowserTab(id, url, {sessionName})` 先解析瀏覽器、等待命名成功，再建立分頁。目前公開 profile 不提供 visibility 能力。
 
-`await browser.history({queries, limit, from, to})` 透過實際宣告歷史傳輸能力的擴充功能讀取目前瀏覽器 profile 的歷史。它要求目前權限邊界下針對實際瀏覽器 ID 和 generation 的獨立 `browser_history` 核准；網頁或下載核准不能授權歷史讀取，來源原則亦不會自動核准。預設查詢全部歷史並限制為 100 筆；多查詢結果依造訪時間倒序合併、依 URL 去重後再套用總筆數限制。Maka 擴充功能宣告 Chrome history 權限，舊擴充功能未具備權限時不宣告支援。ChatGPT 與其他第三方介接器仍為盡力支援。
+`await browser.history({queries, limit, from, to})` 透過實際宣告歷史傳輸能力的擴充功能讀取目前瀏覽器 profile 的歷史。啟用沙箱時，它要求目前權限邊界下針對實際瀏覽器 ID 和 generation 的獨立 `browser_history` 核准；網頁或下載核准不能授權歷史讀取，來源原則亦不會自動核准。預設查詢全部歷史並限制為 100 筆；多查詢結果依造訪時間倒序合併、依 URL 去重後再套用總筆數限制。Maka 擴充功能宣告 Chrome history 權限，舊擴充功能未具備權限時不宣告支援。ChatGPT 與其他第三方介接器仍為盡力支援。
 
 - `await browser.user.getTabContext(tabOrId)` 讀取目前可見使用者分頁的內容，不認領或啟用分頁。Host 對目前實際 URL 授權，呼叫者不能指定替代 URL。隱私分頁和單次讀取前後發生 URL 變更的頁面會被拒絕。結果為 `{kind:'text',text,title,url,truncated}`，或 `{kind:'document',data,fileName,mimeType,title,url}`；`data` 為實際匯出檔案的 `Uint8Array`。Host 提供檔案發布服務時，文件還包含本 Session 持有的真實 `path`。Google Workspace 可提供 Markdown、PDF 或 XLSX，一般頁面可包含目前選取內容，YouTube 影片頁可包含字幕。`maka` 實作固定讀取，`chatgpt` 在支援時重用原版讀取協定；第三方擴充功能依實際能力盡力支援。
 

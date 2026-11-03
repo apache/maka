@@ -45,7 +45,6 @@ pub(crate) struct Servers {
     connections: Vec<Connection>,
     pub names: BTreeMap<String, Vec<String>>,
     pub registrations: Vec<ToolRegistration>,
-    pub planning: Vec<String>,
     pub bindings: BTreeMap<String, Option<String>>,
 }
 impl Servers {
@@ -123,9 +122,6 @@ impl Servers {
                 let mut definition = tool.definition.clone();
                 let (input_projection, input_schema) = Projection::project(definition.input_schema);
                 definition.input_schema = input_schema;
-                if tool.read_only {
-                    servers.planning.push(name.clone());
-                }
                 servers
                     .bindings
                     .insert(name.clone(), Some(generation.clone()));

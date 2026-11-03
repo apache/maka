@@ -42,20 +42,8 @@ pub(crate) async fn validate_append(
             "steering requires an inline model invocation".into(),
         ));
     }
-    let pending: bool = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-        "{} SELECT EXISTS(SELECT 1 FROM unresolved u WHERE kind != 0
-          OR NOT EXISTS(SELECT 1 FROM context_execution_steps s WHERE s.invocation_id=?1
-            AND s.operation_id=u.id AND s.purpose='summary' AND s.tool_observed_at IS NULL))",
-        crate::recovery::unresolved!(""),
-    )))
-    .bind(&event.invocation.invocation_id)
-    .fetch_one(&mut *tx)
-    .await?;
-    if pending {
-        return Err(StoreError::InvalidTransition(
-            "steering requires settled model and tool boundaries".into(),
-        ));
-    }
+    crate::context::safety::model_boundary(tx, &event.invocation.invocation_id, i64::MAX as u64)
+        .await?;
     // The unique canonical index rejects a different event claiming this same
     // Session/message identity. Exact event replay was already handled by append.
     Ok(())

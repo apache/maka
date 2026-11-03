@@ -7378,6 +7378,7 @@ dependencies = [
  "base64 0.23.1",
  "cap-fs-ext",
  "cap-std",
+ "fastrand",
  "futures-util",
  "hex",
  "image",
@@ -7393,6 +7394,7 @@ dependencies = [
  "maka-capabilities",
  "maka-code-runtime",
  "maka-config",
+ "maka-decisions-api-native",
  "maka-event-log",
  "maka-external-agent",
  "maka-files-native",
@@ -7403,7 +7405,6 @@ dependencies = [
  "maka-host-runtime",
  "maka-interactions-api",
  "maka-interactions-native",
- "maka-jev-native",
  "maka-js-runtime",
  "maka-mcp",
  "maka-model",
@@ -7490,22 +7491,14 @@ name = "maka-assistant"
 version = "0.2.0"
 dependencies = [
  "futures-util",
- "hex",
  "maka-agent-facts",
  "maka-agent-ports",
  "maka-capabilities",
- "maka-event-log",
- "maka-plugin-core",
  "schemars 1.2.3",
  "serde",
  "serde_json",
- "sha2 0.11.1",
- "tempfile",
- "thiserror 2.0.21",
  "tokio",
- "tokio-util",
  "unicode-normalization",
- "uuid",
 ]
 
 [[package]]
@@ -7701,6 +7694,7 @@ dependencies = [
  "regex",
  "reqwest",
  "schemars 1.2.3",
+ "screencapturekit 8.0.1",
  "serde",
  "serde_json",
  "sha2 0.11.1",
@@ -7740,6 +7734,50 @@ dependencies = [
  "tokio",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "maka-decisions-api"
+version = "0.2.0"
+dependencies = [
+ "futures-util",
+ "hex",
+ "jsonschema 0.60.1",
+ "maka-agent-facts",
+ "maka-agent-ports",
+ "maka-capabilities",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-util",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "maka-decisions-api-native"
+version = "0.2.0"
+dependencies = [
+ "futures-util",
+ "maka-agent-facts",
+ "maka-agent-ports",
+ "maka-capabilities",
+ "maka-config",
+ "maka-decisions-api",
+ "maka-event-log",
+ "maka-host-runtime",
+ "maka-network",
+ "maka-plugin-core",
+ "maka-sandbox",
+ "maka-workspace-api",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "url",
 ]
 
 [[package]]
@@ -7979,6 +8017,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "maka-host-shell"
+version = "0.2.0"
+dependencies = [
+ "libc",
+]
+
+[[package]]
 name = "maka-insights"
 version = "0.2.0"
 dependencies = [
@@ -8013,50 +8058,6 @@ dependencies = [
  "maka-plugin-core",
  "serde_json",
  "sha2 0.11.1",
-]
-
-[[package]]
-name = "maka-jev"
-version = "0.2.0"
-dependencies = [
- "futures-util",
- "hex",
- "jsonschema 0.60.1",
- "maka-agent-facts",
- "maka-agent-ports",
- "maka-capabilities",
- "schemars 1.2.3",
- "serde",
- "serde_json",
- "sha2 0.11.1",
- "thiserror 2.0.21",
- "tokio",
- "tokio-util",
- "url",
- "uuid",
-]
-
-[[package]]
-name = "maka-jev-native"
-version = "0.2.0"
-dependencies = [
- "futures-util",
- "maka-agent-facts",
- "maka-agent-ports",
- "maka-capabilities",
- "maka-config",
- "maka-event-log",
- "maka-host-runtime",
- "maka-jev",
- "maka-network",
- "maka-plugin-core",
- "maka-sandbox",
- "maka-workspace-api",
- "serde",
- "serde_json",
- "tokio",
- "tokio-util",
- "url",
 ]
 
 [[package]]
@@ -8264,11 +8265,11 @@ dependencies = [
  "maka-capabilities",
  "maka-computer-native",
  "maka-config",
+ "maka-decisions-api-native",
  "maka-event-log",
  "maka-files-native",
  "maka-host-runtime",
  "maka-interactions-native",
- "maka-jev-native",
  "maka-model",
  "maka-network",
  "maka-processes-native",
@@ -8777,9 +8778,9 @@ dependencies = [
  "maka-agent-api",
  "maka-agent-facts",
  "maka-capabilities",
+ "maka-decisions-api",
  "maka-fs-tools",
  "maka-host-runtime",
- "maka-jev",
  "maka-plugin-core",
  "maka-presentation",
  "maka-sandbox",

@@ -71,9 +71,10 @@ export const configurations = {
         default: false,
       },
       plans: {
-        description: 'Enable planning, reviewed approval and execution progress.',
+        description:
+          "Retired with planning mode and ignored. Package updates keep a saved\ninstallation's parameters, so this key must keep validating.",
         type: 'boolean',
-        default: false,
+        writeOnly: true,
       },
       todo: {
         description: 'Enable the session-scoped, model-maintained checklist.',
@@ -169,7 +170,7 @@ export const configurations = {
           },
           readOnlyTools: {
             description:
-              "Explicitly permit these remote tools in read-only workspaces and plans.\nThe server's readOnlyHint is descriptive and cannot grant this access.",
+              "Explicitly permit these remote tools in read-only workspaces.\nThe server's readOnlyHint is descriptive and cannot grant this access.",
             type: 'array',
             items: {
               type: 'string',
@@ -351,7 +352,7 @@ export const configurations = {
       },
       AgentWorkspaceAccess: {
         description:
-          'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+          'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
         type: 'string',
         enum: ['read_only', 'workspace_write', 'danger_full_access'],
       },
@@ -740,8 +741,9 @@ export const configurations = {
           },
           plans: {
             type: 'boolean',
-            description: 'Enable planning, reviewed approval and execution progress.',
-            default: false,
+            description:
+              "Retired with planning mode and ignored. Package updates keep a saved\ninstallation's parameters, so this key must keep validating.",
+            writeOnly: true,
           },
           todo: {
             type: 'boolean',
@@ -840,7 +842,7 @@ export const configurations = {
               type: 'string',
             },
             description:
-              "Explicitly permit these remote tools in read-only workspaces and plans.\nThe server's readOnlyHint is descriptive and cannot grant this access.",
+              "Explicitly permit these remote tools in read-only workspaces.\nThe server's readOnlyHint is descriptive and cannot grant this access.",
             default: [],
           },
           preapproved: {
@@ -1021,7 +1023,7 @@ export const configurations = {
         type: 'string',
         enum: ['read_only', 'workspace_write', 'danger_full_access'],
         description:
-          'Session sandbox policy. Full access explicitly disables filesystem and process isolation.',
+          'Session sandbox policy. Full access disables isolation and permits Computer Use\nwithout additional application, browser or audio consent.',
       },
       DirectoryRootSpec: {
         type: 'object',
@@ -1757,7 +1759,7 @@ export const configurations = {
       },
     },
   },
-  workspaceJev: {
+  workspaceDecisionsApi: {
     type: 'object',
     additionalProperties: false,
     properties: {
@@ -1766,7 +1768,7 @@ export const configurations = {
       },
     },
     required: ['network'],
-    title: 'WorkspaceJevConfiguration',
+    title: 'WorkspaceDecisionsApiConfiguration',
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     $defs: {
       Network: {

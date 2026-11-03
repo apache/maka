@@ -36,18 +36,19 @@ mod context;
 pub use context::*;
 mod files;
 pub use files::*;
+mod checkpoints;
+pub use checkpoints::*;
 mod fork;
 pub use fork::*;
 mod git;
 pub use git::*;
 mod goal;
 mod imports;
-mod plan;
 pub use goal::*;
-pub use maka_agent_facts::execution::CollaborationMode;
-pub use plan::*;
 mod todo;
 pub use todo::*;
+mod predictions;
+pub use predictions::*;
 mod recap;
 pub use recap::*;
 mod scheduler;
@@ -97,8 +98,9 @@ pub struct Configuration {
     /// Enable explicitly approved Goal continuation.
     #[serde(default)]
     pub goals: bool,
-    /// Enable planning, reviewed approval and execution progress.
-    #[serde(default)]
+    /// Retired with planning mode and ignored. Package updates keep a saved
+    /// installation's parameters, so this key must keep validating.
+    #[serde(default, skip_serializing)]
     pub plans: bool,
     /// Enable the session-scoped, model-maintained checklist.
     #[serde(default)]
@@ -408,9 +410,6 @@ pub struct Metadata {
     /// Omission preserves the conversation's position in the catalog.
     #[serde(default)]
     pub pinned: Option<bool>,
-    /// Changing collaboration is only allowed while the Session is idle.
-    #[serde(default)]
-    pub collaboration_mode: Option<CollaborationMode>,
     /// Omission leaves the permission boundary and its approvals unchanged.
     #[serde(default)]
     pub permissions: Option<PermissionChange>,
@@ -597,14 +596,27 @@ pub enum MetadataResult {
     RevisionConflict { expected: u64, actual: u64 },
     Rejected { reason: Rejection },
 }
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentSendDelivery")]
+pub enum SendDelivery {
+    #[default]
+    Steer,
+    Queue,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    #[serde(default)]
+    pub delivery: SendDelivery,
+    /// An active send must not start new work after Stop fences its original Run.
+    pub expected_invocation_id: Option<String>,
     /// IDs of immutable user uploads in this Session; metadata is resolved by the owner.
     #[serde(default)]
     pub attachments: Vec<String>,
-    pub model: ModelSelection,
+    pub model: Option<ModelSelection>,
     /// Omission/null uses the configured model default; `off` is explicit.
     pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     #[schemars(length(min = 1))]
@@ -728,8 +740,6 @@ pub struct Session {
     pub branch: Option<SessionBranch>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<BackendPreference>,
-    #[serde(default)]
-    pub collaboration_mode: CollaborationMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<Vec<String>>,
     pub data_source: Box<DataSource>,
@@ -782,7 +792,7 @@ pub struct SessionPage {
 pub enum SendResult {
     Rejected {
         session_id: String,
-        reason: SkillInputRejection,
+        reason: SendRejection,
         skills: Option<maka_skills::SkillInvocationResult>,
     },
     Started {
@@ -801,9 +811,10 @@ pub enum SendResult {
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[schemars(rename = "AgentSkillInputRejection")]
-pub enum SkillInputRejection {
+#[schemars(rename = "AgentSendRejection")]
+pub enum SendRejection {
     SkillsUnavailable,
+    TurnStopped,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -964,6 +975,9 @@ pub struct DiagnosticChange {
 #[schemars(rename = "AgentObservation")]
 pub struct Observation {
     pub session: Session,
+    /// Latest successful source turn at this observation's fence, or none while busy.
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+    pub last_completed_turn_id: Option<String>,
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<CompactionProgress>")]
     pub compacting: Option<CompactionProgress>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1158,6 +1172,15 @@ pub struct QueueMessage {
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub expected_revision: u64,
 }
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentQueueMessageMissingReason")]
+pub enum QueueMessageMissingReason {
+    Delivered,
+    Cancelled,
+    Unknown,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(
     tag = "kind",
@@ -1177,7 +1200,9 @@ pub enum QueueMessageResult {
         expected: u64,
         actual: u64,
     },
-    Missing,
+    Missing {
+        reason: QueueMessageMissingReason,
+    },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1623,26 +1648,6 @@ pub fn contract() -> Contract {
                     },
                 ),
                 (
-                    "plan".into(),
-                    method::<PlanRead, PlanView>(MethodMode::Query),
-                ),
-                (
-                    "watchPlan".into(),
-                    method::<PlanRead, PlanView>(MethodMode::Subscription),
-                ),
-                (
-                    "planHistory".into(),
-                    method::<PlanHistoryRead, PlanHistory>(MethodMode::Query),
-                ),
-                (
-                    "planReceipt".into(),
-                    method::<PlanReceiptRead, Option<PlanResult>>(MethodMode::Query),
-                ),
-                (
-                    "changePlan".into(),
-                    method::<PlanChange, PlanResult>(MethodMode::Mutation),
-                ),
-                (
                     "goal".into(),
                     method::<GoalRead, GoalView>(MethodMode::Query),
                 ),
@@ -1661,6 +1666,10 @@ pub fn contract() -> Contract {
                 (
                     "checklist".into(),
                     method::<ChecklistRead, Checklist>(MethodMode::Query),
+                ),
+                (
+                    "predictNextMessage".into(),
+                    method::<PredictNextMessage, MessagePrediction>(MethodMode::Mutation),
                 ),
                 (
                     "recap".into(),
@@ -1787,6 +1796,26 @@ pub fn contract() -> Contract {
                 (
                     "create".into(),
                     method::<Create, Created>(MethodMode::Mutation),
+                ),
+                (
+                    "previewHistoryCheckpoint".into(),
+                    method::<SessionRead, HistoryCheckpointInventory>(MethodMode::Query),
+                ),
+                (
+                    "publishHistoryCheckpoint".into(),
+                    method::<HistoryCheckpointPublish, HistoryCheckpointPublication>(MethodMode::Mutation),
+                ),
+                (
+                    "historyCheckpointReceipt".into(),
+                    method::<HistoryCheckpointReceiptRead, HistoryCheckpointReceipt>(MethodMode::Query),
+                ),
+                (
+                    "historyCheckpointHead".into(),
+                    method::<SessionRead, Option<HistoryCheckpointHead>>(MethodMode::Query),
+                ),
+                (
+                    "readHistoryCheckpoint".into(),
+                    method::<HistoryCheckpointRead, Option<HistoryCheckpointFrame>>(MethodMode::Subscription),
                 ),
                 (
                     "fork".into(),
@@ -1951,6 +1980,21 @@ pub fn contract() -> Contract {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_saved_installation_with_the_retired_plans_setting_still_validates() {
+        for plans in [true, false] {
+            let saved = json!({
+                "plans": plans,
+                "permissions": {"access": "workspace_write", "requestPermissions": true},
+                "workspaceRoots": [],
+                "tools": [],
+            });
+            assert!(jsonschema::is_valid(&configuration_schema(), &saved));
+            let configuration: Configuration = serde_json::from_value(saved).unwrap();
+            assert!(serde_json::to_value(configuration).unwrap()["plans"].is_null());
+        }
+    }
 
     #[test]
     fn history_window_contract_distinguishes_end_from_missing_boundaries() {

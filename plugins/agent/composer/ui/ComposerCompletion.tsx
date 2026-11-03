@@ -668,16 +668,14 @@ export function createComposerCompletion(options: Options) {
             within: target,
           },
         ),
-        ...['enter', 'tab'].map((key) =>
-          keymap.bind(
-            key,
-            () => {
-              if (!valid()) return;
-              const item = rows()[index()];
-              if (item) accept(item.action);
-            },
-            { when: 'always', within: target },
-          ),
+        keymap.bind(
+          'enter',
+          () => {
+            if (!valid()) return;
+            const item = rows()[index()];
+            if (item) accept(item.action);
+          },
+          { when: 'always', within: target },
         ),
       );
     }
@@ -781,8 +779,11 @@ export function createComposerCompletion(options: Options) {
     },
     send(action: SendAction) {
       const owner = options.session();
-      if (!owner || !options.active() || owner.sessionId !== action.owner) return;
-      if (!submitCommand(owner, action.text)) owner.sendRendered(action);
+      if (!owner || !options.active() || owner.sessionId !== action.owner || composing()) return;
+      if (!submitCommand(owner, action.text)) {
+        owner.sendRendered(action);
+        editor()?.node.focus();
+      }
     },
     list(node: ListRef) {
       list = node;

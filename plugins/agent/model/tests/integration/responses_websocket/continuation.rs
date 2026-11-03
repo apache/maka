@@ -51,8 +51,8 @@ async fn custom_result_and_notifications_all_survive_confirmed_websocket_delta()
             assert_eq!(delta["previous_response_id"], "resp_1");
             assert_eq!(delta["input"], json!([
                 {"type":"custom_tool_call_output","call_id":"call_1","output":"running"},
-                {"type":"custom_tool_call_output","call_id":"call_1","output":"notice one"},
-                {"type":"custom_tool_call_output","call_id":"call_1","output":"notice two"},
+                {"role":"user","content":[{"type":"input_text","text":"[Notification from tool call_1]"},{"type":"input_text","text":"notice one"}]},
+                {"role":"user","content":[{"type":"input_text","text":"[Notification from tool call_1]"},{"type":"input_text","text":"notice two"}]},
             ]));
             finish(&mut socket, "resp_2").await;
         });

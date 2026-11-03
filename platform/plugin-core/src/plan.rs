@@ -191,6 +191,18 @@ impl Plan {
         remote: &RemoteExports,
         replace: impl Fn(&PackageRef) -> Option<PackageRef>,
     ) -> Result<(Self, Vec<PackageChange>), Error> {
+        let mut selected = input.clone();
+        let mut base_change = None;
+        if let Some(base) = &mut selected.base
+            && let Some(next) = replace(&base.package).filter(|next| next != &base.package)
+        {
+            base.package = next.clone();
+            base_change = Some(PackageChange {
+                path: Vec::new(),
+                package: next,
+            });
+        }
+        let input = selected.materialize(packages)?;
         composition::validate_nodes(&input.instances)?;
         if let Some(ui) = &input.ui {
             ui.validate()?;
@@ -200,7 +212,7 @@ impl Plan {
             nodes: BTreeMap::new(),
             aliases: BTreeMap::new(),
             replace: &replace,
-            package_changes: Vec::new(),
+            package_changes: base_change.into_iter().collect(),
         };
         builder.expand(&input.instances, &[], None, &BTreeMap::new(), &[], false)?;
         let remote = remote
@@ -392,7 +404,9 @@ impl<'a> Builder<'a> {
             ancestor_disabled: bool,
         ) -> Result<(), Error> {
             composition::validate_nodes(nodes)?;
+            composition::validate_overrides(overrides)?;
             for patch in overrides {
+                patch.validate()?;
                 if !nodes.contains_key(&patch.path[0]) {
                     return Err(Error::Composition(format!(
                         "override target disappeared: {:?}",
@@ -403,6 +417,12 @@ impl<'a> Builder<'a> {
             let parameters = Arc::new(parameters.clone());
             let overrides: Arc<[Override]> = overrides.into();
             for (alias, node) in nodes.iter().rev() {
+                if overrides
+                    .iter()
+                    .any(|patch| patch.path == [alias.clone()] && patch.remove)
+                {
+                    continue;
+                }
                 tasks.push(Task::Enter {
                     alias: alias.clone(),
                     node: Box::new(node.clone()),
@@ -441,60 +461,8 @@ impl<'a> Builder<'a> {
                 continue;
             };
             let mut node = *node;
-            let mut child_overrides = BTreeMap::new();
-            for patch in &node.overrides {
-                child_overrides.insert(patch.path.clone(), patch.clone());
-            }
-            for patch in overrides.iter().filter(|patch| patch.path[0] == alias) {
-                if patch.path.len() == 1 {
-                    if let Some(package) = &patch.package {
-                        node.package = package.clone().into();
-                    }
-                    if let Some(use_package) = patch.use_package {
-                        node.use_package = use_package;
-                    }
-                    for (field, value) in &patch.parameters {
-                        node.parameters.parameters.remove(field);
-                        node.parameters.values.insert(field.clone(), value.clone());
-                    }
-                    for (field, value) in &patch.configuration {
-                        node.configuration.parameters.remove(field);
-                        node.configuration
-                            .values
-                            .insert(field.clone(), value.clone());
-                    }
-                    node.bindings.extend(patch.bindings.clone());
-                    if let Some(disabled) = patch.disabled {
-                        node.disabled = disabled;
-                    }
-                } else {
-                    let mut relative = patch.clone();
-                    relative.path.remove(0);
-                    let combined =
-                        child_overrides
-                            .entry(relative.path.clone())
-                            .or_insert_with(|| Override {
-                                path: relative.path.clone(),
-                                configuration: BTreeMap::new(),
-                                bindings: BTreeMap::new(),
-                                disabled: None,
-                                ..Override::default()
-                            });
-                    combined.configuration.extend(relative.configuration);
-                    combined.bindings.extend(relative.bindings);
-                    combined.parameters.extend(relative.parameters);
-                    if relative.package.is_some() {
-                        combined.package = relative.package;
-                    }
-                    if relative.use_package.is_some() {
-                        combined.use_package = relative.use_package;
-                    }
-                    if relative.disabled.is_some() {
-                        combined.disabled = relative.disabled;
-                    }
-                }
-            }
-            let child_overrides: Vec<_> = child_overrides.into_values().collect();
+            node.apply_overrides(&alias, &overrides, &parameters)?;
+            let child_overrides = node.overrides.clone();
             node.validate()?;
             let mut identity = parent
                 .as_ref()
@@ -624,25 +592,8 @@ impl<'a> Builder<'a> {
             );
             if node.use_package == PackageUse::Composition {
                 let template = declaration.composition.as_ref().unwrap();
-                let mut supplied = node.parameters.resolve(&parameters)?;
-                for name in supplied.keys() {
-                    if !template.parameters.contains_key(name) {
-                        return Err(Error::Composition(format!(
-                            "undeclared template parameter: {name}"
-                        )));
-                    }
-                }
-                for (name, parameter) in &template.parameters {
-                    if !supplied.contains_key(name) {
-                        supplied.insert(
-                            name.clone(),
-                            parameter.default.clone().ok_or_else(|| {
-                                Error::Composition(format!("missing template parameter: {name}"))
-                            })?,
-                        );
-                    }
-                    crate::validate_value(&parameter.schema, &supplied[name])?;
-                }
+                let supplied =
+                    template.resolve_parameters(node.parameters.resolve(&parameters)?)?;
                 // Only package selection and effective child overrides determine topology.
                 // Repeated packages with shrinking override paths can still terminate.
                 let state = ExpansionState {

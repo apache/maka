@@ -95,6 +95,7 @@ async fn observed(log: &EventLog, accepted: bool) -> (u64, ModelCompletion) {
     (
         through,
         ModelCompletion {
+            compaction: None,
             parts,
             finish_reason: ModelFinishReason::Stop,
             usage: ModelUsage::default(),

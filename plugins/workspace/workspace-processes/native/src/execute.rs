@@ -165,10 +165,7 @@ impl Processes {
         }
         cancelled(cancellation)?;
         if !input.run_in_background {
-            let mut process = command.observe(
-                Some(input.timeout_ms.unwrap_or(120_000)),
-                cancellation.clone(),
-            )?;
+            let mut process = command.observe(input.timeout_ms, cancellation.clone())?;
             let mut events_open = true;
             let output = loop {
                 tokio::select! {

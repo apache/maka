@@ -31,6 +31,8 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 pub struct Decoder {
+    native_compaction: bool,
+    compaction: Option<maka_agent_facts::model::NativeCompaction>,
     inner: wire::decode::Decoder,
     plaintext: Option<PlaintextResponses>,
     pub observed_output: bool,
@@ -51,6 +53,8 @@ impl Decoder {
             })
             .map(|tool| tool.name.clone());
         Self {
+            native_compaction: false,
+            compaction: None,
             inner: wire::decode::Decoder::new(
                 super::request::reasoning_mode(plaintext),
                 search_name,
@@ -61,22 +65,108 @@ impl Decoder {
         }
     }
 
+    pub fn operation(mut self, operation: maka_agent_facts::context::ModelOperation) -> Self {
+        self.native_compaction =
+            operation == maka_agent_facts::context::ModelOperation::CodexCompaction;
+        self
+    }
+    fn accept_compaction(&mut self, item: Value, terminal: bool) -> Result<()> {
+        if !self.native_compaction {
+            return Err(super::Error::Invalid(
+                "unexpected native compaction output".into(),
+            ));
+        }
+        if item["encrypted_content"].as_str().is_none_or(str::is_empty) {
+            return Err(super::Error::Invalid(
+                "invalid native compaction output".into(),
+            ));
+        }
+        match &self.compaction {
+            None => {
+                self.compaction = Some(
+                    maka_agent_facts::model::NativeCompaction::new(item)
+                        .map_err(|e| super::Error::Invalid(e.into()))?,
+                )
+            }
+            Some(previous) if terminal && previous.item() == &item => {}
+            _ => {
+                return Err(super::Error::Invalid(
+                    "multiple native compaction output items".into(),
+                ));
+            }
+        }
+        self.observed_output = true;
+        self.replay_safe = false;
+        Ok(())
+    }
     pub fn finished(&self) -> bool {
         self.inner.finished()
     }
 
     pub fn end(&self) -> Result<()> {
+        if self.compaction.is_some() && !self.inner.finished() {
+            return Err(super::Error::Truncated {
+                replay_safe: false,
+                retained_output_safe: false,
+            });
+        }
         self.inner.end().map_err(Into::into)
     }
 
     pub fn retained_output_safe(&self) -> bool {
-        self.inner.retained_output_safe()
+        self.compaction.is_none() && self.inner.retained_output_safe()
     }
 
-    pub fn push(&mut self, value: Value) -> Result<Vec<ModelEvent>> {
+    pub fn push(&mut self, mut value: Value) -> Result<Vec<ModelEvent>> {
+        let event_type = value["type"].as_str().unwrap_or_default().to_owned();
+        if value["item"]["type"] == "compaction" {
+            if !self.native_compaction {
+                return Err(super::Error::Invalid(
+                    "unexpected native compaction output".into(),
+                ));
+            }
+            if event_type == "response.output_item.done" {
+                self.accept_compaction(value["item"].take(), false)?;
+            }
+            return Ok(vec![]);
+        }
+        if matches!(
+            event_type.as_str(),
+            "response.completed" | "response.incomplete"
+        ) {
+            if let Some(items) = value
+                .get_mut("response")
+                .and_then(|response| response.get_mut("output"))
+                .and_then(Value::as_array_mut)
+            {
+                let native = items
+                    .iter()
+                    .filter(|item| item["type"] == "compaction")
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if native.len() > 1 {
+                    return Err(super::Error::Invalid(
+                        "multiple native compaction output items".into(),
+                    ));
+                }
+                for item in native {
+                    self.accept_compaction(item, true)?;
+                }
+                items.retain(|item| item["type"] != "compaction");
+            }
+            if self.native_compaction
+                && (event_type != "response.completed"
+                    || self.compaction.is_none()
+                    || value["response"]["id"].as_str().is_none_or(str::is_empty))
+            {
+                return Err(super::Error::Invalid(
+                    "native compaction did not complete".into(),
+                ));
+            }
+        }
         let events = self.inner.push(value);
-        self.observed_output = self.inner.observed_output;
-        self.replay_safe = self.inner.replay_safe;
+        self.observed_output = self.inner.observed_output || self.compaction.is_some();
+        self.replay_safe = self.inner.replay_safe && self.compaction.is_none();
         events.map_err(Into::into).map(|events| {
             events
                 .into_iter()
@@ -207,7 +297,8 @@ impl Decoder {
                     cache_write_tokens: usage.cache_write,
                     reasoning_tokens: usage.reasoning,
                 },
-                provider_options: response_id.map(|id| json!({"openai": {"responseId": id}})),
+                compaction: self.compaction.clone(),
+                provider_options: response_id.map(|id| json!({"openai":{"responseId":id}})),
             },
         }
     }
@@ -223,3 +314,6 @@ fn item_options(metadata: ItemMetadata) -> Value {
     }
     options
 }
+
+#[cfg(test)]
+mod native_tests;

@@ -131,6 +131,12 @@ impl<T: Send + 'static> Future for ApprovalContinuation<T> {
                 decision: crate::interaction::Decision::Allow,
                 ..
             }) => None,
+            Ok(crate::interaction::InteractionOutcome::Closure {
+                reason: crate::interaction::ClosureReason::Steered,
+                ..
+            }) => Some(ToolError::Failed(
+                "Not executed: superseded by new user input".into(),
+            )),
             Ok(
                 crate::interaction::InteractionOutcome::ServiceApprovalDecision { .. }
                 | crate::interaction::InteractionOutcome::Closure { .. },
@@ -750,6 +756,7 @@ mod admission_tests {
             Fact::ModelCompleted {
                 step_id: "step".into(),
                 output: crate::model::recorded::ModelCompletion {
+                    compaction: None,
                     parts: vec![crate::model::recorded::CompletionPart::Own(
                         crate::model::recorded::ModelPartRecord {
                             ordinal: 0,

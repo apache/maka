@@ -66,6 +66,14 @@ export function createSessionGoal(
     if (retry !== null) clearTimeout(retry);
     void stream?.close().catch(() => {});
   });
+  // The stream and a change's own query arrive in either order, and a change
+  // sent from an older revision conflicts. A session keeps one Goal record,
+  // never removed, so its revision also orders a replaced Goal.
+  const show = (next: AgentGoalView) => {
+    const shown = view()?.current;
+    if (shown && (next.current?.revision ?? 0) < shown.revision) return;
+    view.set(next);
+  };
   const watch = async () => {
     try {
       const opened = await host.subscribe('agent', 'watchGoal', { sessionId });
@@ -80,7 +88,7 @@ export function createSessionGoal(
           if (!alive) return;
           if (next === null) throw new UiError('Goal updates disconnected. Reconnecting…');
           batch(() => {
-            view.set(next);
+            show(next);
             connectionError.set('');
           });
         }
@@ -134,7 +142,7 @@ export function createSessionGoal(
       }
       const next: AgentGoalView = await host.query('agent', 'goal', { sessionId });
       if (!alive) return false;
-      view.set(next);
+      show(next);
       return true;
     } catch (reason) {
       if (alive) error.set(errorText(reason));

@@ -19,7 +19,6 @@
 
 use crate::{Access, Error, invalid, repository::digest};
 use maka_agent_facts::execution::BehaviorId;
-use maka_agent_facts::execution::CollaborationMode;
 use maka_agent_ports::session::catalog::List;
 use maka_agent_ports::session::catalog::Queries;
 use maka_agent_ports::session::catalog::Summary;
@@ -57,7 +56,6 @@ pub async fn discover(
                 let session = &summary.session;
                 if session.session_id != coordinator
                     && session.behavior == BehaviorId::default()
-                    && session.collaboration_mode == CollaborationMode::Agent
                     && !summary
                         .labels
                         .iter()

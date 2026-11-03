@@ -196,6 +196,7 @@ pub fn host() -> (Input, Vec<Package>) {
     ]);
     (
         Input {
+            base: None,
             ui: None,
             instances: BTreeMap::from([
                 ("business".into(), counter::node(&service, 11)),
@@ -249,6 +250,7 @@ pub fn caller() -> (Input, Vec<Package>, Vec<RemoteObservation>) {
     .to_vec();
     (
         Input {
+            base: None,
             ui: None,
             instances: BTreeMap::from([("app".into(), consumer)]),
         },

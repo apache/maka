@@ -117,7 +117,6 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"position":{"kind":"through_turn","turnId":turn_a}}));
         assert_eq!(forked["session"]["title"], "Independent branch");
         assert_eq!(forked["session"]["labels"], json!(["branch"]));
-        assert_eq!(forked["session"]["collaborationMode"], "agent");
         assert_eq!(forked["session"]["boundaryRevision"], 0);
         assert_eq!(forked["session"]["activity"], "idle");
         assert_eq!(f.query("observe", json!({"sessionId":target})).await.unwrap()["run"], Value::Null);
@@ -186,7 +185,6 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
                     request_permissions: true,
                 };
                 configuration.tools = Some(vec!["WorkspaceFile".into(), "RetiredTool".into()]);
-                configuration.collaboration_mode = CollaborationMode::Plan;
                 configuration.boundary_revision = 17;
                 Ok(())
             },
@@ -198,7 +196,6 @@ async fn fork_archived_source_narrows_current_authority_and_refuses_managed_sess
         assert_eq!(forked["session"]["archived"], false);
         assert_eq!(forked["session"]["permissions"], json!({"access":"read_only","requestPermissions":false}));
         assert_eq!(forked["session"]["tools"], json!(["WorkspaceFile"]));
-        assert_eq!(forked["session"]["collaborationMode"], "agent");
         assert_eq!(forked["session"]["boundaryRevision"], 0);
         assert_eq!(forked["session"]["branch"], json!({"sessionId":source,"position":{"kind":"end"}}));
         let target = forked["session"]["id"].as_str().unwrap();

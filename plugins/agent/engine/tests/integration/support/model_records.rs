@@ -139,6 +139,7 @@ pub fn completion(
     writer
         .push(
             ModelEvent::Finished {
+                compaction: None,
                 reason,
                 usage: Default::default(),
                 provider_options: None,

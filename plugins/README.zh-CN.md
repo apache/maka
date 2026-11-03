@@ -26,7 +26,7 @@
 | 插件族 | 职责 |
 | --- | --- |
 | [agent](agent/README.zh-CN.md) | 会话、模型执行、工具、目标和调度 |
-| [workspace](workspace/README.zh-CN.md) | 文件、进程、Web 和 Jev 服务 |
+| [workspace](workspace/README.zh-CN.md) | 文件、进程、Web 和 Decisions API 服务 |
 | [settings](settings/native/README.zh-CN.md) | 连接、凭据和偏好 |
 | [skills](skills/native/README.zh-CN.md) | 技能发现、读取和发布 |
 | [interactions](interactions/native/README.zh-CN.md) | 问题和表单 |
@@ -37,6 +37,8 @@
 修改已有插件时，从声明入手，沿所选实现查找代码。原生入口选择可执行文件提供的实现；JavaScript 入口指定打包后的本地模块。插件族目录和已链接 crate 都不会自动激活插件。
 
 包可以声明 `application.host`、`application.ui` 或组合模板。部署中的实例通过 `usePackage: host / ui / composition` 明确选择所用入口，纯 UI 插件不需要伪造 Host 服务。[终端 shell](../products/maka/terminal-shell/README.zh-CN.md) 和[桌面 shell](../products/maka/desktop-shell/README.zh-CN.md) 运行同一个 [NSH 工作台](../products/maka/workbench/README.zh-CN.md)，共享动态 UI 模块与公共 Host 能力。包可声明 `root` 贡献来提供整个应用，部署来源通过 `ui: { path, id }` 选择入口。Maka 默认工作台也是普通 UI 包，缺少根入口时不会自动回退到它。安装表示用户信任，UI 插件可直接使用工作台现有能力。
+
+部署也可以通过 `base.package` 选择不可变的根级 composition，以同一套 overrides 修改继承的子实例，并在 `instances` 中保留独立根。它不同于结构组合实例，不增加父实例或身份命名空间。`remove` 记录删除；`configurationFields` 记录精确对象字段编辑，省略值表示删除字段，显式 null 仍是一个值。整字段 `configuration` 覆盖保持原有替换语义。模板的 `ui` 默认继承，除非源显式选择其他根或清空 `base.ui`。详见[产品基线模型](../products/maka/bundle/README.zh-CN.md#安装与升级)和[规范类型](../platform/plugin-core/src/composition.rs)。
 
 UI 入口可以声明服务导入，并绑定到 Host 导出，包括同一个包的后台服务。`UiContext.application` 是绑定到这些导入的原生应用客户端，保留 Client、journal 和原始 receipt。`UiContext.services[importName][index]` 选择具体的提供者，也支持有多个提供者的导入；`UiContext.operations` 恢复该实例的原始 mutation receipt。业务控制器由所属激活实例持有，使用该实例的应用客户端。可信 UI 代码仍可使用完整的 `UiContext.host` 和 `maka/host`，包括根界面与目录集成。详见 [UI 开发指南](../skills/maka-plugin-authoring/references/ui-plugins.md)。
 
@@ -71,3 +73,5 @@ node scripts/plugins/build.mjs   --plugin plugins/workspace/workspace-web --outp
 ```
 
 插件管理会展示并搜索这些说明，添加应用时也会展示。缺少翻译时使用默认文案，最后回退到实例名或包 ID。名称应让人预知操作结果或目的地，参照 [Apple 的清晰命名指南](https://developer.apple.com/videos/play/wwdc2026/290/)。常见操作使用带无障碍名称和提示的图标；重要或不熟悉的操作保留明确文字。shell 列表使用原生虚拟列表并保留可见行，数据游标不暴露为手动翻页。
+
+配置给 Agent 的服务工具会捕获原绑定上所选方法的精确调用能力，不应再在 Host 的 `native` 中重复声明直接工具调用。独立后台准备、执行器回调和跨组件委托仍需显式授权；工具确认、文件系统/网络权限及资源检查继续独立生效。已有工具配置在新的原生实现启动后直接获得该行为，无需重写部署源或启动器授权。

@@ -24,6 +24,7 @@ import {
   createTransientText,
   UiError,
   errorText,
+  renderText,
   type UiText,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
@@ -59,6 +60,12 @@ import {
   confirmSend,
   pendingSends,
   recoverSend,
+  sendDelivery,
+  type SendDelivery,
+  retrySend,
+  dismissSend,
+  abandonSend,
+  type SendOperation,
   type ScopedHost,
 } from '../../../../products/maka/workbench/app/host';
 import {
@@ -77,12 +84,17 @@ import {
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
-import { Preview } from '../../../../products/maka/workbench/app/preview';
+import {
+  TranscriptOverlay,
+  type LivePart,
+} from '../../../../products/maka/workbench/app/transcriptOverlay';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
+  ComposerPrediction,
   ComposerQueue,
   ComposerSendAction as SendAction,
+  ComposerSendStatus,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
@@ -107,7 +119,10 @@ import type { SessionAction } from '../../../../products/maka/workbench/app/sess
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
 import { createSessionGoal } from '../../../../products/maka/workbench/app/sessionGoal';
-import { createSessionPlan } from '../../../../products/maka/workbench/app/sessionPlan';
+import {
+  createMessagePrediction,
+  predictionTrigger,
+} from '../../../../products/maka/workbench/app/messagePrediction';
 import {
   TurnPanel,
   TurnSummary,
@@ -140,10 +155,7 @@ import {
 import type { TurnNavigationItem } from '../../../../products/maka/workbench/app/TurnNavigation';
 import type { ConversationStatus } from '../../../../products/maka/workbench/app/sessionStatus';
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
-import {
-  latestToolActivity,
-  updateToolActivity,
-} from '../../../../products/maka/workbench/app/toolActivity';
+import { latestToolActivity } from '../../../../products/maka/workbench/app/toolActivity';
 import type { ToolActivity } from '../../../../products/maka/workbench/app/toolActivity';
 import type {
   AgentHistoryAttachment,
@@ -251,14 +263,6 @@ type ConversationProps = {
   focusComposer(): void;
   stopAction(): () => void;
 };
-type LivePart = {
-  invocationId: string | null;
-  stepId: string;
-  partId: string;
-  messageId: string;
-  field: 'thinking' | 'body';
-  startSequence: number;
-};
 function comparePosition(left: Position, right: Position): number {
   return left.sourceSequence - right.sourceSequence || left.itemIndex - right.itemIndex;
 }
@@ -279,7 +283,9 @@ function receiptMessage(reply: any): UiText {
   if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'returned') {
     const value = receipt.outcome.value;
     return value?.kind === 'rejected'
-      ? uiMessage('Send rejected: {reason}', { reason: value.reason })
+      ? value.reason === 'turn_stopped'
+        ? uiMessage('Stopped before delivery. Your message is kept.')
+        : uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
   return uiMessage('This action could not be completed.');
@@ -316,10 +322,12 @@ export function Conversation(props: ConversationProps) {
       first.position?.itemIndex === row.position?.itemIndex
     );
   };
-  const live = signal<Row[]>([]);
-  const toolActivity = signal<ToolActivity[]>([]);
-  const parts = signal<LivePart[]>([]);
-  const preview = new Preview();
+  const overlay = new TranscriptOverlay();
+  const transient = signal(overlay.snapshot());
+  const publishOverlay = () => transient.set(overlay.snapshot());
+  const live = computed(() => transient().rows);
+  const toolActivity = computed(() => transient().tools);
+  const parts = computed(() => transient().parts);
   const pendingMessages = signal<Row[]>([]);
   const queued = signal<AgentQueue | null>(null);
   const title = signal(sessionId);
@@ -345,7 +353,6 @@ export function Conversation(props: ConversationProps) {
   const workspace = signal('');
   const permissions = createSessionPermissions(host, sessionId, props.control);
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
-  const plan = createSessionPlan(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
   const backend = signal<any>(null);
@@ -389,7 +396,22 @@ export function Conversation(props: ConversationProps) {
   const draftReady = signal(false);
   const savingFailed = signal(false);
   const sending = signal(false);
-  const unresolved = signal<any[]>([]);
+  const unresolved = signal<SendOperation[]>([]);
+  type FrozenSend = {
+    id: string;
+    text: string;
+    files: DraftAttachment[];
+    edit: AttachmentEdit & { text: string };
+    selection: Record<string, unknown>;
+    revision?: number;
+    error: UiText | null;
+  };
+  const freezingSend = signal<FrozenSend | null>(null);
+  const activeSends = signal<Map<string, FrozenSend>>(new Map());
+  const sendErrors = signal<Map<string, UiText>>(new Map());
+  const checkingSends = signal<Set<string>>(new Set());
+  const sendDeliveries = signal<Map<string, SendDelivery>>(new Map());
+  let sendSequence = 0;
   const receiptsKnown = signal(false);
   const recovering = signal(false);
   const notice = createTransientText();
@@ -718,6 +740,7 @@ export function Conversation(props: ConversationProps) {
   let latestKnown = 0;
   let watchLast = 0;
   let runThrough = 0;
+  let predictionTriggerTurn: string | null = null;
   let followTask: Promise<void> | null = null;
   let followAgain = false;
   let historyIdentity: object = {};
@@ -740,7 +763,6 @@ export function Conversation(props: ConversationProps) {
   } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
-  let editEpoch = 0;
   let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
   let saveTask: Promise<void> | null = null;
   // From Enter until the send is reserved, the saved draft must stay the
@@ -754,7 +776,6 @@ export function Conversation(props: ConversationProps) {
     focus: props.focusComposer,
     changed() {
       if (!alive || !draftReady()) return;
-      editEpoch += 1;
       queueDraft({ text: draft(), ...attachments.snapshot() });
     },
   });
@@ -766,12 +787,8 @@ export function Conversation(props: ConversationProps) {
     batch(() => {
       rows.set(mergeChunks(rows(), chunks, older, through));
       const canonical = canonicalRows().byMessage;
-      const currentLive = live();
-      for (const row of currentLive)
-        if (row.preview && canonical.has(`${row.messageId}/${row.field}`))
-          preview.commit(row.invocationId!, row.stepId!, row.messageId);
-      const nextLive = currentLive.filter((row) => !canonical.has(`${row.messageId}/${row.field}`));
-      if (nextLive.length !== currentLive.length) live.set(nextLive);
+      overlay.history(canonical, atHistoryTail() ? through : null);
+      publishOverlay();
       const currentPending = pendingMessages();
       const nextPending = currentPending.filter(
         (row) => !canonical.has(`${row.messageId}/${row.field}`),
@@ -856,18 +873,18 @@ export function Conversation(props: ConversationProps) {
       }
       if (!canPublish()) return false;
       batch(() => {
-        rows.set(mergeChunks([], page.chunks, false, page.through));
+        rows.set([]);
         historyWindow.set({
           identity,
           through: page.through,
           before: page.before,
           after: page.after,
         });
+        publishHistory(page.chunks, page.through);
         ready.set(true);
         awayFromLatest.set(position.kind !== 'tail');
         innerReader.set(null);
       });
-      hydrateAttachmentMetadata();
       if (page.after === null && latestKnown > through) void follow().catch(report);
       return true;
     })()
@@ -990,11 +1007,26 @@ export function Conversation(props: ConversationProps) {
     permissions.observe(observed.session);
     backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
     if (observed.through >= runThrough) {
+      overlay.observe(observed);
+      publishOverlay();
+      const completedTurn = observed.lastCompletedTurnId;
+      const trigger = predictionTrigger({
+        completedTurnId: completedTurn,
+        activeTurnId: observed.run?.turnId ?? null,
+        previousActiveTurnId: runTurn(),
+        completedEventTurnId: predictionTriggerTurn,
+      });
+      if (trigger === 'live') predictionTriggerTurn = completedTurn;
       metrics.set(observed.metrics ?? null);
       run.set(observed.run?.state ?? 'idle');
       compacting.set(observed.compacting);
       invocation.set(observed.run?.invocationId ?? null);
       runTurn.set(observed.run?.turnId ?? null);
+      messagePrediction.source(
+        observed.session.parentSessionId === null ? completedTurn : null,
+        trigger,
+        JSON.stringify(backendIdentity(backend())),
+      );
       if (!observed.run) stoppingRun.set(null);
       runThrough = observed.through;
     }
@@ -1037,11 +1069,6 @@ export function Conversation(props: ConversationProps) {
           const current = historyWindow()!;
           historyWindow.set({ ...current, through: fence, after: null });
         }
-        const currentLive = live();
-        const nextLive = currentLive.filter(
-          (row) => row.closedAt === null || row.closedAt! > fence,
-        );
-        if (nextLive.length !== currentLive.length) live.set(nextLive);
         const refresh = refreshFrom;
         refreshFrom = null;
         const last = rows().at(-1);
@@ -1097,23 +1124,6 @@ export function Conversation(props: ConversationProps) {
     return task;
   };
 
-  const openParts = (started: LivePart[]) => {
-    const same = (a: LivePart, b: LivePart) =>
-      a.invocationId === b.invocationId && a.stepId === b.stepId && a.partId === b.partId;
-    parts.set([
-      ...parts().filter((part) => !started.some((other) => same(part, other))),
-      ...started,
-    ]);
-  };
-  const closeLive = (sequence: number, invocationId: string, stepId?: string) => {
-    live.set(
-      live().map((row) =>
-        row.invocationId === invocationId && (stepId === undefined || row.stepId === stepId)
-          ? { ...row, closedAt: sequence }
-          : row,
-      ),
-    );
-  };
   const deliver = (page: any) => {
     if (page.kind === 'queue') {
       if (page.queue.revision >= (queued()?.revision ?? -1)) queued.set(page.queue);
@@ -1129,9 +1139,8 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     if (page.kind === 'preview') {
-      const next = preview.page(page.page, live(), toolActivity(), canonicalRows().byMessage);
-      live.set(next.rows);
-      toolActivity.set(next.tools);
+      overlay.page(page.page);
+      publishOverlay();
       return;
     }
     if (page.kind !== 'events') return;
@@ -1140,14 +1149,12 @@ export function Conversation(props: ConversationProps) {
     for (const event of page.events) {
       if (event.sequence <= watchLast) continue;
       const fact = event.fact;
-      if (fact.kind === 'tool_input_ready')
-        preview.retireTool(event.invocationId, fact.stepId, fact.toolUseId);
-      const nextTools = updateToolActivity(toolActivity(), event);
-      if (nextTools !== toolActivity()) toolActivity.set(nextTools);
-      const field = (kind: string) => (kind === 'thinking' ? 'thinking' : 'body');
+      overlay.event(event);
       switch (fact.kind) {
         case 'opened':
           if (event.sequence > runThrough) {
+            predictionTriggerTurn = null;
+            messagePrediction.source(null, 'live');
             run.set('running');
             invocation.set(event.invocationId);
             runTurn.set(event.turnId);
@@ -1158,65 +1165,21 @@ export function Conversation(props: ConversationProps) {
           changed = true;
           break;
         case 'executor_started':
-          openParts(
-            ['text', 'thinking'].map((textKind) => ({
-              invocationId: event.invocationId,
-              stepId: event.invocationId,
-              partId: textKind,
-              messageId: fact.messageId,
-              field: field(textKind),
-              startSequence: event.sequence,
-            })),
-          );
           changed = true;
           break;
-        case 'delta': {
-          const part = parts().find(
-            (part) =>
-              part.invocationId === event.invocationId &&
-              part.stepId === fact.stepId &&
-              part.partId === fact.partId,
-          );
-          if (!part || canonicalRows().byMessage.has(`${part.messageId}/${part.field}`)) break;
-          const key = `live/${part.messageId}/${part.field}`;
-          const previous = live().find((row) => row.key === key);
-          if (previous?.sequence !== undefined && event.sequence <= previous.sequence) break;
-          const next = {
-            ...part,
-            invocationId: part.invocationId ?? undefined,
-            key,
-            role: part.field === 'thinking' ? 'thinking' : 'assistant',
-            turnId: event.turnId,
-            text: (previous?.text ?? '') + fact.text,
-            prefix: true,
-            sequence: event.sequence,
-            closedAt: null,
-          };
-          live.set(
-            previous ? live().map((row) => (row.key === key ? next : row)) : [...live(), next],
-          );
+        case 'delta':
           break;
-        }
         case 'part_committed':
-          preview.commit(event.invocationId, fact.stepId, fact.messageId);
           changed = true;
           break;
         case 'step_ended':
-          preview.commit(event.invocationId, fact.stepId);
-          closeLive(event.sequence, event.invocationId, fact.stepId);
-          parts.set(
-            parts().filter(
-              (part) => part.invocationId !== event.invocationId || part.stepId !== fact.stepId,
-            ),
-          );
           void observe().catch(report);
           changed = true;
           break;
         case 'ended':
           requestMetadata(rows().find((row) => row.turnId === event.turnId));
-          closeLive(event.sequence, event.invocationId);
-          parts.set(parts().filter((part) => part.invocationId !== event.invocationId));
           if (event.sequence > runThrough) {
+            predictionTriggerTurn = fact.failed ? null : event.turnId;
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
             compacting.set(null);
@@ -1242,6 +1205,7 @@ export function Conversation(props: ConversationProps) {
           break;
       }
     }
+    publishOverlay();
     watchLast = Math.max(watchLast, page.nextAfter);
     if (changed) void follow().catch(report);
   };
@@ -1255,13 +1219,6 @@ export function Conversation(props: ConversationProps) {
     if (previousTurn !== null) requestMetadata(rows().find((row) => row.turnId === previousTurn));
     const observed = await observe();
     if (!alive) return;
-    parts.set(
-      observed.parts.map((part: any) => ({
-        ...part,
-        invocationId: observed.run?.invocationId ?? null,
-        field: part.textKind === 'thinking' ? 'thinking' : 'body',
-      })),
-    );
     const after = replayStartCursor(observed.through, observed.parts, observed.toolSeeds);
     const stream = await host.subscribe('agent', 'watch', { sessionId, after });
     if (!alive) {
@@ -1327,7 +1284,8 @@ export function Conversation(props: ConversationProps) {
           return;
         } catch (reason) {
           if (!alive) return;
-          toolActivity.set([]);
+          overlay.disconnect();
+          publishOverlay();
           report(reason);
           // Match the desktop catalog's quiet two-second reconnect pause.
           // Only observations repeat; original mutations remain in the journal.
@@ -1639,34 +1597,17 @@ export function Conversation(props: ConversationProps) {
   };
   const changeDraft = (text: string) => {
     if (!alive || !draftReady()) return;
-    editEpoch += 1;
     draft.set(text);
     queueDraft({ text, ...attachments.snapshot() });
   };
-  // Saves what was edited while a send was being reserved; whether there was any.
+  // Save edits held while a send was being reserved.
   const releaseHeld = () => {
     holding = false;
     const edit = heldDraft;
     heldDraft = null;
-    if (edit === null || !alive) return false;
+    if (edit === null || !alive) return;
     pendingDraft = edit;
     startSave();
-    return true;
-  };
-  const acceptRecoveredDraft = (
-    stored: { revision: number; text: string; attachments: DraftAttachment[] },
-    epoch: number,
-  ) => {
-    if (
-      editEpoch === epoch &&
-      draftRevision === stored.revision &&
-      !savingFailed() &&
-      pendingDraft === null &&
-      saveTask === null
-    ) {
-      draft.set(stored.text);
-      attachments.restore(stored.attachments);
-    }
   };
 
   const backendIdentity = (value: any): BackendIdentity =>
@@ -1869,17 +1810,9 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
-  const settleReply = (
-    reply: any,
-    text?: string,
-    epoch?: number,
-    files: DraftAttachment[] = [],
-  ) => {
+  const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
     const accepted = acceptedSend(reply, sessionId);
-    if (!accepted) {
-      notice.set(receiptMessage(reply));
-      return;
-    }
+    if (!accepted) return;
     if (
       accepted.kind === 'started' &&
       text !== undefined &&
@@ -1904,16 +1837,27 @@ export function Conversation(props: ConversationProps) {
         },
       ]);
     }
-    if (text !== undefined && editEpoch === epoch && draft() === text) draft.set('');
-    if (text !== undefined) attachments.sent(files.map((file) => file.id));
-    notice.set(
-      accepted.kind === 'started' && text === undefined ? uiMessage('Message accepted.') : '',
-    );
-    if (accepted.kind === 'queued') return;
-    cancelNavigation();
-    awayFromLatest.set(false);
-    innerReader.set(null);
-    list?.scrollToEnd({ animated: false });
+  };
+
+  const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
+    const expectedInvocationId = invocation() ?? undefined;
+    if (delivery === 'steer' && expectedInvocationId !== undefined)
+      return { delivery, expectedInvocationId };
+    const selected = backendIdentity(backend());
+    if (expectedBackend !== undefined && !sameBackend(selected, expectedBackend))
+      throw new UiError('The model changed before confirmation. Send again to confirm it.');
+    if (!selected) throw new UiError('Choose a model before sending.');
+    const details = modelDetails();
+    if (details.kind !== 'ready')
+      throw new UiError('Model unavailable: {model}. Choose another model.', {
+        model: selected.modelId,
+      });
+    return {
+      delivery,
+      expectedInvocationId,
+      model: details.choice.selection,
+      thinkingLevel: selected.thinkingLevel,
+    };
   };
 
   const sendBlockedReason = () => {
@@ -1934,12 +1878,94 @@ export function Conversation(props: ConversationProps) {
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
-    if (sending()) return tr('Confirming send… New typing is kept.');
-    if (recovering()) return tr('Checking send status…');
-    if (!receiptsKnown() || unresolved().length) return tr('Checking send status…');
+    if (sending()) return tr('Saving message… New typing is kept.');
+    if (freezingSend()) return tr('Retry or remove the unsaved message before sending another.');
+    if (!receiptsKnown()) return tr('Checking send status…');
     return '';
   };
-  const send = async (text: string, expectedBackend?: BackendIdentity, first?: boolean) => {
+
+  const refreshSends = async () => {
+    const operations = await pendingSends(client);
+    if (alive) {
+      unresolved.set(operations);
+      receiptsKnown.set(true);
+      const ids = new Set(operations.map((item) => item.id));
+      sendErrors.set(new Map([...sendErrors()].filter(([id]) => ids.has(id))));
+      sendDeliveries.set(new Map([...sendDeliveries()].filter(([id]) => ids.has(id))));
+    }
+    return operations;
+  };
+  const sendError = (id: string, reason: unknown) => {
+    if (alive) sendErrors.set(new Map(sendErrors()).set(id, errorText(reason)));
+  };
+  const confirmFrozen = async (id: string, frozen: FrozenSend) => {
+    activeSends.set(new Map(activeSends()).set(id, frozen));
+    try {
+      if (frozen.selection.model !== undefined && !(await projectMcp.check())) {
+        await abandonSend(client, id);
+        sendError(id, new UiError('Approve workspace connections, then retry this message.'));
+        return;
+      }
+      const sent = await confirmSend(client, id);
+      if (alive) settleReply(sent.reply, frozen.text, frozen.files);
+    } catch (reason) {
+      sendError(id, reason);
+    } finally {
+      try {
+        if (alive) await refreshSends();
+      } catch (reason) {
+        report(reason);
+      }
+      if (alive) {
+        const next = new Map(activeSends());
+        next.delete(id);
+        activeSends.set(next);
+      }
+    }
+  };
+  const freezeSend = async (frozen: FrozenSend) => {
+    if (!alive || sending()) return;
+    sending.set(true);
+    freezingSend.set({ ...frozen, error: null });
+    let operation: string | undefined;
+    try {
+      if (frozen.revision !== undefined) {
+        // A lost local reply can be recovered by the exact draft revision;
+        // message text is never used to infer whether an attempt already exists.
+        const originals = await refreshSends();
+        operation = originals.find((item) => item.draft?.revision === frozen.revision)?.id;
+      }
+      if (operation === undefined) {
+        if (savingFailed()) {
+          const stored = await loadDraft(client);
+          draftRevision = stored.revision;
+          savingFailed.set(false);
+          pendingDraft = frozen.edit;
+        }
+        await flushDraft();
+        if (!alive) return;
+        if (savingFailed())
+          throw new UiError('The draft could not be saved; it has not been sent.');
+        frozen.revision = draftRevision;
+        operation = await reserveSend(client, draftRevision, frozen.selection);
+      }
+      if (!alive) return;
+      freezingSend.set(null);
+      releaseHeld();
+      sending.set(false);
+      void confirmFrozen(operation, frozen);
+    } catch (reason) {
+      if (alive) freezingSend.set({ ...frozen, error: errorText(reason) });
+    } finally {
+      if (alive) sending.set(false);
+    }
+  };
+  const send = async (
+    text: string,
+    expectedBackend?: BackendIdentity,
+    first?: boolean,
+    delivery: 'steer' | 'queue' = 'steer',
+  ) => {
     if (!alive) return;
     if (!text.trim() && attachments.files().length === 0) {
       return;
@@ -1952,88 +1978,218 @@ export function Conversation(props: ConversationProps) {
       );
       return;
     }
-    if (!first && draft() !== text) changeDraft(text);
-    const epoch = editEpoch;
-    const files = [...attachments.files()];
-    sending.set(true);
-    error.set('');
-    holding = true;
     try {
-      const model = await selection(expectedBackend);
-      if (!alive || model === null) return;
-      if (!(await projectMcp.check()) || !alive) {
-        return;
-      }
-      await flushDraft();
-      if (!alive) return;
-      if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
-      if (editEpoch !== epoch && heldDraft === null)
-        throw new UiError('The draft changed before confirmation. Send again to confirm it.');
-      if (
-        expectedBackend !== undefined &&
-        !sameBackend(backendIdentity(backend()), expectedBackend)
-      )
-        throw new UiError('The model changed before confirmation. Send again to confirm it.');
-      // The native journal consumes only this exact revision. New edits keep
-      // saving while confirmation waits and never inherit this send attempt.
-      receiptsKnown.set(false);
-      const operation = await reserveSend(client, draftRevision, model);
-      const typedAhead = releaseHeld();
-      const sent = await confirmSend(client, operation);
-      if (!alive) return;
-      settleReply(sent.reply, text, epoch, files);
-      // Text typed before the send was reserved continues the sent message in
-      // the composer; once it is accepted, only the continuation stays. A
-      // rejected send leaves its text in the draft, so the whole edit stays.
-      if (typedAhead && acceptedSend(sent.reply, sessionId) && draft().startsWith(text))
-        changeDraft(draft().slice(text.length));
+      const selected = sendSelection(delivery, expectedBackend);
+      const edit = { text, ...attachments.snapshot() };
+      const frozen: FrozenSend = {
+        id: `draft-send-${++sendSequence}`,
+        text,
+        files: edit.attachments,
+        edit,
+        selection: selected,
+        error: null,
+      };
+      const nextText = first && draft() !== text ? draft() : '';
+      pendingDraft = edit;
+      holding = true;
+      error.set('');
+      changeDraft(nextText);
+      attachments.sent(edit.attachments.map((file) => file.id));
+      await freezeSend(frozen);
     } catch (reason) {
       report(reason);
-    } finally {
-      releaseHeld();
-      try {
-        if (alive) {
-          const operations = await pendingSends(client);
-          if (alive) {
-            unresolved.set(operations);
-            receiptsKnown.set(true);
-          }
-        }
-      } catch (reason) {
-        report(reason);
-      }
-      if (alive) sending.set(false);
     }
   };
 
+  const acceptedQueued = (original: SendOperation) =>
+    original.receipt?.kind === 'recorded' &&
+    original.receipt.outcome.kind === 'returned' &&
+    acceptedSend({ receipt: original.receipt }, sessionId)?.kind === 'queued';
+  const retryable = (original: SendOperation) =>
+    sendDeliveries().get(original.id) === 'cancelled' ||
+    original.abandoned ||
+    (original.receipt?.kind === 'recorded' &&
+      original.receipt.outcome.kind === 'returned' &&
+      ['rejected', 'not_your_worker'].includes(
+        (original.receipt.outcome.value as { kind?: string })?.kind ?? '',
+      ));
+  const needsRecovery = (original: SendOperation) =>
+    !original.abandoned &&
+    !activeSends().has(original.id) &&
+    (original.receipt == null ||
+      (original.receipt.kind === 'recorded' && original.receipt.outcome.kind === 'unresolved'));
+  const checkSend = async (id: string) => {
+    const original = unresolved().find((item) => item.id === id);
+    if (!alive || !original || activeSends().has(id) || checkingSends().has(id)) return;
+    checkingSends.set(new Set(checkingSends()).add(id));
+    try {
+      if (!acceptedQueued(original)) {
+        const reply = await recoverSend(client, id);
+        if (alive)
+          settleReply(
+            reply,
+            original.correlation.draft.text,
+            original.correlation.draft.attachments,
+          );
+      }
+      const delivery = await sendDelivery(client, id);
+      if (alive) {
+        sendDeliveries.set(new Map(sendDeliveries()).set(id, delivery));
+        const errors = new Map(sendErrors());
+        errors.delete(id);
+        sendErrors.set(errors);
+      }
+    } catch (reason) {
+      if (alive) sendDeliveries.set(new Map(sendDeliveries()).set(id, 'unknown'));
+      sendError(id, reason);
+    } finally {
+      if (alive) {
+        const next = new Set(checkingSends());
+        next.delete(id);
+        checkingSends.set(next);
+        await refreshSends();
+      }
+    }
+  };
+  const retryOriginal = async (id: string) => {
+    const frozen = freezingSend();
+    if (frozen?.id === id) {
+      await freezeSend(frozen);
+      return;
+    }
+    const original = unresolved().find((item) => item.id === id);
+    if (
+      !alive ||
+      !original ||
+      !retryable(original) ||
+      activeSends().has(id) ||
+      checkingSends().has(id)
+    )
+      return;
+    try {
+      const snapshot = original.correlation;
+      const selected = sendSelection(snapshot.selection.delivery);
+      const retry: FrozenSend = {
+        id,
+        text: snapshot.draft.text,
+        files: snapshot.draft.attachments,
+        edit: {
+          text: snapshot.draft.text,
+          attachments: snapshot.draft.attachments,
+          settledUploads: [],
+        },
+        selection: selected,
+        error: null,
+      };
+      activeSends.set(new Map(activeSends()).set(id, retry));
+      const next = await retrySend(client, id, selected);
+      if (alive) {
+        const active = new Map(activeSends());
+        active.delete(id);
+        activeSends.set(active);
+        void confirmFrozen(next, retry);
+      }
+    } catch (reason) {
+      const active = new Map(activeSends());
+      active.delete(id);
+      activeSends.set(active);
+      sendError(id, reason);
+    }
+  };
+  const dismissOriginal = async (id: string) => {
+    if (!alive || activeSends().has(id) || checkingSends().has(id)) return;
+    if (freezingSend()?.id === id) {
+      if (sending()) return;
+      freezingSend.set(null);
+      savingFailed.set(false);
+      releaseHeld();
+      return;
+    }
+    try {
+      await dismissSend(client, id);
+      if (alive) await refreshSends();
+    } catch (reason) {
+      sendError(id, reason);
+    }
+  };
+  const sendStatuses = (): ComposerSendStatus[] => {
+    const statuses = new Map<string, ComposerSendStatus>();
+    const followups = new Set(
+      queued()
+        ?.entries.filter((entry) => entry.kind === 'followup')
+        .map((entry) => entry.messageId),
+    );
+    for (const original of unresolved()) {
+      const failed = retryable(original);
+      const checking = checkingSends().has(original.id);
+      const detail = sendErrors().get(original.id);
+      if (
+        !failed &&
+        !detail &&
+        acceptedQueued(original) &&
+        sendDeliveries().get(original.id) !== 'unknown' &&
+        followups.has(acceptedSend({ receipt: original.receipt }, sessionId).messageId)
+      )
+        continue;
+      statuses.set(original.id, {
+        id: original.id,
+        text: original.correlation.draft.text,
+        attachments: original.correlation.draft.attachments,
+        state: failed
+          ? 'failed'
+          : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+            ? 'accepted'
+            : 'unknown',
+        detail: checking
+          ? tr('Checking send status…')
+          : detail
+            ? renderText(detail)
+            : sendDeliveries().get(original.id) === 'cancelled'
+              ? tr('Stopped before delivery. Your message is kept.')
+              : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+                ? tr('Received · waiting for the next step')
+                : original.abandoned
+                  ? tr('Message was not sent.')
+                  : failed
+                    ? renderText(receiptMessage({ receipt: original.receipt }))
+                    : tr('Delivery not confirmed. Check status before retrying.'),
+        retryable: failed && !checking,
+        busy: checking,
+      });
+    }
+    for (const [id, frozen] of activeSends()) {
+      statuses.set(id, {
+        id,
+        text: frozen.text,
+        attachments: frozen.files,
+        state: 'sending',
+        detail: tr('Sending…'),
+        retryable: false,
+        busy: true,
+      });
+    }
+    const frozen = freezingSend();
+    if (frozen)
+      statuses.set(frozen.id, {
+        id: frozen.id,
+        text: frozen.text,
+        attachments: frozen.files,
+        state: frozen.error === null ? 'sending' : 'failed',
+        detail: frozen.error === null ? tr('Saving message…') : renderText(frozen.error),
+        retryable: frozen.error !== null,
+        busy: sending(),
+      });
+    return [...statuses.values()];
+  };
   const recover = async () => {
     if (!alive || recovering() || sending()) return;
     recovering.set(true);
-    const epoch = editEpoch;
-    await flushDraft();
-    if (!alive) return;
     try {
-      const originals = await pendingSends(client);
-      if (!alive) return;
-      unresolved.set(originals);
-      receiptsKnown.set(true);
+      const originals = await refreshSends();
       for (const original of originals) {
-        try {
-          const reply = await recoverSend(client, original.id);
-          if (!alive) return;
-          if (reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'unresolved')
-            continue;
-          settleReply(reply);
-        } catch (reason) {
-          report(reason);
-        }
+        if (!alive) return;
+        if (needsRecovery(original) || acceptedQueued(original)) await checkSend(original.id);
       }
-      const stored = await loadDraft(client);
-      if (!alive) return;
-      acceptRecoveredDraft(stored, epoch);
-      const remaining = await pendingSends(client);
-      if (!alive) return;
-      unresolved.set(remaining);
     } catch (reason) {
       report(reason);
     } finally {
@@ -2041,8 +2197,34 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
+  let checkedDeliveryKey = '';
+  effect(() => {
+    const queue = queued();
+    const accepted = unresolved().filter(acceptedQueued);
+    const key = JSON.stringify([
+      queue?.revision,
+      accepted.map((item) => item.id),
+      [...activeSends().keys()],
+      transcriptStatus(),
+      props.connectionLost(),
+    ]);
+    if (key === checkedDeliveryKey) return;
+    checkedDeliveryKey = key;
+    if (queue && accepted.length)
+      untracked(() => {
+        const received = new Set(queue.entries.map((item) => item.messageId));
+        const deliveries = new Map(sendDeliveries());
+        for (const original of accepted) {
+          const message = acceptedSend({ receipt: original.receipt }, sessionId);
+          if (received.has(message.messageId)) deliveries.set(original.id, 'accepted');
+          else void checkSend(original.id).catch(report);
+        }
+        sendDeliveries.set(deliveries);
+      });
+  });
+
   createPendingRecovery({
-    pending: () => !receiptsKnown() || unresolved().length > 0,
+    pending: () => !receiptsKnown() || unresolved().some(needsRecovery),
     blocked: () => !draftReady() || sending() || recovering(),
     recover,
   });
@@ -2070,18 +2252,45 @@ export function Conversation(props: ConversationProps) {
     text,
     backend: expectedBackend,
     attachments: files,
+    delivery = 'steer',
   }: SendAction) => {
     if (
       !alive ||
       owner !== sessionId ||
       draft() !== text ||
       !attachments.same(files) ||
-      !sameBackend(backendIdentity(backend()), expectedBackend)
+      ((delivery !== 'steer' || invocation() === null) &&
+        !sameBackend(backendIdentity(backend()), expectedBackend))
     )
       return;
-    void send(text, expectedBackend);
+    void send(text, expectedBackend, false, delivery);
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
+  const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
+  const messagePrediction = createMessagePrediction({
+    sessionId,
+    preferences: () => host.query('settings', 'assistantPreferences', {}),
+    begin: (input) => host.beginControl('predictNextMessage', input),
+    changed: (value) => predictedMessage.set(value),
+    report: (reason) => console.warn('Message prediction failed:', reason),
+  });
+  const prediction: ComposerPrediction = {
+    current: predictedMessage,
+    dismiss: messagePrediction.presentation.dismiss,
+  };
+  effect(() => {
+    const eligible =
+      ready() &&
+      props.visible() &&
+      connected() &&
+      !archived() &&
+      invocation() === null &&
+      (queued()?.entries.length ?? 0) === 0 &&
+      !sending() &&
+      !recovering() &&
+      !confirmingContinuation();
+    untracked(() => messagePrediction.eligible(eligible));
+  });
   const queueSession: ComposerQueue = {
     sessionId,
     snapshot: queued,
@@ -2101,6 +2310,7 @@ export function Conversation(props: ConversationProps) {
   };
   const ownHandle: ConversationHandle = {
     sessionId,
+    prediction,
     title: () => title() || tr('Untitled conversation'),
     queue: queueSession,
     interactions,
@@ -2120,7 +2330,6 @@ export function Conversation(props: ConversationProps) {
     modelDetails,
     refreshModel,
     permissions,
-    plan,
     goal,
     projectMcp,
     workspace,
@@ -2129,13 +2338,20 @@ export function Conversation(props: ConversationProps) {
       invocation() === null &&
       rows().length === 0 &&
       live().length === 0 &&
+      unresolved().length === 0 &&
+      activeSends().size === 0 &&
+      freezingSend() === null &&
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,
     connected,
     error: () => (connected() ? error() : ''),
     notice: () => (connected() ? notice() : ''),
-    recovering: () => recovering() || sending(),
+    sends: sendStatuses,
+    retrySend: retryOriginal,
+    checkSend,
+    dismissSend: dismissOriginal,
+    recovering: () => !receiptsKnown() || sending(),
     stopping,
     resumable,
     resuming: confirmingContinuation,
@@ -2153,10 +2369,7 @@ export function Conversation(props: ConversationProps) {
     },
     changeDraft,
     submit(event) {
-      const value = resumable();
-      if (!event.text.trim() && !attachments.files().length && value?.kind === 'ready')
-        void resume(value.source, backendIdentity(backend()));
-      else void send(event.text);
+      void send(event.text);
     },
     sendRendered,
     invocation,
@@ -2454,6 +2667,7 @@ export function Conversation(props: ConversationProps) {
     });
   });
   cleanup(() => {
+    messagePrediction.dispose();
     alive = false;
     bot.close();
     historyIdentity = {};
@@ -2461,7 +2675,8 @@ export function Conversation(props: ConversationProps) {
     wakeReconnect?.();
     modelGeneration += 1;
     modelRead = null;
-    toolActivity.set([]);
+    overlay.disconnect();
+    publishOverlay();
     props.detach(ownHandle);
     const stream = subscription;
     subscription = null;

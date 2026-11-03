@@ -123,6 +123,7 @@ fn completed(step: &str, input: Option<u64>, output: Option<u64>) -> EventWrite 
         Fact::ModelCompleted {
             step_id: step.into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: vec![],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage {

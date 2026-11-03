@@ -85,6 +85,7 @@ pub enum RowDirectory {
         custom: bool,
         is_error: bool,
         archived: bool,
+        kind: crate::model::prompt_source::source::ToolResultKind,
     },
     Notification {
         payload: RowPosition,
@@ -95,6 +96,7 @@ pub enum RowDirectory {
         call_id: TextSpan,
         name: TextSpan,
         custom: bool,
+        kind: crate::model::prompt_source::source::ToolResultKind,
     },
 }
 impl RowDirectory {

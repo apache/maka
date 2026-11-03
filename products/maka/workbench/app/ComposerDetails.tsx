@@ -31,40 +31,70 @@ import {
 import { Button } from 'nsh/base';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { createChecklist } from './Checklist';
-import { createPlanPanel } from './PlanPanel';
 import { createComputerAppControls } from './ComputerAppControls';
-import { createQueueDock } from './QueueDock';
+import { createMessagesDock } from './MessagesDock';
+import { createGoalContent, goalStatusLabel } from './GoalDialog';
+import { LoadingIndicator } from './Loading';
 import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 
 export function ComposerDetails(props: {
-  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'plan' | 'queue' | 'connected'>;
+  session: Pick<
+    ComposerSession,
+    | 'checklist'
+    | 'computerAccess'
+    | 'queue'
+    | 'connected'
+    | 'goal'
+    | 'sends'
+    | 'retrySend'
+    | 'checkSend'
+    | 'dismissSend'
+  >;
 }) {
   const session = props.session;
   const height = () => windowSize().height / 4;
+  const goal = () => session.goal?.view()?.current;
+  const renderGoal = session.goal ? createGoalContent({ goal: session.goal }) : null;
   const panels = {
-    plan: createPlanPanel(session.plan),
+    goal: {
+      shown: () => !!goal(),
+      summary: () => tr(goalStatusLabel(goal()!.status)),
+      preview: () => goal()!.objective,
+      problem: () =>
+        !!session.goal?.error() ||
+        goal()?.status === 'blocked' ||
+        goal()?.status === 'budget_limited',
+      content: () => (
+        <View style={{ minHeight: 0, flexShrink: 1, padding: 16 }}>{renderGoal!()}</View>
+      ),
+    },
     todo: createChecklist(session.checklist, height),
     computer: createComputerAppControls(session.computerAccess, height),
-    queue: createQueueDock(session.queue, height, session.connected),
+    messages: createMessagesDock(session, height),
   };
   type Panel = keyof typeof panels;
-  const keys: Panel[] = ['plan', 'todo', 'computer', 'queue'];
+  const keys: Panel[] = ['goal', 'todo', 'computer', 'messages'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
-  const previewed = () => available().length === 1 && selected() === null;
   const labels = {
-    plan: () => tr('Plan'),
+    goal: () => tr('Goal'),
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
-    queue: () => tr('Queued messages'),
+    messages: () => tr('Messages'),
   };
+  const icons = {
+    goal: 'statusPending',
+    todo: 'check',
+    computer: 'shield',
+    messages: 'queue',
+  } as const;
   const accessibilityLabels = {
-    plan: () => tr('Toggle plan'),
+    goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
-    queue: () => tr('Queued messages'),
+    messages: () => tr('Messages'),
   };
   let alive = true;
   cleanup(() => {
@@ -76,13 +106,6 @@ export function ComposerDetails(props: {
   effect(() => {
     const current = selected();
     if (current !== null && !panels[current].shown()) selected.set(null);
-  });
-  // A proposal waiting for approval opens the plan once; closing it is kept.
-  let attended: string | null = null;
-  effect(() => {
-    const attention = panels.plan.attention();
-    if (attention !== null && attention !== attended && panels.plan.shown()) selected.set('plan');
-    attended = attention;
   });
   return (
     <If when={available().length > 0}>
@@ -121,18 +144,24 @@ export function ComposerDetails(props: {
                   hoverStyle={{ backgroundColor: C.raised }}
                   focusStyle={{ backgroundColor: C.line }}
                 >
-                  <Icon
-                    name={
-                      key === 'plan'
-                        ? 'edit'
-                        : key === 'todo'
-                          ? 'check'
-                          : key === 'computer'
-                            ? 'shield'
-                            : 'queue'
+                  <If
+                    when={
+                      (key === 'goal' && goal()?.status === 'active') ||
+                      (key === 'messages' && session.sends().some((item) => item.busy))
                     }
-                    color={panel.problem() ? C.warning : C.secondary}
-                  />
+                    else={
+                      <Icon
+                        name={
+                          key === 'goal' && goal()?.status === 'achieved'
+                            ? 'statusSuccess'
+                            : icons[key]
+                        }
+                        color={panel.problem() ? C.warning : C.secondary}
+                      />
+                    }
+                  >
+                    <LoadingIndicator color={C.secondary} />
+                  </If>
                   <Text style={{ ...captionTextStyle, color: C.text }}>{labels[key]()}</Text>
                   <Text
                     style={{ ...captionTextStyle, color: panel.problem() ? C.warning : C.muted }}
@@ -172,13 +201,12 @@ export function ComposerDetails(props: {
               style={{
                 minHeight: 0,
                 flexShrink: 1,
-                // A plan to review needs more room than a list of items.
-                maxHeight: key() === 'plan' ? windowSize().height / 2 : height(),
+                maxHeight: selected() === 'goal' ? windowSize().height / 2 : height(),
                 borderTopWidth: 1,
                 borderTopColor: C.line,
               }}
             >
-              {panels[key()].content(previewed)}
+              {panels[key()].content()}
             </View>
           )}
         </Each>

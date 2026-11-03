@@ -129,6 +129,7 @@ mod tests {
                 Uuid::new_v4(),
                 0,
                 Input {
+                    base: None,
                     instances: BTreeMap::new(),
                     ui: None,
                 },

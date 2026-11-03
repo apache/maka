@@ -74,8 +74,8 @@ export default {
           contract: contracts.terminal,
           cardinality: { kind: 'optional' },
         },
-        jev: {
-          contract: contracts.workspaceJev,
+        decisions_api: {
+          contract: contracts.workspaceDecisionsApi,
           cardinality: { kind: 'optional' },
         },
         web: {
@@ -328,6 +328,18 @@ export default {
           shortcut: 'alt+down',
           trigger: 'activity',
         },
+        queue: {
+          kind: 'command',
+          title: {
+            fallback: 'Add to queue',
+            translations: { 'zh-CN': '加入队列', 'zh-TW': '加入佇列' },
+          },
+          description: {
+            fallback: 'Send the current draft after this turn',
+            translations: { 'zh-CN': '本轮结束后发送当前草稿', 'zh-TW': '本輪結束後傳送目前草稿' },
+          },
+          order: 105,
+        },
         stop: {
           kind: 'command',
           title: {
@@ -341,22 +353,6 @@ export default {
           order: 110,
           hint: { fallback: 'Esc' },
           trigger: 'stop',
-        },
-        plan: {
-          kind: 'command',
-          title: {
-            fallback: 'Planning mode',
-            translations: { 'zh-CN': '规划模式', 'zh-TW': '規劃模式' },
-          },
-          description: {
-            fallback: 'Plan before changing anything, or stop planning',
-            translations: {
-              'zh-CN': '先规划再改动，或退出规划',
-              'zh-TW': '先規劃再變更，或結束規劃',
-            },
-          },
-          order: 120,
-          trigger: 'plan',
         },
       },
     },

@@ -231,10 +231,10 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
         let (mut socket, _) = listener.accept().await.unwrap();
         assert_eq!(request(&mut socket).await["reasoning_effort"], "high");
         for level in [Off, Low] {
-            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","model":selection,"thinkingLevel":level}), Uuid::new_v4()).await.unwrap();
+            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","delivery":"queue","model":selection,"thinkingLevel":level}), Uuid::new_v4()).await.unwrap();
             assert_eq!(result["kind"], "queued");
         }
-        assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.is_err());
+        assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.is_err());
         let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
         assert_eq!(pending.len(), 2);
         for (entry, level) in pending.iter().zip([Off, Low]) {
@@ -271,9 +271,11 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
                 context_window: Some(1_000_000),
                 input_limit: Some(900_000),
                 compaction_threshold: Some(700_000),
+                max_output_tokens: Some(8192),
                 ..Default::default()
             },
         )]));
+        changes.request_body_overlay = Patch::Set(json!({"seed":7}));
     })
     .await;
     let (source, prepared) = crate::model::Source::select(
@@ -296,6 +298,8 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
         source.accepted.editing_tools,
         Some(maka_agent_facts::execution::EditingTools::Structured)
     );
+    assert_eq!(prepared.main_output_limit, Some(8192));
+    assert_eq!(prepared.provider.body_overlay.as_ref().unwrap()["seed"], 7);
     let context = prepared.context.unwrap();
     assert_eq!(context.model_context_window, Some(1_000_000));
     assert_eq!(context.context_window, Some(900_000));
@@ -322,9 +326,11 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
                 apply_patch: Some(true),
                 context_window: Some(128_000),
                 input_limit: Some(96_000),
+                max_output_tokens: Some(4096),
                 ..Default::default()
             },
         )]));
+        changes.request_body_overlay = Patch::Set(json!({"seed":9}));
     })
     .await;
     let restored = crate::model::Source::restore(
@@ -335,7 +341,10 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
         fixture.owner.revision.clone(),
     )
     .unwrap();
-    assert_eq!(restored.capture().await.unwrap().context, Some(context));
+    let resumed = restored.capture().await.unwrap();
+    assert_eq!(resumed.context, Some(context));
+    assert_eq!(resumed.main_output_limit, Some(8192));
+    assert_eq!(resumed.provider.body_overlay.as_ref().unwrap()["seed"], 7);
     assert_eq!(restored.accepted.tool_mode, ToolMode::CodeMode);
     assert_eq!(
         restored.accepted.code_language,
@@ -357,6 +366,8 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
     )
     .await
     .unwrap();
+    assert_eq!(prepared.main_output_limit, Some(4096));
+    assert_eq!(prepared.provider.body_overlay.as_ref().unwrap()["seed"], 9);
     let context = prepared.context.unwrap();
     assert_eq!(context.model_context_window, Some(128_000));
     assert_eq!(context.context_window, Some(96_000));
@@ -383,6 +394,67 @@ async fn accepted_tool_policy_survives_settings_changes_and_requires_explicit_fi
             "accepted tool policy requires an explicit {field}"
         );
     }
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn accepted_model_ignores_presentation_edits_but_checks_route_and_disable() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let session = fixture.create("Accepted model settings").await;
+    let (source, original) = crate::model::Source::select(
+        fixture.config.clone(),
+        fixture.owner.catalog.clone(),
+        fixture.owner.credentials.clone(),
+        fixture.selection().await,
+        None,
+        session.clone(),
+        fixture.owner.revision.clone(),
+    )
+    .await
+    .unwrap();
+    edit(&fixture, |changes| {
+        changes.model_overrides = Patch::Set(BTreeMap::from([(
+            "fixture-model".into(),
+            ModelOverride {
+                display_name: Some("New display name".into()),
+                description: Some("New description".into()),
+                ..Default::default()
+            },
+        )]));
+    })
+    .await;
+    let prepared = source.capture().await.unwrap();
+    assert_eq!(prepared.context, original.context);
+    assert_eq!(prepared.provider.base_url, original.provider.base_url);
+    let auxiliary = source.capture_auxiliary().await.unwrap();
+    assert_eq!(auxiliary.provider.base_url, original.provider.base_url);
+
+    edit(&fixture, |changes| {
+        changes.configuration = Some(json!({"baseUrl":"http://127.0.0.1:2/v1"}))
+    })
+    .await;
+    assert!(
+        source.capture().await.is_err(),
+        "actual route changes invalidate the old authority"
+    );
+    let (next, prepared) = crate::model::Source::select(
+        fixture.config.clone(),
+        fixture.owner.catalog.clone(),
+        fixture.owner.credentials.clone(),
+        fixture.selection().await,
+        None,
+        session,
+        fixture.owner.revision.clone(),
+    )
+    .await
+    .unwrap();
+    assert_ne!(prepared.provider.base_url, original.provider.base_url);
+    edit(&fixture, |changes| changes.enabled = Some(false)).await;
+    assert!(
+        next.capture().await.is_err(),
+        "disabling a connection still prevents execution"
+    );
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }

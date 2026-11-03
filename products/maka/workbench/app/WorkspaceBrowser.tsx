@@ -51,7 +51,7 @@ import {
 import { Icon } from './Icon';
 import type { Browsing, BrowserProject, BrowserScope, BrowserWorkspace } from './browsing';
 import { SessionActions } from './SessionActions';
-import { groupConversations, type ConversationGroup } from './conversationGroups';
+import { groupWorkspace, groupConversations, type ConversationGroup } from './conversationGroups';
 import {
   hasForkPrefix,
   sessionActionTarget,
@@ -103,6 +103,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
   const titleBarRow = () => ownTitleBar && props.docked();
   // Desktop rows hold one line; the terminal's also name the workspace.
   const rowHeight = () => (compact() ? 32 : platform.isTerminal ? 48 : 36);
+  const navigationRowHeight = () => (platform.isTerminal && !compact() ? 40 : 32);
   const browser = props.browsing;
   const visibleSessions = computed(() => {
     const bot = props.botSession?.() ?? null;
@@ -348,50 +349,23 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
         }}
       >
         <Image src={logo} style={[{ width: 24, height: 24 }, { objectFit: 'contain' }]} />
-        <Text style={{ color: C.text, fontSize: 18, lineHeight: 24, fontWeight: '600', flex: 1 }}>
+        <Text style={{ color: C.text, fontSize: 14, lineHeight: 24, fontWeight: '600', flex: 1 }}>
           Maka
         </Text>
       </View>
-      <Button
-        accessibilityLabel={tr('New conversation')}
-        ref={(node) => {
-          if (platform.isTerminal) return;
-          navigationTarget = node;
-          focusBrowser();
-        }}
-        disabled={props.switching()}
-        onPress={inputAction(props.newConversation, props.selected())}
-        style={{
-          backgroundColor: C.raised,
-          height: compact() ? 32 : 40,
-          flexDirection: 'row',
-          gap: 8,
-          paddingHorizontal: 8,
-          paddingVertical: 8,
-          alignItems: 'center',
-          borderRadius: 8,
-        }}
-        hoverStyle={{ backgroundColor: C.raised }}
-        focusStyle={{ backgroundColor: C.line }}
-        disabledStyle={controlDisabledStyle}
-      >
-        <Icon name="plus" color={C.secondary} />
-        <Text style={{ color: C.text, fontSize: 14 }}>{tr('New conversation')}</Text>
-      </Button>
-      <If when={props.openBot !== undefined}>
+      <View style={{ gap: platform.isTerminal ? 8 : 2 }}>
         <Button
-          accessibilityLabel={tr('Maka Bot')}
+          accessibilityLabel={tr('New conversation')}
+          ref={(node) => {
+            if (platform.isTerminal) return;
+            navigationTarget = node;
+            focusBrowser();
+          }}
           disabled={props.switching()}
-          onPress={inputAction(
-            (origin: string | null) => props.openBot?.(origin),
-            props.selected(),
-          )}
+          onPress={inputAction(props.newConversation, props.selected())}
           style={{
-            backgroundColor:
-              props.botSession?.() != null && props.selected() === props.botSession?.()
-                ? C.line
-                : 'transparent',
-            height: compact() ? 32 : 40,
+            backgroundColor: platform.isTerminal ? C.raised : 'transparent',
+            height: navigationRowHeight(),
             flexDirection: 'row',
             gap: 8,
             paddingHorizontal: 8,
@@ -403,51 +377,89 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
           focusStyle={{ backgroundColor: C.line }}
           disabledStyle={controlDisabledStyle}
         >
-          <Icon name="activity" color={C.accent} />
-          <Text style={{ color: C.text, fontSize: 14 }}>{tr('Maka Bot')}</Text>
+          <Icon name="plus" color={C.secondary} />
+          <Text style={{ color: C.text, fontSize: 14 }}>{tr('New conversation')}</Text>
         </Button>
-      </If>
-      <If when={platform.isTerminal}>
+        <If when={props.openBot !== undefined}>
+          <Button
+            accessibilityLabel={tr('Maka Bot')}
+            disabled={props.switching()}
+            onPress={inputAction(
+              (origin: string | null) => props.openBot?.(origin),
+              props.selected(),
+            )}
+            style={{
+              backgroundColor:
+                props.botSession?.() != null && props.selected() === props.botSession?.()
+                  ? C.line
+                  : 'transparent',
+              height: navigationRowHeight(),
+              flexDirection: 'row',
+              gap: 8,
+              paddingHorizontal: 8,
+              paddingVertical: 8,
+              alignItems: 'center',
+              borderRadius: 8,
+            }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={{ backgroundColor: C.line }}
+            disabledStyle={controlDisabledStyle}
+          >
+            <Icon name="activity" color={C.secondary} />
+            <Text style={{ color: C.text, fontSize: 14 }}>{tr('Maka Bot')}</Text>
+          </Button>
+        </If>
+        <If when={platform.isTerminal}>
+          <Button
+            accessibilityLabel={tr('Choose workspace scope')}
+            ref={(node) => {
+              navigationTarget = node;
+              focusBrowser();
+            }}
+            onPress={inputAction(toggleScopes, null)}
+            style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
+            hoverStyle={{ backgroundColor: C.raised }}
+            focusStyle={{ backgroundColor: C.line }}
+          >
+            <Icon name="folder" color={C.secondary} />
+            <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
+              {scopeLabel()}
+            </Text>
+            <Icon name="down" color={C.secondary} />
+          </Button>
+        </If>
         <Button
-          accessibilityLabel={tr('Choose workspace scope')}
-          ref={(node) => {
-            navigationTarget = node;
-            focusBrowser();
+          accessibilityLabel={tr('Search conversations')}
+          tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
+          onPress={inputAction(props.search, props.selected())}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            paddingHorizontal: 8,
+            gap: 8,
+            height: 32,
+            backgroundColor: platform.isTerminal ? C.background : 'transparent',
+            borderRadius: 8,
           }}
-          onPress={inputAction(toggleScopes, null)}
-          style={{ ...controlStyle, flexDirection: 'row', alignItems: 'center', gap: 8 }}
-          hoverStyle={{ backgroundColor: C.raised }}
-          focusStyle={{ backgroundColor: C.line }}
+          hoverStyle={platform.isTerminal ? controlHoverStyle() : { backgroundColor: C.raised }}
+          focusStyle={platform.isTerminal ? controlFocusStyle() : { backgroundColor: C.line }}
         >
-          <Icon name="folder" color={C.secondary} />
-          <Text style={[{ color: C.secondary, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
-            {scopeLabel()}
-          </Text>
-          <Icon name="down" color={C.secondary} />
+          <Icon name="search" color={C.secondary} />
+          <If
+            when={platform.isTerminal}
+            else={
+              <Text style={[{ color: C.text, flex: 1, fontSize: 14 }, { numberOfLines: 1 }]}>
+                {tr('Search conversations')}
+              </Text>
+            }
+          >
+            <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
+              {tr('Search titles and messages…')}
+            </Text>
+          </If>
         </Button>
-      </If>
-      <Button
-        accessibilityLabel={tr('Search conversations')}
-        tooltip={textTooltip(() => `${tr('Search conversations')} · ${keymap.label('mod+o')}`)}
-        onPress={inputAction(props.search, props.selected())}
-        style={{
-          ...controlStyle,
-          flexDirection: 'row',
-          alignItems: 'center',
-          paddingHorizontal: 8,
-          gap: 8,
-          height: 32,
-          backgroundColor: C.background,
-          borderRadius: 8,
-        }}
-        hoverStyle={controlHoverStyle()}
-        focusStyle={controlFocusStyle()}
-      >
-        <Icon name="search" color={C.secondary} />
-        <Text style={[{ color: C.muted, flex: 1, fontSize: 13 }, { numberOfLines: 1 }]}>
-          {tr('Search titles and messages…')}
-        </Text>
-      </Button>
+      </View>
       <If when={platform.isTerminal}>
         <View
           style={{
@@ -597,13 +609,10 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const initialGroup = groupsById().get(key());
               if (initialGroup) {
                 const group = () => groupsById().get(key()) ?? initialGroup;
-                const hovered = signal(false);
                 const open = () => !collapsed().has(group().key);
-                const project = () => group().project;
+                const workspace = () => groupWorkspace(group());
                 return (
                   <View
-                    onMouseEnter={() => hovered.set(true)}
-                    onMouseLeave={() => hovered.set(false)}
                     style={{
                       flexDirection: 'row',
                       height: rowHeight(),
@@ -629,21 +638,17 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                       hoverStyle={controlHoverStyle()}
                       focusStyle={controlFocusStyle()}
                     >
-                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
                       <Text
                         style={[
-                          { ...captionTextStyle, color: C.secondary, fontWeight: '600', flex: 1 },
+                          { ...captionTextStyle, color: C.muted, flex: 1 },
                           { numberOfLines: 1 },
                         ]}
                       >
                         {group().name}
                       </Text>
+                      <Icon name={open() ? 'down' : 'right'} color={C.muted} />
                     </Button>
-                    <If
-                      when={
-                        project()?.selection && !project()?.archived && browser.filter() === 'all'
-                      }
-                    >
+                    <If when={workspace() !== null && browser.filter() === 'all'}>
                       <Button
                         accessibilityLabel={tr('New conversation in {name}', {
                           name: group().name,
@@ -651,25 +656,20 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         tooltip={textTooltip(() =>
                           tr('New conversation in {name}', { name: group().name }),
                         )}
-                        disabled={props.switching() || !project()?.available}
+                        disabled={props.switching()}
                         onPress={inputAction(createWorkspace, {
-                          workspace: {
-                            kind: 'project',
-                            project: project()!.reference,
-                            selection: project()!.selection!,
-                          },
+                          workspace: workspace()!,
                           origin: props.selected(),
-                          label: project()!.path ?? project()!.name,
+                          label: group().project?.path ?? group().name,
                         })}
                         style={{
                           width: 32,
                           alignItems: 'center',
                           justifyContent: 'center',
                           borderRadius: 8,
-                          opacity: hovered() ? 1 : 0,
                         }}
                         hoverStyle={controlHoverStyle()}
-                        focusStyle={{ opacity: 1 }}
+                        focusStyle={controlFocusStyle()}
                         disabledStyle={controlDisabledStyle}
                       >
                         <Icon name="plus" color={C.muted} />
@@ -699,6 +699,12 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
               const creator = () => {
                 const parent = session()?.parentSessionId;
                 return parent && !nestedRows().has(key()) ? sessionsById().get(parent) : undefined;
+              };
+              // The Bot is not in this list, so its workers cannot nest under it; mark them
+              // with the Bot's own icon (a text caption would shorten the title).
+              const botWorker = () => {
+                const parent = session()?.parentSessionId;
+                return parent != null && parent === props.botSession?.();
               };
               // The desktop names the workspace only where the group does not.
               const desktopCaption = () => {
@@ -796,7 +802,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                                   ? tr('From {title}', {
                                       title: creator()!.title || tr('Untitled conversation'),
                                     })
-                                  : undefined,
+                                  : botWorker()
+                                    ? tr('From {title}', { title: tr('Maka Bot') })
+                                    : undefined,
                               )
                         }
                         onPress={inputAction(select, { id: key(), origin: props.selected() })}
@@ -804,8 +812,6 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                           flex: 1,
                           minWidth: 0,
                           paddingHorizontal: 8,
-                          // Under its workspace, past the workspace's disclosure icon.
-                          paddingLeft: platform.isTerminal ? 8 : 32,
                           justifyContent: 'center',
                           borderRadius: 8,
                           backgroundColor: platform.isTerminal
@@ -846,6 +852,9 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                             >
                               {desktopCaption()}
                             </Text>
+                          </If>
+                          <If when={!platform.isTerminal && botWorker()}>
+                            <Icon name="activity" color={C.muted} />
                           </If>
                           <If when={session()?.hasUnread}>
                             <Icon name="unread" color={C.accent} />

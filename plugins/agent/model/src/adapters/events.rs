@@ -272,6 +272,7 @@ impl Events {
                 let usage = finish.usage.unwrap_or_default();
                 self.finished = true;
                 ModelEvent::Finished {
+                    compaction: None,
                     reason,
                     usage: ModelUsage {
                         input_tokens: usage.input,

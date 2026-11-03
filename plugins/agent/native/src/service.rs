@@ -137,38 +137,6 @@ impl Handler for Agent {
                 ),
                 "fileCandidates" => owner.file_candidates(decode(input)?, context).await,
                 "tools" => encode(owner.tool_names(context.scope()).await?),
-                "plan" => encode(owner.plan(decode(input)?).await?),
-                "planHistory" => encode(owner.plan_history(decode(input)?).await?),
-                "planReceipt" => encode(owner.plan_receipt(decode(input)?).await?),
-                "changePlan" => {
-                    let operation = context
-                        .operation()
-                        .ok_or("agent_mutation_required")?
-                        .clone();
-                    encode(
-                        owner
-                            .plan_change(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
-                "watchPlan" => {
-                    let input: PlanRead = decode(input)?;
-                    let mut changes = owner.plan_changes();
-                    let mut revision = None;
-                    loop {
-                        changes.borrow_and_update();
-                        let page = owner.plan(input.clone()).await?;
-                        if revision != Some(page.current.revision) {
-                            revision = Some(page.current.revision);
-                            context.emit(encode(page)?).await?;
-                        }
-                        tokio::select! {
-                            biased;
-                            _ = context.scope().cancellation.cancelled() => return Err("plan_observation_cancelled".into()),
-                            result = changes.changed() => result.map_err(|_| "plan_observation_closed")?,
-                        }
-                    }
-                }
                 "goalReceipt" => encode(owner.goal_receipt(decode(input)?).await?),
                 "goal" => encode(owner.goal(decode(input)?).await?),
                 "changeGoal" => {
@@ -211,6 +179,22 @@ impl Handler for Agent {
                 }
                 "checklist" => encode(owner.checklist(&decode(input)?).await?),
                 "recap" => encode(owner.recap(decode(input)?, context.scope()).await?),
+                "predictNextMessage" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .predict_next_message(
+                                decode(input)?,
+                                context.scope(),
+                                operation,
+                                context
+                                    .operation_scope()
+                                    .ok_or("agent_mutation_required")?
+                                    .clone(),
+                            )
+                            .await?,
+                    )
+                }
                 "generateRecap" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -376,6 +360,32 @@ impl Handler for Agent {
                     }
                     encode(created)
                 }
+                "previewHistoryCheckpoint" => encode(
+                    owner
+                        .preview_history_checkpoint(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "publishHistoryCheckpoint" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .publish_history_checkpoint(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "historyCheckpointReceipt" => encode(
+                    owner
+                        .history_checkpoint_receipt(decode(input)?, context)
+                        .await?,
+                ),
+                "historyCheckpointHead" => encode(
+                    owner
+                        .history_checkpoint_head(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "readHistoryCheckpoint" => {
+                    owner.read_history_checkpoint(decode(input)?, context).await
+                }
                 "fork" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
@@ -433,6 +443,13 @@ impl Handler for Agent {
                     let compacting = observed.compacting.map(|progress| CompactionProgress {
                         id: progress.id,
                         started_at: progress.started_at,
+                    });
+                    let last_completed_turn_id = observed.root_turn.as_ref().and_then(|turn| {
+                        matches!(
+                            turn.state.terminal_outcome(),
+                            Some(maka_agent_facts::event::InvocationOutcome::Completed)
+                        )
+                        .then(|| turn.root_invocation().turn_id.clone())
                     });
                     let run = observed.root_turn.and_then(|turn| {
                         let state = match turn.state {
@@ -503,6 +520,7 @@ impl Handler for Agent {
                     let result = encode(Observation {
                         compacting,
                         session,
+                        last_completed_turn_id,
                         metrics,
                         remembered_backend,
                         through: observed.through_sequence,
@@ -1304,7 +1322,6 @@ pub(crate) fn summary_for(
         parent_session_id: session.configuration.parent_session_id,
         branch,
         backend: session.configuration.backend,
-        collaboration_mode: session.configuration.collaboration_mode,
         tools: session.configuration.tools,
         data_source: Box::new(data_source.clone()),
         permissions: session.configuration.permissions,

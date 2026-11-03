@@ -48,6 +48,8 @@ pub enum CompletionPart {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelCompletion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<super::NativeCompaction>,
     pub parts: Vec<CompletionPart>,
     pub finish_reason: ModelFinishReason,
     pub usage: ModelUsage,

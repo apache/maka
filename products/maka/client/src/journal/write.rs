@@ -67,6 +67,15 @@ pub(super) enum Command {
         edit: DraftEdit,
     },
     Reserve(Reservation),
+    ReserveSend {
+        reservation: Reservation,
+        draft: DraftReference,
+    },
+    RetrySend {
+        original: Uuid,
+        reservation: Reservation,
+    },
+    DismissSend(Uuid),
     ReserveSettings {
         reservation: Reservation,
         correlation: Value,
@@ -113,6 +122,21 @@ impl Command {
             Self::Reserve(reservation) => reserve(connection, reservation)
                 .await
                 .map(|()| Output::Unit),
+            Self::ReserveSend { reservation, draft } => {
+                reserve_send(connection, reservation, &draft).await?;
+                Ok(Output::Unit)
+            }
+            Self::RetrySend {
+                original,
+                reservation,
+            } => {
+                retry_send(connection, original, reservation).await?;
+                Ok(Output::Unit)
+            }
+            Self::DismissSend(id) => {
+                dismiss_send(connection, id).await?;
+                Ok(Output::Unit)
+            }
             Self::ReserveSettings {
                 reservation,
                 correlation,
@@ -336,6 +360,78 @@ async fn reserve(connection: &mut SqliteConnection, reservation: Reservation) ->
     Ok(())
 }
 
+async fn reserve_send(
+    connection: &mut SqliteConnection,
+    reservation: Reservation,
+    draft: &DraftReference,
+) -> Result<()> {
+    let id = reservation.id.clone();
+    let owner = serde_json::to_string(&draft.key).map_err(error)?;
+    reserve(connection, reservation).await?;
+    let consumed = sqlx::query(
+        "UPDATE drafts SET consumed=1,text='',attachments='[]' WHERE owner=? AND revision=? AND consumed=0",
+    )
+    .bind(&owner)
+    .bind(draft.revision as i64)
+    .execute(&mut *connection)
+    .await
+    .map_err(error)?;
+    if consumed.rows_affected() != 1 {
+        return Err("saved draft revision changed before sending".into());
+    }
+    pending_send(connection, &id, &owner).await?;
+    Ok(())
+}
+
+async fn retry_send(
+    connection: &mut SqliteConnection,
+    original: Uuid,
+    reservation: Reservation,
+) -> Result<()> {
+    let row = sqlx::query(
+        "SELECT context,reference,receipt,abandoned FROM operations WHERE id=? AND domain=? AND deployment=? AND draft_owner=? AND EXISTS (SELECT 1 FROM pending_sends WHERE operation=operations.id)",
+    )
+    .bind(original.to_string())
+    .bind(&reservation.domain)
+    .bind(&reservation.deployment)
+    .bind(&reservation.draft_owner)
+    .fetch_optional(&mut *connection)
+    .await
+    .map_err(error)?
+    .ok_or("original send is no longer available for retry")?;
+    let previous = decode_operation(row)?;
+    if !super::retryable_send(&previous) && super::queued_send(&previous).is_none() {
+        return Err("original send must be confirmed unsent before retrying".into());
+    }
+    let id = reservation.id.clone();
+    let owner = reservation
+        .draft_owner
+        .clone()
+        .ok_or("send requires a draft owner")?;
+    reserve(connection, reservation).await?;
+    pending_send(connection, &id, &owner).await?;
+    dismiss_send(connection, original).await
+}
+
+async fn dismiss_send(connection: &mut SqliteConnection, id: Uuid) -> Result<()> {
+    sqlx::query("DELETE FROM pending_sends WHERE operation=?")
+        .bind(id.to_string())
+        .execute(&mut *connection)
+        .await
+        .map_err(error)?;
+    Ok(())
+}
+
+async fn pending_send(connection: &mut SqliteConnection, id: &str, owner: &str) -> Result<()> {
+    sqlx::query("INSERT INTO pending_sends(operation,owner) VALUES(?,?)")
+        .bind(id)
+        .bind(owner)
+        .execute(&mut *connection)
+        .await
+        .map_err(error)?;
+    Ok(())
+}
+
 async fn reserve_settings(
     connection: &mut SqliteConnection,
     reservation: Reservation,
@@ -465,15 +561,9 @@ async fn observe(
         .map_err(error)?;
     if let Some(draft) = draft
         && accepted_send(&next, &draft.key.session_id)
+        && matches!(&next, Receipt::Recorded { outcome: OperationOutcome::Returned { value }, .. } if value["kind"] == "started")
     {
-        // Receipt and conditional draft clearing are one durable product
-        // transition. A later edit or unknown outcome cannot clear this text.
-        sqlx::query("UPDATE drafts SET consumed=1,text='' WHERE owner=? AND revision=?")
-            .bind(serde_json::to_string(&draft.key).map_err(error)?)
-            .bind(draft.revision as i64)
-            .execute(&mut *connection)
-            .await
-            .map_err(error)?;
+        dismiss_send(connection, id).await?;
     }
     Ok(())
 }

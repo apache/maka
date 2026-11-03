@@ -410,6 +410,19 @@ pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -
     assert!(matches!(config.set_default_target(serde_json::from_value(json!({"expectedCatalogRevision":config.catalog().await.unwrap().revision,"target":{"connectionId":connection.connection_id,"modelId":"fixture-model"}})).unwrap()).await.unwrap(), CatalogMutationResult::Committed {..}));
     let connection = config.catalog().await.unwrap().connections.remove(0);
     let selection = json!({"connectionId":connection.connection_id,"revision":connection.revision,"modelId":"fixture-model"});
+    assert!(matches!(
+        config
+            .set_message_predictions(
+                config.runtime_policy().await.unwrap().revision,
+                maka_agent_facts::configuration::policy::MessagePredictionSettings {
+                    enabled: false,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap(),
+        maka_agent_facts::configuration::policy::RuntimePolicyMutationResult::Committed { .. }
+    ));
     config.shutdown().await.unwrap();
     selection
 }
@@ -615,14 +628,7 @@ pub async fn wait_enabled_button(
                     nsh_core::AccessibilityRole::Button | nsh_core::AccessibilityRole::Menuitem
                 )
             })
-            .map(|node| {
-                (
-                    node.id,
-                    node.label.chars().take(160).collect::<String>(),
-                    node.state.disabled,
-                    node.frame,
-                )
-            })
+            .map(|node| (node.id, node.label, node.state.disabled, node.frame))
             .collect();
         panic!(
             "native button {label:?} did not become enabled:\n{}\nbuttons={buttons:#?}",
@@ -685,7 +691,12 @@ pub fn wait_view_state(
             }
             assert!(
                 started.elapsed() < Duration::from_secs(20),
-                "expected real UI state did not appear at {caller}:\n{snapshot}"
+                "expected real UI state did not appear at {caller}:\n{snapshot}\naccessibility={:?}",
+                view.accessibility_snapshot()
+                    .into_iter()
+                    .filter(|node| !node.label.is_empty())
+                    .map(|node| (node.label, node.state.disabled))
+                    .collect::<Vec<_>>()
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -745,16 +756,8 @@ impl ReplyGate {
     pub fn resume(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "resume", "mutation")
     }
-    pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "settings", "resolveModel", "finished")
-    }
-    #[cfg(feature = "desktop-tests")]
-    pub fn create(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "create", "mutation")
-    }
-    #[cfg(feature = "desktop-tests")]
-    pub fn upload(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "uploadAttachment", "mutation")
+    pub fn send(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "send", "mutation")
     }
     fn for_method(
         directory: &Path,

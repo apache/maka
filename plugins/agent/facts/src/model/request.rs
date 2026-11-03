@@ -99,6 +99,7 @@ pub struct Provider {
 /// to the selected implementation, not to the canonical log.
 #[derive(Clone)]
 pub struct Request {
+    pub operation: crate::context::ModelOperation,
     pub language: crate::language::Language,
     pub provider: Provider,
     pub prompt: Prompt,

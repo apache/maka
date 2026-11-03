@@ -591,6 +591,11 @@ mod tests {
                 b"<plist version=\"1.0\"/>\n",
             );
             append("bin/Maka.app/Contents/Resources/Maka.icns", b"icns");
+            append(
+                "bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/Info.plist",
+                b"<plist version=\"1.0\"/>\n",
+            );
+            append(target.host_shell().unwrap(), &binary);
             for name in ["DISCLAIMER", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"] {
                 append(
                     &format!("bin/Maka.app/Contents/Resources/{name}"),

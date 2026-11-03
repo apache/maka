@@ -70,6 +70,7 @@ pub(super) fn integer_field(value: &mut Value, key: &str) {
 }
 
 fn normalize_policy(policy: &mut RuntimePolicy) -> Result<(), String> {
+    policy.predictions.validate()?;
     proxy(&mut policy.network_proxy)?;
     shell(&mut policy.shell)?;
     external_agents(&policy.external_agents)?;

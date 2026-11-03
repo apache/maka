@@ -100,6 +100,7 @@ pub(super) fn request(id: &str, step: &str, source: Option<&ModelContextSource>)
 pub(super) async fn tool(log: &EventLog, id: &str, step: &str, text: String) -> EventWrite {
     log.append(&request(id, step, None)).await.unwrap();
     let output = ModelCompletion {
+        compaction: None,
         parts: vec![model_part(
             id,
             step,
@@ -214,16 +215,18 @@ pub(super) async fn summary_pair(
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest.clone(),
                 previous_checkpoint_id: source.baseline.as_ref().map(|b| b.event_id.clone()),
-                summary: TextSummary::from_parts(
-                    output.finish_reason,
-                    output.parts.iter().filter_map(|part| match part {
-                        maka_agent_facts::model::recorded::CompletionPart::Own(record) => {
-                            Some(record.part.as_ref())
-                        }
-                        _ => None,
-                    }),
-                )
-                .unwrap(),
+                summary: maka_agent_facts::context::CheckpointContent::text(
+                    TextSummary::from_parts(
+                        output.finish_reason,
+                        output.parts.iter().filter_map(|part| match part {
+                            maka_agent_facts::model::recorded::CompletionPart::Own(record) => {
+                                Some(record.part.as_ref())
+                            }
+                            _ => None,
+                        }),
+                    )
+                    .unwrap(),
+                ),
                 summary_step_id: summary_step,
             },
         },
@@ -268,6 +271,7 @@ pub(super) fn model_part(
 
 pub(super) fn summary_completion(invocation: &str, step: &str, text: &str) -> ModelCompletion {
     ModelCompletion {
+        compaction: None,
         parts: vec![model_part(
             invocation,
             step,

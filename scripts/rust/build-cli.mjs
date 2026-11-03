@@ -81,6 +81,7 @@ export async function compileCli({
     '-p',
     'maka-cli',
     ...(desktop ? ['-p', 'maka-desktop-shell'] : []),
+    ...(desktop && triple.includes('-apple-darwin') ? ['-p', 'maka-host-shell'] : []),
     '-p',
     'maka-python-runtime',
   ];
@@ -138,6 +139,15 @@ export function desktopShell(platform) {
 /** The desktop's identity; the shell gives its window the same application id. */
 const desktopApp = { id: 'org.apache.maka.desktop', name: 'Maka' };
 
+/**
+ * The identity the Host runs under on macOS, so privacy grants belong to it
+ * (products/maka/cli/src/deployment/host_identity.rs). macOS ties a grant to
+ * the bytes of its executable, and an installed helper is replaced only by a
+ * higher version: bump `version` only when the helper must change. Every
+ * bump makes users allow "Maka Host" again.
+ */
+const hostApp = { id: 'org.apache.maka.host', name: 'Maka Host', version: '1' };
+
 /** `[workspace.package] version`, which every Maka crate takes. */
 export function workspaceVersion(manifest) {
   const section = /^\[workspace\.package\]$([^]*?)(?=^\[|(?![^]))/mu.exec(manifest)?.[1];
@@ -147,8 +157,9 @@ export function workspaceVersion(manifest) {
 }
 
 /**
- * Stage `Maka.app`: the shell, which carries the workbench, and the
- * Info.plist and icon macOS reads.
+ * Stage `Maka.app`: the shell, which carries the workbench, the Info.plist
+ * and icon macOS reads, and the Host's helper `Maka Host.app`, built beside
+ * the shell.
  */
 export async function stageDesktopBundle(repositoryRoot, shell, destination) {
   const version = workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
@@ -168,6 +179,7 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination) {
     const executable = join(contents, 'MacOS', 'maka-desktop-shell');
     await copyFile(shell, executable, constants.COPYFILE_FICLONE);
     await chmod(executable, 0o755);
+    await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents);
     await chmod(stage, 0o755);
     await rm(destination, { recursive: true, force: true });
     await rename(stage, destination);
@@ -177,7 +189,46 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination) {
   }
 }
 
-function infoPlist({ id, name, version }) {
+/**
+ * `Contents/Helpers/Maka Host.app`. It carries no build-specific value, and
+ * no signature beyond the linker's: macOS registers it by bundle id and ties
+ * the grant to the executable's code hash.
+ */
+async function stageHostBundle(hostShell, contents) {
+  const metadata = await lstat(hostShell);
+  if (!metadata.isFile() || metadata.size === 0) {
+    throw new Error(`Host shell is not a regular file: ${hostShell}`);
+  }
+  const host = join(contents, 'Helpers', `${hostApp.name}.app`, 'Contents');
+  await mkdir(join(host, 'MacOS'), { recursive: true });
+  await writeFile(
+    join(host, 'Info.plist'),
+    infoPlist({
+      ...hostApp,
+      executable: 'maka-host-shell',
+      icon: undefined,
+      extra: [
+        ['LSUIElement', true],
+        [
+          'NSAccessibilityUsageDescription',
+          'Maka Host controls apps on your behalf when you use Computer Use.',
+        ],
+      ],
+    }),
+  );
+  const executable = join(host, 'MacOS', 'maka-host-shell');
+  await copyFile(hostShell, executable, constants.COPYFILE_FICLONE);
+  await chmod(executable, 0o755);
+}
+
+function infoPlist({
+  id,
+  name,
+  version,
+  executable = 'maka-desktop-shell',
+  icon = 'Maka',
+  extra = [],
+}) {
   // `CFBundleVersion` takes up to three integers, so a pre-release or build
   // suffix stays in the short version only.
   const build = /^[0-9]+\.[0-9]+\.[0-9]+/u.exec(version)?.[0] ?? version;
@@ -195,8 +246,8 @@ function infoPlist({ id, name, version }) {
     ...[
       ['CFBundleDevelopmentRegion', 'en'],
       ['CFBundleDisplayName', name],
-      ['CFBundleExecutable', 'maka-desktop-shell'],
-      ['CFBundleIconFile', 'Maka'],
+      ['CFBundleExecutable', executable],
+      ...(icon ? [['CFBundleIconFile', icon]] : []),
       ['CFBundleIdentifier', id],
       ['CFBundleInfoDictionaryVersion', '6.0'],
       ['CFBundleName', name],
@@ -207,6 +258,11 @@ function infoPlist({ id, name, version }) {
     ].map(([key, value]) => `  <key>${key}</key>\n  <string>${escape(value)}</string>`),
     '  <key>NSHighResolutionCapable</key>',
     '  <true/>',
+    ...extra.map(([key, value]) =>
+      value === true
+        ? `  <key>${key}</key>\n  <true/>`
+        : `  <key>${key}</key>\n  <string>${escape(value)}</string>`,
+    ),
     '</dict>',
     '</plist>',
     '',
