@@ -295,6 +295,7 @@ impl Owner {
             self.auxiliary
                 .generate(
                     ModelRequest {
+                        operation: maka_agent_facts::context::ModelOperation::Inference,
                         language: input.language,
                         provider: prepared.provider,
                         prompt: prompt.into(),

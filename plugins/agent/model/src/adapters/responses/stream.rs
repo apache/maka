@@ -163,7 +163,7 @@ async fn run(
         .map_err(|_| ModelError::Adapter("invalid Responses endpoint".into()))?;
     url.set_path(&format!("{}/responses", url.path().trim_end_matches('/')));
     let headers = headers(&request)?;
-    let mut decoder = Decoder::new(plaintext, &request.tools);
+    let mut decoder = Decoder::new(plaintext, &request.tools).operation(request.operation);
     let lane = lane.filter(|_| {
         request.provider.headers.is_empty()
             && request
@@ -655,6 +655,7 @@ mod upload_settlement_tests {
                 owner: weak.clone(),
             });
             let request = ModelRequest {
+                operation: maka_agent_facts::context::ModelOperation::Inference,
                 language: Language::En,
                 provider: maka_agent_ports::model::Provider {
                     kind: ProviderKind::OpenaiResponses,

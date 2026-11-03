@@ -74,6 +74,7 @@ pub struct ProviderConfig {
 
 /// Provider input projected from canonical facts, never a history authority.
 pub struct ModelRequest {
+    pub operation: maka_agent_facts::context::ModelOperation,
     pub language: maka_agent_facts::language::Language,
     pub provider: ProviderConfig,
     pub prompt: prompt::Prompt,
@@ -139,6 +140,7 @@ impl ModelRequest {
             }
         };
         Ok(Request {
+            operation: self.operation,
             language: self.language,
             provider: Provider {
                 kind: self.provider.kind,

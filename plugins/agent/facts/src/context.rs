@@ -59,6 +59,8 @@ pub fn effective_output_limit(configured: Option<u64>) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequestContext {
+    #[serde(default, skip_serializing_if = "ModelOperation::is_inference")]
+    pub operation: ModelOperation,
     pub provider_id: String,
     /// Captured at request preparation; never reconstructed from a later catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -76,6 +78,47 @@ pub struct ModelRequestContext {
     /// None means no usable threshold; overflow recovery remains available.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub declared_window: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelOperation {
+    #[default]
+    Inference,
+    CodexCompaction,
+}
+
+impl ModelOperation {
+    pub fn is_inference(&self) -> bool {
+        *self == Self::Inference
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CheckpointContent {
+    Text(String),
+    CodexNative {
+        item_digest: String,
+        estimated_tokens: u64,
+    },
+}
+impl CheckpointContent {
+    pub fn text_value(&self) -> Option<&str> {
+        match self {
+            Self::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+    pub fn text(summary: TextSummary) -> Self {
+        Self::Text(summary.text)
+    }
+    pub fn native(item: &crate::model::NativeCompaction, estimated_tokens: u64) -> Self {
+        Self::CodexNative {
+            item_digest: item.digest(),
+            estimated_tokens,
+        }
+    }
 }
 
 /// ChatGPT subscription facts. Account/connection identify provenance, not replay permission.
@@ -97,6 +140,9 @@ pub struct CodexCompatibility {
 
 impl ModelRequestContext {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if self.operation == ModelOperation::CodexCompaction && self.codex.is_none() {
+            return Err("native compaction requires ChatGPT provenance");
+        }
         if let Some(codex) = &self.codex {
             if codex.connection_id.is_empty()
                 || codex
@@ -175,7 +221,7 @@ pub struct ContextCheckpoint {
     pub source_digest: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_checkpoint_id: Option<String>,
-    pub summary: TextSummary,
+    pub summary: CheckpointContent,
     pub summary_step_id: String,
 }
 
@@ -234,6 +280,20 @@ impl ContextCheckpoint {
     /// Storage additionally verifies same-Session coverage, predecessor and the
     /// exact completed summary attempt; these are not inferred from the shape.
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let CheckpointContent::CodexNative {
+            item_digest,
+            estimated_tokens,
+            ..
+        } = &self.summary
+            && (item_digest.len() != 71
+                || !item_digest.starts_with("sha256:")
+                || !item_digest.as_bytes()[7..]
+                    .iter()
+                    .all(u8::is_ascii_hexdigit)
+                || *estimated_tokens > 9_007_199_254_740_991)
+        {
+            return Err("invalid native Codex checkpoint");
+        }
         if let CheckpointMode::MidTurn { anchor_event_id } = &self.mode {
             crate::interaction::entity_id(anchor_event_id)?;
         }
@@ -261,6 +321,7 @@ mod tests {
     #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {
         let mut context = ModelRequestContext {
+            operation: ModelOperation::Inference,
             codex: None,
             provider_id: "😀".repeat(256),
             context_window: None,
@@ -296,6 +357,17 @@ mod tests {
             serde_json::from_value::<ModelRequestContext>(encoded).unwrap(),
             context
         );
+    }
+
+    #[test]
+    fn ordinary_context_and_text_checkpoint_keep_their_canonical_wire_shapes() {
+        let original = serde_json::json!({"provider_id":"chatgpt","codex":{"connection_id":"connection","account_id":null,"compatibility":null}});
+        let context: ModelRequestContext = serde_json::from_value(original.clone()).unwrap();
+        assert_eq!(context.operation, ModelOperation::Inference);
+        assert_eq!(serde_json::to_value(context).unwrap(), original);
+        let text = serde_json::json!({"text":"checkpoint"});
+        let summary: CheckpointContent = serde_json::from_value(text.clone()).unwrap();
+        assert_eq!(serde_json::to_value(summary).unwrap(), text);
     }
 
     #[test]

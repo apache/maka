@@ -370,6 +370,11 @@ async fn describe_with(
             while let Some(part) = cursor.next().await? {
                 last_is_tool_result = matches!(part, AssistantRecipe::ToolResult(_));
                 match part {
+                    AssistantRecipe::CodexCompaction { item } => {
+                        measure.marker(b"codex-compaction");
+                        measure.json(&item, false).await?;
+                    }
+
                     AssistantRecipe::Text {
                         text,
                         provider_options,

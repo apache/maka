@@ -214,14 +214,53 @@ pub(super) async fn validate(
     let parts = crate::model_items::resolve_parts(connection, &completion).await?;
     if completion.invocation != event.invocation
         || !(opened < requested && requested < completed && completed < sequence)
-        || TextSummary::from_parts(
-            output.finish_reason,
-            parts.iter().map(|record| record.part.as_ref()),
-        )
-        .map_err(|_| invalid("invalid completed summary"))?
-            != checkpoint.summary
     {
-        return Err(invalid("summary does not match its completed model step"));
+        return Err(invalid("checkpoint completion identity mismatch"));
+    }
+    match &checkpoint.summary {
+        maka_agent_facts::context::CheckpointContent::Text(text) => {
+            if matches!(&request.fact, Fact::ModelRequested { context: Some(context), .. } if !context.operation.is_inference())
+            {
+                return Err(invalid("native request cannot install a text checkpoint"));
+            }
+            if TextSummary::from_parts(
+                output.finish_reason,
+                parts.iter().map(|record| record.part.as_ref()),
+            )
+            .map_err(|_| invalid("invalid completed summary"))?
+            .text
+                != *text
+            {
+                return Err(invalid("summary does not match its completed model step"));
+            }
+        }
+        maka_agent_facts::context::CheckpointContent::CodexNative {
+            item_digest,
+            estimated_tokens,
+        } => {
+            let Fact::ModelRequested {
+                context: Some(context),
+                ..
+            } = &request.fact
+            else {
+                return Err(invalid("native checkpoint has no producer context"));
+            };
+            if context.operation != maka_agent_facts::context::ModelOperation::CodexCompaction
+                || context.codex.is_none()
+                || output.usage.output_tokens.or(context.context_window) != Some(*estimated_tokens)
+                || output.finish_reason != maka_agent_facts::model::ModelFinishReason::Stop
+                || output
+                    .compaction
+                    .as_ref()
+                    .map(|output| output.digest())
+                    .as_ref()
+                    != Some(item_digest)
+            {
+                return Err(invalid(
+                    "native checkpoint does not match its completed model step",
+                ));
+            }
+        }
     }
     Ok(selection)
 }

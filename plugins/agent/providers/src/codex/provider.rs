@@ -107,7 +107,7 @@ impl Provider for Codex {
                     .as_ref()
                     .and_then(|value| value.catalog_model.as_ref()),
             );
-            let info = match &request.overrides {
+            let mut info = match &request.overrides {
                 Some(overrides) => overrides.apply(&reported),
                 None => reported,
             };
@@ -158,6 +158,7 @@ impl Provider for Codex {
             if summary || level.is_some() {
                 options["openai"]["forceReasoning"] = json!(true);
             }
+            info.capabilities.get_or_insert_default().native_compaction = Some(true);
             let model = Model {
                 main_output_limit: request
                     .overrides

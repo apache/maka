@@ -90,6 +90,7 @@ async fn fixture_with_changes(
         write(Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: vec![CompletionPart::Own(ModelPartRecord {
                     ordinal: 0,
                     message_id: tool_use_id("invocation", "step:call"),

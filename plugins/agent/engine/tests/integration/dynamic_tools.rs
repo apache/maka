@@ -161,7 +161,7 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
                 input.configuration.tool_mode = mode;
                 // Exercise measured-usage compaction, without making the
                 // discovery prompt itself exceed the provider input capacity.
-                input.context = Some(ModelRequestContext { codex: None, provider_id:"openai".into(), context_window:Some(64_000), declared_window:Some(210), model_context_window:None });
+                input.context = Some(ModelRequestContext { operation: maka_agent_facts::context::ModelOperation::Inference, codex: None, provider_id:"openai".into(), context_window:Some(64_000), declared_window:Some(210), model_context_window:None });
                 input.work = RunWork::Message { source_messages:Vec::new(), message:"Use echo".into(), tools:catalog };
                 let engine = fixture::engine();
                 engine.run(log.store(), input, CancellationToken::new()).await.unwrap();

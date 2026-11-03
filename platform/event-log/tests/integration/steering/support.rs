@@ -126,6 +126,7 @@ pub async fn assert_provider_identity(log: &EventLog) {
         Fact::ModelCompleted {
             step_id: "provider-step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: vec![
                     CompletionPart::Ref(RecordedPartRef {
                         event_id: original_call.event().id.clone(),

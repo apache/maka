@@ -258,6 +258,7 @@ mod tests {
             Fact::ModelCompleted {
                 step_id: "step".into(),
                 output: maka_agent_facts::model::recorded::ModelCompletion {
+                    compaction: None,
                     parts: vec![maka_agent_facts::model::recorded::CompletionPart::Own(
                         maka_agent_facts::model::recorded::ModelPartRecord {
                             ordinal: 0,

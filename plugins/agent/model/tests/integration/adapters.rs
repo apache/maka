@@ -68,6 +68,7 @@ impl Session for Controlled {
                 .events
                 .emit(
                     ModelEvent::Finished {
+                        compaction: None,
                         reason: maka_agent_facts::model::ModelFinishReason::Stop,
                         usage: Default::default(),
                         provider_options: None,

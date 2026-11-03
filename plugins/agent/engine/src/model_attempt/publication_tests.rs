@@ -361,6 +361,7 @@ fn events(failed_tail: bool) -> Vec<ModelEvent> {
         }
     } else {
         ModelEvent::Finished {
+            compaction: None,
             reason: ModelFinishReason::ToolCalls,
             usage: Default::default(),
             provider_options: None,

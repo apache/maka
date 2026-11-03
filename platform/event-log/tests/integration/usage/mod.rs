@@ -102,6 +102,7 @@ async fn physical_attempt_usage_survives_rejection_copy_removal_and_reopen() {
             Fact::ModelCompleted {
                 step_id: "success".into(),
                 output: ModelCompletion {
+                    compaction: None,
                     parts: vec![],
                     finish_reason: ModelFinishReason::Stop,
                     usage: ModelUsage {

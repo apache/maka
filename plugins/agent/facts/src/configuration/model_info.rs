@@ -234,6 +234,8 @@ impl ImageInput {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelCapabilities {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_compaction: Option<bool>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

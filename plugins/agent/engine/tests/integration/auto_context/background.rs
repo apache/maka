@@ -46,9 +46,46 @@ async fn respond_tail_call(
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
 }
 
+fn configure_native(input: &mut maka_agent_engine::RunInput, base: &str, threshold: Option<u64>) {
+    let template = crate::codex_compaction::input(base, "template", false);
+    input.provider_id = template.provider_id;
+    input.provider = template.provider;
+    input.provider_options = template.provider_options;
+    input.context = template.context;
+    input.context.as_mut().unwrap().declared_window = threshold;
+    input.configuration.workspace_identity = template.configuration.workspace_identity;
+}
+fn tool_result(message: &serde_json::Value, native: bool) -> bool {
+    if native {
+        message["type"] == "function_call_output"
+    } else {
+        message["role"] == "tool"
+    }
+}
+fn call_id(message: &serde_json::Value, native: bool) -> &serde_json::Value {
+    &message[if native { "call_id" } else { "tool_call_id" }]
+}
+async fn respond_for(socket: &mut tokio::net::TcpStream, text: &str, native: bool) {
+    if native {
+        crate::codex_compaction::respond(socket, crate::codex_compaction::message(text), text)
+            .await;
+    } else {
+        fixture::respond(socket, text, "stop").await;
+    }
+}
+async fn respond_call_for(socket: &mut tokio::net::TcpStream, id: &str, value: u64, native: bool) {
+    if native {
+        crate::codex_compaction::respond(socket,
+            json!({"type":"function_call","id":format!("item-{id}"),"call_id":id,"name":"echo","arguments":json!({"value":value}).to_string()}), id).await;
+    } else {
+        respond_tail_call(socket, id, value).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_retry() {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    for native in [false, true] {
+        tokio::time::timeout(Duration::from_secs(20), async {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(SessionFixture::open(&directory.path().join("events.sqlite")).await.unwrap());
 
@@ -61,12 +98,14 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
         next.configuration.model = fixture::input(&base, "unused", false).configuration.model;
         next.context = context(Some(70));
         next.provider.auth = maka_model::ProviderAuth::ApiKey("fixture".into());
+        if native { configure_native(&mut next, &base, Some(70)); }
+        let history_key = if native { "input" } else { "messages" };
         let invocation = next.invocation.clone();
         let observed = log.clone();
         let server = tokio::spawn(async move {
             let (mut old, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut old).await;
-            fixture::respond(&mut old, "old-answer", "stop").await;
+            respond_for(&mut old, "old-answer", native).await;
             let mut summary = None;
             let mut main = None;
             // Both requests must arrive while neither has a response. With a
@@ -74,26 +113,27 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             for _ in 0..2 {
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let request = fixture::read_request(&mut socket).await;
-                if request["messages"].to_string().contains(maka_agent_facts::context::default_compaction_prompt(maka_agent_facts::language::Language::En).lines().next().unwrap()) {
-                    assert!(!request["messages"].to_string().contains("question next"));
-                    assert!(!request["messages"].to_string().contains("A queued correction"));
-                    assert!(!request["messages"].to_string().contains("during-summary-call"));
+                if (native && request[history_key].as_array().unwrap().iter().any(|item| item["type"] == "compaction_trigger"))
+                    || (!native && request[history_key].to_string().contains(maka_agent_facts::context::default_compaction_prompt(maka_agent_facts::language::Language::En).lines().next().unwrap())) {
+                    assert!(!request[history_key].to_string().contains("question next"));
+                    assert!(!request[history_key].to_string().contains("A queued correction"));
+                    assert!(!request[history_key].to_string().contains("during-summary-call"));
                     summary = Some(socket);
                 } else {
-                    assert!(request["messages"].to_string().contains("old-answer"));
+                    assert!(request[history_key].to_string().contains("old-answer"));
                     main = Some(socket);
                 }
             }
             let mut summary = summary.unwrap();
             let mut main = main.unwrap();
-            respond_tail_call(&mut main, "during-summary-call", 41).await;
+            respond_call_for(&mut main, "during-summary-call", 41, native).await;
             let (mut observing, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut observing).await;
             agent_loop::enqueue(&observed, invocation).await;
             let (mut main, _) = listener.accept().await.unwrap();
             let frozen = fixture::read_request(&mut main).await;
-            assert!(frozen["messages"].to_string().contains("A queued correction"));
-            assert!(!frozen["messages"].to_string().contains("summary-marker"));
+            assert!(frozen[history_key].to_string().contains("A queued correction"));
+            assert!(!frozen[history_key].to_string().contains("summary-marker"));
             // The first operation has settled and steering has been projected
             // while the summarizer still holds its original captured request.
             let during = observed.prefix(200, 512 * 1024).await.unwrap();
@@ -105,13 +145,15 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
                 Fact::MessageSteered { .. } | Fact::ToolDispatched { .. } | Fact::ToolSettled { .. })) {
                 assert!(event.sequence > captured_cut, "steering and operation transitions belong after the summary cutoff");
             }
-            let frozen_messages = frozen["messages"].as_array().unwrap();
-            let tail_start = frozen_messages.iter().position(|message| message["content"].as_str().is_some_and(|text| text.contains("question next"))).unwrap();
+            let frozen_messages = frozen[history_key].as_array().unwrap();
+            let tail_start = frozen_messages.iter().position(|message| message["role"] == "user" && message["content"].to_string().contains("question next")).unwrap();
             let frozen_tail = &frozen_messages[tail_start..];
-            assert_eq!(frozen_tail.iter().filter(|message| message["role"] == "tool").count(), 1);
-            assert!(frozen_tail.iter().any(|message| message["role"] == "tool" && message["content"].as_str().is_some_and(|text| text.contains("41"))));
+            assert_eq!(frozen_tail.iter().filter(|message| tool_result(message, native)).count(), 1);
+            assert!(frozen_tail.iter().any(|message| tool_result(message, native) && message.to_string().contains("41")));
             let mut commits = observed.subscribe_commits();
-            fixture::respond(&mut summary, fixture::SUMMARY, "stop").await;
+            if native {
+                crate::codex_compaction::respond(&mut summary, crate::codex_compaction::native("summary-marker"), "native-summary").await;
+            } else { fixture::respond(&mut summary, fixture::SUMMARY, "stop").await; }
             loop {
                 let prefix = observed.prefix(200, 512 * 1024).await.unwrap();
                 if prefix.events.iter().any(|e| matches!(&e.event.fact,
@@ -122,35 +164,41 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             main.write_all(format!("HTTP/1.1 429 Too Many Requests\r\nRetry-After: 0.01\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{failure}", failure.len()).as_bytes()).await.unwrap();
             let (mut retry, _) = listener.accept().await.unwrap();
             assert_eq!(fixture::read_request(&mut retry).await, frozen);
-            respond_tail_call(&mut retry, "after-summary-call", 42).await;
+            respond_call_for(&mut retry, "after-summary-call", 42, native).await;
             let (mut last, _) = listener.accept().await.unwrap();
             let adopted = fixture::read_request(&mut last).await;
-            let messages = adopted["messages"].to_string();
+            let messages = adopted[history_key].to_string();
             assert!(messages.contains("summary-marker"));
             assert!(!messages.contains("old-answer"));
             assert_eq!(messages.matches("A queued correction").count(), 1);
-            let adopted_messages = adopted["messages"].as_array().unwrap();
-            let adopted_tail_start = adopted_messages.iter().position(|message| message["content"].as_str().is_some_and(|text| text.contains("question next"))).unwrap();
-            assert!(adopted_messages[..adopted_tail_start].iter().any(|message| message["content"].as_str().is_some_and(|text| text.contains("summary-marker"))));
+            let adopted_messages = adopted[history_key].as_array().unwrap();
+            let adopted_tail_start = adopted_messages.iter().position(|message| message["role"] == "user" && message["content"].to_string().contains("question next")).unwrap();
+            assert!(adopted_messages[..adopted_tail_start].iter().any(|message| message.to_string().contains("summary-marker")));
             assert_eq!(&adopted_messages[adopted_tail_start..adopted_tail_start + frozen_tail.len()], frozen_tail, "all history captured during compaction follows the checkpoint once and in its original order");
             let new_tail = &adopted_messages[adopted_tail_start + frozen_tail.len()..];
             assert_eq!(new_tail.len(), 2, "the later accepted operation adds exactly its call and result");
-            assert_eq!(new_tail[0]["tool_calls"][0]["id"], "after-summary-call");
-            assert_eq!(new_tail[1]["role"], "tool");
-            assert_eq!(new_tail[1]["tool_call_id"], "after-summary-call");
-            assert!(new_tail[1]["content"].as_str().unwrap().contains("42"));
-            assert_eq!(adopted_messages.iter().filter(|message| message["tool_call_id"] == "during-summary-call").count(), 1);
-            assert_eq!(adopted_messages.iter().filter(|message| message["tool_call_id"] == "after-summary-call").count(), 1);
+            if native {
+                assert_eq!(new_tail[0]["call_id"], "after-summary-call");
+                assert_eq!(new_tail[1]["call_id"], "after-summary-call");
+            } else {
+                assert_eq!(new_tail[0]["tool_calls"][0]["id"], "after-summary-call");
+                assert_eq!(new_tail[1]["tool_call_id"], "after-summary-call");
+            }
+            assert!(tool_result(&new_tail[1], native));
+            assert!(new_tail[1].to_string().contains("42"));
+            assert_eq!(adopted_messages.iter().filter(|message| tool_result(message, native) && call_id(message, native) == "during-summary-call").count(), 1);
+            assert_eq!(adopted_messages.iter().filter(|message| tool_result(message, native) && call_id(message, native) == "after-summary-call").count(), 1);
             let completed = observed.prefix(200, 512 * 1024).await.unwrap();
             let checkpoint = completed.events.iter().find_map(|event| match &event.event.fact {
                 Fact::ContextCheckpointRecorded { checkpoint } => Some(checkpoint), _ => None,
             }).unwrap();
             assert_eq!(checkpoint.covered_through, captured_cut, "checkpoint coverage stays at capture time rather than swallowing newer history");
-            fixture::respond(&mut last, "done", "stop").await;
+            respond_for(&mut last, "done", native).await;
         });
         let worker = engine();
         let mut old = fixture::input(&base, "old", false);
         old.context = context(None);
+        if native { configure_native(&mut old, &base, None); }
         worker.run(log.store(), old, CancellationToken::new()).await.unwrap();
         worker.run(log.store(), next, CancellationToken::new()).await.unwrap();
         worker.drain().await;
@@ -160,6 +208,7 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
         assert!(source.baseline.is_some());
         assert!(log.unfinished_invocations(0, 10).await.unwrap().invocations.is_empty());
     }).await.expect("background work and physical retries must settle");
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -570,8 +619,7 @@ async fn historical_unknown_tool_does_not_disable_automatic_compaction_or_pin_ol
             view.baseline
                 .unwrap()
                 .checkpoint
-                .summary
-                .text
+                .summary.text_value().unwrap()
                 .contains("summary-marker")
         );
         let history = log.prefix(200, 512 * 1024).await.unwrap();

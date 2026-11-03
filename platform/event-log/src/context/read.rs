@@ -303,9 +303,56 @@ pub(crate) async fn latest_selected(
     if matches!(checkpoint.mode, CheckpointMode::Standalone) {
         super::validate::require_terminal(connection, &event).await?;
     }
+    let native =
+        if let maka_agent_facts::context::CheckpointContent::CodexNative { item_digest, .. } =
+            &checkpoint.summary
+        {
+            let (_, request) = super::proof::by_kind(
+                connection,
+                &event.invocation.invocation_id,
+                "model_requested",
+                Some(&checkpoint.summary_step_id),
+            )
+            .await?;
+            let Fact::ModelRequested {
+                context: Some(context),
+                model_id,
+                ..
+            } = request.fact
+            else {
+                return Err(invalid("native checkpoint has no producing request"));
+            };
+            let provenance = context
+                .codex
+                .ok_or_else(|| invalid("native checkpoint has no producer"))?;
+            let (_, completion) = super::proof::by_kind(
+                connection,
+                &event.invocation.invocation_id,
+                "model_completed",
+                Some(&checkpoint.summary_step_id),
+            )
+            .await?;
+            let Fact::ModelCompleted { output, .. } = completion.fact else {
+                return Err(invalid("native checkpoint has no completion"));
+            };
+            let native = output
+                .compaction
+                .ok_or_else(|| invalid("native checkpoint has no output"))?;
+            if native.digest() != *item_digest {
+                return Err(invalid("native checkpoint item digest changed"));
+            }
+            Some(super::NativeBaseline {
+                output: native,
+                provenance,
+                model_id,
+            })
+        } else {
+            None
+        };
     Ok(Some(ContextBaseline {
         event_id: event.id,
         checkpoint: checkpoint.clone(),
+        native,
     }))
 }
 

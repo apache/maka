@@ -120,6 +120,7 @@ pub(crate) async fn output(
     let observations = writer
         .push(
             ModelEvent::Finished {
+                compaction: None,
                 reason: ModelFinishReason::ToolCalls,
                 usage: Default::default(),
                 provider_options: None,
