@@ -109,25 +109,20 @@ pub(crate) fn present(grant: Grant) -> bool {
     }
 }
 
-/// Asks macOS to show its request for the grant, once per Host. Returns
-/// whether this call asked.
-pub(crate) fn ask(grant: Grant) -> bool {
-    let asked = !grant.asked().swap(true, Ordering::Relaxed);
-    if asked {
+/// Asks macOS to show its request for the grant, once per Host.
+pub(crate) fn ask(grant: Grant) {
+    if !grant.asked().swap(true, Ordering::Relaxed) {
         grant.request();
     }
-    asked
 }
 
 pub(crate) fn require(grant: Grant) -> Result<(), ToolError> {
     if present(grant) {
         return Ok(());
     }
-    let asked = ask(grant);
-    Err(ToolError::Failed(message(
+    Err(ToolError::Failed(still_missing(
         grant,
         &responsible_application().0,
-        asked,
     )))
 }
 
@@ -159,21 +154,11 @@ fn suspect(error: &ToolError) -> Option<Grant> {
     }
 }
 
-/// The failure for a grant still missing after the user was asked.
-pub(crate) fn still_missing(grant: Grant, application: &str) -> String {
-    message(grant, application, false)
-}
-
 /// The tool error for a missing grant. `permission_required:` is the stable
 /// prefix; the rest tells the user which switch to turn on.
-fn message(grant: Grant, application: &str, asked: bool) -> String {
-    let request = if asked {
-        "macOS is showing its permission request now. "
-    } else {
-        ""
-    };
+pub(crate) fn still_missing(grant: Grant, application: &str) -> String {
     format!(
-        "permission_required: {code}; {request}Turn on \"{application}\" in System Settings > \
+        "permission_required: {code}; Turn on \"{application}\" in System Settings > \
          Privacy & Security > {pane}, then retry. If it is not listed, reopen System Settings, \
          or add it with the + button. If access is still denied after an update, remove the old \
          application entry and add the current app again. macOS may also require restarting \
@@ -332,11 +317,11 @@ mod tests {
 
     #[test]
     fn message_names_the_switch_and_keeps_its_prefix() {
-        let text = message(Grant::Accessibility, "Terminal", true);
-        assert!(text.starts_with("permission_required: accessibility; macOS is showing"));
+        let text = still_missing(Grant::Accessibility, "Terminal");
+        assert!(text.starts_with("permission_required: accessibility; Turn on"));
         assert!(text.contains("Turn on \"Terminal\""));
         assert!(text.contains("Privacy & Security > Accessibility"));
-        let text = message(Grant::ScreenRecording, "Maka", false);
+        let text = still_missing(Grant::ScreenRecording, "Maka");
         assert!(text.starts_with("permission_required: screen_recording; Turn on \"Maka\""));
         assert!(text.contains("Screen & System Audio Recording"));
     }
