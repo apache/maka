@@ -81,6 +81,17 @@ export interface ComposerSendAction {
   text: string;
   backend: ComposerBackend;
   attachments: string[];
+  delivery?: 'steer' | 'queue';
+}
+
+export interface ComposerSendStatus {
+  id: string;
+  text: string;
+  attachments: ClientDraftAttachment[];
+  state: 'sending' | 'accepted' | 'failed' | 'unknown';
+  detail: string;
+  retryable: boolean;
+  busy: boolean;
 }
 
 export interface ComposerImagePreview {
@@ -237,6 +248,10 @@ export interface ComposerSession<Element = unknown> {
   empty(): boolean;
   error(): string;
   notice(): string;
+  sends(): ComposerSendStatus[];
+  retrySend(id: string): Promise<void>;
+  checkSend(id: string): Promise<void>;
+  dismissSend(id: string): Promise<void>;
   recovering(): boolean;
   connected(): boolean;
   invocation(): string | null;

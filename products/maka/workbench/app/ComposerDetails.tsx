@@ -32,7 +32,7 @@ import { Button } from 'nsh/base';
 import type { ComposerSession } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import { createChecklist } from './Checklist';
 import { createComputerAppControls } from './ComputerAppControls';
-import { createQueueDock } from './QueueDock';
+import { createMessagesDock } from './MessagesDock';
 import { createGoalContent, goalStatusLabel } from './GoalDialog';
 import { LoadingIndicator } from './Loading';
 import { Icon } from './Icon';
@@ -40,7 +40,18 @@ import { tr } from './locale';
 import { C, captionTextStyle, controlStyle, textTooltip } from './ui';
 
 export function ComposerDetails(props: {
-  session: Pick<ComposerSession, 'checklist' | 'computerAccess' | 'queue' | 'connected' | 'goal'>;
+  session: Pick<
+    ComposerSession,
+    | 'checklist'
+    | 'computerAccess'
+    | 'queue'
+    | 'connected'
+    | 'goal'
+    | 'sends'
+    | 'retrySend'
+    | 'checkSend'
+    | 'dismissSend'
+  >;
 }) {
   const session = props.session;
   const height = () => windowSize().height / 4;
@@ -61,29 +72,29 @@ export function ComposerDetails(props: {
     },
     todo: createChecklist(session.checklist, height),
     computer: createComputerAppControls(session.computerAccess, height),
-    queue: createQueueDock(session.queue, height, session.connected),
+    messages: createMessagesDock(session, height),
   };
   type Panel = keyof typeof panels;
-  const keys: Panel[] = ['goal', 'todo', 'computer', 'queue'];
+  const keys: Panel[] = ['goal', 'todo', 'computer', 'messages'];
   const available = computed(() => keys.filter((key) => panels[key].shown()));
   const selected = signal<Panel | null>(null);
   const labels = {
     goal: () => tr('Goal'),
     todo: () => tr('Todo'),
     computer: () => tr('Computer access'),
-    queue: () => tr('Queued messages'),
+    messages: () => tr('Messages'),
   };
   const icons = {
     goal: 'statusPending',
     todo: 'check',
     computer: 'shield',
-    queue: 'queue',
+    messages: 'queue',
   } as const;
   const accessibilityLabels = {
     goal: () => `${tr('Goal progress')}: ${panels.goal.summary()}`,
     todo: () => tr('Toggle conversation todo'),
     computer: () => tr('Toggle computer access'),
-    queue: () => tr('Queued messages'),
+    messages: () => tr('Messages'),
   };
   let alive = true;
   cleanup(() => {
@@ -134,7 +145,10 @@ export function ComposerDetails(props: {
                   focusStyle={{ backgroundColor: C.line }}
                 >
                   <If
-                    when={key === 'goal' && goal()?.status === 'active'}
+                    when={
+                      (key === 'goal' && goal()?.status === 'active') ||
+                      (key === 'messages' && session.sends().some((item) => item.busy))
+                    }
                     else={
                       <Icon
                         name={

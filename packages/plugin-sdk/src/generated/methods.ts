@@ -342,6 +342,7 @@ export type SettingsUsageOutput_UsageToolResult =
  * Refusal category without input-derived explanation text.
  */
 export type SettingsUsageOutput_RejectionKind =
+  | 'superseded'
   | 'unavailable'
   | 'invalid_input'
   | 'policy_denied'

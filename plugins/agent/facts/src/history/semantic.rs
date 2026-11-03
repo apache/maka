@@ -90,6 +90,7 @@ pub enum SemanticKind {
         payload: PayloadKey,
         is_error: bool,
         archived: bool,
+        kind: crate::model::prompt_source::source::ToolResultKind,
     },
     Notification {
         call_id: String,
@@ -101,6 +102,7 @@ pub enum SemanticKind {
         call_id: String,
         name: String,
         custom: bool,
+        kind: crate::model::prompt_source::source::ToolResultKind,
     },
 }
 
@@ -196,6 +198,7 @@ impl RecordedKind {
                         .as_ref()
                         .is_some_and(|value| value["openai"]["toolKind"] == "custom"),
                     dispatched_at: None,
+                    yielded: false,
                 }
             })),
         }
@@ -208,6 +211,7 @@ pub struct CallFrontier {
     pub name: String,
     pub custom: bool,
     pub dispatched_at: Option<u64>,
+    pub yielded: bool,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CellFrontier {
@@ -252,7 +256,7 @@ impl Frontier {
     }
 
     fn flush(&mut self, through: u64, transition: &mut Transition) {
-        if !self.calls.is_empty() {
+        if self.calls.values().any(|call| !call.yielded) {
             return;
         }
         let first_ordinal = transition
@@ -575,27 +579,79 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 return Err("hidden rejection aliases provider call");
             }
         }
+        Fact::ToolYielded { operation_id } => {
+            let pending = frontier
+                .calls
+                .get_mut(operation_id)
+                .ok_or("yield lacks accepted provider call")?;
+            if pending.dispatched_at.is_none() || pending.yielded {
+                return Err("yield requires an unobserved dispatched provider call");
+            }
+            pending.yielded = true;
+            let mut output = pending.clone();
+            output.yielded = false;
+            fragment(&mut out, key, Payload::Text(serde_json::json!({
+                "state":"running", "operationId":operation_id,
+                "message":"The original operation is still executing. Its result will arrive as a tool notification; do not repeat the operation."
+            }).to_string()));
+            out.rows
+                .push(tool_row(stored, operation_id, output, key, false));
+            frontier.stable(&mut out, position(stored.sequence, END_INDEX));
+        }
         Fact::ToolSettled {
             operation_id,
             outcome,
         } => {
-            frontier.cells.remove(operation_id);
+            let cell = frontier.cells.remove(operation_id);
             if let Some(pending) = frontier.calls.remove(operation_id) {
                 if pending.dispatched_at.is_none() {
                     return Err("provider result lacks dispatch");
                 }
-                let (source, is_error) = match outcome {
-                    ToolOutcome::Succeeded { .. } => {
-                        (FragmentSource::CanonicalToolProjection, false)
-                    }
-                    ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => (
-                        FragmentSource::Payload(Box::new(Payload::Text(message.clone()))),
-                        true,
-                    ),
-                };
+                let (source, is_error) = settled_payload(outcome);
                 out.fragments.push(Fragment { key, source });
-                out.rows
-                    .push(tool_row(stored, operation_id, pending, key, is_error));
+                let notification = pending.yielded;
+                let row = tool_row(stored, operation_id, pending, key, is_error);
+                if notification {
+                    let blocked_by = frontier
+                        .requests
+                        .iter()
+                        .filter(|(_, request)| request.main && request.source < stored.sequence)
+                        .map(|(id, _)| id.clone())
+                        .collect();
+                    frontier
+                        .notifications
+                        .push(PendingNotification { row, blocked_by });
+                } else {
+                    out.rows.push(row);
+                }
+                frontier.stable(&mut out, position(stored.sequence, END_INDEX));
+            } else if let Some(cell) = cell {
+                let (source, is_error) = settled_payload(outcome);
+                out.fragments.push(Fragment { key, source });
+                let row = row(
+                    stored,
+                    0,
+                    key,
+                    SemanticKind::ToolResult {
+                        operation_id: operation_id.clone(),
+                        call_id: cell.call_id,
+                        name: "exec".into(),
+                        custom: cell.custom,
+                        payload: key,
+                        is_error,
+                        archived: false,
+                        kind: crate::model::prompt_source::source::ToolResultKind::Notification,
+                    },
+                );
+                let blocked_by = frontier
+                    .requests
+                    .iter()
+                    .filter(|(_, request)| request.main && request.source < stored.sequence)
+                    .map(|(id, _)| id.clone())
+                    .collect();
+                frontier
+                    .notifications
+                    .push(PendingNotification { row, blocked_by });
                 frontier.stable(&mut out, position(stored.sequence, END_INDEX));
             }
         }
@@ -731,6 +787,21 @@ fn tool_row(
             payload,
             is_error,
             archived: false,
+            kind: if call.yielded {
+                crate::model::prompt_source::source::ToolResultKind::Notification
+            } else {
+                crate::model::prompt_source::source::ToolResultKind::Output
+            },
         },
     )
+}
+
+fn settled_payload(outcome: &ToolOutcome) -> (FragmentSource, bool) {
+    match outcome {
+        ToolOutcome::Succeeded { .. } => (FragmentSource::CanonicalToolProjection, false),
+        ToolOutcome::Failed { message } | ToolOutcome::Unknown { message, .. } => (
+            FragmentSource::Payload(Box::new(Payload::Text(message.clone()))),
+            true,
+        ),
+    }
 }

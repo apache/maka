@@ -171,8 +171,9 @@ fn notifications(request: &Value) -> Vec<&str> {
         .as_array()
         .unwrap()
         .iter()
-        .filter(|item| item["type"] == "custom_tool_call_output")
-        .filter_map(|item| item["output"].as_str())
+        .filter(|item| item["role"] == "user")
+        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+        .filter_map(|part| part["text"].as_str())
         .filter(|text| matches!(*text, "first notice" | "second notice"))
         .collect()
 }
@@ -211,7 +212,7 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
             assert_eq!(notifications(&third), ["first notice", "second notice"]);
             let input = third["input"].as_array().unwrap();
             let answer = input.iter().position(|item| item["content"][0]["text"] == "tentative answer").unwrap();
-            let notice = input.iter().position(|item| item["output"] == "first notice").unwrap();
+            let notice = input.iter().position(|item| item["role"] == "user" && item["content"].as_array().is_some_and(|parts| parts.iter().any(|part| part["text"] == "first notice"))).unwrap();
             assert!(answer < notice, "notifications do not rewrite the request already in flight");
             server_gates.hold.notify_one();
             reply(&mut socket, json!({"type":"function_call","id":"wait-item","call_id":"wait-call","name":"wait","arguments":json!({"cell_id":running["cell_id"]}).to_string()}), 2).await;
@@ -253,4 +254,103 @@ async fn notifications_trigger_followup_without_wait_and_audio_survives_copy_and
         Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
       }
     }).await.expect("notification and audio lifecycle must make bounded progress");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_background_cell_delivers_final_text_and_audio_without_wait_and_after_restart() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("events.sqlite");
+        let log = Arc::new(SessionFixture::open(&path).await.unwrap());
+        let gates = Arc::new(Gates::default());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let audio = format!("data:audio/wav;base64,{}", STANDARD.encode(wav()));
+        let script = format!("// @exec: {{\"yield_time_ms\":0}}\nawait tools.gate({{}}); text('final background output'); audio({});", serde_json::to_string(&audio).unwrap());
+        let observed = log.clone();
+        let released = gates.clone();
+        let expected_audio = audio.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = next_request(&listener).await;
+            reply(&mut socket, json!({"type":"custom_tool_call","id":"exec-item","call_id":"exec-call","name":"exec","input":script}), 0).await;
+            let (mut socket, _) = next_request(&listener).await;
+            let mut changes = observed.subscribe_commits();
+            released.gate.notify_one();
+            loop {
+                let prefix = observed.prefix(100, 1024 * 1024).await.unwrap();
+                if prefix.events.iter().any(|entry| {
+                    let Fact::ToolDispatched { operation_id, name, .. } = &entry.event.fact else { return false; };
+                    name == "code_cell" && prefix.events.iter().any(|settled| matches!(&settled.event.fact, Fact::ToolSettled { operation_id: id, .. } if id == operation_id))
+                }) { break; }
+                changes.changed().await.unwrap();
+            }
+            reply(&mut socket, text("interim", 1), 1).await;
+            let (mut socket, final_request) = next_request(&listener).await;
+            assert_final_cell_media(&final_request, &expected_audio);
+            reply(&mut socket, text("complete", 2), 2).await;
+        });
+        let mut input = fixture::input(&base, "final-cell", Arc::new(fixture::Effects { log: log.clone(), count: Arc::default(), together: Arc::new(tokio::sync::Barrier::new(2)) }));
+        input.provider.kind = ProviderKind::OpenaiResponses;
+        input.provider_options = json!({"openai":{"store":false}});
+        if let RunWork::Message { tools, .. } = &mut input.work {
+            *tools = ToolCatalog::new([ToolRegistration {
+                definition: ToolDefinition { name:"gate".into(), description:"fixture gate".into(), input_schema:json!({"type":"object"}), provider:None, freeform:None, output_schema:None },
+                handler: ToolHandler::Immediate(Arc::new(GateHandler { gates })), nesting: ToolNesting::Nestable, semantics: ToolSemantics::Parallel,
+            }]).unwrap();
+        }
+        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(10)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
+        engine.run(log.store(), input.clone(), CancellationToken::new()).await.unwrap();
+        server.await.unwrap();
+        engine.drain().await;
+        drop(engine);
+        Arc::try_unwrap(log).ok().unwrap().close().await.unwrap();
+        let reopened = Arc::new(SessionFixture::open(&path).await.unwrap());
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        input.provider.base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        input.invocation.turn_id = "next-turn".into();
+        input.invocation.run_id = "next-run".into();
+        input.invocation.invocation_id = "next-invocation".into();
+        if let RunWork::Message { tools, .. } = &mut input.work { *tools = ToolCatalog::default(); }
+        let server = tokio::spawn(async move {
+            let (mut socket, request) = next_request(&listener).await;
+            assert_final_cell_media(&request, &audio);
+            reply(&mut socket, text("reopened", 3), 3).await;
+        });
+        let engine = Engine::new(ModelExecutor::new(Duration::from_secs(10)).unwrap(), CodeExecutor::new(CellLimits::default()).unwrap()).unwrap();
+        engine.run(reopened.store(), input, CancellationToken::new()).await.unwrap();
+        server.await.unwrap();
+        engine.drain().await;
+        drop(engine);
+        Arc::try_unwrap(reopened).ok().unwrap().close().await.unwrap();
+    }).await.unwrap();
+}
+
+fn assert_final_cell_media(request: &Value, audio: &str) {
+    let input = request["input"].as_array().unwrap();
+    assert_eq!(
+        input
+            .iter()
+            .filter(
+                |item| item["type"] == "custom_tool_call_output" && item["call_id"] == "exec-call"
+            )
+            .count(),
+        1
+    );
+    let content: Vec<_> = input
+        .iter()
+        .filter(|item| item["role"] == "user")
+        .flat_map(|item| item["content"].as_array().into_iter().flatten())
+        .collect();
+    assert!(
+        content
+            .iter()
+            .any(|part| part["text"] == "final background output"),
+        "final output must be delivered without wait: {request}"
+    );
+    assert!(
+        content
+            .iter()
+            .any(|part| part["type"] == "input_audio" && part["audio_url"] == audio),
+        "unobserved audio must survive final settlement and restart: {request}"
+    );
 }

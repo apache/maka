@@ -596,14 +596,27 @@ pub enum MetadataResult {
     RevisionConflict { expected: u64, actual: u64 },
     Rejected { reason: Rejection },
 }
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentSendDelivery")]
+pub enum SendDelivery {
+    #[default]
+    Steer,
+    Queue,
+}
+
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentSend")]
 pub struct Send {
+    #[serde(default)]
+    pub delivery: SendDelivery,
+    /// An active send must not start new work after Stop fences its original Run.
+    pub expected_invocation_id: Option<String>,
     /// IDs of immutable user uploads in this Session; metadata is resolved by the owner.
     #[serde(default)]
     pub attachments: Vec<String>,
-    pub model: ModelSelection,
+    pub model: Option<ModelSelection>,
     /// Omission/null uses the configured model default; `off` is explicit.
     pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
     #[schemars(length(min = 1))]
@@ -779,7 +792,7 @@ pub struct SessionPage {
 pub enum SendResult {
     Rejected {
         session_id: String,
-        reason: SkillInputRejection,
+        reason: SendRejection,
         skills: Option<maka_skills::SkillInvocationResult>,
     },
     Started {
@@ -798,9 +811,10 @@ pub enum SendResult {
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
-#[schemars(rename = "AgentSkillInputRejection")]
-pub enum SkillInputRejection {
+#[schemars(rename = "AgentSendRejection")]
+pub enum SendRejection {
     SkillsUnavailable,
+    TurnStopped,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1158,6 +1172,15 @@ pub struct QueueMessage {
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub expected_revision: u64,
 }
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentQueueMessageMissingReason")]
+pub enum QueueMessageMissingReason {
+    Delivered,
+    Cancelled,
+    Unknown,
+}
+
 #[derive(Serialize, JsonSchema)]
 #[serde(
     tag = "kind",
@@ -1177,7 +1200,9 @@ pub enum QueueMessageResult {
         expected: u64,
         actual: u64,
     },
-    Missing,
+    Missing {
+        reason: QueueMessageMissingReason,
+    },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

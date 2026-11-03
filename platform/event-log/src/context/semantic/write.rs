@@ -204,6 +204,10 @@ fn kind(row: &SemanticRow) -> &'static str {
         SemanticKind::ImportedAssistant { .. } => "imported_assistant",
         SemanticKind::ExecutorText { .. } => "executor_text",
         SemanticKind::AssistantPart { .. } => "assistant_part",
+        SemanticKind::ToolResult {
+            kind: maka_agent_facts::model::prompt_source::source::ToolResultKind::Notification,
+            ..
+        } => "notification",
         SemanticKind::ToolResult { .. } => "tool_result",
         SemanticKind::Notification { .. } => "notification",
         SemanticKind::UnknownTool { .. } => "unknown_tool",
@@ -297,26 +301,39 @@ async fn unknown_dispatch(
     stored: &StoredEvent,
     frontier: &Frontier,
 ) -> Result<(), StoreError> {
-    let Fact::ToolDispatched { operation_id, .. } = &stored.event.fact else {
-        return Ok(());
+    let operation_id = match &stored.event.fact {
+        Fact::ToolDispatched { operation_id, .. } | Fact::ToolYielded { operation_id } => {
+            operation_id
+        }
+        _ => return Ok(()),
     };
     let Some(call) = frontier.calls.get(operation_id) else {
         return Ok(());
     };
     let point = RowPosition {
-        source_sequence: stored.sequence,
+        source_sequence: call
+            .dispatched_at
+            .ok_or_else(|| invalid("unknown tool lacks dispatch"))?,
         item_index: 0,
     };
     let row = SemanticRow {
         id: point,
         revision: stored.sequence,
         invocation: stored.event.invocation.clone(),
-        order: point,
+        order: RowPosition {
+            source_sequence: stored.sequence,
+            item_index: u64::from(call.yielded),
+        },
         kind: SemanticKind::UnknownTool {
             operation_id: operation_id.clone(),
             call_id: call.call_id.clone(),
             name: call.name.clone(),
             custom: call.custom,
+            kind: if call.yielded {
+                maka_agent_facts::model::prompt_source::source::ToolResultKind::Notification
+            } else {
+                maka_agent_facts::model::prompt_source::source::ToolResultKind::Output
+            },
         },
     };
     save_row(
@@ -368,7 +385,8 @@ async fn pending_unknown_notifications(
 ) -> Result<(), StoreError> {
     if !matches!(
         stored.event.fact,
-        Fact::ToolNotified { .. }
+        Fact::ToolSettled { .. }
+            | Fact::ToolNotified { .. }
             | Fact::ModelRequested { .. }
             | Fact::ModelCompleted { .. }
             | Fact::ModelInterrupted { .. }

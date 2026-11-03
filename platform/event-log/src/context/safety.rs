@@ -217,8 +217,8 @@ pub(crate) async fn settled_boundary(
     execution_boundary(connection, invocation, through, Boundary::Settled).await
 }
 
-/// Main-model control may observe independent cells without summarizing away
-/// their unresolved effects. Direct calls and unfinished model steps still block.
+/// Main-model control may observe cells and yielded calls without summarizing
+/// away their unresolved effects. Unobserved calls and model steps still block.
 pub(crate) async fn model_boundary(
     connection: &mut SqliteConnection,
     invocation: &str,

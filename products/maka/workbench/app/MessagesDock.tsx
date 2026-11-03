@@ -30,7 +30,11 @@ import type {
   AgentQueueAction,
   AgentQueueMessageResult,
 } from '../../../../packages/plugin-sdk/src/index.js';
-import type { ComposerQueue } from '../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  ComposerSendStatus,
+  ComposerSession,
+} from '../../../../packages/plugin-sdk/src/composer-view.js';
+import { PendingMessage } from './PendingMessage';
 import { C, bodyTextStyle, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
 
@@ -59,15 +63,35 @@ const actionStyle = {
 
 // Queue content belongs to the existing Host watch. Only an uncommitted inline
 // edit and the current action's receipt/observation fence are local to this view.
-export function createQueueDock(
-  session: ComposerQueue,
+export function createMessagesDock(
+  session: Pick<
+    ComposerSession,
+    'queue' | 'sends' | 'connected' | 'retrySend' | 'checkSend' | 'dismissSend'
+  >,
   height: () => number,
-  connected: () => boolean,
 ) {
+  const queue = session.queue;
+  const connected = session.connected;
+  const sends = computed(() => session.sends());
   const items = computed(
-    () => session.snapshot()?.entries.filter((row) => row.kind !== 'in_flight') ?? [],
+    () => queue.snapshot()?.entries.filter((row) => row.kind === 'followup') ?? [],
+  );
+  type Message =
+    | { kind: 'send'; id: string; status: ComposerSendStatus }
+    | { kind: 'queued'; id: string; entry: ReturnType<typeof items>[number] };
+  const messages = computed<Message[]>(() => [
+    ...sends().map((status) => ({ kind: 'send' as const, id: `send/${status.id}`, status })),
+    ...items().map((entry) => ({
+      kind: 'queued' as const,
+      id: `queued/${entry.messageId}`,
+      entry,
+    })),
+  ]);
+  const problems = computed(() =>
+    sends().filter((item) => item.state === 'failed' || item.state === 'unknown'),
   );
   const editing = signal<Editing | null>(null);
+  const composing = signal(false);
   const review = signal<Review | null>(null);
   const busy = signal<{ through: number | null } | null>(null);
   const error = createText();
@@ -78,11 +102,11 @@ export function createQueueDock(
   });
   effect(() => {
     const pending = busy();
-    if (pending?.through != null && (session.snapshot()?.revision ?? -1) >= pending.through)
+    if (pending?.through != null && (queue.snapshot()?.revision ?? -1) >= pending.through)
       busy.set(null);
   });
   const entry = (messageId: string) => items().find((row) => row.messageId === messageId);
-  const revision = () => session.snapshot()?.revision ?? -1;
+  const revision = () => queue.snapshot()?.revision ?? -1;
   const report = (reason: unknown) => {
     if (alive) error.set(errorText(reason));
   };
@@ -106,7 +130,7 @@ export function createQueueDock(
     busy.set({ through: null });
     error.set('');
     try {
-      const result = await session.change(expectedRevision, edit);
+      const result = await queue.change(expectedRevision, edit);
       if (!alive) return false;
       if (result.kind === 'committed') {
         // Keep the row action pending until the original watch observes this
@@ -137,7 +161,7 @@ export function createQueueDock(
     busy.set({ through: null });
     error.set('');
     try {
-      const result = await session.read(messageId, expectedRevision);
+      const result = await queue.read(messageId, expectedRevision);
       if (!alive) return null;
       if (result.kind === 'ready' && result.revision === revision() && entry(messageId))
         return result;
@@ -154,7 +178,7 @@ export function createQueueDock(
     return null;
   };
   const act = async (request: RowAction) => {
-    if (!alive || !connected() || request.sessionId !== session.sessionId || busy()) return;
+    if (!alive || !connected() || request.sessionId !== queue.sessionId || busy()) return;
     const row = entry(request.messageId);
     if (!row || request.revision !== revision()) {
       error.set(uiMessage('The queue changed before this action. Select the current row again.'));
@@ -164,6 +188,7 @@ export function createQueueDock(
       const result = await read(row.messageId, request.revision);
       if (result && alive) {
         review.set(null);
+        composing.set(false);
         editing.set({
           messageId: row.messageId,
           revision: result.revision,
@@ -171,13 +196,13 @@ export function createQueueDock(
           hasAttachments: result.hasAttachments,
         });
       }
-    } else if (request.kind !== 'promote' || (row.kind === 'followup' && session.running())) {
+    } else if (request.kind !== 'promote' || queue.running()) {
       await change(request.revision, { kind: request.kind, messageId: row.messageId });
     }
   };
   const save = async () => {
     const edit = editing();
-    if (!edit || (!edit.text.trim() && !edit.hasAttachments)) return;
+    if (composing() || !edit || (!edit.text.trim() && !edit.hasAttachments)) return;
     if (
       await change(edit.revision, { kind: 'update', messageId: edit.messageId, message: edit.text })
     ) {
@@ -190,6 +215,7 @@ export function createQueueDock(
   const cancel = () => {
     if (!busy()) {
       editing.set(null);
+      composing.set(false);
       review.set(null);
       error.set('');
     }
@@ -247,107 +273,130 @@ export function createQueueDock(
   );
   return {
     shown: () =>
-      items().length > 0 || editing() !== null || busy() !== null || (connected() && !!error()),
-    summary: () => String(items().length),
+      messages().length > 0 || editing() !== null || busy() !== null || (connected() && !!error()),
+    summary: () =>
+      problems().length
+        ? tr('{count} · {problems} to review', {
+            count: messages().length,
+            problems: problems().length,
+          })
+        : String(messages().length),
     preview: () =>
+      problems()[0]?.detail ||
       (connected() && error()) ||
       (editing()
         ? tr('Edit queued message')
         : busy()
           ? tr('Updating queue…')
-          : (items()[0]?.preview ?? '')),
-    problem: () => connected() && !!error(),
+          : sends()[0]?.detail || items()[0]?.preview || ''),
+    problem: () => problems().length > 0 || (connected() && !!error()),
     content: () => (
       <View style={{ minHeight: 0, flexShrink: 1 }}>
         <If when={editing() === null}>
           <List
-            accessibilityLabel={tr('Message queue')}
-            each={items()}
-            keyExtractor={(row) => row.messageId}
+            accessibilityLabel={tr('Messages')}
+            each={messages()}
+            keyExtractor={(row) => row.id}
             estimatedItemSize={rowHeight}
             style={{
-              height: Math.min(items().length * rowHeight, height()),
+              height: Math.min(sends().length * 96 + items().length * rowHeight, height()),
               minHeight: 0,
               flexShrink: 1,
               flexGrow: 0,
             }}
           >
-            {(row) => {
-              const number = () =>
-                items().findIndex((item) => item.messageId === row().messageId) + 1;
-              const request = (kind: RowAction['kind']): RowAction => ({
-                sessionId: session.sessionId,
-                revision: revision(),
-                messageId: row().messageId,
-                kind,
-              });
+            {(item) => {
+              const pending = () => {
+                const message = item();
+                return message.kind === 'send' ? [message.status] : [];
+              };
+              const queued = () => {
+                const message = item();
+                return message.kind === 'queued' ? [message.entry] : [];
+              };
               return (
-                <View
-                  style={{
-                    height: rowHeight,
-                    paddingHorizontal: 8,
-                    flexDirection: 'row',
-                    alignItems: 'center',
-                    gap: 8,
-                  }}
-                >
-                  <Icon name="queue" color={C.muted} />
-                  <Text
-                    style={[
-                      { ...captionTextStyle, color: C.secondary, flex: 1 },
-                      { numberOfLines: 1 },
-                    ]}
-                  >
-                    {row().kind === 'steering'
-                      ? tr('Sending to current turn · {preview}', { preview: row().preview })
-                      : row().preview}
-                  </Text>
-                  <Button
-                    accessibilityLabel={tr('Edit queued message {number}', { number: number() })}
-                    tooltip={textTooltip(() => tr('Edit message'))}
-                    disabled={!connected() || busy() !== null || editing() !== null}
-                    onPress={inputAction(act, request('edit'))}
-                    style={actionStyle}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.line }}
-                  >
-                    <Icon name="edit" color={C.muted} />
-                  </Button>
-                  <Button
-                    accessibilityLabel={tr('Remove queued message {number}', { number: number() })}
-                    tooltip={textTooltip(() => tr('Remove message'))}
-                    disabled={!connected() || busy() !== null || editing() !== null}
-                    onPress={inputAction(act, request('retract'))}
-                    style={actionStyle}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.line }}
-                  >
-                    <Icon name="close" color={C.muted} />
-                  </Button>
-                  <Button
-                    accessibilityLabel={tr('Steer queued message {number} now', {
-                      number: number(),
-                    })}
-                    tooltip={textTooltip(() =>
-                      row().kind === 'steering'
-                        ? tr('Waiting for the next step')
-                        : tr('Steer now · use in the current turn'),
-                    )}
-                    disabled={
-                      !connected() ||
-                      busy() !== null ||
-                      editing() !== null ||
-                      row().kind !== 'followup' ||
-                      !session.running()
-                    }
-                    onPress={inputAction(act, request('promote'))}
-                    style={actionStyle}
-                    hoverStyle={{ backgroundColor: C.raised }}
-                    focusStyle={{ backgroundColor: C.line }}
-                  >
-                    <Icon name="send" color={C.muted} />
-                  </Button>
-                </View>
+                <>
+                  <Each of={pending()} key={(status) => status.id}>
+                    {(status) => <PendingMessage session={session} message={status()} />}
+                  </Each>
+                  <Each of={queued()} key={(entry) => entry.messageId}>
+                    {(row) => {
+                      const number = () =>
+                        items().findIndex((item) => item.messageId === row().messageId) + 1;
+                      const request = (kind: RowAction['kind']): RowAction => ({
+                        sessionId: queue.sessionId,
+                        revision: revision(),
+                        messageId: row().messageId,
+                        kind,
+                      });
+                      return (
+                        <View
+                          style={{
+                            height: rowHeight,
+                            paddingHorizontal: 8,
+                            flexDirection: 'row',
+                            alignItems: 'center',
+                            gap: 8,
+                          }}
+                        >
+                          <Icon name="queue" color={C.muted} />
+                          <Text
+                            style={[
+                              { ...captionTextStyle, color: C.secondary, flex: 1 },
+                              { numberOfLines: 1 },
+                            ]}
+                          >
+                            {row().preview}
+                          </Text>
+                          <Button
+                            accessibilityLabel={tr('Edit queued message {number}', {
+                              number: number(),
+                            })}
+                            tooltip={textTooltip(() => tr('Edit message'))}
+                            disabled={!connected() || busy() !== null || editing() !== null}
+                            onPress={inputAction(act, request('edit'))}
+                            style={actionStyle}
+                            hoverStyle={{ backgroundColor: C.raised }}
+                            focusStyle={{ backgroundColor: C.line }}
+                          >
+                            <Icon name="edit" color={C.muted} />
+                          </Button>
+                          <Button
+                            accessibilityLabel={tr('Remove queued message {number}', {
+                              number: number(),
+                            })}
+                            tooltip={textTooltip(() => tr('Remove message'))}
+                            disabled={!connected() || busy() !== null || editing() !== null}
+                            onPress={inputAction(act, request('retract'))}
+                            style={actionStyle}
+                            hoverStyle={{ backgroundColor: C.raised }}
+                            focusStyle={{ backgroundColor: C.line }}
+                          >
+                            <Icon name="close" color={C.muted} />
+                          </Button>
+                          <Button
+                            accessibilityLabel={tr('Steer queued message {number} now', {
+                              number: number(),
+                            })}
+                            tooltip={textTooltip(() => tr('Steer now · use in the current turn'))}
+                            disabled={
+                              !connected() ||
+                              busy() !== null ||
+                              editing() !== null ||
+                              !queue.running()
+                            }
+                            onPress={inputAction(act, request('promote'))}
+                            style={actionStyle}
+                            hoverStyle={{ backgroundColor: C.raised }}
+                            focusStyle={{ backgroundColor: C.line }}
+                          >
+                            <Icon name="send" color={C.muted} />
+                          </Button>
+                        </View>
+                      );
+                    }}
+                  </Each>
+                </>
               );
             }}
           </List>
@@ -361,7 +410,13 @@ export function createQueueDock(
               <Scroll
                 ref={(node) => {
                   unbind();
-                  unbind = keymap.bind('escape', cancel, { when: 'always', within: node });
+                  unbind = keymap.bind(
+                    'escape',
+                    () => {
+                      if (!composing()) cancel();
+                    },
+                    { when: 'always', within: node },
+                  );
                 }}
                 style={{ maxHeight: height(), minHeight: 0, flexShrink: 1, flexGrow: 0 }}
               >
@@ -380,7 +435,9 @@ export function createQueueDock(
                     value={edit().text}
                     readonly={busy() !== null}
                     onChange={({ value: text }) => editing.set({ ...edit(), text })}
+                    onCompositionChange={(event) => composing.set(event.composing)}
                     onSubmit={({ text }) => {
+                      if (composing()) return;
                       editing.set({ ...edit(), text });
                       void save();
                     }}
@@ -427,6 +484,7 @@ export function createQueueDock(
                       disabled={
                         !connected() ||
                         busy() !== null ||
+                        composing() ||
                         !entry(edit().messageId) ||
                         edit().revision !== revision() ||
                         (!edit().text.trim() && !edit().hasAttachments)

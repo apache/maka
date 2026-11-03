@@ -45,12 +45,13 @@ ownership; closing the scope fences admission and drains all accepted calls.
 
 Drafts belong to the actual Host domain/deployment, captured provider/export,
 session and stable editor ID. Saves compare the previous edit revision. Sending
-reads the exact saved revision in Rust, so the UI supplies a revision and model
-selection rather than a second copy of the message. A returned `started` or
-`queued` result for that session consumes only the original revision in the same
-transaction as its receipt. Consumption keeps the edit revision; a newly queued
-save advances it normally. This lets editing and saving continue while sending.
+atomically freezes that exact revision in the original operation journal and
+consumes the editor's draft, so a new draft can be written while confirmation is
+pending. The pending-send index retains only operation identities; it neither
+copies message bodies nor schedules delivery. Confirmation reads the frozen
+snapshot. Failed or stopped-before-delivery messages remain independently
+recoverable without overwriting a newer draft. Queued receipts remain indexed
+until the Agent confirms delivery, cancellation, or the user dismisses them.
 
-`cargo test -p maka-app-client --lib` exercises the public Host IPC implementation,
-including disconnected receipt recovery, cancelled preparation, storage failure,
+Tests cover reconnect recovery, cancelled preparation, storage failure,
 subscription cleanup and draft edits racing a returned send.

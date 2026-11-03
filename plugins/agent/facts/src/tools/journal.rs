@@ -131,6 +131,12 @@ impl<T: Send + 'static> Future for ApprovalContinuation<T> {
                 decision: crate::interaction::Decision::Allow,
                 ..
             }) => None,
+            Ok(crate::interaction::InteractionOutcome::Closure {
+                reason: crate::interaction::ClosureReason::Steered,
+                ..
+            }) => Some(ToolError::Failed(
+                "Not executed: superseded by new user input".into(),
+            )),
             Ok(
                 crate::interaction::InteractionOutcome::ServiceApprovalDecision { .. }
                 | crate::interaction::InteractionOutcome::Closure { .. },

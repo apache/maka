@@ -103,6 +103,13 @@ pub(crate) async fn validate(
 ) -> Result<(), StoreError> {
     let invocation = &event.invocation.invocation_id;
     match &event.fact {
+        Fact::ToolYielded { operation_id } => {
+            let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=? AND d.operation_id=? AND d.kind='tool_dispatched' AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider' AND NOT EXISTS(SELECT 1 FROM runtime_events s WHERE s.invocation_id=d.invocation_id AND s.operation_id=d.operation_id AND s.kind IN ('tool_settled','tool_yielded')))")
+                .bind(&event.invocation.invocation_id).bind(operation_id).fetch_one(&mut *tx).await?;
+            if !pending {
+                return Err(invalid("only a pending provider operation can yield"));
+            }
+        }
         Fact::ToolOperationObserved { operation_id, .. } => {
             identity(operation_id)?;
             let live: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM runtime_events d

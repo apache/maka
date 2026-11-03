@@ -30,6 +30,7 @@ use maka_plugin_core::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod approval_park;
+mod steering;
 
 fn counter_contract() -> Contract {
     let write = Method {
@@ -60,6 +61,7 @@ enum Behavior {
     Unknown,
     CleanupFailed,
     Blocked,
+    Held,
 }
 struct Counter {
     behavior: Behavior,
@@ -114,6 +116,14 @@ impl Handler for Counter {
                     let mut ticket = context.scope().resources.reserve().unwrap();
                     ticket.start();
                     ticket.complete(Err("counter cleanup failed".into()));
+                    Ok(json!({"effects":count}))
+                }
+                Behavior::Held => {
+                    release.acquire().await.unwrap().forget();
+                    assert!(
+                        !context.scope().cancellation.is_cancelled(),
+                        "steering must retain the original tool execution"
+                    );
                     Ok(json!({"effects":count}))
                 }
                 Behavior::Blocked => {
@@ -1160,7 +1170,7 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
         let mut same = Box::pin(f.mutation(
             2,
             "send",
-            json!({"sessionId":a,"message":"same queued","model":selection}),
+            json!({"sessionId":a,"message":"same queued","delivery":"queue","model":selection}),
             Uuid::new_v4(),
         ));
         let independent = f.mutation(
