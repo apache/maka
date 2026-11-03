@@ -71,7 +71,10 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
         stepId: fact.stepId,
         name: snippet(fact.name),
         source: fact.providerExecuted ? 'provider' : 'native',
-        startSequence: previous?.startSequence ?? event.sequence,
+        startSequence:
+          previous?.previewOrder === undefined
+            ? (previous?.startSequence ?? event.sequence)
+            : event.sequence,
         previewOrder: undefined,
         inputReady: true,
         phase: fact.providerExecuted ? 'running' : 'preparing',
@@ -82,7 +85,10 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
         ...(previous ?? start('native', 'running')),
         source: 'native',
         previewOrder: undefined,
-        startSequence: previous?.startSequence ?? event.sequence,
+        startSequence:
+          previous?.previewOrder === undefined
+            ? (previous?.startSequence ?? event.sequence)
+            : event.sequence,
         phase: 'running',
         name: snippet(fact.name),
         title: fact.title,
