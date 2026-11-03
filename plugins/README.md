@@ -26,7 +26,7 @@ A plugin is declared by a leaf `package.ts`. It lists executable entries, config
 | Family | What it owns |
 | --- | --- |
 | [agent](agent/README.md) | Conversations, model execution, tools, goals and scheduling |
-| [workspace](workspace/README.md) | Files, processes, Web and Jev services |
+| [workspace](workspace/README.md) | Files, processes, Web and Decisions API services |
 | [settings](settings/native/README.md) | Connections, credentials and preferences |
 | [skills](skills/native/README.md) | Skill discovery, reads and publication |
 | [interactions](interactions/native/README.md) | Questions and forms |

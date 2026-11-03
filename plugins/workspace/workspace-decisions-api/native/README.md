@@ -17,12 +17,12 @@
   under the License.
 -->
 
-# maka-jev
+# maka-decisions-api-native
 
-[English](README.md)
+[简体中文](README.zh-CN.md)
 
-实现结构化 Jev 评估和端点设置。`decision` 校验问题与响应，`settings` 管理配置及绑定到端点的凭据。调用使用作用域内的 HTTP 资源。返回的概率是提供方给出的答案，超时可能意味着远端结果仍未知。
+Native `maka.workspace.decisions_api` implementation. Exports the Decisions API contract for endpoint settings, credentials and evaluation. Uses the shared engine with explicit JEV or OpenAI protocol selection. HTTP admission is restricted to the configured endpoint and settings/credential revisions; redirects never forward credentials.
 
-评估、完整响应和绑定端点的凭据不再附加本地数量或字节上限。调用方配置的正超时仍是明确的执行期限；取消、网络失败和无法确认的清理保留远端结果的不确定性。问题和回答保留原始 ID、选项及评分结构、概率校验和 JavaScript 可精确表示的用量计数。引擎缓冲完整 JSON，不承诺内存有界或供应商接受每个本地有效的评估。
+Settings and secrets use the `maka.workspace.decisions_api` namespace. Credentials are bound to the exact endpoint URL. Saved settings explicitly select their protocol.
 
-[源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
+[Source](src/lib.rs) · [Engine](../engine/README.md)

@@ -16,7 +16,7 @@
 # under the License.
 
 [package]
-name = "maka-jev-native"
+name = "maka-decisions-api-native"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -32,7 +32,7 @@ maka-capabilities.workspace = true
 futures-util.workspace = true
 maka-config.workspace = true
 maka-event-log.workspace = true
-maka-jev.workspace = true
+maka-decisions-api.workspace = true
 maka-network.workspace = true
 maka-plugin-core.workspace = true
 maka-host-runtime.workspace = true

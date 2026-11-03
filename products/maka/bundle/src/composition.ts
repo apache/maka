@@ -25,7 +25,7 @@ import {
   type WorkspaceProcessConfiguration,
   type WorkspaceWebConfiguration,
   type ComputerConfiguration,
-  type WorkspaceJevConfiguration,
+  type WorkspaceDecisionsApiConfiguration,
   type CompositionInput,
   type CompositionNode,
   type PackageRef,
@@ -57,7 +57,7 @@ export const packageNames = [
   'skills',
   'workspace-computer',
   'workspace-web',
-  'workspace-jev',
+  'workspace-decisions-api',
 ] as const;
 export type PackageName = (typeof packageNames)[number];
 export const instanceNames = [
@@ -85,7 +85,7 @@ export interface CompositionConfiguration {
   processes?: WorkspaceProcessConfiguration;
   web?: WorkspaceWebConfiguration;
   computer?: ComputerConfiguration;
-  jev?: WorkspaceJevConfiguration;
+  decisions_api?: WorkspaceDecisionsApiConfiguration;
   coordinator?: AgentConfiguration;
   coordinatorProcesses?: WorkspaceProcessConfiguration;
   acpExecutors?: AcpExecutor[];
@@ -553,11 +553,20 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       web: expose('gateway', 'web', ['snapshot', 'save', 'saveKey', 'deleteKey', 'checkKey'], true),
     });
   }
-  if (configuration.jev) {
-    host.instances['workspace-jev'] = node('workspace-jev', { ...configuration.jev });
-    host.instances.gateway!.bindings!.jev = [local('workspace-jev', 'jev')];
+  if (configuration.decisions_api) {
+    host.instances['workspace-decisions-api'] = node('workspace-decisions-api', {
+      ...configuration.decisions_api,
+    });
+    host.instances.gateway!.bindings!.decisions_api = [
+      local('workspace-decisions-api', 'decisions_api'),
+    ];
     Object.assign(endpoints, {
-      jev: expose('gateway', 'jev', ['snapshot', 'save', 'credential', 'evaluate'], true),
+      decisions_api: expose(
+        'gateway',
+        'decisions_api',
+        ['snapshot', 'save', 'credential', 'evaluate'],
+        true,
+      ),
     });
   }
   if (configuration.skills) {

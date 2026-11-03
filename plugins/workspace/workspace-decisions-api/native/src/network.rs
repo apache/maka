@@ -26,22 +26,27 @@ use maka_host_runtime::http::{Authority, Worker};
 use maka_sandbox::Destination;
 use std::panic::AssertUnwindSafe;
 
-/// The installed Jev capability authorizes only its configured endpoint.
+/// The installed Decisions API capability authorizes only its configured endpoint.
 /// No caller-supplied URL or redirect can widen that authority.
 #[derive(Clone)]
 pub(super) struct Access {
-    owner: Arc<Jev>,
+    owner: Arc<DecisionsApi>,
     caller: Scope,
     destination: Destination,
     revision: Option<u64>,
     credential_revision: Option<u64>,
 }
 impl Access {
-    pub fn new(owner: Arc<Jev>, caller: Scope, snapshot: &Snapshot) -> Result<Self, String> {
+    pub fn new(
+        owner: Arc<DecisionsApi>,
+        caller: Scope,
+        snapshot: &Snapshot,
+    ) -> Result<Self, String> {
         let url = url::Url::parse(&snapshot.settings.url).map_err(message)?;
         let destination = Destination::new(
-            url.host_str().ok_or("jev_invalid_host")?,
-            url.port_or_known_default().ok_or("jev_invalid_port")?,
+            url.host_str().ok_or("decisions_api_invalid_host")?,
+            url.port_or_known_default()
+                .ok_or("decisions_api_invalid_port")?,
         )
         .map_err(message)?;
         Ok(Self {
@@ -143,7 +148,7 @@ impl Authority for Access {
             let result = AssertUnwindSafe(worker(stopping.child_token()))
                 .catch_unwind()
                 .await
-                .unwrap_or_else(|_| Err("Jev HTTP worker panicked".into()));
+                .unwrap_or_else(|_| Err("Decisions API HTTP worker panicked".into()));
             if result.is_err() {
                 stopping.cancel();
             }

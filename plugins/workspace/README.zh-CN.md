@@ -26,7 +26,7 @@
 - [Files](workspace-files/native/README.zh-CN.md)使用文件[引擎](workspace-files/engine/README.zh-CN.md)和纯[补丁解析器](workspace-files/patch/README.zh-CN.md)。
 - [Processes](workspace-processes/native/README.zh-CN.md)管理命令、终端和协议进程。
 - [Web](workspace-web/native/README.zh-CN.md)提供抓取与搜索，[API crate](workspace-web/api/README.zh-CN.md)包含声明。
-- [Jev](workspace-jev/native/README.zh-CN.md)提供结构化评估[引擎](workspace-jev/engine/README.zh-CN.md)。
+- [Decisions API](workspace-decisions-api/native/README.zh-CN.md)提供结构化评估[引擎](workspace-decisions-api/engine/README.zh-CN.md)。
 - Computer Use 通过[原生提供方](workspace-computer/native/src/lib.rs)提供 `cua_repl` 和 `cua_reset`。每个会话需要显式授权，权限边界变更会使授权失效；Explore 模式不能操作电脑。REPL 变量和目标绑定保留到重置或 Host 关闭，会话授权则在重启后保留。桌面与浏览器连接由提供方配置选择。
 
 共用 [API](api/README.zh-CN.md)定义工作区契约，[support](support/README.zh-CN.md)处理已配置根目录、目录选择和私有路径排除。服务显式接收资源限制与权限，请求 JSON 中的路径不能扩大它们。

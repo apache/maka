@@ -17,12 +17,12 @@
   under the License.
 -->
 
-# maka-jev-native
+# maka-decisions-api-native
 
 [English](README.md)
 
-注册 Jev 服务，将公开契约连接到评估引擎和设置存储。`provide` 向 Host 添加工厂。产品绑定与调用准入决定谁可以访问配置的端点。
+原生 `maka.workspace.decisions_api` 实现，导出端点设置、密钥管理和评估的 Decisions API 契约。共享引擎明确选择 JEV 或 OpenAI 协议。HTTP 准入受已配置端点和设置/密钥 revision 约束，重定向不会转发密钥。
 
-凭据资源按原端点和版本意图完整读取。完整评估结果仍区分已确认结果与远端 POST 的不确定回执；所有者关闭仍等待原调用范围和 HTTP 清理。
+设置和密钥使用 `maka.workspace.decisions_api` namespace。密钥绑定完整原始端点 URL；保存的设置明确指定协议。
 
-[源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
+[源码](src/lib.rs) · [引擎](../engine/README.zh-CN.md)

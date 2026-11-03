@@ -77,8 +77,8 @@ mod queue;
 mod mcp;
 mod selection;
 
+mod decisions_api_tests;
 mod git;
-mod jev_tests;
 mod web_tests;
 
 mod worktrees;
@@ -1438,6 +1438,6 @@ fn provide_without_workhub(registry: &mut NativeRegistry) -> Result<(), String> 
     maka_interactions_native::questions::provide(registry)?;
     maka_interactions_native::forms::provide(registry)?;
     maka_web::provide(registry)?;
-    maka_jev_native::provide(registry)?;
+    maka_decisions_api_native::provide(registry)?;
     Ok(())
 }

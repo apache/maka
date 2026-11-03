@@ -1759,7 +1759,7 @@ export const configurations = {
       },
     },
   },
-  workspaceJev: {
+  workspaceDecisionsApi: {
     type: 'object',
     additionalProperties: false,
     properties: {
@@ -1768,7 +1768,7 @@ export const configurations = {
       },
     },
     required: ['network'],
-    title: 'WorkspaceJevConfiguration',
+    title: 'WorkspaceDecisionsApiConfiguration',
     $schema: 'https://json-schema.org/draft/2020-12/schema',
     $defs: {
       Network: {

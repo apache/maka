@@ -17,9 +17,12 @@
  * under the License.
  */
 
-pub use maka_jev::{
-    decision::{Evaluation, EvaluationResult},
-    settings::{Settings, Snapshot},
+pub use maka_decisions_api::{
+    decision::{
+        Answer, Choice, ChoiceProbability, ChoiceValue, Evaluation, EvaluationResult, Level,
+        Question, ScoreProbability, Usage,
+    },
+    settings::{Protocol, Settings, Snapshot},
 };
 use maka_plugin_core::contract::{
     Contract, Interface, Method, MethodMode, ResourceType, Transport,
@@ -31,7 +34,7 @@ use std::collections::BTreeMap;
 
 #[derive(Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(rename = "WorkspaceJevConfiguration")]
+#[schemars(rename = "WorkspaceDecisionsApiConfiguration")]
 pub struct Configuration {
     pub network: maka_sandbox::Network,
 }
@@ -41,7 +44,7 @@ pub fn configuration_schema() -> Value {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(rename = "JevSet")]
+#[schemars(rename = "DecisionsApiSet")]
 pub struct Set {
     pub revision: Option<u64>,
     pub settings: Settings,
@@ -49,7 +52,7 @@ pub struct Set {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "JevCredentialTarget")]
+#[schemars(rename = "DecisionsApiCredentialTarget")]
 pub enum CredentialTarget {
     ApiKey,
     Header {
@@ -60,7 +63,7 @@ pub enum CredentialTarget {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-#[schemars(rename = "JevCredentialChange")]
+#[schemars(rename = "DecisionsApiCredentialChange")]
 pub enum CredentialChange {
     Replace,
     Remove,
@@ -68,7 +71,7 @@ pub enum CredentialChange {
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-#[schemars(rename = "JevCredential")]
+#[schemars(rename = "DecisionsApiCredential")]
 pub struct Credential {
     #[schemars(length(min = 1))]
     pub url: String,
@@ -79,7 +82,7 @@ pub struct Credential {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "JevUpdate")]
+#[schemars(rename = "DecisionsApiUpdate")]
 pub enum Update {
     Updated { snapshot: Snapshot },
     Changed,
@@ -88,7 +91,7 @@ pub enum Update {
 
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-#[schemars(rename = "JevResult")]
+#[schemars(rename = "DecisionsApiResult")]
 pub enum ResultValue {
     Completed { value: EvaluationResult },
     Failed { message: String },
@@ -105,7 +108,7 @@ fn method<I: JsonSchema, O: JsonSchema>(mode: MethodMode) -> Method {
 }
 pub fn contract() -> Contract {
     Contract {
-        name: "maka.workspace.Jev".into(),
+        name: "maka.workspace.DecisionsApi".into(),
         version: 1,
         transport: Transport::Remote,
         interface: Interface::Service {
@@ -141,8 +144,8 @@ pub fn contract() -> Contract {
     }
 }
 
-pub const IMPLEMENTATION: &str = "maka.workspace.jev";
-pub const EXPORT: &str = "jev";
+pub const IMPLEMENTATION: &str = "maka.workspace.decisions_api";
+pub const EXPORT: &str = "decisions_api";
 
 pub fn native() -> maka_plugin_core::package::NativeDefinition {
     maka_plugin_core::package::NativeDefinition::new(

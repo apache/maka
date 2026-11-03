@@ -74,8 +74,8 @@ export default {
           contract: contracts.terminal,
           cardinality: { kind: 'optional' },
         },
-        jev: {
-          contract: contracts.workspaceJev,
+        decisions_api: {
+          contract: contracts.workspaceDecisionsApi,
           cardinality: { kind: 'optional' },
         },
         web: {

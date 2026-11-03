@@ -43,7 +43,10 @@ export default {
           cardinality: { kind: 'optional' },
         },
         terminal: { contract: sdk.contracts.terminal, cardinality: { kind: 'optional' } },
-        jev: { contract: sdk.contracts.workspaceJev, cardinality: { kind: 'optional' } },
+        decisions_api: {
+          contract: sdk.contracts.workspaceDecisionsApi,
+          cardinality: { kind: 'optional' },
+        },
         web: { contract: sdk.contracts.workspaceWeb, cardinality: { kind: 'optional' } },
         skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
         settings: one(sdk.contracts.settings),

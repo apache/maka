@@ -26,7 +26,7 @@
 | 插件族 | 职责 |
 | --- | --- |
 | [agent](agent/README.zh-CN.md) | 会话、模型执行、工具、目标和调度 |
-| [workspace](workspace/README.zh-CN.md) | 文件、进程、Web 和 Jev 服务 |
+| [workspace](workspace/README.zh-CN.md) | 文件、进程、Web 和 Decisions API 服务 |
 | [settings](settings/native/README.zh-CN.md) | 连接、凭据和偏好 |
 | [skills](skills/native/README.zh-CN.md) | 技能发现、读取和发布 |
 | [interactions](interactions/native/README.zh-CN.md) | 问题和表单 |

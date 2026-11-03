@@ -67,6 +67,34 @@ test('Session tools select their own exports without duplicate native grants or 
   });
 });
 
+test('Decisions API publishes its own package, instance and capability', async () => {
+  const { composition, instanceNames, installationNames, packageNames } = await import(
+    '../dist/authoring/composition.mjs'
+  );
+  const keys = Object.fromEntries(instanceNames.map((name, index) => [name, `key-${index}`]));
+  keys['workspace-decisions-api'] = 'decision-instance';
+  const { host, endpoints } = composition({
+    locale: 'en',
+    hostDeployment: 'host',
+    keys,
+    packages: Object.fromEntries(
+      packageNames.map((name) => [name, { id: name, revision: 'a'.repeat(64) }]),
+    ),
+    agent: { workspaceRoots: [], tools: [] },
+    decisions_api: { network: 'allowed' },
+  });
+  assert.equal(host.instances['workspace-decisions-api'].key, 'decision-instance');
+  assert.equal(
+    host.instances['workspace-decisions-api'].package.package.id,
+    'workspace-decisions-api',
+  );
+  assert.deepEqual(host.instances.gateway.bindings.decisions_api, [
+    { kind: 'instance', path: ['workspace-decisions-api'], export: 'decisions_api' },
+  ]);
+  assert.ok(endpoints.decisions_api);
+  assert.ok(installationNames({}).includes('workspace-decisions-api'));
+});
+
 test('publishing plugin packages preserves unchanged files and removes obsolete bytes', async () => {
   const { bundle } = await import('../../../../scripts/plugins/build.mjs');
   const output = mkdtempSync(resolve(tmpdir(), 'maka-product-publication-'));

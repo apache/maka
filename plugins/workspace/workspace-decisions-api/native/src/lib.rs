@@ -17,8 +17,8 @@
  * under the License.
  */
 
-//! Endpoint-bound structured decisions, using the original Jev engine and repository.
-use maka_workspace_api::jev as contract;
+//! Endpoint-bound decisions over explicit JEV and OpenAI protocols.
+use maka_workspace_api::decisions_api as contract;
 mod network;
 use contract::*;
 use contract::{EXPORT, IMPLEMENTATION, contract};
@@ -34,9 +34,9 @@ use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
-struct Jev {
+struct DecisionsApi {
     configuration: Arc<ConfigurationStore>,
-    repository: maka_jev::settings::Repository,
+    repository: maka_decisions_api::settings::Repository,
     storage: Arc<maka_host_runtime::storage::Storage>,
     network: maka_sandbox::Network,
     resources: Arc<Resources>,
@@ -44,10 +44,10 @@ struct Jev {
 }
 pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
     registry.insert(
-        maka_workspace_api::jev::IMPLEMENTATION.into(),
+        maka_workspace_api::decisions_api::IMPLEMENTATION.into(),
         Arc::new(|context, input| {
             Box::pin(async move {
-                match Jev::open(context, input).await {
+                match DecisionsApi::open(context, input).await {
                     Ok(owner) => {
                         let service = Arc::new(Service(owner));
                         NativeActivation {
@@ -70,10 +70,12 @@ pub fn provide(registry: &mut NativeRegistry) -> Result<(), String> {
         }),
     )
 }
-impl Jev {
+impl DecisionsApi {
     async fn open(context: NativeContext, input: Value) -> Result<Arc<Self>, String> {
         let input: Configuration = serde_json::from_value(input).map_err(message)?;
-        let persistence = context.persistence().ok_or("jev_requires_persistence")?;
+        let persistence = context
+            .persistence()
+            .ok_or("decisions_api_requires_persistence")?;
         let root = persistence.store().owned_root().map_err(message)?;
         let configuration = Arc::new(ConfigurationStore::for_root(root).await.map_err(message)?);
         let prefix = maka_host_runtime::storage::instance_prefix(
@@ -99,7 +101,7 @@ impl Jev {
         });
         Ok(Arc::new(Self {
             configuration,
-            repository: maka_jev::settings::Repository {
+            repository: maka_decisions_api::settings::Repository {
                 store: storage.clone(),
                 credentials,
             },
@@ -115,7 +117,7 @@ impl Jev {
         })
     }
 }
-struct Service(Arc<Jev>);
+struct Service(Arc<DecisionsApi>);
 impl Handler for Service {
     fn call(
         &self,
@@ -126,10 +128,10 @@ impl Handler for Service {
         let owner = self.0.clone();
         Box::pin(async move {
             if owner.stopping.is_cancelled() || context.scope().cancellation.is_cancelled() {
-                return Err("jev_closed".into());
+                return Err("decisions_api_closed".into());
             }
             if name != "snapshot" && context.operation().is_none() {
-                return Err("jev_mutation_required".into());
+                return Err("decisions_api_mutation_required".into());
             }
             match name.as_str() {
                 "snapshot" => encode(owner.repository.snapshot().await.map_err(message)?),
@@ -145,7 +147,7 @@ impl Handler for Service {
                     }
                 }
                 "credential" => {
-                    use maka_jev::settings::{HeaderPatch, SecretChange, SecretsPatch};
+                    use maka_decisions_api::settings::{HeaderPatch, SecretChange, SecretsPatch};
                     let input: Credential = serde_json::from_value(input).map_err(message)?;
                     // The endpoint in the intent identifies the credential owner even if
                     // another editor changes the active endpoint during this operation.
@@ -164,7 +166,7 @@ impl Handler for Service {
                             let secret = context
                                 .attachments()
                                 .get("secret")
-                                .ok_or("jev_secret_required")?;
+                                .ok_or("decisions_api_secret_required")?;
                             let Ok(value) = String::from_utf8(secret.read(0..secret.bytes())?)
                             else {
                                 return encode(Update::Invalid);
@@ -195,7 +197,7 @@ impl Handler for Service {
                             encode(Update::Changed)
                         }
                         Err(StoreError::Unavailable(message))
-                            if message.starts_with("Invalid Jev") =>
+                            if message.starts_with("Invalid Decisions API") =>
                         {
                             encode(Update::Invalid)
                         }
@@ -207,7 +209,7 @@ impl Handler for Service {
                     let snapshot = owner.repository.snapshot().await.map_err(message)?;
                     let authority =
                         network::Access::new(owner.clone(), context.scope().clone(), &snapshot)?;
-                    let engine = maka_jev::decision::Jev {
+                    let engine = maka_decisions_api::decision::DecisionsApi {
                         settings: owner.repository.clone(),
                         http: Arc::new(maka_host_runtime::http::Http::new(Arc::new(authority))),
                         preferences: Arc::new(network::Preferences(owner.configuration.clone())),
@@ -218,7 +220,7 @@ impl Handler for Service {
                     {
                         Ok(value) => encode(ResultValue::Completed { value }),
                         Err(error) if error.outcome_unknown() => {
-                            if matches!(error, maka_jev::decision::Error::Settlement) {
+                            if matches!(error, maka_decisions_api::decision::Error::Settlement) {
                                 owner.stopping.cancel();
                             }
                             Err(message(error))
@@ -228,7 +230,7 @@ impl Handler for Service {
                         }),
                     }
                 }
-                _ => Err("jev_method_unavailable".into()),
+                _ => Err("decisions_api_method_unavailable".into()),
             }
         })
     }
