@@ -70,7 +70,7 @@ export function displayText(text: DisplayText): string {
   return (
     text.translations?.[locale] ??
     text.translations?.[locale.split('-')[0]!] ??
-    text.translations?.[(['en', 'zh-CN', 'zh-TW'] as const)[languageIndex(locale)]] ??
+    text.translations?.[(['en', 'zh-CN', 'zh-TW', 'ko'] as const)[languageIndex(locale)]] ??
     text.fallback
   );
 }
