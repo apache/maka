@@ -363,42 +363,6 @@ impl Desktop {
         .await;
     }
 
-    async fn diagnostic_type_text(&self, text: &str) {
-        let _ = self.platform.take_clipboard_write();
-        let mut previous = None;
-        self.until("the editor did not accept the diagnostic draft", || {
-            self.platform.text_input_target()?;
-            self.key("a", true);
-            self.platform.paste(text).unwrap();
-            let copied = self.copy_input();
-            let actual = self.app.update(|cx| {
-                self.window
-                    .update(cx, |view, window, cx| {
-                        let len = view.text_length_utf16(window, cx)?;
-                        view.text_for_range(0..len, &mut None, window, cx)
-                    })
-                    .unwrap()
-            });
-            let state = (
-                actual.as_ref().map(String::len),
-                copied.as_ref().map(String::len),
-                actual.as_deref() == Some(text),
-            );
-            if previous != Some(state) {
-                eprintln!(
-                    "[DEBUG-6589] expected={}, native={:?}, copied={:?}, native_matches={}",
-                    text.len(),
-                    state.0,
-                    state.1,
-                    state.2
-                );
-                previous = Some(state);
-            }
-            copied.filter(|copied| copied == text)
-        })
-        .await;
-    }
-
     /// Enter does nothing until the typed draft can be sent.
     async fn submit(&self) {
         self.control("Send message").await;
@@ -547,10 +511,6 @@ async fn desktop_multiline_drafts_keep_the_composer_bounded() {
         }
         let mut capped_height = None;
         for draft in [&text, &longer] {
-            eprintln!(
-                "[DEBUG-6589] pending={pending}, length={}, phase=short",
-                draft.len()
-            );
             desktop.type_text("short").await;
             let short = desktop
                 .until(
@@ -564,11 +524,17 @@ async fn desktop_multiline_drafts_keep_the_composer_bounded() {
                     },
                 )
                 .await;
-            eprintln!(
-                "[DEBUG-6589] pending={pending}, length={}, phase=multiline",
-                draft.len()
-            );
-            desktop.diagnostic_type_text(draft).await;
+            desktop.key("a", true);
+            let accepted = desktop.app.update(|cx| {
+                desktop
+                    .window
+                    .update(cx, |view, _, _| {
+                        view.paste(nsh_core::PasteEvent::new(draft.as_str()))
+                    })
+                    .unwrap()
+            });
+            assert!(accepted, "the focused composer must accept the paste");
+            desktop.expect_text(draft).await;
             let height = desktop
                 .until(
                     "multiline composer did not grow to a bounded height",
