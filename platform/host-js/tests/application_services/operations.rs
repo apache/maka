@@ -1109,6 +1109,7 @@ async fn commit_caller_source(
         }],
     );
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([("caller".into(), node)]),
     };

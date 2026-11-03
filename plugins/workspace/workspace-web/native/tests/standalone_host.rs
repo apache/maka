@@ -135,6 +135,7 @@ fn input(web: &Package, caller: &Package) -> Input {
         overrides: vec![],
     };
     Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             ("web".into(), node(web, 1, true)),

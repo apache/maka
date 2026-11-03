@@ -269,7 +269,7 @@ pub(crate) fn catalog(
                 binding: binding.execution_basis().into(),
             });
             let service = Service {
-                services: services.clone(),
+                services: services.select_method(&selection.target, &selection.method)?,
                 store: store.clone(),
                 binding: binding.execution_basis().into(),
                 target: format!(
