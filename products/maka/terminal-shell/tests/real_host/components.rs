@@ -115,6 +115,12 @@ async fn activity_resumes_following_after_reading_an_expanded_tool() {
         screen.contains("Live activity-13") && screen.contains("At activity end")
     })
     .await;
+
+    view.resize(120, 100);
+    wait_view(&mut view, |screen| {
+        screen.contains("Tool source line 10") && screen.contains("Live activity-13")
+    })
+    .await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

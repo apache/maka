@@ -42,7 +42,7 @@ const groupHeaderHeight = Math.max(
   captionTextStyle.lineHeight + 2 * controlStyle.paddingVertical,
 );
 const memberGap = 6;
-const activityFollowThreshold = 16;
+const activityFollowThreshold = captionTextStyle.lineHeight;
 
 export type LiveActivity = {
   kind: 'working' | 'thinking' | 'response' | 'waiting';
@@ -208,7 +208,7 @@ function ActivityLog(props: {
       panelStyle.gap +
       2 * (panelStyle.marginVertical + panelStyle.padding + panelStyle.borderWidth);
     const viewportHeight = props.viewport().height;
-    const available = Math.max(16, Math.min(400, windowSize().height / 2, viewportHeight - chrome));
+    const available = Math.max(16, Math.min(windowSize().height / 2, viewportHeight - chrome));
     return platform.isTerminal ? Math.floor(available / 16) * 16 : available;
   };
   const bodyHeight = () => {

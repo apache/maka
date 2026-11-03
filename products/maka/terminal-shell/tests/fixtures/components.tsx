@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { AnimatedValue, mount, platform, signal, Text, View, type JSX } from 'nsh';
+import { AnimatedValue, mount, platform, signal, Text, View, windowSize, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { ContextGaugePreview } from './ContextGaugePreview';
@@ -689,7 +689,7 @@ function ActivityFollow() {
           }}
           sessionId="activity-session"
           through={() => 1}
-          viewport={() => ({ width: 960, height: 576 })}
+          viewport={windowSize}
           activity={() => ({ kind: 'working', detail: '' })}
           reveal={() => {}}
           previewImage={() => {}}
