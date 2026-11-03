@@ -18,6 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
 
@@ -203,4 +208,26 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
   assert(
     plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
   );
+});
+
+test('native macOS behavior verification selects nextest during runner setup', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
+  try {
+    for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
+      const output = join(temporary, role);
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
+        {
+          env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
+        },
+      );
+      assert.equal(
+        readFileSync(output, 'utf8'),
+        role === 'native-macos' ? 'tools=cargo-nextest\n' : 'tools=\n',
+      );
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 });
