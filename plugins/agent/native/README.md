@@ -106,9 +106,11 @@ already frozen request. Catalog changes alone therefore do not invalidate queued
 
 A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
 background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts
-at 270 seconds to leave 30 seconds before the 300-second catalog TTL. Its 15-second deadline
-bounds this foreground delay; failure uses the existing model with no new compatibility claim,
+at 270 seconds to leave 30 seconds before the 300-second catalog TTL. Each discovery has a 15-second deadline; account replacement may first await the old flight and
+then the new identity’s discovery. This is not a 15-second deadline for the complete model request.
+Failure uses the existing model with no new compatibility claim,
 then retries after a jittered 30–60-second backoff to avoid a request storm. Warm and backed-off
-preparations do not wait for network discovery. These are local latency/load policies, not protocol
+preparations do not wait for network discovery; credential resolution follows its existing policy.
+These are local latency/load policies, not protocol
 limits. The TTL governs new catalog observations; recorded producer facts and checkpoints do not
 expire with that cache. Once capture finishes, proactive compaction executes alongside Main.
