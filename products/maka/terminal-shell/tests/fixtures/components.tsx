@@ -450,7 +450,7 @@ function Compaction() {
           value() === 'waiting' ? (
             <CompactionDivider state="running" startedAt={() => startedAt} />
           ) : (
-            <CompactionDivider state="completed" durationMs={() => 126_700} />
+            <CompactionDivider state="completed" durationMs={() => 3_726_700} />
           )
         }
       </Each>
