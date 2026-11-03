@@ -26,27 +26,20 @@ import { bodyTextStyle, C, captionTextStyle } from './ui';
 
 export type SystemPermissionRequest = Extract<InteractionRequest, { kind: 'system_permission' }>;
 
-/** The System Settings pane that holds each grant. */
-const panes: Record<SystemPermissionGrant, string> = {
-  accessibility: 'x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility',
-  screen_recording: 'x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture',
-};
-
-export function systemPermissionPane(grant: SystemPermissionGrant): string {
-  return panes[grant];
-}
-
 /** The grant's name as System Settings shows it. */
 export function systemPermissionName(grant: SystemPermissionGrant): string {
   return grant === 'accessibility' ? tr('Accessibility') : tr('Screen & System Audio Recording');
 }
 
-export function SystemPermissionRequest(props: { request: SystemPermissionRequest }) {
+export function SystemPermissionRequest(props: {
+  request: SystemPermissionRequest;
+  canLocate?: boolean;
+}) {
   return (
     <View style={{ gap: 16 }}>
       <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
         {tr(
-          '{application} needs these macOS permissions to use the computer. Turn them on in System Settings; the request continues on its own once they are on.',
+          '{application} needs these macOS permissions to use the computer. Turn them on in System Settings.',
           { application: props.request.application },
         )}
       </Text>
@@ -64,13 +57,20 @@ export function SystemPermissionRequest(props: { request: SystemPermissionReques
           )}
         </Each>
       </View>
-      <Text style={{ ...captionTextStyle, color: C.muted }}>
+      <Text style={{ ...bodyTextStyle, color: C.text }}>
         {tr(
-          'If {application} is not listed, reopen System Settings, or add it with the + button.',
-          {
-            application: props.request.application,
-          },
+          'If {application} is enabled but access is still denied after an update, remove its entry and add the current app again. macOS may also require restarting the Host, not just the conversation window.',
+          { application: props.request.application },
         )}
+      </Text>
+      <Text style={{ ...captionTextStyle, color: C.muted }}>
+        {props.canLocate
+          ? tr(
+              'Show the permission application in Finder, then drag the selected app into the privacy list in System Settings. You do not need to enter a path.',
+            )
+          : tr(
+              'Grant permission on the Mac running the Host. This window cannot locate the application for this request.',
+            )}
       </Text>
     </View>
   );

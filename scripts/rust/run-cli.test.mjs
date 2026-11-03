@@ -117,6 +117,11 @@ test('development builds select capabilities once for the CLI and worker, then r
 });
 
 test('desktop development stages the current macOS shell before starting Maka', async (t) => {
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (command, args, options) =>
+    command === '/usr/bin/codesign' ? Buffer.alloc(0) : execute(command, args, options),
+  );
+
   const directory = await mkdtemp(join(tmpdir(), 'maka-run-desktop-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   await mkdir(join(directory, 'assets'));

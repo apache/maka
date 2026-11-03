@@ -18,6 +18,7 @@
  */
 
 import { cleanup, platform, signal, Text, View } from 'nsh';
+import { formatDuration } from './duration';
 import { tr } from './locale';
 import { C, captionTextStyle } from './ui';
 
@@ -36,18 +37,12 @@ export function CompactionDivider(props: CompactionDividerProps) {
   } else {
     durationMs = props.durationMs;
   }
-  const duration = (milliseconds: number) => {
-    const seconds = milliseconds / 1000;
-    return seconds < 60
-      ? `${seconds.toFixed(1)}s`
-      : `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`;
-  };
   const label = () =>
     tr(
       props.state === 'running'
         ? 'Compacting context… ({duration})'
         : 'Context compacted ({duration})',
-      { duration: duration(durationMs()) },
+      { duration: formatDuration(durationMs(), true) },
     );
   return <NoteDivider label={label()} />;
 }

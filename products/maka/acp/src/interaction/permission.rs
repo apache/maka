@@ -234,6 +234,7 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
             tool_use_id,
             grants,
             application,
+            ..
         } => {
             let names = grants
                 .iter()
@@ -553,6 +554,7 @@ mod tests {
                 SystemPermissionGrant::ScreenRecording,
             ],
             application: "Maka Host".into(),
+            application_location: None,
         })
     }
 

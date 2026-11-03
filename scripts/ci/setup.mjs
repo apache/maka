@@ -31,9 +31,17 @@ const selectedManifests =
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
-    : ['root', 'replay', 'bridge', 'desktop', 'termina', 'nsh', 'gpui', 'native-windows'].includes(
-          role,
-        )
+    : [
+          'root',
+          'replay',
+          'bridge',
+          'desktop',
+          'termina',
+          'nsh',
+          'gpui',
+          'native-windows',
+          'native-macos',
+        ].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
 

@@ -149,6 +149,7 @@ fn system_permission_request_round_trips_and_validates_grants_and_application() 
                 SystemPermissionGrant::ScreenRecording
             ],
             application: "Maka Host".into(),
+            application_location: None,
         }
     );
     assert_eq!(
@@ -285,4 +286,35 @@ fn system_permission_granted_is_producer_committed_and_only_for_its_request() {
         .validate_for_request(&request)
         .is_err()
     );
+}
+
+#[test]
+fn system_permission_location_preserves_old_records_and_rejects_unusable_bundles() {
+    let old = system_permission_request();
+    let request: InteractionRequest = serde_json::from_value(old.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), old);
+    let mut located = old.clone();
+    located["applicationLocation"] = json!({
+        "fileUrl": "file:///Applications/Maka%20Host.app",
+        "stateDomain": "a".repeat(64),
+    });
+    let request: InteractionRequest = serde_json::from_value(located.clone()).unwrap();
+    assert_eq!(serde_json::to_value(request).unwrap(), located);
+
+    let mut unknown_location = old.clone();
+    unknown_location["applicationLocation"] = Value::Null;
+    let unknown: InteractionRequest = serde_json::from_value(unknown_location).unwrap();
+    assert_eq!(serde_json::to_value(unknown).unwrap(), old);
+
+    for location in [
+        json!({"fileUrl":"https://example.com/Host.app", "stateDomain":"a".repeat(64)}),
+        json!({"fileUrl":"file://another-mac/Applications/Host.app", "stateDomain":"a".repeat(64)}),
+        json!({"fileUrl":"file:///Applications/Host.app?launch=true", "stateDomain":"a".repeat(64)}),
+        json!({"fileUrl":"file:///Applications/not-an-app.txt", "stateDomain":"a".repeat(64)}),
+        json!({"fileUrl":"file:///Applications/Host.app", "stateDomain":""}),
+    ] {
+        let mut invalid = old.clone();
+        invalid["applicationLocation"] = location;
+        assert!(serde_json::from_value::<InteractionRequest>(invalid).is_err());
+    }
 }

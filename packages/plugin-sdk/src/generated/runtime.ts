@@ -3404,6 +3404,7 @@ export type InteractionRequest =
        * The application name the operating system lists in its settings.
        */
       application: string;
+      applicationLocation?: SystemPermissionApplicationLocation | null;
     };
 export type FormField = {
   name: string;
@@ -8021,6 +8022,10 @@ export interface ComputerAppDisplay {
   appPath: string;
   risk?: ComputerAppRisk | null;
   warning?: string | null;
+}
+export interface SystemPermissionApplicationLocation {
+  fileUrl: string;
+  stateDomain: string;
 }
 export interface QuestionAsk {
   /**

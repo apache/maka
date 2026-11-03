@@ -41,6 +41,7 @@ import type {
 import {
   C,
   bodyTextStyle,
+  inputTextStyle,
   captionTextStyle,
   compact,
   controlFocusStyle,
@@ -678,6 +679,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         <Input
                           accessibilityLabel={tr('Attachment path')}
                           placeholder={tr('Absolute file path…')}
+                          style={{
+                            ...inputTextStyle,
+                            height: 32,
+                            paddingHorizontal: 8,
+                            borderWidth: 1,
+                            borderRadius: 6,
+                            borderColor: C.line,
+                            color: C.text,
+                            placeholderColor: C.muted,
+                          }}
+                          focusStyle={{ borderColor: C.accent }}
                           autoFocus
                           value={path()}
                           onChange={({ value }) => path.set(value)}
@@ -695,7 +707,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         </Button>
                       </If>
                     </If>
-                    <View>
+                    <View
+                      style={{
+                        minHeight: hero() && !compact() ? 40 : 24,
+                        maxHeight: compact() ? 64 : 144,
+                      }}
+                    >
                       <Input
                         ref={(node) => {
                           editor.set(node);
@@ -801,8 +818,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         }
                         style={[
                           {
-                            minHeight: hero() && !compact() ? 40 : 24,
-                            maxHeight: compact() ? 64 : 144,
+                            minHeight: 0,
+                            flexGrow: 1,
+                            flexShrink: 1,
                             color: C.text,
                             placeholderColor: C.muted,
                             ...bodyTextStyle,

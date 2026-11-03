@@ -93,7 +93,7 @@ export const suites = {
   'native-build': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: embeddedInputs,
+    extraInputs: [...embeddedInputs, 'scripts/rust/build-cli.mjs'],
   },
   clippy: {
     workspace: 'root',
@@ -192,9 +192,26 @@ export const suites = {
     ],
     extraInputs: ['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs'],
   },
+  'macos-host': {
+    workspace: 'root',
+    packages: ['maka-cli', 'maka-host-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka', '--no-default-features'],
+    filter: 'test(deployment::host_identity::tests::)',
+    extraInputs: [
+      ...embeddedInputs,
+      'scripts/rust/build-cli.mjs',
+      'scripts/rust/build-cli.test.mjs',
+      'scripts/rust/pack-cli.mjs',
+      'scripts/rust/pack-cli.test.mjs',
+      'scripts/rust/run-cli.mjs',
+      'scripts/rust/run-cli.test.mjs',
+    ],
+  },
   native: {
     workspace: 'root',
     packages: ['maka-computer-use'],
+    cargoArgs: ['--locked', '-p', 'maka-computer-use', '--lib', '--features', 'native-desktop'],
+    filter: 'test(macos::controller::tests::) | test(macos::tcc::tests::)',
   },
 };
 
@@ -264,11 +281,16 @@ export const workers = [
   },
   ...['ubuntu', 'macos', 'windows'].map((os) => ({
     id: `native-${os}`,
-    suites: os === 'windows' ? ['native', 'windows-desktop', 'windows-nsh'] : ['native'],
+    suites:
+      os === 'windows'
+        ? ['native', 'windows-desktop', 'windows-nsh']
+        : os === 'macos'
+          ? ['native', 'macos-host']
+          : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
     dependencies: os === 'ubuntu' ? 'computer-use' : '',
-    javascript: os === 'windows',
+    javascript: os === 'windows' || os === 'macos',
     compile: true,
   })),
 ];

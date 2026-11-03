@@ -76,7 +76,8 @@ pub fn required(command: &Command) -> &'static [SystemPermissionGrant] {
 }
 
 /// The grants native desktop work needs that are not in effect now, checked
-/// with real calls. It blocks for those calls.
+/// using non-prompting preflight checks. It can block on the OS, but must
+/// never request authorization or enumerate screen content.
 pub fn missing(required: &[SystemPermissionGrant]) -> Vec<SystemPermissionGrant> {
     #[cfg(all(feature = "native-desktop", target_os = "macos"))]
     {
@@ -105,13 +106,13 @@ pub fn request(grants: &[SystemPermissionGrant]) {
 }
 
 /// The name System Settings lists for the application the grants belong to.
-pub fn application() -> String {
+pub fn application() -> (String, Option<std::path::PathBuf>) {
     #[cfg(all(feature = "native-desktop", target_os = "macos"))]
     {
         crate::macos::tcc::responsible_application()
     }
     #[cfg(not(all(feature = "native-desktop", target_os = "macos")))]
-    String::new()
+    (String::new(), None)
 }
 
 /// The tool failure for grants still missing: one `permission_required:`

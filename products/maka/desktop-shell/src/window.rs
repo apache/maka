@@ -114,6 +114,7 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
     // quit handlers' 200 ms.
     let application = gpui_platform::application().with_quit_mode(gpui::QuitMode::Explicit);
     application.run(move |cx| {
+        cx.set_app_identity(APP_ID, TITLE);
         let closed = detach.clone();
         cx.on_window_closed(move |cx, _| {
             if cx.windows().is_empty() {

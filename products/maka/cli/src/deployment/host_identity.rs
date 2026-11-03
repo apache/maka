@@ -29,54 +29,93 @@
 //! macOS ties a grant to the exact bytes of that executable, and every
 //! package is installed into a directory of its own. So the helper is
 //! copied once into the account data directory and replaced only when a
-//! package carries a higher bundle version; a new build of the same version
+//! package carries a higher bundle version or the installed signature is
+//! broken. A new build of the same version
 //! keeps the copy, and with it the grants. Bump `hostApp.version` in
 //! `scripts/rust/build-cli.mjs` only when the helper must change.
 
 use std::path::{Path, PathBuf};
 
 /// The program and its leading arguments that run `executable` as the Host.
-/// Without a usable helper, the executable runs directly.
-pub(super) async fn command(executable: &Path) -> (PathBuf, Vec<String>) {
-    let direct = (executable.to_owned(), Vec::new());
-    let Some(argument) = executable.to_str().map(str::to_owned) else {
-        return direct;
-    };
+/// A development build without a packaged or installed helper runs directly.
+pub(super) async fn command(executable: &Path) -> Result<(PathBuf, Vec<String>), String> {
+    let argument = executable
+        .to_str()
+        .ok_or("Host executable path must be UTF-8")?
+        .to_owned();
     let executable = executable.to_owned();
-    match tokio::task::spawn_blocking(move || shell(&executable)).await {
-        Ok(Some(shell)) => (shell, vec![argument]),
-        _ => direct,
+    let source = executable.clone();
+    match tokio::task::spawn_blocking(move || shell(&source))
+        .await
+        .map_err(|error| error.to_string())??
+    {
+        Some(shell) => Ok((shell, vec![argument])),
+        None => Ok((executable, Vec::new())),
     }
 }
 
 const BUNDLE: &str = "Maka Host.app";
 const EXECUTABLE: &str = "Contents/MacOS/maka-host-shell";
 
-/// The installed helper's executable, installing, upgrading or repairing it
-/// from the package `executable` belongs to. It blocks on file system work.
-pub(super) fn shell(executable: &Path) -> Option<PathBuf> {
-    let installed = maka_event_log::root::RootNamespaces::for_current_account()
-        .ok()?
+/// Installs, upgrades or repairs the Host identity. This blocks on file and
+/// signature checks and must not run on an asynchronous executor thread.
+pub(super) fn shell(executable: &Path) -> Result<Option<PathBuf>, String> {
+    let namespaces = maka_event_log::root::RootNamespaces::for_current_account()
+        .map_err(|error| format!("find macOS Host identity directory: {error}"))?;
+    let installed = namespaces
         .ownership
-        .parent()?
+        .parent()
+        .ok_or("Host identity directory has no parent")?
         .join(BUNDLE);
     let packaged = executable
-        .parent()?
+        .parent()
+        .ok_or("Host executable has no parent")?
         .join("Maka.app/Contents/Helpers")
         .join(BUNDLE);
-    prepare(&packaged, &installed)
+    prepare(&packaged, &installed).map_err(|error| format!("prepare macOS Host identity: {error}"))
 }
 
-fn prepare(packaged: &Path, installed: &Path) -> Option<PathBuf> {
-    let shell = installed.join(EXECUTABLE);
-    let usable = version(installed).is_some() && shell.is_file();
-    let newer = version(packaged) > version(installed);
-    if newer || (!usable && version(packaged).is_some()) {
-        // A failed install keeps the helper already installed, if any; the
-        // Host then runs under it or, without one, directly.
-        let _ = install(packaged, installed);
+fn prepare(packaged: &Path, installed: &Path) -> std::io::Result<Option<PathBuf>> {
+    let current = verified(installed);
+    if (current.is_err() || version(packaged) > version(installed)) && packaged.try_exists()? {
+        verified(packaged)?;
+        install(packaged, installed)?;
+        return verified(installed).map(Some);
     }
-    (version(installed).is_some() && shell.is_file()).then_some(shell)
+    if installed.try_exists()? {
+        current.map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn verified(bundle: &Path) -> std::io::Result<PathBuf> {
+    if version(bundle).is_none() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} has no valid Host bundle version", bundle.display()),
+        ));
+    }
+    let signature = std::process::Command::new("/usr/bin/codesign")
+        .args([
+            "--verify",
+            "--strict",
+            "--test-requirement",
+            "=identifier \"org.apache.maka.host\"",
+        ])
+        .arg(bundle)
+        .output()?;
+    if !signature.status.success() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "invalid Host identity at {}: {}",
+                bundle.display(),
+                String::from_utf8_lossy(&signature.stderr).trim()
+            ),
+        ));
+    }
+    Ok(bundle.join(EXECUTABLE))
 }
 
 /// The bundle's `CFBundleVersion`, an integer the build sets.
@@ -171,17 +210,42 @@ fn copy(source: &Path, destination: &Path) -> std::io::Result<()> {
 mod tests {
     use super::*;
 
-    fn bundle(root: &Path, name: &str, version: &str, executable: &[u8]) -> PathBuf {
+    const MARKER: &str = "Contents/Resources/version";
+
+    fn bundle(root: &Path, name: &str, version: &str, marker: &[u8]) -> PathBuf {
         let bundle = root.join(name);
         std::fs::create_dir_all(bundle.join("Contents/MacOS")).unwrap();
+        std::fs::create_dir_all(bundle.join("Contents/Resources")).unwrap();
         std::fs::write(
             bundle.join("Contents/Info.plist"),
             format!(
-                "<dict>\n  <key>CFBundleVersion</key>\n  <string>{version}</string>\n</dict>\n"
+                "<?xml version=\"1.0\"?><plist version=\"1.0\"><dict>\n\
+             <key>CFBundleIdentifier</key><string>org.apache.maka.host</string>\n\
+             <key>CFBundleExecutable</key><string>maka-host-shell</string>\n\
+             <key>CFBundlePackageType</key><string>APPL</string>\n\
+             <key>CFBundleVersion</key><string>{version}</string>\n</dict></plist>\n"
             ),
         )
         .unwrap();
-        std::fs::write(bundle.join(EXECUTABLE), executable).unwrap();
+        std::fs::copy("/usr/bin/true", bundle.join(EXECUTABLE)).unwrap();
+        std::fs::write(bundle.join(MARKER), marker).unwrap();
+        let signed = std::process::Command::new("/usr/bin/codesign")
+            .args([
+                "--force",
+                "--sign",
+                "-",
+                "--identifier",
+                "org.apache.maka.host",
+                "--timestamp=none",
+            ])
+            .arg(&bundle)
+            .output()
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
         bundle
     }
 
@@ -198,9 +262,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         let destination = root.path().join(BUNDLE);
         install(&bundle(root.path(), "one.app", "1", b"one"), &destination).unwrap();
-        assert_eq!(std::fs::read(destination.join(EXECUTABLE)).unwrap(), b"one");
+        assert_eq!(std::fs::read(destination.join(MARKER)).unwrap(), b"one");
         install(&bundle(root.path(), "two.app", "2", b"two"), &destination).unwrap();
-        assert_eq!(std::fs::read(destination.join(EXECUTABLE)).unwrap(), b"two");
+        assert_eq!(std::fs::read(destination.join(MARKER)).unwrap(), b"two");
         assert_eq!(version(&destination), Some(2));
         let leftovers = std::fs::read_dir(root.path())
             .unwrap()
@@ -222,20 +286,55 @@ mod tests {
         let installed = root.path().join(BUNDLE);
         let one = bundle(root.path(), "one.app", "1", b"one");
         let two = bundle(root.path(), "two.app", "2", b"two");
-        let shell = prepare(&one, &installed).unwrap();
-        assert_eq!(std::fs::read(&shell).unwrap(), b"one");
+        let shell = prepare(&one, &installed).unwrap().unwrap();
+        assert_eq!(std::fs::read(installed.join(MARKER)).unwrap(), b"one");
         prepare(&two, &installed).unwrap();
-        assert_eq!(std::fs::read(&shell).unwrap(), b"two");
+        assert_eq!(std::fs::read(installed.join(MARKER)).unwrap(), b"two");
         // An older package keeps the newer helper and its grants.
         prepare(&one, &installed).unwrap();
-        assert_eq!(std::fs::read(&shell).unwrap(), b"two");
+        assert_eq!(std::fs::read(installed.join(MARKER)).unwrap(), b"two");
         // A helper without its executable is replaced.
         std::fs::remove_file(&shell).unwrap();
         prepare(&one, &installed).unwrap();
-        assert_eq!(std::fs::read(&shell).unwrap(), b"one");
+        assert_eq!(std::fs::read(installed.join(MARKER)).unwrap(), b"one");
         // Nothing to install and nothing installed.
         let missing = root.path().join("missing.app");
-        assert_eq!(prepare(&missing, &root.path().join("none.app")), None);
+        assert_eq!(
+            prepare(&missing, &root.path().join("none.app")).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn repairs_a_same_version_with_a_broken_signature() {
+        let root = tempfile::tempdir().unwrap();
+        let source = bundle(root.path(), "source.app", "2", b"original");
+        let installed = root.path().join(BUNDLE);
+        prepare(&source, &installed).unwrap();
+        std::fs::write(installed.join(MARKER), b"corrupted").unwrap();
+        assert!(verified(&installed).is_err());
+        prepare(&source, &installed).unwrap();
+        assert_eq!(std::fs::read(installed.join(MARKER)).unwrap(), b"original");
+        assert!(verified(&installed).is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_updates_and_reports_install_failures() {
+        let root = tempfile::tempdir().unwrap();
+        let old = bundle(root.path(), "old.app", "1", b"old");
+        let new = bundle(root.path(), "new.app", "2", b"new");
+        let installed = root.path().join(BUNDLE);
+        prepare(&old, &installed).unwrap();
+        std::fs::write(new.join(MARKER), b"corrupted").unwrap();
+        assert!(prepare(&new, &installed).is_err());
+        assert!(verified(&installed).is_ok());
+        assert_eq!(version(&installed), Some(1));
+        let blocked = root.path().join("not-a-directory");
+        std::fs::write(&blocked, b"x").unwrap();
+        assert!(prepare(&old, &blocked.join(BUNDLE)).is_err());
+        let missing = root.path().join("missing.app");
+        std::fs::write(installed.join(MARKER), b"corrupted").unwrap();
+        assert!(prepare(&missing, &installed).is_err());
     }
 
     #[test]

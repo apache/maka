@@ -26,6 +26,7 @@ mod links;
 mod mutation;
 mod plugins;
 mod settings;
+mod system_permission;
 mod terminal;
 mod terminal_grid;
 mod ui_services;
@@ -551,6 +552,40 @@ impl ApplicationHost {
         })
         .await?;
         Ok(Instance::new(original))
+    }
+
+    pub async fn system_permission_actions(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<Vec<String>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let record = system_permission::read(&client, &session_id, &request_id).await?;
+            Ok(system_permission::actions(
+                &record,
+                &owner.client.source().state_domain,
+            ))
+        })
+        .await
+    }
+
+    pub async fn system_permission_action(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+        action: String,
+    ) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let record = system_permission::read(&client, &session_id, &request_id).await?;
+            system_permission::perform(&record, &owner.client.source().state_domain, &action).await
+        })
+        .await
     }
 
     /// Query any service exposed by the original Host catalogue.

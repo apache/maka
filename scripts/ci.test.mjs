@@ -318,3 +318,44 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
     plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
   );
 });
+
+test('Host identity inputs execute real macOS tests, including changes outside Cargo', () => {
+  for (const path of [
+    'scripts/rust/build-cli.mjs',
+    'scripts/rust/build-cli.test.mjs',
+    'scripts/rust/pack-cli.mjs',
+    'scripts/rust/run-cli.mjs',
+    'products/maka/cli/src/deployment/host_identity.rs',
+    'platform/code-runtime/src/lib.rs',
+    'packages/plugin-sdk/src/runtime/client.ts',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['macos-host'], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes('macos-host'));
+    assert.equal(runners.length, 1, path);
+    assert.equal(runners[0].runner, 'macos-latest', path);
+    assert.equal(runners[0].javascript, true, path);
+  }
+});
+
+test('native macOS and Windows behavior verification select nextest during runner setup', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
+  try {
+    for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
+      const output = join(temporary, role);
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
+        {
+          env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
+        },
+      );
+      assert.equal(
+        readFileSync(output, 'utf8'),
+        role === 'native-macos' || role === 'native-windows' ? 'tools=cargo-nextest\n' : 'tools=\n',
+      );
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
+});

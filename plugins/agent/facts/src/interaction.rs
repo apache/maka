@@ -223,7 +223,16 @@ pub enum InteractionRequest {
         /// The application name the operating system lists in its settings.
         #[schemars(length(min = 1))]
         application: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        application_location: Option<SystemPermissionApplicationLocation>,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemPermissionApplicationLocation {
+    pub file_url: String,
+    pub state_domain: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]

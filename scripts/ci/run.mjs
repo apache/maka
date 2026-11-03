@@ -88,7 +88,7 @@ export function executor(root, worker = {}) {
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui', 'windows-desktop', 'windows-nsh'].includes(id)) {
+    if (['root', 'desktop', 'gpui', 'windows-desktop', 'windows-nsh', 'macos-host'].includes(id)) {
       await nextest(id, true, filter, extra);
       if (id === 'windows-nsh') {
         await cargo([
@@ -140,15 +140,7 @@ export function executor(root, worker = {}) {
       await nextest(id, true);
       await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
     } else if (id === 'native') {
-      await cargo([
-        'check',
-        '--locked',
-        '-p',
-        'maka-computer-use',
-        '--lib',
-        '--features',
-        'native-desktop',
-      ]);
+      await cargo(['check', ...suites.native.cargoArgs]);
     } else if (id !== 'tooling') {
       throw new Error(`Unknown suite: ${id}`);
     }
@@ -157,6 +149,14 @@ export function executor(root, worker = {}) {
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
       for (const name of ['format', 'lint-js', 'tooling-tests', 'licenses']) await check(name);
+    } else if (id === 'macos-host') {
+      await nextest(id);
+      await node([
+        '--test',
+        'scripts/rust/build-cli.test.mjs',
+        'scripts/rust/pack-cli.test.mjs',
+        'scripts/rust/run-cli.test.mjs',
+      ]);
     } else if (id === 'root') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {
@@ -165,6 +165,8 @@ export function executor(root, worker = {}) {
     } else if (['desktop', 'gpui', 'windows-desktop', 'windows-nsh'].includes(id)) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
+      await nextest(id);
+    } else if (id === 'native' && process.platform === 'darwin') {
       await nextest(id);
     } else if (id === 'contracts') {
       await node(['packages/plugin-sdk/scripts/generate.mjs', 'check']);

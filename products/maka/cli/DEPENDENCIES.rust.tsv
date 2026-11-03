@@ -695,6 +695,7 @@ nsh-package@0.3.0		X
 nsh-platform-gpui@0.3.0		X																
 nsh-platform-macos@0.3.0		X																
 nsh-platform-tui@0.3.0		X																
+nsh-platform-windows@0.3.0		X																
 ntapi@0.4.3		X										X						
 nu-ansi-term@0.50.3												X						
 num_cpus@1.17.0		X										X						
@@ -1211,6 +1212,9 @@ web_atoms@0.2.6		X										X
 web-time@1.1.0		X										X						
 webpki-roots@0.26.11									X									
 webpki-roots@1.0.11									X									
+webview2-com-macros@0.8.1												X						
+webview2-com-sys@0.39.1												X						
+webview2-com@0.39.1												X						
 weezl@0.1.12		X										X						
 wgpu-core-deps-apple@30.0.1		X										X						
 wgpu-core-deps-windows-linux-android@30.0.1		X										X						

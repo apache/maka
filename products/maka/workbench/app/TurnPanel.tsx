@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatDuration } from './duration';
 import { LoadingIndicator } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
@@ -42,6 +43,7 @@ const groupHeaderHeight = Math.max(
   captionTextStyle.lineHeight + 2 * controlStyle.paddingVertical,
 );
 const memberGap = 6;
+const activityFollowThreshold = captionTextStyle.lineHeight;
 
 export type LiveActivity = {
   kind: 'working' | 'thinking' | 'response' | 'waiting';
@@ -73,8 +75,7 @@ function duration(turn: TurnPresentation, now?: number): string {
   const start = turn.timing?.startedAt;
   const end = turn.timing?.finished?.at ?? now;
   if (start == null || end == null || end < start) return '';
-  const seconds = Math.floor((end - start) / 1000);
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return formatDuration(end - start);
 }
 
 export function TurnSummary(props: {
@@ -188,6 +189,8 @@ function ActivityLog(props: {
   const opening = state.opening;
   state.opening = undefined;
   let ownList: ListRef | undefined;
+  let activityScrollIntent = false;
+  let nearEnd = false;
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -205,7 +208,7 @@ function ActivityLog(props: {
       panelStyle.gap +
       2 * (panelStyle.marginVertical + panelStyle.padding + panelStyle.borderWidth);
     const viewportHeight = props.viewport().height;
-    const available = Math.max(16, Math.min(400, windowSize().height / 2, viewportHeight - chrome));
+    const available = Math.max(16, Math.min(windowSize().height / 2, viewportHeight - chrome));
     return platform.isTerminal ? Math.floor(available / 16) * 16 : available;
   };
   const bodyHeight = () => {
@@ -255,19 +258,29 @@ function ActivityLog(props: {
           scrollValue={state.offset}
           contentOffset={initial()!}
           maintainVisibleContentPosition={
-            state.following() ? { autoscrollToBottomThreshold: 16 } : {}
+            state.following() ? { autoscrollToBottomThreshold: activityFollowThreshold } : {}
           }
           scrollbar={true}
-          onScrollIntent={props.userScroll}
+          onScrollIntent={() => {
+            if (!alive || lease !== state.lease) return;
+            activityScrollIntent = true;
+            props.userScroll();
+            if (nearEnd) {
+              state.following.set(true);
+              props.reading(false);
+            }
+          }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
-            const away =
-              event.offset.y < Math.max(0, event.contentSize.height - event.size.height) - 1;
-            props.settled?.(!away);
-            // A capped tool reader can be at the turn's bottom while the user
-            // is reading its original. Only an explicit return resumes follow.
+            const distance =
+              Math.max(0, event.contentSize.height - event.size.height) - event.offset.y;
+            nearEnd = distance <= activityFollowThreshold;
+            props.settled?.(distance <= 1);
+            // Layout scroll reports must not release a tool-reading pause;
+            // user input on the activity list does, even with the tool still open.
             if (
-              !away &&
+              nearEnd &&
+              !activityScrollIntent &&
               !state.following() &&
               props.group().rowIds.some((id) => {
                 const row = props.row(id);
@@ -278,8 +291,8 @@ function ActivityLog(props: {
               })
             )
               return;
-            state.following.set(!away);
-            props.reading(away);
+            state.following.set(nearEnd);
+            props.reading(!nearEnd);
           }}
           contentStyle={{ paddingLeft: platform.isTerminal ? 0 : 8, paddingRight: 8 }}
           ref={(node) => {
@@ -359,6 +372,7 @@ function ActivityLog(props: {
                           !props.rowState(key).expanded()
                         )
                           return;
+                        activityScrollIntent = false;
                         state.following.set(false);
                         props.reading(true);
                       }}
@@ -369,6 +383,7 @@ function ActivityLog(props: {
                       userScroll={props.userScroll}
                       onExpand={(key) => {
                         if (!alive || !ownList) return;
+                        activityScrollIntent = false;
                         state.following.set(false);
                         props.reading(true);
                         const index = props.group().rowIds.indexOf(key);

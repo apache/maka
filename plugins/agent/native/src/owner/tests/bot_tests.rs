@@ -206,6 +206,112 @@ async fn new_conversation_from_bot_uses_installed_tools_in_the_same_workspace() 
 }
 
 #[tokio::test]
+async fn bot_tools_follow_the_current_composition_not_the_list_stored_at_creation() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.tools = vec![
+                    session_tool("create", "SessionCreate"),
+                    session_tool("send", "SessionSend"),
+                ];
+            },
+        )
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        // A Bot opened by an older build holds a shorter list.
+        let original = f.owner.session(&bot).await.unwrap();
+        f.session(&bot)
+            .await
+            .update_session_metadata(
+                &bot,
+                original.revision,
+                |configuration: &mut StoredSessionConfiguration| {
+                    configuration.tools = Some(vec!["todo_read".into()]);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        let accepted = f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let stopped = f
+            .mutation(
+                2,
+                "stop",
+                json!({"sessionId":bot,"invocationId":accepted["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped["requested"], true);
+        idle(&f, &bot).await;
+        let source = f
+            .query(
+                "execution",
+                json!({"sessionId":bot,"invocationId":accepted["invocationId"]}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(source["execution"]["state"], "cancelled");
+        let resumed = f
+            .mutation(
+                2,
+                "resume",
+                json!({
+                    "sessionId":bot,
+                    "sourceInvocationId":accepted["invocationId"],
+                    "sourceHighWater":source["execution"]["highWater"],
+                    "model":f.selection().await,
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed["kind"], "started", "{resumed}");
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let replay = request(&mut socket).await;
+        response(&mut socket).await;
+        idle(&f, &bot).await;
+        for sent in [&sent, &replay] {
+            let names = tool_names(sent);
+            for name in ["SessionCreate", "SessionSend", "SendUser", "sleep"] {
+                assert!(
+                    names.iter().any(|held| held == name),
+                    "{name} missing: {names:?}"
+                );
+            }
+            assert!(
+                !names.iter().any(|name| name == "WorkspaceFile"),
+                "{names:?}"
+            );
+            let prompt = sent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "system" || message["role"] == "developer")
+                .map(|message| message["content"].to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                prompt.contains("SessionSend"),
+                "the standing instructions name the derived tools"
+            );
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn bot_opened_from_a_restricted_session_still_speaks() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

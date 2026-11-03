@@ -176,7 +176,7 @@ impl Owner {
             collaboration_mode: CollaborationMode::Agent,
             background_kind: kind,
             tool_discovery: self.settings.tool_discovery,
-            allowed_tools: session.configuration.tools.clone(),
+            allowed_tools: self.admitted_tools(&target.session_id, &session.configuration.tools),
             background: Some(target.clone()),
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
@@ -186,7 +186,8 @@ impl Owner {
                     .await?,
                 &snapshot,
                 language,
-                session.configuration.tools.as_deref(),
+                self.admitted_tools(&target.session_id, &session.configuration.tools)
+                    .as_deref(),
             ),
             model: Some(source.accepted),
             executor: None,
