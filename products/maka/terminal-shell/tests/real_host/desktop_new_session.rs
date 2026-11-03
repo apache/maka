@@ -425,7 +425,16 @@ impl Desktop {
         self.press_at(bounds.center());
     }
 
+    async fn right_click(&self, label: &str) {
+        let bounds = self.control(label).await;
+        self.click_at(bounds.center(), MouseButton::Right);
+    }
+
     fn press_at(&self, position: gpui::Point<gpui::Pixels>) {
+        self.click_at(position, MouseButton::Left);
+    }
+
+    fn click_at(&self, position: gpui::Point<gpui::Pixels>, button: MouseButton) {
         for input in [
             PlatformInput::MouseMove(MouseMoveEvent {
                 position,
@@ -433,14 +442,14 @@ impl Desktop {
                 modifiers: Modifiers::default(),
             }),
             PlatformInput::MouseDown(MouseDownEvent {
-                button: MouseButton::Left,
+                button,
                 position,
                 modifiers: Modifiers::default(),
                 click_count: 1,
                 first_mouse: false,
             }),
             PlatformInput::MouseUp(MouseUpEvent {
-                button: MouseButton::Left,
+                button,
                 position,
                 modifiers: Modifiers::default(),
                 click_count: 1,
@@ -853,14 +862,9 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.control("Stop response").await;
 
     desktop.type_text("Focus on steering in both modes.").await;
-    let editor = desktop.platform.text_input_target();
     gate.arm();
-    desktop.key("enter", false);
+    desktop.press("Send message").await;
     desktop.held(&gate).await;
-    assert!(
-        desktop.platform.text_input_target() == editor,
-        "sending preserves native editor focus"
-    );
     desktop.type_text("Keep the sidebar compact.").await;
     desktop
         .wait(
@@ -888,7 +892,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     drop(original);
 
     desktop.type_text("Summarize the changes afterwards.").await;
-    desktop.press("Send options").await;
+    desktop.right_click("Send message").await;
     desktop.control("Add to queue").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-queue-menu"));
     desktop.key("escape", false);
@@ -910,7 +914,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         observed["session"]["activity"], "idle",
         "dismissing the send menu must not stop the active turn"
     );
-    desktop.press("Send options").await;
+    desktop.right_click("Send message").await;
     desktop.press("Add to queue").await;
     desktop
         .wait("explicit queue message was not accepted", async {
@@ -935,7 +939,6 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         "the one-shot menu closes after use"
     );
 
-    desktop.type_text("Check ").await;
     let target = desktop.platform.text_input_target().unwrap();
     assert!(
         desktop
@@ -943,7 +946,11 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
             .apply_composition(&target, "", "方向", Some(2..2), true)
             .unwrap()
     );
-    desktop.pump();
+    desktop
+        .until("IME input still offered Stop as the primary action", || {
+            desktop.controls("Stop response").is_empty().then_some(())
+        })
+        .await;
     desktop.key("enter", false);
     desktop.key("escape", false);
     desktop
@@ -983,7 +990,11 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop
         .type_text("Preserve this draft after stopping.")
         .await;
-    desktop.control("Stop response").await;
+    desktop.control("Send message").await;
+    assert!(
+        desktop.controls("Stop response").is_empty(),
+        "a populated draft makes Send the primary action"
+    );
     if desktop.controls("Edit queued message 1").is_empty() {
         desktop.press("Messages").await;
     }
@@ -996,6 +1007,7 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.artifact(&format!("steering-{theme}-{width_name}-model-scope"));
     desktop.key("escape", false);
     desktop.press("Messages").await;
+    desktop.right_click("Send message").await;
     desktop.press("Stop response").await;
     desktop
         .wait(

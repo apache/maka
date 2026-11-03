@@ -21,7 +21,7 @@ import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
-import { Input, Menu, MenuItem, Popover } from 'nsh/base';
+import { ContextMenu, Input, MenuItem, Popover } from 'nsh/base';
 import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
@@ -247,7 +247,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           !pending()?.draft().trim() &&
           !pending()?.files().length)));
   const hasContent = () =>
-    !!props.session()?.draft().trim() || !!props.session()?.attachments.files().length;
+    completion.composing() ||
+    !!props.session()?.draft().trim() ||
+    !!props.session()?.attachments.files().length;
   const running = () =>
     props.session()?.connected() === true && props.session()?.invocation() != null;
   const resumeSource = () => {
@@ -256,12 +258,19 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       ? value.source
       : null;
   };
-  const primaryDisabled = () => cannotSend() || completion.composing();
+  const stopPrimary = () => running() && !hasContent();
+  const sendDisabled = () => cannotSend() || completion.composing();
   const continueDisabled = () =>
     !!props.blocked?.() ||
     !!props.session()?.resuming() ||
     !!blocked() ||
     !props.session()?.editable();
+  const primaryDisabled = () =>
+    stopPrimary()
+      ? props.session()!.stopping()
+      : resumeSource() !== null
+        ? continueDisabled()
+        : sendDisabled();
   const continueRendered = ({
     owner,
     source,
@@ -316,6 +325,78 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           .at(-1) ?? path)
       : tr('Choose workspace');
   };
+  const primaryButton = () => (
+    <View
+      role="button"
+      focusable
+      accessibilityLabel={
+        stopPrimary()
+          ? props.session()!.stopping()
+            ? tr('Stopping…')
+            : tr('Stop response')
+          : resumeSource() !== null
+            ? tr('Continue response')
+            : tr('Send message')
+      }
+      tooltip={textTooltip(() =>
+        stopPrimary()
+          ? `${tr('Stop response')} · Esc`
+          : resumeSource() !== null
+            ? tr('Continue response')
+            : `${tr('Send message')} · Enter`,
+      )}
+      disabled={primaryDisabled()}
+      onPress={
+        stopPrimary()
+          ? inputAction(props.session()!.stop, props.session()!.invocation())
+          : resumeSource() !== null
+            ? inputAction(continueRendered, {
+                owner: props.session()!.sessionId,
+                source: resumeSource()!,
+                backend: props.session()!.backend(),
+              })
+            : props.session()
+              ? inputAction(completion.send, {
+                  owner: props.session()!.sessionId,
+                  text: props.session()!.draft(),
+                  backend: props.session()!.backend(),
+                  attachments: props.session()!.attachments.ids(),
+                  delivery: 'steer',
+                })
+              : pending()
+                ? inputAction(sendPending, {
+                    owner: pending()!,
+                    text: pending()!.draft(),
+                    expected: pending()!.confirmation(),
+                  })
+                : undefined
+      }
+      style={{
+        width: 32,
+        height: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: C.accent,
+        borderRadius: 16,
+      }}
+      hoverStyle={{ backgroundColor: C.accentHover }}
+      focusStyle={{ backgroundColor: C.accentHover }}
+      activeStyle={{ backgroundColor: C.accent }}
+      disabledStyle={{ backgroundColor: C.line }}
+    >
+      <If
+        when={stopPrimary() ? props.session()!.stopping() : confirming()}
+        else={
+          <Icon
+            name={stopPrimary() ? 'stop' : resumeSource() !== null ? 'play' : 'send'}
+            color={primaryDisabled() ? C.muted : C.background}
+          />
+        }
+      >
+        <LoadingIndicator color={C.muted} />
+      </If>
+    </View>
+  );
   return (
     <View
       style={{
@@ -899,168 +980,70 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             <If when={props.session() === null && pending() === null}>
               <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
             </If>
-            <If when={running()}>
-              <Button
-                accessibilityLabel={
-                  props.session()!.stopping() ? tr('Stopping…') : tr('Stop response')
-                }
-                tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
-                disabled={props.session()!.stopping()}
-                onPress={inputAction(props.session()!.stop, props.session()!.invocation())}
-                style={{
-                  width: 32,
-                  height: 32,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 16,
-                }}
-                hoverStyle={{ backgroundColor: C.line }}
-                focusStyle={controlFocusStyle()}
+            <If when={running() && hasContent()} else={primaryButton()}>
+              <ContextMenu
+                offset={8}
+                margin={8}
+                popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
+                trigger={primaryButton()}
               >
-                <If
-                  when={props.session()!.stopping()}
-                  else={<Icon name="stop" color={C.secondary} />}
+                <Each
+                  of={running() && hasContent() ? [props.session()!] : []}
+                  key={(owner) => owner.sessionId}
                 >
-                  <LoadingIndicator color={C.muted} />
-                </If>
-              </Button>
-            </If>
-            <If when={resumeSource() !== null}>
-              <Button
-                accessibilityLabel={tr('Continue response')}
-                tooltip={textTooltip(() => tr('Continue response'))}
-                disabled={continueDisabled()}
-                onPress={inputAction(continueRendered, {
-                  owner: props.session()!.sessionId,
-                  source: resumeSource()!,
-                  backend: props.session()!.backend(),
-                })}
-                style={{
-                  width: 32,
-                  height: 32,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 16,
-                }}
-                hoverStyle={{ backgroundColor: C.line }}
-                focusStyle={controlFocusStyle()}
-              >
-                <Icon name="play" color={C.secondary} />
-              </Button>
-            </If>
-            <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <Button
-                accessibilityLabel={tr('Send message')}
-                tooltip={textTooltip(() => `${tr('Send message')} · Enter`)}
-                disabled={primaryDisabled()}
-                onPress={
-                  props.session()
-                    ? inputAction(completion.send, {
-                        owner: props.session()!.sessionId,
-                        text: props.session()!.draft(),
-                        backend: props.session()!.backend(),
-                        attachments: props.session()!.attachments.ids(),
-                        delivery: 'steer',
-                      })
-                    : pending()
-                      ? inputAction(sendPending, {
-                          owner: pending()!,
-                          text: pending()!.draft(),
-                          expected: pending()!.confirmation(),
-                        })
-                      : undefined
-                }
-                style={{
-                  width: 32,
-                  height: 32,
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  backgroundColor: C.accent,
-                  borderTopLeftRadius: 16,
-                  borderBottomLeftRadius: 16,
-                  borderTopRightRadius: running() ? 0 : 16,
-                  borderBottomRightRadius: running() ? 0 : 16,
-                }}
-                hoverStyle={{ backgroundColor: C.accentHover }}
-                focusStyle={{ backgroundColor: C.accentHover }}
-                activeStyle={{ backgroundColor: C.accent }}
-                disabledStyle={{ backgroundColor: C.line }}
-              >
-                <If when={confirming()}>
-                  <LoadingIndicator color={C.muted} />
-                </If>
-                <If when={!confirming()}>
-                  <Icon name="send" color={primaryDisabled() ? C.muted : C.background} />
-                </If>
-              </Button>
-              <Each of={running() ? [props.session()!] : []} key={(owner) => owner.sessionId}>
-                {() => (
-                  <Menu
-                    placement="top"
-                    align="end"
-                    offset={8}
-                    margin={8}
-                    popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
-                    trigger={
-                      <View
-                        role="button"
-                        focusable
-                        accessibilityLabel={tr('Send options')}
-                        tooltip={textTooltip(() => tr('Send options'))}
-                        disabled={primaryDisabled() || completion.isCommand()}
+                  {(owner) => (
+                    <>
+                      <MenuItem
+                        accessibilityLabel={tr('Add to queue')}
+                        tooltip={textTooltip(() => tr('Send after this turn'))}
+                        disabled={sendDisabled() || completion.isCommand()}
+                        onSelect={inputAction(completion.send, {
+                          owner: owner().sessionId,
+                          text: owner().draft(),
+                          backend: owner().backend(),
+                          attachments: owner().attachments.ids(),
+                          delivery: 'queue' as const,
+                        })}
                         style={{
-                          width: 28,
-                          height: 32,
+                          ...controlStyle,
+                          flexDirection: 'row',
                           alignItems: 'center',
-                          justifyContent: 'center',
-                          borderTopRightRadius: 16,
-                          borderBottomRightRadius: 16,
-                          borderLeftWidth: 1,
-                          borderLeftColor: C.accentHover,
-                          backgroundColor: C.accent,
+                          gap: 8,
                         }}
-                        hoverStyle={{ backgroundColor: C.accentHover }}
-                        focusStyle={{ backgroundColor: C.accentHover }}
-                        disabledStyle={{ backgroundColor: C.line, borderLeftColor: C.surface }}
+                        hoverStyle={{ backgroundColor: C.raised }}
+                        focusStyle={controlFocusStyle()}
                       >
-                        <Icon
-                          name="down"
-                          color={
-                            primaryDisabled() || completion.isCommand() ? C.muted : C.background
-                          }
-                        />
-                      </View>
-                    }
-                  >
-                    <MenuItem
-                      accessibilityLabel={tr('Add to queue')}
-                      tooltip={textTooltip(() => tr('Send after this turn'))}
-                      disabled={primaryDisabled() || completion.isCommand()}
-                      onSelect={inputAction(completion.send, {
-                        owner: props.session()!.sessionId,
-                        text: props.session()!.draft(),
-                        backend: props.session()!.backend(),
-                        attachments: props.session()!.attachments.ids(),
-                        delivery: 'queue' as const,
-                      })}
-                      style={{
-                        ...controlStyle,
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        gap: 8,
-                      }}
-                      hoverStyle={{ backgroundColor: C.raised }}
-                      focusStyle={controlFocusStyle()}
-                    >
-                      <Icon name="queue" color={C.secondary} />
-                      <Text style={{ ...captionTextStyle, color: C.text }}>
-                        {tr('Add to queue')}
-                      </Text>
-                    </MenuItem>
-                  </Menu>
-                )}
-              </Each>
-            </View>
+                        <Icon name="queue" color={C.secondary} />
+                        <Text style={{ ...captionTextStyle, color: C.text }}>
+                          {tr('Add to queue')}
+                        </Text>
+                      </MenuItem>
+                      <MenuItem
+                        accessibilityLabel={
+                          owner().stopping() ? tr('Stopping…') : tr('Stop response')
+                        }
+                        tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
+                        disabled={owner().stopping()}
+                        onSelect={inputAction(owner().stop, owner().invocation())}
+                        style={{
+                          ...controlStyle,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                        }}
+                        hoverStyle={{ backgroundColor: C.raised }}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Icon name="stop" color={C.secondary} />
+                        <Text style={{ ...captionTextStyle, color: C.text }}>
+                          {tr('Stop response')}
+                        </Text>
+                      </MenuItem>
+                    </>
+                  )}
+                </Each>
+              </ContextMenu>
+            </If>
           </View>
           <If when={fileDragging()}>
             <FileDropHint radius={cardRadius()} />

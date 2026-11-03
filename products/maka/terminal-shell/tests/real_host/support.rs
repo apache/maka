@@ -636,14 +636,7 @@ pub async fn wait_enabled_button(
                     nsh_core::AccessibilityRole::Button | nsh_core::AccessibilityRole::Menuitem
                 )
             })
-            .map(|node| {
-                (
-                    node.id,
-                    node.label.chars().take(160).collect::<String>(),
-                    node.state.disabled,
-                    node.frame,
-                )
-            })
+            .map(|node| (node.id, node.label, node.state.disabled, node.frame))
             .collect();
         panic!(
             "native button {label:?} did not become enabled:\n{}\nbuttons={buttons:#?}",
@@ -706,7 +699,12 @@ pub fn wait_view_state(
             }
             assert!(
                 started.elapsed() < Duration::from_secs(20),
-                "expected real UI state did not appear at {caller}:\n{snapshot}"
+                "expected real UI state did not appear at {caller}:\n{snapshot}\naccessibility={:?}",
+                view.accessibility_snapshot()
+                    .into_iter()
+                    .filter(|node| !node.label.is_empty())
+                    .map(|node| (node.label, node.state.disabled))
+                    .collect::<Vec<_>>()
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }

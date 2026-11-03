@@ -104,13 +104,37 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         assert_ne!(resumed["run"]["turnId"], source_turn);
         replace_input(&mut view, "Message composer", "UNSENT_WHILE_RUNNING").await;
         support::wait_enabled_button(&mut view, "Send message").await;
+        shortcut(&mut view, 'p');
+        select_command(&mut view, "Add to queue").await;
         support::wait_enabled_button(&mut view, "Stop response").await;
-        replace_input(&mut view, "Message composer", "").await;
+        let queued = loop {
+            support::tick(&mut view);
+            let queued = client
+                .query("agent", "queue", json!({"sessionId":fixture.session}))
+                .await
+                .unwrap();
+            if queued["entries"][0]["preview"] == "UNSENT_WHILE_RUNNING" {
+                break queued;
+            }
+            tokio::task::yield_now().await;
+        };
+        assert_eq!(queued["entries"][0]["preview"], "UNSENT_WHILE_RUNNING");
+        assert_eq!(queued["entries"][0]["kind"], "followup");
         continuation.delta("RESUMED_ANSWER").await;
         continuation.finish().await;
+        let mut queued_request = fixture.next_request().await;
+        assert!(
+            queued_request
+                .body
+                .to_string()
+                .contains("UNSENT_WHILE_RUNNING")
+        );
+        queued_request.delta("QUEUED_ANSWER").await;
+        queued_request.finish().await;
         fixture.idle(&client, &fixture.session).await;
         wait_view_state(&mut view, |view, screen| {
             screen.contains("RESUMED_ANSWER")
+                && screen.contains("QUEUED_ANSWER")
                 && view
                     .accessibility_snapshot()
                     .iter()
@@ -118,7 +142,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         })
         .await;
         support::evidence("composer-resumed-answer", &view.snapshot());
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
         drop(view);
         bindings.close().await.unwrap();
         fixture.finish().await;

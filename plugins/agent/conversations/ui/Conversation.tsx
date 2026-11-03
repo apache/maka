@@ -2423,6 +2423,9 @@ export function Conversation(props: ConversationProps) {
       invocation() === null &&
       rows().length === 0 &&
       live().length === 0 &&
+      unresolved().length === 0 &&
+      activeSends().size === 0 &&
+      freezingSend() === null &&
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,

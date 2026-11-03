@@ -94,6 +94,7 @@ import type {
   CommandEntry,
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
+import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
 import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
@@ -1207,6 +1208,20 @@ export function createConversationUi(
     if (closeCommand(context) && handle()?.connected())
       void handle()?.stop(context.invocationId).catch(report);
   };
+  const commandQueue = (context: ActionContext) => {
+    if (!closeCommand(context)) return false;
+    const owner = handle();
+    if (!owner) return false;
+    owner.sendRendered({
+      owner: owner.sessionId,
+      text: owner.draft(),
+      backend: owner.backend(),
+      attachments: owner.attachments.ids(),
+      delivery: 'queue',
+    });
+    owner.focus();
+    return true;
+  };
   const pendingGoalError = createText();
   const goalCreating = signal(false);
   const pendingGoal: import('../../../../packages/plugin-sdk/src/composer-view.js').ComposerGoal = {
@@ -1797,8 +1812,8 @@ export function createConversationUi(
                 () =>
                   selected() === source.sessionId &&
                   overlay() === null &&
-                  (contribution.id !== 'stop' ||
-                    ownedContributions().get('stop')?.key !== contribution.key ||
+                  (!['stop', 'queue'].includes(contribution.id) ||
+                    ownedContributions().get(contribution.id)?.key !== contribution.key ||
                     (handle() === expectedOwner &&
                       expectedOwner?.invocation() === expectedInvocation)),
               );
@@ -1811,9 +1826,11 @@ export function createConversationUi(
       ];
     });
   };
+  // Queue acts on the existing draft rather than consuming a slash command.
   const composerCommands = computed(() =>
     commands({ instance: null, sessionId: selected() }).filter(
-      (command): command is ComposerCommand => command.trigger !== undefined,
+      (command): command is ComposerCommand =>
+        command.trigger !== undefined && command.id !== ownedContributions().get('queue')?.key,
     ),
   );
   const sessionHandle: ConversationSessionHandle = {
@@ -2360,6 +2377,21 @@ export function createConversationUi(
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
+      if (id === 'queue') {
+        const owner = handle();
+        return (
+          !!owner &&
+          owner.connected() &&
+          owner.editable() &&
+          owner.invocation() !== null &&
+          !owner.blockedReason() &&
+          (!!owner.draft().trim() || owner.attachments.files().length > 0) &&
+          !matchComposerCommand(
+            commandCandidates().map((entry) => entry.metadata),
+            owner.draft(),
+          )
+        );
+      }
       return true;
     },
     run(id: string, argument?: string) {
@@ -2409,6 +2441,8 @@ export function createConversationUi(
             ...source,
             invocationId: handle()?.invocation() ?? null,
           });
+        case 'queue':
+          return commandQueue(source);
       }
     },
     async prepareReload() {
