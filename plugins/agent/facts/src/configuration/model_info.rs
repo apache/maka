@@ -25,6 +25,13 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ModelInfo {
     pub id: String,
+    /// Opaque compatibility group reported by the ChatGPT subscription inventory.
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present",
+        default
+    )]
+    pub codex_compaction_hash: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -281,6 +288,11 @@ impl ModelInfo {
 
     pub fn validate(&self) -> Result<(), String> {
         validation::text(&self.id)?;
+        if let Some(hash) = &self.codex_compaction_hash
+            && (hash.is_empty() || hash.trim() != hash || hash.chars().any(char::is_control))
+        {
+            return Err("invalid Codex compaction hash".into());
+        }
         if let Some(image) = &self.image_input {
             image.validate()?;
         }

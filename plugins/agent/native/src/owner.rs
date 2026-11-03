@@ -538,6 +538,10 @@ impl Owner {
         };
         let credentials = crate::model::Credentials {
             executor: models.clone(),
+            inventory: Arc::new(crate::model::codex_inventory::Authority::new(
+                workers.clone(),
+                stop.clone(),
+            )),
             refresh: Arc::new(crate::model::oauth::Authority::new(
                 workers.clone(),
                 stop.clone(),

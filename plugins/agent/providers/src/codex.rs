@@ -65,6 +65,13 @@ pub fn request_headers(
     Ok(headers)
 }
 
+/// Non-secret account observation for directory cache scope and request provenance.
+pub fn credential_account_id(
+    credential: &maka_agent_facts::provider::Credential,
+) -> Result<Option<String>, Error> {
+    Ok(account_id(&login::Tokens::read(credential)?.access_token))
+}
+
 fn account_id(token: &str) -> Option<String> {
     let mut parts = token.split('.');
     parts.next()?;

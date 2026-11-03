@@ -60,6 +60,9 @@ pub fn effective_output_limit(configured: Option<u64>) -> u64 {
 #[serde(deny_unknown_fields)]
 pub struct ModelRequestContext {
     pub provider_id: String,
+    /// Captured at request preparation; never reconstructed from a later catalog.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codex: Option<CodexRequestProvenance>,
     /// Effective input ceiling: the smaller known contextWindow/inputLimit value.
     /// Unlike ModelInfo::context_window, this may be input-only. No output budget
     /// is subtracted here; this value is not the proactive compaction threshold.
@@ -75,8 +78,43 @@ pub struct ModelRequestContext {
     pub declared_window: Option<u64>,
 }
 
+/// ChatGPT subscription facts. Account/connection identify provenance, not replay permission.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexRequestProvenance {
+    pub connection_id: String,
+    pub account_id: Option<String>,
+    pub compatibility: Option<CodexCompatibility>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CodexCompatibility {
+    pub comp_hash: String,
+    /// Unix seconds, matching the canonical account inventory timestamp.
+    pub fetched_at: u64,
+}
+
 impl ModelRequestContext {
     pub fn validate(&self) -> Result<(), &'static str> {
+        if let Some(codex) = &self.codex {
+            if codex.connection_id.is_empty()
+                || codex
+                    .account_id
+                    .as_ref()
+                    .is_some_and(|id| id.is_empty() || id.chars().any(char::is_control))
+            {
+                return Err("invalid Codex request provenance");
+            }
+            if let Some(proof) = &codex.compatibility
+                && (proof.comp_hash.is_empty()
+                    || proof.comp_hash.trim() != proof.comp_hash
+                    || proof.comp_hash.chars().any(char::is_control)
+                    || proof.fetched_at > 9_007_199_254_740_991)
+            {
+                return Err("invalid Codex compatibility observation");
+            }
+        }
         if self.provider_id.is_empty() || self.provider_id.encode_utf16().count() > 512 {
             return Err("invalid model request provider identity");
         }
@@ -223,6 +261,7 @@ mod tests {
     #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {
         let mut context = ModelRequestContext {
+            codex: None,
             provider_id: "😀".repeat(256),
             context_window: None,
             model_context_window: None,

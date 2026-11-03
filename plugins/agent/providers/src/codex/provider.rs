@@ -107,14 +107,10 @@ impl Provider for Codex {
                     .as_ref()
                     .and_then(|value| value.catalog_model.as_ref()),
             );
-            let mut info = match &request.overrides {
+            let info = match &request.overrides {
                 Some(overrides) => overrides.apply(&reported),
                 None => reported,
             };
-            // Existing saved connections may predate discovery of this fact.
-            if info.max_output_tokens.is_none() {
-                info.max_output_tokens = super::inventory::output_capacity(&info.id)?;
-            }
             if info
                 .api_protocol
                 .is_some_and(|wire| wire != ApiProtocol::OpenaiResponses)

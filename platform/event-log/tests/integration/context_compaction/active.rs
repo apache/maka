@@ -54,6 +54,7 @@ fn request(id: &str, step: &str, purpose: ModelPurpose, source: &ModelContextSou
             model_id: "test".into(),
             purpose,
             context: Some(ModelRequestContext {
+                codex: None,
                 provider_id: "openai".into(),
                 context_window: Some(10_000),
                 model_context_window: None,
