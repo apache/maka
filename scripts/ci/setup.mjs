@@ -30,7 +30,7 @@ const version = process.env.MAKA_CI_NEXTEST;
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
-    : ['root', 'replay', 'variants', 'termina', 'nsh', 'gpui'].includes(role)
+    : ['root', 'replay', 'variants', 'termina', 'nsh', 'gpui', 'native-windows'].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
 
@@ -50,7 +50,10 @@ async function main(action) {
     await command('cargo', ['binstall', '--no-confirm', '--force', 'cargo-binstall']);
     await command('cargo', ['binstall', '--no-confirm', '--force', ...tools]);
   } else if (action === 'keys') {
-    const lock = readFileSync(join(dirname(manifests[workspace]), 'Cargo.lock'));
+    const locks = [readFileSync(join(dirname(manifests[workspace]), 'Cargo.lock'))];
+    if (role === 'native-windows')
+      locks.push(readFileSync(join(dirname(manifests.nsh), 'Cargo.lock')));
+    const lock = Buffer.concat(locks);
     const compiler = await command('rustc', ['-vV'], { capture: true });
     const sharedRoot = ['root', 'variants', 'clippy', 'product'].includes(role);
     const base = `rust-target-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${sharedRoot ? 'root' : role}`;

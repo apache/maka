@@ -105,8 +105,10 @@ export function createPlan({ root, changes = null, metadata = {}, revision, base
       inputs.map((path) => [path, ownership.find(([, pkg]) => contains(pkg.path, path))?.[0]]),
     );
     const extraInput = (suite, path) =>
-      !(owners.get(path) && path.endsWith('.rs')) &&
-      suite.extraInputs?.some((entry) => contains(entry, path));
+      suite.extraInputs?.some(
+        (entry) =>
+          contains(entry, path) && (!(owners.get(path) && path.endsWith('.rs')) || entry === path),
+      );
     const supported = new Set(
       [...packages.keys()].filter((key) =>
         Object.values(suites).some((suite) => suitePackage(suite, key, packages, members)),
