@@ -21,6 +21,164 @@ use super::*;
 use serde_json::{Value, json};
 use uuid::Uuid;
 
+#[tokio::test]
+async fn legacy_jev_installation_upgrades_before_startup_without_losing_identity_or_grants() {
+    use super::super::super::{authoring, baseline, bundle_fingerprint, packages};
+    let directory = tempfile::tempdir().unwrap();
+    let store = launch::create(directory.path().join("host")).await.unwrap();
+    let deployment = Uuid::new_v4();
+    let bundled = packages().unwrap();
+    let (sources, base) = baseline::generate(
+        baseline::Environment {
+            workspace: directory.path().into(),
+            roots: vec![],
+            home: None,
+            helper: std::env::current_exe().unwrap(),
+            locale: "auto".into(),
+        },
+        deployment,
+        BTreeMap::new(),
+        &bundled,
+        &authoring().unwrap(),
+        &bundle_fingerprint().unwrap(),
+    )
+    .await
+    .unwrap();
+    // Before #6592, these exact product slots and ports were named JEV.
+    let legacy = |text: String| {
+        text.replace("workspace-decisions-api", "workspace-jev")
+            .replace("decisions_api", "jev")
+    };
+    let mut input: Input = serde_json::from_str(&legacy(
+        serde_json::to_string(&baseline::flat(&base).unwrap()).unwrap(),
+    ))
+    .unwrap();
+    let previous: Vec<_> = bundled
+        .values()
+        .map(|package| {
+            let mut files = package.files().clone();
+            let manifest = files.get_mut("maka.extension.json").unwrap();
+            *manifest = legacy(String::from_utf8(manifest.clone()).unwrap()).into_bytes();
+            let old = Package::new(files).unwrap();
+            for node in input.instances.values_mut() {
+                if let PackageSelection::Pinned { package: reference } = &mut node.package {
+                    if reference.id == old.application_ref().id {
+                        *reference = old.application_ref();
+                    }
+                }
+            }
+            old
+        })
+        .collect();
+    let source = store
+        .commit_application(deployment, 0, input.clone(), vec![], previous)
+        .await
+        .unwrap();
+    let mut selection = serde_json::to_value(super::super::Selection::PublicHost {
+        endpoints: sources.endpoints,
+        native: sources.native,
+        product_methods: Default::default(),
+    })
+    .unwrap();
+    selection = serde_json::from_str(&legacy(serde_json::to_string(&selection).unwrap())).unwrap();
+    // A user narrowed this endpoint; an upgrade must not restore broader defaults.
+    selection["endpoints"]["jev"]["grant"]["methods"] = json!(["snapshot"]);
+    selection["native"].as_array_mut().unwrap().push(json!({
+        "origin":[input.instances["agent"].key],
+        "consumer":[input.instances["agent"].key],
+        "provider":[input.instances["workspace-jev"].key],
+        "export":"jev","methods":["snapshot"],"recovery":false
+    }));
+    store
+        .select_committed_application_launch(source.clone(), selection.clone())
+        .await
+        .unwrap();
+
+    let record = store.application_launch().await.unwrap().unwrap();
+    let preview = synchronize_packages(&store, record, false, bundled.clone())
+        .await
+        .unwrap();
+    assert!(preview.changed && !preview.applied);
+    assert_eq!(
+        store
+            .load_application(deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .source()
+            .reference,
+        source
+    );
+    let (loaded, publication) = super::super::prepare(&store, Roots::Saved).await.unwrap();
+    let expected = bundled["workspace-decisions-api"].application_ref();
+    let provider = &loaded.plan().instances()
+        [&maka_plugin_core::composition::InstanceId(vec![input.instances["workspace-jev"].key])];
+    assert_eq!(provider.package, expected);
+    for (name, node) in &input.instances {
+        let instance =
+            &loaded.plan().instances()[&maka_plugin_core::composition::InstanceId(vec![node.key])];
+        assert_eq!(
+            instance.configuration,
+            serde_json::to_value(&node.configuration.values).unwrap(),
+            "{name}"
+        );
+    }
+    let publication = serde_json::to_value(publication).unwrap();
+    let mut endpoint = selection["endpoints"]["jev"].clone();
+    endpoint["import"] = json!("decisions_api");
+    assert_eq!(publication["endpoints"]["decisions_api"], endpoint);
+    assert!(publication["endpoints"].get("jev").is_none());
+    let mut native = selection["native"].clone();
+    native.as_array_mut().unwrap().last_mut().unwrap()["export"] = json!("decisions_api");
+    assert_eq!(publication["native"], native);
+    assert_eq!(loaded.source().reference.revision, 2);
+    // Recover a crash after committing the new source but before publication.
+    let record = store.application_launch().await.unwrap().unwrap();
+    assert!(
+        store
+            .compare_and_set_application_launch_configuration(
+                loaded.source().reference.clone(),
+                record.configuration,
+                selection.clone()
+            )
+            .await
+            .unwrap()
+    );
+    let pending = Preparation {
+        expected_revision: 1,
+        input: loaded.source().input.clone(),
+        packages: loaded
+            .packages()
+            .iter()
+            .map(|package| {
+                package
+                    .files()
+                    .iter()
+                    .map(|(path, bytes)| (path.clone(), STANDARD.encode(bytes)))
+                    .collect()
+            })
+            .collect(),
+    };
+    store
+        .begin_application_restore(deployment, serde_json::to_vec(&pending).unwrap())
+        .await
+        .unwrap();
+    let (recovered, recovered_publication) =
+        super::super::prepare(&store, Roots::Saved).await.unwrap();
+    assert_eq!(recovered.source().reference, loaded.source().reference);
+    assert_eq!(
+        serde_json::to_value(recovered_publication).unwrap(),
+        publication
+    );
+    let record = store.application_launch().await.unwrap().unwrap();
+    assert!(record.pending.is_none());
+    let again = synchronize_packages(&store, record, true, bundled)
+        .await
+        .unwrap();
+    assert!(!again.changed && !again.applied);
+    store.drain().await;
+}
+
 fn leaf(marker: &str, label_type: &str) -> Package {
     let service = json!({
         "name":"example.Service","version":1,"transport":"remote",
