@@ -150,7 +150,6 @@ pub struct Fixture {
 #[derive(Default)]
 pub struct Options {
     pub images: bool,
-    pub predictions: bool,
 }
 
 impl Fixture {
@@ -182,7 +181,6 @@ impl Fixture {
             owner.clone(),
             &format!("http://{}/v1", listener.local_addr().unwrap()),
             options.images,
-            options.predictions,
         )
         .await;
         let store = Arc::new(RootStore::open(owner).await.unwrap());
@@ -378,12 +376,7 @@ impl Fixture {
         assert!(self.provider.await.unwrap_err().is_cancelled());
     }
 }
-pub(crate) async fn configure(
-    owner: Arc<RootOwner>,
-    base: &str,
-    vision: bool,
-    predictions: bool,
-) -> Value {
+pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
         maka_config::ConfigurationStore::for_root(owner)
@@ -422,8 +415,7 @@ pub(crate) async fn configure(
             .set_message_predictions(
                 config.runtime_policy().await.unwrap().revision,
                 maka_agent_facts::configuration::policy::MessagePredictionSettings {
-                    enabled: predictions,
-                    catch_up_sample_percent: 100.0,
+                    enabled: false,
                     ..Default::default()
                 },
             )
