@@ -23,7 +23,8 @@
 
 use crate::{
     host::{self, Connection},
-    window::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
+    shell::{APP_ID, Requests, SIZE, Shell, TITLE},
+    window::MIN_SIZE,
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
@@ -37,10 +38,14 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     let Connection {
         bindings,
         config,
-        directory,
         endpoint,
         epoch,
     } = first;
+    let directory = config
+        .data_dir
+        .as_ref()
+        .expect("Host admission sets the client directory");
+    let frame_autosave_name = Some(format!("{TITLE} {}", directory.display()));
     let (active, foreground) = watch::channel(false);
     let (shell, requests) = Shell::new(foreground);
     let reloading = config
@@ -56,7 +61,7 @@ pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
         title: TITLE.into(),
         size: SIZE,
         min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
-        frame_autosave_name: Some(format!("{TITLE} {}", directory.display())),
+        frame_autosave_name,
         ..Default::default()
     };
     run_app_with_config(config, options, move |is_active| {
@@ -98,7 +103,8 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
         }
     });
     runtime.spawn(async move {
-        while notices.recv().await.is_some() {
+        while let Some(call) = notices.recv().await {
+            call.resolve(JsonValue::Null);
             eprintln!("maka-desktop-shell: the AppKit window posts no notifications");
         }
     });

@@ -79,7 +79,7 @@ fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool
 }
 
 /// Removes the character `TranslateMessage` queued for the consumed key.
-fn drop_char(surface: &Surface) {
+pub(crate) fn drop_char(surface: &Surface) {
     let mut msg = MSG::default();
     for kind in [WM_CHAR, WM_SYSCHAR] {
         // SAFETY: a plain call with a local out value, for our own window.

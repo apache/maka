@@ -82,6 +82,22 @@ use crate::{
 
 type Press = input::Press<NshView>;
 
+#[derive(Clone, Copy, PartialEq)]
+enum ActivationKey {
+    Enter,
+    Space,
+}
+
+impl ActivationKey {
+    fn from_vk(vk: u16) -> Option<Self> {
+        match vk {
+            0x0D => Some(Self::Enter),
+            0x20 => Some(Self::Space),
+            _ => None,
+        }
+    }
+}
+
 /// A pinch / rotation in progress.
 #[derive(Clone)]
 struct Transform {
@@ -262,6 +278,7 @@ pub(crate) struct Input {
     /// ([`PointerEvent::buttons`]): presses of the right, middle and side
     /// buttons hold no pointer.
     mouse_buttons: Cell<u8>,
+    keyboard_press: RefCell<Option<(ActivationKey, Press)>>,
     /// Two fingers pinching / rotating on the touchscreen.
     two: RefCell<Option<TwoFinger>>,
     /// A pinch by Ctrl + wheel (or a precision touchpad's pinch), with the
@@ -1134,6 +1151,9 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
         modifiers_changed(surface, event.modifiers);
     }
     if !event.down {
+        if release_keyboard_press(surface, &event) {
+            return true;
+        }
         // `DefWindowProc` opens the window menu when Alt is released after
         // it saw no other key: swallow the release once Alt + key was ours.
         return event.vk == VK_MENU && input.alt_combo.replace(false);
@@ -1154,6 +1174,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
             crate::scroll::key(surface, &event, x, y)
         }
         || tab(surface, &event)
+        || keyboard_press(surface, &event)
         || crate::keymap::fallback_key(surface, &event);
     if handled && event.modifiers.alt {
         input.alt_combo.set(true);
@@ -1161,8 +1182,83 @@ pub(crate) fn key(surface: &Rc<Surface>, event: KeyEvent) -> bool {
     handled
 }
 
-/// Tab and Shift + Tab move focus through text inputs and explicitly
-/// focusable views in tree order, within the newest modal. An input reached
+fn keyboard_press(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    let Some(key) = ActivationKey::from_vk(event.vk) else {
+        return false;
+    };
+    if event.modifiers.ctrl || event.modifiers.alt || event.modifiers.meta {
+        return false;
+    }
+    let Some(view) = crate::text_input::focused_view(surface) else {
+        return false;
+    };
+    let state = view.state();
+    if view.kind() == ViewKind::Input
+        || state.props.accessibility.state.disabled
+        || !state.events.contains(EventKind::Press)
+        || surface.focus_path().is_empty()
+    {
+        return false;
+    }
+    if event.repeat {
+        crate::keymap::drop_char(surface);
+        return true;
+    }
+    let mut press = Press::new(view.clone(), view.id(), state.events, None, 0);
+    drop(state);
+    cancel_keyboard_press(surface);
+    set_state(surface, &view, PRESSED, true);
+    if let Some(kind) = press.press_in() {
+        surface.event(press.node, kind, EventPayload::None);
+    }
+    if key == ActivationKey::Enter {
+        finish_keyboard_press(surface, &mut press, true);
+    }
+    *surface.input.keyboard_press.borrow_mut() = Some((key, press));
+    crate::keymap::drop_char(surface);
+    true
+}
+
+fn release_keyboard_press(surface: &Surface, event: &KeyEvent) -> bool {
+    let Some(key) = ActivationKey::from_vk(event.vk) else {
+        return false;
+    };
+    if surface
+        .input
+        .keyboard_press
+        .borrow()
+        .as_ref()
+        .is_none_or(|(held, _)| *held != key)
+    {
+        return false;
+    }
+    let (_, mut press) = surface.input.keyboard_press.borrow_mut().take().unwrap();
+    let fire = key == ActivationKey::Space
+        && !event.modifiers.ctrl
+        && !event.modifiers.alt
+        && !event.modifiers.meta
+        && surface.focus_path().first() == Some(&press.node)
+        && !press.view.state().props.accessibility.state.disabled;
+    finish_keyboard_press(surface, &mut press, fire);
+    true
+}
+
+pub(crate) fn cancel_keyboard_press(surface: &Surface) {
+    let held = surface.input.keyboard_press.borrow_mut().take();
+    if let Some((_, mut press)) = held {
+        finish_keyboard_press(surface, &mut press, false);
+    }
+}
+
+fn finish_keyboard_press(surface: &Surface, press: &mut Press, fire: bool) {
+    set_state(surface, &press.view, PRESSED, false);
+    for kind in press.press_out(fire) {
+        surface.event(press.node, kind, EventPayload::None);
+    }
+}
+
+/// Tab and Shift + Tab move focus through enabled controls and explicit
+/// focus stops in tree order, within the newest modal. An input reached
 /// this way has its text selected, as in Windows' dialogs.
 fn tab(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     let m = event.modifiers;
@@ -1184,6 +1280,14 @@ fn tab(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
     true
 }
 
+fn focusable(state: &ViewState) -> bool {
+    !state.props.accessibility.state.disabled
+        && state
+            .props
+            .focusable
+            .unwrap_or(state.kind == ViewKind::Input || has_press(state.events))
+}
+
 /// The enabled focus stops shown under `view`, in tree order.
 fn collect_fields(view: &NshView, out: &mut Vec<NshView>) {
     {
@@ -1191,10 +1295,7 @@ fn collect_fields(view: &NshView, out: &mut Vec<NshView>) {
         if s.style.hidden || s.concealed || s.props.pointer_events == PointerEvents::None {
             return;
         }
-        if !s.props.accessibility.state.disabled
-            && s.props.focusable != Some(false)
-            && (s.kind == ViewKind::Input || s.props.focusable == Some(true))
-        {
+        if focusable(&s) {
             out.push(view.clone());
         }
     }
@@ -1369,7 +1470,7 @@ fn down(
     let touch = key != Key::Mouse;
     if let Some(view) = chain(&hit.view).into_iter().find(|view| {
         let state = view.state();
-        state.props.focusable == Some(true) && !state.props.accessibility.state.disabled
+        focusable(&state)
     }) {
         crate::text_input::focus_view(surface, &view);
     }
@@ -2496,10 +2597,10 @@ mod tests {
     use crate::geom::rect;
 
     #[test]
-    fn tab_moves_between_focusable_views_and_skips_disabled_controls() {
+    fn tab_visits_buttons_and_explicit_stops_but_skips_disabled_and_opted_out_controls() {
         let surface = Surface::new(Default::default());
         let first = view(&surface.root, 2, ViewKind::View, rect(0.0, 0.0, 50.0, 20.0));
-        first.state_mut().props.focusable = Some(true);
+        first.state_mut().events.set(EventKind::Press, true);
         let disabled = view(
             &surface.root,
             3,
@@ -2515,6 +2616,14 @@ mod tests {
             rect(0.0, 40.0, 50.0, 20.0),
         );
         second.state_mut().props.focusable = Some(true);
+        let opted_out = view(
+            &surface.root,
+            6,
+            ViewKind::View,
+            rect(0.0, 60.0, 50.0, 20.0),
+        );
+        opted_out.state_mut().events.set(EventKind::Press, true);
+        opted_out.state_mut().props.focusable = Some(false);
         let mut event = KeyEvent {
             vk: 0x09,
             down: true,

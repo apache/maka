@@ -865,6 +865,7 @@ fn set_focus(surface: &Rc<Surface>, view: Option<&NshView>) {
     if old.as_ref() == view {
         return;
     }
+    crate::input::cancel_keyboard_press(surface);
     if let Some(old) = &old {
         cancel_composition(surface);
         if let Some(input) = input_of(old) {

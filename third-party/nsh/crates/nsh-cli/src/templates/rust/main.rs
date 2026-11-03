@@ -21,6 +21,8 @@ fn main() -> impl std::process::Termination {
             size: (480, 640),
             ..Default::default()
         },
+        #[cfg(target_os = "windows")]
+        |_| {},
     )
 }
 

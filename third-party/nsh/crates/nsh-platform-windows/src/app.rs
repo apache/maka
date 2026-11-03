@@ -5,7 +5,7 @@
 use std::{
     cell::RefCell,
     path::PathBuf,
-    rc::Rc,
+    rc::{Rc, Weak},
     sync::{Arc, RwLock},
 };
 
@@ -28,7 +28,7 @@ use windows::{
 
 use crate::{
     image::{AssetBase, AssetReader},
-    surface::Surface,
+    surface::{ActivationHandler, Surface},
 };
 
 static UI_SETS: RwLock<Option<Vec<nsh_core::element::Registry>>> = RwLock::new(None);
@@ -386,23 +386,68 @@ fn initial_environment() -> Environment {
 /// thread-local destructors instead, they would run inside `ExitProcess`,
 /// after the graphics DLLs and their driver threads are gone, and the
 /// process would end with a stray exit code.
-pub fn run_app(source: AppSource, options: AppOptions) -> std::process::ExitCode {
+/// The observer follows window activation and receives `false` on shutdown.
+pub fn run_app(
+    source: AppSource,
+    options: AppOptions,
+    on_active: impl Fn(bool) + Send + 'static,
+) -> std::process::ExitCode {
+    run(source, options, Box::new(on_active))
+}
+
+thread_local! {
+    static RUNNING_VIEW: RefCell<Weak<AppView>> = const { RefCell::new(Weak::new()) };
+}
+
+/// Runs `f` on the standalone Windows window's UI thread while it is open.
+pub fn with_running_view(f: impl FnOnce(&AppView) + Send + 'static) {
+    crate::window::invoke(move || {
+        RUNNING_VIEW.with(|running| {
+            let view = running.borrow().upgrade();
+            if let Some(view) = view {
+                f(&view);
+            }
+        });
+    });
+}
+
+/// Closes the standalone Windows window through its normal close handler.
+pub fn quit_app() {
+    with_running_view(|view| {
+        use windows::Win32::{
+            Foundation::{LPARAM, WPARAM},
+            UI::WindowsAndMessaging::{PostMessageW, WM_CLOSE},
+        };
+        // SAFETY: this runs on the owning UI thread and only posts a close request.
+        if let Err(error) =
+            unsafe { PostMessageW(Some(view.hwnd()), WM_CLOSE, WPARAM(0), LPARAM(0)) }
+        {
+            log::error!("cannot close the Windows app: {error}");
+        }
+    });
+}
+
+fn run(
+    source: AppSource,
+    options: AppOptions,
+    on_active: ActivationHandler,
+) -> std::process::ExitCode {
     /// The app, moved to the UI thread.
-    struct Job(AppSource, AppOptions);
+    struct Job(AppSource, AppOptions, ActivationHandler);
     // SAFETY: the options hold `Rc`s (the native components), so they are
     // not `Send`. They move to the UI thread whole while this thread waits
     // in `join` and never touches them; clones the caller kept are only
     // used again after `join` returns, once the UI thread has ended, so
     // the reference counts are never changed from two threads at once.
     unsafe impl Send for Job {}
-    let job = Job(source, options);
+    let job = Job(source, options, on_active);
     let ui = std::thread::Builder::new()
         .name("nsh-ui".into())
         // Deep view trees recurse in drawing and hit testing.
         .stack_size(8 << 20)
         .spawn(move || {
             let job = job;
-            run_on_this_thread(job.0, job.1)
+            run_on_this_thread(job.0, job.1, job.2)
         });
     match ui.map(std::thread::JoinHandle::join) {
         Ok(Ok(code)) => code,
@@ -415,7 +460,11 @@ pub fn run_app(source: AppSource, options: AppOptions) -> std::process::ExitCode
 }
 
 /// [`run_app`] on the calling thread.
-fn run_on_this_thread(source: AppSource, options: AppOptions) -> std::process::ExitCode {
+fn run_on_this_thread(
+    source: AppSource,
+    options: AppOptions,
+    on_active: ActivationHandler,
+) -> std::process::ExitCode {
     // SAFETY: process setup before any window exists: per-monitor DPI
     // (points stay sharp on every monitor) and an OLE apartment for the
     // clipboard, drag and drop and WIC.
@@ -431,6 +480,8 @@ fn run_on_this_thread(source: AppSource, options: AppOptions) -> std::process::E
             return std::process::ExitCode::FAILURE;
         }
     };
+    *view.surface.on_activation.borrow_mut() = Some(on_active);
+    RUNNING_VIEW.with(|running| *running.borrow_mut() = Rc::downgrade(&view));
     match source {
         AppSource::Rust(root) => view.load(App::Rust(root)),
         AppSource::Bundle(bundle) => view.load(App::Js(bundle)),
@@ -442,6 +493,8 @@ fn run_on_this_thread(source: AppSource, options: AppOptions) -> std::process::E
     install_shortcuts(&view);
     view.show();
     let code = crate::window::run_loop();
+    view.surface.activation_changed(false);
+    RUNNING_VIEW.with(|running| *running.borrow_mut() = Weak::new());
     view.stop();
     drop(view);
     // SAFETY: pairs the `OleInitialize` above; nothing on this thread uses

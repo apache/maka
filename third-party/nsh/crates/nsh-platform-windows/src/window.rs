@@ -773,6 +773,7 @@ fn handle(
         | WM_IME_REQUEST => {
             return crate::text_input::ime(surface, hwnd, msg, wparam, lparam);
         }
+        WM_ACTIVATE => surface.activation_changed((wparam.0 & 0xffff) != WA_INACTIVE as usize),
         WM_SETFOCUS => crate::text_input::window_focus(surface, true),
         WM_KILLFOCUS => crate::text_input::window_focus(surface, false),
         WM_GETOBJECT => return crate::access::get_object(surface, hwnd, wparam, lparam),
@@ -780,6 +781,7 @@ fn handle(
             crate::system::settings_changed(surface);
         }
         WM_DESTROY => {
+            surface.activation_changed(false);
             surface.stop();
             surface.set_hwnd(HWND::default());
         }
