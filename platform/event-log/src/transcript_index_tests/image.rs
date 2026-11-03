@@ -396,14 +396,21 @@ async fn projection_images_beside_tool_content_are_readable_by_index() {
         out
     }
     use maka_agent_facts::tool_output::{ToolContent, ToolOutput};
+    // A valid identity must not impose an unrelated image-descriptor byte limit.
+    let session = "shots".repeat(4_000);
+    let record = |fact| {
+        let mut original = event("shots", fact).event().clone();
+        original.invocation.session_id = session.clone();
+        maka_agent_facts::event::EventWrite::plain(original).unwrap()
+    };
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("shots.sqlite");
     let log = EventLog::open(&path).await.unwrap();
-    log.create_session("shots", "shots", &Value::Null, 1)
+    log.create_session(&session, "shots", &Value::Null, 1)
         .await
         .unwrap();
-    log.append(&event("shots", opening())).await.unwrap();
-    log.append(&event("shots", request("shots"))).await.unwrap();
+    log.append(&record(opening())).await.unwrap();
+    log.append(&record(request("shots"))).await.unwrap();
     let call = maka_agent_facts::model::ModelToolCall {
         id: "shot-call".into(),
         name: "computer".into(),
@@ -411,35 +418,29 @@ async fn projection_images_beside_tool_content_are_readable_by_index() {
         provider_options: None,
         provider_executed: false,
     };
-    log.append(&event(
-        "shots",
-        Fact::ModelCompleted {
-            step_id: "step-shots".into(),
-            output: ModelCompletion {
-                compaction: None,
-                parts: completion_parts("step-shots".into(), vec![ModelPart::ToolCall { call }]),
-                finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
-                usage: ModelUsage::default(),
-                provider_options: None,
-                response_id: None,
-                model: None,
-                timestamp: None,
-            },
+    log.append(&record(Fact::ModelCompleted {
+        step_id: "step-shots".into(),
+        output: ModelCompletion {
+            compaction: None,
+            parts: completion_parts("step-shots".into(), vec![ModelPart::ToolCall { call }]),
+            finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
+            usage: ModelUsage::default(),
+            provider_options: None,
+            response_id: None,
+            model: None,
+            timestamp: None,
         },
-    ))
+    }))
     .await
     .unwrap();
-    log.append(&event(
-        "shots",
-        Fact::ToolDispatched {
-            presentation: None,
-            title: None,
-            operation_id: "step-shots:shot-call".into(),
-            call: ToolCallIdentity::provider("step-shots".into(), "shot-call".into()),
-            name: "computer".into(),
-            input: Value::Null,
-        },
-    ))
+    log.append(&record(Fact::ToolDispatched {
+        presentation: None,
+        title: None,
+        operation_id: "step-shots:shot-call".into(),
+        call: ToolCallIdentity::provider("step-shots".into(), "shot-call".into()),
+        name: "computer".into(),
+        input: Value::Null,
+    }))
     .await
     .unwrap();
     let gif = |comment: u8| {
@@ -458,12 +459,9 @@ async fn projection_images_beside_tool_content_are_readable_by_index() {
         },
         detail: None,
     };
-    let template = event(
-        "shots",
-        Fact::InvocationEnded {
-            outcome: InvocationOutcome::Completed,
-        },
-    );
+    let template = record(Fact::InvocationEnded {
+        outcome: InvocationOutcome::Completed,
+    });
     let (result, _) = maka_agent_facts::event::EventWrite::tool_success(
         "shot-result".into(),
         template.event().recorded_at,
@@ -480,11 +478,16 @@ async fn projection_images_beside_tool_content_are_readable_by_index() {
     )
     .unwrap();
     log.append(&result).await.unwrap();
-    let through = end(&log, "shots", InvocationOutcome::Completed).await;
+    let through = log
+        .append(&record(Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        }))
+        .await
+        .unwrap();
 
     let Page::Ready { chunks, .. } = log
         .history_text(
-            "shots",
+            &session,
             through,
             Position::Start,
             false,
@@ -512,7 +515,7 @@ async fn projection_images_beside_tool_content_are_readable_by_index() {
     let sequence = row.position;
     for (index, bytes) in [(0, &first), (1, &second)] {
         let chunk = log
-            .tool_image_at("shots", through, sequence, Some(index), 0, 8192)
+            .tool_image_at(&session, through, sequence, Some(index), 0, 8192)
             .await
             .unwrap();
         assert_eq!(&chunk.bytes, bytes);
@@ -520,26 +523,26 @@ async fn projection_images_beside_tool_content_are_readable_by_index() {
         assert_eq!(chunk.digest, content_digest(bytes));
     }
     assert!(
-        log.tool_image_at("shots", through, sequence, Some(2), 0, 8192)
+        log.tool_image_at(&session, through, sequence, Some(2), 0, 8192)
             .await
             .is_err()
     );
     // Without an index the content itself must be the image.
     assert!(
-        log.tool_image("shots", through, sequence, 0, 8192)
+        log.tool_image(&session, through, sequence, 0, 8192)
             .await
             .is_err()
     );
     assert!(
-        log.tool_image_at("shots", through, call.position, Some(0), 0, 8192)
+        log.tool_image_at(&session, through, call.position, Some(0), 0, 8192)
             .await
             .is_err()
     );
 
-    let source = log.get_session::<Value>("shots").await.unwrap().unwrap();
+    let source = log.get_session::<Value>(&session).await.unwrap().unwrap();
     log.copy_session(
         maka_event_log::sessions::SessionCopy {
-            source_session_id: "shots".into(),
+            source_session_id: session.clone(),
             target_session_id: "copy".into(),
             expected_source_revision: source.revision,
             purpose: maka_agent_facts::session::CopyPurpose::Branch {

@@ -161,16 +161,14 @@ impl EventLog {
                             "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
                  FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
-                 AND json_extract(payload, '$.content.kind') = 'image' AND ?4 IS NULL
-                 AND length(CAST(json_extract(payload, '$.content') AS BLOB)) <= 16384",
+                 AND json_extract(payload, '$.content.kind') = 'image' AND ?4 IS NULL",
                         ),
                         Some(_) => sqlx::query_scalar(
                             "SELECT image.value
                  FROM temp.transcript_rows, json_each(payload, '$.images') image
                  WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
-                 AND image.key = ?4 AND image.type = 'object'
-                 AND length(CAST(image.value AS BLOB)) <= 16384",
+                 AND image.key = ?4 AND image.type = 'object'",
                         ),
                     };
                     let raw: String = query
