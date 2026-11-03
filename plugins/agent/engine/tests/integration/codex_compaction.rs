@@ -191,6 +191,86 @@ async fn native_compact_replay_roll_forward_and_restart_preserve_opaque_items() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disabling_native_compaction_replays_existing_checkpoint_then_installs_text_summary() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = SessionFixture::open(&directory.path().join("events.sqlite"))
+        .await
+        .unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}/v1", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let mut requests = vec![];
+        for (index, item) in [
+            message("old-answer"),
+            native("cmp-enabled"),
+            message("continued-with-option-off"),
+            message("text-summary"),
+            message("continued-after-text-compaction"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            requests.push(support::read_request(&mut socket).await);
+            respond(&mut socket, item, &format!("response-{index}")).await;
+        }
+        requests
+    });
+    let worker = support::engine();
+    for (id, compact, enabled) in [
+        ("seed", false, true),
+        ("native", true, true),
+        ("off", false, false),
+        ("text", true, false),
+        ("after-text", false, false),
+    ] {
+        let mut request = input(&base, id, compact);
+        request.provider.capabilities.native_compaction = Some(enabled);
+        request.configuration.compaction_prompt = Some("Summarize this conversation.".into());
+        worker
+            .run(log.store(), request, CancellationToken::new())
+            .await
+            .unwrap();
+    }
+    worker.drain().await;
+    let baseline = log
+        .read_model_view("session", None)
+        .await
+        .unwrap()
+        .baseline
+        .unwrap();
+    assert_eq!(
+        baseline.checkpoint.summary,
+        CheckpointContent::Text("text-summary".into())
+    );
+    let requests = server.await.unwrap();
+    for request in &requests[2..] {
+        assert!(
+            !request["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| { item["type"] == "compaction_trigger" })
+        );
+    }
+    for request in &requests[2..4] {
+        assert!(
+            request["input"]
+                .as_array()
+                .unwrap()
+                .contains(&native("cmp-enabled"))
+        );
+    }
+    assert!(
+        requests[3]
+            .to_string()
+            .contains("Summarize this conversation.")
+    );
+    assert!(!requests[4].to_string().contains("opaque-cmp-enabled"));
+    assert!(requests[4].to_string().contains("text-summary"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_native_compaction_keeps_original_history_and_never_falls_back_to_text() {
     let directory = tempfile::tempdir().unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -397,6 +397,11 @@ export const settingsMessages = {
     '连接默认推理强度',
     '連線預設推理強度',
   ],
+  'Provider server-side compaction': [
+    'Provider server-side compaction',
+    '提供商服务端压缩',
+    '供應商伺服器端壓縮',
+  ],
   'Connection enabled': ['Connection enabled', '连接已启用', '連線已啟用'],
   'Connection models': ['Connection models', '连接模型', '連線模型'],
   'Connection name': ['Connection name', '连接名称', '連線名稱'],

@@ -111,12 +111,14 @@ ChatGPT 冷缓存或到期刷新在逻辑请求准备时等待，后台压缩的
 随后随机退避 30–60 秒以免请求风暴。缓存有效或处于退避期时不等待目录网络请求；凭证解析沿用自己的既有策略。这些数字是本地延迟与负载策略，
 不是协议限制。TTL 只管理新目录观测，已记录的来源事实与检查点不会随缓存到期。捕获完成后，提前压缩继续与 Main 并行执行。
 
-ChatGPT 订阅的 `/compact` 使用 Responses 原生 `compaction_trigger` 控制项。
+连接默认使用文字摘要压缩。模型连接设置仅在提供商配置 schema 声明 `serverSideCompaction` 时显示
+**提供商服务端压缩**开关，按连接保存；目前 ChatGPT 订阅支持此功能。
+开启后，手动和自动压缩使用 Responses 原生 `compaction_trigger` 控制项。
 只有生产流完整结束且存储验证同一来源边界和生产请求后，引擎才安装不透明 checkpoint。
 后续请求回放该 checkpoint 与保留的后续历史；再次压缩会替换基线。
 会话、全局和一次性文字压缩提示词仍可编辑、保存，但不进入 ChatGPT 原生压缩请求。
-其他 provider 继续使用文字摘要。当前原生回放要求生产模型；跨模型准入和切换预检由后续 stack 层实现。
+关闭开关时，文字压缩提示词正常生效。当前原生回放要求生产模型；跨模型准入和切换预检由后续 stack 层实现。
 
-订阅 Provider 在解析后的能力中声明原生压缩支持。Host 冻结一个协议操作，Responses 适配器负责追加触发命令，
+订阅 Provider 仅在连接开启该选项时，在解析后的能力中选择原生压缩。关闭后仍可回放已有原生 checkpoint；下一次压缩生成文字摘要。Host 冻结一个协议操作，Responses 适配器负责追加触发命令，
 并只在流完成时返回有类型的 `NativeCompaction`。Engine 和 EventLog 无需再从 provider options JSON 提取结果。
 检查点头部只保留来源步骤引用、内容摘要和 token 估算，baseline 读取时从原始请求派生 producer/model。
