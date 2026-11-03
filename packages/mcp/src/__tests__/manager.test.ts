@@ -1300,6 +1300,31 @@ describe('McpClientManager E2E', { concurrency: false }, () => {
       assert.deepEqual(status?.stderrTail, ['fixture startup failed: deliberate diagnostic']);
     });
 
+    test('timestamps stderr tail updates with the injected clock', async () => {
+      const now = 1_700_000_000_000;
+      const manager = createManager({ now: () => now });
+      const stderrUpdateTimestamps: number[] = [];
+      manager.onChange((status) => {
+        // The stderr append is the only update that publishes a tail while the
+        // connection is still connecting; the later error update carries its
+        // own timestamp, so this filter isolates the append's clock source.
+        if (status.stderrTail?.length && status.state === 'connecting') {
+          stderrUpdateTimestamps.push(status.updatedAt);
+        }
+      });
+
+      await manager.sync(fixtureConfig(['--crash']));
+
+      assert.equal(manager.status('fixture')?.state, 'error');
+      assert.deepEqual(manager.status('fixture')?.stderrTail, [
+        'fixture startup failed: deliberate diagnostic',
+      ]);
+      assert.ok(stderrUpdateTimestamps.length > 0, 'expected a stderr-bearing status update');
+      for (const timestamp of stderrUpdateTimestamps) {
+        assert.equal(timestamp, now);
+      }
+    });
+
     test('excludes credential keys case-insensitively from a real stdio child', async () => {
       const key = 'XDG_MAKA_PROVIDER_CREDENTIAL';
       const previous = process.env[key];
