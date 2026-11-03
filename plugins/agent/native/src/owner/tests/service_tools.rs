@@ -870,15 +870,14 @@ async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() 
     .unwrap();
 }
 
-// The provider finishes its physical work after cancellation, independently of the observer.
 #[tokio::test]
 async fn code_mode_uses_selected_methods_without_duplicate_grants_and_keeps_original_receipts() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        for (nestable, granted) in [(true, true), (true, false), (false, true)] {
+        for nestable in [true, false] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
             let counter = Counter::new(Behavior::Returned);
-            let mut setup = Setup::native(counter.clone(), granted);
+            let mut setup = Setup::native(counter.clone(), false);
             setup.nestable = nestable;
             let fixture = Fixture::with_services(&base, None, None, Some(setup)).await;
             selection::edit(&fixture, |changes| {

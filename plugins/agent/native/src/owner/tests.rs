@@ -192,13 +192,7 @@ fn entry(provider: bool) -> EntryDeclaration {
             json!({"type":"object","additionalProperties":false}).into()
         },
         imports: if provider {
-            BTreeMap::from([(
-                "settings".into(),
-                Import {
-                    contract: maka_settings_native::contract::contract(),
-                    cardinality: Cardinality::One,
-                },
-            )])
+            BTreeMap::new()
         } else {
             BTreeMap::from([
                 (
@@ -263,7 +257,39 @@ fn application_package(name: &str, entry: EntryDeclaration) -> Package {
     Package::new(files).unwrap()
 }
 fn input(settings: &Configuration) -> (Input, Vec<Package>) {
-    application_input(settings, package(true), package(false))
+    let needs_settings = settings.tools.iter().any(|tool| {
+        matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Import { name } if name == "settings")
+    });
+    let mut provider = entry(true);
+    if needs_settings {
+        provider.imports.insert(
+            "settings".into(),
+            Import {
+                contract: maka_settings_native::contract::contract(),
+                cardinality: Cardinality::One,
+            },
+        );
+    }
+    let (mut input, packages) = application_input(
+        settings,
+        application_package("agent", provider),
+        package(false),
+    );
+    if needs_settings {
+        input
+            .instances
+            .get_mut("provider")
+            .unwrap()
+            .bindings
+            .insert(
+                "settings".into(),
+                vec![Target::Instance {
+                    path: vec!["settings".into()],
+                    export: maka_settings_native::EXPORT.into(),
+                }],
+            );
+    }
+    (input, packages)
 }
 fn application_input(
     settings: &Configuration,
@@ -326,28 +352,6 @@ fn application_input(
                         values: serde_json::from_value(serde_json::to_value(settings).unwrap())
                             .unwrap(),
                         parameters: Default::default(),
-                    },
-                    bindings: if provider
-                        .manifest()
-                        .application
-                        .as_ref()
-                        .unwrap()
-                        .declaration()
-                        .host
-                        .as_ref()
-                        .unwrap()
-                        .imports
-                        .contains_key("settings")
-                    {
-                        BTreeMap::from([(
-                            "settings".into(),
-                            vec![Target::Instance {
-                                path: vec!["settings".into()],
-                                export: maka_settings_native::EXPORT.into(),
-                            }],
-                        )])
-                    } else {
-                        BTreeMap::new()
                     },
                     ..node(1, &provider)
                 },
