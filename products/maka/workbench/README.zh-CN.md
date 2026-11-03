@@ -64,3 +64,22 @@ MAKA_NSH_EVIDENCE=/tmp/maka-nsh-evidence cargo nextest run --locked --workspace 
 提供商列表按账号登录、自定义接口和命名 API 服务分组，组内按名称排序。搜索支持多个词、方向键和 Enter，Esc 先清空搜索再返回。从新连接返回时保留搜索和选择；再次添加连接时，会在已加载的连接中避开重复标识。
 
 内置订阅、兼容接口和地区标签随界面语言显示；提供商搜索同时匹配原文和译文。已保存的连接名称、品牌名、模型 ID 和推理档位保留原样。
+
+## 图标
+
+`app/Icon.tsx` 保留 Workbench 名称 API 和终端字符。桌面/Web 使用
+`app/lucide.ts` 中的 Lucide 子集，采用 24 点网格、2 点圆端描边。
+play、pause、stop 保持填充，unread 保留小实心圆点。上下文仪表、回合导航轨道和
+选择控件指示器继续使用表达数据或控件状态的专用绘制。
+
+重新生成前先安装仓库 npm 工具，在仓库外解压 npm 的 `lucide-static` 1.61.0：
+
+```sh
+python3 -I products/maka/workbench/scripts/lucide.py /path/to/package/icon-nodes.json
+```
+
+脚本校验输入摘要并用仓库 Biome 格式化输出。产品仅打包选中几何数据，没有新增
+Lucide 运行时依赖。映射维护在 `Icon.tsx`，例如 refresh → refresh-cw、edit → pencil、
+activity → clock、nowrap → move-right。来源见 LICENSE、NOTICE 和来源审计。
+
+Lucide 没有对应的 Markdown 标记，因此保留 M/向下箭头，并适配同一网格。

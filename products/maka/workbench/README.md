@@ -64,3 +64,26 @@ Only skills installed through Maka have an update button. Updating replaces thei
 The provider picker separates account sign-in, custom endpoints and named API services, with alphabetical choices within each section. Search accepts multiple terms, supports arrow keys and Enter, and Escape clears the query before returning. Returning from a new connection preserves the provider search and selection; adding another connection suggests an unused ID among the loaded connections.
 
 Built-in subscription, compatible-endpoint and region labels follow the interface language. Provider search matches both the original and localized labels. Saved connection names, brand names, model IDs and reasoning-effort values keep their original spelling.
+
+## Icons
+
+`app/Icon.tsx` keeps the Workbench name API and terminal glyphs. Desktop/Web
+uses the selected Lucide data in `app/lucide.ts`, on a 24-point grid with a
+two-point round stroke. Play, pause and stop stay filled; unread keeps its
+small filled dot. The context gauge, turn rail and choice indicators remain
+purpose-built data/control drawings.
+
+To regenerate, install the repository's npm tools, extract `lucide-static`
+1.61.0 from npm outside the checkout, then run:
+
+```sh
+python3 -I products/maka/workbench/scripts/lucide.py /path/to/package/icon-nodes.json
+```
+
+The generator checks the input digest and formats its output with the repository's
+Biome. Only selected geometry is shipped; there is no Lucide runtime dependency.
+Names map in `Icon.tsx` (for example `refresh` → `refresh-cw`, `edit` → `pencil`,
+`activity` → `clock`, `nowrap` → `move-right`).
+Upstream attribution is recorded in `LICENSE`, `NOTICE` and the source audit.
+
+The Markdown mark retains its M/down-arrow geometry because Lucide has no equivalent.

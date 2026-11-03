@@ -1,24 +1,10 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
+// Canvas drawing adapted from NSH Gallery icons.tsx (Apache-2.0).
+// Copyright 2026 Longbridge <https://longbridge.com>.
+// Lucide geometry is ISC / Feather MIT; see LICENSE.
 
-import { Canvas, Path2D, Text } from 'nsh';
+import { Canvas, Path2D, Text, type CanvasRenderingContext2D } from 'nsh';
 import { platform } from 'nsh';
+import { lucide, type LucideElement } from './lucide';
 
 const glyphs = {
   back: '‹',
@@ -73,34 +59,110 @@ const glyphs = {
   unread: '●',
 };
 
-// Lucide source geometry on its original 24-point grid; upstream notices in LICENSE.
-const circlePath = new Path2D('M22 12a10 10 0 1 1 -20 0a10 10 0 1 1 20 0Z');
-const lucidePaths: Partial<Record<keyof typeof glyphs, readonly Path2D[]>> = {
-  thinking: [
-    new Path2D(
-      'M12 18V5 ' +
-        'M15 13a4.17 4.17 0 01-3-4 4.17 4.17 0 01-3 4 ' +
-        'M17.707 6.294A3 3 0 1012 5a3 3 0 10-5.707 1.294 ' +
-        'M17.996 5.125a4 4 0 012.526 5.77 ' +
-        'M18 18a4 4 0 002-7.465 ' +
-        'M19.967 17.482a4 4 0 11-7.967.517 4 4 0 11-7.967-.517 ' +
-        'M6 18a4 4 0 01-2-7.465 ' +
-        'M6.004 5.125a4 4 0 00-2.526 5.77',
-    ),
-  ],
-  statusRecorded: [circlePath, new Path2D('M13 12a1 1 0 1 1 -2 0a1 1 0 1 1 2 0Z')],
-  statusSuccess: [circlePath, new Path2D('m16 9-5.5 5.5L8 12')],
-  statusError: [circlePath, new Path2D('m15 9-6 6'), new Path2D('m9 9 6 6')],
-  statusUnknown: [
-    circlePath,
-    new Path2D('M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3'),
-    new Path2D('M12 17h.01'),
-  ],
-  statusStopped: [circlePath, new Path2D('M10 15L10 9'), new Path2D('M14 15L14 9')],
-  statusDispatched: [circlePath, new Path2D('m16 12-4-4-4 4'), new Path2D('M12 16V8')],
-  statusPending: [circlePath],
-  loader: [new Path2D('M21 12a9 9 0 1 1-6.219-8.56')],
-};
+const iconNames = {
+  back: 'chevron-left',
+  sidebar: 'panel-left',
+  split: 'columns-2',
+  sidebarCollapse: 'panel-left-close',
+  sidebarExpand: 'panel-left-open',
+  plus: 'plus',
+  send: 'arrow-up',
+  stop: 'square',
+  pause: 'pause',
+  play: 'play',
+  close: 'x',
+  down: 'chevron-down',
+  right: 'chevron-right',
+  search: 'search',
+  settings: 'settings',
+  folder: 'folder',
+  refresh: 'refresh-cw',
+  file: 'file',
+  terminal: 'square-terminal',
+  command: 'command',
+  copy: 'copy',
+  archive: 'archive',
+  pin: 'pin',
+  trash: 'trash',
+  wrap: 'text-wrap',
+  nowrap: 'move-right',
+  code: 'code',
+  markdown: 'markdown',
+  check: 'check',
+  more: 'ellipsis',
+  latest: 'arrow-down',
+  paperclip: 'paperclip',
+  queue: 'list-end',
+  edit: 'pencil',
+  image: 'image',
+  expand: 'maximize',
+  fork: 'git-fork',
+  shield: 'shield',
+  lock: 'lock',
+  activity: 'clock',
+  thinking: 'brain',
+  statusRecorded: 'circle-dot',
+  statusSuccess: 'circle-check',
+  statusError: 'circle-x',
+  statusUnknown: 'circle-question-mark',
+  statusStopped: 'circle-pause',
+  statusDispatched: 'circle-arrow-up',
+  statusPending: 'circle',
+  loader: 'loader-circle',
+  unread: 'circle',
+} satisfies Record<keyof typeof glyphs, keyof typeof lucide>;
+
+const paths = new Map<string, Path2D>();
+const pointLists = new Map<string, number[]>();
+for (const elements of Object.values(lucide)) {
+  for (const el of elements as LucideElement[]) {
+    if (el.tag === 'path') paths.set(el.d, new Path2D(el.d));
+    if (el.tag === 'polygon' || el.tag === 'polyline') pointLists.set(el.points, points(el.points));
+  }
+}
+
+function points(list: string): number[] {
+  return list
+    .trim()
+    .split(/[\s,]+/)
+    .map(Number);
+}
+
+/** Draws one element as Lucide's SVG does: stroked, never filled. */
+function draw(cx: CanvasRenderingContext2D, el: LucideElement) {
+  switch (el.tag) {
+    case 'path':
+      cx.stroke(paths.get(el.d)!);
+      return;
+    case 'circle':
+      cx.beginPath();
+      cx.arc(el.cx, el.cy, el.r, 0, Math.PI * 2);
+      break;
+    case 'ellipse':
+      cx.beginPath();
+      cx.ellipse(el.cx, el.cy, el.rx, el.ry, 0, 0, Math.PI * 2);
+      break;
+    case 'rect':
+      cx.beginPath();
+      cx.roundRect(el.x, el.y, el.width, el.height, el.rx ?? 0);
+      break;
+    case 'line':
+      cx.beginPath();
+      cx.moveTo(el.x1, el.y1);
+      cx.lineTo(el.x2, el.y2);
+      break;
+    case 'polyline':
+    case 'polygon': {
+      const p = pointLists.get(el.points)!;
+      cx.beginPath();
+      cx.moveTo(p[0], p[1]);
+      for (let i = 2; i < p.length; i += 2) cx.lineTo(p[i], p[i + 1]);
+      if (el.tag === 'polygon') cx.closePath();
+      break;
+    }
+  }
+  cx.stroke();
+}
 
 export function Icon(props: { name: keyof typeof glyphs; color: string; size?: number }) {
   if (platform.isTerminal)
@@ -130,384 +192,29 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
         { pointerEvents: 'none' },
       ]}
       draw={(cx) => {
-        // Glyphs are drawn on a 16-point grid; larger ones keep a 2-point stroke.
-        const scale = (props.size ?? 16) / 16;
-        cx.scale(scale, scale);
+        cx.scale((props.size ?? 16) / 24, (props.size ?? 16) / 24);
         cx.strokeStyle = props.color;
         cx.fillStyle = props.color;
-        cx.lineWidth = scale === 1 ? 1.5 : 2 / scale;
+        cx.lineWidth = 2;
         cx.lineCap = 'round';
         cx.lineJoin = 'round';
-        const paths = lucidePaths[props.name];
-        if (paths) {
-          cx.scale(16 / 24, 16 / 24);
-          cx.lineWidth = 2;
-          for (const path of paths) cx.stroke(path);
+        if (props.name === 'unread') {
+          cx.beginPath();
+          cx.arc(12, 12, 3.75, 0, Math.PI * 2);
+          cx.fill();
           return;
         }
-        cx.beginPath();
-        switch (props.name) {
-          case 'sidebar':
-          case 'sidebarCollapse':
-          case 'sidebarExpand':
-            cx.roundRect(1.5, 1.5, 13, 13, 2);
-            cx.moveTo(5.5, 1.5);
-            cx.lineTo(5.5, 14.5);
-            if (props.name === 'sidebarCollapse') {
-              cx.moveTo(10.5, 5.5);
-              cx.lineTo(8, 8);
-              cx.lineTo(10.5, 10.5);
-            } else if (props.name === 'sidebarExpand') {
-              cx.moveTo(8.5, 5.5);
-              cx.lineTo(11, 8);
-              cx.lineTo(8.5, 10.5);
+        for (const el of lucide[iconNames[props.name]] as LucideElement[]) {
+          if (props.name === 'play' || props.name === 'stop' || props.name === 'pause') {
+            // Transport controls retain their filled affordance.
+            if (el.tag === 'path') cx.fill(paths.get(el.d)!);
+            else if (el.tag === 'rect') {
+              cx.beginPath();
+              cx.roundRect(el.x, el.y, el.width, el.height, el.rx ?? 0);
+              cx.fill();
             }
-            break;
-          case 'split':
-            cx.roundRect(1.5, 1.5, 13, 13, 2);
-            cx.moveTo(8, 1.5);
-            cx.lineTo(8, 14.5);
-            break;
-          case 'plus':
-            cx.moveTo(8, 2);
-            cx.lineTo(8, 14);
-            cx.moveTo(2, 8);
-            cx.lineTo(14, 8);
-            break;
-          case 'send':
-            cx.moveTo(8, 13);
-            cx.lineTo(8, 3);
-            cx.moveTo(3.5, 7.5);
-            cx.lineTo(8, 3);
-            cx.lineTo(12.5, 7.5);
-            break;
-          case 'pause':
-            cx.rect(4, 3, 3, 10);
-            cx.rect(9, 3, 3, 10);
-            cx.fill();
-            return;
-          case 'play':
-            cx.moveTo(5, 3);
-            cx.lineTo(13, 8);
-            cx.lineTo(5, 13);
-            cx.closePath();
-            cx.fill();
-            return;
-          case 'stop':
-            cx.roundRect(4, 4, 8, 8, 1);
-            cx.fill();
-            return;
-          case 'close':
-            cx.moveTo(4, 4);
-            cx.lineTo(12, 12);
-            cx.moveTo(12, 4);
-            cx.lineTo(4, 12);
-            break;
-          case 'expand':
-            cx.moveTo(6, 2);
-            cx.lineTo(2, 2);
-            cx.lineTo(2, 6);
-            cx.moveTo(10, 2);
-            cx.lineTo(14, 2);
-            cx.lineTo(14, 6);
-            cx.moveTo(2, 10);
-            cx.lineTo(2, 14);
-            cx.lineTo(6, 14);
-            cx.moveTo(10, 14);
-            cx.lineTo(14, 14);
-            cx.lineTo(14, 10);
-            break;
-          case 'down':
-            cx.moveTo(4, 6);
-            cx.lineTo(8, 10);
-            cx.lineTo(12, 6);
-            break;
-          case 'back':
-            cx.moveTo(10, 4);
-            cx.lineTo(6, 8);
-            cx.lineTo(10, 12);
-            break;
-          case 'right':
-            cx.moveTo(6, 4);
-            cx.lineTo(10, 8);
-            cx.lineTo(6, 12);
-            break;
-          case 'search':
-            cx.arc(7, 7, 4.5, 0, Math.PI * 2);
-            cx.moveTo(10.5, 10.5);
-            cx.lineTo(14, 14);
-            break;
-          case 'settings':
-            // One closed outline with eight square-ended teeth, so the gear does
-            // not read as a sun's separate rays.
-            for (let i = 0; i < 8; i++) {
-              const angle = (i * Math.PI) / 4;
-              const points: [number, number][] = [
-                [5.2, angle - 0.36],
-                [7, angle - 0.2],
-                [7, angle + 0.2],
-                [5.2, angle + 0.36],
-              ];
-              for (const [index, [radius, at]] of points.entries()) {
-                const x = 8 + Math.cos(at) * radius;
-                const y = 8 + Math.sin(at) * radius;
-                if (i === 0 && index === 0) cx.moveTo(x, y);
-                else cx.lineTo(x, y);
-              }
-            }
-            cx.closePath();
-            cx.moveTo(10.25, 8);
-            cx.arc(8, 8, 2.25, 0, Math.PI * 2);
-            break;
-          case 'folder':
-            cx.moveTo(1.5, 5);
-            cx.lineTo(1.5, 3);
-            cx.lineTo(6, 3);
-            cx.lineTo(8, 5);
-            cx.lineTo(14.5, 5);
-            cx.lineTo(14.5, 13);
-            cx.lineTo(1.5, 13);
-            cx.closePath();
-            break;
-          case 'refresh':
-            // Three quarters of a turn and on toward the arrowhead, so the gap
-            // at the top right stays open and the arrow sits clear of it.
-            cx.arc(8, 8, 5.5, 0, Math.PI * 1.75);
-            cx.lineTo(12.75, 5);
-            cx.moveTo(12.75, 2);
-            cx.lineTo(12.75, 5);
-            cx.lineTo(9.75, 5);
-            break;
-          case 'file':
-            cx.moveTo(3, 1.5);
-            cx.lineTo(9, 1.5);
-            cx.lineTo(13, 5.5);
-            cx.lineTo(13, 14.5);
-            cx.lineTo(3, 14.5);
-            cx.closePath();
-            cx.moveTo(9, 1.5);
-            cx.lineTo(9, 5.5);
-            cx.lineTo(13, 5.5);
-            break;
-          case 'command':
-            cx.moveTo(5.5, 3.5);
-            cx.arc(3.5, 3.5, 2, 0, Math.PI / 2, true);
-            cx.lineTo(12.5, 5.5);
-            cx.arc(12.5, 3.5, 2, Math.PI / 2, Math.PI, true);
-            cx.lineTo(10.5, 12.5);
-            cx.arc(12.5, 12.5, 2, Math.PI, (Math.PI * 3) / 2, true);
-            cx.lineTo(3.5, 10.5);
-            cx.arc(3.5, 12.5, 2, (Math.PI * 3) / 2, Math.PI * 2, true);
-            cx.lineTo(5.5, 3.5);
-            break;
-          case 'terminal':
-            cx.roundRect(1, 2, 14, 12, 2);
-            cx.moveTo(4, 5);
-            cx.lineTo(7, 8);
-            cx.lineTo(4, 11);
-            cx.moveTo(9, 11);
-            cx.lineTo(12, 11);
-            break;
-          case 'edit':
-            cx.moveTo(3, 10);
-            cx.lineTo(11, 2);
-            cx.lineTo(14, 5);
-            cx.lineTo(6, 13);
-            cx.lineTo(2, 14);
-            cx.closePath();
-            cx.moveTo(9, 4);
-            cx.lineTo(12, 7);
-            break;
-          case 'archive':
-            cx.rect(1.5, 2, 13, 3);
-            cx.moveTo(3, 5);
-            cx.lineTo(3, 14);
-            cx.lineTo(13, 14);
-            cx.lineTo(13, 5);
-            cx.moveTo(6, 8);
-            cx.lineTo(10, 8);
-            break;
-          case 'trash':
-            cx.moveTo(2, 4);
-            cx.lineTo(14, 4);
-            cx.moveTo(5, 4);
-            cx.lineTo(5, 2);
-            cx.lineTo(11, 2);
-            cx.lineTo(11, 4);
-            cx.moveTo(3.5, 4);
-            cx.lineTo(4.5, 14);
-            cx.lineTo(11.5, 14);
-            cx.lineTo(12.5, 4);
-            cx.moveTo(6, 7);
-            cx.lineTo(6.5, 11.5);
-            cx.moveTo(10, 7);
-            cx.lineTo(9.5, 11.5);
-            break;
-          case 'copy':
-            // The sheet behind shows only where the front one leaves it.
-            cx.moveTo(5, 11.5);
-            cx.lineTo(3.5, 11.5);
-            cx.arc(3.5, 10, 1.5, Math.PI / 2, Math.PI);
-            cx.lineTo(2, 3);
-            cx.arc(3.5, 3, 1.5, Math.PI, Math.PI * 1.5);
-            cx.lineTo(9.5, 1.5);
-            cx.arc(9.5, 3, 1.5, Math.PI * 1.5, Math.PI * 2);
-            cx.lineTo(11, 4.5);
-            cx.roundRect(5, 4.5, 9, 10, 1.5);
-            break;
-          case 'wrap':
-            cx.moveTo(2, 3.5);
-            cx.lineTo(14, 3.5);
-            cx.moveTo(2, 7.5);
-            cx.lineTo(11.5, 7.5);
-            cx.arc(11.5, 10, 2.5, -Math.PI / 2, Math.PI / 2);
-            cx.lineTo(7, 12.5);
-            cx.moveTo(9, 10.5);
-            cx.lineTo(7, 12.5);
-            cx.lineTo(9, 14.5);
-            cx.moveTo(2, 11.5);
-            cx.lineTo(4, 11.5);
-            break;
-          case 'nowrap':
-            cx.moveTo(2, 3.5);
-            cx.lineTo(14, 3.5);
-            cx.moveTo(2, 7.5);
-            cx.lineTo(14, 7.5);
-            cx.moveTo(12, 5.5);
-            cx.lineTo(14, 7.5);
-            cx.lineTo(12, 9.5);
-            cx.moveTo(2, 11.5);
-            cx.lineTo(9, 11.5);
-            break;
-          case 'code':
-            cx.moveTo(6, 4);
-            cx.lineTo(2, 8);
-            cx.lineTo(6, 12);
-            cx.moveTo(10, 4);
-            cx.lineTo(14, 8);
-            cx.lineTo(10, 12);
-            break;
-          case 'markdown':
-            // The Markdown mark: an M and a down arrow.
-            cx.moveTo(1.5, 12);
-            cx.lineTo(1.5, 4);
-            cx.lineTo(4.5, 8);
-            cx.lineTo(7.5, 4);
-            cx.lineTo(7.5, 12);
-            cx.moveTo(12, 4);
-            cx.lineTo(12, 12);
-            cx.moveTo(10, 10);
-            cx.lineTo(12, 12);
-            cx.lineTo(14, 10);
-            break;
-          case 'check':
-            cx.moveTo(3, 8);
-            cx.lineTo(6.5, 11.5);
-            cx.lineTo(13, 4.5);
-            break;
-          case 'more':
-            for (const x of [3, 8, 13]) {
-              cx.moveTo(x + 1, 8);
-              cx.arc(x, 8, 1, 0, Math.PI * 2);
-            }
-            cx.fill();
-            return;
-          case 'latest':
-            cx.moveTo(8, 2);
-            cx.lineTo(8, 12);
-            cx.moveTo(3.5, 7.5);
-            cx.lineTo(8, 12);
-            cx.lineTo(12.5, 7.5);
-            break;
-          case 'paperclip':
-            cx.moveTo(5, 11);
-            cx.lineTo(10, 6);
-            cx.arc(9, 5, 1.5, -0.8, Math.PI * 1.2, true);
-            cx.lineTo(4, 9);
-            cx.arc(6, 11, 3, Math.PI * 1.2, 0.2, true);
-            cx.lineTo(13, 6);
-            break;
-          case 'queue':
-            for (const y of [4, 8, 12]) {
-              cx.moveTo(2, y);
-              cx.lineTo(11, y);
-            }
-            cx.moveTo(12, 9);
-            cx.lineTo(15, 12);
-            cx.lineTo(12, 15);
-            break;
-          case 'edit':
-            cx.moveTo(3, 10);
-            cx.lineTo(11, 2);
-            cx.lineTo(14, 5);
-            cx.lineTo(6, 13);
-            cx.lineTo(2, 14);
-            cx.closePath();
-            cx.moveTo(9, 4);
-            cx.lineTo(12, 7);
-            break;
-          case 'image':
-            cx.roundRect(1.5, 2, 13, 12, 2);
-            cx.moveTo(2, 12);
-            cx.lineTo(6, 8);
-            cx.lineTo(9, 11);
-            cx.lineTo(11, 9);
-            cx.lineTo(14, 12);
-            cx.moveTo(11, 5.5);
-            cx.arc(10, 5.5, 1, 0, Math.PI * 2);
-            break;
-          case 'fork':
-            cx.arc(5, 3, 1.5, 0, Math.PI * 2);
-            cx.moveTo(5, 4.5);
-            cx.lineTo(5, 11.5);
-            cx.moveTo(6.5, 13);
-            cx.arc(5, 13, 1.5, 0, Math.PI * 2);
-            cx.moveTo(5, 9);
-            cx.lineTo(11, 6);
-            cx.lineTo(11, 4.5);
-            cx.moveTo(12.5, 3);
-            cx.arc(11, 3, 1.5, 0, Math.PI * 2);
-            break;
-          case 'shield':
-            cx.moveTo(8, 1.5);
-            cx.lineTo(13.5, 4);
-            cx.lineTo(12.5, 10);
-            cx.lineTo(8, 14.5);
-            cx.lineTo(3.5, 10);
-            cx.lineTo(2.5, 4);
-            cx.closePath();
-            break;
-          case 'lock':
-            cx.roundRect(3, 7, 10, 7, 2);
-            cx.moveTo(5, 7);
-            cx.lineTo(5, 4.5);
-            cx.arc(8, 4.5, 3, Math.PI, 0);
-            cx.lineTo(11, 7);
-            break;
-          case 'activity':
-            cx.arc(8, 8, 6, 0, Math.PI * 2);
-            cx.moveTo(8, 4);
-            cx.lineTo(8, 8);
-            cx.lineTo(11, 9.5);
-            break;
-          case 'pin':
-            cx.moveTo(5, 2);
-            cx.lineTo(11, 2);
-            cx.moveTo(6, 2);
-            cx.lineTo(6, 6);
-            cx.lineTo(3, 9);
-            cx.lineTo(13, 9);
-            cx.lineTo(10, 6);
-            cx.lineTo(10, 2);
-            cx.moveTo(8, 9);
-            cx.lineTo(8, 14);
-            break;
-          case 'unread':
-            cx.arc(8, 8, 2.5, 0, Math.PI * 2);
-            cx.fill();
-            return;
+          } else draw(cx, el);
         }
-        cx.stroke();
       }}
     />
   );
