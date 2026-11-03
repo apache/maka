@@ -21,9 +21,6 @@ use super::*;
 use crate::capability::FormInput;
 
 pub const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
-/// Upper bound for the operating-system application name shown on a system permission card;
-/// the wire schema declares the same bound.
-const MAX_SYSTEM_PERMISSION_APPLICATION_CHARS: usize = 256;
 
 pub fn entity_id(value: &str) -> Result<(), &'static str> {
     if value.is_empty()
@@ -272,7 +269,6 @@ impl InteractionRequest {
                 }
                 if application.trim().is_empty()
                     || application.trim() != application
-                    || application.chars().count() > MAX_SYSTEM_PERMISSION_APPLICATION_CHARS
                     || application.chars().any(char::is_control)
                 {
                     return Err("Invalid system permission application name");

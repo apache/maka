@@ -22,23 +22,75 @@
 //! On macOS these are Accessibility and Screen Recording, which belong to
 //! the application responsible for the Host. Other platforms need none.
 
+use crate::protocol::{Command, Handle, NativeComputerCall, NativeComputerMethod};
 use maka_agent_facts::interaction::SystemPermissionGrant;
+
+/// macOS grants used by this command. Inventory, documentation and browser
+/// work remain usable before the user grants native control or capture.
+pub fn required(command: &Command) -> &'static [SystemPermissionGrant] {
+    use SystemPermissionGrant::{Accessibility, ScreenRecording};
+    match command {
+        Command::GetApp { .. }
+        | Command::Observe {
+            handle: Handle::App(_),
+            ..
+        }
+        | Command::NativeComputer {
+            call:
+                NativeComputerCall::Invoke {
+                    operation: NativeComputerMethod::GetAppState,
+                    ..
+                },
+        } => &[Accessibility, ScreenRecording],
+        Command::StartAudioRecording { .. } => &[ScreenRecording],
+        Command::NativeComputer {
+            call:
+                NativeComputerCall::Invoke {
+                    operation: NativeComputerMethod::ListApps,
+                    ..
+                },
+        } => &[],
+        Command::NativeComputer {
+            call: NativeComputerCall::Invoke { .. },
+        }
+        | Command::Action {
+            handle: Handle::App(_),
+            ..
+        }
+        | Command::ClipboardRead {
+            handle: Handle::App(_),
+        }
+        | Command::ClipboardReadText {
+            handle: Handle::App(_),
+        }
+        | Command::ClipboardWrite {
+            handle: Handle::App(_),
+            ..
+        }
+        | Command::ClipboardWriteText {
+            handle: Handle::App(_),
+            ..
+        } => &[Accessibility],
+        _ => &[],
+    }
+}
 
 /// The grants native desktop work needs that are not in effect now, checked
 /// with real calls. It blocks for those calls.
-pub fn missing() -> Vec<SystemPermissionGrant> {
+pub fn missing(required: &[SystemPermissionGrant]) -> Vec<SystemPermissionGrant> {
     #[cfg(all(feature = "native-desktop", target_os = "macos"))]
     {
-        [
-            SystemPermissionGrant::Accessibility,
-            SystemPermissionGrant::ScreenRecording,
-        ]
-        .into_iter()
-        .filter(|grant| !crate::macos::tcc::present((*grant).into()))
-        .collect()
+        required
+            .iter()
+            .copied()
+            .filter(|grant| !crate::macos::tcc::present((*grant).into()))
+            .collect()
     }
     #[cfg(not(all(feature = "native-desktop", target_os = "macos")))]
-    Vec::new()
+    {
+        let _ = required;
+        Vec::new()
+    }
 }
 
 /// Asks the operating system to show its own request for each grant, at
@@ -77,5 +129,40 @@ pub fn failure(grants: &[SystemPermissionGrant], application: &str) -> String {
     {
         let _ = (grants, application);
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::AppReference;
+
+    #[test]
+    fn browser_setup_and_documentation_do_not_require_native_grants() {
+        for input in [
+            r#"{"method":"readDocumentation","name":"browser"}"#,
+            r#"{"method":"configureCursor","options":{"enabled":false}}"#,
+            r#"{"method":"cursorState","options":{}}"#,
+            r#"{"method":"listBrowsers","options":{}}"#,
+            r#"{"method":"stopAudioRecording"}"#,
+        ] {
+            let command = serde_json::from_str(input).unwrap();
+            assert_eq!(required(&command), &[], "{input}");
+        }
+        assert_eq!(
+            required(&Command::GetApp {
+                target: AppReference::Name("Notes".into())
+            }),
+            &[
+                SystemPermissionGrant::Accessibility,
+                SystemPermissionGrant::ScreenRecording
+            ],
+        );
+        assert_eq!(
+            required(&Command::StartAudioRecording {
+                options: Default::default()
+            }),
+            &[SystemPermissionGrant::ScreenRecording],
+        );
     }
 }

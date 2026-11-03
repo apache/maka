@@ -173,9 +173,6 @@ impl Foreground {
                 {
                     continue;
                 }
-                if seen.len() >= 1024 || callbacks.len() >= 16 {
-                    return Err("ACP interaction limit exceeded".into());
-                }
                 seen.insert(record.request_id.clone());
                 let callback = interaction::request(&record, &self.capabilities)?;
                 let client = self.client.clone();

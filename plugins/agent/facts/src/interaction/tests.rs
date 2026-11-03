@@ -175,7 +175,6 @@ fn system_permission_request_round_trips_and_validates_grants_and_application() 
         json!(" Maka Host"),
         json!("Maka\nHost"),
         json!("Maka\0Host"),
-        json!("a".repeat(257)),
         json!(null),
     ] {
         let mut input = system_permission_request();

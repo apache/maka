@@ -220,7 +220,7 @@ pub enum InteractionRequest {
         #[schemars(length(min = 1))]
         grants: Vec<SystemPermissionGrant>,
         /// The application name the operating system lists in its settings.
-        #[schemars(length(min = 1, max = 256))]
+        #[schemars(length(min = 1))]
         application: String,
     },
 }

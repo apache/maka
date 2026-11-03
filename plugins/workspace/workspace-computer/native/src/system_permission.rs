@@ -36,8 +36,8 @@ use sha2::{Digest, Sha256};
 const RECHECK: std::time::Duration = std::time::Duration::from_millis(1500);
 
 /// The grants still missing; `None` when the check itself failed.
-async fn missing() -> Option<Vec<SystemPermissionGrant>> {
-    tokio::task::spawn_blocking(system_permission::missing)
+async fn missing(required: &'static [SystemPermissionGrant]) -> Option<Vec<SystemPermissionGrant>> {
+    tokio::task::spawn_blocking(move || system_permission::missing(required))
         .await
         .ok()
 }
@@ -46,12 +46,13 @@ pub(super) async fn ensure(
     owner: &Computer,
     call: &Scope,
     basis: PermissionBasis,
+    required: &'static [SystemPermissionGrant],
     native_operation_id: &str,
     cancellation: &CancellationToken,
     cell: &maka_code_runtime::CellContext,
 ) -> Result<(), ToolError> {
     // A failed check leaves the native call to report what it meets.
-    let grants = missing().await.unwrap_or_default();
+    let grants = missing(required).await.unwrap_or_default();
     if grants.is_empty() {
         return Ok(());
     }
@@ -112,31 +113,35 @@ pub(super) async fn ensure(
         let committed = store
             .establish_run_interaction(&context.invocation, &record)
             .await
-            .map_err(|_| "System permission request publication unavailable")?;
+            .map_err(|error| format!("System permission request publication unavailable: {error}"))?;
         if !committed.matches {
-            return Err("System permission request identity conflict");
+            return Err("System permission request identity conflict".into());
         }
         let _timeout = cell.suspend_timeout();
         let granted = async {
             loop {
                 tokio::time::sleep(RECHECK).await;
-                if missing().await.is_some_and(|grants| grants.is_empty()) {
+                if missing(required).await.is_some_and(|grants| grants.is_empty()) {
                     // The first outcome stands: a cancel committed meanwhile wins.
-                    let _ = store
+                    store
                         .commit_interaction_outcome(
                             &record.request_id,
                             InteractionOutcome::SystemPermissionGranted {
                                 committed_at: maka_agent_authority::now(),
                             },
                         )
-                        .await;
-                    return;
+                        .await
+                        .map_err(|error| format!("System permission outcome unavailable: {error}"))?;
+                    return Ok::<_, String>(());
                 }
             }
         };
         tokio::select! {
-            outcome = maka_agent_authority::interaction_wait::wait(&store, &record, cancellation) => outcome,
-            () = granted => maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await,
+            outcome = maka_agent_authority::interaction_wait::wait(&store, &record, cancellation) => outcome.map_err(str::to_owned),
+            result = granted => {
+                result?;
+                maka_agent_authority::interaction_wait::wait(&store, &record, cancellation).await.map_err(str::to_owned)
+            },
         }
     }
     .await;
@@ -156,7 +161,7 @@ pub(super) async fn ensure(
         return Ok(());
     }
     // A cancel stands even if the grants arrived as the card closed.
-    match missing().await {
+    match missing(required).await {
         Some(missing) if !missing.is_empty() => Err(still_missing(&missing)),
         Some(_) => Err(failed("System permission request cancelled")),
         None => Err(still_missing(&grants)),
