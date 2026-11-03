@@ -1619,11 +1619,11 @@ export const conversationMessages = {
   ],
   'Application access request': ['Application access request', '应用访问请求', '應用程式存取請求'],
   'System permission request': ['System permission request', '系统权限请求', '系統權限請求'],
-  '{application} needs these macOS permissions to use the computer. Turn them on in System Settings; the request continues on its own once they are on.':
+  '{application} needs these macOS permissions to use the computer. Turn them on in System Settings.':
     [
-      '{application} needs these macOS permissions to use the computer. Turn them on in System Settings; the request continues on its own once they are on.',
-      '{application} 需要以下 macOS 权限才能操作电脑。请在系统设置中打开，打开后请求会自动继续。',
-      '{application} 需要以下 macOS 權限才能操作電腦。請在系統設定中開啟，開啟後請求會自動繼續。',
+      '{application} needs these macOS permissions to use the computer. Turn them on in System Settings.',
+      '{application} 需要以下 macOS 权限才能操作电脑。请在系统设置中打开。',
+      '{application} 需要以下 macOS 權限才能操作電腦。請在系統設定中開啟。',
     ],
   Accessibility: ['Accessibility', '辅助功能', '輔助使用'],
   'Screen & System Audio Recording': [
@@ -1631,17 +1631,15 @@ export const conversationMessages = {
     '录屏与系统录音',
     '螢幕與系統錄音',
   ],
-  'If {application} is not listed, reopen System Settings, or add it with the + button.': [
-    'If {application} is not listed, reopen System Settings, or add it with the + button.',
-    '如果列表中没有 {application}，请重新打开系统设置，或用 + 按钮添加。',
-    '如果清單中沒有 {application}，請重新打開系統設定，或用 + 按鈕加入。',
-  ],
+  'If {application} is enabled but access is still denied after an update, remove its entry and add the current app again. macOS may also require restarting the Host, not just the conversation window.':
+    [
+      'If {application} is enabled but access is still denied after an update, remove its entry and add the current app again. macOS may also require restarting the Host, not just the conversation window.',
+      '如果更新后 {application} 的开关已打开但访问仍被拒绝，请删除旧条目，再添加当前应用。macOS 也可能要求重启 Host，而不只是重新打开对话窗口。',
+      '如果更新後 {application} 的開關已開啟但存取仍被拒絕，請移除舊項目，再加入目前的應用程式。macOS 也可能要求重新啟動 Host，而不只是重新開啟對話視窗。',
+    ],
+
   'Open {name} settings': ['Open {name} settings', '打开{name}设置', '開啟{name}設定'],
-  'System Settings could not be opened.': [
-    'System Settings could not be opened.',
-    '无法打开系统设置。',
-    '無法開啟系統設定。',
-  ],
+
   'System permissions granted': ['System permissions granted', '系统权限已开启', '系統權限已開啟'],
   'Application access denied': [
     'Application access denied',
@@ -1771,4 +1769,21 @@ export const conversationMessages = {
   'Checking upload status…': ['Checking upload status…', '正在确认上传状态…', '正在確認上傳狀態…'],
   'Syncing changes…': ['Syncing changes…', '正在同步更改…', '正在同步變更…'],
   'Connecting to terminal…': ['Connecting to terminal…', '正在连接终端…', '正在連線終端…'],
+  'Show permission application in Finder': [
+    'Show permission application in Finder',
+    '在 Finder 中显示授权应用',
+    '在 Finder 中顯示授權應用程式',
+  ],
+  'Show the permission application in Finder, then drag the selected app into the privacy list in System Settings. You do not need to enter a path.':
+    [
+      'Show the permission application in Finder, then drag the selected app into the privacy list in System Settings. You do not need to enter a path.',
+      '在 Finder 中显示授权应用，再将选中的应用拖入系统设置的隐私列表，无需输入路径。',
+      '在 Finder 中顯示授權應用程式，再將選取的應用程式拖入系統設定的隱私列表，無需輸入路徑。',
+    ],
+  'Grant permission on the Mac running the Host. This window cannot locate the application for this request.':
+    [
+      'Grant permission on the Mac running the Host. This window cannot locate the application for this request.',
+      '请在运行 Host 的 Mac 上授权。当前窗口无法定位此请求的授权应用。',
+      '請在執行 Host 的 Mac 上授權。目前視窗無法定位此請求的授權應用程式。',
+    ],
 } as const satisfies Catalog;

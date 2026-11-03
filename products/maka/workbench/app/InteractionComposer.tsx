@@ -33,7 +33,7 @@ import { Input } from 'nsh/base';
 import type { ViewRef } from 'nsh';
 import { useHost } from './host';
 import { keymap } from 'nsh';
-import { openUrl, windowSize } from 'nsh';
+import { windowSize } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   InteractionAnswer,
@@ -66,11 +66,7 @@ import { Icon } from './Icon';
 import { CapabilityRequest, computerCapability } from './CapabilityRequest';
 import { FormRequest } from './FormRequest';
 import { ComputerAppRequest } from './ComputerAppRequest';
-import {
-  SystemPermissionRequest,
-  systemPermissionName,
-  systemPermissionPane,
-} from './SystemPermissionRequest';
+import { SystemPermissionRequest, systemPermissionName } from './SystemPermissionRequest';
 import { computerAppOptions } from './interaction-computer-app';
 import {
   formSubmission,
@@ -204,6 +200,41 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
   return uiMessage('Request closed · {reason}', { reason: outcome.reason.replaceAll('_', ' ') });
 }
 
+export function SystemPermissionActions(props: {
+  request: SystemPermissionRequest;
+  actions: string[];
+  disabled?: boolean;
+  onCancel: () => void;
+  onAction: (action: string) => void;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+      <InteractionAction
+        label={tr('Cancel request')}
+        disabled={props.disabled}
+        onPress={props.onCancel}
+      />
+      <Each of={props.request.grants.filter((grant) => props.actions.includes(grant))}>
+        {(grant) => (
+          <InteractionAction
+            label={tr('Open {name} settings', { name: systemPermissionName(grant()) })}
+            primary={grant() === props.request.grants[0]}
+            disabled={props.disabled}
+            onPress={() => props.onAction(grant())}
+          />
+        )}
+      </Each>
+      <If when={props.actions.includes('reveal_application')}>
+        <InteractionAction
+          label={tr('Show permission application in Finder')}
+          disabled={props.disabled}
+          onPress={() => props.onAction('reveal_application')}
+        />
+      </If>
+    </View>
+  );
+}
+
 export function InteractionComposer({
   sessionId,
   requestId,
@@ -233,6 +264,7 @@ export function InteractionComposer({
   const argumentBusy = signal(false),
     argumentError = createText();
   let argumentPosition: HistoryRowPosition | null = null;
+  const systemActions = signal<string[]>([]);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -464,6 +496,12 @@ export function InteractionComposer({
       ]);
       if (!alive) return;
       if (!sameRecord(canonical)) throw new UiError('The Host returned a different request.');
+      const actions =
+        canonical.request.kind === 'system_permission' && !canonical.outcome
+          ? await host.systemPermissionActions(sessionId, requestId)
+          : [];
+      if (!alive) return;
+      systemActions.set(actions);
       record.set(canonical);
       uncertain.set(unresolved);
       pending.set(list.entries.some((entry) => entry.requestId === requestId));
@@ -589,15 +627,15 @@ export function InteractionComposer({
     if (kind === 'computer_app') return { kind, decision: 'deny' };
     return null;
   };
-  const openSettings = async (url: string) => {
-    let opened = false;
+  const openSystemPermissionAction = async (action: string) => {
+    error.set('');
     try {
-      opened = (await openUrl(url)).opened;
+      await host.systemPermissionAction(sessionId, requestId, action);
     } catch (reason) {
-      console.warn('System Settings did not open:', reason);
+      if (alive) error.set(String(reason));
     }
-    if (alive && !opened) error.set(tr('System Settings could not be opened.'));
   };
+
   const deny = () => {
     const answer = denialAnswer();
     if (answer) void respond(answer);
@@ -1016,7 +1054,10 @@ export function InteractionComposer({
                   <ComputerAppRequest request={computerAppRequest()!} />
                 </If>
                 <If when={systemPermissionRequest()}>
-                  <SystemPermissionRequest request={systemPermissionRequest()!} />
+                  <SystemPermissionRequest
+                    request={systemPermissionRequest()!}
+                    canLocate={systemActions().includes('reveal_application')}
+                  />
                 </If>
               </View>
             }
@@ -1093,20 +1134,13 @@ export function InteractionComposer({
             }}
           >
             <If when={systemPermissionRequest() && !record()?.outcome}>
-              <InteractionAction
-                label={tr('Cancel request')}
+              <SystemPermissionActions
+                request={systemPermissionRequest()!}
+                actions={systemActions()}
                 disabled={blocked()}
-                onPress={answerBinding({ kind: 'system_permission_cancel' })}
+                onCancel={answerBinding({ kind: 'system_permission_cancel' })}
+                onAction={(action) => void openSystemPermissionAction(action)}
               />
-              <Each of={systemPermissionRequest()!.grants}>
-                {(grant) => (
-                  <InteractionAction
-                    label={tr('Open {name} settings', { name: systemPermissionName(grant()) })}
-                    primary={grant() === systemPermissionRequest()!.grants[0]}
-                    onPress={() => void openSettings(systemPermissionPane(grant()))}
-                  />
-                )}
-              </Each>
             </If>
             <If when={computerAppRequest() && !record()?.outcome}>
               <InteractionAction

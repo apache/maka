@@ -181,6 +181,10 @@ export function createHost(application: UiHost) {
           };
     },
     query,
+    systemPermissionActions: (sessionId: string, requestId: string) =>
+      nativeHost.systemPermissionActions(sessionId, requestId),
+    systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
+      nativeHost.systemPermissionAction(sessionId, requestId, action),
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
     stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
