@@ -238,28 +238,72 @@ async fn bot_tools_follow_the_current_composition_not_the_list_stored_at_creatio
             )
             .await
             .unwrap();
-        f.send(&bot).await.unwrap();
+        let accepted = f.send(&bot).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;
-        let names = tool_names(&sent);
+        let stopped = f
+            .mutation(
+                2,
+                "stop",
+                json!({"sessionId":bot,"invocationId":accepted["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped["requested"], true);
+        idle(&f, &bot).await;
+        let source = f
+            .query(
+                "execution",
+                json!({"sessionId":bot,"invocationId":accepted["invocationId"]}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(source["execution"]["state"], "cancelled");
+        let resumed = f
+            .mutation(
+                2,
+                "resume",
+                json!({
+                    "sessionId":bot,
+                    "sourceInvocationId":accepted["invocationId"],
+                    "sourceHighWater":source["execution"]["highWater"],
+                    "model":f.selection().await,
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resumed["kind"], "started", "{resumed}");
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let replay = request(&mut socket).await;
         response(&mut socket).await;
         idle(&f, &bot).await;
-        for name in ["SessionCreate", "SessionSend", "SendUser", "sleep"] {
+        for sent in [&sent, &replay] {
+            let names = tool_names(sent);
+            for name in ["SessionCreate", "SessionSend", "SendUser", "sleep"] {
+                assert!(
+                    names.iter().any(|held| held == name),
+                    "{name} missing: {names:?}"
+                );
+            }
             assert!(
-                names.iter().any(|held| held == name),
-                "{name} missing: {names:?}"
+                !names.iter().any(|name| name == "WorkspaceFile"),
+                "{names:?}"
+            );
+            let prompt = sent["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|message| message["role"] == "system" || message["role"] == "developer")
+                .map(|message| message["content"].to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                prompt.contains("SessionSend"),
+                "the standing instructions name the derived tools"
             );
         }
-        // The ceiling is policy, not a free-for-all: tools outside it stay out.
-        assert!(
-            !names.iter().any(|name| name == "WorkspaceFile"),
-            "{names:?}"
-        );
-        let prompt = sent.to_string();
-        assert!(
-            prompt.contains("SessionSend"),
-            "the standing instructions name the derived tools"
-        );
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
