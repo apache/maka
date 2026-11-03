@@ -363,6 +363,42 @@ impl Desktop {
         .await;
     }
 
+    async fn diagnostic_type_text(&self, text: &str) {
+        let _ = self.platform.take_clipboard_write();
+        let mut previous = None;
+        self.until("the editor did not accept the diagnostic draft", || {
+            self.platform.text_input_target()?;
+            self.key("a", true);
+            self.platform.paste(text).unwrap();
+            let copied = self.copy_input();
+            let actual = self.app.update(|cx| {
+                self.window
+                    .update(cx, |view, window, cx| {
+                        let len = view.text_length_utf16(window, cx)?;
+                        view.text_for_range(0..len, &mut None, window, cx)
+                    })
+                    .unwrap()
+            });
+            let state = (
+                actual.as_ref().map(String::len),
+                copied.as_ref().map(String::len),
+                actual.as_deref() == Some(text),
+            );
+            if previous != Some(state) {
+                eprintln!(
+                    "[DEBUG-6589] expected={}, native={:?}, copied={:?}, native_matches={}",
+                    text.len(),
+                    state.0,
+                    state.1,
+                    state.2
+                );
+                previous = Some(state);
+            }
+            copied.filter(|copied| copied == text)
+        })
+        .await;
+    }
+
     /// Enter does nothing until the typed draft can be sent.
     async fn submit(&self) {
         self.control("Send message").await;
@@ -532,7 +568,7 @@ async fn desktop_multiline_drafts_keep_the_composer_bounded() {
                 "[DEBUG-6589] pending={pending}, length={}, phase=multiline",
                 draft.len()
             );
-            desktop.type_text(draft).await;
+            desktop.diagnostic_type_text(draft).await;
             let height = desktop
                 .until(
                     "multiline composer did not grow to a bounded height",
