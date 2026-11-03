@@ -25,11 +25,10 @@
 //! native work, naming that application, instead of surfacing later as an
 //! opaque AX error.
 //!
-//! The first time a grant is missing, the Host asks macOS to show its own
-//! request. The Host is long-lived, which the request needs: macOS drops it
-//! when the asking process exits. A grant takes effect in the running Host
-//! as soon as the user turns it on, so the next call simply passes; see
-//! [`Grant::observed`] for how that is observed.
+//! Status checks use only macOS preflight APIs. ScreenCaptureKit content
+//! enumeration can show an authorization dialog and must never be used to
+//! poll permissions. A grant may require restarting the Host to take effect;
+//! requesting it explicitly is separate from observing its status.
 
 use maka_agent_facts::tools::ToolError;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -55,33 +54,6 @@ impl Grant {
         }
     }
 
-    /// Whether the grant is in effect for this Host now, observed with a
-    /// real call.
-    ///
-    /// `AXIsProcessTrusted` and `CGPreflightScreenCaptureAccess` keep their
-    /// first answer in a process without a main run loop, such as the Host,
-    /// while the APIs themselves follow the grant at once. So a real call
-    /// decides: an AX query that macOS does not refuse with
-    /// `kAXErrorAPIDisabled`, and a ScreenCaptureKit listing that succeeds.
-    fn observed(self) -> bool {
-        match self {
-            Self::Accessibility => accessibility_enabled(),
-            Self::ScreenRecording => screencapturekit::prelude::SCShareableContent::get().is_ok(),
-        }
-    }
-
-    /// Whether a real call has shown the grant in effect. Later checks trust
-    /// it, so native work does not pay for the probe each time; a failure
-    /// that shows the grant revoked clears it (see [`explain`]).
-    fn confirmed(self) -> &'static AtomicBool {
-        static ACCESSIBILITY: AtomicBool = AtomicBool::new(false);
-        static SCREEN_RECORDING: AtomicBool = AtomicBool::new(false);
-        match self {
-            Self::Accessibility => &ACCESSIBILITY,
-            Self::ScreenRecording => &SCREEN_RECORDING,
-        }
-    }
-
     /// Whether this Host has already asked macOS to show the request.
     fn asked(self) -> &'static AtomicBool {
         static ACCESSIBILITY: AtomicBool = AtomicBool::new(false);
@@ -100,96 +72,8 @@ impl Grant {
             }
             Self::ScreenRecording => {
                 status::request_screen_recording();
-                // macOS shows the Screen Recording request at most once; listing
-                // shareable content is what enters the application in the
-                // System Settings list afterwards. Its failure is the expected
-                // answer while the grant is missing.
-                let _ = screencapturekit::prelude::SCShareableContent::get();
             }
         }
-    }
-}
-
-/// Asks the Dock, which always runs, for its role. Without the grant macOS
-/// refuses with `kAXErrorAPIDisabled`; any other answer means it let the
-/// call through. (The system-wide element is no use here: it answers
-/// `kAXErrorCannotComplete` either way.)
-fn accessibility_enabled() -> bool {
-    use core_foundation::{
-        base::{CFRelease, TCFType},
-        string::CFString,
-    };
-    use platform_macos::ax::bindings::{
-        AXUIElementCopyAttributeValue, AXUIElementCreateApplication,
-        AXUIElementSetMessagingTimeout, kAXErrorAPIDisabled,
-    };
-    let Some(pid) = process_with_path(DOCK).or_else(|| process_with_path(FINDER)) else {
-        return platform_macos::permissions::status::accessibility_granted();
-    };
-    let attribute = CFString::new("AXRole");
-    // SAFETY: the application element and any copied value are owned here
-    // and released before returning.
-    unsafe {
-        let application = AXUIElementCreateApplication(pid);
-        if application.is_null() {
-            return platform_macos::permissions::status::accessibility_granted();
-        }
-        // A hung or restarting Dock must not hold native work for the
-        // default AX timeout.
-        AXUIElementSetMessagingTimeout(application, 0.5);
-        let mut value = std::ptr::null();
-        let status =
-            AXUIElementCopyAttributeValue(application, attribute.as_concrete_TypeRef(), &mut value);
-        if !value.is_null() {
-            CFRelease(value);
-        }
-        CFRelease(application.cast());
-        status != kAXErrorAPIDisabled
-    }
-}
-
-const DOCK: &str = "/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock";
-const FINDER: &str = "/System/Library/CoreServices/Finder.app/Contents/MacOS/Finder";
-
-/// The pid of a process of this user running this executable. Each
-/// logged-in user has their own Dock, and another session's would not
-/// answer for this one.
-fn process_with_path(executable: &str) -> Option<libc::pid_t> {
-    // SAFETY: getuid cannot fail.
-    let user = unsafe { libc::getuid() };
-    // SAFETY: a null buffer asks for the count; the second call writes at
-    // most the buffer's size in bytes.
-    let count = unsafe { libc::proc_listallpids(std::ptr::null_mut(), 0) };
-    if count <= 0 {
-        return None;
-    }
-    let mut pids = vec![0 as libc::pid_t; count as usize + 64];
-    let bytes = (pids.len() * std::mem::size_of::<libc::pid_t>()) as libc::c_int;
-    // SAFETY: as above.
-    let count = unsafe { libc::proc_listallpids(pids.as_mut_ptr().cast(), bytes) };
-    if count <= 0 {
-        return None;
-    }
-    pids.truncate(count as usize);
-    pids.into_iter()
-        .filter(|pid| *pid > 0 && owner_of(*pid) == Some(user))
-        .find(|pid| path_of(*pid).is_some_and(|path| path == executable))
-}
-
-fn owner_of(pid: libc::pid_t) -> Option<libc::uid_t> {
-    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
-    let size = std::mem::size_of::<libc::proc_bsdinfo>() as libc::c_int;
-    // SAFETY: the buffer holds one proc_bsdinfo, whose size is passed; the
-    // value is read only when the call filled all of it.
-    unsafe {
-        let written = libc::proc_pidinfo(
-            pid,
-            libc::PROC_PIDTBSDINFO,
-            0,
-            info.as_mut_ptr().cast(),
-            size,
-        );
-        (written == size).then(|| info.assume_init().pbi_uid)
     }
 }
 
@@ -215,17 +99,14 @@ impl From<maka_agent_facts::interaction::SystemPermissionGrant> for Grant {
     }
 }
 
-/// Whether the grant is in effect, confirming it with a real call when it
-/// has not been confirmed yet. It blocks for the call.
+/// Non-prompting status only. This is also called while a permission card
+/// is open; it must not enumerate screen content or ask for authorization.
 pub(crate) fn present(grant: Grant) -> bool {
-    if grant.confirmed().load(Ordering::Relaxed) {
-        return true;
+    use platform_macos::permissions::status;
+    match grant {
+        Grant::Accessibility => status::accessibility_granted(),
+        Grant::ScreenRecording => status::screen_recording_granted(),
     }
-    let observed = grant.observed();
-    if observed {
-        grant.confirmed().store(true, Ordering::Relaxed);
-    }
-    observed
 }
 
 /// Asks macOS to show its request for the grant, once per Host. Returns
@@ -245,20 +126,19 @@ pub(crate) fn require(grant: Grant) -> Result<(), ToolError> {
     let asked = ask(grant);
     Err(ToolError::Failed(message(
         grant,
-        &responsible_application(),
+        &responsible_application().0,
         asked,
     )))
 }
 
 /// An ordinary failure that a revoked grant can cause is checked again with
-/// a real call and, when the grant is gone, reported as the missing grant.
+/// preflight and, when the grant is gone, reported as the missing grant.
 /// Other errors, including unconfirmed effects and cleanup, keep their
 /// meaning.
 pub(crate) fn explain(error: ToolError) -> ToolError {
     let Some(grant) = suspect(&error) else {
         return error;
     };
-    grant.confirmed().store(false, Ordering::Relaxed);
     match require(grant) {
         Err(missing) => missing,
         Ok(()) => error,
@@ -295,17 +175,23 @@ fn message(grant: Grant, application: &str, asked: bool) -> String {
     format!(
         "permission_required: {code}; {request}Turn on \"{application}\" in System Settings > \
          Privacy & Security > {pane}, then retry. If it is not listed, reopen System Settings, \
-         or add it with the + button.",
+         or add it with the + button. If access is still denied after an update, remove the old \
+         application entry and add the current app again. macOS may also require restarting \
+         the Host, not just reopening the conversation window.",
         code = grant.code(),
         pane = grant.pane(),
     )
 }
 
 /// The name macOS shows for the process that holds this Host's grants.
-pub(crate) fn responsible_application() -> String {
-    responsible_path()
-        .map(|path| application_name(&path))
-        .unwrap_or_else(|| "the application that started Maka".into())
+pub(crate) fn responsible_application() -> (String, Option<std::path::PathBuf>) {
+    match responsible_path() {
+        Some(path) => (
+            application_name(&path),
+            application_bundle(&path).map(ToOwned::to_owned),
+        ),
+        None => ("the application that started Maka".into(), None),
+    }
 }
 
 fn responsible_path() -> Option<std::path::PathBuf> {
@@ -332,16 +218,19 @@ fn responsible_path() -> Option<std::path::PathBuf> {
 /// as System Settings lists a nested helper under its own name), or the
 /// executable's file name.
 fn application_name(path: &std::path::Path) -> String {
-    path.ancestors()
-        .find(|ancestor| {
-            ancestor
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
-        })
+    application_bundle(path)
         .or(Some(path))
         .and_then(|path| path.file_stem())
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| "the application that started Maka".into())
+}
+
+fn application_bundle(path: &std::path::Path) -> Option<&std::path::Path> {
+    path.ancestors().find(|ancestor| {
+        ancestor
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+    })
 }
 
 #[cfg(test)]
@@ -367,10 +256,59 @@ mod tests {
     }
 
     #[test]
-    fn finds_a_running_process_by_its_executable() {
-        let own = path_of(std::process::id() as libc::pid_t).expect("own path");
-        assert_eq!(process_with_path(&own).map(path_of), Some(Some(own)));
-        assert_eq!(process_with_path("/nonexistent/executable"), None);
+    fn polling_permissions_does_not_enumerate_screen_content() {
+        const CHILD: &str = "MAKA_TEST_PERMISSION_POLL_CHILD";
+        const TEST: &str =
+            "macos::tcc::tests::polling_permissions_does_not_enumerate_screen_content";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        use objc2::{
+            runtime::{AnyClass, AnyObject, Bool, Imp, Sel},
+            sel,
+        };
+        unsafe extern "C-unwind" fn content_requested(
+            _: *mut AnyObject,
+            _: Sel,
+            _: Bool,
+            _: Bool,
+            _: *mut AnyObject,
+        ) {
+            eprintln!("permission polling attempted screen-content enumeration, which can prompt");
+            std::process::exit(1);
+        }
+        // SAFETY: load Apple's framework for this child process's lifetime.
+        let framework = unsafe {
+            libc::dlopen(
+                c"/System/Library/Frameworks/ScreenCaptureKit.framework/ScreenCaptureKit".as_ptr(),
+                libc::RTLD_NOW,
+            )
+        };
+        assert!(!framework.is_null());
+        let method = AnyClass::get(c"SCShareableContent").unwrap()
+            .class_method(sel!(getShareableContentExcludingDesktopWindows:onScreenWindowsOnly:completionHandler:)).unwrap();
+        type Request = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, Bool, Bool, *mut AnyObject);
+        // SAFETY: the replacement has this selector's exact C ABI and exits
+        // before any prompt. Only this isolated child runs with it installed.
+        unsafe {
+            method.set_implementation(std::mem::transmute::<Request, Imp>(content_requested));
+        }
+        use maka_agent_facts::interaction::SystemPermissionGrant::{
+            Accessibility, ScreenRecording,
+        };
+        let _ = crate::system_permission::missing(&[Accessibility, ScreenRecording]);
+        let _ = crate::system_permission::missing(&[Accessibility, ScreenRecording]);
     }
 
     #[test]

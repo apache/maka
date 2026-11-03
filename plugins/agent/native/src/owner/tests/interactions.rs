@@ -230,6 +230,7 @@ async fn native_system_permission_is_listed_cancellable_and_producer_granted() {
                             maka_agent_facts::interaction::SystemPermissionGrant::ScreenRecording,
                         ],
                         application: "Maka Host".into(),
+                        application_location: None,
                     },
                 };
                 store

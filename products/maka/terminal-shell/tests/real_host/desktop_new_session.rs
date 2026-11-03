@@ -1935,3 +1935,53 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     desktop.close().await;
     fixture.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_system_permission_guidance_uses_native_actions_without_paths() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/permission_preview.tsx");
+    let output = fixture.directory.path().join("permission-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Local Host")),
+    )
+    .await;
+    desktop.control("Open Accessibility settings").await;
+    desktop
+        .control("Open Screen & System Audio Recording settings")
+        .await;
+    desktop.press("Show permission application in Finder").await;
+    desktop.control("Requested reveal_application").await;
+    desktop.artifact("system-permission-native-guidance");
+    desktop.press("Open Accessibility settings").await;
+    desktop.control("Requested accessibility").await;
+    desktop.press("Cancel request").await;
+    desktop
+        .control("Request cancelled without granting access")
+        .await;
+    for mode in ["Remote Host", "Older request"] {
+        desktop.press(mode).await;
+        desktop
+            .until("remote or old request retained local actions", || {
+                (desktop
+                    .controls("Show permission application in Finder")
+                    .is_empty()
+                    && desktop.controls("Open Accessibility settings").is_empty())
+                .then_some(())
+            })
+            .await;
+        desktop.control("Cancel request").await;
+    }
+    desktop.close().await;
+    fixture.finish().await;
+}
