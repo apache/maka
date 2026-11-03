@@ -17,15 +17,14 @@
  * under the License.
  */
 
-import { mount, platform, signal, Text, View, type JSX } from 'nsh';
+import { AnimatedValue, mount, platform, signal, Text, View, windowSize, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { ContextGaugePreview } from './ContextGaugePreview';
 import { MessageRow } from '../../../workbench/app/MessageRow';
-import type {
-  ComposerSendStatus,
-  ComposerSession,
-} from '../../../../../packages/plugin-sdk/src/composer-view.js';
+import type { MessageViewState } from '../../../workbench/app/MessageRow';
+import { TurnPanel, type GroupViewState } from '../../../workbench/app/TurnPanel';
+import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
@@ -37,8 +36,6 @@ import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
 import type {
   AgentSession,
-  AgentQueue,
-  AgentComputerApps,
   InteractionRecord,
 } from '../../../../../packages/plugin-sdk/src/index.js';
 
@@ -141,39 +138,13 @@ function Consent() {
   );
 }
 
-function CompletionComposer(props: { details?: boolean }) {
+function CompletionComposer(props: { prediction?: boolean }) {
   const draft = signal('');
-  const sends = signal<ComposerSendStatus[]>([]);
+  const prediction = signal<{ sourceTurnId: string; text: string } | null>(
+    props.prediction ? { sourceTurnId: 'prediction-turn', text: 'Review the changes.' } : null,
+  );
   const action = signal('No command');
   const lookup = signal('No lookup');
-  const queue = signal<AgentQueue>({
-    revision: 1,
-    entries: props.details
-      ? [{ messageId: 'queued-original', kind: 'followup', preview: 'QUEUED_ORIGINAL' }]
-      : [],
-  });
-  const makeApp = (id: string) => ({
-    stopped: false,
-    activity: {
-      invocation: {
-        session_id: 'original-session',
-        turn_id: 'original-turn',
-        run_id: 'original-run',
-        invocation_id: 'original-invocation',
-      },
-      operationId: id,
-      target: {
-        providerId: 'computer',
-        contractId: 'computer',
-        serverId: 'computer',
-        toolName: 'cua_repl',
-        capability: 'computer_use' as const,
-        scope: { kind: 'computer_app' as const, applicationId: id },
-      },
-      display: { name: `Fixture App ${id}`, appPath: `/applications/${id}`, risk: null },
-    },
-  });
-  const apps = signal<AgentComputerApps>({ entries: props.details ? [makeApp('one')] : [] });
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
@@ -192,19 +163,17 @@ function CompletionComposer(props: { details?: boolean }) {
     notice: () => '',
     metrics: () => '',
     recovering: () => false,
-    sends,
-    async retrySend(id) {
-      action.set(`retried:${id}`);
-      sends.set(sends().filter((item) => item.id !== id));
-    },
+    sends: () => [],
+    retrySend: unexpected,
     checkSend: unexpected,
-    async dismissSend(id) {
-      sends.set(sends().filter((item) => item.id !== id));
-    },
+    dismissSend: unexpected,
     invocation: () => null,
     prediction: {
-      current: () => null,
-      dismiss: unexpected,
+      current: prediction,
+      dismiss(sourceTurnId) {
+        if (prediction()?.sourceTurnId !== sourceTurnId) throw new Error('Wrong prediction source');
+        prediction.set(null);
+      },
     },
     stopping: () => false,
     resumable: () => null,
@@ -223,8 +192,8 @@ function CompletionComposer(props: { details?: boolean }) {
     }),
     refreshModel: unexpected,
     previewImage: unexpected,
-    submit: unexpected,
-    sendRendered: unexpected,
+    submit: () => action.set('message:sent'),
+    sendRendered: () => action.set('message:sent'),
     stop: unexpected,
     permissions: {
       sessionId: 'original-session',
@@ -235,16 +204,9 @@ function CompletionComposer(props: { details?: boolean }) {
     },
     queue: {
       sessionId: 'original-session',
-      snapshot: queue,
+      snapshot: () => ({ revision: 1, entries: [] }),
       running: () => false,
-      async read() {
-        return {
-          kind: 'ready',
-          revision: queue().revision,
-          message: 'QUEUED_ORIGINAL',
-          hasAttachments: false,
-        };
-      },
+      read: unexpected,
       change: unexpected,
     },
     projectMcp: {
@@ -256,15 +218,8 @@ function CompletionComposer(props: { details?: boolean }) {
       dismiss: unexpected,
     },
     computerAccess: {
-      snapshot: apps,
-      async stop(operationId) {
-        action.set(`stopped:${operationId}`);
-        apps.set({
-          entries: apps().entries.map((entry) =>
-            entry.activity.operationId === operationId ? { ...entry, stopped: true } : entry,
-          ),
-        });
-      },
+      snapshot: () => ({ entries: [] }),
+      stop: unexpected,
     },
     checklist: {
       read: unexpected,
@@ -276,20 +231,13 @@ function CompletionComposer(props: { details?: boolean }) {
             first
               ? ((first = false),
                 Promise.resolve({
-                  enabled: !!props.details,
+                  enabled: false,
                   revision: 1,
-                  total: props.details ? 2 : 0,
+                  total: 0,
                   completed: 0,
-                  current: props.details
-                    ? { content: 'TODO_CURRENT', status: 'in_progress' }
-                    : null,
+                  current: null,
                   offset: 0,
-                  items: props.details
-                    ? [
-                        { content: 'TODO_CURRENT', status: 'in_progress' },
-                        { content: 'TODO_NEXT', status: 'pending' },
-                      ]
-                    : [],
+                  items: [],
                   nextOffset: null,
                 }))
               : new Promise<null>((resolve) => {
@@ -354,57 +302,6 @@ function CompletionComposer(props: { details?: boolean }) {
   };
   return (
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-      <If when={props.details}>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          <Button
-            accessibilityLabel="Add computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [...apps().entries, makeApp('two')] })}
-          >
-            <Text>Add computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Clear computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [] })}
-          >
-            <Text>Clear computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Restore computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [makeApp('one')] })}
-          >
-            <Text>Restore computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Drain queued messages"
-            style={{ height: 32 }}
-            onPress={() => queue.set({ revision: queue().revision + 1, entries: [] })}
-          >
-            <Text>Drain queued messages</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Fail outgoing message"
-            style={{ height: 32 }}
-            onPress={() =>
-              sends.set([
-                {
-                  id: 'failed-original',
-                  text: 'FAILED_MESSAGE',
-                  attachments: [],
-                  state: 'failed',
-                  detail: 'FIXTURE_SEND_FAILED',
-                  retryable: true,
-                  busy: false,
-                },
-              ])
-            }
-          >
-            <Text>Fail outgoing message</Text>
-          </Button>
-        </View>
-      </If>
       <Text>{action()}</Text>
       <Text>{lookup()}</Text>
       <Composer
@@ -474,7 +371,7 @@ function Compaction() {
           value() === 'waiting' ? (
             <CompactionDivider state="running" startedAt={() => startedAt} />
           ) : (
-            <CompactionDivider state="completed" durationMs={() => 126_700} />
+            <CompactionDivider state="completed" durationMs={() => 3_726_700} />
           )
         }
       </Each>
@@ -598,6 +495,109 @@ function WorkspacePages(props: { busy: boolean }) {
   );
 }
 
+function ActivityFollow() {
+  const atEnd = signal(false);
+  const count = signal(10);
+  const reading = signal(false);
+  const rows = new Map<string, Row>();
+  const states = new Map<string, MessageViewState>();
+  const state: GroupViewState = {
+    open: signal(true),
+    following: signal(true),
+    offset: new AnimatedValue(0),
+    measured: new Map(),
+    lease: 0,
+    opening: 'bottom',
+    visibleRows: signal(new Set<string>()),
+    rowNodes: new Map(),
+  };
+  const ids = () => ['tool', ...Array.from({ length: count() }, (_, i) => `activity-${i + 1}`)];
+  return (
+    <HostProvider value={{} as Host}>
+      <View style={{ flex: 1 }}>
+        <Text>{`Activity count: ${count()} · ${reading() ? 'Reading history' : 'Following latest'} · ${atEnd() ? 'At activity end' : 'Above activity end'}`}</Text>
+        <Button
+          accessibilityLabel="Read older activity"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={() => {
+            state.list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+            state.list?.focus();
+          }}
+        >
+          <Text>Read older activity</Text>
+        </Button>
+        <Button
+          accessibilityLabel="Append activity"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={() => count.set(count() + 1)}
+        >
+          <Text>Append activity</Text>
+        </Button>
+        <Button
+          accessibilityLabel="One line above latest"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={async () => {
+            const y = await state.offset.getValue();
+            state.list?.scrollToOffset({ offset: Math.max(0, y - 16), animated: false });
+          }}
+        >
+          <Text>One line above latest</Text>
+        </Button>
+        <TurnPanel
+          group={() => ({
+            kind: 'process',
+            key: 'process',
+            turnId: 'turn',
+            members: [],
+            rowIds: ids(),
+            toolIds: ['tool'],
+            closed: false,
+          })}
+          turn={() => ({
+            turnId: 'turn',
+            timing: null,
+            active: true,
+            finalOutputIds: [],
+            interleavedInput: false,
+          })}
+          toolActivity={() => undefined}
+          toolProgress={() => null}
+          state={state}
+          row={(id) => {
+            if (!rows.has(id))
+              rows.set(id, {
+                key: id,
+                messageId: id,
+                field: 'body',
+                role: id === 'tool' ? 'tool_call' : 'assistant',
+                text:
+                  id === 'tool'
+                    ? Array.from({ length: 25 }, (_, i) => `Tool source line ${i + 1}`).join('\n')
+                    : `Live ${id}`,
+              });
+            return rows.get(id);
+          }}
+          rowState={(id) => {
+            if (!states.has(id))
+              states.set(id, { expanded: signal(false), sourceMode: signal(false) });
+            return states.get(id)!;
+          }}
+          sessionId="activity-session"
+          through={() => 1}
+          viewport={windowSize}
+          activity={() => ({ kind: 'working', detail: '' })}
+          reveal={() => {}}
+          previewImage={() => {}}
+          openLink={async () => {}}
+          userScroll={() => {}}
+          reading={(away) => reading.set(away)}
+          settled={(end) => atEnd.set(end)}
+        />
+      </View>
+    </HostProvider>
+  );
+}
+
 function ToolStatuses() {
   const cases = [
     { settlement: 'returned', dispatched: true },
@@ -638,6 +638,7 @@ function ToolStatuses() {
                           position: { sourceSequence: index(), itemIndex: 1 },
                           isError: item().settlement !== 'returned',
                           image: false,
+                          images: 0,
                         },
                 },
               })}
@@ -658,7 +659,9 @@ function ToolStatuses() {
 
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
 mount(() =>
-  scenario === 'context-gauge' ? (
+  scenario === 'activity-follow' ? (
+    <ActivityFollow />
+  ) : scenario === 'context-gauge' ? (
     <ContextGaugePreview />
   ) : scenario === 'tool-statuses' ? (
     <ToolStatuses />
@@ -687,10 +690,8 @@ mount(() =>
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer-details' ? (
-    <CompletionComposer details />
-  ) : scenario === 'composer' ? (
-    <CompletionComposer />
+  ) : scenario === 'composer' || scenario === 'composer-prediction' ? (
+    <CompletionComposer prediction={scenario === 'composer-prediction'} />
   ) : (
     <Consent />
   ),

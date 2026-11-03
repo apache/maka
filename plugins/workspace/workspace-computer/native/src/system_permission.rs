@@ -35,11 +35,12 @@ use sha2::{Digest, Sha256};
 /// How often the grants are checked again while the card is open.
 const RECHECK: std::time::Duration = std::time::Duration::from_millis(1500);
 
-/// The grants still missing; `None` when the check itself failed.
-async fn missing(required: &'static [SystemPermissionGrant]) -> Option<Vec<SystemPermissionGrant>> {
+async fn missing(
+    required: &'static [SystemPermissionGrant],
+) -> Result<Vec<SystemPermissionGrant>, String> {
     tokio::task::spawn_blocking(move || system_permission::missing(required))
         .await
-        .ok()
+        .map_err(|error| format!("System permission check stopped: {error}"))
 }
 
 pub(super) async fn ensure(
@@ -51,15 +52,21 @@ pub(super) async fn ensure(
     cancellation: &CancellationToken,
     cell: &maka_code_runtime::CellContext,
 ) -> Result<(), ToolError> {
-    // A failed check leaves the native call to report what it meets.
-    let grants = missing(required).await.unwrap_or_default();
+    let grants = missing(required).await.map_err(failed)?;
     if grants.is_empty() {
         return Ok(());
     }
-    let application = tokio::task::spawn_blocking({
+    let (configuration, _) = access::current(owner, call, "cua_repl").await?;
+    if configuration.permission_basis() != basis {
+        return Err(failed("Computer Use permission boundary changed"));
+    }
+    let request_permissions = configuration.permissions.request_permissions;
+    let (application, bundle) = tokio::task::spawn_blocking({
         let grants = grants.clone();
         move || {
-            system_permission::request(&grants);
+            if request_permissions {
+                system_permission::request(&grants);
+            }
             system_permission::application()
         }
     })
@@ -67,11 +74,7 @@ pub(super) async fn ensure(
     .map_err(|_| failed("System permission check stopped"))?;
     let still_missing =
         |grants: &[SystemPermissionGrant]| failed(system_permission::failure(grants, &application));
-    let (configuration, _) = access::current(owner, call, "cua_repl").await?;
-    if configuration.permission_basis() != basis {
-        return Err(failed("Computer Use permission boundary changed"));
-    }
-    if !configuration.permissions.request_permissions {
+    if !request_permissions {
         return Err(still_missing(&grants));
     }
     let context = ToolCallContext {
@@ -107,6 +110,22 @@ pub(super) async fn ensure(
             tool_use_id: context.tool_use_id(),
             grants: grants.clone(),
             application: application.clone(),
+            application_location: bundle
+                .map(|path| -> Result<_, ToolError> {
+                    let root = owner
+                        .store
+                        .owned_root()
+                        .map_err(|error| failed(error.to_string()))?;
+                    Ok(
+                        maka_agent_facts::interaction::SystemPermissionApplicationLocation {
+                            file_url: url::Url::from_file_path(path)
+                                .map_err(|_| failed("Invalid responsible application bundle path"))?
+                                .to_string(),
+                            state_domain: root.root_id().into(),
+                        },
+                    )
+                })
+                .transpose()?,
         },
     };
     let observed = async {
@@ -121,7 +140,7 @@ pub(super) async fn ensure(
         let granted = async {
             loop {
                 tokio::time::sleep(RECHECK).await;
-                if missing(required).await.is_some_and(|grants| grants.is_empty()) {
+                if missing(required).await?.is_empty() {
                     // The first outcome stands: a cancel committed meanwhile wins.
                     store
                         .commit_interaction_outcome(
@@ -161,9 +180,10 @@ pub(super) async fn ensure(
         return Ok(());
     }
     // A cancel stands even if the grants arrived as the card closed.
-    match missing(required).await {
-        Some(missing) if !missing.is_empty() => Err(still_missing(&missing)),
-        Some(_) => Err(failed("System permission request cancelled")),
-        None => Err(still_missing(&grants)),
+    let missing = missing(required).await.map_err(failed)?;
+    if missing.is_empty() {
+        Err(failed("System permission request cancelled"))
+    } else {
+        Err(still_missing(&missing))
     }
 }

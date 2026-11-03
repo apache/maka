@@ -105,7 +105,9 @@ impl Service {
         let shell = self
             .host
             .as_deref()
-            .and_then(super::super::host_identity::shell)
+            .map(super::super::host_identity::shell)
+            .transpose()?
+            .flatten()
             .map(|shell| {
                 shell
                     .into_os_string()

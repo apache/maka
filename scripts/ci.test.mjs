@@ -18,6 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
 
@@ -103,7 +108,7 @@ test('a path dependency affects consumers across owning workspaces', () => {
 
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {
   const plan = fixture()(['packages/plugin-sdk/src/runtime/client.ts']);
-  for (const id of ['root', 'bridge', 'desktop', 'clippy', 'contracts', 'product'])
+  for (const id of ['root', 'bridge', 'desktop', 'contracts', 'product'])
     assert.ok(plan.suites[id], id);
   assert.equal(plan.suites.root.filter, 'all()');
   assert.equal(plan.suites.native, undefined);
@@ -203,4 +208,45 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
   assert(
     plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
   );
+});
+
+test('Host identity inputs execute real macOS tests, including changes outside Cargo', () => {
+  for (const path of [
+    'scripts/rust/build-cli.mjs',
+    'scripts/rust/build-cli.test.mjs',
+    'scripts/rust/pack-cli.mjs',
+    'scripts/rust/run-cli.mjs',
+    'products/maka/cli/src/deployment/host_identity.rs',
+    'platform/code-runtime/src/lib.rs',
+    'packages/plugin-sdk/src/runtime/client.ts',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['macos-host'], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes('macos-host'));
+    assert.equal(runners.length, 1, path);
+    assert.equal(runners[0].runner, 'macos-latest', path);
+    assert.equal(runners[0].javascript, true, path);
+  }
+});
+
+test('native macOS behavior verification selects nextest during runner setup', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
+  try {
+    for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
+      const output = join(temporary, role);
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
+        {
+          env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
+        },
+      );
+      assert.equal(
+        readFileSync(output, 'utf8'),
+        role === 'native-macos' ? 'tools=cargo-nextest\n' : 'tools=\n',
+      );
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 });

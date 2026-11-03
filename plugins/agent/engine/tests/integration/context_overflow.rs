@@ -195,6 +195,8 @@ async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
     let worker = fixture::engine();
     let mut old = fixture::input(&base, "old", false);
     old.context = Some(ModelRequestContext {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
+        codex: None,
         provider_id: "openai".into(),
         context_window: Some(170),
         declared_window: None,
@@ -206,6 +208,8 @@ async fn proactive_failure_spends_the_same_budget_as_overflow_recovery() {
         .unwrap();
     let mut next = fixture::input(&base, "latched", false);
     next.context = Some(ModelRequestContext {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
+        codex: None,
         provider_id: "openai".into(),
         context_window: Some(170),
         declared_window: Some(70),

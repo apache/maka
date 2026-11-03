@@ -38,6 +38,7 @@ pub(crate) async fn encoded_request_bytes(
     // Authentication does not enter the body. Counting can run before resolving
     // a bound credential, and must not activate its owner.
     let mut input = Request {
+        operation: request.operation,
         language: request.language,
         provider: Provider {
             kind: request.provider.kind.clone(),

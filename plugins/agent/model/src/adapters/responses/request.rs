@@ -169,6 +169,10 @@ fn project(
                             None
                         },
                     }),
+                    AssistantPart::CodexCompaction { item } => {
+                        input.push(Input::CodexCompaction(item.clone()))
+                    }
+
                     AssistantPart::Reasoning {
                         text,
                         provider_options,

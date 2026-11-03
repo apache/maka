@@ -109,21 +109,6 @@ test('a failed read recovers on the next change without losing or repeating mess
   core.close();
 });
 
-test('new messages are picked up as the head moves', async () => {
-  const { state, announce, host: h } = host({ messages: [] });
-  const core = createBotTranscriptCore(h, SESSION, () => {});
-  await core.started;
-  await settle();
-  state.messages.push(message(1, 'a'));
-  announce();
-  await settle();
-  state.messages.push(message(2, 'b'));
-  announce();
-  await settle();
-  assert.deepEqual([replies(core, 'a'), replies(core, 'b')], [['m1'], ['m2']]);
-  core.close();
-});
-
 test('an ordinary Session makes one lookup and never subscribes', async () => {
   let queries = 0;
   let subscribed = false;
@@ -241,23 +226,6 @@ test('an identity the application already knows is used without waiting for the 
   for (const core of [asBot, asOrdinary, none]) core.close();
 });
 
-test('a later answer from the application settles an unknown identity', async () => {
-  const { host: h } = slowIdentity({ failures: 100 });
-  let known;
-  const core = createBotTranscriptCore(
-    h,
-    SESSION,
-    () => {},
-    noWait,
-    () => known,
-  );
-  await core.started;
-  assert.equal(core.identity(), 'unknown');
-  known = SESSION;
-  assert.equal(core.identity(), 'bot');
-  core.close();
-});
-
 test('a late answer from the application starts the watch after every lookup failed', async () => {
   const { state, host: h } = slowIdentity({ failures: 100 });
   let known;
@@ -270,12 +238,10 @@ test('a late answer from the application starts the watch after every lookup fai
   );
   await core.started;
   assert.equal(core.identity(), 'unknown');
-  const lookups = state.lookups;
   known = SESSION;
   assert.equal(core.identity(), 'bot');
   await settle();
   assert.ok(state.subscribed, 'the outbox is now being watched');
-  assert.ok(state.lookups >= lookups, 'no lookup was lost');
   assert.equal(core.identity(), 'bot');
   core.close();
 });

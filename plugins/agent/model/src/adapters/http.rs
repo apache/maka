@@ -634,6 +634,7 @@ mod quota_scope_tests {
             let start = tokio::time::Instant::now();
             let error = run(
                 Request {
+                    operation: maka_agent_facts::context::ModelOperation::Inference,
                     language: Default::default(),
                     provider: Provider {
                         kind: crate::ProviderKind::OpenaiCompatible {

@@ -538,6 +538,10 @@ impl Owner {
         };
         let credentials = crate::model::Credentials {
             executor: models.clone(),
+            inventory: Arc::new(crate::model::codex_inventory::Authority::new(
+                workers.clone(),
+                stop.clone(),
+            )),
             refresh: Arc::new(crate::model::oauth::Authority::new(
                 workers.clone(),
                 stop.clone(),
@@ -1254,7 +1258,10 @@ impl Owner {
                 ))
             }
             Selection::Executor(selection) => {
-                if session.configuration.tools.is_some() {
+                if self
+                    .admitted_tools(&id, &session.configuration.tools)
+                    .is_some()
+                {
                     return Err("agent_executor_cannot_enforce_tool_selection".into());
                 }
                 PreparedBackend::Executor(Box::new(self.executors.select(selection)?))
@@ -1333,7 +1340,7 @@ impl Owner {
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: !external && self.settings.tool_discovery,
-            allowed_tools: session.configuration.tools.clone(),
+            allowed_tools: self.admitted_tools(&id, &session.configuration.tools),
             background: None,
             internal_tools: if external {
                 Arc::default()
@@ -1351,7 +1358,8 @@ impl Owner {
                     .await?,
                 &snapshot,
                 language,
-                session.configuration.tools.as_deref(),
+                self.admitted_tools(&id, &session.configuration.tools)
+                    .as_deref(),
             ),
             model,
             executor,

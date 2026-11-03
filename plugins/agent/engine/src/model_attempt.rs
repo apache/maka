@@ -47,15 +47,20 @@ pub(super) enum Attempt<'a> {
     },
 }
 
+pub(super) enum SummaryOutput {
+    Text(maka_agent_facts::context::TextSummary),
+    CodexNative {
+        item: maka_agent_facts::model::NativeCompaction,
+        tokens: Option<u64>,
+    },
+}
+
 pub(super) enum AttemptOutput {
     Main(MainResponse),
     Steered,
     Summary {
         step_id: String,
-        summary: Result<
-            maka_agent_facts::context::TextSummary,
-            maka_agent_facts::context::SummaryDefect,
-        >,
+        summary: Result<SummaryOutput, maka_agent_facts::context::SummaryDefect>,
     },
 }
 
@@ -84,6 +89,8 @@ impl From<AttemptOutput> for Outcome {
 }
 
 pub(super) struct PromptSettings<'a> {
+    pub operation: maka_agent_facts::context::ModelOperation,
+    pub codex: Option<&'a maka_agent_facts::context::CodexRequestProvenance>,
     pub language: Language,
     pub provider: &'a maka_model::ProviderConfig,
     pub options: &'a serde_json::Value,
@@ -92,6 +99,13 @@ pub(super) struct PromptSettings<'a> {
 impl<'a> PromptSettings<'a> {
     fn from_input<W>(input: &'a RunInput<W>) -> Self {
         Self {
+            codex: input.context.as_ref().and_then(|c| c.codex.as_ref()),
+            operation: input
+                .context
+                .as_ref()
+                .map_or(maka_agent_facts::context::ModelOperation::Inference, |c| {
+                    c.operation
+                }),
             language: input.configuration.language,
             provider: &input.provider,
             options: &input.provider_options,
@@ -145,6 +159,30 @@ pub(super) async fn prompt_with_resources(
     purpose: ModelPurpose,
     instruction: Option<Arc<String>>,
 ) -> Result<PreparedPrompt, RunError> {
+    if let Some(producer) = source
+        .baseline
+        .as_ref()
+        .and_then(|baseline| baseline.native())
+    {
+        let model_id = &producer.model_id;
+        let producer = &producer.provenance;
+        if settings.codex.is_none() || model_id != &settings.provider.model {
+            return Err(RunError::InvalidInput(
+                "native Codex checkpoint requires its producing model".into(),
+            ));
+        }
+        if settings.operation == maka_agent_facts::context::ModelOperation::Inference
+            && producer
+                .compatibility
+                .as_ref()
+                .zip(settings.codex.and_then(|c| c.compatibility.as_ref()))
+                .is_some_and(|(old, new)| old.comp_hash != new.comp_hash)
+        {
+            return Err(RunError::InvalidInput(
+                "native Codex checkpoint requires re-compaction after compatibility changed".into(),
+            ));
+        }
+    }
     let route = digest(settings.provider)?;
     let mut selection = source.selection.clone();
     selection.replay =
@@ -159,7 +197,11 @@ pub(super) async fn prompt_with_resources(
         system.is_some(),
         source.baseline.is_some(),
         usize::from(purpose == ModelPurpose::Summary) + usize::from(instruction.is_some()),
-    );
+    )
+    .checked_add(crate::prepared_prompt::OwnedOverlay::checkpoint_payload_bytes(source))
+    .ok_or_else(|| {
+        RunError::Preparation(std::io::Error::other("native checkpoint size overflow"))
+    })?;
     let body = history::prepare_view(
         log,
         selection,
@@ -971,6 +1013,8 @@ pub(super) fn prepare_request_with_settings(
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
     struct Evidence<'a> {
+        #[serde(skip_serializing_if = "maka_agent_facts::context::ModelOperation::is_inference")]
+        operation: maka_agent_facts::context::ModelOperation,
         projection: &'static str,
         #[serde(skip_serializing_if = "Language::is_english")]
         language: Language,
@@ -985,6 +1029,7 @@ pub(super) fn prepare_request_with_settings(
     }
     let route_identity = digest(settings.provider)?;
     let input_digest = digest(&Evidence {
+        operation: settings.operation,
         projection: "maka.model-history.v1",
         language: settings.language,
         prompt_root: prompt.identity(),
@@ -998,6 +1043,7 @@ pub(super) fn prepare_request_with_settings(
     Ok(PreparedRequest {
         context_breakdown,
         request: ModelRequest {
+            operation: settings.operation,
             language: settings.language,
             provider: settings.provider.clone(),
             prompt,
@@ -1656,10 +1702,20 @@ async fn finish(
     drop(writer);
     let summary = if output.binding.purpose == ModelPurpose::Summary {
         use maka_agent_facts::context::TextSummary;
-        match TextSummary::from_parts(
-            output.finish_reason,
-            output.parts().iter().map(|record| record.part.as_ref()),
-        ) {
+        let extracted = output
+            .compaction
+            .clone()
+            .map(|item| SummaryOutput::CodexNative {
+                item,
+                tokens: output.usage.output_tokens,
+            });
+        match extracted.map(Ok).unwrap_or_else(|| {
+            TextSummary::from_parts(
+                output.finish_reason,
+                output.parts().iter().map(|record| record.part.as_ref()),
+            )
+            .map(SummaryOutput::Text)
+        }) {
             Ok(summary) => Some(summary),
             Err(defect) => {
                 let error: RunError = ModelError::Adapter(defect.to_string()).into();
@@ -2160,6 +2216,7 @@ mod tests {
             ),
             closed("text"),
             ModelEvent::Finished {
+                compaction: None,
                 reason: ModelFinishReason::Stop,
                 usage: Default::default(),
                 provider_options: None,

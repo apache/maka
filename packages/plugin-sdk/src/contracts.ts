@@ -7233,9 +7233,16 @@ export const contracts = {
                       'Canonical content is an image; this does not grant artifact reads.',
                     type: 'boolean',
                   },
+                  images: {
+                    description:
+                      'Images the model received beside non-image content, readable by index.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
                 },
                 additionalProperties: false,
-                required: ['settlement', 'position', 'isError', 'image'],
+                required: ['settlement', 'position', 'isError', 'image', 'images'],
               },
               ToolSettlement: {
                 description:
@@ -10235,6 +10242,16 @@ export const contracts = {
                         type: 'string',
                         minLength: 1,
                       },
+                      applicationLocation: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/SystemPermissionApplicationLocation',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'grants', 'application'],
@@ -10819,6 +10836,19 @@ export const contracts = {
                     const: 'screen_recording',
                   },
                 ],
+              },
+              SystemPermissionApplicationLocation: {
+                type: 'object',
+                properties: {
+                  fileUrl: {
+                    type: 'string',
+                  },
+                  stateDomain: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['fileUrl', 'stateDomain'],
               },
               InteractionOutcome: {
                 oneOf: [
@@ -17091,6 +17121,16 @@ export const contracts = {
                         type: 'string',
                         minLength: 1,
                       },
+                      applicationLocation: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/SystemPermissionApplicationLocation',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'grants', 'application'],
@@ -17675,6 +17715,19 @@ export const contracts = {
                     const: 'screen_recording',
                   },
                 ],
+              },
+              SystemPermissionApplicationLocation: {
+                type: 'object',
+                properties: {
+                  fileUrl: {
+                    type: 'string',
+                  },
+                  stateDomain: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['fileUrl', 'stateDomain'],
               },
               InteractionOutcome: {
                 oneOf: [
@@ -22443,9 +22496,16 @@ export const contracts = {
                       'Canonical content is an image; this does not grant artifact reads.',
                     type: 'boolean',
                   },
+                  images: {
+                    description:
+                      'Images the model received beside non-image content, readable by index.',
+                    type: 'integer',
+                    format: 'uint32',
+                    minimum: 0,
+                  },
                 },
                 additionalProperties: false,
-                required: ['settlement', 'position', 'isError', 'image'],
+                required: ['settlement', 'position', 'isError', 'image', 'images'],
               },
               ToolSettlement: {
                 description:
@@ -22542,6 +22602,14 @@ export const contracts = {
               },
               position: {
                 $ref: '#/$defs/HistoryRowPosition',
+              },
+              image: {
+                description:
+                  'Selects one of `HistoryToolResult.images`; absent when the content is the image.',
+                type: ['integer', 'null'],
+                format: 'uint32',
+                minimum: 0,
+                default: null,
               },
               offset: {
                 type: 'integer',

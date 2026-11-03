@@ -179,7 +179,7 @@ mod tests {
             "field":"body", "messageId":"result", "turnId":"turn", "timestamp":1,
             "role":"tool_result", "position":{"sourceSequence":2,"itemIndex":0}, "offset":0, "totalBytes":text.len(), "text":text,
             "tool":{"toolUseId":"call", "call":null,
-                "result":{"position":{"sourceSequence":2,"itemIndex":0},"settlement":"returned","isError":false,"image":false}}
+                "result":{"position":{"sourceSequence":2,"itemIndex":0},"settlement":"returned","isError":false,"image":false,"images":0}}
         }))
         .unwrap();
         let mut projection = Projection::default();

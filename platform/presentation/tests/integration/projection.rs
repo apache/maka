@@ -101,6 +101,7 @@ fn events(outcome: InvocationOutcome) -> Vec<StoredEvent> {
         facts.push(Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: vec![CompletionPart::Own(record)],
                 finish_reason: maka_agent_facts::model::ModelFinishReason::Stop,
                 usage,
@@ -610,6 +611,7 @@ fn project_tool_fanout(item_acceptance: bool) -> Vec<maka_presentation::Row> {
     push(Fact::ModelCompleted {
         step_id: "step".into(),
         output: ModelCompletion {
+            compaction: None,
             parts: completion_parts,
             finish_reason: ModelFinishReason::ToolCalls,
             usage,

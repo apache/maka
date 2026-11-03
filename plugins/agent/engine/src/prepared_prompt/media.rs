@@ -739,6 +739,7 @@ pub(super) async fn fit_request(
             return Err(RunError::Cancelled);
         }
         let request = maka_model::ModelRequest {
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language,
             provider: provider.clone(),
             prompt: prompt.model(),

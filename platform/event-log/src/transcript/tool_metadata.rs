@@ -34,7 +34,8 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 tool_name AS name,
                 settlement AS settlement,
                 is_error AS error,
-                content_kind IS 'image' AS image
+                content_kind IS 'image' AS image,
+                COALESCE(image_count, 0) AS images
             FROM transcript_directory WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3 AND source_sequence <= ?4
         ), call_row AS (
             SELECT row.source_sequence, row.item_index, row.tool_name AS name,
@@ -93,7 +94,8 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 row.result_valid AS valid,
                 row.settlement AS settlement,
                 row.is_error AS error,
-                row.content_kind IS 'image' AS image
+                row.content_kind IS 'image' AS image,
+                COALESCE(row.image_count, 0) AS images
             FROM owner CROSS JOIN transcript_directory row ON row.session_id = owner.session_id
                 AND row.turn_id = owner.turn_id AND row.tool_use_id = owner.tool_id
             WHERE row.source_sequence <= ?4 AND row.role = 'tool_result'
@@ -102,7 +104,8 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
             SELECT call.reference AS call_ref,
                 json_object('position', json_object('sourceSequence', results.source_sequence, 'itemIndex', results.item_index), 'settlement', results.settlement,
                     'isError', json(CASE results.error WHEN 1 THEN 'true' ELSE 'false' END),
-                    'image', json(CASE results.image WHEN 1 THEN 'true' ELSE 'false' END)) AS result_ref
+                    'image', json(CASE results.image WHEN 1 THEN 'true' ELSE 'false' END),
+                    'images', results.images) AS result_ref
             FROM call, results WHERE (SELECT count(*) FROM results) = 1
                 AND results.valid
                 AND (call.source_sequence, call.item_index) < (results.source_sequence, results.item_index)
@@ -117,7 +120,8 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                     ELSE (SELECT call_ref FROM pair) END),
                 'result', json(CASE kind WHEN 'tool_result' THEN json_object('position', json_object('sourceSequence', source_sequence, 'itemIndex', item_index), 'settlement', settlement,
                     'isError', json(CASE error WHEN 1 THEN 'true' ELSE 'false' END),
-                    'image', json(CASE image WHEN 1 THEN 'true' ELSE 'false' END))
+                    'image', json(CASE image WHEN 1 THEN 'true' ELSE 'false' END),
+                    'images', images)
                     ELSE (SELECT result_ref FROM pair) END)) AS value FROM owner
         ) SELECT value FROM metadata";
 

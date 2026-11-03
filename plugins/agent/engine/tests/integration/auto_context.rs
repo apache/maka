@@ -36,6 +36,8 @@ mod background;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
     Some(ModelRequestContext {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
+        codex: None,
         provider_id: "openai".into(),
         context_window: Some(170_000),
         model_context_window: Some(200_000),
@@ -287,7 +289,7 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
     let source = log.read_model_view("session", None).await.unwrap();
     let checkpoint = &source.baseline.as_ref().unwrap().checkpoint;
     assert!(matches!(checkpoint.mode, CheckpointMode::MidTurn { .. }));
-    assert_eq!(checkpoint.summary.text, summary_text);
+    assert_eq!(checkpoint.summary.text_value().unwrap(), summary_text);
     let checkpoint_id = source.baseline.unwrap().event_id;
     assert_eq!(count.load(Ordering::SeqCst), 4);
     let prefix = log.prefix(100, 256 * 1024).await.unwrap();
@@ -381,7 +383,8 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
             .unwrap()
             .checkpoint
             .summary
-            .text,
+            .text_value()
+            .unwrap(),
         summary_text
     );
     let address = maka_agent_facts::read::ResourceAddress::parse(&image_reference)

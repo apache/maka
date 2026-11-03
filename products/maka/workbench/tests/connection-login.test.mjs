@@ -116,7 +116,12 @@ test('a failed login and cleanup report both boundaries without discovery or sav
   assert.equal(operations.notice(), '');
 });
 
-function connectionEditor({ wrongProvider = false, failDiscovery = false, existing = true } = {}) {
+function connectionEditor({
+  wrongProvider = false,
+  failDiscovery = false,
+  existing = true,
+  supportsCompaction = false,
+} = {}) {
   const provider = {
     entryId: 'maka.codex',
     name: 'chatgpt',
@@ -139,6 +144,20 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
     revision: configured ? 1 : null,
     updatedAt: null,
   });
+  let configuration = { baseUrl: 'https://chatgpt.com/backend-api/codex' };
+  const descriptor = {
+    label: 'ChatGPT Subscription',
+    anonymous: false,
+    discovery: true,
+    configurationSchema: {
+      properties: supportsCompaction ? { serverSideCompaction: { type: 'boolean' } } : {},
+    },
+    configurationDefaults: {
+      ...configuration,
+      ...(supportsCompaction ? { serverSideCompaction: false } : {}),
+    },
+    authentication: [{ id: 'device', interactive: true, label: 'Sign in with ChatGPT' }],
+  };
   const detail = () => ({
     kind: 'ready',
     target: {
@@ -146,7 +165,7 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
       revision: version,
       slug: 'chatgpt',
       provider,
-      configuration: { baseUrl: 'https://chatgpt.com/backend-api/codex' },
+      configuration: { ...configuration },
     },
     name: 'ChatGPT Subscription',
     enabled: true,
@@ -165,13 +184,7 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
       if (method === 'provider')
         return {
           identity: provider,
-          descriptor: {
-            label: 'ChatGPT Subscription',
-            anonymous: false,
-            discovery: true,
-            configurationDefaults: original.target.configuration,
-            authentication: [{ id: 'device', interactive: true, label: 'Sign in with ChatGPT' }],
-          },
+          descriptor,
         };
       if (method === 'credentialStatus') return { kind: 'status', status: status() };
       if (method === 'connections')
@@ -215,7 +228,11 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
     },
     async settingsMutation(endpoint, method, input) {
       calls.push({ endpoint, method, input });
-      if (method === 'create') {
+      if (method === 'create' || method === 'update') {
+        if (method === 'update') assert.equal(input.expected.revision, version);
+        configuration = {
+          ...(method === 'create' ? input.connection.configuration : input.changes.configuration),
+        };
         version++;
         return {
           reply: {
@@ -272,17 +289,13 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
         baseline: original,
         provider: {
           identity: provider,
-          descriptor: {
-            label: 'ChatGPT Subscription',
-            anonymous: false,
-            discovery: true,
-            authentication: [{ id: 'device', interactive: true, label: 'Sign in with ChatGPT' }],
-          },
+          descriptor,
         },
         name: original.name,
         slug: 'chatgpt',
         baseUrl: original.target.configuration.baseUrl,
         enabled: true,
+        serverSideCompaction: false,
         overlay: 'null',
         apiKey: '',
       },
@@ -305,6 +318,47 @@ function connectionEditor({ wrongProvider = false, failDiscovery = false, existi
     },
   };
 }
+
+test('server-side compaction is opt-in and survives saving and reopening a connection', async () => {
+  const { owner, operations } = connectionEditor({ supportsCompaction: true });
+  assert.equal(owner.supportsServerSideCompaction(), true);
+  assert.equal(owner.editor().serverSideCompaction, false);
+  assert.equal(owner.dirty(), false);
+  owner.toggleServerSideCompaction({ ...owner.action(), enabled: true });
+  assert.equal(owner.dirty(), true);
+  await owner.saveConnection(owner.action());
+  assert.equal(operations.error(), '');
+  await owner.openConnection(owner.editor().baseline.target);
+  assert.equal(operations.error(), '');
+  assert.equal(owner.editor().serverSideCompaction, true);
+  assert.equal(owner.dirty(), false);
+  owner.toggleServerSideCompaction({ ...owner.action(), enabled: false });
+  await owner.saveConnection(owner.action());
+  await owner.openConnection(owner.editor().baseline.target);
+  assert.equal(operations.error(), '');
+  assert.equal(owner.editor().serverSideCompaction, false);
+  assert.equal(owner.dirty(), false);
+});
+
+test('only supporting providers offer compaction, and new connections start with it off', async () => {
+  const unsupported = connectionEditor();
+  assert.equal(unsupported.owner.supportsServerSideCompaction(), false);
+  const { owner, provider, operations, calls } = connectionEditor({
+    existing: false,
+    supportsCompaction: true,
+  });
+  owner.newConnection();
+  await owner.chooseProvider(provider);
+  assert.equal(owner.supportsServerSideCompaction(), true);
+  assert.equal(owner.editor().serverSideCompaction, false);
+  await owner.saveConnection(owner.action());
+  assert.equal(operations.error(), '');
+  assert.equal(
+    calls.find((call) => call.method === 'create').input.connection.configuration
+      .serverSideCompaction,
+    false,
+  );
+});
 
 test('connection login accepts reordered provider fields and refreshes both connection and credential bases', async () => {
   const { owner, operations, calls } = connectionEditor();

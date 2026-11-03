@@ -289,6 +289,8 @@ pub struct ToolResult {
     pub is_error: bool,
     /// Canonical content is an image; this does not grant artifact reads.
     pub image: bool,
+    /// Images the model received beside non-image content, readable by index.
+    pub images: u32,
 }
 
 /// An explicitly selected canonical transcript field, never an execution grant.

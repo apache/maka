@@ -52,7 +52,10 @@ async fn forged_summary_source_is_rejected() {
         };
         match mutation {
             0 => checkpoint.source_digest = format!("sha256:{}", "0".repeat(64)),
-            1 => checkpoint.summary.text = "forged summary text".into(),
+            1 => {
+                checkpoint.summary =
+                    maka_agent_facts::context::CheckpointContent::Text("forged summary text".into())
+            }
             _ => checkpoint.previous_checkpoint_id = Some(forged.id.clone()),
         }
         assert!(
@@ -121,7 +124,15 @@ async fn failed_tool_history_can_be_compacted_and_pruned_without_losing_uncertai
         .await
         .unwrap();
     let view = log.read_model_view("session", None).await.unwrap();
-    assert_eq!(view.baseline.unwrap().checkpoint.summary.text, SUMMARY);
+    assert_eq!(
+        view.baseline
+            .unwrap()
+            .checkpoint
+            .summary
+            .text_value()
+            .unwrap(),
+        SUMMARY
+    );
     let history = log.prefix(100, 128 * 1024).await.unwrap();
     assert!(
         history
@@ -137,5 +148,57 @@ async fn failed_tool_history_can_be_compacted_and_pruned_without_losing_uncertai
             .any(|stored| matches!(&stored.event.fact,
         Fact::ToolSettled { operation_id, .. } if operation_id == "browser-operation"))
     );
+    log.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn native_checkpoint_requires_exact_completed_payload_producer_and_budget() {
+    use maka_agent_facts::context::CheckpointContent;
+    let directory = tempfile::tempdir().unwrap();
+    let log = EventLog::open(&directory.path().join("events.sqlite"))
+        .await
+        .unwrap();
+    closed(&log, "main", 32, 1).await;
+    let pair = fixtures::prepared_native(&log, "native").await;
+    for mutation in 0..2 {
+        let mut forged = pair[0].event().clone();
+        let Fact::ContextCheckpointRecorded { checkpoint } = &mut forged.fact else {
+            panic!()
+        };
+        let CheckpointContent::CodexNative {
+            item_digest,
+            estimated_tokens,
+        } = &mut checkpoint.summary
+        else {
+            panic!()
+        };
+        match mutation {
+            0 => *item_digest = format!("sha256:{}", "0".repeat(64)),
+            _ => *estimated_tokens = 0,
+        }
+        assert!(
+            log.append_batch(&[EventWrite::plain(forged).unwrap(), pair[1].clone()])
+                .await
+                .is_err()
+        );
+    }
+    log.append_batch(&pair).await.unwrap();
+    let source = log
+        .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
+        .await
+        .unwrap();
+    let baseline = source.baseline.unwrap();
+    assert_eq!(baseline.native().unwrap().model_id, "test");
+    assert_eq!(
+        baseline.native().unwrap().provenance.account_id.as_deref(),
+        Some("account")
+    );
+    assert!(matches!(
+        baseline.checkpoint.summary,
+        CheckpointContent::CodexNative {
+            estimated_tokens: 12,
+            ..
+        }
+    ));
     log.close().await.unwrap();
 }

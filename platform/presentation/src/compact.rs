@@ -149,7 +149,7 @@ impl InvocationView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use maka_agent_facts::context::{CheckpointMode, ContextCheckpoint, TextSummary};
+    use maka_agent_facts::context::{CheckpointMode, ContextCheckpoint};
     use maka_agent_facts::event::{
         Invocation, InvocationOutcome, LogScope, SourceCapture, StoredEvent,
     };
@@ -263,9 +263,9 @@ mod tests {
                                 source_digest: "source".into(),
                                 previous_checkpoint_id: None,
                                 summary_step_id: "retry".into(),
-                                summary: TextSummary {
-                                    text: "private summary".into(),
-                                },
+                                summary: maka_agent_facts::context::CheckpointContent::Text(
+                                    "private summary".into(),
+                                ),
                             },
                         },
                     );
@@ -374,9 +374,9 @@ mod tests {
                         source_digest: if new_source { "new-source" } else { "source" }.into(),
                         previous_checkpoint_id: None,
                         summary_step_id: "retry".into(),
-                        summary: TextSummary {
-                            text: "summary".into(),
-                        },
+                        summary: maka_agent_facts::context::CheckpointContent::Text(
+                            "summary".into(),
+                        ),
                     },
                 },
             );

@@ -3409,6 +3409,7 @@ export type InteractionRequest =
        * The application name the operating system lists in its settings.
        */
       application: string;
+      applicationLocation?: SystemPermissionApplicationLocation | null;
     };
 export type FormField = {
   name: string;
@@ -8033,6 +8034,10 @@ export interface ComputerAppDisplay {
   risk?: ComputerAppRisk | null;
   warning?: string | null;
 }
+export interface SystemPermissionApplicationLocation {
+  fileUrl: string;
+  stateDomain: string;
+}
 export interface QuestionAsk {
   /**
    * @minItems 1
@@ -8625,6 +8630,10 @@ export interface HistoryToolResult {
    * Canonical content is an image; this does not grant artifact reads.
    */
   image: boolean;
+  /**
+   * Images the model received beside non-image content, readable by index.
+   */
+  images: number;
 }
 export interface AgentHistorySearch {
   sessionId: string;
@@ -8716,6 +8725,10 @@ export interface AgentToolImageRead {
   sessionId: string;
   through: number;
   position: HistoryRowPosition;
+  /**
+   * Selects one of `HistoryToolResult.images`; absent when the content is the image.
+   */
+  image?: number | null;
   offset: number;
 }
 export interface AgentAttachmentImageRead {

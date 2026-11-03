@@ -93,3 +93,49 @@ Reusable WorkHub presets store an explicit connection and model. New ordinary an
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
 
 [Performance baseline](checkpoint-baseline.md)
+
+ChatGPT subscription requests use the Host-owned [account inventory](src/model/codex_inventory.rs).
+Logical model-step preparation shares per-connection discovery, refreshes its five-minute
+compatibility cache on demand, and retries failed discovery after a short jittered backoff.
+Cancelling one waiter leaves shared work with the Host. Each request records its account,
+connection and observed `comp_hash` in `ModelRequested.context`; these are provenance,
+not same-account replay restrictions. Discovery does not change selected models. A fresh
+Host obtains its own account observation before recording compatibility evidence.
+
+Accepted work retains its selected model, thinking/tool policy, model overrides and body controls,
+not resolved inventory capacities. Later default or presentation edits apply to subsequently
+accepted messages. Each step and restored work continue using the captured user choices. Provider
+identity, connection availability, credential authorization and the resolved transport route are
+still checked before execution. Each logical request resolves one current model
+observation into its context, capabilities, options and output budget; physical retries reuse the
+already frozen request. Catalog changes alone therefore do not invalidate queued/restored work.
+
+A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
+background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts
+at 270 seconds to leave 30 seconds before the 300-second catalog TTL. Each discovery has a 15-second deadline; account replacement may first await the old flight and
+then the new identity’s discovery. This is not a 15-second deadline for the complete model request.
+Failure uses the existing model with no new compatibility claim,
+then retries after a jittered 30–60-second backoff to avoid a request storm. Warm and backed-off
+preparations do not wait for network discovery; credential resolution follows its existing policy.
+These are local latency/load policies, not protocol
+limits. The TTL governs new catalog observations; recorded producer facts and checkpoints do not
+expire with that cache. Once capture finishes, proactive compaction executes alongside Main.
+
+Connections use ordinary text summarization by default. Model connection settings expose
+**Provider server-side compaction** only when the provider's configuration schema declares
+`serverSideCompaction`. The setting is saved per connection; currently ChatGPT subscription
+supports it. When enabled, manual and automatic compaction use the Responses native
+`compaction_trigger` control.
+The engine installs its opaque checkpoint only after the producing stream completes and storage
+validates the same source fence and producer request. Subsequent requests replay the checkpoint
+with the preserved suffix; another compact replaces that baseline. Session/global/custom text
+compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
+With the setting off, text compaction prompts apply as usual. Native replay currently requires
+the producing model; cross-model admission and switch preflight are separate stack layers.
+
+The subscription provider selects native compaction in its resolved capabilities only when the
+connection opts in. Disabling it preserves replay of existing native checkpoints; the next
+compaction produces a text summary. Host freezes a single protocol operation; the Responses adapter adds the wire trigger and returns typed
+`NativeCompaction` only at stream completion. Engine and EventLog do not extract provider-options
+JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
+estimate; baseline reads derive producer/model facts from that original request.

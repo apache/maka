@@ -60,6 +60,10 @@ pub fn prompt_breakdown(prompt: &[Message]) -> PreparedContextBreakdown {
             Message::Assistant { content, .. } => {
                 for part in content {
                     match part {
+                        AssistantPart::CodexCompaction { .. } => {
+                            bucket.estimated_tokens += 16;
+                        }
+
                         AssistantPart::Text { text, .. }
                         | AssistantPart::Reasoning { text, .. } => add_text(bucket, text),
                         AssistantPart::ToolCall {

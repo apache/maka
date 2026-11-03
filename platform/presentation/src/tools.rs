@@ -260,6 +260,12 @@ fn result_message(
     content: ToolContent,
     metadata: crate::ToolMetadata,
 ) -> Message {
+    let images = match &event.fact {
+        Fact::ToolSettled { outcome, .. } => {
+            crate::ToolImage::from_projection(&event.invocation.session_id, outcome, &content)
+        }
+        _ => Vec::new(),
+    };
     message(
         event,
         ts,
@@ -285,6 +291,7 @@ fn result_message(
             },
             is_error,
             content,
+            images,
             metadata,
         },
     )

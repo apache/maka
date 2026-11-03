@@ -64,6 +64,7 @@ impl PreparedPrediction {
     /// Borrow the source through cheap handles; no history bodies are copied.
     pub fn request(&self) -> ModelRequest {
         ModelRequest {
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language: self.request.language,
             provider: self.request.provider.clone(),
             prompt: self.request.prompt.clone(),
@@ -145,6 +146,7 @@ impl Engine {
         let context_window = context
             .as_ref()
             .and_then(|context| context.model_context_window);
+        let codex = context.as_ref().and_then(|c| c.codex.clone());
         let prior_unknown = source_capture.prior_unknown;
         let system = crate::request_composition::render_system(
             frozen.composition.system_prompt.as_deref(),
@@ -172,6 +174,8 @@ impl Engine {
             .instructions_source()
             .map(|source| *source.commitment());
         let settings = model_attempt::PromptSettings {
+            codex: codex.as_ref(),
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language,
             provider: &provider,
             options: &options,
@@ -241,6 +245,7 @@ impl Engine {
                 ));
             }
             Ok(ModelRequest {
+                operation: maka_agent_facts::context::ModelOperation::Inference,
                 language,
                 provider: provider.clone(),
                 prompt: model,

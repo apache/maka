@@ -175,6 +175,10 @@ pub enum Content {
         settlement: Option<maka_agent_facts::tool_call::ToolSettlement>,
         is_error: bool,
         content: ToolContent,
+        /// Images the model received beside non-image content, such as Computer
+        /// Use screenshots, so the transcript can show what the model saw.
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        images: Vec<ToolImage>,
         #[serde(flatten)]
         metadata: ToolMetadata,
     },
@@ -235,6 +239,53 @@ impl ToolContent {
                 },
             ),
         })
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct ToolImage {
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    #[serde(rename = "ref")]
+    pub reference: maka_agent_facts::attachment::StorageRef,
+}
+impl ToolImage {
+    /// The model projection's images this Session owns, other than the content image.
+    /// Only those can be served by index, so the transcript never counts others.
+    pub(crate) fn from_projection(
+        session: &str,
+        outcome: &maka_agent_facts::event::ToolOutcome,
+        content: &ToolContent,
+    ) -> Vec<Self> {
+        use maka_agent_facts::attachment::StorageRef;
+        use maka_agent_facts::event::ToolOutcome;
+        use maka_agent_facts::tool_output::{DurableToolProjection, ProjectionPart};
+        let ToolOutcome::Succeeded {
+            model_projection: DurableToolProjection::Content { parts },
+            ..
+        } = outcome
+        else {
+            return Vec::new();
+        };
+        let shown = match content {
+            ToolContent::Image { reference, .. } => Some(reference),
+            _ => None,
+        };
+        parts
+            .iter()
+            .filter_map(|part| match part {
+                ProjectionPart::Artifact { image }
+                    if Some(&image.reference) != shown
+                        && matches!(&image.reference,
+                            StorageRef::SessionFile { session_id, .. } if session_id == session) =>
+                {
+                    Some(Self {
+                        mime_type: image.mime_type.clone(),
+                        reference: image.reference.clone(),
+                    })
+                }
+                _ => None,
+            })
+            .collect()
     }
 }
 pub(crate) fn message(
@@ -345,5 +396,82 @@ impl TurnState {
                 aborted_at: timestamp,
             },
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use maka_agent_facts::attachment::StorageRef;
+    use maka_agent_facts::event::ToolOutcome;
+    use maka_agent_facts::tool_output::{
+        DurableToolProjection, ImageOutput, ProjectionPart, RawToolResultRef,
+    };
+
+    fn file(session: &str, path: &str) -> StorageRef {
+        StorageRef::SessionFile {
+            session_id: session.into(),
+            relative_path: path.into(),
+        }
+    }
+
+    #[test]
+    fn projection_images_are_only_those_this_session_can_serve() {
+        let image = |reference| ProjectionPart::Artifact {
+            image: ImageOutput {
+                detail: None,
+                mime_type: "image/png".into(),
+                reference,
+            },
+        };
+        let outcome = ToolOutcome::Succeeded {
+            raw: RawToolResultRef {
+                bytes: 1,
+                digest: "sha256:0".into(),
+            },
+            model_projection: DurableToolProjection::Content {
+                parts: vec![
+                    ProjectionPart::Text {
+                        text: "seen".into(),
+                    },
+                    image(file("own", "shown")),
+                    image(file("own", "first")),
+                    image(file("other", "foreign")),
+                    image(StorageRef::WorkspaceFile {
+                        relative_path: "shot.png".into(),
+                    }),
+                    image(file("own", "second")),
+                ],
+            },
+            artifacts: Vec::new(),
+        };
+        let paths = |content: &ToolContent| {
+            ToolImage::from_projection("own", &outcome, content)
+                .into_iter()
+                .map(|image| match image.reference {
+                    StorageRef::SessionFile { relative_path, .. } => relative_path,
+                    other => panic!("unexpected {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            paths(&ToolContent::Json { value: Value::Null }),
+            ["shown", "first", "second"]
+        );
+        // The content image is shown as the content, not again beside it.
+        assert_eq!(
+            paths(&ToolContent::Image {
+                mime_type: "image/png".into(),
+                reference: file("own", "shown"),
+            }),
+            ["first", "second"]
+        );
+        let failed = ToolOutcome::Failed {
+            message: "no".into(),
+        };
+        assert!(
+            ToolImage::from_projection("own", &failed, &ToolContent::Json { value: Value::Null })
+                .is_empty()
+        );
     }
 }

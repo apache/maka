@@ -41,7 +41,7 @@ export type ProcessRow = Pick<
 >;
 export type ProcessActivity = Pick<
   ToolActivity,
-  'toolUseId' | 'turnId' | 'startSequence' | 'previewOrder'
+  'toolUseId' | 'turnId' | 'stepId' | 'startSequence' | 'previewOrder'
 >;
 
 export type MemberRef =
@@ -92,17 +92,21 @@ export function sourceSequence(row: ProcessRow): number | undefined {
   return row.position?.sourceSequence ?? row.startSequence ?? row.sequence;
 }
 
-/** A model step occupies its canonical seat while its parts retain provider order. */
+/** Canonical step seats take precedence over preview anchors; parts retain provider order. */
 export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] {
   const seats = new Map<string, number>();
+  const anchors = new Map<string, number>();
   for (const row of rows) {
     const sequence = sourceSequence(row);
-    if (row.modelPart && sequence !== undefined)
-      seats.set(
+    if (row.modelPart && sequence !== undefined) {
+      const target = row.preview ? anchors : seats;
+      target.set(
         row.modelPart.stepId,
-        Math.min(seats.get(row.modelPart.stepId) ?? sequence, sequence),
+        Math.min(target.get(row.modelPart.stepId) ?? sequence, sequence),
       );
+    }
   }
+  for (const [step, anchor] of anchors) if (!seats.has(step)) seats.set(step, anchor);
   return rows.toSorted((left, right) => {
     if (left.modelPart && right.modelPart && left.modelPart.stepId === right.modelPart.stepId)
       return (
@@ -170,6 +174,7 @@ export function sameProcessActivity(
       return (
         activity.toolUseId === next.toolUseId &&
         activity.turnId === next.turnId &&
+        activity.stepId === next.stepId &&
         activity.startSequence === next.startSequence &&
         activity.previewOrder === next.previewOrder
       );
@@ -307,10 +312,13 @@ export function projectProcessGroups(input: {
       const activity = activities[nextActivity];
       // A preview cut publishes its text parts before pending tool inputs.
       const before =
-        activity.previewOrder === undefined
-          ? position.sequence === undefined ||
-            (activity.startSequence ?? Infinity) <= position.sequence
-          : row.preview !== undefined && activity.previewOrder < row.preview.stepOrder;
+        activity.previewOrder !== undefined &&
+        activity.stepId !== undefined &&
+        row.modelPart?.stepId === activity.stepId
+          ? false
+          : activity.previewOrder !== undefined && row.preview !== undefined
+            ? activity.previewOrder < row.preview.stepOrder
+            : (activity.startSequence ?? Infinity) <= (position.sequence ?? Infinity);
       if (!before) break;
       nextActivity += 1;
       append(activity.turnId, { kind: 'activity', toolUseId: activity.toolUseId });

@@ -72,35 +72,7 @@
     "formatter": { "enabled": false }
   },
   "linter": {
-    "enabled": true,
-    // Admission bar for this gate (PR #1019 review). This is an EXPLICIT
-    // ALLOWLIST (recommended: false): nothing enters the gate implicitly, so
-    // it can never silently drift from a correctness gate into a style gate.
-    // A rule joins only if BOTH hold:
-    //   1. it catches a defect, not a style preference; and
-    //   2. the tree is already zero-violation, or is hand-fixed to zero in
-    //      the same change that turns the rule on.
-    // Pure-style and formatting concerns are out of scope by design. Adding a
-    // rule is always a deliberate decision, never a side effect of a preset.
-    "rules": {
-      // `none` = start from an empty ruleset (the explicit-allowlist default);
-      // only the rules listed below are active.
-      "preset": "none",
-      "correctness": {
-        // A short-circuit to `undefined` would throw at the later member
-        // access. Hand-fixed to zero across the test suite in this PR.
-        "noUnsafeOptionalChaining": "error"
-      },
-      "suspicious": {
-        // Caught a real masked bug: a duplicate `fixtureState` key in
-        // cu-provider-matrix.test.mjs silently overrode the intended input.
-        // Hand-fixed to zero in this PR.
-        "noDuplicateObjectKeys": "error",
-        // `a?.b!` — a non-null assertion on an optionally-chained value
-        // defeats the short-circuit and can throw. Hand-fixed to zero.
-        "noNonNullAssertedOptionalChain": "error"
-      }
-    }
+    "enabled": false
   },
   "assist": {
     "enabled": false

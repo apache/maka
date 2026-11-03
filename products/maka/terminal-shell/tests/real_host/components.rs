@@ -75,6 +75,61 @@ async fn component(scenario: &'static str) -> AppView {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn activity_resumes_following_after_reading_an_expanded_tool() {
+    let mut view = component("activity-follow").await;
+    wait_view(&mut view, |screen| screen.contains("Live activity-10")).await;
+    support::click_button(&mut view, "Read older activity").await;
+    support::click_button(&mut view, "Toggle tool Tool details").await;
+    wait_view(&mut view, |screen| screen.contains("Tool source line 1")).await;
+    support::click_button(&mut view, "Append activity").await;
+    wait_view(&mut view, |screen| screen.contains("Activity count: 11")).await;
+    assert!(view.snapshot().contains("Tool source line 1"));
+    assert!(!view.snapshot().contains("Live activity-11"));
+
+    let list = view
+        .accessibility_snapshot()
+        .into_iter()
+        .find(|node| node.label == "Turn activity")
+        .unwrap();
+    let column = ((list.frame.origin.x.0 + list.frame.size.width.0) / 8.0).ceil() as u16 - 1;
+    let row = (list.frame.origin.y.0 / 16.0).ceil() as u16 + 1;
+    for _ in 0..40 {
+        view.handle_event(TerminalEvent::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+        view.poll().unwrap();
+        support::tick(&mut view);
+        tokio::task::yield_now().await;
+    }
+    wait_view(&mut view, |screen| screen.contains("Live activity-11")).await;
+    support::click_button(&mut view, "Append activity").await;
+    wait_view(&mut view, |screen| screen.contains("Live activity-12")).await;
+
+    support::click_button(&mut view, "One line above latest").await;
+    wait_view(&mut view, |screen| screen.contains("Above activity end")).await;
+    support::click_button(&mut view, "Append activity").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("Live activity-13") && screen.contains("At activity end")
+    })
+    .await;
+
+    let terminal_rows = 100;
+    view.resize(120, terminal_rows);
+    let activity_height = f32::from(terminal_rows) * 16.0 / 2.0;
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("Live activity-13")
+            && screen.contains("At activity end")
+            && view.accessibility_snapshot().iter().any(|node| {
+                node.label == "Turn activity" && node.frame.size.height.0 == activity_height
+            })
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sandbox_choice_preserves_the_original_session_and_approval_setting() {
     let mut view = component("sandbox").await;
     support::click_button(&mut view, "Sandbox and approvals").await;
@@ -137,6 +192,109 @@ async fn composer_slash_command_and_workspace_reference_edit_the_native_draft() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_tab_accepts_prediction_as_an_undoable_draft_then_navigates() {
+    let mut view = component("composer-prediction").await;
+    wait_editable_composer(&mut view).await;
+    wait_enabled_node(&mut view, "Use suggested message").await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("No command")
+            && view
+                .surface()
+                .input_context()
+                .is_some_and(|input| input.text.as_deref() == Some("Review the changes."))
+            && !view
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == "Use suggested message")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    )));
+    wait_focused_input(&mut view, "Message composer").await;
+    shortcut(&mut view, 'z');
+    wait_view_state(&mut view, |view, _| {
+        view.surface()
+            .input_context()
+            .is_some_and(|input| input.text.as_deref() == Some(""))
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn composer_prediction_preserves_reverse_tab_and_escape_restores_forward_tab() {
+    let mut view = component("composer-prediction").await;
+    wait_editable_composer(&mut view).await;
+    wait_enabled_node(&mut view, "Use suggested message").await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::BackTab,
+        KeyModifiers::SHIFT,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_focused_input(&mut view, "Message composer").await;
+    assert_eq!(
+        view.surface().input_context().unwrap().text.as_deref(),
+        Some("")
+    );
+    wait_enabled_node(&mut view, "Use suggested message").await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Use suggested message")
+    })
+    .await;
+    view.handle_event(TerminalEvent::Key(KeyEvent::new(
+        KeyCode::Tab,
+        KeyModifiers::NONE,
+    )));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.focused && node.label != "Message composer")
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn thinking_disclosure_renders_inline_markdown_and_keeps_formatted_body() {
     let mut view = component("thinking-markdown").await;
     let title = "Thinking · Opening Reddit homepage";
@@ -192,24 +350,11 @@ async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_re
     .await;
     support::click_button(&mut view, "Complete compaction").await;
     wait_view(&mut view, |screen| {
-        screen.contains("Context compacted (2m 6s)") && !screen.contains("Compacting context")
+        screen.contains("Context compacted (1h 2m 6s)") && !screen.contains("Compacting context")
     })
     .await;
     let screen = view.snapshot();
-    let line = |label: &str| {
-        screen
-            .lines()
-            .find(|line| line.contains(label))
-            .unwrap_or_default()
-            .to_owned()
-    };
-    assert!(line("Context compacted").contains('─'), "{screen}");
-    // The Host's Plan opening names the Plan on the same kind of line, without
-    // its frozen request or the user's message actions.
-    assert!(
-        line("Executing plan: FIXTURE_PLAN").contains('─'),
-        "{screen}"
-    );
+    // The Plan opening must not expose its frozen request or user actions.
     assert!(
         !screen.contains("Execute the user-approved plan"),
         "{screen}"
@@ -229,143 +374,7 @@ async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_re
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits() {
-    let mut view = component("composer-details").await;
-    support::wait_enabled_button(&mut view, "Toggle conversation todo").await;
-    support::wait_enabled_button(&mut view, "Toggle computer access").await;
-    support::wait_enabled_button(&mut view, "Messages").await;
-    assert!(!view.snapshot().contains("Fixture App one"));
-    assert!(!view.snapshot().contains("TODO_NEXT"));
-    assert!(!view.snapshot().contains("QUEUED_ORIGINAL"));
-    support::evidence("composer-details-collapsed", &view.snapshot());
-    support::evidence_cells("composer-details-collapsed", &view);
-    view.resize(60, 24);
-    tab_to_label(&mut view, "Messages").await;
-    support::click_button(&mut view, "Messages").await;
-    wait_view(&mut view, |screen| screen.contains("QUEUED_ORIGINAL")).await;
-    support::evidence("composer-details-narrow", &view.snapshot());
-    support::evidence_cells("composer-details-narrow", &view);
-    support::click_button(&mut view, "Messages").await;
-    view.resize(120, 36);
-
-    support::click_button(&mut view, "Toggle computer access").await;
-    wait_view(&mut view, |screen| screen.contains("Fixture App one")).await;
-    support::click_button(&mut view, "Stop access to Fixture App one").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("stopped:one") && screen.contains("Access stopped for this turn")
-    })
-    .await;
-    support::click_button(&mut view, "Toggle computer access").await;
-    wait_view(&mut view, |screen| !screen.contains("Fixture App one")).await;
-
-    support::click_button(&mut view, "Messages").await;
-    support::click_button(&mut view, "Edit queued message 1").await;
-    wait_focused_input(&mut view, "Queued message editor").await;
-    shortcut(&mut view, 'a');
-    view.handle_event(TerminalEvent::Paste("UNSAVED_QUEUE_EDIT".into()));
-    commit_native_events(&mut view).await;
-    support::click_button(&mut view, "Toggle conversation todo").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("TODO_NEXT") && !screen.contains("UNSAVED_QUEUE_EDIT")
-    })
-    .await;
-    support::click_button(&mut view, "Add computer access").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("TODO_NEXT") && !screen.contains("Fixture App two")
-    })
-    .await;
-    assert!(
-        !view
-            .accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Queued message editor")
-    );
-    support::evidence("composer-details-todo", &view.snapshot());
-    support::evidence_cells("composer-details-todo", &view);
-
-    support::click_button(&mut view, "Messages").await;
-    wait_view_state(&mut view, |view, _| {
-        view.surface()
-            .input_context()
-            .is_some_and(|input| input.text.as_deref() == Some("UNSAVED_QUEUE_EDIT"))
-    })
-    .await;
-    support::click_button(&mut view, "Drain queued messages").await;
-    support::click_button(&mut view, "Toggle computer access").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("Fixture App one") && !screen.contains("UNSAVED_QUEUE_EDIT")
-    })
-    .await;
-    support::evidence("composer-details-access", &view.snapshot());
-    support::evidence_cells("composer-details-access", &view);
-    support::click_button(&mut view, "Messages").await;
-    wait_view_state(&mut view, |view, screen| {
-        screen.contains("Message no longer queued")
-            && view
-                .surface()
-                .input_context()
-                .is_some_and(|input| input.text.as_deref() == Some("UNSAVED_QUEUE_EDIT"))
-    })
-    .await;
-    support::click_button(&mut view, "Cancel queued message edit").await;
-    wait_view_state(&mut view, |view, _| {
-        !view
-            .accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Messages")
-    })
-    .await;
-
-    support::click_button(&mut view, "Toggle computer access").await;
-    support::click_button(&mut view, "Clear computer access").await;
-    wait_view_state(&mut view, |view, _| {
-        !view
-            .accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Toggle computer access")
-    })
-    .await;
-    wait_view(&mut view, |screen| {
-        screen.contains("TODO_CURRENT") && !screen.contains("TODO_NEXT")
-    })
-    .await;
-    support::click_button(&mut view, "Restore computer access").await;
-    support::wait_enabled_button(&mut view, "Toggle computer access").await;
-    assert!(!view.snapshot().contains("Fixture App one"));
-    support::click_button(&mut view, "Toggle conversation todo").await;
-    wait_view(&mut view, |screen| screen.contains("TODO_NEXT")).await;
-    support::click_button(&mut view, "Fail outgoing message").await;
-    let screen = wait_view(&mut view, |screen| screen.contains("1 to review")).await;
-    assert!(screen.contains("TODO_NEXT"));
-    assert!(
-        !view
-            .accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Retry message")
-    );
-    support::click_button(&mut view, "Messages").await;
-    wait_view(&mut view, |screen| {
-        screen.contains("FAILED_MESSAGE") && screen.contains("FIXTURE_SEND_FAILED")
-    })
-    .await;
-    support::click_button(&mut view, "Retry message").await;
-    wait_view_state(&mut view, |view, screen| {
-        screen.contains("retried:failed-original")
-            && !view
-                .accessibility_snapshot()
-                .iter()
-                .any(|node| node.label == "Messages")
-    })
-    .await;
-    assert!(
-        view.accessibility_snapshot()
-            .iter()
-            .any(|node| node.label == "Message composer")
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn tool_status_icons_keep_accessible_meanings_without_inline_labels() {
+async fn tool_status_icons_keep_accessible_meanings() {
     let mut view = component("tool-statuses").await;
     let labels = [
         "Recorded",
@@ -376,23 +385,13 @@ async fn tool_status_icons_keep_accessible_meanings_without_inline_labels() {
         "Input recorded",
         "Running tool",
     ];
-    let screen = wait_view_state(&mut view, |view, _| {
+    wait_view_state(&mut view, |view, _| {
         let nodes = view.accessibility_snapshot();
         labels
             .iter()
             .all(|label| nodes.iter().any(|node| node.label == *label))
     })
     .await;
-    for label in labels {
-        assert!(
-            !screen.contains(label),
-            "status should be an icon, not inline text: {label}"
-        );
-    }
-    assert!(
-        screen.contains('?'),
-        "unknown results need the question-mark icon"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

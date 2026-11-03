@@ -87,9 +87,6 @@ fn selection_evaluates_each_capability_once_and_preserves_the_source() {
             );
             assert!(source.validate(&name, &json!("valid")).is_ok());
         }
-        if rejected.is_none() {
-            assert!(Arc::ptr_eq(&source.entries, &selected.entries));
-        }
     }
 }
 

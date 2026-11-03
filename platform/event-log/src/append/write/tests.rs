@@ -98,6 +98,7 @@ fn completed_parts(id: &str, parts: Vec<CompletionPart>) -> EventWrite {
         Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts,
                 finish_reason: ModelFinishReason::Stop,
                 usage: Default::default(),

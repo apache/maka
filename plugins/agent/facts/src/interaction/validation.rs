@@ -253,6 +253,7 @@ impl InteractionRequest {
                 tool_use_id,
                 grants,
                 application,
+                application_location,
             } => {
                 if tool_use_id.is_empty() {
                     return Err("Invalid interaction tool use identity");
@@ -272,6 +273,9 @@ impl InteractionRequest {
                     || application.chars().any(char::is_control)
                 {
                     return Err("Invalid system permission application name");
+                }
+                if let Some(location) = application_location {
+                    location.bundle_url()?;
                 }
             }
         }
@@ -477,4 +481,36 @@ fn windows_absolute(path: &str) -> bool {
                 && unc(&rest[4..]));
     }
     drive(&path) || path.strip_prefix("\\\\").is_some_and(unc)
+}
+
+impl SystemPermissionApplicationLocation {
+    pub fn bundle_url(&self) -> Result<url::Url, &'static str> {
+        if self.state_domain.len() != 64
+            || !self
+                .state_domain
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("Invalid system permission Host identity");
+        }
+        let url =
+            url::Url::parse(&self.file_url).map_err(|_| "Invalid permission application URL")?;
+        if url.scheme() != "file"
+            || url.host_str().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Permission application must be a local bundle URL");
+        }
+        let path = url.path().trim_end_matches('/');
+        if !path.starts_with('/')
+            || !path
+                .rsplit('.')
+                .next()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            return Err("Permission application must be an absolute app bundle");
+        }
+        Ok(url)
+    }
 }

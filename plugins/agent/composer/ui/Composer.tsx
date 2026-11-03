@@ -41,6 +41,7 @@ import type {
 import {
   C,
   bodyTextStyle,
+  inputTextStyle,
   captionTextStyle,
   compact,
   controlFocusStyle,
@@ -134,21 +135,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       sourceTurnId: suggestion.sourceTurnId,
       text: suggestion.text,
     };
-    const bindings = ['right', 'enter'].map((key) =>
+    const bindings = ['tab', 'right', 'enter'].map((key) =>
       keymap.bind(key, () => acceptSuggestedMessage(offered), {
         when: 'always',
         within: editor.node,
       }),
-    );
-    bindings.push(
-      keymap.bind(
-        'escape',
-        () => {
-          if (props.session() === owner && suggestedMessage() === suggestion)
-            owner.prediction.dismiss(suggestion.sourceTurnId);
-        },
-        { when: 'always', within: editor.node },
-      ),
     );
     return () => bindings.forEach((unbind) => unbind());
   });
@@ -219,11 +210,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     text,
     expected,
   }: {
-    owner: Pending;
+    owner: string;
     text: string;
     expected: string;
   }) => {
-    submitPending(owner, text, expected);
+    const current = pending();
+    if (current?.id === owner) submitPending(current, text, expected);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
@@ -311,7 +303,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         'escape',
         () => {
           if (completion.composing()) return;
-          stop();
+          const suggestion = suggestedMessage();
+          if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
+          else stop();
         },
         { when: 'always', within: node },
       );
@@ -365,7 +359,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 })
               : pending()
                 ? inputAction(sendPending, {
-                    owner: pending()!,
+                    owner: pending()!.id,
                     text: pending()!.draft(),
                     expected: pending()!.confirmation(),
                   })
@@ -677,6 +671,17 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         <Input
                           accessibilityLabel={tr('Attachment path')}
                           placeholder={tr('Absolute file path…')}
+                          style={{
+                            ...inputTextStyle,
+                            height: 32,
+                            paddingHorizontal: 8,
+                            borderWidth: 1,
+                            borderRadius: 6,
+                            borderColor: C.line,
+                            color: C.text,
+                            placeholderColor: C.muted,
+                          }}
+                          focusStyle={{ borderColor: C.accent }}
                           autoFocus
                           value={path()}
                           onChange={({ value }) => path.set(value)}
@@ -694,7 +699,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         </Button>
                       </If>
                     </If>
-                    <View>
+                    <View
+                      style={{
+                        minHeight: hero() && !compact() ? 40 : 24,
+                        maxHeight: compact() ? 64 : 144,
+                      }}
+                    >
                       <Input
                         ref={(node) => {
                           editor.set(node);
@@ -800,8 +810,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                         }
                         style={[
                           {
-                            minHeight: hero() && !compact() ? 40 : 24,
-                            maxHeight: compact() ? 64 : 144,
+                            minHeight: 0,
+                            flexGrow: 1,
+                            flexShrink: 1,
                             color: C.text,
                             placeholderColor: C.muted,
                             ...bodyTextStyle,
@@ -831,7 +842,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           {suggestedMessage()!.text}{' '}
                           <Button
                             accessibilityLabel={tr('Use suggested message')}
-                            tooltip={textTooltip(() => tr('Right arrow to use · Esc to dismiss'))}
+                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
                             onPress={inputAction(acceptSuggestedMessage, {
                               sessionId: owner!.sessionId,
                               sourceTurnId: suggestedMessage()!.sourceTurnId,
@@ -851,7 +862,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
-                              {tr('Use suggestion')}
+                              {tr('Press Tab to accept')}
                             </Text>
                           </Button>
                         </Text>

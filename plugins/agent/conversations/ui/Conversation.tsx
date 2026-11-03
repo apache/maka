@@ -84,7 +84,10 @@ import {
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
-import { Preview } from '../../../../products/maka/workbench/app/preview';
+import {
+  TranscriptOverlay,
+  type LivePart,
+} from '../../../../products/maka/workbench/app/transcriptOverlay';
 import { thinkingSummary } from '../../../../products/maka/workbench/app/thinkingSummary';
 import type {
   ComposerSession,
@@ -125,6 +128,7 @@ import {
   TurnSummary,
   turnOutcome,
 } from '../../../../products/maka/workbench/app/TurnPanel';
+import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
   GroupViewState,
   LiveActivity,
@@ -152,10 +156,7 @@ import {
 import type { TurnNavigationItem } from '../../../../products/maka/workbench/app/TurnNavigation';
 import type { ConversationStatus } from '../../../../products/maka/workbench/app/sessionStatus';
 import type { ImagePreview } from '../../../../products/maka/workbench/app/ImageThumbnail';
-import {
-  latestToolActivity,
-  updateToolActivity,
-} from '../../../../products/maka/workbench/app/toolActivity';
+import { latestToolActivity } from '../../../../products/maka/workbench/app/toolActivity';
 import type { ToolActivity } from '../../../../products/maka/workbench/app/toolActivity';
 import type {
   AgentHistoryAttachment,
@@ -263,14 +264,6 @@ type ConversationProps = {
   focusComposer(): void;
   stopAction(): () => void;
 };
-type LivePart = {
-  invocationId: string | null;
-  stepId: string;
-  partId: string;
-  messageId: string;
-  field: 'thinking' | 'body';
-  startSequence: number;
-};
 function comparePosition(left: Position, right: Position): number {
   return left.sourceSequence - right.sourceSequence || left.itemIndex - right.itemIndex;
 }
@@ -330,10 +323,12 @@ export function Conversation(props: ConversationProps) {
       first.position?.itemIndex === row.position?.itemIndex
     );
   };
-  const live = signal<Row[]>([]);
-  const toolActivity = signal<ToolActivity[]>([]);
-  const parts = signal<LivePart[]>([]);
-  const preview = new Preview();
+  const overlay = new TranscriptOverlay();
+  const transient = signal(overlay.snapshot());
+  const publishOverlay = () => transient.set(overlay.snapshot());
+  const live = computed(() => transient().rows);
+  const toolActivity = computed(() => transient().tools);
+  const parts = computed(() => transient().parts);
   const pendingMessages = signal<Row[]>([]);
   const queued = signal<AgentQueue | null>(null);
   const title = signal(sessionId);
@@ -793,12 +788,8 @@ export function Conversation(props: ConversationProps) {
     batch(() => {
       rows.set(mergeChunks(rows(), chunks, older, through));
       const canonical = canonicalRows().byMessage;
-      const currentLive = live();
-      for (const row of currentLive)
-        if (row.preview && canonical.has(`${row.messageId}/${row.field}`))
-          preview.commit(row.invocationId!, row.stepId!, row.messageId);
-      const nextLive = currentLive.filter((row) => !canonical.has(`${row.messageId}/${row.field}`));
-      if (nextLive.length !== currentLive.length) live.set(nextLive);
+      overlay.history(canonical, atHistoryTail() ? through : null);
+      publishOverlay();
       const currentPending = pendingMessages();
       const nextPending = currentPending.filter(
         (row) => !canonical.has(`${row.messageId}/${row.field}`),
@@ -883,18 +874,18 @@ export function Conversation(props: ConversationProps) {
       }
       if (!canPublish()) return false;
       batch(() => {
-        rows.set(mergeChunks([], page.chunks, false, page.through));
+        rows.set([]);
         historyWindow.set({
           identity,
           through: page.through,
           before: page.before,
           after: page.after,
         });
+        publishHistory(page.chunks, page.through);
         ready.set(true);
         awayFromLatest.set(position.kind !== 'tail');
         innerReader.set(null);
       });
-      hydrateAttachmentMetadata();
       if (page.after === null && latestKnown > through) void follow().catch(report);
       return true;
     })()
@@ -1017,6 +1008,8 @@ export function Conversation(props: ConversationProps) {
     permissions.observe(observed.session);
     backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
     if (observed.through >= runThrough) {
+      overlay.observe(observed);
+      publishOverlay();
       const completedTurn = observed.lastCompletedTurnId;
       const trigger = predictionTrigger({
         completedTurnId: completedTurn,
@@ -1077,11 +1070,6 @@ export function Conversation(props: ConversationProps) {
           const current = historyWindow()!;
           historyWindow.set({ ...current, through: fence, after: null });
         }
-        const currentLive = live();
-        const nextLive = currentLive.filter(
-          (row) => row.closedAt === null || row.closedAt! > fence,
-        );
-        if (nextLive.length !== currentLive.length) live.set(nextLive);
         const refresh = refreshFrom;
         refreshFrom = null;
         const last = rows().at(-1);
@@ -1137,23 +1125,6 @@ export function Conversation(props: ConversationProps) {
     return task;
   };
 
-  const openParts = (started: LivePart[]) => {
-    const same = (a: LivePart, b: LivePart) =>
-      a.invocationId === b.invocationId && a.stepId === b.stepId && a.partId === b.partId;
-    parts.set([
-      ...parts().filter((part) => !started.some((other) => same(part, other))),
-      ...started,
-    ]);
-  };
-  const closeLive = (sequence: number, invocationId: string, stepId?: string) => {
-    live.set(
-      live().map((row) =>
-        row.invocationId === invocationId && (stepId === undefined || row.stepId === stepId)
-          ? { ...row, closedAt: sequence }
-          : row,
-      ),
-    );
-  };
   const deliver = (page: any) => {
     if (page.kind === 'queue') {
       if (page.queue.revision >= (queued()?.revision ?? -1)) queued.set(page.queue);
@@ -1169,9 +1140,8 @@ export function Conversation(props: ConversationProps) {
       return;
     }
     if (page.kind === 'preview') {
-      const next = preview.page(page.page, live(), toolActivity(), canonicalRows().byMessage);
-      live.set(next.rows);
-      toolActivity.set(next.tools);
+      overlay.page(page.page);
+      publishOverlay();
       return;
     }
     if (page.kind !== 'events') return;
@@ -1180,11 +1150,7 @@ export function Conversation(props: ConversationProps) {
     for (const event of page.events) {
       if (event.sequence <= watchLast) continue;
       const fact = event.fact;
-      if (fact.kind === 'tool_input_ready')
-        preview.retireTool(event.invocationId, fact.stepId, fact.toolUseId);
-      const nextTools = updateToolActivity(toolActivity(), event);
-      if (nextTools !== toolActivity()) toolActivity.set(nextTools);
-      const field = (kind: string) => (kind === 'thinking' ? 'thinking' : 'body');
+      overlay.event(event);
       switch (fact.kind) {
         case 'opened':
           if (event.sequence > runThrough) {
@@ -1200,64 +1166,19 @@ export function Conversation(props: ConversationProps) {
           changed = true;
           break;
         case 'executor_started':
-          openParts(
-            ['text', 'thinking'].map((textKind) => ({
-              invocationId: event.invocationId,
-              stepId: event.invocationId,
-              partId: textKind,
-              messageId: fact.messageId,
-              field: field(textKind),
-              startSequence: event.sequence,
-            })),
-          );
           changed = true;
           break;
-        case 'delta': {
-          const part = parts().find(
-            (part) =>
-              part.invocationId === event.invocationId &&
-              part.stepId === fact.stepId &&
-              part.partId === fact.partId,
-          );
-          if (!part || canonicalRows().byMessage.has(`${part.messageId}/${part.field}`)) break;
-          const key = `live/${part.messageId}/${part.field}`;
-          const previous = live().find((row) => row.key === key);
-          if (previous?.sequence !== undefined && event.sequence <= previous.sequence) break;
-          const next = {
-            ...part,
-            invocationId: part.invocationId ?? undefined,
-            key,
-            role: part.field === 'thinking' ? 'thinking' : 'assistant',
-            turnId: event.turnId,
-            text: (previous?.text ?? '') + fact.text,
-            prefix: true,
-            sequence: event.sequence,
-            closedAt: null,
-          };
-          live.set(
-            previous ? live().map((row) => (row.key === key ? next : row)) : [...live(), next],
-          );
+        case 'delta':
           break;
-        }
         case 'part_committed':
-          preview.commit(event.invocationId, fact.stepId, fact.messageId);
           changed = true;
           break;
         case 'step_ended':
-          preview.commit(event.invocationId, fact.stepId);
-          closeLive(event.sequence, event.invocationId, fact.stepId);
-          parts.set(
-            parts().filter(
-              (part) => part.invocationId !== event.invocationId || part.stepId !== fact.stepId,
-            ),
-          );
           void observe().catch(report);
           changed = true;
           break;
         case 'ended':
           requestMetadata(rows().find((row) => row.turnId === event.turnId));
-          closeLive(event.sequence, event.invocationId);
-          parts.set(parts().filter((part) => part.invocationId !== event.invocationId));
           if (event.sequence > runThrough) {
             predictionTriggerTurn = fact.failed ? null : event.turnId;
             run.set(fact.failed ? 'failed' : 'idle');
@@ -1285,6 +1206,7 @@ export function Conversation(props: ConversationProps) {
           break;
       }
     }
+    publishOverlay();
     watchLast = Math.max(watchLast, page.nextAfter);
     if (changed) void follow().catch(report);
   };
@@ -1298,13 +1220,6 @@ export function Conversation(props: ConversationProps) {
     if (previousTurn !== null) requestMetadata(rows().find((row) => row.turnId === previousTurn));
     const observed = await observe();
     if (!alive) return;
-    parts.set(
-      observed.parts.map((part: any) => ({
-        ...part,
-        invocationId: observed.run?.invocationId ?? null,
-        field: part.textKind === 'thinking' ? 'thinking' : 'body',
-      })),
-    );
     const after = replayStartCursor(observed.through, observed.parts, observed.toolSeeds);
     const stream = await host.subscribe('agent', 'watch', { sessionId, after });
     if (!alive) {
@@ -1370,7 +1285,8 @@ export function Conversation(props: ConversationProps) {
           return;
         } catch (reason) {
           if (!alive) return;
-          toolActivity.set([]);
+          overlay.disconnect();
+          publishOverlay();
           report(reason);
           // Match the desktop catalog's quiet two-second reconnect pause.
           // Only observations repeat; original mutations remain in the journal.
@@ -2760,7 +2676,8 @@ export function Conversation(props: ConversationProps) {
     wakeReconnect?.();
     modelGeneration += 1;
     modelRead = null;
-    toolActivity.set([]);
+    overlay.disconnect();
+    publishOverlay();
     props.detach(ownHandle);
     const stream = subscription;
     subscription = null;
@@ -3050,11 +2967,20 @@ export function Conversation(props: ConversationProps) {
                         const first = projection().turns.get(initial.turnId);
                         if (!first) return <View />;
                         const turn = () => projection().turns.get(initial.turnId) ?? first;
+                        const images = computed(() =>
+                          turnImages(projection().rowsById.values(), initial.turnId),
+                        );
                         return (
                           <TurnSummary
                             turn={turn}
                             expanded={() => turnExpanded(turn())}
                             canFold={() => canFoldTurn(turn())}
+                            images={{
+                              sessionId,
+                              through: () => latestKnown,
+                              refs: images,
+                              preview: props.previewImage,
+                            }}
                             toggle={(open) => {
                               turnState(initial.turnId).expanded.set({
                                 open,

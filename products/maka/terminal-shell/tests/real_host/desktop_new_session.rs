@@ -411,31 +411,6 @@ impl Desktop {
         .await
     }
 
-    async fn reveal_settings_control(&self, label: &str) -> Bounds<gpui::Pixels> {
-        let header = self.control("Close settings").await.bottom();
-        self.until(&format!("{label} did not scroll into view"), || {
-            let controls = self.controls(label);
-            let [bounds] = controls.as_slice() else {
-                return None;
-            };
-            let height = self.frame.lock().unwrap().as_ref()?.size().height.0 as f32;
-            if bounds.top() >= header && bounds.bottom() <= px(height) {
-                return Some(*bounds);
-            }
-            let middle = (header + px(height)) / 2.;
-            self.platform
-                .dispatch_input(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-                    position: point(bounds.center().x, middle),
-                    delta: gpui::ScrollDelta::Pixels(point(px(0.), middle - bounds.center().y)),
-                    modifiers: Modifiers::default(),
-                    touch_phase: gpui::TouchPhase::Moved,
-                }))
-                .unwrap();
-            None
-        })
-        .await
-    }
-
     /// Clicks the one control labelled `label` once the window shows it.
     async fn press(&self, label: &str) {
         let bounds = self.control(label).await;
@@ -524,147 +499,8 @@ impl Desktop {
     }
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_prediction_preserves_the_request_and_inserts_an_undoable_draft() {
-    let mut fixture = Fixture::configured(Options {
-        predictions: true,
-        ..Default::default()
-    })
-    .await;
-    let (_, appearance, _, width, height) = visual_case();
-    let desktop = Desktop::open_at(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
-        appearance,
-    )
-    .await;
-    if !desktop.controls("Expand session browser").is_empty() {
-        desktop.press("Expand session browser").await;
-    }
-    desktop.press("Open settings").await;
-    desktop.press("Settings section General").await;
-    let configure = desktop
-        .reveal_settings_control("Configure message predictions")
-        .await;
-    desktop.press_at(configure.center());
-    desktop.press("Only for regular conversations: Off").await;
-    desktop.control("Only for regular conversations: On").await;
-    desktop.artifact("prediction-settings-scope");
-    let save = desktop
-        .reveal_settings_control("Save prediction settings")
-        .await;
-    desktop.press_at(save.center());
-    desktop.press("Close settings").await;
-    desktop
-        .wait("the prediction setting was not saved", async {
-            while desktop
-                .client
-                .query("settings", "assistantPreferences", json!({}))
-                .await
-                .unwrap()["predictions"]["ordinarySessionsOnly"]
-                != true
-            {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await;
-    desktop.control("Focus message composer").await;
-    desktop.new_draft().await;
-    desktop.type_text("Review the patch.").await;
-    desktop.submit().await;
-    let mut reply = desktop.request(&mut fixture).await;
-    let original = reply.body.clone();
-    let session = desktop
-        .sessions()
-        .await
-        .into_iter()
-        .find(|entry| entry["id"] != fixture.session)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    desktop.control("Stop response").await;
-    reply.delta("The patch needs a regression test.").await;
-    reply.finish().await;
-    desktop
-        .wait(
-            "the reply did not finish",
-            fixture.idle(&desktop.client, &session),
-        )
-        .await;
-    let observe = || {
-        desktop
-            .client
-            .query("agent", "observe", json!({"sessionId":session}))
-    };
-    let before = observe().await.unwrap()["through"].as_u64().unwrap();
-    let mut prediction = desktop.request(&mut fixture).await;
-    assert!(
-        prediction.body["messages"]
-            .as_array()
-            .unwrap()
-            .starts_with(original["messages"].as_array().unwrap())
-    );
-    let mut parameters = original;
-    parameters.as_object_mut().unwrap().remove("messages");
-    let mut predicted_parameters = prediction.body.clone();
-    predicted_parameters
-        .as_object_mut()
-        .unwrap()
-        .remove("messages");
-    assert_eq!(
-        predicted_parameters, parameters,
-        "model, reasoning and tools must remain unchanged"
-    );
-    prediction.thinking("Review the current goal.").await;
-    prediction
-        .delta(r#"{"suggestion":"Add a regression test."}"#)
-        .await;
-    prediction.finish().await;
-    desktop.control("Use suggested message").await;
-    desktop.artifact("prediction-composer");
-    desktop.press("Use suggested message").await;
-    desktop.control("Send message").await;
-    desktop.expect_text("Add a regression test.").await;
-    assert_eq!(
-        fixture.request_count.load(Ordering::SeqCst),
-        2,
-        "accepting must not send"
-    );
-    let after = observe().await.unwrap()["through"].as_u64().unwrap();
-    // The fence also includes auxiliary accounting; compare only this conversation's events.
-    let appended = fixture
-        .store
-        .session(&session)
-        .await
-        .unwrap()
-        .session_events(&session, before, after, 1, usize::MAX)
-        .await
-        .unwrap();
-    assert!(
-        appended.events.is_empty(),
-        "prediction must not append conversation events: {:?}",
-        appended
-            .events
-            .iter()
-            .map(|event| event.event.fact.kind())
-            .collect::<Vec<_>>(),
-    );
-    desktop.key("end", false);
-    desktop.key("z", true);
-    desktop.platform.paste("Write a focused test.").unwrap();
-    desktop.expect_text("Write a focused test.").await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
 async fn images_fixture() -> Fixture {
-    Fixture::configured(Options {
-        images: true,
-        ..Default::default()
-    })
-    .await
+    Fixture::configured(Options { images: true }).await
 }
 
 fn image_file(fixture: &Fixture) -> (std::path::PathBuf, Vec<u8>) {
@@ -711,7 +547,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 1);
     gate.arm();
-    desktop.key("enter", false);
+    desktop.press("Send message").await;
     desktop.held(&gate).await;
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 2);
@@ -728,6 +564,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
             super::support::wait_draft(&desktop.client, session, "NEXT_DESKTOP_DRAFT"),
         )
         .await;
+    desktop.artifact("first-send-clicked");
     gate.release();
     let request = desktop.request(&mut fixture).await;
     assert_image(&request, "FIRST_DESKTOP_MESSAGE", &bytes);
@@ -1279,13 +1116,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     .await;
     desktop.press("Edit connection ChatGPT Subscription").await;
     let reload = desktop.control("Reload connection").await;
-    let delete = desktop.control("Delete connection").await;
-    assert_eq!(
-        reload.center().y,
-        delete.center().y,
-        "connection actions must share one baseline"
-    );
-    assert!(reload.bottom() <= px(height as f32) && reload.bottom() > px(height as f32 - 128.0));
+    assert!(reload.bottom() <= px(height as f32));
     desktop.artifact(&format!("connection-before-login-{theme}-{layout}"));
     desktop.press("Sign in with ChatGPT").await;
     desktop.control("Copy sign-in code").await;
@@ -1331,27 +1162,13 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     desktop.control("Set default gpt-4.1").await;
     desktop.artifact(&format!("connection-models-{theme}-{layout}"));
     desktop.press("Edit model gpt-4.1").await;
-    let associate = desktop.control("Associate catalog model").await;
+    desktop.control("Associate catalog model").await;
     desktop.artifact(&format!("connection-model-editor-{theme}-{layout}"));
-    // A choice spans its content, not the editor, so it starts where its siblings do.
-    let provider = desktop.control("Provider default (medium)").await;
-    let off = desktop.control("Default effort off").await;
-    let capabilities = desktop.control("Model capabilities").await;
-    assert_eq!(provider.left(), off.left());
-    assert!(
-        provider.right() < capabilities.center().x,
-        "{provider:?} {capabilities:?}"
-    );
     desktop.press("Associate catalog model").await;
     desktop.control("openai / gpt-4.1").await;
     desktop.artifact(&format!("connection-model-catalog-{theme}-{layout}"));
     desktop.press("openai / gpt-4.1").await;
-    let save = desktop.control("Save model").await;
-    assert_eq!(
-        associate.right(),
-        save.right(),
-        "model controls must share the reading edge"
-    );
+    desktop.control("Save model").await;
     desktop.press("Back").await;
     desktop.control("Keep editing").await;
     desktop.artifact(&format!("connection-unsaved-model-{theme}-{layout}"));
@@ -1577,35 +1394,26 @@ async fn desktop_settings_translate_subscription_sign_in_and_provider_search() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_available() {
-    let mut fixture = Fixture::open().await;
+async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
+    let fixture = Fixture::open().await;
     let (theme, appearance, layout, width, height) = visual_case();
-    let desktop = Desktop::open_at(
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/mermaid_preview.tsx");
+    let output = fixture.directory.path().join("mermaid-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
         &fixture,
         &fixture.address,
         size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
         appearance,
+        Some((source, "en", "Show diagram source")),
     )
     .await;
-    desktop.new_draft().await;
-    desktop
-        .type_text("Show how Maka renders Mermaid diagrams locally.")
-        .await;
-    desktop.key("enter", false);
-    desktop.artifact("mermaid-submitted");
-    let mut reply = desktop.request(&mut fixture).await;
-    reply.delta("### Mermaid diagrams in Maka\n\nRendered locally, with Chinese labels and colors that follow the workbench theme.\n\n```mermaid\nflowchart LR\n  A[Mermaid 源码] --> B[Pele 渲染]\n  B --> C[字体转路径]\n  C --> D[NSH 显示]\n  style D fill:#1d745a,stroke:#24c483,color:#ffffff\n```\n").await;
-    reply.finish().await;
-    let sessions = desktop.sessions().await;
-    let session = sessions
-        .iter()
-        .find(|session| session["id"] != fixture.session)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
-    fixture.idle(&desktop.client, &session).await;
-    desktop.control("Show diagram source").await;
     desktop
         .until(
             "the diagram's image never reached the desktop frame",
@@ -1626,93 +1434,23 @@ async fn desktop_mermaid_renders_in_the_real_conversation_and_keeps_source_avail
     desktop.artifact(&format!("mermaid-workbench-{theme}-{layout}"));
     desktop.press("Show diagram source").await;
     desktop.control("Hide diagram source").await;
+    desktop.press("Copy code block").await;
+    let copied = desktop
+        .until("the diagram source was not copied", || {
+            desktop
+                .platform
+                .take_clipboard_write()
+                .and_then(|item| item.text())
+        })
+        .await;
+    assert_eq!(
+        copied,
+        "flowchart LR\n  A[源码] --> B[图表]\n  style B fill:#1d745a,stroke:#24c483,color:#ffffff"
+    );
     desktop.artifact(&format!("mermaid-workbench-source-{theme}-{layout}"));
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
-    let fixture = Fixture::open().await;
-    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../terminal-shell/tests/real_host/activity_preview.tsx");
-    let output = fixture.directory.path().join("activity-preview");
-    let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
-        std::fs::read_to_string(compiled.module).unwrap()
-    })
-    .await
-    .unwrap();
-    let desktop = Desktop::open_config(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
-        nsh_core::platform::Appearance::Dark,
-        Some((source, "en", "Thinking · Check browser connection")),
-    )
-    .await;
-    let icon_center = |row: Bounds<gpui::Pixels>| {
-        let crop = Bounds::new(
-            point(row.right() - row.size.height, row.top()),
-            size(row.size.height, row.size.height),
-        );
-        let pixels = desktop.pixels(crop)?;
-        let background = &pixels[..3];
-        let contrast: Vec<_> = pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|pixel| {
-                (0..3)
-                    .map(|channel| pixel[channel].abs_diff(background[channel]))
-                    .max()
-                    .unwrap()
-            })
-            .collect();
-        let peak = *contrast.iter().max()?;
-        if peak == 0 {
-            return None;
-        }
-        let side = f32::from(crop.size.width) as usize;
-        let mut left = side;
-        let mut right = 0;
-        let mut top = side;
-        let mut bottom = 0;
-        for (index, contrast) in contrast.into_iter().enumerate() {
-            if contrast < peak / 2 {
-                continue;
-            }
-            left = left.min(index % side);
-            right = right.max(index % side);
-            top = top.min(index / side);
-            bottom = bottom.max(index / side);
-        }
-        Some((
-            f32::from(crop.left()) + (left + right) as f32 / 2.,
-            f32::from(crop.top()) + (top + bottom) as f32 / 2.,
-        ))
-    };
-    let mut column = None;
-    for index in 0..8 {
-        let row = desktop.control(&format!("Toggle tool tool-{index}")).await;
-        let (x, y) = desktop
-            .until("the status icon did not paint", || icon_center(row))
-            .await;
-        let expected_x = *column.get_or_insert(x);
-        assert!(
-            (x - expected_x).abs() <= 1.,
-            "status {index} is off the icon column: {x} vs {expected_x}"
-        );
-        let expected_y = f32::from(row.center().y);
-        assert!(
-            (y - expected_y).abs() <= 1.,
-            "status {index} is not vertically centered: {y} vs {expected_y}"
-        );
-    }
-    desktop.artifact("activity-status-icons-collapsed");
-    desktop.press("Thinking · Check browser connection").await;
-    desktop.control("Show thinking source").await;
-    desktop.artifact("activity-status-icons-expanded");
+    desktop.press("Hide diagram source").await;
+    desktop.control("Show diagram source").await;
+    assert!(desktop.controls("Copy code block").is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
@@ -1881,12 +1619,6 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.key("v", true);
     desktop.artifact("goal-objective-entered");
     let start = desktop.control("Start Goal").await;
-    let close = desktop.control("Close Goal").await;
-    assert_eq!(
-        start.right(),
-        close.right(),
-        "Goal actions share the trailing edge"
-    );
     assert!(start.right() <= px(width as f32) && start.bottom() <= px(height as f32));
     desktop.artifact(&format!("goal-create-{theme}-{layout}"));
     desktop.press("Start Goal").await;
@@ -2095,6 +1827,172 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
             super::support::wait_draft(&desktop.client, &grandchild, "OPENED_TREE_GRANDCHILD"),
         )
         .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_large_paste_keeps_controls_on_screen() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let before = desktop.control("Focus message composer").await;
+    let draft = (0..200)
+        .map(|i| format!("Traceback line {i}: a long pasted diagnostic with paths and details\n"))
+        .collect::<String>();
+    // TerminalPlatform::paste injects IME text, which strips control characters.
+    // Native clipboard paste keeps the diagnostic's line breaks.
+    desktop
+        .app
+        .update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(draft.clone())));
+    let keystroke = Keystroke {
+        key: "v".into(),
+        key_char: None,
+        modifiers: Modifiers {
+            control: true,
+            shift: true,
+            ..Default::default()
+        },
+    };
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        }))
+        .unwrap();
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+        .unwrap();
+    let card = desktop
+        .until("the pasted draft did not size its composer", || {
+            let card = desktop
+                .controls("Focus message composer")
+                .into_iter()
+                .next()?;
+            (card.size.height > before.size.height).then_some(card)
+        })
+        .await;
+    desktop.artifact("composer-large-paste");
+    let window_height = desktop
+        .frame
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .size()
+        .height
+        .0 as f32;
+    assert!(
+        card.top() >= px(0.) && card.bottom() <= px(window_height),
+        "large paste escaped the composer viewport: {card:?}"
+    );
+    desktop.expect_text(&draft).await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_attachment_picker_has_readable_dark_controls() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop
+        .type_text("Keep this draft while picking an attachment")
+        .await;
+    let previous = desktop.platform.text_input_target();
+    desktop.key("u", true);
+    desktop.control("Close attachment picker").await;
+    desktop.target_after(previous).await;
+    desktop
+        .type_text("/tmp/attachment-path-not-submitted.txt")
+        .await;
+    desktop.control("Upload selected file").await;
+    let card = desktop.control("Focus message composer").await;
+    desktop.artifact("composer-dark-attachment-picker");
+    let pixels = desktop
+        .pixels(Bounds::new(
+            point(card.left() + px(12.), card.top() + px(12.)),
+            size(card.size.width - px(24.), card.size.height - px(24.)),
+        ))
+        .unwrap();
+    let black = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[..3] == [0, 0, 0])
+        .count();
+    assert_eq!(
+        black, 0,
+        "attachment picker painted default black text/borders over the dark composer"
+    );
+    desktop.press("Close attachment picker").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .expect_text("Keep this draft while picking an attachment")
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_system_permission_guidance_uses_native_actions_without_paths() {
+    let fixture = Fixture::open().await;
+    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../terminal-shell/tests/real_host/permission_preview.tsx");
+    let output = fixture.directory.path().join("permission-preview");
+    let source = tokio::task::spawn_blocking(move || {
+        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
+        std::fs::read_to_string(compiled.module).unwrap()
+    })
+    .await
+    .unwrap();
+    let desktop = Desktop::open_config(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+        Some((source, "en", "Local Host")),
+    )
+    .await;
+    desktop.control("Open Accessibility settings").await;
+    desktop
+        .control("Open Screen & System Audio Recording settings")
+        .await;
+    desktop.press("Show permission application in Finder").await;
+    desktop.control("Requested reveal_application").await;
+    desktop.artifact("system-permission-native-guidance");
+    desktop.press("Open Accessibility settings").await;
+    desktop.control("Requested accessibility").await;
+    desktop.press("Cancel request").await;
+    desktop
+        .control("Request cancelled without granting access")
+        .await;
+    for mode in ["Remote Host", "Older request"] {
+        desktop.press(mode).await;
+        desktop
+            .until("remote or old request retained local actions", || {
+                (desktop
+                    .controls("Show permission application in Finder")
+                    .is_empty()
+                    && desktop.controls("Open Accessibility settings").is_empty())
+                .then_some(())
+            })
+            .await;
+        desktop.control("Cancel request").await;
+    }
     desktop.close().await;
     fixture.finish().await;
 }

@@ -30,6 +30,7 @@ use tokio_util::sync::CancellationToken;
 
 fn request(base_url: &str) -> ModelRequest {
     ModelRequest {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
             image_input: None,
@@ -273,7 +274,7 @@ async fn redirect_replay_and_usage_retry_preserve_encoded_header_bytes() {
             let messages = fields.remove("messages").unwrap();
             fields.remove("stream_options");
             fields.insert("messages".into(), messages);
-            assert_eq!(retried, serde_json::to_vec(&expected).unwrap(), "usage negotiation must preserve existing swap_remove field order");
+            assert_eq!(serde_json::from_slice::<Value>(&retried).unwrap(), expected, "usage negotiation must preserve all fields except stream_options");
             response(&mut socket, 200, &completion(&[json!({"content":"ok"})])).await;
         });
         let mut input = request(&url);

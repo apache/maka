@@ -106,11 +106,25 @@ fn request(v: &Value) -> Result<InteractionRequest> {
             }
         }
         Some("system_permission") => {
-            shape(v, &["kind", "toolUseId", "grants", "application"])?;
+            if v.get("applicationLocation").is_some() {
+                shape(
+                    v,
+                    &[
+                        "kind",
+                        "toolUseId",
+                        "grants",
+                        "application",
+                        "applicationLocation",
+                    ],
+                )?;
+            } else {
+                shape(v, &["kind", "toolUseId", "grants", "application"])?;
+            }
             InteractionRequest::SystemPermission {
                 tool_use_id: field(v, "toolUseId")?,
                 grants: field(v, "grants")?,
                 application: field(v, "application")?,
+                application_location: field(v, "applicationLocation")?,
             }
         }
         Some("form") => {

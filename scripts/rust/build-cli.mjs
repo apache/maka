@@ -17,11 +17,12 @@
  * under the License.
  */
 
+import { execFileSync } from 'node:child_process';
 import { constants } from 'node:fs';
 import { release as osRelease } from 'node:os';
 import { parseArgs } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import {
   chmod,
   copyFile,
@@ -146,7 +147,7 @@ const desktopApp = { id: 'org.apache.maka.desktop', name: 'Maka' };
  * higher version: bump `version` only when the helper must change. Every
  * bump makes users allow "Maka Host" again.
  */
-const hostApp = { id: 'org.apache.maka.host', name: 'Maka Host', version: '1' };
+const hostApp = { id: 'org.apache.maka.host', name: 'Maka Host', version: '2' };
 
 /** `[workspace.package] version`, which every Maka crate takes. */
 export function workspaceVersion(manifest) {
@@ -161,7 +162,7 @@ export function workspaceVersion(manifest) {
  * and icon macOS reads, and the Host's helper `Maka Host.app`, built beside
  * the shell.
  */
-export async function stageDesktopBundle(repositoryRoot, shell, destination) {
+export async function stageDesktopBundle(repositoryRoot, shell, destination, resources = []) {
   const version = workspaceVersion(await readFile(join(repositoryRoot, 'Cargo.toml'), 'utf8'));
   const icon = icns(await readFile(join(repositoryRoot, 'assets/logo.png')));
   const metadata = await lstat(shell);
@@ -177,10 +178,14 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination) {
     await writeFile(join(contents, 'Info.plist'), infoPlist({ ...desktopApp, version }));
     await mkdir(join(contents, 'MacOS'));
     const executable = join(contents, 'MacOS', 'maka-desktop-shell');
+    for (const resource of resources) {
+      await copyFile(resource, join(contents, 'Resources', basename(resource)));
+    }
     await copyFile(shell, executable, constants.COPYFILE_FICLONE);
     await chmod(executable, 0o755);
     await stageHostBundle(join(dirname(shell), 'maka-host-shell'), contents);
     await chmod(stage, 0o755);
+    signBundle(stage, desktopApp.id);
     await rm(destination, { recursive: true, force: true });
     await rename(stage, destination);
   } catch (error) {
@@ -190,9 +195,9 @@ export async function stageDesktopBundle(repositoryRoot, shell, destination) {
 }
 
 /**
- * `Contents/Helpers/Maka Host.app`. It carries no build-specific value, and
- * no signature beyond the linker's: macOS registers it by bundle id and ties
- * the grant to the executable's code hash.
+ * `Contents/Helpers/Maka Host.app` has no build-specific values and carries
+ * a complete bundle signature: the linker signature does not bind its plist
+ * or seal its resources, and carries a build-derived identifier.
  */
 async function stageHostBundle(hostShell, contents) {
   const metadata = await lstat(hostShell);
@@ -219,6 +224,20 @@ async function stageHostBundle(hostShell, contents) {
   const executable = join(host, 'MacOS', 'maka-host-shell');
   await copyFile(hostShell, executable, constants.COPYFILE_FICLONE);
   await chmod(executable, 0o755);
+  signBundle(dirname(host), hostApp.id);
+}
+
+function signBundle(bundle, id) {
+  execFileSync(
+    '/usr/bin/codesign',
+    ['--force', '--sign', '-', '--identifier', id, '--timestamp=none', bundle],
+    { stdio: 'pipe' },
+  );
+  execFileSync(
+    '/usr/bin/codesign',
+    ['--verify', '--strict', '--test-requirement', `=identifier "${id}"`, bundle],
+    { stdio: 'pipe' },
+  );
 }
 
 function infoPlist({

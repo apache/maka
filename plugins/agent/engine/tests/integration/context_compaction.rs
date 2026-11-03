@@ -86,7 +86,7 @@ async fn compact_next_main_and_reopen_use_durable_baseline_with_complete_tail() 
         .unwrap();
     let source = log.read_model_view("session", None).await.unwrap();
     let baseline = source.baseline.unwrap();
-    assert_eq!(baseline.checkpoint.summary.text, SUMMARY);
+    assert_eq!(baseline.checkpoint.summary.text_value().unwrap(), SUMMARY);
     let checkpoint = baseline.event_id;
     worker
         .run(

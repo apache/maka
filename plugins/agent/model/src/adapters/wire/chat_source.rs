@@ -378,6 +378,11 @@ async fn encode(
             while let Some(part) = cursor.next().await.map_err(error)? {
                 tokio::task::yield_now().await;
                 let part_options = match &part {
+                    AssistantRecipe::CodexCompaction { .. } => {
+                        return Err(ModelError::Adapter(
+                            "Codex native state requires ChatGPT Responses".into(),
+                        ));
+                    }
                     AssistantRecipe::Text {
                         provider_options, ..
                     }

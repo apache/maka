@@ -46,14 +46,16 @@ use std::sync::{Arc, OnceLock};
 const ENDPOINT: &str = "https://chatgpt.com/backend-api/codex";
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct Configuration {
+pub(super) struct Configuration {
     base_url: String,
+    #[serde(default)]
+    server_side_compaction: bool,
 }
 #[derive(Deserialize, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct LoginInput {}
 
-pub(super) fn configuration(connection: &Connection) -> Result<String, Error> {
+pub(super) fn configuration(connection: &Connection) -> Result<Configuration, Error> {
     let configuration: Configuration = serde_json::from_value(connection.configuration.clone())
         .map_err(|_| Error::Invalid("invalid subscription configuration".into()))?;
     if configuration.base_url.trim_end_matches('/') != ENDPOINT {
@@ -61,7 +63,7 @@ pub(super) fn configuration(connection: &Connection) -> Result<String, Error> {
             "subscription endpoint cannot be overridden".into(),
         ));
     }
-    Ok(configuration.base_url)
+    Ok(configuration)
 }
 
 impl Codex {
@@ -80,7 +82,7 @@ impl Codex {
             custom_endpoint: false,
             configuration_schema: serde_json::to_value(schemars::schema_for!(Configuration))
                 .map_err(|e| e.to_string())?,
-            configuration_defaults: json!({ "baseUrl": ENDPOINT }),
+            configuration_defaults: json!({ "baseUrl": ENDPOINT, "serverSideCompaction": false }),
             authentication: vec![Method {
                 id: "chatgpt".into(),
                 label: "Sign in with ChatGPT".into(),
@@ -98,7 +100,7 @@ impl Codex {
 impl Provider for Codex {
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
         Box::pin(async move {
-            let base_url = configuration(&request.connection)?;
+            let configuration = configuration(&request.connection)?;
             let reported = self.snapshot.resolve(
                 "chatgpt",
                 request.model,
@@ -111,10 +113,6 @@ impl Provider for Codex {
                 Some(overrides) => overrides.apply(&reported),
                 None => reported,
             };
-            // Existing saved connections may predate discovery of this fact.
-            if info.max_output_tokens.is_none() {
-                info.max_output_tokens = super::inventory::output_capacity(&info.id)?;
-            }
             if info
                 .api_protocol
                 .is_some_and(|wire| wire != ApiProtocol::OpenaiResponses)
@@ -162,6 +160,8 @@ impl Provider for Codex {
             if summary || level.is_some() {
                 options["openai"]["forceReasoning"] = json!(true);
             }
+            info.capabilities.get_or_insert_default().native_compaction =
+                Some(configuration.server_side_compaction);
             let model = Model {
                 main_output_limit: request
                     .overrides
@@ -178,7 +178,7 @@ impl Provider for Codex {
                     .and_then(|o| o.adapter.clone())
                     .unwrap_or_else(|| ADAPTER.into()),
                 protocol: ProviderKind::OpenaiResponses,
-                base_url,
+                base_url: configuration.base_url,
                 info,
                 thinking_levels,
                 provider_options: options,
@@ -237,7 +237,7 @@ impl Provider for Codex {
                 credential,
                 request_headers,
             } = request;
-            let base_url = configuration(&connection)?;
+            let base_url = configuration(&connection)?.base_url;
             let tokens = login::Tokens::read(&credential.ok_or(Error::AuthenticationRequired)?)?;
             let mut headers = super::request_headers(&tokens.access_token, &connection.id)?;
             for (name, value) in request_headers {

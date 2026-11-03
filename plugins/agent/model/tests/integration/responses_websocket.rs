@@ -42,6 +42,7 @@ mod continuation;
 mod failures;
 fn request(base_url: &str, text: &str) -> ModelRequest {
     ModelRequest {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         language: maka_agent_facts::language::Language::En,
         provider: ProviderConfig {
             image_input: None,
