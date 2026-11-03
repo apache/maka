@@ -207,22 +207,22 @@ async fn assistant_preferences_and_capability_guidance_freeze_at_message_accepta
         }), None).await;
         assert_eq!(stale["kind"], "revision_conflict");
         let current = query(&fixture, "assistantPreferences", json!({})).await;
-        assert_eq!(current["shellTitles"], true);
+        assert_eq!(current["shell"]["titles"], true);
         let (disabled, reference) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
-            "mutation":{"kind":"shell_titles","enabled":false}
+            "mutation":{"kind":"shell","value":{"preference":"auto","executable":"","titles":false}}
         }), None).await;
         assert_eq!(disabled["kind"], "committed");
-        assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["shellTitles"], false);
+        assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["shell"]["titles"], false);
         assert!(!fixture.config.runtime_policy().await.unwrap().policy.shell.titles);
         assert_eq!(fixture.store.operation(&reference).unwrap().operation_observation().await.unwrap().unwrap().outcome,
             OperationOutcome::Returned { value: disabled });
         let (stale, _) = mutate(&fixture, "updateAssistantPreferences", json!({
             "expectedRevision":current["revision"],
-            "mutation":{"kind":"shell_titles","enabled":true}
+            "mutation":{"kind":"shell","value":{"preference":"auto","executable":"","titles":true}}
         }), None).await;
         assert_eq!(stale["kind"], "revision_conflict");
-        assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["shellTitles"], false);
+        assert_eq!(query(&fixture, "assistantPreferences", json!({})).await["shell"]["titles"], false);
         fixture.app.shutdown().await.unwrap();
         fixture.config.shutdown().await.unwrap();
     }).await.unwrap();

@@ -197,7 +197,7 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
             request={request}
             kind="titles"
             label={tr('Automatic shell titles')}
-            enabled={owner.facts()?.shellTitles ?? false}
+            enabled={owner.facts()?.shell.titles ?? false}
           />
         </View>
         <If when={platform.os === 'windows'}>

@@ -557,7 +557,7 @@ export function createGeneralSettings(
           : kind === 'privacy'
             ? { kind: 'privacy', incognitoActive: !saved.incognitoActive }
             : kind === 'titles'
-              ? { kind: 'shell_titles', enabled: !saved.shellTitles }
+              ? { kind: 'shell', value: { ...saved.shell, titles: !saved.shell.titles } }
               : {
                   kind: 'message_predictions',
                   settings: { ...saved.predictions, enabled: !saved.predictions.enabled },

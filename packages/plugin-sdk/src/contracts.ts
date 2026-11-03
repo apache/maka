@@ -33717,6 +33717,18 @@ export const contracts = {
                 type: 'string',
                 minLength: 1,
               },
+              shell: {
+                anyOf: [
+                  {
+                    $ref: '#/$defs/ShellPolicy',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+                description:
+                  'Explicit interpreter choice; absent uses the Runtime Host preference.',
+              },
               login: {
                 type: 'boolean',
                 description: "Load the shell's login profile. Set false to skip it.",
@@ -33758,6 +33770,26 @@ export const contracts = {
             title: 'Execute',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
+              ShellPolicy: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  preference: {
+                    $ref: '#/$defs/ShellPreference',
+                  },
+                  executable: {
+                    type: 'string',
+                  },
+                  titles: {
+                    type: 'boolean',
+                  },
+                },
+                required: ['preference', 'executable', 'titles'],
+              },
+              ShellPreference: {
+                type: 'string',
+                enum: ['auto', 'git_bash'],
+              },
               Permissions: {
                 type: 'object',
                 additionalProperties: false,
@@ -38549,9 +38581,6 @@ export const contracts = {
               incognitoActive: {
                 type: 'boolean',
               },
-              shellTitles: {
-                type: 'boolean',
-              },
               shell: {
                 $ref: '#/$defs/ShellPolicy',
               },
@@ -38568,7 +38597,6 @@ export const contracts = {
               'displayName',
               'workspaceInstructions',
               'incognitoActive',
-              'shellTitles',
               'shell',
             ],
             $defs: {
@@ -42966,20 +42994,6 @@ export const contracts = {
                     },
                     additionalProperties: false,
                     required: ['kind', 'incognitoActive'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'shell_titles',
-                      },
-                      enabled: {
-                        type: 'boolean',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'enabled'],
                   },
                   {
                     type: 'object',

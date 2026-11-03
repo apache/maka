@@ -1052,7 +1052,6 @@ export interface ServiceMethods {
         displayName: string;
         workspaceInstructions: boolean;
         incognitoActive: boolean;
-        shellTitles: boolean;
         shell: SettingsAssistantPreferencesOutput_ShellPolicy;
       };
     };

@@ -263,6 +263,7 @@ impl Processes {
                 tool,
                 &configuration,
                 requested,
+                None,
                 &context.scope().cancellation,
             )
             .await?;
@@ -454,7 +455,13 @@ impl Processes {
                     None => None,
                 };
                 let captured = self
-                    .prepare(&tool, &current, requested, &context.scope().cancellation)
+                    .prepare(
+                        &tool,
+                        &current,
+                        requested,
+                        None,
+                        &context.scope().cancellation,
+                    )
                     .await?;
                 if !captured
                     .executor

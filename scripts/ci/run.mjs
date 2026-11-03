@@ -56,7 +56,19 @@ export function executor(root, worker = {}) {
         ...(noRun ? ['--no-run'] : []),
         ...extra,
       ],
-      { env: { ...env, NEXTEST_PROFILE: suites[id].profile ?? 'default' } },
+      {
+        env: {
+          ...env,
+          NEXTEST_PROFILE: suites[id].profile ?? 'default',
+          ...(id === 'windows-shell'
+            ? {
+                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(env.ProgramFiles, 'LLVM', 'bin'),
+                MAKA_TEST_GIT_BASH:
+                  env.MAKA_TEST_GIT_BASH ?? join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+              }
+            : {}),
+        },
+      },
     );
 
   async function check(id) {
@@ -86,7 +98,7 @@ export function executor(root, worker = {}) {
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui', 'macos-host'].includes(id)) {
+    if (['root', 'desktop', 'gpui', 'macos-host', 'windows-shell'].includes(id)) {
       await nextest(id, true, filter, extra);
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
@@ -139,7 +151,7 @@ export function executor(root, worker = {}) {
         'scripts/rust/pack-cli.test.mjs',
         'scripts/rust/run-cli.test.mjs',
       ]);
-    } else if (id === 'root') {
+    } else if (id === 'root' || id === 'windows-shell') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);

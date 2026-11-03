@@ -23,6 +23,10 @@ use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
 use std::collections::BTreeMap;
 
 pub(super) fn schema(mut input: Value, titles: bool) -> Value {
+    input["properties"]
+        .as_object_mut()
+        .expect("shell input properties")
+        .remove("shell");
     if titles {
         input["properties"]["title"] = serde_json::json!({
             "type": "string",
@@ -73,7 +77,7 @@ pub(super) struct Binding {
 }
 impl RequestBinding for Binding {
     fn bind(&self, _: BindingRequest) -> maka_tools::request::BindingFuture {
-        let service = self.service.clone();
+        let mut service = self.service.clone();
         let configuration = self.configuration.clone();
         let input = self.input.clone();
         Box::pin(async move {
@@ -83,6 +87,7 @@ impl RequestBinding for Binding {
                 .map_err(|error| ToolError::Failed(error.to_string()))?
                 .policy
                 .shell;
+            service.shell = Some(shell.clone());
             let titles = shell.titles;
             let mut input = schema(input, titles);
             #[cfg(windows)]

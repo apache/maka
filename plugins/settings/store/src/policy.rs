@@ -145,17 +145,6 @@ impl ConfigurationStore {
         self.update_policy(expected_revision, move |policy| policy.shell = value)
             .await
     }
-    pub async fn set_shell_titles(
-        &self,
-        expected_revision: u64,
-        enabled: bool,
-    ) -> Result<RuntimePolicyMutationResult> {
-        self.update_policy(expected_revision, move |policy| {
-            policy.shell.titles = enabled
-        })
-        .await
-    }
-
     async fn update_policy(
         &self,
         expected_revision: u64,

@@ -144,7 +144,13 @@ impl Processes {
                 permissions,
             });
         let captured = self
-            .prepare(tool, &configuration, requested, cancellation)
+            .prepare(
+                tool,
+                &configuration,
+                requested,
+                input.shell.take(),
+                cancellation,
+            )
             .await?;
         let captured = Captured {
             executor: captured.executor.with_login_shell(input.login),
@@ -260,15 +266,20 @@ impl Processes {
         tool: &ToolCallContext,
         configuration: &ResolvedConfiguration,
         requested: Option<PermissionRequest>,
+        shell: Option<maka_agent_facts::configuration::policy::ShellPolicy>,
         cancellation: &CancellationToken,
     ) -> Result<Captured, ToolError> {
-        let shell = self
-            .configuration
-            .runtime_policy()
-            .await
-            .map_err(|e| failed(e.to_string()))?
-            .policy
-            .shell;
+        let shell = match shell {
+            Some(shell) => shell,
+            None => {
+                self.configuration
+                    .runtime_policy()
+                    .await
+                    .map_err(|e| failed(e.to_string()))?
+                    .policy
+                    .shell
+            }
+        };
         let settings = self.settings.clone();
         let state_root = self.state_root.clone();
         let captured_configuration = configuration.clone();

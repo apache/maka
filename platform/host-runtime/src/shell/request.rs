@@ -26,6 +26,8 @@ use serde::Deserialize;
 pub struct Execute {
     #[schemars(length(min = 1))]
     pub command: String,
+    /// Explicit interpreter choice; absent uses the Runtime Host preference.
+    pub shell: Option<maka_agent_facts::configuration::policy::ShellPolicy>,
     /// Load the shell's login profile. Set false to skip it.
     #[serde(default = "default_login")]
     pub login: bool,

@@ -1563,10 +1563,6 @@ export type SettingsPreferencesMutation =
       incognitoActive: boolean;
     }
   | {
-      kind: 'shell_titles';
-      enabled: boolean;
-    }
-  | {
       kind: 'shell';
       value: ShellPolicy;
     };
@@ -6627,7 +6623,6 @@ export interface SettingsAssistantPreferences {
   displayName: string;
   workspaceInstructions: boolean;
   incognitoActive: boolean;
-  shellTitles: boolean;
   shell: ShellPolicy;
 }
 export interface MessagePredictionSettings {

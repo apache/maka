@@ -45,7 +45,6 @@ pub struct Preferences {
     pub display_name: String,
     pub workspace_instructions: bool,
     pub incognito_active: bool,
-    pub shell_titles: bool,
     pub shell: maka_agent_facts::configuration::policy::ShellPolicy,
 }
 #[derive(Deserialize, JsonSchema)]
@@ -82,9 +81,6 @@ pub enum Mutation {
     },
     Privacy {
         incognito_active: bool,
-    },
-    ShellTitles {
-        enabled: bool,
     },
     Shell {
         value: maka_agent_facts::configuration::policy::ShellPolicy,
@@ -140,7 +136,6 @@ pub(crate) async fn read(
         display_name: snapshot.policy.personalization.display_name,
         workspace_instructions: snapshot.policy.workspace_instructions.enabled,
         incognito_active: snapshot.policy.privacy.incognito_active,
-        shell_titles: snapshot.policy.shell.titles,
         shell: snapshot.policy.shell,
     })
 }
@@ -168,15 +163,18 @@ pub(crate) async fn update(
                 .await
         }
         Mutation::Shell { value } => {
-            if !validate_shell(&value).await {
+            let current = store
+                .runtime_policy()
+                .await
+                .map_err(|_| "settings_effect_unknown")?
+                .policy
+                .shell;
+            if (value.preference != current.preference || value.executable != current.executable)
+                && !validate_shell(&value).await
+            {
                 return super::connections::encode(Updated::Rejected);
             }
             store.set_shell(input.expected_revision, value).await
-        }
-        Mutation::ShellTitles { enabled } => {
-            store
-                .set_shell_titles(input.expected_revision, enabled)
-                .await
         }
         Mutation::Privacy { incognito_active } => {
             store
