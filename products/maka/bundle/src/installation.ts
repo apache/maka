@@ -243,7 +243,7 @@ export function installation(
     processes,
     computer: { desktop: 'auto', browsers: [] },
     web: { network: 'allowed' },
-    jev: { network: 'allowed' },
+    decisions_api: { network: 'allowed' },
     coordinator: agent,
     coordinatorProcesses: processes,
     skills: {

@@ -18,6 +18,7 @@
  */
 
 use super::Answer;
+use crate::decision::present;
 use serde::{
     Deserialize, Deserializer,
     de::{MapAccess, Visitor, value::MapAccessDeserializer},
@@ -62,7 +63,7 @@ struct AnswerWire {
     #[serde(default, deserialize_with = "present")]
     probabilities: Option<BTreeMap<String, f64>>,
     #[serde(default, deserialize_with = "present")]
-    legend: Option<BTreeMap<String, String>>,
+    legend: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 enum Kind {
@@ -84,15 +85,6 @@ impl<'de> Deserialize<'de> for Kind {
             )),
         }
     }
-}
-
-// Absent fields select the variant; explicit null is never a valid field value.
-fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
-where
-    D: Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    T::deserialize(deserializer).map(Some)
 }
 
 impl TryFrom<AnswerWire> for Answer {

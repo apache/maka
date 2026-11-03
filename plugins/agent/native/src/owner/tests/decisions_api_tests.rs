@@ -118,11 +118,11 @@ impl maka_capabilities::call::ReadResource for Secret {
 }
 
 fn evaluation() -> Value {
-    json!({"state":{"ready":true},"questions":{"ready":{"type":"noul","instructions":"Is ready true?"}}})
+    json!({"input":{"ready":true},"questions":{"ready":{"type":"predicate","instructions":"Is ready true?"}}})
 }
 async fn configure(f: &Fixture, url: &str, enabled: bool) -> Value {
     let current = snapshot(f).await;
-    mutation(f, "save", json!({"revision":current["revision"],"settings":{"enabled":enabled,"url":url,"model":"fixture-jev","timeoutMs":8000}}), None).await
+    mutation(f, "save", json!({"revision":current["revision"],"settings":{"protocol":"jev","enabled":enabled,"url":url,"model":"fixture-jev","timeoutMs":8000}}), None).await
 }
 async fn credential(f: &Fixture, url: &str, target: Value, secret: Option<&str>) -> Value {
     let current = snapshot(f).await;
@@ -133,15 +133,24 @@ async fn incoming(socket: &mut TcpStream) -> (String, Value) {
 }
 
 #[tokio::test]
-async fn native_jev_evaluates_with_endpoint_credentials_and_revokes_inflight_access() {
+async fn native_decisions_api_evaluates_with_endpoint_credentials_and_revokes_inflight_access() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/decision", server.local_addr().unwrap());
         let other_url = format!("http://{}/other", server.local_addr().unwrap());
-        let f = Fixture::with_services("http://127.0.0.1:1/v1", None, None, Some(service_tools::Setup::jev())).await;
+        let f = Fixture::with_services("http://127.0.0.1:1/v1", None, None, Some(service_tools::Setup::decisions_api())).await;
         assert_eq!(snapshot(&f).await["settings"]["enabled"], false);
         configure(&f, &url, true).await;
         assert_eq!(credential(&f, &url, json!({"kind":"api_key"}), Some("jev-private-key")).await["kind"], "updated");
+        let source = f.app.source().unwrap();
+        let prefix = maka_host_runtime::storage::instance_prefix(&source.state_domain, source.deployment, &id(21));
+        let namespace = maka_capabilities::storage::Namespace::new("maka.workspace.decisions_api", maka_plugin_core::scope::Scope::Profile).unwrap();
+        let persisted = maka_host_runtime::storage::Storage::new(f.store.clone(), prefix.clone(), namespace.clone());
+        let stored = maka_capabilities::storage::Store::read(&persisted, "settings".into()).await.unwrap().unwrap();
+        assert_eq!(stored.data.value().unwrap()["protocol"], "jev");
+        let settings = maka_workspace_api::decisions_api::Settings { url: url.clone(), ..Default::default() };
+        let stored_key = f.config.plugin_credential(namespace, format!("{prefix}{}", settings.credential_key())).await.unwrap().unwrap();
+        assert!(stored_key.secret.unwrap().contains("jev-private-key"));
         let keyed = snapshot(&f).await;
         assert_eq!(credential(&f, &url, json!({"kind":"header","name":"X-Tenant"}), Some("jev-private-tenant")).await["kind"], "updated");
         assert_eq!(mutation(&f, "credential", json!({"url":url,"revision":keyed["credentialRevision"],"target":{"kind":"api_key"},"change":"remove"}), None).await["kind"], "changed");
@@ -152,7 +161,7 @@ async fn native_jev_evaluates_with_endpoint_credentials_and_revokes_inflight_acc
             assert!(headers.to_ascii_lowercase().contains("authorization: bearer jev-private-key"));
             assert!(headers.to_ascii_lowercase().contains("x-tenant: jev-private-tenant"));
             assert_eq!(body["model"], "fixture-jev");
-            assert_eq!(body["state"], evaluation()["state"]);
+            assert_eq!(body["state"], evaluation()["input"]);
             let body = json!({"model":"fixture-jev","answers":{"ready":{"type":"noul","noul":0.9}},"usage":{"input_tokens":12,"output_tokens":3}}).to_string();
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
         });
@@ -192,33 +201,64 @@ async fn native_jev_evaluates_with_endpoint_credentials_and_revokes_inflight_acc
 }
 
 #[tokio::test]
-async fn native_jev_choice_and_score_preserve_the_original_wire_values() {
+async fn native_decisions_api_jev_preserves_structured_criteria_and_legend() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}/decision", server.local_addr().unwrap());
         let f = Fixture::with_services("http://127.0.0.1:1/v1", None, None,
-            Some(service_tools::Setup::jev())).await;
+            Some(service_tools::Setup::decisions_api())).await;
         configure(&f, &url, true).await;
         credential(&f, &url, json!({"kind":"api_key"}), Some("original-jev-key")).await;
-        let input = json!({"state":{"original":"state"},"questions":{
-            "choice":{"type":"choice","instructions":"Choose the last","criteria":{"first":null,"second":null}},
-            "score":{"type":"score","instructions":"Use the last score","criteria":["zero","one"]}
+        let input = json!({"input":{"original":"state"},"questions":{
+            "choice":{"type":"choice","instructions":"Choose the last","choices":[{"value":"first"},{"value":"second"}]},
+            "score":{"type":"score","instructions":"Use the last score","levels":[{"label":"zero"},{"label":"one","description":{"value":"one"}}]}
         }});
         let reply = json!({"model":"fixture-jev","answers":{
             "choice":{"type":"choice","choice":"second","confidence":1.0,"probabilities":{"first":0.0,"second":1.0}},
-            "score":{"type":"score","score":1.0,"confidence":1.0,"probabilities":{"0":0.0,"1":1.0},"legend":{"0":"zero","1":"one"}}
+            "score":{"type":"score","score":1.0,"confidence":1.0,"probabilities":{"0":0.0,"1":1.0},"legend":{"0":"zero","1":{"label":"one","description":{"value":"one"}}}}
         },"usage":{"input_tokens":12,"output_tokens":3}});
         let (evaluated, ()) = tokio::join!(mutation(&f, "evaluate", input.clone(), None), async {
             let (mut socket, _) = server.accept().await.unwrap();
             let (_, observed) = incoming(&mut socket).await;
-            assert_eq!(observed["state"], input["state"]);
-            assert_eq!(observed["questions"], input["questions"]);
+            assert_eq!(observed["state"], input["input"]);
+            assert_eq!(observed["questions"]["score"]["criteria"], json!(["zero",{"label":"one","description":{"value":"one"}}]));
             let body = reply.to_string();
             socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
         });
         assert_eq!(evaluated["kind"], "completed");
-        assert_eq!(evaluated["value"]["answers"], reply["answers"]);
+        assert_eq!(evaluated["value"]["answers"]["score"]["legend"], reply["answers"]["score"]["legend"]);
+        assert_eq!(evaluated["value"]["answers"]["choice"]["choice"], "second");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_decisions_api_openai_uses_typed_choices_and_preserves_partial_refusal() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let server = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/decisions", server.local_addr().unwrap());
+        let f = Fixture::with_services("http://127.0.0.1:1/v1", None, None, Some(service_tools::Setup::decisions_api())).await;
+        let current = snapshot(&f).await;
+        assert_eq!(mutation(&f,"save",json!({"revision":current["revision"],"settings":{"protocol":"openai_decisions","enabled":true,"url":url,"model":"gpt-6-luna","timeoutMs":8000}}),None).await["kind"],"updated");
+        credential(&f,&url,json!({"kind":"api_key"}),Some("openai-private-key")).await;
+        let input = json!({"input":{"ticket":"charged twice"},"questions":{
+            "ready":{"type":"predicate","instructions":"Is this supported?"},
+            "route":{"type":"choice","instructions":{"select":"boolean true"},"choices":[{"value":true},{"value":"true"}]}
+        }});
+        let (evaluated, ()) = tokio::join!(mutation(&f,"evaluate",input.clone(),None),async {
+            let (mut socket,_) = server.accept().await.unwrap();
+            let (headers,body) = incoming(&mut socket).await;
+            assert!(headers.to_ascii_lowercase().contains("authorization: bearer openai-private-key"));
+            assert_eq!(body["model"],"gpt-6-luna");
+            assert_eq!(body["input"][0]["content"][0],json!({"type":"input_json","data":input["input"]}));
+            assert_eq!(body["questions"][1]["choices"],json!([{"value":true},{"value":"true"}]));
+            let body = json!({"model":"gpt-6-luna","answers":[{"type":"refusal","name":"ready"},{"type":"choice","name":"route","choice":true,"confidence":1.0,"probabilities":[{"value":true,"probability":1.0},{"value":"true","probability":0.0}]}],"usage":{"input_tokens":32,"output_tokens":0,"total_tokens":32,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0}}}).to_string();
+            socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+        });
+        assert_eq!(evaluated["kind"],"completed");
+        assert_eq!(evaluated["value"]["answers"]["ready"],json!({"type":"refusal"}));
+        assert_eq!(evaluated["value"]["answers"]["route"]["choice"],true);
+        f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }

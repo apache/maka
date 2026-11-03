@@ -16,7 +16,7 @@
 # under the License.
 
 [package]
-name = "maka-jev"
+name = "maka-decisions-api"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

@@ -50353,8 +50353,8 @@ export const contracts = {
       },
     },
   },
-  workspaceJev: {
-    name: 'maka.workspace.Jev',
+  workspaceDecisionsApi: {
+    name: 'maka.workspace.DecisionsApi',
     version: 1,
     transport: 'remote',
     interface: {
@@ -50376,17 +50376,17 @@ export const contracts = {
                 minimum: 0,
               },
               target: {
-                $ref: '#/$defs/JevCredentialTarget',
+                $ref: '#/$defs/DecisionsApiCredentialTarget',
               },
               change: {
-                $ref: '#/$defs/JevCredentialChange',
+                $ref: '#/$defs/DecisionsApiCredentialChange',
               },
             },
             required: ['url', 'target', 'change'],
-            title: 'JevCredential',
+            title: 'DecisionsApiCredential',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevCredentialTarget: {
+              DecisionsApiCredentialTarget: {
                 oneOf: [
                   {
                     type: 'object',
@@ -50416,7 +50416,7 @@ export const contracts = {
                   },
                 ],
               },
-              JevCredentialChange: {
+              DecisionsApiCredentialChange: {
                 type: 'string',
                 enum: ['replace', 'remove'],
               },
@@ -50433,7 +50433,7 @@ export const contracts = {
                     const: 'updated',
                   },
                   snapshot: {
-                    $ref: '#/$defs/JevSnapshot',
+                    $ref: '#/$defs/DecisionsSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -50461,10 +50461,10 @@ export const contracts = {
                 additionalProperties: false,
               },
             ],
-            title: 'JevUpdate',
+            title: 'DecisionsApiUpdate',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSnapshot: {
+              DecisionsSnapshot: {
                 type: 'object',
                 properties: {
                   revision: {
@@ -50473,7 +50473,7 @@ export const contracts = {
                     minimum: 0,
                   },
                   settings: {
-                    $ref: '#/$defs/JevSettings',
+                    $ref: '#/$defs/DecisionsSettings',
                   },
                   credentialRevision: {
                     type: ['integer', 'null'],
@@ -50495,10 +50495,13 @@ export const contracts = {
                 },
                 required: ['settings', 'configured', 'apiKeyConfigured', 'headerNames'],
               },
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -50514,7 +50517,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },
@@ -50534,19 +50541,19 @@ export const contracts = {
             type: 'object',
             additionalProperties: false,
             properties: {
-              state: true,
+              input: true,
               questions: {
                 type: 'object',
                 additionalProperties: {
-                  $ref: '#/$defs/JevQuestion',
+                  $ref: '#/$defs/DecisionsQuestion',
                 },
               },
             },
-            required: ['state', 'questions'],
-            title: 'JevEvaluation',
+            required: ['input', 'questions'],
+            title: 'DecisionsEvaluation',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevQuestion: {
+              DecisionsQuestion: {
                 oneOf: [
                   {
                     type: 'object',
@@ -50554,7 +50561,7 @@ export const contracts = {
                     properties: {
                       type: {
                         type: 'string',
-                        const: 'noul',
+                        const: 'predicate',
                       },
                       instructions: true,
                       criteria: {
@@ -50573,12 +50580,14 @@ export const contracts = {
                         const: 'choice',
                       },
                       instructions: true,
-                      criteria: {
-                        type: 'object',
-                        additionalProperties: true,
+                      choices: {
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/DecisionsChoice',
+                        },
                       },
                     },
-                    required: ['type', 'instructions', 'criteria'],
+                    required: ['type', 'instructions', 'choices'],
                   },
                   {
                     type: 'object',
@@ -50589,14 +50598,48 @@ export const contracts = {
                         const: 'score',
                       },
                       instructions: true,
-                      criteria: {
+                      levels: {
                         type: 'array',
-                        items: true,
+                        items: {
+                          $ref: '#/$defs/DecisionsLevel',
+                        },
                       },
                     },
-                    required: ['type', 'instructions', 'criteria'],
+                    required: ['type', 'instructions', 'levels'],
                   },
                 ],
+              },
+              DecisionsChoice: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  value: {
+                    $ref: '#/$defs/DecisionsChoiceValue',
+                  },
+                  description: true,
+                },
+                required: ['value'],
+              },
+              DecisionsChoiceValue: {
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'boolean',
+                  },
+                ],
+              },
+              DecisionsLevel: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  label: {
+                    type: 'string',
+                  },
+                  description: true,
+                },
+                required: ['label'],
               },
             },
           },
@@ -50611,7 +50654,7 @@ export const contracts = {
                     const: 'completed',
                   },
                   value: {
-                    $ref: '#/$defs/JevEvaluationResult',
+                    $ref: '#/$defs/DecisionsEvaluationResult',
                   },
                 },
                 required: ['kind', 'value'],
@@ -50631,10 +50674,10 @@ export const contracts = {
                 required: ['kind', 'message'],
               },
             ],
-            title: 'JevResult',
+            title: 'DecisionsApiResult',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevEvaluationResult: {
+              DecisionsEvaluationResult: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
@@ -50644,16 +50687,16 @@ export const contracts = {
                   answers: {
                     type: 'object',
                     additionalProperties: {
-                      $ref: '#/$defs/JevAnswer',
+                      $ref: '#/$defs/DecisionsAnswer',
                     },
                   },
                   usage: {
-                    $ref: '#/$defs/JevUsage',
+                    $ref: '#/$defs/DecisionsUsage',
                   },
                 },
                 required: ['model', 'answers', 'usage'],
               },
-              JevAnswer: {
+              DecisionsAnswer: {
                 oneOf: [
                   {
                     type: 'object',
@@ -50661,14 +50704,14 @@ export const contracts = {
                     properties: {
                       type: {
                         type: 'string',
-                        const: 'noul',
+                        const: 'predicate',
                       },
-                      noul: {
+                      probability: {
                         type: 'number',
                         format: 'double',
                       },
                     },
-                    required: ['type', 'noul'],
+                    required: ['type', 'probability'],
                   },
                   {
                     type: 'object',
@@ -50679,17 +50722,16 @@ export const contracts = {
                         const: 'choice',
                       },
                       choice: {
-                        type: 'string',
+                        $ref: '#/$defs/DecisionsChoiceValue',
                       },
                       confidence: {
                         type: 'number',
                         format: 'double',
                       },
                       probabilities: {
-                        type: 'object',
-                        additionalProperties: {
-                          type: 'number',
-                          format: 'double',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/DecisionsChoiceProbability',
                         },
                       },
                     },
@@ -50712,24 +50754,75 @@ export const contracts = {
                         format: 'double',
                       },
                       probabilities: {
-                        type: 'object',
-                        additionalProperties: {
-                          type: 'number',
-                          format: 'double',
+                        type: 'array',
+                        items: {
+                          $ref: '#/$defs/DecisionsScoreProbability',
                         },
                       },
                       legend: {
                         type: 'object',
-                        additionalProperties: {
-                          type: 'string',
-                        },
+                        additionalProperties: true,
                       },
                     },
                     required: ['type', 'score', 'confidence', 'probabilities', 'legend'],
                   },
+                  {
+                    type: 'object',
+                    properties: {
+                      type: {
+                        type: 'string',
+                        const: 'refusal',
+                      },
+                    },
+                    required: ['type'],
+                    additionalProperties: false,
+                  },
                 ],
               },
-              JevUsage: {
+              DecisionsChoiceValue: {
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'boolean',
+                  },
+                ],
+              },
+              DecisionsChoiceProbability: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  value: {
+                    $ref: '#/$defs/DecisionsChoiceValue',
+                  },
+                  probability: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                },
+                required: ['value', 'probability'],
+              },
+              DecisionsScoreProbability: {
+                type: 'object',
+                additionalProperties: false,
+                properties: {
+                  value: {
+                    type: 'integer',
+                    format: 'uint',
+                    minimum: 0,
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  probability: {
+                    type: 'number',
+                    format: 'double',
+                  },
+                },
+                required: ['value', 'label', 'probability'],
+              },
+              DecisionsUsage: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
@@ -50762,17 +50855,20 @@ export const contracts = {
                 minimum: 0,
               },
               settings: {
-                $ref: '#/$defs/JevSettings',
+                $ref: '#/$defs/DecisionsSettings',
               },
             },
             required: ['settings'],
-            title: 'JevSet',
+            title: 'DecisionsApiSet',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -50788,7 +50884,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },
@@ -50803,7 +50903,7 @@ export const contracts = {
                     const: 'updated',
                   },
                   snapshot: {
-                    $ref: '#/$defs/JevSnapshot',
+                    $ref: '#/$defs/DecisionsSnapshot',
                   },
                 },
                 required: ['kind', 'snapshot'],
@@ -50831,10 +50931,10 @@ export const contracts = {
                 additionalProperties: false,
               },
             ],
-            title: 'JevUpdate',
+            title: 'DecisionsApiUpdate',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSnapshot: {
+              DecisionsSnapshot: {
                 type: 'object',
                 properties: {
                   revision: {
@@ -50843,7 +50943,7 @@ export const contracts = {
                     minimum: 0,
                   },
                   settings: {
-                    $ref: '#/$defs/JevSettings',
+                    $ref: '#/$defs/DecisionsSettings',
                   },
                   credentialRevision: {
                     type: ['integer', 'null'],
@@ -50865,10 +50965,13 @@ export const contracts = {
                 },
                 required: ['settings', 'configured', 'apiKeyConfigured', 'headerNames'],
               },
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -50884,7 +50987,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },
@@ -50905,7 +51012,7 @@ export const contracts = {
                 minimum: 0,
               },
               settings: {
-                $ref: '#/$defs/JevSettings',
+                $ref: '#/$defs/DecisionsSettings',
               },
               credentialRevision: {
                 type: ['integer', 'null'],
@@ -50926,13 +51033,16 @@ export const contracts = {
               },
             },
             required: ['settings', 'configured', 'apiKeyConfigured', 'headerNames'],
-            title: 'JevSnapshot',
+            title: 'DecisionsSnapshot',
             $schema: 'https://json-schema.org/draft/2020-12/schema',
             $defs: {
-              JevSettings: {
+              DecisionsSettings: {
                 type: 'object',
                 additionalProperties: false,
                 properties: {
+                  protocol: {
+                    $ref: '#/$defs/DecisionsProtocol',
+                  },
                   enabled: {
                     type: 'boolean',
                   },
@@ -50948,7 +51058,11 @@ export const contracts = {
                     minimum: 0,
                   },
                 },
-                required: ['enabled', 'url', 'model', 'timeoutMs'],
+                required: ['protocol', 'enabled', 'url', 'model', 'timeoutMs'],
+              },
+              DecisionsProtocol: {
+                type: 'string',
+                enum: ['jev', 'openai_decisions'],
               },
             },
           },

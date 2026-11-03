@@ -17,17 +17,6 @@
  * under the License.
  */
 
-import * as sdk from '../../../packages/plugin-sdk/src/index.js';
-import { native } from '../../shared/package.js';
-export default {
-  schemaVersion: 1,
-  id: 'maka.agent.workspace-jev',
-  displayName: 'Jev reasoning',
-  description: 'Send structured reasoning requests to Jev.',
-  localizations: {
-    'zh-CN': { displayName: 'Jev 推理', description: '向 Jev 发送结构化推理请求。' },
-  },
-  application: {
-    host: native(sdk.nativeImplementations.workspaceJev),
-  },
-};
+//! Configurable JEV and OpenAI structured decisions through scoped plugin calls.
+pub mod decision;
+pub mod settings;

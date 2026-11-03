@@ -27,10 +27,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "DecisionsProtocol")]
+pub enum Protocol {
+    Jev,
+    #[serde(rename = "openai_decisions")]
+    OpenAiDecisions,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "JevSettings")]
+#[schemars(rename = "DecisionsSettings")]
 pub struct Settings {
+    pub protocol: Protocol,
     pub enabled: bool,
     pub url: String,
     pub model: String,
@@ -39,6 +49,7 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            protocol: Protocol::Jev,
             enabled: false,
             url: "https://api.typesafe.ai/v1/systemone".into(),
             model: "jev-latest".into(),
@@ -72,7 +83,7 @@ impl Settings {
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-#[schemars(rename = "JevSnapshot")]
+#[schemars(rename = "DecisionsSnapshot")]
 pub struct Snapshot {
     pub revision: Option<u64>,
     pub settings: Settings,
@@ -141,7 +152,7 @@ impl Repository {
     }
 }
 fn invalid() -> storage::StoreError {
-    storage::StoreError::Unavailable("Invalid Jev settings: use an HTTP(S) URL without user credentials or fragment, a model, and a positive timeout in milliseconds".into())
+    storage::StoreError::Unavailable("Invalid Decisions API settings: use an HTTP(S) URL without user credentials or fragment, a model, and a positive timeout in milliseconds".into())
 }
 
 /// Endpoint-bound request secrets. Never returned by a settings read.
@@ -201,7 +212,9 @@ impl Secrets {
     }
 }
 fn invalid_headers() -> storage::StoreError {
-    storage::StoreError::Unavailable("Invalid Jev authentication or request headers".into())
+    storage::StoreError::Unavailable(
+        "Invalid Decisions API authentication or request headers".into(),
+    )
 }
 
 #[cfg(test)]
@@ -209,6 +222,25 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn explicit_protocol_does_not_change_endpoint_secret_identity() {
+        let settings = Settings::default();
+        let mut changed = settings.clone();
+        changed.protocol = Protocol::OpenAiDecisions;
+        assert_eq!(changed.credential_key(), settings.credential_key());
+        assert_eq!(
+            settings.credential_key(),
+            format!(
+                "endpoint-{}",
+                hex::encode(Sha256::digest(settings.url.as_bytes()))
+            )
+        );
+        let mut value = serde_json::to_value(settings).unwrap();
+        value["protocol"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<Settings>(value.clone()).is_err());
+        value.as_object_mut().unwrap().remove("protocol");
+        assert!(serde_json::from_value::<Settings>(value).is_err());
+    }
     #[test]
     fn destination_and_header_validation_prevent_credential_confusion() {
         let a = Settings::default();

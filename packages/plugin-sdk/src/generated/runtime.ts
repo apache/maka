@@ -63,12 +63,12 @@ export type RuntimeProtocol =
   | Export
   | CallerIntent
   | AgentConfiguration
-  | WorkspaceJevConfiguration
-  | JevSet
-  | JevCredential
-  | JevUpdate
-  | JevEvaluation
-  | JevResult
+  | WorkspaceDecisionsApiConfiguration
+  | DecisionsApiSet
+  | DecisionsApiCredential
+  | DecisionsApiUpdate
+  | DecisionsEvaluation
+  | DecisionsApiResult
   | WorkspaceWebConfiguration
   | WebCapture
   | WebCall_WebFetch
@@ -706,7 +706,8 @@ export type Network =
         destinations: Destination[];
       };
     };
-export type JevCredentialTarget =
+export type DecisionsProtocol = 'jev' | 'openai_decisions';
+export type DecisionsApiCredentialTarget =
   | {
       kind: 'api_key';
     }
@@ -714,11 +715,11 @@ export type JevCredentialTarget =
       kind: 'header';
       name: string;
     };
-export type JevCredentialChange = 'replace' | 'remove';
-export type JevUpdate =
+export type DecisionsApiCredentialChange = 'replace' | 'remove';
+export type DecisionsApiUpdate =
   | {
       kind: 'updated';
-      snapshot: JevSnapshot;
+      snapshot: DecisionsSnapshot;
     }
   | {
       kind: 'changed';
@@ -726,9 +727,9 @@ export type JevUpdate =
   | {
       kind: 'invalid';
     };
-export type JevQuestion =
+export type DecisionsQuestion =
   | {
-      type: 'noul';
+      type: 'predicate';
       instructions: unknown;
       criteria?: {
         [k: string]: unknown | undefined;
@@ -737,47 +738,45 @@ export type JevQuestion =
   | {
       type: 'choice';
       instructions: unknown;
-      criteria: {
-        [k: string]: unknown | undefined;
-      };
+      choices: DecisionsChoice[];
     }
   | {
       type: 'score';
       instructions: unknown;
-      criteria: unknown[];
+      levels: DecisionsLevel[];
     };
-export type JevResult =
+export type DecisionsChoiceValue = string | boolean;
+export type DecisionsApiResult =
   | {
       kind: 'completed';
-      value: JevEvaluationResult;
+      value: DecisionsEvaluationResult;
     }
   | {
       kind: 'failed';
       message: string;
     };
-export type JevAnswer =
+export type DecisionsAnswer =
   | {
-      type: 'noul';
-      noul: number;
+      type: 'predicate';
+      probability: number;
     }
   | {
       type: 'choice';
-      choice: string;
+      choice: DecisionsChoiceValue;
       confidence: number;
-      probabilities: {
-        [k: string]: number | undefined;
-      };
+      probabilities: DecisionsChoiceProbability[];
     }
   | {
       type: 'score';
       score: number;
       confidence: number;
-      probabilities: {
-        [k: string]: number | undefined;
-      };
+      probabilities: DecisionsScoreProbability[];
       legend: {
-        [k: string]: string | undefined;
+        [k: string]: unknown | undefined;
       };
+    }
+  | {
+      type: 'refusal';
     };
 export type WebSource = 'model' | 'tavily';
 export type WebUpdate =
@@ -5247,7 +5246,7 @@ export interface DisplayText {
     [k: string]: string | undefined;
   };
 }
-export interface WorkspaceJevConfiguration {
+export interface WorkspaceDecisionsApiConfiguration {
   network: Network;
 }
 /**
@@ -5258,45 +5257,63 @@ export interface Destination {
   host: string;
   port: number;
 }
-export interface JevSet {
+export interface DecisionsApiSet {
   revision?: number | null;
-  settings: JevSettings;
+  settings: DecisionsSettings;
 }
-export interface JevSettings {
+export interface DecisionsSettings {
+  protocol: DecisionsProtocol;
   enabled: boolean;
   url: string;
   model: string;
   timeoutMs: number;
 }
-export interface JevCredential {
+export interface DecisionsApiCredential {
   url: string;
   revision?: number | null;
-  target: JevCredentialTarget;
-  change: JevCredentialChange;
+  target: DecisionsApiCredentialTarget;
+  change: DecisionsApiCredentialChange;
 }
-export interface JevSnapshot {
+export interface DecisionsSnapshot {
   revision?: number | null;
-  settings: JevSettings;
+  settings: DecisionsSettings;
   credentialRevision?: number | null;
   configured: boolean;
   apiKeyConfigured: boolean;
   headerNames: string[];
   [k: string]: unknown | undefined;
 }
-export interface JevEvaluation {
-  state: unknown;
+export interface DecisionsEvaluation {
+  input: unknown;
   questions: {
-    [k: string]: JevQuestion | undefined;
+    [k: string]: DecisionsQuestion | undefined;
   };
 }
-export interface JevEvaluationResult {
+export interface DecisionsChoice {
+  value: DecisionsChoiceValue;
+  description?: unknown;
+}
+export interface DecisionsLevel {
+  label: string;
+  description?: unknown;
+}
+export interface DecisionsEvaluationResult {
   model: string;
   answers: {
-    [k: string]: JevAnswer | undefined;
+    [k: string]: DecisionsAnswer | undefined;
   };
-  usage: JevUsage;
+  usage: DecisionsUsage;
 }
-export interface JevUsage {
+export interface DecisionsChoiceProbability {
+  value: DecisionsChoiceValue;
+  probability: number;
+}
+export interface DecisionsScoreProbability {
+  value: number;
+  label: string;
+  probability: number;
+}
+export interface DecisionsUsage {
   input_tokens: number;
   output_tokens: number;
 }

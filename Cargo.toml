@@ -28,7 +28,7 @@ members = [
     "plugins/interactions/native",
     "plugins/agent/acp-executor/native",
     "plugins/skills/native",
-    "plugins/workspace/workspace-jev/native",
+    "plugins/workspace/workspace-decisions-api/native",
     "plugins/workspace/workspace-processes/native",
     "plugins/workspace/workspace-files/native",
     "plugins/workspace/support",
@@ -52,7 +52,7 @@ members = [
     "plugins/agent/goal",
     "plugins/agent/graph",
     "plugins/agent/insights",
-    "plugins/workspace/workspace-jev/engine",
+    "plugins/workspace/workspace-decisions-api/engine",
     "platform/js-runtime",
     "platform/code-runtime",
     "platform/python-runtime",
@@ -115,7 +115,7 @@ maka-product-native = { path = "products/maka/native" }
 maka-interactions-native = { path = "plugins/interactions/native" }
 maka-acp-native = { path = "plugins/agent/acp-executor/native" }
 maka-skills-native = { path = "plugins/skills/native" }
-maka-jev-native = { path = "plugins/workspace/workspace-jev/native" }
+maka-decisions-api-native = { path = "plugins/workspace/workspace-decisions-api/native" }
 maka-processes-native = { path = "plugins/workspace/workspace-processes/native" }
 maka-files-native = { path = "plugins/workspace/workspace-files/native" }
 maka-workspace-support = { path = "plugins/workspace/support" }
@@ -159,7 +159,7 @@ maka-fs-tools = { path = "plugins/workspace/workspace-files/engine" }
 maka-goal = { path = "plugins/agent/goal" }
 maka-graph = { path = "plugins/agent/graph" }
 maka-insights = { path = "plugins/agent/insights" }
-maka-jev = { path = "plugins/workspace/workspace-jev/engine" }
+maka-decisions-api = { path = "plugins/workspace/workspace-decisions-api/engine" }
 maka-js-runtime = { path = "platform/js-runtime" }
 maka-session-state = { path = "platform/session-state" }
 maka-code-runtime = { path = "platform/code-runtime" }

@@ -173,91 +173,115 @@ export const tui_subagents_connections: Message = [
   '请在“设置 → 模型”中添加或修复模型连接。',
   '請在「設定 → 模型」中新增或修復模型連線。',
 ];
-export const tui_settings_jev: Message = ['Jev', 'Jev', 'Jev'];
-export const tui_jev_help: Message = [
-  'Evaluate structured questions with a configured Jev service. Enabling it permits requests to the saved endpoint within this installation’s network permissions.',
-  '使用配置的 Jev 服务评估结构化问题。启用后可在安装的网络权限范围内向已保存的端点发送请求。',
-  '使用設定的 Jev 服務評估結構化問題。啟用後可在安裝的網路權限範圍內向已儲存的端點傳送請求。',
+export const tui_settings_decisions_api: Message = ['Decisions API', '决策 API', '決策 API'];
+export const tui_decisions_api_help: Message = [
+  'Evaluate structured questions with a configured Decisions API service. Enabling it permits requests to the saved endpoint within this installation’s network permissions.',
+  '使用配置的 决策 API 服务评估结构化问题。启用后可在安装的网络权限范围内向已保存的端点发送请求。',
+  '使用設定的 決策 API 服務評估結構化問題。啟用後可在安裝的網路權限範圍內向已儲存的端點傳送請求。',
 ];
-export const tui_jev_enabled: Message = ['Jev enabled', '启用 Jev', '啟用 Jev'];
-export const tui_jev_url: Message = ['Endpoint URL', '端点 URL', '端點 URL'];
-export const tui_jev_model: Message = ['Model', '模型', '模型'];
-export const tui_jev_timeoutMs: Message = [
+export const tui_decisions_api_enabled: Message = [
+  'Decisions API enabled',
+  '启用决策 API',
+  '啟用決策 API',
+];
+export const tui_decisions_api_url: Message = ['Endpoint URL', '端点 URL', '端點 URL'];
+export const tui_decisions_api_model: Message = ['Model', '模型', '模型'];
+export const tui_decisions_api_timeoutMs: Message = [
   'Timeout (100–60000 ms)',
   '超时（100–60000 毫秒）',
   '逾時（100–60000 毫秒）',
 ];
-export const tui_jev_headerName: Message = ['Header name', '请求头名称', '請求標頭名稱'];
-export const tui_jev_secret: Message = [
+export const tui_decisions_api_headerName: Message = ['Header name', '请求头名称', '請求標頭名稱'];
+export const tui_decisions_api_secret: Message = [
   'New key or header value',
   '新密钥或请求头值',
   '新金鑰或請求標頭值',
 ];
-export const tui_jev_save: Message = ['Save settings', '保存设置', '儲存設定'];
-export const tui_jev_saved: Message = ['Saved', '已保存', '已儲存'];
-export const tui_jev_saved_endpoint: Message = [
+export const tui_decisions_api_save: Message = ['Save settings', '保存设置', '儲存設定'];
+export const tui_decisions_api_saved: Message = ['Saved', '已保存', '已儲存'];
+export const tui_decisions_api_saved_endpoint: Message = [
   'Credentials for saved endpoint',
   '凭据对应的已保存端点',
   '憑證對應的已儲存端點',
 ];
-export const tui_jev_key_present: Message = ['API key saved', '已保存 API 密钥', '已儲存 API 金鑰'];
-export const tui_jev_key_absent: Message = [
+export const tui_decisions_api_key_present: Message = [
+  'API key saved',
+  '已保存 API 密钥',
+  '已儲存 API 金鑰',
+];
+export const tui_decisions_api_key_absent: Message = [
   'No API key saved',
   '未保存 API 密钥',
   '未儲存 API 金鑰',
 ];
-export const tui_jev_credential_help: Message = [
+export const tui_decisions_api_credential_help: Message = [
   'Save the endpoint first. Keys and header values stay private and belong to that exact URL. Each credential change preserves the other saved values.',
   '请先保存端点。密钥和请求头值保持私密，绑定到该完整 URL。每次凭据修改都会保留其他已保存的值。',
   '請先儲存端點。金鑰和請求標頭值保持私密，綁定至該完整 URL。每次憑證修改都會保留其他已儲存的值。',
 ];
-export const tui_jev_save_key: Message = ['Save API key', '保存 API 密钥', '儲存 API 金鑰'];
-export const tui_jev_remove_key: Message = ['Remove API key', '删除 API 密钥', '刪除 API 金鑰'];
-export const tui_jev_save_header: Message = ['Save header value', '保存请求头值', '儲存請求標頭值'];
-export const tui_jev_remove_header: Message = ['Remove header', '删除请求头', '刪除請求標頭'];
-export const tui_jev_test: Message = [
+export const tui_decisions_api_save_key: Message = [
+  'Save API key',
+  '保存 API 密钥',
+  '儲存 API 金鑰',
+];
+export const tui_decisions_api_remove_key: Message = [
+  'Remove API key',
+  '删除 API 密钥',
+  '刪除 API 金鑰',
+];
+export const tui_decisions_api_save_header: Message = [
+  'Save header value',
+  '保存请求头值',
+  '儲存請求標頭值',
+];
+export const tui_decisions_api_remove_header: Message = [
+  'Remove header',
+  '删除请求头',
+  '刪除請求標頭',
+];
+export const tui_decisions_api_test: Message = [
   'Test saved configuration',
   '测试已保存的配置',
   '測試已儲存的設定',
 ];
-export const tui_jev_test_help: Message = [
+export const tui_decisions_api_test_help: Message = [
   'Sends a small test question to the saved endpoint. Provider charges may apply.',
   '向已保存端点发送一个简单测试问题，服务商可能收费。',
   '向已儲存端點傳送一個簡單測試問題，服務商可能收費。',
 ];
-export const tui_jev_tested: Message = ['Test completed', '测试完成', '測試完成'];
-export const tui_jev_test_failed: Message = [
+export const tui_decisions_api_tested: Message = ['Test completed', '测试完成', '測試完成'];
+export const tui_decisions_api_test_failed: Message = [
   'Test failed. Check the endpoint, credentials, network permissions and privacy mode.',
   '测试失败，请检查端点、凭据、网络权限及隐私模式。',
   '測試失敗，請檢查端點、憑證、網路權限及隱私模式。',
 ];
-export const tui_jev_reload: Message = [
+export const tui_decisions_api_reload: Message = [
   'Reload saved settings',
   '重新加载已保存设置',
   '重新載入已儲存設定',
 ];
-export const tui_jev_invalid: Message = [
+export const tui_decisions_api_invalid: Message = [
   'Invalid settings or credentials. Check the URL, model, timeout and header name/value.',
   '设置或凭据无效，请检查 URL、模型、超时及请求头名称和值。',
   '設定或憑證無效，請檢查 URL、模型、逾時及請求標頭名稱和值。',
 ];
-export const tui_jev_conflict: Message = [
+export const tui_decisions_api_conflict: Message = [
   'Saved values changed elsewhere. Reload before retrying; your draft is retained.',
   '已保存值被其他操作修改。草稿已保留，请重新加载后再试。',
   '已儲存值被其他操作修改。草稿已保留，請重新載入後再試。',
 ];
-export const tui_jev_unknown: Message = [
+export const tui_decisions_api_unknown: Message = [
   'The outcome is unknown. Read the original receipt before another change.',
   '结果未知，请先查询原操作回执。',
   '結果未知，請先查詢原操作回執。',
 ];
-export const tui_jev_unavailable: Message = [
-  'Unable to load or save Jev settings.',
-  '无法加载或保存 Jev 设置。',
-  '無法載入或儲存 Jev 設定。',
+export const tui_decisions_api_unavailable: Message = [
+  'Unable to load or save Decisions API settings.',
+  '无法加载或保存 决策 API 设置。',
+  '無法載入或儲存 決策 API 設定。',
 ];
-export const tui_jev_remove: Message = ['Remove credential', '删除凭据', '刪除憑證'];
-export const tui_jev_remove_question: Message = [
+export const tui_decisions_api_remove: Message = ['Remove credential', '删除凭据', '刪除憑證'];
+export const tui_decisions_api_remove_question: Message = [
   'Remove this saved credential? Other keys and headers will be kept.',
   '删除此已保存凭据？其他密钥和请求头将保留。',
   '刪除此已儲存憑證？其他金鑰和請求標頭將保留。',
