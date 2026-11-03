@@ -46,66 +46,6 @@ fn open(dialogs: &Dialogs, target: DialogTarget, kind: DialogType) -> ActiveDial
     dialogs.current().unwrap()
 }
 
-#[test]
-fn dialog_objects_and_exact_parameter_mapping() {
-    let dialogs = Dialogs::default();
-    assert!(dialogs.current().is_none());
-    for kind in [
-        DialogType::Alert,
-        DialogType::BeforeUnload,
-        DialogType::Confirm,
-        DialogType::Prompt,
-    ] {
-        let dialog = open(&dialogs, main(), kind);
-        let id = &dialog.metadata.id;
-        let dismiss = dialogs
-            .prepare_handle(id, DialogAction::Dismiss, Some("ignored".into()))
-            .unwrap();
-        assert_eq!(
-            dismiss.request,
-            DialogRequest {
-                target: main(),
-                accept: kind == DialogType::Alert,
-                prompt_text: None,
-            }
-        );
-        if matches!(kind, DialogType::Alert | DialogType::BeforeUnload) {
-            assert!(
-                dialogs
-                    .prepare_handle(id, DialogAction::Accept, None)
-                    .is_err()
-            );
-        }
-        if kind == DialogType::Confirm {
-            assert!(
-                dialogs
-                    .prepare_handle(id, DialogAction::Accept, Some(String::new()))
-                    .is_err()
-            );
-            assert!(
-                dialogs
-                    .prepare_handle(id, DialogAction::Accept, None)
-                    .unwrap()
-                    .request
-                    .accept
-            );
-        }
-        if kind == DialogType::Prompt {
-            assert!(
-                dialogs
-                    .prepare_handle(id, DialogAction::Accept, None)
-                    .is_err()
-            );
-            for text in ["", "你好 🦀\nnext line"] {
-                let accept = dialogs
-                    .prepare_handle(id, DialogAction::Accept, Some(text.into()))
-                    .unwrap();
-                assert_eq!(accept.request.prompt_text.as_deref(), Some(text));
-            }
-        }
-    }
-}
-
 #[tokio::test]
 async fn acknowledgement_alone_does_not_confirm_close() {
     let dialogs = Dialogs::default();

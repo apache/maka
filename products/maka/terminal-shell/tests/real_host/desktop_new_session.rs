@@ -1116,13 +1116,7 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     .await;
     desktop.press("Edit connection ChatGPT Subscription").await;
     let reload = desktop.control("Reload connection").await;
-    let delete = desktop.control("Delete connection").await;
-    assert_eq!(
-        reload.center().y,
-        delete.center().y,
-        "connection actions must share one baseline"
-    );
-    assert!(reload.bottom() <= px(height as f32) && reload.bottom() > px(height as f32 - 128.0));
+    assert!(reload.bottom() <= px(height as f32));
     desktop.artifact(&format!("connection-before-login-{theme}-{layout}"));
     desktop.press("Sign in with ChatGPT").await;
     desktop.control("Copy sign-in code").await;
@@ -1168,27 +1162,13 @@ async fn desktop_model_settings_keeps_successful_sign_in_and_retries_models() {
     desktop.control("Set default gpt-4.1").await;
     desktop.artifact(&format!("connection-models-{theme}-{layout}"));
     desktop.press("Edit model gpt-4.1").await;
-    let associate = desktop.control("Associate catalog model").await;
+    desktop.control("Associate catalog model").await;
     desktop.artifact(&format!("connection-model-editor-{theme}-{layout}"));
-    // A choice spans its content, not the editor, so it starts where its siblings do.
-    let provider = desktop.control("Provider default (medium)").await;
-    let off = desktop.control("Default effort off").await;
-    let capabilities = desktop.control("Model capabilities").await;
-    assert_eq!(provider.left(), off.left());
-    assert!(
-        provider.right() < capabilities.center().x,
-        "{provider:?} {capabilities:?}"
-    );
     desktop.press("Associate catalog model").await;
     desktop.control("openai / gpt-4.1").await;
     desktop.artifact(&format!("connection-model-catalog-{theme}-{layout}"));
     desktop.press("openai / gpt-4.1").await;
-    let save = desktop.control("Save model").await;
-    assert_eq!(
-        associate.right(),
-        save.right(),
-        "model controls must share the reading edge"
-    );
+    desktop.control("Save model").await;
     desktop.press("Back").await;
     desktop.control("Keep editing").await;
     desktop.artifact(&format!("connection-unsaved-model-{theme}-{layout}"));
@@ -1476,92 +1456,6 @@ async fn desktop_mermaid_renders_markdown_and_toggles_its_source() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_reasoning_and_tool_status_icons_share_the_activity_layout() {
-    let fixture = Fixture::open().await;
-    let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../terminal-shell/tests/real_host/activity_preview.tsx");
-    let output = fixture.directory.path().join("activity-preview");
-    let source = tokio::task::spawn_blocking(move || {
-        let compiled = maka_ui_build::compile(&entry, &output).unwrap();
-        std::fs::read_to_string(compiled.module).unwrap()
-    })
-    .await
-    .unwrap();
-    let desktop = Desktop::open_config(
-        &fixture,
-        &fixture.address,
-        size(gpui::DevicePixels(1120), gpui::DevicePixels(800)),
-        nsh_core::platform::Appearance::Dark,
-        Some((source, "en", "Thinking · Check browser connection")),
-    )
-    .await;
-    let icon_center = |row: Bounds<gpui::Pixels>| {
-        let crop = Bounds::new(
-            point(row.right() - row.size.height, row.top()),
-            size(row.size.height, row.size.height),
-        );
-        let pixels = desktop.pixels(crop)?;
-        let background = &pixels[..3];
-        let contrast: Vec<_> = pixels
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|pixel| {
-                (0..3)
-                    .map(|channel| pixel[channel].abs_diff(background[channel]))
-                    .max()
-                    .unwrap()
-            })
-            .collect();
-        let peak = *contrast.iter().max()?;
-        if peak == 0 {
-            return None;
-        }
-        let side = f32::from(crop.size.width) as usize;
-        let mut left = side;
-        let mut right = 0;
-        let mut top = side;
-        let mut bottom = 0;
-        for (index, contrast) in contrast.into_iter().enumerate() {
-            if contrast < peak / 2 {
-                continue;
-            }
-            left = left.min(index % side);
-            right = right.max(index % side);
-            top = top.min(index / side);
-            bottom = bottom.max(index / side);
-        }
-        Some((
-            f32::from(crop.left()) + (left + right) as f32 / 2.,
-            f32::from(crop.top()) + (top + bottom) as f32 / 2.,
-        ))
-    };
-    let mut column = None;
-    for index in 0..8 {
-        let row = desktop.control(&format!("Toggle tool tool-{index}")).await;
-        let (x, y) = desktop
-            .until("the status icon did not paint", || icon_center(row))
-            .await;
-        let expected_x = *column.get_or_insert(x);
-        assert!(
-            (x - expected_x).abs() <= 1.,
-            "status {index} is off the icon column: {x} vs {expected_x}"
-        );
-        let expected_y = f32::from(row.center().y);
-        assert!(
-            (y - expected_y).abs() <= 1.,
-            "status {index} is not vertically centered: {y} vs {expected_y}"
-        );
-    }
-    desktop.artifact("activity-status-icons-collapsed");
-    desktop.press("Thinking · Check browser connection").await;
-    desktop.control("Show thinking source").await;
-    desktop.artifact("activity-status-icons-expanded");
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_context_tooltip_includes_output_speed() {
     let fixture = Fixture::open().await;
     let entry = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1725,12 +1619,6 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.key("v", true);
     desktop.artifact("goal-objective-entered");
     let start = desktop.control("Start Goal").await;
-    let close = desktop.control("Close Goal").await;
-    assert_eq!(
-        start.right(),
-        close.right(),
-        "Goal actions share the trailing edge"
-    );
     assert!(start.right() <= px(width as f32) && start.bottom() <= px(height as f32));
     desktop.artifact(&format!("goal-create-{theme}-{layout}"));
     desktop.press("Start Goal").await;

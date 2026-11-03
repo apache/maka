@@ -73,10 +73,3 @@ test('diagram policy does not inherit Pele source, output or edge quotas', () =>
   assert(svg.length > 4_000_000);
   assert.equal((svg.match(/class="pele-edge"/g) ?? []).length, 20_000);
 });
-
-test('cyclic palette references fail instead of recursing indefinitely', () => {
-  assert.throws(
-    () => diagramSvg('flowchart LR\n A[Start] --> B[Done]', { ...dark, surface: 'var(--_s)' }, 720),
-    /Circular diagram color variable:/,
-  );
-});

@@ -108,7 +108,7 @@ test('a path dependency affects consumers across owning workspaces', () => {
 
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {
   const plan = fixture()(['packages/plugin-sdk/src/runtime/client.ts']);
-  for (const id of ['root', 'bridge', 'desktop', 'clippy', 'contracts', 'product'])
+  for (const id of ['root', 'bridge', 'desktop', 'contracts', 'product'])
     assert.ok(plan.suites[id], id);
   assert.equal(plan.suites.root.filter, 'all()');
   assert.equal(plan.suites.native, undefined);

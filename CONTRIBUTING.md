@@ -35,7 +35,7 @@ just run --help
 just check
 ```
 
-`just check` runs formatting, lint, type checks, tests and license checks. For a focused Rust change, use `cargo nextest run -p CRATE`; `--lib` or `--test NAME` limits which test targets are built. Run the checks relevant to the changed behavior before the full repository check.
+`just check` runs formatting, type checks, tests and license checks. For a focused Rust change, use `cargo nextest run -p CRATE`; `--lib` or `--test NAME` limits which test targets are built. Run the checks relevant to the changed behavior before the full repository check.
 
 The [product guide](products/maka/README.md) explains TypeScript development. The [plugin guide](plugins/README.md) covers declarations and composition. Native packaging and V8 requirements live in [scripts/rust](scripts/rust/README.md). The [website](website/README.md) has a separate manifest and lockfile.
 

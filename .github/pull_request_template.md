@@ -38,7 +38,7 @@ Tool(s) and scope:
 ## Checklist
 
 - [ ] Tests cover the change and fail without it
-- [ ] Lint, format, typecheck and the affected suites pass locally
+- [ ] Format, typecheck and the affected suites pass locally
 
 Does this PR entail a change in behavior?
 

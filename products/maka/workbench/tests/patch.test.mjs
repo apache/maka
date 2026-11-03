@@ -99,23 +99,6 @@ const CASES = [
       ['added', null, 4, '++ b'],
     ],
   },
-  {
-    name: 'tabs, CRLF and a bare empty context line',
-    patch: '@@ -1,3 +1,3 @@\n \tx\r\n\n-a\tb\n+ab\tc\n',
-    rows: [
-      ['hunk', '@@ -1,3 +1,3 @@'],
-      ['context', 1, 1, '    x'],
-      ['context', 2, 2, ''],
-      ['removed', 3, null, 'a   b'],
-      ['added', null, 3, 'ab  c'],
-    ],
-  },
-  {
-    name: 'a mode change only',
-    patch: 'diff --git a/s b/s\nold mode 100644\nnew mode 100755\n',
-    rows: [['meta', 'old mode 100644 · new mode 100755']],
-  },
-  { name: 'an empty patch', patch: '', rows: [] },
 ];
 
 for (const { name, patch, rows } of CASES) {

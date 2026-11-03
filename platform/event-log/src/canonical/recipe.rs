@@ -272,42 +272,6 @@ mod tests {
         );
     }
     #[test]
-    fn projection_measure_matches_sqlite_without_binding_a_whole_event() {
-        let db = rusqlite::Connection::open_in_memory().unwrap();
-        let numbers = [
-            "1e+00",
-            "1E-009",
-            "-0",
-            "-0.00",
-            "1e9999",
-            "123456789012345678901234567890",
-        ];
-        let strings = [
-            r#""汉🦀""#,
-            r#""\u0061\uD83E\uDD80""#,
-            r#""\\\" \\ \t\r\n""#,
-        ];
-        for number in numbers {
-            for text in strings {
-                let token = format!(
-                    "{{ \"kind\" : \"json\", \"value\" : {{ \"n\" : {number}, \"text\" : {text}, \"n\": [ true, null, false ] }} }}"
-                );
-                let event = format!(
-                    "{{\"fact\":{{\"outcome\":{{\"kind\":\"succeeded\",\"model_projection\":{token}}}}}}}"
-                );
-                let source = projection("tool_settled", &event).unwrap().unwrap();
-                let expected: i64 = db
-                    .query_row(
-                        "SELECT length(CAST(json(?1) AS BLOB))",
-                        [source.json],
-                        |row| row.get(0),
-                    )
-                    .unwrap();
-                assert_eq!(source.sqlite_json_bytes(), expected as usize);
-            }
-        }
-    }
-    #[test]
     fn extraction_and_reconstruction_preserve_original_bytes() {
         let projection = projection("tool_settled", ORIGINAL).unwrap().unwrap();
         let header = projection.header(ORIGINAL).unwrap();

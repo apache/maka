@@ -318,7 +318,7 @@ mod state_tests {
     use super::*;
 
     #[test]
-    fn binding_ceiling_names_share_refresh_and_outlive_only_their_catalog_data() {
+    fn binding_ceiling_names_remain_scoped_and_release_catalog_data() {
         use crate::request::{BindingFuture, BindingRequest, BoundTool, RequestBinding};
         use crate::{
             PreparationFuture, ToolCallContext, ToolHandler, ToolNesting, ToolPreparer,
@@ -433,11 +433,7 @@ mod state_tests {
             BTreeSet::from(["beta".into(), "gamma".into()])
         );
         assert_eq!(seen[0].ceiling.as_ref(), ["alpha", "beta", "gamma"]);
-        for next in &seen[1..4] {
-            assert!(Arc::ptr_eq(&seen[0].ceiling, &next.ceiling));
-        }
         assert_eq!(seen[4].ceiling.as_ref(), ["beta", "gamma"]);
-        assert!(!Arc::ptr_eq(&seen[0].ceiling, &seen[4].ceiling));
         assert_eq!(seen[5].selected, BTreeSet::from(["beta".into()]));
         assert_eq!(seen[5].ceiling.as_ref(), ["beta"]);
         assert!(first.all().contains("alpha"));

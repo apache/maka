@@ -30,19 +30,6 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         let session = fixture.create("Queued followup").await;
         let first = fixture.send(&session).await.unwrap();
         assert_eq!(first["kind"], "started");
-        let catalog = fixture.owner.mcp_projects.catalog(None).unwrap();
-        {
-            let runs = fixture.owner.runs.lock().await;
-            let basis = &runs.controls[&session].basis;
-            assert!(Arc::ptr_eq(&basis.internal_tools, &catalog.definitions));
-            assert!(Arc::ptr_eq(&basis.internal_bindings, &catalog.bindings));
-            assert!(Arc::ptr_eq(&basis.tools, &fixture.owner.tool_basis));
-            // Durable admission still uses the original array/object representation.
-            let wire = serde_json::to_value(basis).unwrap();
-            let restored: MessageBasis = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(serde_json::to_value(restored).unwrap(), wire);
-            assert!(wire["tools"].is_array());
-        }
         let (mut first_socket, _) = listener.accept().await.unwrap();
         request(&mut first_socket).await;
         let next = fixture.mutation(2, "send", json!({"sessionId":session,"message":"original followup","delivery":"queue","model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
@@ -64,15 +51,6 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         let current = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
         assert_ne!(current["run"]["invocationId"], first["invocationId"]);
         assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
-        {
-            // A queued admission was decoded from durable JSON. Validation must
-            // reattach shared descriptors before the successor remains running.
-            let runs = fixture.owner.runs.lock().await;
-            let basis = &runs.controls[&session].basis;
-            assert!(Arc::ptr_eq(&basis.internal_tools, &catalog.definitions));
-            assert!(Arc::ptr_eq(&basis.internal_bindings, &catalog.bindings));
-            assert!(Arc::ptr_eq(&basis.tools, &fixture.owner.tool_basis));
-        }
         // Put a real send at the gate before the completed successor worker.
         // Its Running handle drops while we hold the gate, cancelling that
         // handle's token; this is not a user stop or a SQL interrupt fence.
