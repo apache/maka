@@ -116,9 +116,15 @@ async fn activity_resumes_following_after_reading_an_expanded_tool() {
     })
     .await;
 
-    view.resize(120, 100);
-    wait_view(&mut view, |screen| {
-        screen.contains("Tool source line 10") && screen.contains("Live activity-13")
+    let terminal_rows = 100;
+    view.resize(120, terminal_rows);
+    let activity_height = f32::from(terminal_rows) * 16.0 / 2.0;
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("Live activity-13")
+            && screen.contains("At activity end")
+            && view.accessibility_snapshot().iter().any(|node| {
+                node.label == "Turn activity" && node.frame.size.height.0 == activity_height
+            })
     })
     .await;
 }
