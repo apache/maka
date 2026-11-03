@@ -82,13 +82,7 @@ export async function packNativeCli({
     );
     await chmod(join(directory, 'bin', worker), 0o755);
     const desktop = platform.os === 'win32' ? 'maka-desktop-shell.exe' : 'maka-desktop-shell';
-    if (platform.os === 'darwin') {
-      await stageDesktopBundle(
-        repositoryRoot,
-        join(dirname(resolve(binary)), desktop),
-        join(directory, 'bin', 'Maka.app'),
-      );
-    } else {
+    if (platform.os !== 'darwin') {
       await copyRegular(
         join(dirname(resolve(binary)), desktop),
         join(directory, 'bin', desktop),
@@ -124,13 +118,14 @@ export async function packNativeCli({
       16 * 1024 * 1024,
     );
     if (platform.os === 'darwin') {
-      for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt']) {
-        await copyRegular(
+      await stageDesktopBundle(
+        repositoryRoot,
+        join(dirname(resolve(binary)), desktop),
+        join(directory, 'bin', 'Maka.app'),
+        ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt'].map((name) =>
           join(directory, name),
-          join(directory, 'bin', 'Maka.app', 'Contents', 'Resources', name),
-          16 * 1024 * 1024,
-        );
-      }
+        ),
+      );
     }
     const name = `@maka-agent/cli-${target}`;
     await writeFile(

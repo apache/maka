@@ -210,6 +210,25 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
   );
 });
 
+test('Host identity inputs execute real macOS tests, including changes outside Cargo', () => {
+  for (const path of [
+    'scripts/rust/build-cli.mjs',
+    'scripts/rust/build-cli.test.mjs',
+    'scripts/rust/pack-cli.mjs',
+    'scripts/rust/run-cli.mjs',
+    'products/maka/cli/src/deployment/host_identity.rs',
+    'platform/code-runtime/src/lib.rs',
+    'packages/plugin-sdk/src/runtime/client.ts',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['macos-host'], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes('macos-host'));
+    assert.equal(runners.length, 1, path);
+    assert.equal(runners[0].runner, 'macos-latest', path);
+    assert.equal(runners[0].javascript, true, path);
+  }
+});
+
 test('native macOS behavior verification selects nextest during runner setup', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
   try {

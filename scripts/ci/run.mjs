@@ -88,7 +88,7 @@ export function executor(root, worker = {}) {
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui'].includes(id)) {
+    if (['root', 'desktop', 'gpui', 'macos-host'].includes(id)) {
       await nextest(id, true, filter, extra);
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
@@ -135,6 +135,14 @@ export function executor(root, worker = {}) {
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
       for (const name of ['format', 'lint-js', 'tooling-tests', 'licenses']) await check(name);
+    } else if (id === 'macos-host') {
+      await nextest(id);
+      await node([
+        '--test',
+        'scripts/rust/build-cli.test.mjs',
+        'scripts/rust/pack-cli.test.mjs',
+        'scripts/rust/run-cli.test.mjs',
+      ]);
     } else if (id === 'root') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {

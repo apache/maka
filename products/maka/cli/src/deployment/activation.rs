@@ -252,7 +252,7 @@ pub(super) async fn connect_or_launch(
                                 .open_capture()?;
                             drop(owner);
                             let (program, leading) =
-                                super::host_identity::command(&deployment.executable).await;
+                                super::host_identity::command(&deployment.executable).await?;
                             child = Some(
                                 detached::spawn(
                                     &program,
