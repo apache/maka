@@ -226,20 +226,9 @@ async fn validate_shell(value: &maka_agent_facts::configuration::policy::ShellPo
                 {
                     return false;
                 }
-                tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    tokio::process::Command::new(path)
-                        .arg("--version")
-                        .kill_on_drop(true)
-                        .output(),
-                )
-                .await
-                .is_ok_and(|result| {
-                    result.is_ok_and(|output| {
-                        output.status.success()
-                            && String::from_utf8_lossy(&output.stdout).contains("GNU bash")
-                    })
-                })
+                tokio::fs::metadata(path)
+                    .await
+                    .is_ok_and(|metadata| metadata.is_file())
             }
         }
     }
