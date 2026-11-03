@@ -10235,6 +10235,16 @@ export const contracts = {
                         type: 'string',
                         minLength: 1,
                       },
+                      applicationLocation: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/SystemPermissionApplicationLocation',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'grants', 'application'],
@@ -10819,6 +10829,19 @@ export const contracts = {
                     const: 'screen_recording',
                   },
                 ],
+              },
+              SystemPermissionApplicationLocation: {
+                type: 'object',
+                properties: {
+                  fileUrl: {
+                    type: 'string',
+                  },
+                  stateDomain: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['fileUrl', 'stateDomain'],
               },
               InteractionOutcome: {
                 oneOf: [
@@ -17091,6 +17114,16 @@ export const contracts = {
                         type: 'string',
                         minLength: 1,
                       },
+                      applicationLocation: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/SystemPermissionApplicationLocation',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
                     },
                     additionalProperties: false,
                     required: ['kind', 'toolUseId', 'grants', 'application'],
@@ -17675,6 +17708,19 @@ export const contracts = {
                     const: 'screen_recording',
                   },
                 ],
+              },
+              SystemPermissionApplicationLocation: {
+                type: 'object',
+                properties: {
+                  fileUrl: {
+                    type: 'string',
+                  },
+                  stateDomain: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['fileUrl', 'stateDomain'],
               },
               InteractionOutcome: {
                 oneOf: [
