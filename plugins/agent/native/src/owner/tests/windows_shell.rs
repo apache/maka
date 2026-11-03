@@ -86,7 +86,7 @@ async fn git_bash_command_keeps_model_visible_choice_after_host_preference_chang
     service_tools::named_tool_response(
         &mut socket,
         "Execute",
-        json!({"command":"[[ -n \"$BASH_VERSION\" ]] && printf captured-git-bash"}),
+        json!({"command":"[[ -n \"$BASH_VERSION\" ]] && printf captured-git-bash", "login":false}),
     )
     .await;
     let (mut socket, _) = listener.accept().await.unwrap();

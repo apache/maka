@@ -55,10 +55,7 @@ fn guidance(
                 "The configured Git Bash is unavailable. Repair the shell setting; commands fail rather than falling back to PowerShell."
             }
         };
-        if let Some(description) = input["properties"]["command"]["description"].as_str() {
-            input["properties"]["command"]["description"] =
-                serde_json::json!(format!("{description} {dialect}"));
-        }
+        input["properties"]["command"]["description"] = serde_json::json!(dialect);
     }
     #[cfg(not(windows))]
     let _ = (input, shell, available);
