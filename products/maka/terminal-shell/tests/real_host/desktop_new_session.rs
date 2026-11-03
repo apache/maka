@@ -547,7 +547,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
     desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 1);
     gate.arm();
-    desktop.key("enter", false);
+    desktop.press("Send message").await;
     desktop.held(&gate).await;
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 2);
@@ -564,6 +564,7 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
             super::support::wait_draft(&desktop.client, session, "NEXT_DESKTOP_DRAFT"),
         )
         .await;
+    desktop.artifact("first-send-clicked");
     gate.release();
     let request = desktop.request(&mut fixture).await;
     assert_image(&request, "FIRST_DESKTOP_MESSAGE", &bytes);

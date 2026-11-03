@@ -219,11 +219,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     text,
     expected,
   }: {
-    owner: Pending;
+    owner: string;
     text: string;
     expected: string;
   }) => {
-    submitPending(owner, text, expected);
+    const current = pending();
+    if (current?.id === owner) submitPending(current, text, expected);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
@@ -365,7 +366,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 })
               : pending()
                 ? inputAction(sendPending, {
-                    owner: pending()!,
+                    owner: pending()!.id,
                     text: pending()!.draft(),
                     expected: pending()!.confirmation(),
                   })
