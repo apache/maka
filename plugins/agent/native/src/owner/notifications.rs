@@ -139,7 +139,7 @@ impl Owner {
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: self.settings.tool_discovery,
-            allowed_tools: session.configuration.tools.clone(),
+            allowed_tools: self.admitted_tools(&source.session_id, &session.configuration.tools),
             background: None,
             model: Some(route.model.clone()),
             executor: None,
@@ -155,7 +155,8 @@ impl Owner {
                     .await?,
                 &snapshot,
                 language,
-                session.configuration.tools.as_deref(),
+                self.admitted_tools(&source.session_id, &session.configuration.tools)
+                    .as_deref(),
             ),
         };
         self.prepare_graph_behavior(&source.session_id, &mut basis, false)

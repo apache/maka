@@ -853,7 +853,11 @@ impl Owner {
         if session.archived
             || session.configuration.workspace != basis.workspace
             || session.configuration.binding != basis.binding
-            || session.configuration.tools != basis.allowed_tools
+            || !self.accepted_tools_match(
+                &invocation.session_id,
+                &session.configuration.tools,
+                &basis.allowed_tools,
+            )
         {
             return Err(RunError::InvalidInput(
                 "agent_session_configuration_changed".into(),
@@ -951,7 +955,11 @@ impl Owner {
             if session.archived
                 || session.configuration.workspace != basis.workspace
                 || session.configuration.binding != basis.binding
-                || session.configuration.tools != basis.allowed_tools
+                || !self.accepted_tools_match(
+                    &invocation.session_id,
+                    &session.configuration.tools,
+                    &basis.allowed_tools,
+                )
                 || (basis.executor.is_some() && basis.allowed_tools.is_some())
             {
                 return Err("agent_session_configuration_changed".into());

@@ -206,6 +206,68 @@ async fn new_conversation_from_bot_uses_installed_tools_in_the_same_workspace() 
 }
 
 #[tokio::test]
+async fn bot_tools_follow_the_current_composition_not_the_list_stored_at_creation() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| {
+                settings.bot = true;
+                settings.tools = vec![
+                    session_tool("create", "SessionCreate"),
+                    session_tool("send", "SessionSend"),
+                ];
+            },
+        )
+        .await;
+        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        // A Bot opened by an older build holds a shorter list.
+        let original = f.owner.session(&bot).await.unwrap();
+        f.session(&bot)
+            .await
+            .update_session_metadata(
+                &bot,
+                original.revision,
+                |configuration: &mut StoredSessionConfiguration| {
+                    configuration.tools = Some(vec!["todo_read".into()]);
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        f.send(&bot).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let names = tool_names(&sent);
+        response(&mut socket).await;
+        idle(&f, &bot).await;
+        for name in ["SessionCreate", "SessionSend", "SendUser", "sleep"] {
+            assert!(
+                names.iter().any(|held| held == name),
+                "{name} missing: {names:?}"
+            );
+        }
+        // The ceiling is policy, not a free-for-all: tools outside it stay out.
+        assert!(
+            !names.iter().any(|name| name == "WorkspaceFile"),
+            "{names:?}"
+        );
+        let prompt = sent.to_string();
+        assert!(
+            prompt.contains("SessionSend"),
+            "the standing instructions name the derived tools"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn bot_opened_from_a_restricted_session_still_speaks() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
