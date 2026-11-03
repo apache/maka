@@ -75,6 +75,7 @@ fn required(target: Target) -> impl Iterator<Item = &'static str> {
     .into_iter()
     .chain(target.desktop_members().iter().copied())
     .chain(target.service_executable())
+    .chain(target.host_shell())
 }
 
 /// The package root or a parent of a required member.
@@ -397,6 +398,9 @@ fn validate_package(directory: &Path, target: Target, version: &str) -> Result<(
     )?;
     if let Some(service) = target.service_executable() {
         target.validate_binary(&mut regular_file(&directory.join(service))?, true)?;
+    }
+    if let Some(shell) = target.host_shell() {
+        target.validate_binary(&mut regular_file(&directory.join(shell))?, false)?;
     }
     Ok(())
 }

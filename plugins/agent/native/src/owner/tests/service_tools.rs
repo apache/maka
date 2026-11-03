@@ -30,6 +30,7 @@ use maka_plugin_core::{
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 mod approval_park;
+mod steering;
 
 fn counter_contract() -> Contract {
     let write = Method {
@@ -60,6 +61,7 @@ enum Behavior {
     Unknown,
     CleanupFailed,
     Blocked,
+    Held,
 }
 struct Counter {
     behavior: Behavior,
@@ -114,6 +116,14 @@ impl Handler for Counter {
                     let mut ticket = context.scope().resources.reserve().unwrap();
                     ticket.start();
                     ticket.complete(Err("counter cleanup failed".into()));
+                    Ok(json!({"effects":count}))
+                }
+                Behavior::Held => {
+                    release.acquire().await.unwrap().forget();
+                    assert!(
+                        !context.scope().cancellation.is_cancelled(),
+                        "steering must retain the original tool execution"
+                    );
                     Ok(json!({"effects":count}))
                 }
                 Behavior::Blocked => {
@@ -731,6 +741,71 @@ async fn stopping_real_agent_run_cancels_tool_but_retains_owner_until_physical_c
     }
 }
 #[tokio::test]
+async fn model_list_calls_real_settings_without_an_independent_native_grant() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}/v1", listener.local_addr().unwrap());
+        let fixture = Fixture::configured(&base, None, None, None, |configuration| {
+            configuration.tools = vec![contract::ServiceTool {
+                target: maka_host_runtime::application::ServiceTarget::Import {
+                    name: "settings".into(),
+                },
+                method: "models".into(),
+                name: "ModelList".into(),
+                description: "Search the model directory".into(),
+                result: contract::ToolResult::Json,
+                confirmation: contract::ToolConfirmation::Preapproved,
+                nestable: false,
+                input: Default::default(),
+                presentation: None,
+                title: None,
+            }];
+        })
+        .await;
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let sent = request(&mut socket).await;
+            assert_eq!(sent["tools"][0]["function"]["name"], "ModelList");
+            named_tool_response(
+                &mut socket,
+                "ModelList",
+                json!({"request":{"kind":"start","query":"never-match-model-list-fixture"}}),
+            )
+            .await;
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let next = request(&mut socket).await;
+            let result = next["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|message| message["role"] == "tool")
+                .unwrap();
+            let page: Value = serde_json::from_str(result["content"].as_str().unwrap()).unwrap();
+            assert_eq!(page["kind"], "ready", "{page}");
+            assert_eq!(page["choices"], json!([]));
+            assert_eq!(page["next"], Value::Null);
+            response(&mut socket).await;
+        });
+        let session = fixture.create("Actual ModelList call").await;
+        fixture.send(&session).await.unwrap();
+        fixture.drained().await;
+        server.await.unwrap();
+        let settled = facts(&fixture, &session).await;
+        assert!(settled.iter().any(|fact| matches!(
+            fact,
+            Fact::ToolSettled {
+                outcome: ToolOutcome::Succeeded { .. },
+                ..
+            }
+        )));
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -754,10 +829,12 @@ async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() 
             response(&mut socket).await;
         });
         let counter = Counter::new(Behavior::Returned);
-        let mut setup = Setup::native(counter.clone(), true);
+        let mut setup = Setup::native(counter.clone(), false);
         setup = setup.with_query(true);
         let fixture = Fixture::with_services(&base, None, None, Some(setup)).await;
-        let session = fixture.create("Actual query tool").await;
+        let session = fixture
+            .create("Query tool without a duplicate native grant")
+            .await;
         fixture.send(&session).await.unwrap();
         fixture.drained().await;
         server.await.unwrap();
@@ -803,15 +880,14 @@ async fn query_tool_uses_original_query_gate_and_projects_plain_business_json() 
     .unwrap();
 }
 
-// The provider finishes its physical work after cancellation, independently of the observer.
 #[tokio::test]
-async fn code_mode_calls_selected_native_services_with_original_grants_and_receipts() {
+async fn code_mode_uses_selected_methods_without_duplicate_grants_and_keeps_original_receipts() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        for (nestable, granted) in [(true, true), (true, false), (false, true)] {
+        for nestable in [true, false] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let base = format!("http://{}/v1", listener.local_addr().unwrap());
             let counter = Counter::new(Behavior::Returned);
-            let mut setup = Setup::native(counter.clone(), granted);
+            let mut setup = Setup::native(counter.clone(), false);
             setup.nestable = nestable;
             let fixture = Fixture::with_services(&base, None, None, Some(setup)).await;
             selection::edit(&fixture, |changes| {
@@ -831,7 +907,7 @@ async fn code_mode_calls_selected_native_services_with_original_grants_and_recei
                 let next = request(&mut socket).await;
                 let result = next["messages"].as_array().unwrap().iter().find(|message| message["role"] == "tool").unwrap();
                 assert_eq!(result["tool_call_id"], "code-call");
-                if nestable && granted {
+                if nestable {
                     assert!(result["content"].as_str().unwrap().contains("effects"));
                 }
                 response(&mut socket).await;
@@ -840,10 +916,10 @@ async fn code_mode_calls_selected_native_services_with_original_grants_and_recei
             fixture.send(&session).await.unwrap();
             fixture.drained().await;
             server.await.unwrap();
-            assert_eq!(counter.effects.load(Ordering::SeqCst), if nestable && granted { 2 } else { 0 });
+            assert_eq!(counter.effects.load(Ordering::SeqCst), if nestable { 2 } else { 0 });
             let recorded = facts(&fixture, &session).await;
             assert!(recorded.iter().any(|fact| matches!(fact, Fact::InvocationOpened { configuration: Some(configuration), .. } if configuration.tool_mode == ToolMode::CodeMode)));
-            if nestable && granted {
+            if nestable {
                 assert_eq!(recorded.iter().filter(|fact| matches!(fact, Fact::ToolDispatched { name, .. } if name == "Counter")).count(), 2);
                 let operations: Vec<_> = recorded.iter().filter_map(|fact| match fact {
                     Fact::ToolDispatched { name, operation_id, .. } if name == "Counter" => Some(operation_id),
@@ -1094,7 +1170,7 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
         let mut same = Box::pin(f.mutation(
             2,
             "send",
-            json!({"sessionId":a,"message":"same queued","model":selection}),
+            json!({"sessionId":a,"message":"same queued","delivery":"queue","model":selection}),
             Uuid::new_v4(),
         ));
         let independent = f.mutation(

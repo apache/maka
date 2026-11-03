@@ -150,7 +150,6 @@ pub struct Fixture {
 #[derive(Default)]
 pub struct Options {
     pub images: bool,
-    pub predictions: bool,
 }
 
 impl Fixture {
@@ -182,7 +181,6 @@ impl Fixture {
             owner.clone(),
             &format!("http://{}/v1", listener.local_addr().unwrap()),
             options.images,
-            options.predictions,
         )
         .await;
         let store = Arc::new(RootStore::open(owner).await.unwrap());
@@ -378,12 +376,7 @@ impl Fixture {
         assert!(self.provider.await.unwrap_err().is_cancelled());
     }
 }
-pub(crate) async fn configure(
-    owner: Arc<RootOwner>,
-    base: &str,
-    vision: bool,
-    predictions: bool,
-) -> Value {
+pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -> Value {
     use maka_agent_facts::configuration::CatalogMutationResult;
     let config = Arc::new(
         maka_config::ConfigurationStore::for_root(owner)
@@ -422,8 +415,7 @@ pub(crate) async fn configure(
             .set_message_predictions(
                 config.runtime_policy().await.unwrap().revision,
                 maka_agent_facts::configuration::policy::MessagePredictionSettings {
-                    enabled: predictions,
-                    catch_up_sample_percent: 100.0,
+                    enabled: false,
                     ..Default::default()
                 },
             )
@@ -636,14 +628,7 @@ pub async fn wait_enabled_button(
                     nsh_core::AccessibilityRole::Button | nsh_core::AccessibilityRole::Menuitem
                 )
             })
-            .map(|node| {
-                (
-                    node.id,
-                    node.label.chars().take(160).collect::<String>(),
-                    node.state.disabled,
-                    node.frame,
-                )
-            })
+            .map(|node| (node.id, node.label, node.state.disabled, node.frame))
             .collect();
         panic!(
             "native button {label:?} did not become enabled:\n{}\nbuttons={buttons:#?}",
@@ -706,7 +691,12 @@ pub fn wait_view_state(
             }
             assert!(
                 started.elapsed() < Duration::from_secs(20),
-                "expected real UI state did not appear at {caller}:\n{snapshot}"
+                "expected real UI state did not appear at {caller}:\n{snapshot}\naccessibility={:?}",
+                view.accessibility_snapshot()
+                    .into_iter()
+                    .filter(|node| !node.label.is_empty())
+                    .map(|node| (node.label, node.state.disabled))
+                    .collect::<Vec<_>>()
             );
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
@@ -768,17 +758,6 @@ impl ReplyGate {
     }
     pub fn send(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation")
-    }
-    pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "settings", "resolveModel", "finished")
-    }
-    #[cfg(feature = "desktop-tests")]
-    pub fn create(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "create", "mutation")
-    }
-    #[cfg(feature = "desktop-tests")]
-    pub fn upload(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "uploadAttachment", "mutation")
     }
     fn for_method(
         directory: &Path,

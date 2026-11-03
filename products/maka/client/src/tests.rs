@@ -61,6 +61,7 @@ struct Counter {
     release: Notify,
     watches_closed: AtomicUsize,
     messages: std::sync::Mutex<Vec<Value>>,
+    deliveries: std::sync::Mutex<BTreeMap<String, String>>,
     secrets: std::sync::Mutex<Vec<Vec<u8>>>,
 }
 struct CounterHandler(Arc<Counter>);
@@ -81,6 +82,20 @@ impl Handler for CounterHandler {
                     Ok(Value::Null)
                 }
                 "read" => Ok(json!({"sent":owner.effects.load(Ordering::SeqCst)})),
+                "queueMessage" => {
+                    let deliveries = owner.deliveries.lock().unwrap();
+                    match deliveries
+                        .get(input["messageId"].as_str().unwrap())
+                        .map(String::as_str)
+                    {
+                        Some("ready") => Ok(
+                            json!({"kind":"ready","revision":1,"message":"queued","hasAttachments":false}),
+                        ),
+                        reason => {
+                            Ok(json!({"kind":"missing","reason":reason.unwrap_or("unknown")}))
+                        }
+                    }
+                }
                 "uploadAttachment" => {
                     let file = context
                         .attachments()
@@ -120,6 +135,25 @@ impl Handler for CounterHandler {
                     if input.get("message").and_then(Value::as_str) == Some("reject") {
                         return Ok(
                             json!({"kind":"rejected","sessionId":input["sessionId"],"reason":"skills_unavailable"}),
+                        );
+                    }
+                    if input["expectedInvocationId"] == "stopped" {
+                        return Ok(
+                            json!({"kind":"rejected","sessionId":input["sessionId"],"reason":"turn_stopped"}),
+                        );
+                    }
+                    if input["delivery"] == "queue" {
+                        let id = format!(
+                            "message-{}",
+                            owner.effects.fetch_add(1, Ordering::SeqCst) + 1
+                        );
+                        owner
+                            .deliveries
+                            .lock()
+                            .unwrap()
+                            .insert(id.clone(), "ready".into());
+                        return Ok(
+                            json!({"kind":"queued","sessionId":input["sessionId"],"messageId":id,"revision":1}),
                         );
                     }
                     let value = owner.effects.fetch_add(1, Ordering::SeqCst) + 1;
@@ -192,6 +226,7 @@ impl Fixture {
         let mut contract: Contract = serde_json::from_value(json!({
             "name":"test.Counter","version":1,"transport":"remote","interface":{"kind":"service","methods":{
                 "read":{"mode":"query","input":{},"output":{},"resources":{}},
+                "queueMessage":{"mode":"query","input":{},"output":{},"resources":{}},
                 "send":{"mode":"mutation","input":{},"output":{},"progress":{},"resources":{}},
                 "selectBackend":{"mode":"mutation","input":{},"output":{},"resources":{}},
                 "stop":{"mode":"mutation","input":{},"output":{},"resources":{}},
@@ -349,6 +384,7 @@ impl Fixture {
                             grant: Grant {
                                 methods: [
                                     "read".into(),
+                                    "queueMessage".into(),
                                     "send".into(),
                                     "uploadAttachment".into(),
                                     "selectBackend".into(),

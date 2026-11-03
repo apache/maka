@@ -390,13 +390,20 @@ impl InvocationView {
                                 messages.extend(interrupted.text(
                                     event,
                                     part,
-                                    *status
-                                        != maka_agent_facts::event::ModelInterruption::Cancelled,
+                                    !matches!(
+                                        status,
+                                        maka_agent_facts::event::ModelInterruption::Cancelled
+                                            | maka_agent_facts::event::ModelInterruption::Steered
+                                    ),
                                 )?);
                             }
                         }
                         if let Some(message) = diagnostic
-                            && *status != maka_agent_facts::event::ModelInterruption::Cancelled
+                            && !matches!(
+                                status,
+                                maka_agent_facts::event::ModelInterruption::Cancelled
+                                    | maka_agent_facts::event::ModelInterruption::Steered
+                            )
                         {
                             messages.push(Message {
                                 id: event.id.clone(),
@@ -443,7 +450,8 @@ impl InvocationView {
                     | Fact::ContextCompactionWaiting
                     | Fact::ToolResultArchived { .. }
                     | Fact::ToolOperationObserved { .. }
-                    | Fact::ToolNotified { .. } => {}
+                    | Fact::ToolNotified { .. }
+                    | Fact::ToolYielded { .. } => {}
                 }
             }
         }

@@ -63,12 +63,12 @@ export type RuntimeProtocol =
   | Export
   | CallerIntent
   | AgentConfiguration
-  | WorkspaceJevConfiguration
-  | JevSet
-  | JevCredential
-  | JevUpdate
-  | JevEvaluation
-  | JevResult
+  | WorkspaceDecisionsApiConfiguration
+  | DecisionsApiSet
+  | DecisionsApiCredential
+  | DecisionsApiUpdate
+  | DecisionsEvaluation
+  | DecisionsApiResult
   | WorkspaceWebConfiguration
   | WebCapture
   | WebCall_WebFetch
@@ -416,18 +416,6 @@ export type HostLogPage =
       hasMore: boolean;
     };
 export type HostLogReset = 'replaced' | 'truncated';
-/**
- * Templates can select an entry in their own immutable package without a
- * self-referential content hash. Deployment roots must select a pinned revision.
- */
-export type PackageSelection =
-  | {
-      source: 'pinned';
-      package: PackageRef;
-    }
-  | {
-      source: 'current';
-    };
 export type PackageUse = 'host' | 'ui' | 'composition';
 export type Target =
   | {
@@ -444,6 +432,18 @@ export type Target =
       deployment: string;
       instance: InstanceId;
       export: string;
+    };
+/**
+ * Templates can select an entry in their own immutable package without a
+ * self-referential content hash. Deployment roots must select a pinned revision.
+ */
+export type PackageSelection =
+  | {
+      source: 'pinned';
+      package: PackageRef;
+    }
+  | {
+      source: 'current';
     };
 export type Interface =
   | {
@@ -706,7 +706,8 @@ export type Network =
         destinations: Destination[];
       };
     };
-export type JevCredentialTarget =
+export type DecisionsProtocol = 'jev' | 'openai_decisions';
+export type DecisionsApiCredentialTarget =
   | {
       kind: 'api_key';
     }
@@ -714,11 +715,11 @@ export type JevCredentialTarget =
       kind: 'header';
       name: string;
     };
-export type JevCredentialChange = 'replace' | 'remove';
-export type JevUpdate =
+export type DecisionsApiCredentialChange = 'replace' | 'remove';
+export type DecisionsApiUpdate =
   | {
       kind: 'updated';
-      snapshot: JevSnapshot;
+      snapshot: DecisionsSnapshot;
     }
   | {
       kind: 'changed';
@@ -726,9 +727,9 @@ export type JevUpdate =
   | {
       kind: 'invalid';
     };
-export type JevQuestion =
+export type DecisionsQuestion =
   | {
-      type: 'noul';
+      type: 'predicate';
       instructions: unknown;
       criteria?: {
         [k: string]: unknown | undefined;
@@ -737,47 +738,45 @@ export type JevQuestion =
   | {
       type: 'choice';
       instructions: unknown;
-      criteria: {
-        [k: string]: unknown | undefined;
-      };
+      choices: DecisionsChoice[];
     }
   | {
       type: 'score';
       instructions: unknown;
-      criteria: unknown[];
+      levels: DecisionsLevel[];
     };
-export type JevResult =
+export type DecisionsChoiceValue = string | boolean;
+export type DecisionsApiResult =
   | {
       kind: 'completed';
-      value: JevEvaluationResult;
+      value: DecisionsEvaluationResult;
     }
   | {
       kind: 'failed';
       message: string;
     };
-export type JevAnswer =
+export type DecisionsAnswer =
   | {
-      type: 'noul';
-      noul: number;
+      type: 'predicate';
+      probability: number;
     }
   | {
       type: 'choice';
-      choice: string;
+      choice: DecisionsChoiceValue;
       confidence: number;
-      probabilities: {
-        [k: string]: number | undefined;
-      };
+      probabilities: DecisionsChoiceProbability[];
     }
   | {
       type: 'score';
       score: number;
       confidence: number;
-      probabilities: {
-        [k: string]: number | undefined;
-      };
+      probabilities: DecisionsScoreProbability[];
       legend: {
-        [k: string]: string | undefined;
+        [k: string]: unknown | undefined;
       };
+    }
+  | {
+      type: 'refusal';
     };
 export type WebSource = 'model' | 'tavily';
 export type WebUpdate =
@@ -1417,6 +1416,7 @@ export type UsageToolResult =
  * Refusal category without input-derived explanation text.
  */
 export type RejectionKind =
+  | 'superseded'
   | 'unavailable'
   | 'invalid_input'
   | 'policy_denied'
@@ -3229,6 +3229,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
+export type AgentSendDelivery = 'steer' | 'queue';
 export type AgentExecutionResult =
   | {
       kind: 'missing';
@@ -3271,7 +3272,8 @@ export type AgentInteractionKind =
   | 'permissions'
   | 'form'
   | 'client_capability'
-  | 'computer_app';
+  | 'computer_app'
+  | 'system_permission';
 export type InteractionAnswer =
   | {
       kind: 'service_approval';
@@ -3315,6 +3317,9 @@ export type InteractionAnswer =
     }
   | {
       kind: 'computer_app_cancel';
+    }
+  | {
+      kind: 'system_permission_cancel';
     };
 export type Decision = 'allow' | 'deny';
 export type Decision2 =
@@ -3385,6 +3390,20 @@ export type InteractionRequest =
       display: ComputerAppDisplay;
       allowAlways: boolean;
       authorityRevision: number;
+    }
+  | {
+      kind: 'system_permission';
+      toolUseId: string;
+      /**
+       * Distinct missing grants.
+       *
+       * @minItems 1
+       */
+      grants: [SystemPermissionGrant, ...SystemPermissionGrant[]];
+      /**
+       * The application name the operating system lists in its settings.
+       */
+      application: string;
     };
 export type FormField = {
   name: string;
@@ -3466,6 +3485,12 @@ export type GrantScope =
     };
 export type ComputerAppPlatform = 'macos' | 'windows';
 export type ComputerAppRisk = 'low' | 'high';
+/**
+ * A macOS privacy grant (TCC) that the Host process itself needs before native
+ * Computer Use can run. This is operating-system state the user changes in
+ * System Settings, not a Maka grant; the Host observes it and commits the outcome.
+ */
+export type SystemPermissionGrant = 'accessibility' | 'screen_recording';
 export type InteractionOutcome =
   | {
       kind: 'service_approval_decision';
@@ -3514,11 +3539,16 @@ export type InteractionOutcome =
       committedAt: number;
     }
   | {
+      kind: 'system_permission_granted';
+      committedAt: number;
+    }
+  | {
       kind: 'closure';
       reason: ClosureReason;
       committedAt: number;
     };
 export type ClosureReason =
+  | 'steered'
   | 'turn_stopped'
   | 'turn_terminal'
   | 'producer_cancelled'
@@ -3783,7 +3813,7 @@ export type AgentSendResult =
   | {
       kind: 'rejected';
       sessionId: string;
-      reason: AgentSkillInputRejection;
+      reason: AgentSendRejection;
       skills?: SkillInvocationResult | null;
     }
   | {
@@ -3802,7 +3832,7 @@ export type AgentSendResult =
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSkillInputRejection = 'skills_unavailable';
+export type AgentSendRejection = 'skills_unavailable' | 'turn_stopped';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -3969,7 +3999,9 @@ export type ProviderFailureReason =
   | 'quota_exhausted'
   | 'provider_unavailable'
   | 'stream_truncated';
-export type ModelInterruption = ('cancelled' | 'timed_out' | 'failed') | 'retryable_failure';
+export type ModelInterruption =
+  | ('steered' | 'cancelled' | 'timed_out' | 'failed')
+  | 'retryable_failure';
 export type TitleFailureCause =
   | {
       kind: 'preparation';
@@ -4120,7 +4152,9 @@ export type AgentQueueMessageResult =
     }
   | {
       kind: 'missing';
+      reason: AgentQueueMessageMissingReason;
     };
+export type AgentQueueMessageMissingReason = 'delivered' | 'cancelled' | 'unknown';
 export type AgentQueueAction =
   | {
       kind: 'retract';
@@ -4609,10 +4643,69 @@ export interface HostLogRequest {
  * Durable deployment input. Plans are derived and never persisted as overrides.
  */
 export interface CompositionInput {
+  /**
+   * Optional immutable root composition. Its children remain deployment roots,
+   * so selecting a baseline does not prepend a namespace to instance identities.
+   */
+  base?: RootComposition | null;
   instances: {
     [k: string]: CompositionNode | undefined;
   };
   ui?: UiTarget | null;
+}
+/**
+ * A composition selected at deployment scope, without introducing an instance.
+ * Additional roots remain in Input.instances; inherited roots are edited with overrides.
+ */
+export interface RootComposition {
+  package: PackageRef;
+  parameters?: {
+    [k: string]: unknown | undefined;
+  };
+  overrides?: Override[];
+  /**
+   * Absent inherits the template UI; null explicitly selects no UI.
+   */
+  ui?: UiTarget | null;
+}
+export interface PackageRef {
+  id: string;
+  revision: string;
+}
+/**
+ * An override belongs to its containing structural instance. Missing paths fail;
+ * removal/upgrade never guesses how to discard independent user intent.
+ */
+export interface Override {
+  path: string[];
+  /**
+   * A persistent deletion, distinct from disabling an instance.
+   */
+  remove?: boolean;
+  package?: PackageRef | null;
+  usePackage?: PackageUse | null;
+  parameters?: {
+    [k: string]: unknown | undefined;
+  };
+  configuration?: {
+    [k: string]: unknown | undefined;
+  };
+  configurationFields?: ConfigurationField[];
+  bindings?: {
+    [k: string]: Target[] | undefined;
+  };
+  disabled?: boolean | null;
+}
+/**
+ * An exact object-field edit. Missing value deletes the field; JSON null is a value.
+ */
+export interface ConfigurationField {
+  path: string[];
+  value?: unknown;
+}
+export interface UiTarget {
+  path: string[];
+  id: string;
 }
 export interface CompositionNode {
   key: string;
@@ -4626,10 +4719,6 @@ export interface CompositionNode {
   disabled?: boolean;
   overrides?: Override[];
 }
-export interface PackageRef {
-  id: string;
-  revision: string;
-}
 export interface Configuration {
   values?: {
     [k: string]: unknown | undefined;
@@ -4640,29 +4729,6 @@ export interface Configuration {
   parameters?: {
     [k: string]: string | undefined;
   };
-}
-/**
- * An override belongs to its containing structural instance. Missing paths fail;
- * removal/upgrade never guesses how to discard independent user intent.
- */
-export interface Override {
-  path: string[];
-  package?: PackageRef | null;
-  usePackage?: PackageUse | null;
-  parameters?: {
-    [k: string]: unknown | undefined;
-  };
-  configuration?: {
-    [k: string]: unknown | undefined;
-  };
-  bindings?: {
-    [k: string]: Target[] | undefined;
-  };
-  disabled?: boolean | null;
-}
-export interface UiTarget {
-  path: string[];
-  id: string;
 }
 export interface Deployment {
   reference: DeploymentRef;
@@ -5011,6 +5077,10 @@ export interface UiEntry {
   };
 }
 export interface Template {
+  /**
+   * Default UI selection when this template is used at deployment scope.
+   */
+  ui?: UiTarget | null;
   parameters?: {
     [k: string]: Parameter | undefined;
   };
@@ -5211,7 +5281,7 @@ export interface DisplayText {
     [k: string]: string | undefined;
   };
 }
-export interface WorkspaceJevConfiguration {
+export interface WorkspaceDecisionsApiConfiguration {
   network: Network;
 }
 /**
@@ -5222,45 +5292,63 @@ export interface Destination {
   host: string;
   port: number;
 }
-export interface JevSet {
+export interface DecisionsApiSet {
   revision?: number | null;
-  settings: JevSettings;
+  settings: DecisionsSettings;
 }
-export interface JevSettings {
+export interface DecisionsSettings {
+  protocol: DecisionsProtocol;
   enabled: boolean;
   url: string;
   model: string;
   timeoutMs: number;
 }
-export interface JevCredential {
+export interface DecisionsApiCredential {
   url: string;
   revision?: number | null;
-  target: JevCredentialTarget;
-  change: JevCredentialChange;
+  target: DecisionsApiCredentialTarget;
+  change: DecisionsApiCredentialChange;
 }
-export interface JevSnapshot {
+export interface DecisionsSnapshot {
   revision?: number | null;
-  settings: JevSettings;
+  settings: DecisionsSettings;
   credentialRevision?: number | null;
   configured: boolean;
   apiKeyConfigured: boolean;
   headerNames: string[];
   [k: string]: unknown | undefined;
 }
-export interface JevEvaluation {
-  state: unknown;
+export interface DecisionsEvaluation {
+  input: unknown;
   questions: {
-    [k: string]: JevQuestion | undefined;
+    [k: string]: DecisionsQuestion | undefined;
   };
 }
-export interface JevEvaluationResult {
+export interface DecisionsChoice {
+  value: DecisionsChoiceValue;
+  description?: unknown;
+}
+export interface DecisionsLevel {
+  label: string;
+  description?: unknown;
+}
+export interface DecisionsEvaluationResult {
   model: string;
   answers: {
-    [k: string]: JevAnswer | undefined;
+    [k: string]: DecisionsAnswer | undefined;
   };
-  usage: JevUsage;
+  usage: DecisionsUsage;
 }
-export interface JevUsage {
+export interface DecisionsChoiceProbability {
+  value: DecisionsChoiceValue;
+  probability: number;
+}
+export interface DecisionsScoreProbability {
+  value: number;
+  label: string;
+  probability: number;
+}
+export interface DecisionsUsage {
   input_tokens: number;
   output_tokens: number;
 }
@@ -7785,11 +7873,16 @@ export interface AgentChangeSession {
   action: AgentSessionAction;
 }
 export interface AgentSend {
+  delivery?: AgentSendDelivery;
+  /**
+   * An active send must not start new work after Stop fences its original Run.
+   */
+  expectedInvocationId?: string | null;
   /**
    * IDs of immutable user uploads in this Session; metadata is resolved by the owner.
    */
   attachments?: string[];
-  model: ModelSelection;
+  model?: ModelSelection | null;
   /**
    * Omission/null uses the configured model default; `off` is explicit.
    */

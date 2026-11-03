@@ -89,6 +89,7 @@ fn template(default: &str) -> Template {
         .parameters
         .insert("title".into(), "title".into());
     Template {
+        ui: None,
         parameters: BTreeMap::from([(
             "title".into(),
             Parameter {
@@ -125,6 +126,7 @@ fn fixture() -> (Input, Packages) {
         )
         .unwrap();
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             (
@@ -550,6 +552,7 @@ fn compositions_select_nested_or_standalone_ui_roots_without_host_execution() {
         .values
         .insert("title".into(), json!("standalone"));
     let input = Input {
+        base: None,
         instances: BTreeMap::from([("app".into(), root)]),
         ui: Some(UiTarget {
             path: vec!["app".into()],
@@ -726,6 +729,7 @@ fn recursive_template_expansion_rejects_cycles_and_duplicate_source_keys() {
                 host: None,
                 ui: None,
                 composition: Some(Template {
+                    ui: None,
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::new(),
                     exports: BTreeMap::new(),
@@ -784,6 +788,7 @@ fn forwarding_rejects_a_real_import_export_cycle() {
                 host: None,
                 ui: None,
                 composition: Some(Template {
+                    ui: None,
                     parameters: BTreeMap::new(),
                     imports: BTreeMap::from([(
                         "base".into(),
@@ -813,5 +818,239 @@ fn forwarding_rejects_a_real_import_export_cycle() {
             .unwrap_err()
             .to_string()
             .contains("cyclic import forwarding")
+    );
+}
+
+fn root_baselines() -> (Input, Packages) {
+    let (_, mut packages) = fixture();
+    for revision in [1, 2] {
+        let mut baseline = template(if revision == 1 {
+            "Old default"
+        } else {
+            "New default"
+        });
+        baseline.exports.clear();
+        let mut inherited = node(20, package("content", 1), PackageUse::Host);
+        inherited
+            .configuration
+            .parameters
+            .insert("title".into(), "title".into());
+        baseline.children.insert("inherited".into(), inherited);
+        if revision == 2 {
+            let mut added = node(30, package("content", 1), PackageUse::Host);
+            added
+                .configuration
+                .values
+                .insert("title".into(), json!("New component"));
+            baseline.children.insert("added".into(), added);
+        }
+        packages
+            .insert(
+                package("root-product", revision),
+                Declaration {
+                    host: None,
+                    ui: None,
+                    composition: Some(baseline),
+                },
+            )
+            .unwrap();
+    }
+    let input: Input = serde_json::from_value(json!({
+        "base": {"package":package("root-product", 1)}, "instances":{}
+    }))
+    .unwrap();
+    (input, packages)
+}
+
+#[test]
+fn root_baseline_does_not_change_instance_identities_or_activation_bases() {
+    let (input, packages) = root_baselines();
+    let flattened = input.materialize(&packages).unwrap();
+    let flat_plan = Plan::prepare(&flattened, &packages, &RemoteExports::new()).unwrap();
+    let inherited_plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    assert_eq!(
+        instance(&inherited_plan, &["content"]).identity,
+        InstanceId(vec![Uuid::from_u128(10)])
+    );
+    assert_eq!(instance(&inherited_plan, &["content"]).parent, None);
+    assert_eq!(
+        instance(&inherited_plan, &["content"]).configuration,
+        json!({"title":"Old default"})
+    );
+    assert_eq!(inherited_plan.instances(), flat_plan.instances());
+    for id in inherited_plan.instances().keys() {
+        assert_eq!(
+            inherited_plan.binding_basis(id).unwrap(),
+            flat_plan.binding_basis(id).unwrap()
+        );
+    }
+    assert!(input.instances.is_empty());
+    assert!(input.base.is_some());
+}
+
+#[test]
+fn root_baseline_upgrade_inherits_new_defaults_and_keeps_explicit_user_differences() {
+    let (mut input, packages) = root_baselines();
+    input.base.as_mut().unwrap().overrides.push(Override {
+        path: vec!["content".into()],
+        configuration: BTreeMap::from([("title".into(), json!("User title"))]),
+        ..Override::default()
+    });
+    let mut extra = node(40, package("content", 1), PackageUse::Host);
+    extra
+        .configuration
+        .values
+        .insert("title".into(), json!("User component"));
+    input.instances.insert("extra".into(), extra);
+    let (plan, changes) =
+        Plan::prepare_replacing(&input, &packages, &RemoteExports::new(), |old| {
+            (old == &package("root-product", 1)).then(|| package("root-product", 2))
+        })
+        .unwrap();
+    assert_eq!(changes.len(), 1);
+    assert!(changes[0].path.is_empty());
+    assert_eq!(
+        instance(&plan, &["content"]).configuration,
+        json!({"title":"User title"})
+    );
+    assert_eq!(
+        instance(&plan, &["inherited"]).configuration,
+        json!({"title":"New default"})
+    );
+    assert_eq!(
+        instance(&plan, &["added"]).configuration,
+        json!({"title":"New component"})
+    );
+    assert_eq!(
+        instance(&plan, &["extra"]).configuration,
+        json!({"title":"User component"})
+    );
+    assert_eq!(
+        instance(&plan, &["content"]).identity,
+        InstanceId(vec![Uuid::from_u128(10)])
+    );
+    input.base.as_mut().unwrap().package = changes[0].package.clone();
+    let checked = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    assert_eq!(plan.instances(), checked.instances());
+}
+
+#[test]
+fn root_deletions_persist_and_cannot_discard_conflicting_user_edits() {
+    let (mut input, packages) = root_baselines();
+    input.base.as_mut().unwrap().overrides.push(Override {
+        path: vec!["content".into()],
+        remove: true,
+        ..Override::default()
+    });
+    input.base.as_mut().unwrap().package = package("root-product", 2);
+    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    assert_eq!(
+        plan.instances()
+            .values()
+            .map(|i| i.path.clone())
+            .collect::<Vec<_>>(),
+        vec![vec!["inherited".to_string()], vec!["added".to_string()]]
+    );
+    input.base.as_mut().unwrap().overrides.push(Override {
+        path: vec!["content".into(), "child".into()],
+        disabled: Some(true),
+        ..Override::default()
+    });
+    assert!(
+        Plan::prepare(&input, &packages, &RemoteExports::new())
+            .unwrap_err()
+            .to_string()
+            .contains("deletion conflicts")
+    );
+}
+
+#[test]
+fn root_overrides_fail_on_disappeared_targets_and_cannot_shadow_inherited_roots() {
+    let (mut input, packages) = root_baselines();
+    input.base.as_mut().unwrap().overrides.push(Override {
+        path: vec!["missing".into()],
+        configuration: BTreeMap::from([("title".into(), json!("User"))]),
+        ..Override::default()
+    });
+    assert!(
+        Plan::prepare(&input, &packages, &RemoteExports::new())
+            .unwrap_err()
+            .to_string()
+            .contains("override target disappeared")
+    );
+    input.base.as_mut().unwrap().overrides.clear();
+    input.instances.insert(
+        "content".into(),
+        node(99, package("content", 1), PackageUse::Host),
+    );
+    assert!(
+        Plan::prepare(&input, &packages, &RemoteExports::new())
+            .unwrap_err()
+            .to_string()
+            .contains("shadows baseline")
+    );
+}
+
+#[test]
+fn field_overrides_preserve_nested_intent_without_freezing_sibling_defaults() {
+    let mut packages = Packages::default();
+    let mut leaf = entry();
+    leaf.configuration = json!({"type":"object","properties":{"agent":{"type":"object"}},
+        "required":["agent"],"additionalProperties":false})
+    .into();
+    packages
+        .insert(
+            package("nested", 1),
+            Declaration {
+                host: Some(leaf),
+                ui: None,
+                composition: None,
+            },
+        )
+        .unwrap();
+    let mut child = node(77, package("nested", 1), PackageUse::Host);
+    child
+        .configuration
+        .parameters
+        .insert("agent".into(), "agent".into());
+    packages.insert(package("field-product", 2), Declaration {
+        host: None, ui: None, composition: Some(Template {
+            ui: None, imports: BTreeMap::new(), exports: BTreeMap::new(),
+            parameters: BTreeMap::from([("agent".into(), Parameter {
+                schema: json!({"type":"object"}).into(),
+                default: Some(json!({"goals":true,"tools":["new-default"],"label":"default","obsolete":true})),
+            })]),
+            children: BTreeMap::from([("coordinator".into(),child)]),
+        }),
+    }).unwrap();
+    let input: Input = serde_json::from_value(json!({
+        "base":{"package":package("field-product", 2),"overrides":[{
+            "path":["coordinator"],"configurationFields":[
+                {"path":["agent","goals"],"value":false},
+                {"path":["agent","label"],"value":null},
+                {"path":["agent","obsolete"]}
+            ]
+        }]},"instances":{}
+    }))
+    .unwrap();
+    let plan = Plan::prepare(&input, &packages, &RemoteExports::new()).unwrap();
+    assert_eq!(
+        instance(&plan, &["coordinator"]).configuration,
+        json!({"agent":{"goals":false,"tools":["new-default"],"label":null}})
+    );
+    let roundtrip: Input = serde_json::from_value(serde_json::to_value(&input).unwrap()).unwrap();
+    assert_eq!(input, roundtrip);
+    let mut conflict = input;
+    conflict.base.as_mut().unwrap().overrides[0]
+        .configuration_fields
+        .push(composition::ConfigurationField {
+            path: vec!["agent".into()],
+            value: Some(json!({})),
+        });
+    assert!(
+        Plan::prepare(&conflict, &packages, &RemoteExports::new())
+            .unwrap_err()
+            .to_string()
+            .contains("overlapping configuration field edits")
     );
 }

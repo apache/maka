@@ -786,7 +786,7 @@ impl Decode for ToolResultRecipe {
                 tool_call_id: store.read_text(Node(r[1])).await?,
                 tool_name: store.read_text(Node(r[2])).await?,
                 kind: if r[6] & 1 == 0 {
-                    ToolResultKind::Settled
+                    ToolResultKind::Output
                 } else {
                     ToolResultKind::Notification
                 },

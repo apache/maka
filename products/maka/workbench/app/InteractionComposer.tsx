@@ -33,7 +33,7 @@ import { Input } from 'nsh/base';
 import type { ViewRef } from 'nsh';
 import { useHost } from './host';
 import { keymap } from 'nsh';
-import { windowSize } from 'nsh';
+import { openUrl, windowSize } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   InteractionAnswer,
@@ -66,6 +66,11 @@ import { Icon } from './Icon';
 import { CapabilityRequest, computerCapability } from './CapabilityRequest';
 import { FormRequest } from './FormRequest';
 import { ComputerAppRequest } from './ComputerAppRequest';
+import {
+  SystemPermissionRequest,
+  systemPermissionName,
+  systemPermissionPane,
+} from './SystemPermissionRequest';
 import { computerAppOptions } from './interaction-computer-app';
 import {
   formSubmission,
@@ -183,6 +188,7 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
     return outcome.decision === 'allow'
       ? uiMessage('Capability allowed')
       : uiMessage('Capability denied');
+  if (outcome.kind === 'system_permission_granted') return uiMessage('System permissions granted');
   if (outcome.kind === 'computer_app_decision')
     return outcome.decision === 'deny'
       ? uiMessage('Application access denied')
@@ -256,6 +262,14 @@ export function InteractionComposer({
     const current = request();
     return current?.kind === 'computer_app' ? current : null;
   };
+  const systemPermissionRequest = () => {
+    const current = request();
+    return current?.kind === 'system_permission' ? current : null;
+  };
+  // A cancel answer has a kind of its own; it applies to its request kind.
+  const cancels = (answer: InteractionAnswer) =>
+    (answer.kind === 'computer_app_cancel' && !!computerAppRequest()) ||
+    (answer.kind === 'system_permission_cancel' && !!systemPermissionRequest());
   const sameRecord = (value: InteractionRecord | null | undefined) =>
     value?.sessionId === sessionId && value?.requestId === requestId;
   const ownsAction = (owner: InteractionOwner) =>
@@ -265,7 +279,9 @@ export function InteractionComposer({
     return current ? JSON.stringify(current.questions) : null;
   };
   const responseIdentity = () =>
-    formRequest() || capabilityRequest() || computerAppRequest() ? JSON.stringify(request()) : null;
+    formRequest() || capabilityRequest() || computerAppRequest() || systemPermissionRequest()
+      ? JSON.stringify(request())
+      : null;
   const form = () => formSubmission(formRequest()?.fields ?? [], formDrafts());
   const changeForm = (
     choice: InteractionOwner & {
@@ -489,12 +505,7 @@ export function InteractionComposer({
     if (ownsAction(owner)) void refresh();
   };
   const respond = async (answer: InteractionAnswer) => {
-    if (
-      blocked() ||
-      (answer.kind !== request()?.kind &&
-        !(answer.kind === 'computer_app_cancel' && computerAppRequest()))
-    )
-      return;
+    if (blocked() || (answer.kind !== request()?.kind && !cancels(answer))) return;
     busy.set(true);
     error.set('');
     try {
@@ -578,6 +589,15 @@ export function InteractionComposer({
     if (kind === 'computer_app') return { kind, decision: 'deny' };
     return null;
   };
+  const openSettings = async (url: string) => {
+    let opened = false;
+    try {
+      opened = (await openUrl(url)).opened;
+    } catch (reason) {
+      console.warn('System Settings did not open:', reason);
+    }
+    if (alive && !opened) error.set(tr('System Settings could not be opened.'));
+  };
   const deny = () => {
     const answer = denialAnswer();
     if (answer) void respond(answer);
@@ -592,16 +612,17 @@ export function InteractionComposer({
   ) => {
     if (!ownsAction(rendered) || blocked()) return;
     const answer = JSON.parse(rendered.answerJSON) as InteractionAnswer | null;
-    if (
-      !answer ||
-      (answer.kind !== request()?.kind &&
-        !(answer.kind === 'computer_app_cancel' && computerAppRequest()))
-    )
-      return;
+    if (!answer || (answer.kind !== request()?.kind && !cancels(answer))) return;
     if (answer.kind === 'question' && rendered.questionsJSON !== questionIdentity()) return;
     if (answer.kind === 'service_approval' && rendered.sourceJSON !== sourceIdentity()) return;
     if (
-      ['form', 'client_capability', 'computer_app', 'computer_app_cancel'].includes(answer.kind) &&
+      [
+        'form',
+        'client_capability',
+        'computer_app',
+        'computer_app_cancel',
+        'system_permission_cancel',
+      ].includes(answer.kind) &&
       rendered.requestJSON !== responseIdentity()
     )
       return;
@@ -668,6 +689,7 @@ export function InteractionComposer({
           form: tr('Form request'),
           client_capability: tr('Capability request'),
           computer_app: tr('Application access request'),
+          system_permission: tr('System permission request'),
         }[current.kind]
       : tr('Review request');
   };
@@ -993,6 +1015,9 @@ export function InteractionComposer({
                 <If when={computerAppRequest()}>
                   <ComputerAppRequest request={computerAppRequest()!} />
                 </If>
+                <If when={systemPermissionRequest()}>
+                  <SystemPermissionRequest request={systemPermissionRequest()!} />
+                </If>
               </View>
             }
           >
@@ -1067,6 +1092,22 @@ export function InteractionComposer({
               gap: 8,
             }}
           >
+            <If when={systemPermissionRequest() && !record()?.outcome}>
+              <InteractionAction
+                label={tr('Cancel request')}
+                disabled={blocked()}
+                onPress={answerBinding({ kind: 'system_permission_cancel' })}
+              />
+              <Each of={systemPermissionRequest()!.grants}>
+                {(grant) => (
+                  <InteractionAction
+                    label={tr('Open {name} settings', { name: systemPermissionName(grant()) })}
+                    primary={grant() === systemPermissionRequest()!.grants[0]}
+                    onPress={() => void openSettings(systemPermissionPane(grant()))}
+                  />
+                )}
+              </Each>
+            </If>
             <If when={computerAppRequest() && !record()?.outcome}>
               <InteractionAction
                 label={tr('Cancel request')}

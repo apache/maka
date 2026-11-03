@@ -24,6 +24,7 @@ import {
   createTransientText,
   UiError,
   errorText,
+  renderText,
   type UiText,
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
@@ -59,6 +60,12 @@ import {
   confirmSend,
   pendingSends,
   recoverSend,
+  sendDelivery,
+  type SendDelivery,
+  retrySend,
+  dismissSend,
+  abandonSend,
+  type SendOperation,
   type ScopedHost,
 } from '../../../../products/maka/workbench/app/host';
 import {
@@ -84,6 +91,7 @@ import type {
   ComposerPrediction,
   ComposerQueue,
   ComposerSendAction as SendAction,
+  ComposerSendStatus,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
 import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
@@ -283,7 +291,9 @@ function receiptMessage(reply: any): UiText {
   if (receipt?.kind === 'recorded' && receipt.outcome?.kind === 'returned') {
     const value = receipt.outcome.value;
     return value?.kind === 'rejected'
-      ? uiMessage('Send rejected: {reason}', { reason: value.reason })
+      ? value.reason === 'turn_stopped'
+        ? uiMessage('Stopped before delivery. Your message is kept.')
+        : uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
   return uiMessage('This action could not be completed.');
@@ -392,7 +402,22 @@ export function Conversation(props: ConversationProps) {
   const draftReady = signal(false);
   const savingFailed = signal(false);
   const sending = signal(false);
-  const unresolved = signal<any[]>([]);
+  const unresolved = signal<SendOperation[]>([]);
+  type FrozenSend = {
+    id: string;
+    text: string;
+    files: DraftAttachment[];
+    edit: AttachmentEdit & { text: string };
+    selection: Record<string, unknown>;
+    revision?: number;
+    error: UiText | null;
+  };
+  const freezingSend = signal<FrozenSend | null>(null);
+  const activeSends = signal<Map<string, FrozenSend>>(new Map());
+  const sendErrors = signal<Map<string, UiText>>(new Map());
+  const checkingSends = signal<Set<string>>(new Set());
+  const sendDeliveries = signal<Map<string, SendDelivery>>(new Map());
+  let sendSequence = 0;
   const receiptsKnown = signal(false);
   const recovering = signal(false);
   const notice = createTransientText();
@@ -744,7 +769,6 @@ export function Conversation(props: ConversationProps) {
   } | null = null;
   let landmarksReadingThrough = -1;
   let draftRevision = 0;
-  let editEpoch = 0;
   let pendingDraft: (AttachmentEdit & { text: string }) | null = null;
   let saveTask: Promise<void> | null = null;
   // From Enter until the send is reserved, the saved draft must stay the
@@ -758,7 +782,6 @@ export function Conversation(props: ConversationProps) {
     focus: props.focusComposer,
     changed() {
       if (!alive || !draftReady()) return;
-      editEpoch += 1;
       queueDraft({ text: draft(), ...attachments.snapshot() });
     },
   });
@@ -1659,7 +1682,6 @@ export function Conversation(props: ConversationProps) {
   };
   const changeDraft = (text: string) => {
     if (!alive || !draftReady()) return;
-    editEpoch += 1;
     draft.set(text);
     queueDraft({ text, ...attachments.snapshot() });
   };
@@ -1671,21 +1693,6 @@ export function Conversation(props: ConversationProps) {
     if (edit === null || !alive) return;
     pendingDraft = edit;
     startSave();
-  };
-  const acceptRecoveredDraft = (
-    stored: { revision: number; text: string; attachments: DraftAttachment[] },
-    epoch: number,
-  ) => {
-    if (
-      editEpoch === epoch &&
-      draftRevision === stored.revision &&
-      !savingFailed() &&
-      pendingDraft === null &&
-      saveTask === null
-    ) {
-      draft.set(stored.text);
-      attachments.restore(stored.attachments);
-    }
   };
 
   const backendIdentity = (value: any): BackendIdentity =>
@@ -1888,17 +1895,9 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
-  const settleReply = (
-    reply: any,
-    text?: string,
-    epoch?: number,
-    files: DraftAttachment[] = [],
-  ) => {
+  const settleReply = (reply: any, text?: string, files: DraftAttachment[] = []) => {
     const accepted = acceptedSend(reply, sessionId);
-    if (!accepted) {
-      notice.set(receiptMessage(reply));
-      return;
-    }
+    if (!accepted) return;
     if (
       accepted.kind === 'started' &&
       text !== undefined &&
@@ -1923,16 +1922,27 @@ export function Conversation(props: ConversationProps) {
         },
       ]);
     }
-    if (text !== undefined && editEpoch === epoch && draft() === text) draft.set('');
-    if (text !== undefined) attachments.sent(files.map((file) => file.id));
-    notice.set(
-      accepted.kind === 'started' && text === undefined ? uiMessage('Message accepted.') : '',
-    );
-    if (accepted.kind === 'queued') return;
-    cancelNavigation();
-    awayFromLatest.set(false);
-    innerReader.set(null);
-    list?.scrollToEnd({ animated: false });
+  };
+
+  const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
+    const expectedInvocationId = invocation() ?? undefined;
+    if (delivery === 'steer' && expectedInvocationId !== undefined)
+      return { delivery, expectedInvocationId };
+    const selected = backendIdentity(backend());
+    if (expectedBackend !== undefined && !sameBackend(selected, expectedBackend))
+      throw new UiError('The model changed before confirmation. Send again to confirm it.');
+    if (!selected) throw new UiError('Choose a model before sending.');
+    const details = modelDetails();
+    if (details.kind !== 'ready')
+      throw new UiError('Model unavailable: {model}. Choose another model.', {
+        model: selected.modelId,
+      });
+    return {
+      delivery,
+      expectedInvocationId,
+      model: details.choice.selection,
+      thinkingLevel: selected.thinkingLevel,
+    };
   };
 
   const sendBlockedReason = () => {
@@ -1953,12 +1963,94 @@ export function Conversation(props: ConversationProps) {
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
-    if (sending()) return tr('Confirming send… New typing is kept.');
-    if (recovering()) return tr('Checking send status…');
-    if (!receiptsKnown() || unresolved().length) return tr('Checking send status…');
+    if (sending()) return tr('Saving message… New typing is kept.');
+    if (freezingSend()) return tr('Retry or remove the unsaved message before sending another.');
+    if (!receiptsKnown()) return tr('Checking send status…');
     return '';
   };
-  const send = async (text: string, expectedBackend?: BackendIdentity, first?: boolean) => {
+
+  const refreshSends = async () => {
+    const operations = await pendingSends(client);
+    if (alive) {
+      unresolved.set(operations);
+      receiptsKnown.set(true);
+      const ids = new Set(operations.map((item) => item.id));
+      sendErrors.set(new Map([...sendErrors()].filter(([id]) => ids.has(id))));
+      sendDeliveries.set(new Map([...sendDeliveries()].filter(([id]) => ids.has(id))));
+    }
+    return operations;
+  };
+  const sendError = (id: string, reason: unknown) => {
+    if (alive) sendErrors.set(new Map(sendErrors()).set(id, errorText(reason)));
+  };
+  const confirmFrozen = async (id: string, frozen: FrozenSend) => {
+    activeSends.set(new Map(activeSends()).set(id, frozen));
+    try {
+      if (frozen.selection.model !== undefined && !(await projectMcp.check())) {
+        await abandonSend(client, id);
+        sendError(id, new UiError('Approve workspace connections, then retry this message.'));
+        return;
+      }
+      const sent = await confirmSend(client, id);
+      if (alive) settleReply(sent.reply, frozen.text, frozen.files);
+    } catch (reason) {
+      sendError(id, reason);
+    } finally {
+      try {
+        if (alive) await refreshSends();
+      } catch (reason) {
+        report(reason);
+      }
+      if (alive) {
+        const next = new Map(activeSends());
+        next.delete(id);
+        activeSends.set(next);
+      }
+    }
+  };
+  const freezeSend = async (frozen: FrozenSend) => {
+    if (!alive || sending()) return;
+    sending.set(true);
+    freezingSend.set({ ...frozen, error: null });
+    let operation: string | undefined;
+    try {
+      if (frozen.revision !== undefined) {
+        // A lost local reply can be recovered by the exact draft revision;
+        // message text is never used to infer whether an attempt already exists.
+        const originals = await refreshSends();
+        operation = originals.find((item) => item.draft?.revision === frozen.revision)?.id;
+      }
+      if (operation === undefined) {
+        if (savingFailed()) {
+          const stored = await loadDraft(client);
+          draftRevision = stored.revision;
+          savingFailed.set(false);
+          pendingDraft = frozen.edit;
+        }
+        await flushDraft();
+        if (!alive) return;
+        if (savingFailed())
+          throw new UiError('The draft could not be saved; it has not been sent.');
+        frozen.revision = draftRevision;
+        operation = await reserveSend(client, draftRevision, frozen.selection);
+      }
+      if (!alive) return;
+      freezingSend.set(null);
+      releaseHeld();
+      sending.set(false);
+      void confirmFrozen(operation, frozen);
+    } catch (reason) {
+      if (alive) freezingSend.set({ ...frozen, error: errorText(reason) });
+    } finally {
+      if (alive) sending.set(false);
+    }
+  };
+  const send = async (
+    text: string,
+    expectedBackend?: BackendIdentity,
+    first?: boolean,
+    delivery: 'steer' | 'queue' = 'steer',
+  ) => {
     if (!alive) return;
     if (!text.trim() && attachments.files().length === 0) {
       return;
@@ -1971,88 +2063,218 @@ export function Conversation(props: ConversationProps) {
       );
       return;
     }
-    if (!first && draft() !== text) changeDraft(text);
-    const epoch = editEpoch;
-    const files = [...attachments.files()];
-    sending.set(true);
-    error.set('');
-    holding = true;
     try {
-      const model = await selection(expectedBackend);
-      if (!alive || model === null) return;
-      if (!(await projectMcp.check()) || !alive) {
-        return;
-      }
-      await flushDraft();
-      if (!alive) return;
-      if (savingFailed()) throw new UiError('The draft could not be saved; it has not been sent.');
-      if (editEpoch !== epoch && heldDraft === null)
-        throw new UiError('The draft changed before confirmation. Send again to confirm it.');
-      if (
-        expectedBackend !== undefined &&
-        !sameBackend(backendIdentity(backend()), expectedBackend)
-      )
-        throw new UiError('The model changed before confirmation. Send again to confirm it.');
-      // The native journal consumes only this exact revision. New edits keep
-      // saving while confirmation waits and never inherit this send attempt.
-      receiptsKnown.set(false);
-      const operation = await reserveSend(client, draftRevision, model);
-      releaseHeld();
-      const sent = await confirmSend(client, operation);
-      if (!alive) return;
-      settleReply(sent.reply, text, epoch, files);
-      // Text typed before the send is confirmed continues the sent message in
-      // the composer; once it is accepted, only the continuation stays. A
-      // rejected send leaves its text in the draft, so the whole edit stays.
-      if (acceptedSend(sent.reply, sessionId) && draft().startsWith(text))
-        changeDraft(draft().slice(text.length));
+      const selected = sendSelection(delivery, expectedBackend);
+      const edit = { text, ...attachments.snapshot() };
+      const frozen: FrozenSend = {
+        id: `draft-send-${++sendSequence}`,
+        text,
+        files: edit.attachments,
+        edit,
+        selection: selected,
+        error: null,
+      };
+      const nextText = first && draft() !== text ? draft() : '';
+      pendingDraft = edit;
+      holding = true;
+      error.set('');
+      changeDraft(nextText);
+      attachments.sent(edit.attachments.map((file) => file.id));
+      await freezeSend(frozen);
     } catch (reason) {
       report(reason);
-    } finally {
-      releaseHeld();
-      try {
-        if (alive) {
-          const operations = await pendingSends(client);
-          if (alive) {
-            unresolved.set(operations);
-            receiptsKnown.set(true);
-          }
-        }
-      } catch (reason) {
-        report(reason);
-      }
-      if (alive) sending.set(false);
     }
   };
 
+  const acceptedQueued = (original: SendOperation) =>
+    original.receipt?.kind === 'recorded' &&
+    original.receipt.outcome.kind === 'returned' &&
+    acceptedSend({ receipt: original.receipt }, sessionId)?.kind === 'queued';
+  const retryable = (original: SendOperation) =>
+    sendDeliveries().get(original.id) === 'cancelled' ||
+    original.abandoned ||
+    (original.receipt?.kind === 'recorded' &&
+      original.receipt.outcome.kind === 'returned' &&
+      ['rejected', 'not_your_worker'].includes(
+        (original.receipt.outcome.value as { kind?: string })?.kind ?? '',
+      ));
+  const needsRecovery = (original: SendOperation) =>
+    !original.abandoned &&
+    !activeSends().has(original.id) &&
+    (original.receipt == null ||
+      (original.receipt.kind === 'recorded' && original.receipt.outcome.kind === 'unresolved'));
+  const checkSend = async (id: string) => {
+    const original = unresolved().find((item) => item.id === id);
+    if (!alive || !original || activeSends().has(id) || checkingSends().has(id)) return;
+    checkingSends.set(new Set(checkingSends()).add(id));
+    try {
+      if (!acceptedQueued(original)) {
+        const reply = await recoverSend(client, id);
+        if (alive)
+          settleReply(
+            reply,
+            original.correlation.draft.text,
+            original.correlation.draft.attachments,
+          );
+      }
+      const delivery = await sendDelivery(client, id);
+      if (alive) {
+        sendDeliveries.set(new Map(sendDeliveries()).set(id, delivery));
+        const errors = new Map(sendErrors());
+        errors.delete(id);
+        sendErrors.set(errors);
+      }
+    } catch (reason) {
+      if (alive) sendDeliveries.set(new Map(sendDeliveries()).set(id, 'unknown'));
+      sendError(id, reason);
+    } finally {
+      if (alive) {
+        const next = new Set(checkingSends());
+        next.delete(id);
+        checkingSends.set(next);
+        await refreshSends();
+      }
+    }
+  };
+  const retryOriginal = async (id: string) => {
+    const frozen = freezingSend();
+    if (frozen?.id === id) {
+      await freezeSend(frozen);
+      return;
+    }
+    const original = unresolved().find((item) => item.id === id);
+    if (
+      !alive ||
+      !original ||
+      !retryable(original) ||
+      activeSends().has(id) ||
+      checkingSends().has(id)
+    )
+      return;
+    try {
+      const snapshot = original.correlation;
+      const selected = sendSelection(snapshot.selection.delivery);
+      const retry: FrozenSend = {
+        id,
+        text: snapshot.draft.text,
+        files: snapshot.draft.attachments,
+        edit: {
+          text: snapshot.draft.text,
+          attachments: snapshot.draft.attachments,
+          settledUploads: [],
+        },
+        selection: selected,
+        error: null,
+      };
+      activeSends.set(new Map(activeSends()).set(id, retry));
+      const next = await retrySend(client, id, selected);
+      if (alive) {
+        const active = new Map(activeSends());
+        active.delete(id);
+        activeSends.set(active);
+        void confirmFrozen(next, retry);
+      }
+    } catch (reason) {
+      const active = new Map(activeSends());
+      active.delete(id);
+      activeSends.set(active);
+      sendError(id, reason);
+    }
+  };
+  const dismissOriginal = async (id: string) => {
+    if (!alive || activeSends().has(id) || checkingSends().has(id)) return;
+    if (freezingSend()?.id === id) {
+      if (sending()) return;
+      freezingSend.set(null);
+      savingFailed.set(false);
+      releaseHeld();
+      return;
+    }
+    try {
+      await dismissSend(client, id);
+      if (alive) await refreshSends();
+    } catch (reason) {
+      sendError(id, reason);
+    }
+  };
+  const sendStatuses = (): ComposerSendStatus[] => {
+    const statuses = new Map<string, ComposerSendStatus>();
+    const followups = new Set(
+      queued()
+        ?.entries.filter((entry) => entry.kind === 'followup')
+        .map((entry) => entry.messageId),
+    );
+    for (const original of unresolved()) {
+      const failed = retryable(original);
+      const checking = checkingSends().has(original.id);
+      const detail = sendErrors().get(original.id);
+      if (
+        !failed &&
+        !detail &&
+        acceptedQueued(original) &&
+        sendDeliveries().get(original.id) !== 'unknown' &&
+        followups.has(acceptedSend({ receipt: original.receipt }, sessionId).messageId)
+      )
+        continue;
+      statuses.set(original.id, {
+        id: original.id,
+        text: original.correlation.draft.text,
+        attachments: original.correlation.draft.attachments,
+        state: failed
+          ? 'failed'
+          : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+            ? 'accepted'
+            : 'unknown',
+        detail: checking
+          ? tr('Checking send status…')
+          : detail
+            ? renderText(detail)
+            : sendDeliveries().get(original.id) === 'cancelled'
+              ? tr('Stopped before delivery. Your message is kept.')
+              : acceptedQueued(original) && sendDeliveries().get(original.id) !== 'unknown'
+                ? tr('Received · waiting for the next step')
+                : original.abandoned
+                  ? tr('Message was not sent.')
+                  : failed
+                    ? renderText(receiptMessage({ receipt: original.receipt }))
+                    : tr('Delivery not confirmed. Check status before retrying.'),
+        retryable: failed && !checking,
+        busy: checking,
+      });
+    }
+    for (const [id, frozen] of activeSends()) {
+      statuses.set(id, {
+        id,
+        text: frozen.text,
+        attachments: frozen.files,
+        state: 'sending',
+        detail: tr('Sending…'),
+        retryable: false,
+        busy: true,
+      });
+    }
+    const frozen = freezingSend();
+    if (frozen)
+      statuses.set(frozen.id, {
+        id: frozen.id,
+        text: frozen.text,
+        attachments: frozen.files,
+        state: frozen.error === null ? 'sending' : 'failed',
+        detail: frozen.error === null ? tr('Saving message…') : renderText(frozen.error),
+        retryable: frozen.error !== null,
+        busy: sending(),
+      });
+    return [...statuses.values()];
+  };
   const recover = async () => {
     if (!alive || recovering() || sending()) return;
     recovering.set(true);
-    const epoch = editEpoch;
-    await flushDraft();
-    if (!alive) return;
     try {
-      const originals = await pendingSends(client);
-      if (!alive) return;
-      unresolved.set(originals);
-      receiptsKnown.set(true);
+      const originals = await refreshSends();
       for (const original of originals) {
-        try {
-          const reply = await recoverSend(client, original.id);
-          if (!alive) return;
-          if (reply.receipt.kind === 'recorded' && reply.receipt.outcome.kind === 'unresolved')
-            continue;
-          settleReply(reply);
-        } catch (reason) {
-          report(reason);
-        }
+        if (!alive) return;
+        if (needsRecovery(original) || acceptedQueued(original)) await checkSend(original.id);
       }
-      const stored = await loadDraft(client);
-      if (!alive) return;
-      acceptRecoveredDraft(stored, epoch);
-      const remaining = await pendingSends(client);
-      if (!alive) return;
-      unresolved.set(remaining);
     } catch (reason) {
       report(reason);
     } finally {
@@ -2060,8 +2282,34 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
+  let checkedDeliveryKey = '';
+  effect(() => {
+    const queue = queued();
+    const accepted = unresolved().filter(acceptedQueued);
+    const key = JSON.stringify([
+      queue?.revision,
+      accepted.map((item) => item.id),
+      [...activeSends().keys()],
+      transcriptStatus(),
+      props.connectionLost(),
+    ]);
+    if (key === checkedDeliveryKey) return;
+    checkedDeliveryKey = key;
+    if (queue && accepted.length)
+      untracked(() => {
+        const received = new Set(queue.entries.map((item) => item.messageId));
+        const deliveries = new Map(sendDeliveries());
+        for (const original of accepted) {
+          const message = acceptedSend({ receipt: original.receipt }, sessionId);
+          if (received.has(message.messageId)) deliveries.set(original.id, 'accepted');
+          else void checkSend(original.id).catch(report);
+        }
+        sendDeliveries.set(deliveries);
+      });
+  });
+
   createPendingRecovery({
-    pending: () => !receiptsKnown() || unresolved().length > 0,
+    pending: () => !receiptsKnown() || unresolved().some(needsRecovery),
     blocked: () => !draftReady() || sending() || recovering(),
     recover,
   });
@@ -2089,16 +2337,18 @@ export function Conversation(props: ConversationProps) {
     text,
     backend: expectedBackend,
     attachments: files,
+    delivery = 'steer',
   }: SendAction) => {
     if (
       !alive ||
       owner !== sessionId ||
       draft() !== text ||
       !attachments.same(files) ||
-      !sameBackend(backendIdentity(backend()), expectedBackend)
+      ((delivery !== 'steer' || invocation() === null) &&
+        !sameBackend(backendIdentity(backend()), expectedBackend))
     )
       return;
-    void send(text, expectedBackend);
+    void send(text, expectedBackend, false, delivery);
   };
   const connected = () => transcriptStatus() === 'live' && !props.connectionLost();
   const predictedMessage = signal<ReturnType<ComposerPrediction['current']>>(null);
@@ -2173,13 +2423,20 @@ export function Conversation(props: ConversationProps) {
       invocation() === null &&
       rows().length === 0 &&
       live().length === 0 &&
+      unresolved().length === 0 &&
+      activeSends().size === 0 &&
+      freezingSend() === null &&
       pendingMessages().length === 0 &&
       (queued()?.entries.length ?? 0) === 0 &&
       toolActivity().length === 0,
     connected,
     error: () => (connected() ? error() : ''),
     notice: () => (connected() ? notice() : ''),
-    recovering: () => recovering() || sending(),
+    sends: sendStatuses,
+    retrySend: retryOriginal,
+    checkSend,
+    dismissSend: dismissOriginal,
+    recovering: () => !receiptsKnown() || sending(),
     stopping,
     resumable,
     resuming: confirmingContinuation,
@@ -2197,10 +2454,7 @@ export function Conversation(props: ConversationProps) {
     },
     changeDraft,
     submit(event) {
-      const value = resumable();
-      if (!event.text.trim() && !attachments.files().length && value?.kind === 'ready')
-        void resume(value.source, backendIdentity(backend()));
-      else void send(event.text);
+      void send(event.text);
     },
     sendRendered,
     invocation,

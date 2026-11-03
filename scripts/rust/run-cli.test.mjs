@@ -130,6 +130,7 @@ test('desktop development stages the current macOS shell before starting Maka', 
   await mkdir(app, { recursive: true });
   await writeFile(join(app, 'maka-desktop-shell'), 'previous desktop');
   await writeFile(join(output, 'maka-desktop-shell'), 'current desktop');
+  await writeFile(join(output, 'maka-host-shell'), 'current host shell');
   const executable = join(output, 'maka');
   const launched = [];
   t.mock.method(childProcess, 'spawn', (command, args) => {

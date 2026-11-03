@@ -114,7 +114,7 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
             .publish(&[])
             .await
             .unwrap()
-            .completion
+            .start()
             .await
             .unwrap();
         assert_eq!(result["result"]["ok"], true);
@@ -125,7 +125,7 @@ async fn large_child_value_is_consumable_and_complete_cell_emission_remains_dura
             "complete cell emission must match the independently expected JSON bytes"
         );
         // Both cases share this ledger; each retains the complete child value.
-        let prefix = log.prefix(32, 2 * 1024 * 1024 + 64 * 1024).await.unwrap();
+        let prefix = log.prefix(usize::MAX, usize::MAX).await.unwrap();
         let outcomes: Vec<_> = prefix
             .events
             .iter()

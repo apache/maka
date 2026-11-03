@@ -86,8 +86,10 @@ async fn background_summary_preserves_steering_tool_tail_and_frozen_physical_ret
             }
             let mut summary = summary.unwrap();
             let mut main = main.unwrap();
-            agent_loop::enqueue(&observed, invocation).await;
             respond_tail_call(&mut main, "during-summary-call", 41).await;
+            let (mut observing, _) = listener.accept().await.unwrap();
+            fixture::read_request(&mut observing).await;
+            agent_loop::enqueue(&observed, invocation).await;
             let (mut main, _) = listener.accept().await.unwrap();
             let frozen = fixture::read_request(&mut main).await;
             assert!(frozen["messages"].to_string().contains("A queued correction"));

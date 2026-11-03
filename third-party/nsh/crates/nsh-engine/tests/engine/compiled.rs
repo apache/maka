@@ -549,6 +549,124 @@ fn a_branch_expression_stays_when_a_sibling_changes() {
     assert!(remade.is_empty(), "{remade:#?}");
 }
 
+const BRANCH_EXPRESSIONS: &str = r#"
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+
+const wide = signal(true);
+const outer = signal(false);
+const inner = signal(false);
+mount(() => (
+  <View>
+    <If when={outer()}>
+      <Text>outer</Text>
+    </If>
+    <If when={wide()}>
+      {(() => <Input testID="a" />)()}
+      <If when={wide()}>
+        {(() => <Input testID="b" />)()}
+        <If when={inner()}>
+          <Text>inner</Text>
+        </If>
+      </If>
+    </If>
+    <Text onPress={() => outer.set(true)}>show outer</Text>
+    <Text onPress={() => inner.set(true)}>show inner</Text>
+  </View>
+));
+"#;
+
+const FRAGMENT_EXPRESSIONS: &str = r#"
+import { mount, signal, Text, View } from "nsh";
+import { Input } from "nsh/base";
+
+const inner = signal(false);
+mount(() => (
+  <View>
+    <>
+      <>
+        {(() => <Input testID="a" />)()}
+        <If when={inner()}>
+          <Text>inner</Text>
+        </If>
+      </>
+    </>
+    <Text onPress={() => inner.set(true)}>show inner</Text>
+  </View>
+));
+"#;
+
+const BRANCH_FAILURE: &str = r#"
+import { ErrorBoundary, mount, signal, Text, View } from "nsh";
+
+const wide = signal(true);
+mount(() => (
+  <View>
+    <ErrorBoundary fallback={() => <Text>failed</Text>}>
+      <If when={wide()}>
+        {(() => {
+          throw new Error("boom");
+        })()}
+        <Text>beside it</Text>
+      </If>
+    </ErrorBoundary>
+  </View>
+));
+"#;
+
+/// What fails among the several children of an `<If>` reaches its boundary.
+#[test]
+fn a_failing_branch_expression_reaches_its_error_boundary() {
+    let (_engine, rx) = start_app(BRANCH_FAILURE);
+    next(&rx, |b| texts(b).iter().any(|t| t == "failed"));
+}
+
+/// Expressions among the several children of an `<If>` (an array the branch
+/// returns) keep their nodes when anything beside them changes, at any depth:
+/// a press landing on nodes made again never reaches its handler.
+#[test]
+fn branch_expressions_stay_when_a_sibling_changes() {
+    assert_inputs_stay(
+        BRANCH_EXPRESSIONS,
+        &[("show outer", "outer"), ("show inner", "inner")],
+    );
+}
+
+/// So do those of a fragment that is the only child of another.
+#[test]
+fn nested_fragment_expressions_stay_when_a_sibling_changes() {
+    assert_inputs_stay(FRAGMENT_EXPRESSIONS, &[("show inner", "inner")]);
+}
+
+fn assert_inputs_stay(app: &str, presses: &[(&str, &str)]) {
+    let (engine, rx) = start_app(app);
+    let first = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("first frame");
+    for &(press, shown) in presses {
+        let target = text_id(&first, press).expect("the text to press");
+        engine
+            .control()
+            .dispatch_event(target, EventKind::Press, EventPayload::None);
+        let batch = next(&rx, |b| texts(b).iter().any(|t| t == shown));
+        let remade: Vec<&MountItem> = batch
+            .items
+            .iter()
+            .filter(|i| {
+                matches!(
+                    i,
+                    MountItem::Create {
+                        kind: nsh_core::ViewKind::Input,
+                        ..
+                    } | MountItem::Remove { .. }
+                        | MountItem::Delete { .. }
+                )
+            })
+            .collect();
+        assert!(remade.is_empty(), "{press}: {remade:#?}");
+    }
+}
+
 const NESTED_CHILDREN: &str = r#"
 import { mount, signal, Text, View } from "nsh";
 

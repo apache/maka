@@ -225,6 +225,7 @@ impl Compiler {
                 MessageState::Tool {
                     cursor: content.open(0),
                     split,
+                    notification: None,
                 }
             }
         };
@@ -270,6 +271,7 @@ enum MessageState {
     Tool {
         cursor: Box<dyn RecipeCursor<ToolResultRecipe>>,
         split: bool,
+        notification: Option<(Box<dyn RecipeCursor<ContentRecipe>>, usize)>,
     },
 }
 pub(in crate::adapters::wire) struct MessageCursor {
@@ -389,58 +391,73 @@ impl MessageCursor {
                     .await?;
                     plan
                 }
-                MessageState::Tool { cursor, split } => {
+                MessageState::Tool {
+                    cursor,
+                    split,
+                    notification: pending,
+                } => {
+                    if let Some((content, owned)) = pending {
+                        if let Some(part) = content.next().await.map_err(failure)? {
+                            let mut plan = self
+                                .compiler
+                                .content(part, false, self.budget.clone())
+                                .await?;
+                            plan.owned_bytes += std::mem::take(owned);
+                            let info = MessageMetadata {
+                                role: MessageRole::User,
+                                system: None,
+                                user_content: true,
+                                part_count: 1,
+                            };
+                            return Ok(Some(plan.finish(info, 0, self.budget.clone()).await?));
+                        }
+                        *pending = None;
+                    }
                     let Some(result) = cursor.next().await.map_err(failure)? else {
                         self.finished = true;
                         return Ok(None);
                     };
                     let options = result.provider_options.clone();
-                    let notification = result.kind == ToolResultKind::Notification;
-                    let output_options = if notification {
-                        None
-                    } else {
-                        output_cache_options(&result.output, self.budget.clone()).await?
-                    };
-                    let mut plan = if notification {
-                        self.compiler
-                            .notification(result, self.budget.clone())
-                            .await?
-                    } else {
-                        self.compiler
-                            .result(result, false, self.budget.clone())
-                            .await?
-                    };
-                    if notification && !plan.emitted {
+                    if result.kind == ToolResultKind::Notification {
+                        let mut owned = 0;
+                        let content = super::super::chat_source::notification_content(
+                            result,
+                            self.compiler.language,
+                            self.budget.clone(),
+                            &mut owned,
+                        )?;
+                        *pending = Some((content.open(0), owned));
                         self.index += 1;
-                        if self.index.is_multiple_of(DIRECTORY_WORK_QUANTUM) {
-                            tokio::task::yield_now().await;
-                        }
                         continue;
                     }
-                    if !notification {
-                        plan.cache = cache_program(
-                            &[
-                                options,
-                                output_options,
-                                if *split || index + 1 == info.part_count {
-                                    self.options.clone()
-                                } else {
-                                    None
-                                },
-                            ],
-                            CacheSite::ToolResult,
-                            None,
-                            &self.compiler.options,
-                            self.budget.clone(),
-                        )
+                    let output_options =
+                        output_cache_options(&result.output, self.budget.clone()).await?;
+                    let mut plan = self
+                        .compiler
+                        .result(result, false, self.budget.clone())
                         .await?;
-                        plan.cache_slot_at = Some(plan.fragments.len());
-                    }
+                    plan.cache = cache_program(
+                        &[
+                            options,
+                            output_options,
+                            if *split || index + 1 == info.part_count {
+                                self.options.clone()
+                            } else {
+                                None
+                            },
+                        ],
+                        CacheSite::ToolResult,
+                        None,
+                        &self.compiler.options,
+                        self.budget.clone(),
+                    )
+                    .await?;
+                    plan.cache_slot_at = Some(plan.fragments.len());
                     if *split {
                         info = MessageMetadata {
                             role: MessageRole::User,
                             system: None,
-                            user_content: notification,
+                            user_content: false,
                             part_count: 1,
                         };
                     }
@@ -1446,33 +1463,6 @@ impl Compiler {
                 )]
             }
         }
-    }
-    async fn notification(
-        &self,
-        result: ToolResultRecipe,
-        _budget: Arc<dyn SourceBudget>,
-    ) -> Result<Plan, ModelError> {
-        let ToolOutputRecipe::Text(body) = result.output else {
-            return Ok(Plan::empty());
-        };
-        let (head, tail) = match self.language {
-            Language::En => ("[Notification from exec ", "]\n"),
-            Language::ZhCn => ("[来自 exec ", " 的通知]\n"),
-            Language::ZhTw => ("[來自 exec ", " 的通知]\n"),
-        };
-        let mut plan = Plan::new("text");
-        plan.field(
-            "text",
-            vec![
-                literal(b"\""),
-                SourceFragment::Text(static_text(head)),
-                SourceFragment::Text(result.tool_call_id),
-                SourceFragment::Text(static_text(tail)),
-                SourceFragment::Text(body),
-                literal(b"\""),
-            ],
-        );
-        Ok(plan)
     }
     async fn result(
         &self,

@@ -21,11 +21,12 @@
 
 [English](README.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) 是供可信装配层使用的内部
-历史 checkpoint 协调器。它绑定原生 Session 命名空间与完整的原始
-`RecoveryRef`，调用 Root 持有的捕获、发布及恢复实现，不注册服务方法或
-模型工具。后续服务适配器必须经过 Host 准入，并根据持久发布回执完成原
-操作；调用方不能自行指定权限作用域。Workspace 捕获及恢复启动不属于此 API。
+[`HistoryCheckpointPublisher`](src/checkpoints.rs) 将已获准的原生 Session namespace
+和原 `RecoveryRef` 绑定到 Root 持有的历史捕获与恢复流程。
+[服务适配层](src/owner/checkpoints.rs)通过 Host 准入、原操作回执授权和有界订阅读取提供显式管理方法。
+领域回执可确认 checkpoint 成功，但不伪造通用 Host 的清理确认。
+参见 [API 工作流](../api/README.zh-CN.md#历史-checkpoint-管理)和[手动性能基线](src/owner/tests/checkpoints/benchmark.rs)。
+Workspace 捕获、恢复激活和模型工具不在此 API 范围内。
 
 `agent.fork` 捕获源会话版本和显式 `position`：`end`、带逻辑 Turn ID 的 `through_turn` 或 `before_turn`，以及表示空历史的 `start`。`before_turn` 排除目标完整轮次，指定第一轮可创建空对话。Host 在复制事务中从规范历史计算边界，客户端无需寻找上一轮或依赖采样的历史导航点。返回的分支保留该位置，源会话保持不变。
 
@@ -88,6 +89,8 @@ WorkHub 任务按受理时间从新到旧排列。任务详情包含记录的标
 可复用的 WorkHub 预设保存明确的连接和模型。普通及 Graph 新任务按当前设置解析该目标，无关的连接编辑不会使预设失效。已受理任务保留接收时的模型选择和工具，修改或禁用预设不会重写它们。新路由在受理前明确报告预设、连接或模型不可用。
 
 [源码](src/lib.rs) · [Cargo 配置](Cargo.toml)
+
+[性能基线](checkpoint-baseline.md)
 
 ChatGPT 订阅请求使用 Host 拥有的[账号模型目录](src/model/codex_inventory.rs)。
 每个逻辑模型 step 准备时检查五分钟有效期的兼容性缓存；同连接共享按需发现任务，

@@ -43,6 +43,7 @@ async fn request(store: &EventLog) -> OperationRequest {
                 Uuid::new_v4(),
                 0,
                 maka_plugin_core::composition::Input {
+                    base: None,
                     ui: None,
                     instances: BTreeMap::new(),
                 },

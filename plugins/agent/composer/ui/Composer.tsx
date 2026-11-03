@@ -21,7 +21,7 @@ import { textTooltip } from '../../../../products/maka/workbench/app/ui';
 import { ProjectMcp } from '../../../../products/maka/workbench/app/ProjectMcpConsent';
 import { tr } from '../../../../products/maka/workbench/app/locale';
 import { cleanup, effect, inputAction, signal, Text, View, Image } from 'nsh';
-import { Input, Popover } from 'nsh/base';
+import { ContextMenu, Input, MenuItem, Popover } from 'nsh/base';
 import type { InputRef, JSX, ViewRef } from 'nsh';
 import { Button } from 'nsh/base';
 import { platform, windowSize } from 'nsh';
@@ -106,6 +106,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const suggestion = suggestedMessage();
     const editor = predictionEditor();
     if (
+      completion.composing() ||
       !owner ||
       owner.sessionId !== offered.sessionId ||
       editor?.owner !== owner ||
@@ -127,13 +128,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     const owner = props.session();
     const suggestion = suggestedMessage();
     const editor = predictionEditor();
-    if (!owner || !suggestion || editor?.owner !== owner) return;
+    if (!owner || !suggestion || editor?.owner !== owner || completion.composing()) return;
     const offered = {
       sessionId: owner.sessionId,
       sourceTurnId: suggestion.sourceTurnId,
       text: suggestion.text,
     };
-    const bindings = ['tab', 'right', 'enter'].map((key) =>
+    const bindings = ['right', 'enter'].map((key) =>
       keymap.bind(key, () => acceptSuggestedMessage(offered), {
         when: 'always',
         within: editor.node,
@@ -218,11 +219,12 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     text,
     expected,
   }: {
-    owner: Pending;
+    owner: string;
     text: string;
     expected: string;
   }) => {
-    submitPending(owner, text, expected);
+    const current = pending();
+    if (current?.id === owner) submitPending(current, text, expected);
   };
   const blocked = () => props.session()?.blockedReason() ?? '';
   const confirming = () =>
@@ -245,26 +247,31 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           !props.session()?.attachments.files().length &&
           !pending()?.draft().trim() &&
           !pending()?.files().length)));
-  const sendLabel = () =>
-    props.session()?.invocation() != null ? tr('Queue message') : tr('Send message');
   const hasContent = () =>
-    !!props.session()?.draft().trim() || !!props.session()?.attachments.files().length;
-  const primaryStops = () =>
-    props.session()?.connected() === true && props.session()?.invocation() != null && !hasContent();
+    completion.composing() ||
+    !!props.session()?.draft().trim() ||
+    !!props.session()?.attachments.files().length;
+  const running = () =>
+    props.session()?.connected() === true && props.session()?.invocation() != null;
   const resumeSource = () => {
     const value = props.session()?.resumable();
     return !props.session()?.invocation() && !hasContent() && value?.kind === 'ready'
       ? value.source
       : null;
   };
-  const primaryLabel = () =>
-    primaryStops() ? tr('Pause response') : resumeSource() ? tr('Continue response') : sendLabel();
+  const stopPrimary = () => running() && !hasContent();
+  const sendDisabled = () => cannotSend() || completion.composing();
+  const continueDisabled = () =>
+    !!props.blocked?.() ||
+    !!props.session()?.resuming() ||
+    !!blocked() ||
+    !props.session()?.editable();
   const primaryDisabled = () =>
-    primaryStops()
+    stopPrimary()
       ? props.session()!.stopping()
-      : !!props.blocked?.() ||
-        !!props.session()?.resuming() ||
-        (resumeSource() ? !!blocked() || !props.session()!.editable() : cannotSend());
+      : resumeSource() !== null
+        ? continueDisabled()
+        : sendDisabled();
   const continueRendered = ({
     owner,
     source,
@@ -275,7 +282,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     backend: ComposerBackend;
   }) => {
     const session = props.session();
-    if (session?.sessionId === owner && props.active() && !primaryDisabled())
+    if (session?.sessionId === owner && props.active() && !continueDisabled())
       void session.resume(source, backend);
   };
   let unbind = () => {};
@@ -300,7 +307,15 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
   effect(() => {
     const stop = props.stopAction();
     const node = cardRoot();
-    if (node) return keymap.bind('escape', stop, { when: 'always', within: node });
+    if (node)
+      return keymap.bind(
+        'escape',
+        () => {
+          if (completion.composing()) return;
+          stop();
+        },
+        { when: 'always', within: node },
+      );
   });
   const workspaceLabel = () => {
     const path = props.session()?.workspace() ?? pending()?.workspace();
@@ -311,6 +326,78 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           .at(-1) ?? path)
       : tr('Choose workspace');
   };
+  const primaryButton = () => (
+    <View
+      role="button"
+      focusable
+      accessibilityLabel={
+        stopPrimary()
+          ? props.session()!.stopping()
+            ? tr('Stopping…')
+            : tr('Stop response')
+          : resumeSource() !== null
+            ? tr('Continue response')
+            : tr('Send message')
+      }
+      tooltip={textTooltip(() =>
+        stopPrimary()
+          ? `${tr('Stop response')} · Esc`
+          : resumeSource() !== null
+            ? tr('Continue response')
+            : `${tr('Send message')} · Enter`,
+      )}
+      disabled={primaryDisabled()}
+      onPress={
+        stopPrimary()
+          ? inputAction(props.session()!.stop, props.session()!.invocation())
+          : resumeSource() !== null
+            ? inputAction(continueRendered, {
+                owner: props.session()!.sessionId,
+                source: resumeSource()!,
+                backend: props.session()!.backend(),
+              })
+            : props.session()
+              ? inputAction(completion.send, {
+                  owner: props.session()!.sessionId,
+                  text: props.session()!.draft(),
+                  backend: props.session()!.backend(),
+                  attachments: props.session()!.attachments.ids(),
+                  delivery: 'steer',
+                })
+              : pending()
+                ? inputAction(sendPending, {
+                    owner: pending()!.id,
+                    text: pending()!.draft(),
+                    expected: pending()!.confirmation(),
+                  })
+                : undefined
+      }
+      style={{
+        width: 32,
+        height: 32,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: C.accent,
+        borderRadius: 16,
+      }}
+      hoverStyle={{ backgroundColor: C.accentHover }}
+      focusStyle={{ backgroundColor: C.accentHover }}
+      activeStyle={{ backgroundColor: C.accent }}
+      disabledStyle={{ backgroundColor: C.line }}
+    >
+      <If
+        when={stopPrimary() ? props.session()!.stopping() : confirming()}
+        else={
+          <Icon
+            name={stopPrimary() ? 'stop' : resumeSource() !== null ? 'play' : 'send'}
+            color={primaryDisabled() ? C.muted : C.background}
+          />
+        }
+      >
+        <LoadingIndicator color={C.muted} />
+      </If>
+    </View>
+  );
   return (
     <View
       style={{
@@ -745,7 +832,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           {suggestedMessage()!.text}{' '}
                           <Button
                             accessibilityLabel={tr('Use suggested message')}
-                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
+                            tooltip={textTooltip(() => tr('Right arrow to use · Esc to dismiss'))}
                             onPress={inputAction(acceptSuggestedMessage, {
                               sessionId: owner!.sessionId,
                               sourceTurnId: suggestedMessage()!.sourceTurnId,
@@ -765,7 +852,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
-                              {tr('Press Tab to accept')}
+                              {tr('Use suggestion')}
                             </Text>
                           </Button>
                         </Text>
@@ -894,59 +981,70 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             <If when={props.session() === null && pending() === null}>
               <View style={[{ flex: 1 }, { pointerEvents: 'none' }]} />
             </If>
-            <Button
-              accessibilityLabel={primaryLabel()}
-              tooltip={textTooltip(() =>
-                primaryStops() ? `${tr('Pause response')} · Esc` : `${primaryLabel()} · Enter`,
-              )}
-              disabled={primaryDisabled()}
-              onPress={
-                primaryStops()
-                  ? inputAction(props.session()!.stop, props.session()!.invocation())
-                  : resumeSource()
-                    ? inputAction(continueRendered, {
-                        owner: props.session()!.sessionId,
-                        source: resumeSource()!,
-                        backend: props.session()!.backend(),
-                      })
-                    : props.session()
-                      ? inputAction(completion.send, {
-                          owner: props.session()!.sessionId,
-                          text: props.session()!.draft(),
-                          backend: props.session()!.backend(),
-                          attachments: props.session()!.attachments.ids(),
-                        })
-                      : pending()
-                        ? inputAction(sendPending, {
-                            owner: pending()!,
-                            text: pending()!.draft(),
-                            expected: pending()!.confirmation(),
-                          })
-                        : undefined
-              }
-              style={{
-                width: 32,
-                height: 32,
-                alignItems: 'center',
-                justifyContent: 'center',
-                backgroundColor: C.accent,
-                borderRadius: 16,
-              }}
-              hoverStyle={{ backgroundColor: C.accentHover }}
-              focusStyle={{ backgroundColor: C.accentHover }}
-              activeStyle={{ backgroundColor: C.accent }}
-              disabledStyle={{ backgroundColor: C.line }}
-            >
-              <If when={!primaryStops() && confirming()}>
-                <LoadingIndicator color={C.muted} />
-              </If>
-              <If when={primaryStops() || !confirming()}>
-                <Icon
-                  name={primaryStops() ? 'pause' : resumeSource() ? 'play' : 'send'}
-                  color={primaryDisabled() ? C.muted : C.background}
-                />
-              </If>
-            </Button>
+            <If when={running() && hasContent()} else={primaryButton()}>
+              <ContextMenu
+                offset={8}
+                margin={8}
+                popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
+                trigger={primaryButton()}
+              >
+                <Each
+                  of={running() && hasContent() ? [props.session()!] : []}
+                  key={(owner) => owner.sessionId}
+                >
+                  {(owner) => (
+                    <>
+                      <MenuItem
+                        accessibilityLabel={tr('Add to queue')}
+                        tooltip={textTooltip(() => tr('Send after this turn'))}
+                        disabled={sendDisabled() || completion.isCommand()}
+                        onSelect={inputAction(completion.send, {
+                          owner: owner().sessionId,
+                          text: owner().draft(),
+                          backend: owner().backend(),
+                          attachments: owner().attachments.ids(),
+                          delivery: 'queue' as const,
+                        })}
+                        style={{
+                          ...controlStyle,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                        }}
+                        hoverStyle={{ backgroundColor: C.raised }}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Icon name="queue" color={C.secondary} />
+                        <Text style={{ ...captionTextStyle, color: C.text }}>
+                          {tr('Add to queue')}
+                        </Text>
+                      </MenuItem>
+                      <MenuItem
+                        accessibilityLabel={
+                          owner().stopping() ? tr('Stopping…') : tr('Stop response')
+                        }
+                        tooltip={textTooltip(() => `${tr('Stop response')} · Esc`)}
+                        disabled={owner().stopping()}
+                        onSelect={inputAction(owner().stop, owner().invocation())}
+                        style={{
+                          ...controlStyle,
+                          flexDirection: 'row',
+                          alignItems: 'center',
+                          gap: 8,
+                        }}
+                        hoverStyle={{ backgroundColor: C.raised }}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Icon name="stop" color={C.secondary} />
+                        <Text style={{ ...captionTextStyle, color: C.text }}>
+                          {tr('Stop response')}
+                        </Text>
+                      </MenuItem>
+                    </>
+                  )}
+                </Each>
+              </ContextMenu>
+            </If>
           </View>
           <If when={fileDragging()}>
             <FileDropHint radius={cardRadius()} />

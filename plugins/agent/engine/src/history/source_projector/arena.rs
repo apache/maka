@@ -41,7 +41,7 @@ pub(in crate::history) async fn project_row(
         return user(payload.ok_or_else(invalid)?, *steering, &context, store).await;
     }
     if let (
-        RowDirectory::ToolResult { .. },
+        RowDirectory::ToolResult { kind, .. },
         Some(PayloadDirectory::Tool(ToolDirectory::Content { parts })),
     ) = (metadata, payload)
     {
@@ -49,7 +49,7 @@ pub(in crate::history) async fn project_row(
         let result = super::result(
             metadata,
             ToolOutputRecipe::Content(store.internal().contents(content)),
-            ToolResultKind::Settled,
+            *kind,
             &context,
         )
         .await?;

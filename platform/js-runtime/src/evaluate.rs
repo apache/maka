@@ -118,7 +118,6 @@ pub(crate) async fn evaluate(
             setTimeout: (callback, millis = 0) => {{
                 if (typeof callback !== "function" || !Number.isFinite(millis) || millis < 0)
                     throw new ErrorClass("invalid timer");
-                if (timers.size >= 128) throw new ErrorClass("timer limit exceeded");
                 const id = ++nextTimer;
                 timers.set(id, callback);
                 timer(id, Math.trunc(millis)).then((fired) => {{

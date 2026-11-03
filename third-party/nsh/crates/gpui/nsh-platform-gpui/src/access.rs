@@ -319,7 +319,9 @@ pub(crate) fn pressable_labelled(surface: &Surface, label: &str) -> Vec<NshView>
         .into_iter()
         .filter(|view| {
             view.try_state().is_some_and(|s| {
-                is_pressable(s.events) && s.props.accessibility.label.as_deref() == Some(label)
+                is_pressable(s.events)
+                    && !s.props.accessibility.state.disabled
+                    && s.props.accessibility.label.as_deref() == Some(label)
             }) && exposed(view).is_ok()
         })
         .collect()

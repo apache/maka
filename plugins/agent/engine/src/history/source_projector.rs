@@ -137,12 +137,12 @@ pub(super) async fn project_row(
     payload: Option<&PayloadDirectory>,
     context: &ProjectContext<'_>,
 ) -> io::Result<ProjectedRow> {
-    if let RowDirectory::UnknownTool { .. } = row {
+    if let RowDirectory::UnknownTool { kind, .. } = row {
         return Ok(ProjectedRow::Tool(
             result(
                 row,
                 ToolOutputRecipe::ErrorText(literal(unknown(context.language))),
-                ToolResultKind::Settled,
+                *kind,
                 context,
             )
             .await?,
@@ -195,13 +195,21 @@ pub(super) async fn project_row(
         }
         (
             RowDirectory::ToolResult {
-                archived, is_error, ..
+                archived,
+                is_error,
+                kind,
+                ..
             },
             payload,
         ) => {
             let output = match payload {
                 PayloadDirectory::Text(text) => {
-                    ToolOutputRecipe::ErrorText(located::text(*text, context)?)
+                    let text = located::text(*text, context)?;
+                    if *is_error {
+                        ToolOutputRecipe::ErrorText(text)
+                    } else {
+                        ToolOutputRecipe::Text(text)
+                    }
                 }
                 PayloadDirectory::Tool(tool) => {
                     tool_output(tool, *archived, *is_error, context).await?
@@ -209,7 +217,7 @@ pub(super) async fn project_row(
                 _ => return Err(invalid()),
             };
             Ok(ProjectedRow::Tool(
-                result(row, output, ToolResultKind::Settled, context).await?,
+                result(row, output, *kind, context).await?,
             ))
         }
         _ => Err(invalid()),
@@ -239,6 +247,7 @@ async fn result(
             call_id,
             name,
             custom,
+            ..
         } => (*call_id, Some(*name), *custom),
         RowDirectory::Notification {
             call_id, custom, ..
@@ -338,7 +347,7 @@ async fn assistant(part: &PartDirectory, context: &ProjectContext<'_>) -> io::Re
             let mut result = ToolResultRecipe {
                 tool_call_id: located::text(*id, context)?,
                 tool_name: located::text(*name, context)?,
-                kind: ToolResultKind::Settled,
+                kind: ToolResultKind::Output,
                 call_kind: call_kind(provider_options.as_ref(), context).await?,
                 output: if *is_error {
                     ToolOutputRecipe::ErrorJson(output)

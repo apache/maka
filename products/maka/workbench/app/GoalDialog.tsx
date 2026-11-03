@@ -19,6 +19,7 @@
 import {
   batch,
   cleanup,
+  computed,
   effect,
   keymap,
   signal,
@@ -178,9 +179,12 @@ export function createGoalContent(props: {
   );
   return () => {
     const root = signal<ViewRef | null>(null);
+    // A snapshot of a running Goal arrives every second, and an Escape the
+    // platform matches to a binding just replaced is lost.
+    const cancellable = computed(() => creating() || changingBudget());
     effect(() => {
       const node = root();
-      if (node && (creating() || changingBudget()))
+      if (node && cancellable())
         return keymap.bind('escape', cancelEditing, { when: 'always', within: node });
     });
     return (

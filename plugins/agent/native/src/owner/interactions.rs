@@ -51,7 +51,8 @@ impl Owner {
                         | InteractionRequest::Question { tool_use_id, .. }
                         | InteractionRequest::Form { tool_use_id, .. }
                         | InteractionRequest::ClientCapability { tool_use_id, .. }
-                        | InteractionRequest::ComputerApp { tool_use_id, .. } => {
+                        | InteractionRequest::ComputerApp { tool_use_id, .. }
+                        | InteractionRequest::SystemPermission { tool_use_id, .. } => {
                             Some(tool_use_id.clone())
                         }
                     },
@@ -66,6 +67,9 @@ impl Owner {
                             InteractionKind::ClientCapability
                         }
                         InteractionRequest::ComputerApp { .. } => InteractionKind::ComputerApp,
+                        InteractionRequest::SystemPermission { .. } => {
+                            InteractionKind::SystemPermission
+                        }
                     },
                 })
                 .collect(),
@@ -141,6 +145,7 @@ impl Owner {
                     | InteractionRequest::ServiceApproval { .. }
                     | InteractionRequest::Permissions { .. }
                     | InteractionRequest::Form { .. }
+                    | InteractionRequest::SystemPermission { .. }
             )
         {
             return reject(InteractionRejection::Unsupported);
@@ -154,6 +159,7 @@ impl Owner {
                 | InteractionAnswer::ClientCapability { .. }
                 | InteractionAnswer::ComputerApp { .. }
                 | InteractionAnswer::ComputerAppCancel {}
+                | InteractionAnswer::SystemPermissionCancel {}
         ) || input.answer.validate_for_request(&record.request).is_err()
         {
             return reject(InteractionRejection::InvalidAnswer);

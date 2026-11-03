@@ -73,6 +73,7 @@ async fn source(store: &EventLog, deployment: Uuid, expected: u64) -> Deployment
             deployment,
             expected,
             Input {
+                base: None,
                 ui: None,
                 instances: BTreeMap::from([(
                     "caller".into(),

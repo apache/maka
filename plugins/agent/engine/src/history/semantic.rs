@@ -94,10 +94,17 @@ fn render_rows(
                 custom,
                 is_error,
                 archived,
+                kind,
                 ..
             } => {
                 let output = match payload {
-                    Some(Payload::Text(text)) => ToolOutput::ErrorText(text.clone()),
+                    Some(Payload::Text(text)) => {
+                        if *is_error {
+                            ToolOutput::ErrorText(text.clone())
+                        } else {
+                            ToolOutput::Text(text.clone())
+                        }
+                    }
                     Some(Payload::Tool(projection)) if *archived => {
                         let maka_agent_facts::tool_output::DurableToolProjection::Json { value } =
                             projection
@@ -120,6 +127,17 @@ fn render_rows(
                     _ => return Err(invalid()),
                 };
                 let mut message = Message::tool(call_id, name, output);
+                if *kind
+                    == maka_agent_facts::model::prompt_source::source::ToolResultKind::Notification
+                    && let Message::Tool { content, .. } = &mut message
+                {
+                    for result in content {
+                        result
+                            .provider_options
+                            .get_or_insert_with(|| serde_json::json!({}))["maka"]["notification"] =
+                            serde_json::Value::Bool(true);
+                    }
+                }
                 mark_custom(&mut message, *custom);
                 messages.push(message);
             }
@@ -134,6 +152,7 @@ fn render_rows(
                 call_id,
                 name,
                 custom,
+                kind,
                 ..
             } => {
                 let text = match language {
@@ -148,6 +167,13 @@ fn render_rows(
                     }
                 };
                 let mut message = Message::tool(call_id, name, ToolOutput::ErrorText(text.into()));
+                if *kind
+                    == maka_agent_facts::model::prompt_source::source::ToolResultKind::Notification
+                    && let Message::Tool { content, .. } = &mut message
+                {
+                    content[0].provider_options =
+                        Some(serde_json::json!({"maka":{"notification":true}}));
+                }
                 mark_custom(&mut message, *custom);
                 messages.push(message);
             }

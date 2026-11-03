@@ -121,3 +121,50 @@ async fn independent_public_agent_client_finds_published_fork_after_uncertain_ho
         server.await.unwrap().unwrap();
     }).await.unwrap();
 }
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn published_product_endpoint_exposes_history_checkpoint_and_original_receipt() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    use maka_plugin_core::operation::{OperationOutcome, Receipt};
+    tokio::time::timeout(Duration::from_secs(60),async {
+        let mut fixture=Fixture::open().await;
+        let preview=support::query(&fixture.native,"agent","previewHistoryCheckpoint",json!({"sessionId":fixture.session})).await;
+        let input=json!({"sessionId":fixture.session,"expectedRevision":null,"confirmedSubtreeDigest":preview["subtreeDigest"]});
+        let mut call=fixture.native.call("agent","publishHistoryCheckpoint".into(),input.clone(),Default::default()).await.unwrap();
+        call.start().await.unwrap();
+        let Reply::Prepared {reference}=call.receive().await.unwrap() else {panic!("original operation reference")};
+        let Reply::Mutation {reply,cleanup}=call.confirm().await.unwrap() else {panic!("publication receipt")};
+        cleanup.unwrap();
+        let Receipt::Recorded {outcome:OperationOutcome::Returned {value},..}=reply.receipt else {panic!("publication failed")};
+        assert_eq!(value["state"]["kind"],"published");
+        call.close().await.unwrap();
+        let receipt=support::query(&fixture.native,"agent","historyCheckpointReceipt",json!({"reference":reference,"input":input})).await;
+        assert_eq!(receipt["publication"],value);
+        let head=support::query(&fixture.native,"agent","historyCheckpointHead",json!({"sessionId":fixture.session})).await;
+        assert_eq!(head,value["state"]["head"]);
+        let mut stream=fixture.native.call("agent","readHistoryCheckpoint".into(),json!({"sessionId":fixture.session,"revision":head["revision"]}),Default::default()).await.unwrap();
+        stream.start().await.unwrap();
+        assert!(matches!(stream.receive().await.unwrap(),Reply::Subscribed));
+        let mut bytes=Vec::new(); let mut ended=false;
+        loop {
+            match stream.pull().await.unwrap() {
+                Reply::Item {value}=>match value["kind"].as_str().unwrap() {
+                    "native_history_v1"=>assert_eq!(value["head"],head),
+                    "chunk"=>{assert_eq!(value["offset"],bytes.len() as u64); bytes.extend(STANDARD.decode(value["data"].as_str().unwrap()).unwrap());},
+                    "end"=>{assert_eq!(value["bytes"],bytes.len() as u64); ended=true;},
+                    _=>panic!("{value}"),
+                },
+                Reply::Finished {result,cleanup}=>{assert!(result.unwrap().is_null());cleanup.unwrap();break;},
+                reply=>panic!("{reply:?}"),
+            }
+        }
+        assert!(ended);
+        let mut stage=maka_event_log::bundle::StagedBundle::read(bytes.as_slice()).await.unwrap();
+        stage.validate_history().await.unwrap();
+        assert!(fixture.model_requests.try_recv().is_err(),"checkpoint management never runs the model");
+        stream.close().await.unwrap();
+        fixture.native.close().await.unwrap(); fixture.client.quit().await.unwrap();
+        fixture.server.await.unwrap().unwrap();
+    }).await.unwrap();
+}

@@ -190,7 +190,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send instructions or follow-up information to a conversation. Admission does not mean completion.',
+      'Send instructions to a conversation. Active conversations are steered by default; set delivery to queue to wait for the current turn. Admission does not mean completion.',
     ],
     ['stop', 'SessionStop', 'Request that a conversation stop its current execution.'],
     ['resume', 'SessionResume', 'Resume a conversation execution.'],
@@ -243,7 +243,7 @@ export function installation(
     processes,
     computer: { desktop: 'auto', browsers: [] },
     web: { network: 'allowed' },
-    jev: { network: 'allowed' },
+    decisions_api: { network: 'allowed' },
     coordinator: agent,
     coordinatorProcesses: processes,
     skills: {

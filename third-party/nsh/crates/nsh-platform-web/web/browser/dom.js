@@ -57,10 +57,11 @@ export function createDom(invoke, values, reactive, live, wake) {
     if (value === undefined || value === null) held.delete(name); else held.set(name, value);
   };
   const dynamic = (value, depth = 0) => typeof value === "function" || (depth < 64 && Array.isArray(value) && value.some(item => dynamic(item, depth + 1)));
-  const itemMemo = fn => reactive.computed(() => { const value = fn(); return typeof value === "function" ? itemMemo(value) : value; });
-  const memoize = items => items.length > 1 && items.some(item => typeof item === "function")
-    ? items.map(item => typeof item === "function" ? itemMemo(item) : item)
-    : items;
+  const memoized = (value, depth = 0) => typeof value === "function" ? itemMemo(value)
+    : depth < 64 && Array.isArray(value) && dynamic(value, depth) ? value.map(item => memoized(item, depth + 1))
+    : value;
+  const itemMemo = fn => reactive.computed(() => memoized(fn()));
+  const memoize = items => items.length === 1 && typeof items[0] === "function" ? items : memoized(items);
   // As QuickJS's insert (Solid's insertExpression): a returned function gets
   // an effect of its own and each function of an array a memo of its own;
   // tracked by the outer effect, what they read would make the components again.

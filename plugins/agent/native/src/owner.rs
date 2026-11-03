@@ -26,6 +26,7 @@ use maka_agent_engine::{Engine, RunError, RunInput, RunWork};
 mod assistant;
 mod attachments;
 mod auxiliary;
+mod checkpoints;
 mod compaction;
 mod computer_apps;
 mod context;
@@ -53,6 +54,7 @@ mod recap;
 mod runs;
 mod scheduler;
 mod skills;
+mod steering;
 mod title;
 mod todo;
 mod work;
@@ -153,7 +155,7 @@ impl BackgroundKind {
     }
 }
 enum Selection {
-    Model(ModelSelection, Option<ThinkingLevel>),
+    Model(Option<ModelSelection>, Option<ThinkingLevel>),
     Executor(maka_agent_api::executor::Selection),
 }
 struct Submission {
@@ -161,6 +163,8 @@ struct Submission {
     text: String,
     attachments: Vec<String>,
     selection: Selection,
+    delivery: maka_agent_api::contract::SendDelivery,
+    expected_invocation_id: Option<String>,
 }
 enum PreparedBackend {
     Model(Box<(crate::model::Source, maka_agent_engine::PreparedModel)>),
@@ -1089,6 +1093,8 @@ impl Owner {
             model: selection,
             thinking_level,
             attachments,
+            delivery,
+            expected_invocation_id,
         } = input;
         self.submit(
             Submission {
@@ -1096,6 +1102,8 @@ impl Owner {
                 text,
                 attachments,
                 selection: Selection::Model(selection, thinking_level),
+                delivery,
+                expected_invocation_id,
             },
             operation,
             parent,
@@ -1114,6 +1122,8 @@ impl Owner {
                 text: input.message,
                 attachments: input.attachments,
                 selection: Selection::Executor(input.executor),
+                delivery: maka_agent_api::contract::SendDelivery::Queue,
+                expected_invocation_id: None,
             },
             operation,
             parent,
@@ -1131,11 +1141,29 @@ impl Owner {
             text,
             attachments,
             selection,
+            delivery,
+            expected_invocation_id,
         } = input;
         if text.trim().is_empty() && attachments.is_empty() {
             return Err("agent_message_invalid".into());
         }
         let admission = self.runs.session(&id).await;
+        if let Some(expected) = expected_invocation_id
+            && self
+                .store
+                .session(&id)
+                .await
+                .map_err(|error| error.to_string())?
+                .invocation_stopped(&expected)
+                .await
+                .map_err(|error| error.to_string())?
+        {
+            return Ok(SendResult::Rejected {
+                session_id: id,
+                reason: SendRejection::TurnStopped,
+                skills: None,
+            });
+        }
         let queued = {
             let runs = admission.state().await;
             if runs.closing {
@@ -1144,36 +1172,91 @@ impl Owner {
             let current = runs.controls.get(&id);
             current.map(|control| control.invocation.clone())
         };
-        let queued = match queued {
-            Some(invocation) => Some(invocation),
-            None => self
-                .store
+        let parked = if queued.is_none() {
+            self.store
                 .session(&id)
                 .await
                 .map_err(|error| error.to_string())?
                 .activation_checkpoint(&id)
                 .await
                 .map_err(|_| "agent_execution_unavailable")?
-                .map(|parked| parked.checkpoint.invocation),
+        } else {
+            None
         };
+        let queued = queued.or_else(|| {
+            parked
+                .as_ref()
+                .map(|parked| parked.checkpoint.invocation.clone())
+        });
         let session = self.session(&id).await?;
         if session.archived {
             return Err("agent_session_configuration_changed".into());
         }
+        if matches!(delivery, maka_agent_api::contract::SendDelivery::Steer) {
+            let control = admission.state().await.controls.get(&id).cloned();
+            if let Some(control) = control.filter(|control| control.basis.executor.is_none()) {
+                return self
+                    .steer_message(
+                        text,
+                        attachments,
+                        &control.invocation,
+                        &control.basis,
+                        operation,
+                        parent,
+                    )
+                    .await;
+            }
+            if let Some(parked) = parked {
+                let mut basis: MessageBasis =
+                    serde_json::from_value(parked.checkpoint.native_basis)
+                        .map_err(|error| format!("invalid parked execution basis: {error}"))?;
+                basis.mcp_catalog = Some(self.mcp_projects.catalog(basis.mcp_revision.as_deref())?);
+                let result = self
+                    .steer_message(
+                        text,
+                        attachments,
+                        &parked.checkpoint.invocation,
+                        &basis,
+                        operation,
+                        parent,
+                    )
+                    .await?;
+                if matches!(result, SendResult::Queued { .. }) {
+                    self.store
+                        .session(&id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .close_run_interactions(
+                            &parked.checkpoint.invocation,
+                            maka_agent_facts::interaction::ClosureReason::Steered,
+                            now(),
+                        )
+                        .await
+                        .map_err(|error| error.to_string())?;
+                }
+                return Ok(result);
+            }
+        }
         let backend = match selection {
-            Selection::Model(selection, thinking_level) => PreparedBackend::Model(Box::new(
-                crate::model::Source::select(
-                    self.configuration.clone(),
-                    self.catalog.clone(),
-                    self.credentials.clone(),
-                    selection,
-                    thinking_level,
-                    id.clone(),
-                    self.revision.clone(),
-                )
-                .await
-                .map_err(public_error)?,
-            )),
+            Selection::Model(selection, thinking_level) => {
+                let (selection, thinking_level) = match selection {
+                    Some(selection) => (selection, thinking_level),
+                    None => self.saved_model(&session.configuration).await?,
+                };
+                PreparedBackend::Model(Box::new(
+                    crate::model::Source::select(
+                        self.configuration.clone(),
+                        self.catalog.clone(),
+                        self.credentials.clone(),
+                        selection,
+                        thinking_level,
+                        id.clone(),
+                        self.revision.clone(),
+                    )
+                    .await
+                    .map_err(public_error)?,
+                ))
+            }
             Selection::Executor(selection) => {
                 if session.configuration.tools.is_some() {
                     return Err("agent_executor_cannot_enforce_tool_selection".into());

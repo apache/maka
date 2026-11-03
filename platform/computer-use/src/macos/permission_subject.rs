@@ -34,7 +34,7 @@ pub(crate) enum Request {
 
 impl Request {
     pub(crate) fn resolve(self, language: Language) -> Result<ComputerAppTarget, ToolError> {
-        super::require_desktop()?;
+        super::require_desktop_blocking()?;
         let (app, binding) = match self {
             Self::RawApp(name) => {
                 let selected = raw_app_candidate(&name, &apps::list_all_apps())?;
