@@ -28,7 +28,12 @@ pub(super) struct Service {
     label: String,
     target: String,
     path: PathBuf,
-    definition: String,
+    /// The service definition around its program arguments.
+    definition: (String, String),
+    arguments: Vec<String>,
+    /// The Host's executable, run under its own identity; see
+    /// `host_identity`.
+    host: Option<PathBuf>,
     capture: Option<maka_host_runtime::logs::Source>,
 }
 
@@ -45,9 +50,8 @@ impl Service {
         let path = home
             .join("Library/LaunchAgents")
             .join(format!("{label}.plist"));
-        let args = arguments(deployment, role)?
-            .map(|arg| format!("<string>{}</string>", xml(arg)))
-            .join("");
+        let arguments = arguments(deployment, role)?.map(str::to_owned).to_vec();
+        let host = (role == Role::Host).then(|| deployment.executable.clone());
         let capture = if role == Role::Host {
             Some(maka_host_runtime::logs::Source::for_root(
                 &deployment.root_id,
@@ -63,11 +67,11 @@ impl Service {
         let log = xml(log.to_str().ok_or("service log path must be UTF-8")?);
         let definition = if role == Role::Updater {
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{args}</array><key>StartInterval</key><integer>600</integer><key>RunAtLoad</key><true/><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>{log}</string></dict></plist>\n"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>\0</array><key>StartInterval</key><integer>600</integer><key>RunAtLoad</key><true/><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>{log}</string></dict></plist>\n"
             )
         } else {
             format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{args}</array><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>2</integer><key>ExitTimeOut</key><integer>45</integer><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>{log}</string></dict></plist>\n"
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<plist version=\"1.0\"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>\0</array><key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict><key>ThrottleInterval</key><integer>2</integer><key>ExitTimeOut</key><integer>45</integer><key>Umask</key><integer>63</integer><key>StandardErrorPath</key><string>{log}</string></dict></plist>\n"
             )
         };
         Ok(Self {
@@ -75,7 +79,12 @@ impl Service {
             uid,
             label,
             path,
-            definition,
+            definition: definition
+                .split_once('\0')
+                .map(|(head, tail)| (head.to_owned(), tail.to_owned()))
+                .ok_or("service definition lost its arguments")?,
+            arguments,
+            host,
             capture,
         })
     }
@@ -91,7 +100,26 @@ impl Service {
         if let Some(source) = &self.capture {
             drop(source.open_capture()?);
         }
-        publish(&self.path, &self.definition)?;
+        // Installing the Host's identity happens here, not when a service
+        // is only observed, stopped or removed.
+        let shell = self
+            .host
+            .as_deref()
+            .and_then(super::super::host_identity::shell)
+            .map(|shell| {
+                shell
+                    .into_os_string()
+                    .into_string()
+                    .map_err(|_| "Host identity path must be UTF-8")
+            })
+            .transpose()?;
+        let arguments = shell
+            .iter()
+            .chain(&self.arguments)
+            .map(|argument| format!("<string>{}</string>", xml(argument)))
+            .collect::<String>();
+        let (head, tail) = &self.definition;
+        publish(&self.path, &format!("{head}{arguments}{tail}"))?;
         checked(command("/bin/launchctl", &["enable", &self.target])?)?;
         checked(command(
             "/bin/launchctl",

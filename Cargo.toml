@@ -42,6 +42,7 @@ members = [
     "products/maka/cli",
     "plugins/settings/store",
     "products/maka/desktop-shell",
+    "products/maka/host-shell",
     "products/maka/client",
     "products/maka/terminal-shell",
     "products/maka/workbench",
