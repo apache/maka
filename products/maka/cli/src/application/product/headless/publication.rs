@@ -17,13 +17,89 @@
  * under the License.
  */
 
-//! Product-owned method publication uses the same policy on open and reconnect.
-use super::{HostError, LoadedDeployment, RootStore, Selection};
+//! Product routes may follow defaults; publication authority remains explicitly granted.
+use super::super::{Input, Package, baseline};
+use super::{HostError, LoadedDeployment, PreparedApplication, RootStore, Selection};
 use maka_host_runtime::application::{host::Client, transport::HostEndpoint};
 use maka_plugin_core::{
     contract::{Contract, Interface, Transport},
     plan::Plan,
 };
+use std::collections::BTreeMap;
+
+pub(super) fn rebase(
+    selection: &mut Selection,
+    previous: &LoadedDeployment,
+    target: &PreparedApplication,
+) -> Result<Vec<String>, HostError> {
+    let Some(previous) = baseline_endpoints(&previous.source().input, previous.packages())? else {
+        return Ok(Vec::new());
+    };
+    let Some(target) = baseline_endpoints(target.input(), target.packages())? else {
+        return Ok(Vec::new());
+    };
+    Ok(rebase_endpoints(selection, &previous, &target))
+}
+
+fn baseline_endpoints(
+    input: &Input,
+    packages: &[Package],
+) -> Result<Option<BTreeMap<String, HostEndpoint>>, HostError> {
+    let Some(base) = input
+        .base
+        .as_ref()
+        .filter(|base| base.package.id == baseline::ID)
+    else {
+        return Ok(None);
+    };
+    let package = packages
+        .iter()
+        .find(|package| package.application_ref() == base.package)
+        .ok_or("product publication baseline bytes missing")?;
+    Ok(Some(baseline::metadata(package)?.endpoints))
+}
+
+fn rebase_endpoints(
+    selection: &mut Selection,
+    previous: &BTreeMap<String, HostEndpoint>,
+    target: &BTreeMap<String, HostEndpoint>,
+) -> Vec<String> {
+    let Selection::PublicHost {
+        endpoints,
+        product_methods,
+        ..
+    } = selection;
+    let mut changes = Vec::new();
+    // A new default is not a grant. Only existing routes can follow their baseline.
+    for (name, before) in previous {
+        let Some(current) = endpoints.get_mut(name) else {
+            continue;
+        };
+        if current.consumer != before.consumer || current.import != before.import {
+            continue;
+        }
+        let path = name.replace('~', "~0").replace('/', "~1");
+        match target.get(name) {
+            Some(after) => {
+                if current.consumer != after.consumer || current.import != after.import {
+                    current.consumer = after.consumer.clone();
+                    current.import.clone_from(&after.import);
+                    changes.push(format!(
+                        "/publication/endpoints/{path}: follow current product binding"
+                    ));
+                }
+            }
+            None => {
+                endpoints.remove(name);
+                product_methods.remove(name);
+                changes.push(format!(
+                    "/publication/endpoints/{path}: remove obsolete product endpoint"
+                ));
+            }
+        }
+    }
+    changes
+}
 
 fn refresh_methods<'a>(
     selection: &mut Selection,
@@ -39,10 +115,10 @@ fn refresh_methods<'a>(
     for (name, endpoint) in endpoints {
         let contract = contract(name, endpoint)?;
         let Interface::Service { methods } = &contract.interface else {
-            return Err("public Host endpoint requires a service".into());
+            return Err(format!("public Host endpoint {name:?} requires a service").into());
         };
         if contract.transport != Transport::Remote || methods.is_empty() {
-            return Err("public Host endpoint requires a public service".into());
+            return Err(format!("public Host endpoint {name:?} requires a public service").into());
         }
         if !product_methods.contains(name) {
             if endpoint
@@ -51,7 +127,10 @@ fn refresh_methods<'a>(
                 .iter()
                 .any(|method| !methods.contains_key(method))
             {
-                return Err("explicit Host endpoint grants an unavailable method".into());
+                return Err(format!(
+                    "explicit Host endpoint grants an unavailable method: {name:?}"
+                )
+                .into());
             }
             continue;
         }
@@ -71,13 +150,18 @@ pub(super) fn refresh_from_plan(
     selection: &mut Selection,
     plan: &Plan,
 ) -> Result<Vec<String>, HostError> {
-    refresh_methods(selection, |_, endpoint| {
+    refresh_methods(selection, |name, endpoint| {
         let bindings = plan
             .instances()
             .get(&endpoint.consumer)
             .and_then(|consumer| consumer.bindings.get(&endpoint.import))
             .filter(|bindings| bindings.len() == 1)
-            .ok_or("public Host endpoint requires one service binding")?;
+            .ok_or_else(|| {
+                format!(
+                    "public Host endpoint {name:?} requires one service binding for consumer {:?}, import {:?}",
+                    endpoint.consumer, endpoint.import
+                )
+            })?;
         Ok(&bindings[0].declaration.contract)
     })
 }
@@ -144,3 +228,6 @@ pub(crate) async fn prepare_live_publication(
         .await?;
     Ok(LivePublication::Updated)
 }
+
+#[cfg(test)]
+mod tests;

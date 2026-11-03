@@ -50,15 +50,13 @@ pub(in super::super) async fn synchronize(
     } else {
         None
     };
-    synchronize_loaded(apply.then_some(store), record, current, base)
-        .await
-        .map(|(outcome, _)| outcome)
+    synchronize_loaded(apply.then_some(store), record, current, base).await
 }
 
 /// Offline preview reads only the existing control database; no runtime partition opens.
 pub(in super::super) async fn preview(
     store: &maka_event_log::EventLog,
-) -> Result<(Outcome, PreparedApplication), HostError> {
+) -> Result<Outcome, HostError> {
     let record = store
         .application_launch()
         .await?
@@ -80,7 +78,7 @@ async fn synchronize_loaded(
     record: Launch,
     current: Option<maka_event_log::applications::LoadedDeployment>,
     base: Option<maka_event_log::applications::LoadedDeployment>,
-) -> Result<(Outcome, PreparedApplication), HostError> {
+) -> Result<Outcome, HostError> {
     let selection: Selection = serde_json::from_value(record.configuration.clone())?;
     selection.validate()?;
     if let Some(pending) = &record.pending {
@@ -112,13 +110,23 @@ async fn synchronize_loaded(
         } else {
             PreparedApplication::new(preparation.input, vec![], packages)?
         };
-        super::launch_changes(target.plan(), &record.configuration)?;
+        let changes = if initializing {
+            super::launch_changes(target.plan(), &record.configuration)?
+        } else {
+            super::launch_update(
+                base.as_ref().ok_or("prepared Host update source missing")?,
+                &target,
+                &record.configuration,
+            )?
+            .1
+        };
+        outcome.changes.extend(changes);
         if let Some(store) = apply {
             // Recover only this frozen operation, even under a newer executable.
             super::prepare_saved(store, Roots::Saved).await?;
             outcome.applied = true;
         }
-        return Ok((outcome, target));
+        return Ok(outcome);
     }
     let version = tokio::task::spawn_blocking(super::super::bundle_fingerprint).await??;
     let packages = tokio::task::spawn_blocking(super::super::packages).await??;
@@ -386,9 +394,7 @@ async fn synchronize_packages(
         .load_application(record.deployment)
         .await?
         .ok_or("public Host source missing")?;
-    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled)
-        .await
-        .map(|(outcome, _)| outcome)
+    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled).await
 }
 
 async fn synchronize_loaded_packages(
@@ -396,7 +402,7 @@ async fn synchronize_loaded_packages(
     record: Launch,
     loaded: maka_event_log::applications::LoadedDeployment,
     bundled: BTreeMap<String, Package>,
-) -> Result<(Outcome, PreparedApplication), HostError> {
+) -> Result<Outcome, HostError> {
     if !loaded.source().remote_exports.is_empty() {
         return Err("public Host source cannot use remote observations".into());
     }
@@ -446,8 +452,14 @@ async fn synchronize_loaded_packages(
             loaded.source().remote_exports.clone(),
             loaded.packages().to_vec(),
         )?;
-        super::launch_changes(target.plan(), &record.configuration)?;
-        return Ok((outcome, target));
+        let (_, changes) = super::launch_update(&loaded, &target, &record.configuration)?;
+        outcome.changed = !changes.is_empty();
+        outcome.changes.extend(changes);
+        if let Some(store) = apply {
+            super::publication::synchronize(store, &loaded).await?;
+            outcome.applied = outcome.changed;
+        }
+        return Ok(outcome);
     }
     let mut old_required: BTreeSet<_> = loaded
         .plan()
@@ -469,7 +481,9 @@ async fn synchronize_loaded_packages(
     }
     let packages: Vec<_> = inventory.into_values().collect();
     let target = PreparedApplication::new(next, vec![], packages)?;
-    super::launch_changes(target.plan(), &record.configuration)?;
+    outcome
+        .changes
+        .extend(super::launch_update(&loaded, &target, &record.configuration)?.1);
     if let Some(store) = apply {
         let preparation = Preparation {
             expected_revision: loaded.source().reference.revision,
@@ -492,7 +506,7 @@ async fn synchronize_loaded_packages(
         super::prepare_saved(store, Roots::Saved).await?;
         outcome.applied = true;
     }
-    Ok((outcome, target))
+    Ok(outcome)
 }
 
 pub(super) fn validate_target(input: &Input, packages: &[Package]) -> Result<(), HostError> {
