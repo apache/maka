@@ -144,9 +144,10 @@ One Oxc pass removes TypeScript and lowers JSX (`plugin.rs` `compile_native`):
   it made stay (an input keeps its text and focus). Each function in such an array (also a run of dynamic children,
   one `insert` of an array, `{spans()}{tail()}`) gets a memo of its own (`memoize_run`): a change in one re-runs only
   that one, and the others' nodes stay where they are. A function such a memo's function returns (an `<If>` whose
-  branch is an expression, `<If when={w}>{(() => …)()}</If>`) gets a memo of its own too, under that one
-  (`item_memo`): called by the array's effect, it would make its nodes again whenever a sibling changes; called by
-  the outer memo, a change in what it reads would run the outer function again (a component made again).
+  branch is an expression, `<If when={w}>{(() => …)()}</If>`), or each one an array it returns holds (a branch of
+  several children), gets a memo of its own too, under that one (`item_memo`): called by the array's effect, it would
+  make its nodes again whenever a sibling changes; called by the outer memo, a change in what it reads would run the
+  outer function again (a component made again).
 - `each` keys rows (`key(item, index)`, the index for `key="index"`, else the item; objects by identity, primitives by
   value) and updates the item and index signals of kept rows (rows get accessors: `item()`, `index()`); each row has
   its own owner. `cond` renders a

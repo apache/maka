@@ -187,7 +187,7 @@ pub fn replace(
     }
     input
         .configure(
-            &[targets.agent.clone()],
+            std::slice::from_ref(&targets.agent),
             vec![ConfigurationField {
                 path: vec!["workspaceRoots".into()],
                 value: Some(serde_json::to_value(roots).map_err(|e| e.to_string())?),
@@ -197,7 +197,7 @@ pub fn replace(
     if let Some(name) = &targets.skills {
         input
             .configure(
-                &[name.clone()],
+                std::slice::from_ref(name),
                 vec![ConfigurationField {
                     path: vec!["projectRoots".into()],
                     value: Some(
@@ -210,7 +210,7 @@ pub fn replace(
     if let Some(name) = &targets.processes {
         input
             .configure(
-                &[name.clone()],
+                std::slice::from_ref(name),
                 vec![ConfigurationField {
                     path: vec!["filesystem".into(), "rules".into()],
                     value: Some(

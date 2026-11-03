@@ -253,10 +253,6 @@ fn export(
     Ok(())
 }
 
-#[cfg(test)]
-async fn installation(options: Value) -> Result<Value, HostError> {
-    installation_with_source(options, &authoring()?).await
-}
 async fn installation_with_source(options: Value, source: &str) -> Result<Value, HostError> {
     let vm = maka_js_runtime::plugin::Vm::pure(Default::default())?;
     let result = match vm.load("maka-product-installation".into(), source.to_owned()) {
