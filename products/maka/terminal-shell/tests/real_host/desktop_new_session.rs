@@ -20,9 +20,9 @@
 use super::support::{Fixture, ModelRequest, Options, ReplyGate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
-    AppContext, Application, ApplicationHandle, Bounds, Focusable, Keystroke, Modifiers,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput, TextInputTarget,
-    WindowBounds, WindowHandle, WindowOptions, point, px, size,
+    AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, Focusable, Keystroke,
+    Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+    TextInputTarget, WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use maka_app_client::Client;
 use maka_workbench::bindings::Bindings;
@@ -306,7 +306,15 @@ impl Desktop {
     }
 
     async fn target_after(&self, previous: Option<TextInputTarget>) {
-        self.until("the requested editor did not receive focus", || {
+        self.until("the requested editor was not ready for text input", || {
+            let editable = self.app.update(|cx| {
+                self.window
+                    .update(cx, |view, window, cx| view.accepts_text_input(window, cx))
+                    .unwrap()
+            });
+            if !editable {
+                return None;
+            }
             self.platform
                 .text_input_target()
                 .filter(|target| Some(target) != previous.as_ref())
@@ -1948,7 +1956,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandchild() {
     use maka_agent_api::session::StoredSessionConfiguration;
-    let mut fixture = Fixture::open().await;
+    let fixture = Fixture::open().await;
     let original = fixture
         .store
         .session(&fixture.session)
@@ -2021,21 +2029,12 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     desktop.target_after(previous).await;
     desktop.press("Focus message composer").await;
     desktop.type_text("OPENED_TREE_GRANDCHILD").await;
-    desktop.press("Send message").await;
-    desktop.request(&mut fixture).await.finish().await;
-    let history = desktop
-        .client
-        .query(
-            "agent",
-            "history",
-            json!({"sessionId":grandchild,"position":{"kind":"start"}}),
+    desktop
+        .wait(
+            "opening a descendant did not bind its draft to that conversation",
+            super::support::wait_draft(&desktop.client, &grandchild, "OPENED_TREE_GRANDCHILD"),
         )
-        .await
-        .unwrap();
-    assert!(
-        history.to_string().contains("OPENED_TREE_GRANDCHILD"),
-        "opening a descendant must navigate to that conversation"
-    );
+        .await;
     desktop.close().await;
     fixture.finish().await;
 }
