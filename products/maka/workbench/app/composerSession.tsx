@@ -24,6 +24,7 @@ import type { AttachmentDraft } from './attachmentDraft';
 import type { Host } from './host';
 import { immutableAsset } from './immutableAsset';
 import { renderText } from './text';
+import { C, inputTextStyle } from './ui';
 
 /** Keep the native upload owner and receipt lifecycle inside the session. */
 export function projectComposerAttachments(
@@ -48,7 +49,13 @@ export function projectComposerAttachments(
     recovering: draft.recovering,
     imageUri: (read) => host.assetUri(immutableAsset('attachment-image', read)),
     renderPicker: (input) => (
-      <AttachmentPicker client={draft.client} {...input} onStatus={draft.status} />
+      <AttachmentPicker
+        client={draft.client}
+        {...input}
+        textStyle={{ ...inputTextStyle, color: C.secondary }}
+        borderColor={C.line}
+        onStatus={draft.status}
+      />
     ),
     pasteClipboard: (onText) => draft.observeIntake(draft.client.beginClipboardPaste(), onText),
     dropFiles: (uris, onText) => draft.observeIntake(draft.client.beginFileDrop(uris), onText),

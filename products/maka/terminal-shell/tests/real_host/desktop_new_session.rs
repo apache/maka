@@ -1935,3 +1935,119 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     desktop.close().await;
     fixture.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_large_paste_keeps_controls_on_screen() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let before = desktop.control("Focus message composer").await;
+    let draft = (0..200)
+        .map(|i| format!("Traceback line {i}: a long pasted diagnostic with paths and details\n"))
+        .collect::<String>();
+    // TerminalPlatform::paste injects IME text, which strips control characters.
+    // Native clipboard paste keeps the diagnostic's line breaks.
+    desktop
+        .app
+        .update(|cx| cx.write_to_clipboard(gpui::ClipboardItem::new_string(draft.clone())));
+    let keystroke = Keystroke {
+        key: "v".into(),
+        key_char: None,
+        modifiers: Modifiers {
+            control: true,
+            shift: true,
+            ..Default::default()
+        },
+    };
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::KeyDown(gpui::KeyDownEvent {
+            keystroke: keystroke.clone(),
+            is_held: false,
+            prefer_character_input: false,
+        }))
+        .unwrap();
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::KeyUp(gpui::KeyUpEvent { keystroke }))
+        .unwrap();
+    let card = desktop
+        .until("the pasted draft did not size its composer", || {
+            let card = desktop
+                .controls("Focus message composer")
+                .into_iter()
+                .next()?;
+            (card.size.height > before.size.height).then_some(card)
+        })
+        .await;
+    desktop.artifact("composer-large-paste");
+    let window_height = desktop
+        .frame
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .size()
+        .height
+        .0 as f32;
+    assert!(
+        card.top() >= px(0.) && card.bottom() <= px(window_height),
+        "large paste escaped the composer viewport: {card:?}"
+    );
+    desktop.expect_text(&draft).await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_composer_attachment_picker_has_readable_dark_controls() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(800)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    desktop
+        .type_text("Keep this draft while picking an attachment")
+        .await;
+    let previous = desktop.platform.text_input_target();
+    desktop.key("u", true);
+    desktop.control("Close attachment picker").await;
+    desktop.target_after(previous).await;
+    desktop
+        .type_text("/tmp/attachment-path-not-submitted.txt")
+        .await;
+    desktop.control("Upload selected file").await;
+    let card = desktop.control("Focus message composer").await;
+    desktop.artifact("composer-dark-attachment-picker");
+    let pixels = desktop
+        .pixels(Bounds::new(
+            point(card.left() + px(12.), card.top() + px(12.)),
+            size(card.size.width - px(24.), card.size.height - px(24.)),
+        ))
+        .unwrap();
+    let black = pixels
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|p| p[..3] == [0, 0, 0])
+        .count();
+    assert_eq!(
+        black, 0,
+        "attachment picker painted default black text/borders over the dark composer"
+    );
+    desktop.press("Close attachment picker").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .expect_text("Keep this draft while picking an attachment")
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}

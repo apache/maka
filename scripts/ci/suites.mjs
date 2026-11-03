@@ -191,6 +191,8 @@ export const suites = {
   native: {
     workspace: 'root',
     packages: ['maka-computer-use'],
+    cargoArgs: ['--locked', '-p', 'maka-computer-use', '--lib', '--features', 'native-desktop'],
+    filter: 'test(macos::controller::tests::) | test(macos::tcc::tests::)',
   },
 };
 

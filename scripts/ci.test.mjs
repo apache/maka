@@ -18,11 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
 
