@@ -41,6 +41,13 @@ type PreferencesEditor =
       displayName: string;
     }
   | {
+      kind: 'shell';
+      id: number;
+      basis: SettingsAssistantPreferences;
+      preference: 'auto' | 'git_bash';
+      executable: string;
+    }
+  | {
       kind: 'compaction';
       id: number;
       basis: SettingsAssistantPreferences;
@@ -216,7 +223,11 @@ export function createGeneralSettings(
             'Preferences changed elsewhere. Cancel this edit and refresh before saving again.',
           );
         case 'rejected':
-          throw new UiError('The Host rejected these preferences. Check the values before saving.');
+          throw new UiError(
+            mutation.kind === 'shell'
+              ? 'Git Bash must be an existing GNU Bash executable on this Windows Runtime Host.'
+              : 'The Host rejected these preferences. Check the values before saving.',
+          );
       }
     });
   };
@@ -369,16 +380,19 @@ export function createGeneralSettings(
     if (!basis || request.kind !== 'root' || !current(request) || disabled()) return;
     cancelRead();
     editor.set(
-      kind === 'personalization'
+      kind === 'shell'
         ? {
             kind,
             id: view(),
             basis,
-            displayName: basis.displayName,
+            preference: basis.shell.preference,
+            executable: basis.shell.executable,
           }
-        : kind === 'compaction'
-          ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
-          : { kind, id: view(), basis, ...predictionDraft(basis) },
+        : kind === 'personalization'
+          ? { kind, id: view(), basis, displayName: basis.displayName }
+          : kind === 'compaction'
+            ? { kind, id: view(), basis, prompt: basis.compactionPrompt, useDefault: false }
+            : { kind, id: view(), basis, ...predictionDraft(basis) },
     );
   };
   const dirty = () => {
@@ -387,23 +401,27 @@ export function createGeneralSettings(
       ? form.displayName !== form.basis.displayName
       : form?.kind === 'compaction'
         ? form.useDefault || form.prompt !== form.basis.compactionPrompt
-        : form?.kind === 'predictions'
-          ? !sameValue(
-              {
-                enabled: form.enabled,
-                ordinarySessionsOnly: form.ordinarySessionsOnly,
-                liveSamplePercent: form.liveSamplePercent,
-                catchUpSamplePercent: form.catchUpSamplePercent,
-                prompt: form.useDefault ? null : form.prompt,
-              },
-              {
-                ...form.basis.predictions,
-                liveSamplePercent: String(form.basis.predictions.liveSamplePercent),
-                catchUpSamplePercent: String(form.basis.predictions.catchUpSamplePercent),
-              },
-            )
-          : !!form?.document &&
-            (!form.document.basis.exists || form.document.content !== form.document.basis.content);
+        : form?.kind === 'shell'
+          ? form.preference !== form.basis.shell.preference ||
+            form.executable !== form.basis.shell.executable
+          : form?.kind === 'predictions'
+            ? !sameValue(
+                {
+                  enabled: form.enabled,
+                  ordinarySessionsOnly: form.ordinarySessionsOnly,
+                  liveSamplePercent: form.liveSamplePercent,
+                  catchUpSamplePercent: form.catchUpSamplePercent,
+                  prompt: form.useDefault ? null : form.prompt,
+                },
+                {
+                  ...form.basis.predictions,
+                  liveSamplePercent: String(form.basis.predictions.liveSamplePercent),
+                  catchUpSamplePercent: String(form.basis.predictions.catchUpSamplePercent),
+                },
+              )
+            : !!form?.document &&
+              (!form.document.basis.exists ||
+                form.document.content !== form.document.basis.content);
   };
   const back = () => {
     if (operations.busy()) return false;
@@ -470,13 +488,15 @@ export function createGeneralSettings(
     title: () =>
       editor()?.kind === 'personalization'
         ? tr('Personalization')
-        : editor()?.kind === 'globalInstructions'
-          ? tr('Global instructions')
-          : editor()?.kind === 'compaction'
-            ? tr('Compaction prompt')
-            : editor()?.kind === 'predictions'
-              ? tr('Message predictions')
-              : tr('General settings'),
+        : editor()?.kind === 'shell'
+          ? tr('Bash tool shell')
+          : editor()?.kind === 'globalInstructions'
+            ? tr('Global instructions')
+            : editor()?.kind === 'compaction'
+              ? tr('Compaction prompt')
+              : editor()?.kind === 'predictions'
+                ? tr('Message predictions')
+                : tr('General settings'),
     open: ({ request, kind }: { request: GeneralAction; kind: PreferencesEditor['kind'] }) =>
       open(request, kind),
     openGlobal(request: GeneralAction) {
@@ -537,7 +557,7 @@ export function createGeneralSettings(
           : kind === 'privacy'
             ? { kind: 'privacy', incognitoActive: !saved.incognitoActive }
             : kind === 'titles'
-              ? { kind: 'shell_titles', enabled: !saved.shellTitles }
+              ? { kind: 'shell', value: { ...saved.shell, titles: !saved.shell.titles } }
               : {
                   kind: 'message_predictions',
                   settings: { ...saved.predictions, enabled: !saved.predictions.enabled },
@@ -547,6 +567,17 @@ export function createGeneralSettings(
     language({ request, preference }: { request: GeneralAction; preference: LanguagePreference }) {
       if (request.kind !== 'root' || facts()?.language === preference) return;
       return mutate(request, { kind: 'language', preference });
+    },
+    editShell({
+      request,
+      change,
+    }: {
+      request: GeneralAction;
+      change: { preference?: 'auto' | 'git_bash'; executable?: string };
+    }) {
+      const form = editor();
+      if (!current(request) || disabled() || form?.kind !== 'shell') return;
+      editor.set({ ...form, ...change });
     },
     editName(request: GeneralAction, displayName: string) {
       const form = editor();
@@ -607,6 +638,24 @@ export function createGeneralSettings(
         });
       }
       if (form.kind === 'globalInstructions') return;
+      if (form.kind === 'shell') {
+        if (form.preference === 'git_bash' && !form.executable.trim()) {
+          operations.report(new UiError('Select a Git Bash executable.'));
+          return;
+        }
+        return mutate(
+          request,
+          {
+            kind: 'shell',
+            value: {
+              ...form.basis.shell,
+              preference: form.preference,
+              executable: form.executable.trim(),
+            },
+          },
+          form,
+        );
+      }
       if (form.kind === 'personalization') {
         return mutate(
           request,

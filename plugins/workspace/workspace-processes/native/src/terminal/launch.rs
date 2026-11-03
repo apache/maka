@@ -41,11 +41,18 @@ impl Processes {
             .terminal_session(&input.session_id, true, context)
             .await?
             .configuration;
+        let shell = self
+            .configuration
+            .runtime_policy()
+            .await
+            .map_err(|e| failed(e.to_string()))?
+            .policy
+            .shell;
         let settings = self.settings.clone();
         let state_root = self.state_root.clone();
         let captured_configuration = configuration.clone();
         let mut captured = tokio::task::spawn_blocking(move || {
-            super::super::execute::capture(&captured_configuration, &settings, &state_root)
+            super::super::execute::capture(&captured_configuration, &settings, &state_root, &shell)
         })
         .await
         .map_err(failed)??;

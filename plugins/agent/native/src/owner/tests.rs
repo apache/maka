@@ -50,6 +50,8 @@ mod file_browsing;
 
 mod health;
 mod processes;
+#[cfg(windows)]
+mod windows_shell;
 
 mod protocol_processes;
 

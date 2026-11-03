@@ -26,3 +26,28 @@ mod sandbox;
 mod terminal;
 mod windows_foreground;
 mod windows_restricted;
+
+#[cfg(windows)]
+fn git_bash() -> std::path::PathBuf {
+    if let Some(path) = std::env::var_os("MAKA_TEST_GIT_BASH") {
+        let path = std::path::PathBuf::from(path);
+        assert!(
+            path.is_file(),
+            "MAKA_TEST_GIT_BASH does not identify a file: {}",
+            path.display()
+        );
+        return path;
+    }
+    let candidates = [
+        std::env::var_os("USERPROFILE").map(|root| {
+            std::path::PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")
+        }),
+        std::env::var_os("ProgramFiles")
+            .map(|root| std::path::PathBuf::from(root).join(r"Git\bin\bash.exe")),
+    ];
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file())
+        .expect("Git Bash is required; set MAKA_TEST_GIT_BASH to its bash.exe")
+}

@@ -224,3 +224,33 @@ async fn normal_shell_exit_preserves_background_descendants_but_bounds_pipe_drai
     assert!(!child.stopped());
     // LiveProcess Drop terminates only this deliberately preserved fixture.
 }
+
+#[tokio::test]
+async fn explicit_git_bash_runs_posix_commands_and_advertises_the_same_dialect() {
+    let bash = super::git_bash();
+    let dir = tempfile::tempdir().unwrap();
+    let auto = ShellExecutor::new(dir.path(), maka_sandbox::Sandbox::Disabled).unwrap();
+    assert!(auto.description().contains("PowerShell"));
+    let executor = auto.with_git_bash(&bash).unwrap();
+    assert!(executor.description().contains("Git Bash"));
+    assert!(executor.description().contains("Bash syntax"));
+    for login in [false, true] {
+        let result = executor
+            .invoke(
+                SHELL_NAME.into(),
+                json!({"command": "shopt -q login_shell && printf login || printf nonlogin", "login": login}),
+                CancellationToken::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result["output"]["stdout"],
+            if login { "login" } else { "nonlogin" },
+            "{result}"
+        );
+    }
+    let result = invoke(&executor, "printf '你好 %s' Bash; exit 17").await;
+    assert_eq!(result["status"], "failed", "{result}");
+    assert_eq!(result["exitCode"], 17, "{result}");
+    assert_eq!(result["output"]["stdout"], "你好 Bash", "{result}");
+}

@@ -197,9 +197,34 @@ function GeneralRoot(props: { owner: GeneralSettingsOwner; request: GeneralActio
             request={request}
             kind="titles"
             label={tr('Automatic shell titles')}
-            enabled={owner.facts()?.shellTitles ?? false}
+            enabled={owner.facts()?.shell.titles ?? false}
           />
         </View>
+        <If when={platform.os === 'windows'}>
+          <Button
+            disabled={owner.disabled()}
+            onPress={inputAction(owner.open, { request, kind: 'shell' })}
+            accessibilityLabel={tr('Bash tool shell')}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+            style={{
+              ...controlStyle,
+              minHeight: 56,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 12,
+            }}
+            disabledStyle={controlDisabledStyle}
+          >
+            <View style={{ flex: 1, minWidth: 0, gap: 4, pointerEvents: 'none' }}>
+              <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Bash tool shell')}</Text>
+              <Text style={{ ...captionTextStyle, color: C.muted }}>
+                {owner.facts()?.shell.preference === 'git_bash' ? tr('Git Bash') : tr('Automatic')}
+              </Text>
+            </View>
+            <Icon name="right" color={C.muted} />
+          </Button>
+        </If>
         <Button
           disabled={owner.disabled()}
           onPress={inputAction(owner.open, { request, kind: 'personalization' })}
@@ -315,6 +340,10 @@ function PreferenceToggle(props: {
 function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: GeneralAction }) {
   const owner = props.owner;
   const request = props.request;
+  const shellEditor = () => {
+    const editor = owner.editor();
+    return editor?.kind === 'shell' ? editor : null;
+  };
   const name = () => {
     const editor = owner.editor();
     return editor?.kind === 'personalization' ? editor.displayName : '';
@@ -328,6 +357,48 @@ function PreferenceEditor(props: { owner: GeneralSettingsOwner; request: General
       <Text style={{ ...captionTextStyle, color: C.muted }}>
         {tr('Changes apply when you save this page.')}
       </Text>
+      <If when={request.kind === 'shell'}>
+        <Text style={{ ...bodyTextStyle, color: C.text }}>{tr('Bash tool shell')}</Text>
+        <Text style={{ ...captionTextStyle, color: C.muted }}>
+          {tr(
+            'Automatic uses PowerShell first on Windows. Git Bash overrides only this Runtime Host.',
+          )}
+        </Text>
+        <View style={{ flexDirection: 'row', gap: 8 }}>
+          <Each
+            of={[
+              { value: 'auto' as const, label: tr('Automatic') },
+              { value: 'git_bash' as const, label: tr('Git Bash') },
+            ]}
+            key={(option) => option.value}
+          >
+            {(option) => (
+              <Button
+                selected={shellEditor()?.preference === option().value}
+                disabled={owner.disabled()}
+                onPress={inputAction(owner.editShell, {
+                  request,
+                  change: { preference: option().value },
+                })}
+                style={controlStyle}
+                focusStyle={controlFocusStyle()}
+                hoverStyle={controlHoverStyle()}
+                disabledStyle={controlDisabledStyle}
+              >
+                <Text style={{ ...bodyTextStyle, color: C.text }}>{option().label}</Text>
+              </Button>
+            )}
+          </Each>
+        </View>
+        <If when={shellEditor()?.preference === 'git_bash'}>
+          <SettingsField
+            label={tr('Git Bash executable')}
+            value={shellEditor()?.executable ?? ''}
+            change={(text) => owner.editShell({ request, change: { executable: text } })}
+            disabled={owner.disabled()}
+          />
+        </If>
+      </If>
       <If when={request.kind === 'personalization'}>
         <SettingsField
           label={tr('Display name')}

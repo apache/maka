@@ -207,6 +207,7 @@ export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'zh-CN'
   | 'zh-TW';
 export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_ShellPreference = 'auto' | 'git_bash';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
@@ -1051,7 +1052,7 @@ export interface ServiceMethods {
         displayName: string;
         workspaceInstructions: boolean;
         incognitoActive: boolean;
-        shellTitles: boolean;
+        shell: SettingsAssistantPreferencesOutput_ShellPolicy;
       };
     };
     catalogModels: {
@@ -1950,6 +1951,11 @@ export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt: string | null;
+}
+export interface SettingsAssistantPreferencesOutput_ShellPolicy {
+  preference: SettingsAssistantPreferencesOutput_ShellPreference;
+  executable: string;
+  titles: boolean;
 }
 export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
   reference: SettingsCatalogModelsOutput_CatalogModelReference;

@@ -23,6 +23,10 @@ use maka_tools::request::{BindingRequest, BoundTool, RequestBinding};
 use std::collections::BTreeMap;
 
 pub(super) fn schema(mut input: Value, titles: bool) -> Value {
+    input["properties"]
+        .as_object_mut()
+        .expect("shell input properties")
+        .remove("shell");
     if titles {
         input["properties"]["title"] = serde_json::json!({
             "type": "string",
@@ -32,6 +36,30 @@ pub(super) fn schema(mut input: Value, titles: bool) -> Value {
     input
 }
 
+fn guidance(
+    input: &mut Value,
+    shell: &maka_agent_facts::configuration::policy::ShellPolicy,
+    available: bool,
+) {
+    #[cfg(windows)]
+    {
+        use maka_agent_facts::configuration::policy::ShellPreference;
+        let dialect = match shell.preference {
+            ShellPreference::Auto => {
+                "On Windows, commands use the automatically selected PowerShell (or cmd fallback); write PowerShell syntax unless the Host selects cmd."
+            }
+            ShellPreference::GitBash if available => {
+                "Commands use the configured Git Bash; write Bash syntax, not PowerShell syntax."
+            }
+            ShellPreference::GitBash => {
+                "The configured Git Bash is unavailable. Repair the shell setting; commands fail rather than falling back to PowerShell."
+            }
+        };
+        input["properties"]["command"]["description"] = serde_json::json!(dialect);
+    }
+    #[cfg(not(windows))]
+    let _ = (input, shell, available);
+}
 pub(super) fn title(input: &Value) -> Option<Text> {
     input["title"]
         .as_str()
@@ -46,22 +74,38 @@ pub(super) struct Binding {
 }
 impl RequestBinding for Binding {
     fn bind(&self, _: BindingRequest) -> maka_tools::request::BindingFuture {
-        let service = self.service.clone();
+        let mut service = self.service.clone();
         let configuration = self.configuration.clone();
         let input = self.input.clone();
         Box::pin(async move {
-            let titles = configuration
+            let shell = configuration
                 .runtime_policy()
                 .await
                 .map_err(|error| ToolError::Failed(error.to_string()))?
                 .policy
-                .shell
-                .titles;
+                .shell;
+            service.shell = Some(shell.clone());
+            let titles = shell.titles;
+            let mut input = schema(input, titles);
+            #[cfg(windows)]
+            let available = if shell.preference
+                == maka_agent_facts::configuration::policy::ShellPreference::GitBash
+            {
+                let path = std::path::PathBuf::from(&shell.executable);
+                tokio::task::spawn_blocking(move || path.is_file())
+                    .await
+                    .map_err(|error| ToolError::Failed(error.to_string()))?
+            } else {
+                true
+            };
+            #[cfg(not(windows))]
+            let available = true;
+            guidance(&mut input, &shell, available);
             Ok(BTreeMap::from([(
                 service.selection.name.clone(),
                 BoundTool::Input {
                     handler: Arc::new(service),
-                    schema: schema(input, titles),
+                    schema: input,
                 },
             )]))
         })

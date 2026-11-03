@@ -183,6 +183,21 @@ export const suites = {
       'scripts/rust/run-cli.test.mjs',
     ],
   },
+  'windows-shell': {
+    workspace: 'root',
+    packages: ['maka-process', 'maka-settings-native', 'maka-agent-native'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-process',
+      '-p',
+      'maka-settings-native',
+      '-p',
+      'maka-agent-native',
+    ],
+    filter:
+      'test(git_bash) | test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice)',
+  },
   native: {
     workspace: 'root',
     packages: ['maka-computer-use'],
@@ -248,11 +263,16 @@ export const workers = [
   },
   ...['ubuntu', 'macos', 'windows'].map((os) => ({
     id: `native-${os}`,
-    suites: os === 'macos' ? ['native', 'macos-host'] : ['native'],
+    suites:
+      os === 'macos'
+        ? ['native', 'macos-host']
+        : os === 'windows'
+          ? ['native', 'windows-shell']
+          : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
     dependencies: os === 'ubuntu' ? 'computer-use' : '',
-    javascript: os === 'macos',
+    javascript: os === 'macos' || os === 'windows',
     compile: true,
   })),
 ];

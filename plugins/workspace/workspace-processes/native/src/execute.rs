@@ -38,6 +38,7 @@ pub(super) fn capture(
     configuration: &ResolvedConfiguration,
     settings: &Configuration,
     state_root: &std::path::Path,
+    shell: &maka_agent_facts::configuration::policy::ShellPolicy,
 ) -> Result<Captured, ToolError> {
     let workspace = &configuration.workspace;
     if workspace.worktree.is_some() && !settings.isolated_workspaces {
@@ -62,7 +63,7 @@ pub(super) fn capture(
             Sandbox::Disabled,
         )?;
         return Ok(Captured {
-            executor: platform(executor, settings, state_root),
+            executor: select_shell(platform(executor, settings, state_root), shell)?,
             ceiling: Sandbox::Disabled,
         });
     }
@@ -84,7 +85,7 @@ pub(super) fn capture(
     maka_fs_tools::directory::open(&path, &workspace.directory_identity).map_err(failed)?;
     let executor =
         maka_process::ShellExecutor::from_directory(path, directory.into_std_file(), base)?;
-    let executor = platform(executor, settings, state_root);
+    let executor = select_shell(platform(executor, settings, state_root), shell)?;
     Ok(Captured { executor, ceiling })
 }
 /// Platform bootstrap shared by Session and explicitly installed setup launches.
@@ -108,6 +109,21 @@ pub(super) fn platform(
     executor
 }
 
+fn select_shell(
+    executor: maka_process::ShellExecutor,
+    shell: &maka_agent_facts::configuration::policy::ShellPolicy,
+) -> Result<maka_process::ShellExecutor, ToolError> {
+    let _ = shell;
+    #[cfg(windows)]
+    let executor = match shell.preference {
+        maka_agent_facts::configuration::policy::ShellPreference::Auto => executor,
+        maka_agent_facts::configuration::policy::ShellPreference::GitBash => {
+            executor.with_git_bash(std::path::Path::new(&shell.executable))?
+        }
+    };
+    Ok(executor)
+}
+
 impl Processes {
     pub(super) async fn execute(
         &self,
@@ -128,7 +144,13 @@ impl Processes {
                 permissions,
             });
         let captured = self
-            .prepare(tool, &configuration, requested, cancellation)
+            .prepare(
+                tool,
+                &configuration,
+                requested,
+                input.shell.take(),
+                cancellation,
+            )
             .await?;
         let captured = Captured {
             executor: captured.executor.with_login_shell(input.login),
@@ -244,13 +266,25 @@ impl Processes {
         tool: &ToolCallContext,
         configuration: &ResolvedConfiguration,
         requested: Option<PermissionRequest>,
+        shell: Option<maka_agent_facts::configuration::policy::ShellPolicy>,
         cancellation: &CancellationToken,
     ) -> Result<Captured, ToolError> {
+        let shell = match shell {
+            Some(shell) => shell,
+            None => {
+                self.configuration
+                    .runtime_policy()
+                    .await
+                    .map_err(|e| failed(e.to_string()))?
+                    .policy
+                    .shell
+            }
+        };
         let settings = self.settings.clone();
         let state_root = self.state_root.clone();
         let captured_configuration = configuration.clone();
         let mut captured = tokio::task::spawn_blocking(move || {
-            capture(&captured_configuration, &settings, &state_root)
+            capture(&captured_configuration, &settings, &state_root, &shell)
         })
         .await
         .map_err(failed)??;
