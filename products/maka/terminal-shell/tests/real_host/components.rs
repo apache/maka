@@ -337,15 +337,24 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
     support::click_button(&mut view, "Fail outgoing message").await;
     let screen = wait_view(&mut view, |screen| screen.contains("1 to review")).await;
     assert!(screen.contains("TODO_NEXT"));
-    assert!(!screen.contains("FAILED_MESSAGE"));
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Retry message")
+    );
     support::click_button(&mut view, "Messages").await;
     wait_view(&mut view, |screen| {
         screen.contains("FAILED_MESSAGE") && screen.contains("FIXTURE_SEND_FAILED")
     })
     .await;
     support::click_button(&mut view, "Retry message").await;
-    wait_view(&mut view, |screen| {
+    wait_view_state(&mut view, |view, screen| {
         screen.contains("retried:failed-original")
+            && !view
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == "Messages")
     })
     .await;
     assert!(

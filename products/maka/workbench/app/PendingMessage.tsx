@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { inputAction, Text, View } from 'nsh';
+import { inputAction, platform, Text, View } from 'nsh';
 import { Button } from 'nsh/base';
 import type {
   ComposerSendStatus,
@@ -41,7 +41,7 @@ export function PendingMessage(props: {
 }) {
   const session = props.session;
   return (
-    <View style={{ padding: 12, gap: 6 }}>
+    <View style={{ padding: platform.isTerminal ? 16 : 12, gap: platform.isTerminal ? 8 : 6 }}>
       <If when={props.message.text !== ''}>
         <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
           {props.message.text}

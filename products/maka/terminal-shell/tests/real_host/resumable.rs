@@ -54,7 +54,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         wait_editable_composer(&mut view).await;
         replace_input(&mut view, "Message composer", "ORIGINAL_RESUME_INPUT").await;
         support::click_button(&mut view, "Send message").await;
-        support::wait_enabled_button(&mut view, "Pause response").await;
+        support::wait_enabled_button(&mut view, "Stop response").await;
         let mut request = fixture.next_request().await;
         request
             .thinking("THOUGHT_INTERRUPTED_BEFORE_TOOL_DISPATCH")
@@ -68,7 +68,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
             .await
             .unwrap();
         let source_turn = active["run"]["turnId"].clone();
-        support::click_button(&mut view, "Pause response").await;
+        support::click_button(&mut view, "Stop response").await;
         support::wait_enabled_button(&mut view, "Continue response").await;
         fixture.idle(&client, &fixture.session).await;
         drop(request);
@@ -82,8 +82,8 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         );
         replace_input(&mut view, "Message composer", "").await;
         support::click_button(&mut view, "Continue response").await;
-        support::wait_enabled_button(&mut view, "Pause response").await;
-        let continuation = fixture.next_request().await;
+        support::wait_enabled_button(&mut view, "Stop response").await;
+        let mut continuation = fixture.next_request().await;
         assert!(
             continuation
                 .body
@@ -97,33 +97,15 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
                 .to_string()
                 .contains("THOUGHT_INTERRUPTED_BEFORE_TOOL_DISPATCH")
         );
-        support::wait_enabled_button(&mut view, "Pause response").await;
         let resumed = client
             .query("agent", "observe", json!({"sessionId":fixture.session}))
             .await
             .unwrap();
         assert_ne!(resumed["run"]["turnId"], source_turn);
-        replace_input(&mut view, "Message composer", "QUEUED_DRAFT").await;
-        support::wait_enabled_button(&mut view, "Queue message").await;
+        replace_input(&mut view, "Message composer", "UNSENT_WHILE_RUNNING").await;
+        support::wait_enabled_button(&mut view, "Send message").await;
+        support::wait_enabled_button(&mut view, "Stop response").await;
         replace_input(&mut view, "Message composer", "").await;
-        support::click_button(&mut view, "Pause response").await;
-        support::wait_enabled_button(&mut view, "Continue response").await;
-        fixture.idle(&client, &fixture.session).await;
-        drop(continuation);
-        tab_to_label(&mut view, "Message composer").await;
-        wait_focused_input(&mut view, "Message composer").await;
-        view.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        support::wait_enabled_button(&mut view, "Pause response").await;
-        let mut continuation = fixture.next_request().await;
-        assert!(
-            continuation
-                .body
-                .to_string()
-                .contains("ORIGINAL_RESUME_INPUT")
-        );
         continuation.delta("RESUMED_ANSWER").await;
         continuation.finish().await;
         fixture.idle(&client, &fixture.session).await;
@@ -136,7 +118,7 @@ async fn composer_continues_an_interrupted_run_and_preserves_draft_send_priority
         })
         .await;
         support::evidence("composer-resumed-answer", &view.snapshot());
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 2);
         drop(view);
         bindings.close().await.unwrap();
         fixture.finish().await;

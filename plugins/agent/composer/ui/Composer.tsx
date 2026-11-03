@@ -1002,7 +1002,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     margin={8}
                     popupStyle={{ padding: 8, backgroundColor: C.surface, borderRadius: 12 }}
                     trigger={
-                      <Button
+                      <View
+                        role="button"
+                        focusable
                         accessibilityLabel={tr('Send options')}
                         tooltip={textTooltip(() => tr('Send options'))}
                         disabled={primaryDisabled() || completion.isCommand()}
@@ -1027,7 +1029,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             primaryDisabled() || completion.isCommand() ? C.muted : C.background
                           }
                         />
-                      </Button>
+                      </View>
                     }
                   >
                     <MenuItem
