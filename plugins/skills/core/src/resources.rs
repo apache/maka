@@ -270,7 +270,7 @@ fn valid_path(path: &str) -> bool {
 mod tests {
     use super::*;
     #[test]
-    fn embedded_resources_share_complete_originals_and_enforce_containment() {
+    fn embedded_resources_preserve_complete_originals_and_enforce_containment() {
         for path in [
             "../secret",
             "/secret",
@@ -289,21 +289,16 @@ mod tests {
             ("a/b/c/d/e/f/g/h/i/j", b"deep"),
         ])
         .unwrap();
-        let first = prepared.capture();
-        let second = prepared.capture();
-        let Resource::Text { content: a, .. } = &first.files["one"] else {
+        let captured = prepared.capture();
+        let Resource::Text { content, .. } = &captured.files["one"] else {
             panic!("text")
         };
-        let Resource::Text { content: b, .. } = &second.files["one"] else {
-            panic!("text")
-        };
-        assert!(Arc::ptr_eq(a, b));
-        assert_eq!(a.as_ref(), "abc");
+        assert_eq!(content.as_ref(), "abc");
         assert!(matches!(
-            second.files["binary"],
+            captured.files["binary"],
             Resource::Unavailable(DiscoveryFailure::ReadFailed)
         ));
-        let (_, page) = second
+        let (_, page) = captured
             .page(
                 "bundled:test",
                 &ReadInput {

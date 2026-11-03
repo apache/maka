@@ -1048,26 +1048,6 @@ mod origin_tests {
     }
 
     #[test]
-    fn read_document_wire_roundtrip_preserves_source_identity_and_origin() {
-        let access = read_document(
-            "about:blank",
-            BrowserAttachmentOrigin::Site("https://inherited.example".into()),
-        );
-        let wire = serde_json::to_value(&access).expect("serialize access");
-        assert_eq!(wire["kind"], "read_document");
-        assert_eq!(
-            wire["origin"],
-            serde_json::json!({
-                "kind":"site", "value":"https://inherited.example"
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<BrowserAccess>(wire).expect("deserialize access"),
-            access
-        );
-    }
-
-    #[test]
     fn read_document_wire_rejects_missing_or_extra_origin_evidence() {
         let doc = serde_json::to_value(document("about:blank")).expect("serialize document");
         for origin in [

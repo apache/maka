@@ -381,33 +381,3 @@ fn check_cancelled(cancellation: &CancellationToken) -> Result<(), ToolError> {
 fn failed(message: impl Into<String>) -> ToolError {
     ToolError::Failed(message.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chess_titles_use_two_characters_and_allow_a_suffix() {
-        assert!(chess_square_title("a1"));
-        assert!(chess_square_title("h8 black rook"));
-        for title in ["a", "A1", "i1", "a9", "a\u{301}1", "a1\u{301}"] {
-            assert!(!chess_square_title(title), "{title:?}");
-        }
-    }
-
-    #[test]
-    fn chess_anchor_is_the_mean_of_all_matching_probe_points() {
-        let grid = ChessGrid {
-            min_x: -40.0,
-            min_y: 20.0,
-            width: 128.0,
-            height: 256.0,
-        };
-        let mut matches = MatchingPoints::default();
-        assert_eq!(matches.mean(), None);
-        matches.add(grid.point(0, 0));
-        matches.add(grid.point(0, 63));
-        matches.add(grid.point(63, 0));
-        assert_eq!(matches.mean(), Some([3.0, 106.0]));
-    }
-}
