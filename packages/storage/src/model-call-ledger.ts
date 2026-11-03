@@ -197,6 +197,7 @@ export interface ModelCallLedgerWriter extends ModelCallLedgerReader {
   /** Advances the read model from the AgentRun authority's durable sequence. */
   catchUpProjection(
     input?: CatchUpModelCallProjectionInput,
+    onProjectedAttempt?: (attempt: ModelCallAttempt) => void,
   ): Promise<CatchUpModelCallProjectionResult>;
   /**
    * Records one usage-unknown row for a call outside any AgentRun. The single
@@ -259,6 +260,7 @@ class SqliteModelCallLedger implements ModelCallLedger {
 
   catchUpProjection(
     input: CatchUpModelCallProjectionInput = {},
+    onProjectedAttempt?: (attempt: ModelCallAttempt) => void,
   ): Promise<CatchUpModelCallProjectionResult> {
     if (this.#state !== 'open') return Promise.reject(new ModelCallLedgerClosedError());
     if (input.runId !== undefined && input.sessionId === undefined) {
@@ -270,9 +272,21 @@ class SqliteModelCallLedger implements ModelCallLedger {
       512,
       'projection catch-up event limit',
     );
+    const projected = onProjectedAttempt ? new Map<string, ModelCallAttempt>() : undefined;
     return this.write(() =>
-      catchUpModelCallProjection(this.#lease.database, input, limit, eventsPerRun),
-    );
+      catchUpModelCallProjection(this.#lease.database, input, limit, eventsPerRun, projected),
+    ).then((result) => {
+      // Observe only committed rows. A failed transaction must neither export
+      // an attempt nor move its durable catch-up checkpoint.
+      for (const attempt of projected?.values() ?? []) {
+        try {
+          onProjectedAttempt?.(attempt);
+        } catch {
+          /* Optional observers cannot invalidate committed local accounting. */
+        }
+      }
+      return result;
+    });
   }
 
   recordUsageUnknownAttempt(record: UsageUnknownModelCallRecord): Promise<void> {
@@ -616,6 +630,7 @@ function catchUpModelCallProjection(
   input: CatchUpModelCallProjectionInput,
   limit: number,
   eventsPerRun: number,
+  projected?: Map<string, ModelCallAttempt>,
 ): CatchUpModelCallProjectionResult {
   const scope = projectionScope(input);
   const lagging = db
@@ -674,6 +689,14 @@ function catchUpModelCallProjection(
       // Projection storage failures must roll the transaction back. Treating
       // one as corrupt authority would advance the checkpoint past a valid,
       // still-unprojected billed call.
+      if (
+        projected &&
+        !db
+          .prepare('SELECT 1 FROM usage_model_call_attempts WHERE attempt_id = ?')
+          .get(attempt.attemptId)
+      ) {
+        projected.set(attempt.attemptId, attempt);
+      }
       writeModelCallAttempt(db, attempt);
     }
     const appliedThrough = rows.at(-1)?.sequence;
