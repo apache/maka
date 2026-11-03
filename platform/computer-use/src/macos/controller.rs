@@ -67,6 +67,7 @@ type Completion<T, E = ToolError> = watch::Receiver<Option<Result<T, E>>>;
 #[derive(Clone)]
 struct StartFailure {
     error: ToolError,
+    cleanup: Result<(), ToolError>,
     owner: Option<Arc<Transport>>,
 }
 
@@ -442,7 +443,7 @@ impl Controller {
                         .expect("AX controller lifecycle poisoned");
                     if matches!(*lifecycle, Lifecycle::Starting(_)) {
                         *lifecycle = Lifecycle::Terminal {
-                            result: Err(failure.error.clone()),
+                            result: failure.cleanup,
                             _owner: failure.owner,
                         };
                     }
@@ -896,7 +897,7 @@ impl Controller {
                             let retained = result.is_err().then_some(transport);
                             (result, retained)
                         }
-                        Err(failure) => (Err(failure.error), failure.owner),
+                        Err(failure) => (failure.cleanup, failure.owner),
                     };
                     *inner
                         .lifecycle
@@ -1271,12 +1272,7 @@ impl Transport {
                     )
                 }));
                 match result {
-                    Ok(result) => {
-                        if let Some(ready) = ready.take() {
-                            let _ = ready.send(result.clone());
-                        }
-                        result
-                    }
+                    Ok(exit) => exit.finish(&mut ready),
                     Err(_) => {
                         let error = cleanup_error("native AX controller thread panicked");
                         if let Some(ready) = ready.take() {
@@ -1298,9 +1294,14 @@ impl Transport {
             Err(error) => cleanup_error(error),
         };
         match transport.join().await {
-            Ok(()) => Err(StartFailure { error, owner: None }),
+            Ok(()) => Err(StartFailure {
+                error,
+                cleanup: Ok(()),
+                owner: None,
+            }),
             Err(join) => Err(StartFailure {
                 error: cleanup_error(format!("{error}; {join}")),
+                cleanup: Err(join),
                 owner: Some(transport),
             }),
         }
@@ -1431,8 +1432,10 @@ async fn started(
 }
 
 fn unowned_start_failure(reason: impl std::fmt::Display) -> StartFailure {
+    let error = cleanup_error(reason);
     StartFailure {
-        error: cleanup_error(reason),
+        error: error.clone(),
+        cleanup: Err(error),
         owner: None,
     }
 }
@@ -2624,8 +2627,11 @@ fn run_worker(
     reader: UnixStream,
     wake_again: UnixStream,
     ready: &mut Option<oneshot::Sender<Result<(), ToolError>>>,
-) -> Result<(), ToolError> {
-    let state = objc2::rc::autoreleasepool(|_| WorkerState::new(pid, generation, bundle))?;
+) -> WorkerExit {
+    let state = match objc2::rc::autoreleasepool(|_| WorkerState::new(pid, generation, bundle)) {
+        Ok(state) => state,
+        Err(error) => return WorkerExit::new(Err(error), Ok(())),
+    };
     let context = Box::new(PumpContext {
         state: RefCell::new(state),
         commands,
@@ -2640,7 +2646,7 @@ fn run_worker(
         Ok(source) => source,
         Err(error) => {
             let cleanup = context.state.borrow_mut().close();
-            return combine_cleanup(Err(error), cleanup);
+            return WorkerExit::new(Err(error), cleanup);
         }
     };
     // SAFETY: this is Foundation's static default-mode string.
@@ -2675,13 +2681,39 @@ fn run_worker(
     drop(source);
     let closed = objc2::rc::autoreleasepool(|_| context.state.borrow_mut().close());
     let failure = context.failure.borrow_mut().take().map_or(Ok(()), Err);
-    let result = combine_cleanup(failure, closed);
+    let exit = WorkerExit::new(failure, closed);
     let reply = context.stop_reply.borrow_mut().take();
     drop(context);
     if let Some(reply) = reply {
-        let _ = reply.send(result.clone().map(|()| Response::Stopped));
+        let _ = reply.send(exit.cleanup.clone().map(|()| Response::Stopped));
     }
-    result
+    exit
+}
+
+// Startup reports the operation failure; joining proves retirement separately.
+struct WorkerExit {
+    work: Result<(), ToolError>,
+    cleanup: Result<(), ToolError>,
+}
+
+impl WorkerExit {
+    fn new(work: Result<(), ToolError>, cleanup: Result<(), ToolError>) -> Self {
+        let cleanup = match (&work, cleanup) {
+            (Err(error @ ToolError::CleanupUnconfirmed(_)), Ok(())) => Err(error.clone()),
+            (_, cleanup) => cleanup,
+        };
+        Self { work, cleanup }
+    }
+
+    fn finish(
+        self,
+        ready: &mut Option<oneshot::Sender<Result<(), ToolError>>>,
+    ) -> Result<(), ToolError> {
+        if let Some(ready) = ready.take() {
+            let _ = ready.send(combine_cleanup(self.work, self.cleanup.clone()));
+        }
+        self.cleanup
+    }
 }
 
 fn combine_cleanup(
@@ -2707,6 +2739,114 @@ const _: () = {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn failed_startup_releases_confirmed_owners_without_poisoning_cleanup() {
+        let controller = Controller::new(-1, "not-an-actual-process".into(), None);
+        assert!(
+            matches!(controller.bind_application(NativeEpochId::new()).await,
+            Err(ToolError::Failed(reason)) if reason == "native AX controller requires an actual process")
+        );
+        let application = Application {
+            controller: controller.clone(),
+            slot: 17,
+        };
+        application.clear().await.unwrap();
+        application.release().await.unwrap();
+        controller.close().await.unwrap();
+
+        // Close may arrive while startup is still being published.
+        let controller = Controller::new(-1, "not-an-actual-process".into(), None);
+        let (reply, pending) = watch::channel(None);
+        *controller.inner.lifecycle.lock().unwrap() = Lifecycle::Starting(pending);
+        let closing = controller.close_ax();
+        let _ = reply.send(Some(Err(StartFailure {
+            error: failed("native page target AXRole failed with AX error -25202"),
+            cleanup: Ok(()),
+            owner: None,
+        })));
+        completed(closing).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_exit_keeps_join_proof_separate_from_operation_failure() {
+        for (work, cleanup, unknown) in [
+            (Err(failed("AX observation failed")), Ok(()), false),
+            (
+                Err(failed("AX observation failed")),
+                Err(cleanup_error("observer close failed")),
+                true,
+            ),
+            (
+                Err(cleanup_error("input effects are not confirmed")),
+                Ok(()),
+                true,
+            ),
+        ] {
+            let (sender, _receiver) = mpsc::channel();
+            let (wake, _reader) = UnixStream::pair().unwrap();
+            let (ready, receive) = oneshot::channel();
+            let transport = Transport {
+                sender: Mutex::new(Some(sender)),
+                wake,
+                thread: Mutex::new(Some(thread::spawn(move || {
+                    WorkerExit::new(work, cleanup).finish(&mut Some(ready))
+                }))),
+            };
+            assert!(receive.await.unwrap().is_err());
+            let joined = transport.join().await;
+            assert_eq!(joined.is_err(), unknown);
+            if let Err(error) = joined {
+                assert!(matches!(error, ToolError::CleanupUnconfirmed(_)));
+            }
+        }
+
+        // After readiness the observation error is no longer a startup reply.
+        assert!(
+            WorkerExit::new(Err(failed("notification failed")), Ok(()))
+                .finish(&mut None)
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
+    async fn retirement_preserves_lost_stop_ack_and_worker_panic() {
+        for panic in [false, true] {
+            let (sender, receiver) = mpsc::channel();
+            let (wake, _reader) = UnixStream::pair().unwrap();
+            let transport = Transport {
+                sender: Mutex::new(Some(sender)),
+                wake,
+                thread: Mutex::new(Some(thread::spawn(move || {
+                    let Envelope { command, reply } = receiver.recv().unwrap();
+                    assert!(matches!(command, Command::Stop));
+                    if panic {
+                        panic!("fixture worker panic");
+                    }
+                    drop(reply);
+                    Ok(())
+                }))),
+            };
+            assert!(matches!(
+                transport.stop_and_join().await,
+                Err(ToolError::CleanupUnconfirmed(_))
+            ));
+        }
+
+        let controller = Controller::new(-1, "fixture-generation".into(), None);
+        let (reply, pending) = watch::channel(None);
+        *controller.inner.lifecycle.lock().unwrap() = Lifecycle::Starting(pending);
+        let closing = controller.close_ax();
+        let _ = reply.send(Some(Err(StartFailure {
+            error: failed("AX startup failed"),
+            cleanup: Err(cleanup_error("observer retirement unknown")),
+            owner: None,
+        })));
+        assert!(matches!(
+            completed(closing).await,
+            Err(ToolError::CleanupUnconfirmed(_))
+        ));
+    }
 
     #[tokio::test]
     async fn application_indexed_input_rejects_another_owner_before_mailbox_admission() {

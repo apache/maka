@@ -33,6 +33,7 @@ import type { ViewRef } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type { ComposerGoal } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { GoalStatus } from '../../../../packages/plugin-sdk/src/index.js';
+import { formatDuration } from './duration';
 import { tr, type MessageKey } from './locale';
 import { SettingsEditor, SettingsField } from './SettingsField';
 import { LoadingIndicator, LoadingState } from './Loading';
@@ -300,8 +301,7 @@ export function createGoalContent(props: {
                 <View style={{ gap: 4 }}>
                   <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Elapsed time')}</Text>
                   <Text style={{ ...bodyTextStyle, color: C.text }}>
-                    {Math.floor(current()!.elapsedSeconds / 60)}:
-                    {String(current()!.elapsedSeconds % 60).padStart(2, '0')}
+                    {formatDuration(current()!.elapsedSeconds * 1000)}
                   </Text>
                 </View>
               </View>

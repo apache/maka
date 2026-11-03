@@ -416,8 +416,10 @@ export function ToolCard(props: {
         <View style={{ paddingLeft: platform.isTerminal ? 16 : 32 }}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
-            onScrollIntent={props.userScroll}
-            onScroll={() => props.reading?.()}
+            onScrollIntent={() => {
+              props.userScroll();
+              props.reading?.();
+            }}
             style={{
               minHeight: 16,
               minWidth: 0,
