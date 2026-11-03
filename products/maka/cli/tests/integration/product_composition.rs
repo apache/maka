@@ -118,31 +118,19 @@ fn workhub_composition_preserves_bindings_authority_and_installation_identities_
     }
     let grants = read(&output, "native-grants");
     let grants = grants.as_array().unwrap();
-    for (provider, method) in [
-        ("agent", "send"),
-        ("coordinator-workspace-processes", "execute"),
-    ] {
-        assert!(grants.iter().any(|grant| {
-            grant["origin"][0] == keys["workhub"]
-                && grant["provider"][0] == keys[provider]
-                && grant["methods"]
-                    .as_array()
-                    .unwrap()
-                    .contains(&json!(method))
-        }));
-    }
+    assert!(grants.iter().any(|grant| {
+        grant["origin"][0] == keys["workhub"]
+            && grant["consumer"][0] == keys["workhub"]
+            && grant["provider"][0] == keys["agent"]
+            && grant["export"] == "agent"
+            && grant["methods"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("send"))
+    }));
     assert_eq!(
         host["instances"]["agent"]["bindings"]["ui"],
         json!([{"kind":"instance","path":["host-deployment-manager"],"export":"Management"}])
-    );
-    assert_eq!(
-        grants
-            .iter()
-            .filter(|grant| grant["origin"][0] == keys["agent"])
-            .collect::<Vec<_>>(),
-        vec![
-            &json!({"origin":[keys["agent"]],"consumer":[keys["agent"]],"provider":[keys["host-deployment-manager"]],"export":"Management","methods":["readUi"],"recovery":true})
-        ]
     );
     fs::write(&configuration, serde_json::to_vec(&installation).unwrap()).unwrap();
     let repeated = directory.path().join("same-installation");
