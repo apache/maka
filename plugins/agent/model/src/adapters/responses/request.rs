@@ -265,15 +265,15 @@ fn project(
         Message::Tool { content, .. } => {
             for result in content {
                 let custom = result.is_custom();
-                if result.is_notification() && (plaintext.is_some() || !custom) {
-                    if let ToolOutput::Text(text) = &result.output {
-                        let id = &result.tool_call_id;
-                        let text = match language {
-                            Language::En => format!("[Notification from exec {id}]\n{text}"),
-                            Language::ZhCn => format!("[来自 exec {id} 的通知]\n{text}"),
-                            Language::ZhTw => format!("[來自 exec {id} 的通知]\n{text}"),
-                        };
-                        input.push(Input::User(vec![Content::Text(text)]));
+                if result.is_notification() {
+                    for message in crate::prompt::notification_fallback(
+                        vec![Message::Tool {
+                            content: vec![result.clone()],
+                            provider_options: None,
+                        }],
+                        language,
+                    ) {
+                        input.extend(project(&message, language, plaintext, options)?);
                     }
                     continue;
                 }

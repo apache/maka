@@ -332,6 +332,17 @@ SELECT e.invocation_id,'tool',e.operation_id,e.sequence,
 FROM runtime_events e WHERE e.kind='tool_dispatched' AND e.sequence=?1"#).bind(sequence).execute(&mut *db).await?;
             }
         }
+        Fact::ToolYielded { .. } => {
+            sqlx::query("WITH RECURSIVE children AS MATERIALIZED (
+                SELECT w.operation_id,json_extract(d.event_header,'$.fact.call.origin.parent_operation_id') AS parent
+                FROM context_execution_work w JOIN runtime_events d ON d.sequence=w.opened_at
+                WHERE w.invocation_id=?1 AND w.kind='tool' AND w.closed_at IS NULL),
+                observed(operation_id) AS (
+                SELECT ?2 UNION ALL SELECT d.operation_id FROM children d JOIN observed p ON d.parent=p.operation_id)
+                INSERT OR IGNORE INTO context_independent_tools
+                    SELECT ?1,operation_id,?3 FROM observed")
+                .bind(invocation).bind(operation).bind(sequence).execute(&mut *db).await?;
+        }
         Fact::ToolSettled { .. } => {
             sqlx::query(r#"UPDATE context_execution_work SET closed_at=?1 WHERE invocation_id=?2 AND kind='tool' AND operation_id=?3 AND closed_at IS NULL"#).bind(sequence).bind(invocation).bind(operation).execute(&mut *db).await?;
         }
@@ -388,6 +399,7 @@ async fn record_interrupted(
         SELECT invocation_id,'interrupted',operation_id,
           MAX(terminal_at,observed_at,CASE WHEN terminal_status='retryable_failure' THEN barrier_at ELSE observed_at END)
         FROM context_execution_steps WHERE terminal_kind='model_interrupted' AND observed_at IS NOT NULL
+          AND terminal_status!='steered'
           AND (terminal_status!='retryable_failure' OR (item_acceptance!=1 AND barrier_at IS NOT NULL))
           AND NOT COALESCE(purpose='summary' AND tool_observed_at IS NULL,0) AND invocation_id=?1 AND operation_id=?2")
         .bind(invocation).bind(step).execute(db).await?;

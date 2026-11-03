@@ -33,6 +33,7 @@ mod model_attempt;
 mod model_source;
 mod prediction;
 mod prepared_prompt;
+mod steering;
 pub use prediction::{PredictionInput, PreparedPrediction};
 mod preview;
 pub use model_source::{ModelSource, PreparedModel};

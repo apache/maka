@@ -91,6 +91,7 @@ const listTextInset = {
 
 export function ModelSelect(props: {
   owner: ModelOwner;
+  running?(): boolean;
   instance(): number | null;
   current(): boolean;
   toggle(target: ModelTarget): void;
@@ -137,11 +138,13 @@ export function ModelSelect(props: {
       }}
       trigger={
         <Button
-          accessibilityLabel={tr('Choose model and effort')}
+          accessibilityLabel={tr(
+            props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort',
+          )}
           tooltip={textTooltip(() =>
             props.instance() !== null
               ? undefined
-              : `${label()} · ${shortcut(tr('Choose model and effort'), 'mod+g')}`,
+              : `${label()} · ${shortcut(tr(props.running?.() ? 'Model for queued and future messages' : 'Choose model and effort'), 'mod+g')}`,
           )}
           onPress={inputAction(props.toggle, {
             sessionId: owner.sessionId,
@@ -193,6 +196,19 @@ export function ModelSelect(props: {
         </Button>
       }
     >
+      <If when={props.running?.()}>
+        <Text
+          style={{
+            ...captionTextStyle,
+            color: C.muted,
+            paddingHorizontal: controlStyle.paddingHorizontal,
+            paddingVertical: 8,
+            flexShrink: 0,
+          }}
+        >
+          {tr('Model for queued and future messages')}
+        </Text>
+      </If>
       <Each
         of={props.instance() === null ? [] : [props.instance()!]}
         key={(instance: number) => instance}

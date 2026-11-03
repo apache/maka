@@ -813,36 +813,6 @@ async fn only_the_bot_has_sleep_and_ordinary_creation_cannot_request_it() {
     .unwrap();
 }
 
-#[tokio::test]
-async fn sleep_is_refused_while_a_message_is_bound_for_the_next_step() {
-    tokio::time::timeout(Duration::from_secs(90), async {
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
-        let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
-        f.send(&bot).await.unwrap();
-        let (mut socket, _) = listener.accept().await.unwrap();
-        request(&mut socket).await;
-        // A message queued during the Turn and promoted will be delivered at the next step.
-        let queued = f.mutation(2, "send", json!({"sessionId":bot,"message":"urgent: change of plan","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
-        let queue = f.query("queue", json!({"sessionId":bot})).await.unwrap();
-        let promoted = f.mutation(2, "editQueue", json!({"sessionId":bot,"expectedRevision":queue["revision"],"edit":{"kind":"promote","messageId":queued["messageId"]}}), Uuid::new_v4()).await.unwrap();
-        assert_eq!(promoted["kind"], "committed", "{promoted}");
-        service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
-
-        // The refusal reaches the model, the Turn goes on, and the message arrives with it.
-        let (mut socket, _) = listener.accept().await.unwrap();
-        let sent = request(&mut socket).await;
-        assert!(last_tool_result(&sent).contains("about to reach you"), "{}", last_tool_result(&sent));
-        assert!(sent.to_string().contains("urgent: change of plan"));
-        service_tools::named_tool_response(&mut socket, "sleep", json!({})).await;
-        idle(&f, &bot).await;
-        f.app.shutdown().await.unwrap();
-        f.config.shutdown().await.unwrap();
-    })
-    .await
-    .unwrap();
-}
-
 #[test]
 fn the_instructions_name_only_the_tools_the_bot_holds() {
     use crate::owner::bot::bot_prompt;

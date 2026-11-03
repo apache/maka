@@ -203,6 +203,19 @@ async fn run_from(
             compaction = budget;
         }
         loop {
+            tools.check()?;
+            if retry.is_none() {
+                crate::interactions::wait_until_clear(&inner.log, &input.invocation, cancellation)
+                    .await?;
+                inner.log.commit_pending_steering(&input.invocation).await?;
+            }
+            let steering = crate::steering::Steering::watch(
+                inner.log.clone(),
+                input.invocation.clone(),
+                cancellation.clone(),
+            )
+            .await?;
+            tools.set_steering(steering.signal.clone());
             let (initial_high_water, high_water, result, request_tools, surface) =
                 if let Some(consumption) = retry.take() {
                     let plan = consumption.plan.clone();
@@ -247,13 +260,6 @@ async fn run_from(
                         surface,
                     )
                 } else {
-                    crate::interactions::wait_until_clear(
-                        &inner.log,
-                        &input.invocation,
-                        cancellation,
-                    )
-                    .await?;
-                    inner.log.commit_pending_steering(&input.invocation).await?;
                     if let Some(pause) = handoff
                         .boundary(cancellation, |intent| async {
                             if let Err(error) = auto_context::drain(&mut pending).await {
@@ -262,7 +268,7 @@ async fn run_from(
                             }
                             // Live cells retain the current step's capabilities and effects.
                             // A handoff can seal only after those independent jobs settle.
-                            if !tools.code_idle() || !effects.is_idle() {
+                            if !tools.is_idle() || !effects.is_idle() {
                                 return None;
                             }
                             let context = model_attempt::read_source(inner, input, cancellation)
@@ -334,7 +340,7 @@ async fn run_from(
                         return Err(RunError::Cancelled);
                     }
                     input.refresh_model(cancellation).await?;
-                    if tools.code_idle()
+                    if tools.is_idle()
                         && effects.is_idle()
                         && pending
                             .as_ref()
@@ -365,7 +371,7 @@ async fn run_from(
                     )
                     .await?;
                     let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
-                    if tools.code_idle()
+                    if tools.is_idle()
                         && effects.is_idle()
                         && ((needs_compaction && pending.is_some())
                             || (compaction == CompactionBudget::Available
@@ -456,11 +462,16 @@ async fn run_from(
                 main_progress = true;
                 compaction = CompactionBudget::Available;
             }
+            steering.check()?;
             let mut output = match result {
+                Ok(model_attempt::Outcome::Steered) => {
+                    inner.log.yield_running_tools(&input.invocation).await?;
+                    continue;
+                }
                 Ok(model_attempt::Outcome::Response(output)) => output,
                 Ok(model_attempt::Outcome::ParkRetry(plan)) => {
                     auto_context::drain(&mut pending).await?;
-                    if !tools.code_idle() || !effects.is_idle() {
+                    if !tools.is_idle() || !effects.is_idle() {
                         return Err(RunError::ReconciliationRequired(
                             "model retry cannot park while execution remains active".into(),
                         ));
@@ -497,7 +508,7 @@ async fn run_from(
                         observed_output: false,
                     }),
                 ) if (compaction == CompactionBudget::Available || pending.is_some())
-                    && tools.code_idle()
+                    && tools.is_idle()
                     && effects.is_idle()
                     && !cancellation.is_cancelled() =>
                 {
@@ -562,7 +573,8 @@ async fn run_from(
             // never replenish their own attempts, even though the log advances.
             compaction = CompactionBudget::Available;
             if output.local_call_ids.is_empty() {
-                if !tools.finish_output(high_water).await? {
+                if wait_for_work(inner, &input.invocation, &tools, high_water, cancellation).await?
+                {
                     main_progress = true;
                     continue;
                 }
@@ -579,7 +591,7 @@ async fn run_from(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.code_idle() && effects.is_idle() && pending.is_none() {
+            if tools.is_idle() && effects.is_idle() && pending.is_none() {
                 prune::run(inner, input, cancellation, &mut inspected_through).await?;
             }
             if request_tools.finished() {
@@ -639,6 +651,7 @@ async fn run_from(
             Err(maka_agent_facts::tools::ToolError::CleanupUnconfirmed(_))
         )
     {
+        tracing::error!(execution_error = ?result.as_ref().err(), summary_error = ?summary_cleanup.as_ref().err(), tool_error = ?tool_cleanup.as_ref().err(), "step cleanup unconfirmed");
         return Err(crate::cleanup::unconfirmed());
     }
     tool_cleanup?;
@@ -788,7 +801,7 @@ async fn approval_frontier(
         if reconsider
             && failure.is_none()
             && running.is_empty()
-            && tools.code_idle()
+            && tools.is_idle()
             && effects.is_idle()
             && let Some(native_basis) = input.native_activation_basis.as_ref()
         {
@@ -912,4 +925,39 @@ async fn capture_surface<'tools>(
         context,
     )?);
     Ok((request_tools, surface))
+}
+
+async fn wait_for_work(
+    inner: &RunContext,
+    invocation: &maka_agent_facts::event::Invocation,
+    tools: &RunTools,
+    observed: u64,
+    cancellation: &CancellationToken,
+) -> Result<bool, RunError> {
+    let mut commits = inner
+        .log
+        .subscribe_session_commits(&invocation.session_id)?;
+    loop {
+        tools.check()?;
+        if cancellation.is_cancelled() {
+            return Err(RunError::Cancelled);
+        }
+        if inner.log.has_pending_steering(invocation).await?
+            || inner.log.unread_tool_results(invocation, observed).await?
+            || tools.has_unread_notifications(observed).await
+        {
+            return Ok(true);
+        }
+        if tools.is_idle() {
+            let code_finished = tools.finish_output(observed).await?;
+            tools.check()?;
+            return Ok(!code_finished || inner.log.unread_tool_results(invocation, observed).await?);
+        }
+        tokio::select! {
+            biased;
+            _ = cancellation.cancelled() => return Err(RunError::Cancelled),
+            changed = commits.changed() => changed.map_err(|_| RunError::Internal("background tool observation closed".into()))?,
+            _ = tools.changed() => {},
+        }
+    }
 }

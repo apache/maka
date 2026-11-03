@@ -328,6 +328,18 @@ export default {
           shortcut: 'alt+down',
           trigger: 'activity',
         },
+        queue: {
+          kind: 'command',
+          title: {
+            fallback: 'Add to queue',
+            translations: { 'zh-CN': '加入队列', 'zh-TW': '加入佇列' },
+          },
+          description: {
+            fallback: 'Send the current draft after this turn',
+            translations: { 'zh-CN': '本轮结束后发送当前草稿', 'zh-TW': '本輪結束後傳送目前草稿' },
+          },
+          order: 105,
+        },
         stop: {
           kind: 'command',
           title: {

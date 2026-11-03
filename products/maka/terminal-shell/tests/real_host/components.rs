@@ -233,19 +233,19 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
     let mut view = component("composer-details").await;
     support::wait_enabled_button(&mut view, "Toggle conversation todo").await;
     support::wait_enabled_button(&mut view, "Toggle computer access").await;
-    support::wait_enabled_button(&mut view, "Queued messages").await;
+    support::wait_enabled_button(&mut view, "Messages").await;
     assert!(!view.snapshot().contains("Fixture App one"));
     assert!(!view.snapshot().contains("TODO_NEXT"));
     assert!(!view.snapshot().contains("QUEUED_ORIGINAL"));
     support::evidence("composer-details-collapsed", &view.snapshot());
     support::evidence_cells("composer-details-collapsed", &view);
     view.resize(60, 24);
-    tab_to_label(&mut view, "Queued messages").await;
-    support::click_button(&mut view, "Queued messages").await;
+    tab_to_label(&mut view, "Messages").await;
+    support::click_button(&mut view, "Messages").await;
     wait_view(&mut view, |screen| screen.contains("QUEUED_ORIGINAL")).await;
     support::evidence("composer-details-narrow", &view.snapshot());
     support::evidence_cells("composer-details-narrow", &view);
-    support::click_button(&mut view, "Queued messages").await;
+    support::click_button(&mut view, "Messages").await;
     view.resize(120, 36);
 
     support::click_button(&mut view, "Toggle computer access").await;
@@ -258,7 +258,7 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
     support::click_button(&mut view, "Toggle computer access").await;
     wait_view(&mut view, |screen| !screen.contains("Fixture App one")).await;
 
-    support::click_button(&mut view, "Queued messages").await;
+    support::click_button(&mut view, "Messages").await;
     support::click_button(&mut view, "Edit queued message 1").await;
     wait_focused_input(&mut view, "Queued message editor").await;
     shortcut(&mut view, 'a');
@@ -283,7 +283,7 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
     support::evidence("composer-details-todo", &view.snapshot());
     support::evidence_cells("composer-details-todo", &view);
 
-    support::click_button(&mut view, "Queued messages").await;
+    support::click_button(&mut view, "Messages").await;
     wait_view_state(&mut view, |view, _| {
         view.surface()
             .input_context()
@@ -298,7 +298,7 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
     .await;
     support::evidence("composer-details-access", &view.snapshot());
     support::evidence_cells("composer-details-access", &view);
-    support::click_button(&mut view, "Queued messages").await;
+    support::click_button(&mut view, "Messages").await;
     wait_view_state(&mut view, |view, screen| {
         screen.contains("Message no longer queued")
             && view
@@ -312,7 +312,7 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
         !view
             .accessibility_snapshot()
             .iter()
-            .any(|node| node.label == "Queued messages")
+            .any(|node| node.label == "Messages")
     })
     .await;
 
@@ -332,6 +332,31 @@ async fn composer_details_switch_without_expanding_updates_or_losing_queue_edits
     support::click_button(&mut view, "Restore computer access").await;
     support::wait_enabled_button(&mut view, "Toggle computer access").await;
     assert!(!view.snapshot().contains("Fixture App one"));
+    support::click_button(&mut view, "Toggle conversation todo").await;
+    wait_view(&mut view, |screen| screen.contains("TODO_NEXT")).await;
+    support::click_button(&mut view, "Fail outgoing message").await;
+    let screen = wait_view(&mut view, |screen| screen.contains("1 to review")).await;
+    assert!(screen.contains("TODO_NEXT"));
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Retry message")
+    );
+    support::click_button(&mut view, "Messages").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("FAILED_MESSAGE") && screen.contains("FIXTURE_SEND_FAILED")
+    })
+    .await;
+    support::click_button(&mut view, "Retry message").await;
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("retried:failed-original")
+            && !view
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == "Messages")
+    })
+    .await;
     assert!(
         view.accessibility_snapshot()
             .iter()

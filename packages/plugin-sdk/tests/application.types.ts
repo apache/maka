@@ -210,7 +210,6 @@ const missingDefaultProjection: SettingsModelsPage = {
   choices: [],
   next: null,
 };
-// @ts-expect-error A send cannot inherit an implicit activation model.
 const implicitSend: AgentSend = { sessionId: 'conversation', message: 'Hello' };
 void [
   explicitSend,

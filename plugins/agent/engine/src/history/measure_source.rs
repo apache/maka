@@ -433,7 +433,7 @@ async fn describe_with(
                     }
                     AssistantRecipe::ToolResult(result) => {
                         let id = measure.result(&result).await?;
-                        if result.kind == ToolResultKind::Settled {
+                        if result.kind == ToolResultKind::Output {
                             settled.push(id, budget, cancellation).await?;
                         }
                     }
@@ -451,7 +451,7 @@ async fn describe_with(
             let mut cursor = content.open(0);
             while let Some(result) = cursor.next().await? {
                 let id = measure.result(&result).await?;
-                if result.kind == ToolResultKind::Settled {
+                if result.kind == ToolResultKind::Output {
                     settled.push(id, budget, cancellation).await?;
                 }
             }

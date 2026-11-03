@@ -22,7 +22,10 @@ import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { ContextGaugePreview } from './ContextGaugePreview';
 import { MessageRow } from '../../../workbench/app/MessageRow';
-import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
+import type {
+  ComposerSendStatus,
+  ComposerSession,
+} from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
@@ -140,6 +143,7 @@ function Consent() {
 
 function CompletionComposer(props: { details?: boolean }) {
   const draft = signal('');
+  const sends = signal<ComposerSendStatus[]>([]);
   const action = signal('No command');
   const lookup = signal('No lookup');
   const queue = signal<AgentQueue>({
@@ -187,9 +191,16 @@ function CompletionComposer(props: { details?: boolean }) {
     error: () => '',
     notice: () => '',
     metrics: () => '',
-    recoverable: () => false,
     recovering: () => false,
-    unconfirmed: () => [],
+    sends,
+    async retrySend(id) {
+      action.set(`retried:${id}`);
+      sends.set(sends().filter((item) => item.id !== id));
+    },
+    checkSend: unexpected,
+    async dismissSend(id) {
+      sends.set(sends().filter((item) => item.id !== id));
+    },
     invocation: () => null,
     prediction: {
       current: () => null,
@@ -214,8 +225,6 @@ function CompletionComposer(props: { details?: boolean }) {
     previewImage: unexpected,
     submit: unexpected,
     sendRendered: unexpected,
-    recover: unexpected,
-    abandon: unexpected,
     stop: unexpected,
     permissions: {
       sessionId: 'original-session',
@@ -308,10 +317,6 @@ function CompletionComposer(props: { details?: boolean }) {
       dropFiles: unexpected,
       open: unexpected,
       remove: unexpected,
-      recover: unexpected,
-      abandon: unexpected,
-      inspect: unexpected,
-      retry: unexpected,
       reportError: unexpected,
       notify: unexpected,
       clearNotice() {},
@@ -350,7 +355,7 @@ function CompletionComposer(props: { details?: boolean }) {
   return (
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
       <If when={props.details}>
-        <View style={{ flexDirection: 'row', gap: 8 }}>
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           <Button
             accessibilityLabel="Add computer access"
             style={{ height: 32 }}
@@ -378,6 +383,25 @@ function CompletionComposer(props: { details?: boolean }) {
             onPress={() => queue.set({ revision: queue().revision + 1, entries: [] })}
           >
             <Text>Drain queued messages</Text>
+          </Button>
+          <Button
+            accessibilityLabel="Fail outgoing message"
+            style={{ height: 32 }}
+            onPress={() =>
+              sends.set([
+                {
+                  id: 'failed-original',
+                  text: 'FAILED_MESSAGE',
+                  attachments: [],
+                  state: 'failed',
+                  detail: 'FIXTURE_SEND_FAILED',
+                  retryable: true,
+                  busy: false,
+                },
+              ])
+            }
+          >
+            <Text>Fail outgoing message</Text>
           </Button>
         </View>
       </If>

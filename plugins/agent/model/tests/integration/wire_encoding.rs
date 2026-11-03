@@ -139,3 +139,126 @@ fn resources() -> maka_model::ModelPreparationResources {
     })
     .unwrap()
 }
+
+#[tokio::test]
+async fn notifications_keep_all_output_formats_without_a_second_provider_receipt() {
+    use maka_model::prompt::{ContentPart, FileData, ToolOutput};
+    const IMAGE: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==";
+    fn strings(value: &Value, output: &mut Vec<String>) {
+        match value {
+            Value::String(value) => output.push(value.clone()),
+            Value::Array(values) => {
+                for value in values {
+                    strings(value, output);
+                }
+            }
+            Value::Object(values) => {
+                for value in values.values() {
+                    strings(value, output);
+                }
+            }
+            _ => {}
+        }
+    }
+    for kind in [
+        ProviderKind::OpenaiChatCompletions,
+        ProviderKind::OpenaiResponses,
+        ProviderKind::Anthropic,
+    ] {
+        for custom in [false, true] {
+            if custom && !matches!(&kind, ProviderKind::OpenaiResponses) {
+                continue;
+            }
+            let input = request(kind.clone(), "http://localhost/v1".into());
+            let options = custom.then(|| json!({"openai":{"toolKind":"custom"}}));
+            let mut messages = vec![Message::Assistant {
+                content: vec![AssistantPart::ToolCall {
+                    tool_call_id: "call-1".into(),
+                    tool_name: "exec".into(),
+                    input: if custom {
+                        ToolInput::Json(json!("text('start')"))
+                    } else {
+                        ToolInput::Json(json!({}))
+                    },
+                    provider_executed: None,
+                    provider_options: options.clone(),
+                }],
+                provider_options: None,
+            }];
+            let outputs = [
+                ToolOutput::Text("running receipt".into()),
+                ToolOutput::Text("late text 原文".into()),
+                ToolOutput::ErrorText("late failure 原因".into()),
+                ToolOutput::Json(json!({"result":"完整", "values":[1,2,3]})),
+                ToolOutput::ErrorJson(json!({"problem":"错误", "partial":[4,5]})),
+                ToolOutput::Content(vec![
+                    ContentPart::text("media caption"),
+                    ContentPart::File {
+                        data: FileData::Data(IMAGE.into()),
+                        media_type: "image/png".into(),
+                        provider_options: None,
+                    },
+                ]),
+            ];
+            for (index, output) in outputs.into_iter().enumerate() {
+                let mut message = Message::tool("call-1", "exec", output);
+                let Message::Tool { content, .. } = &mut message else {
+                    unreachable!()
+                };
+                content[0].provider_options = Some(
+                    json!({"openai":{"toolKind":if custom {"custom"} else {"function"}}, "maka":{"notification": index != 0}}),
+                );
+                messages.push(message);
+            }
+            let encoding = WireEncoding::new(
+                input.language,
+                &input.provider,
+                &input.provider_options,
+                &input.tools,
+            )
+            .unwrap();
+            let wire = encoding.prepare_source(Arc::new(maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(&messages)), resources()).await.unwrap();
+            let encoded = items(&wire).await;
+            let receipts = encoded
+                .iter()
+                .filter(|item| match &kind {
+                    ProviderKind::OpenaiChatCompletions => item["role"] == "tool",
+                    ProviderKind::OpenaiResponses => matches!(
+                        item["type"].as_str(),
+                        Some("custom_tool_call_output" | "function_call_output")
+                    ),
+                    ProviderKind::Anthropic => item["type"] == "tool_result",
+                    _ => unreachable!(),
+                })
+                .count();
+            assert_eq!(receipts, 1, "one output receipt per call: {encoded:?}");
+            let mut values = Vec::new();
+            strings(&Value::Array(encoded), &mut values);
+            let text = values.join("\n");
+            for expected in [
+                "late text 原文",
+                "late failure 原因",
+                "Error: ",
+                "media caption",
+                IMAGE,
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "notification lost {expected:?}: {text}"
+                );
+            }
+            for expected in [
+                json!({"result":"完整", "values":[1,2,3]}),
+                json!({"problem":"错误", "partial":[4,5]}),
+            ] {
+                assert!(
+                    values.iter().any(|text| serde_json::from_str::<Value>(
+                        text.strip_prefix("Error: ").unwrap_or(text)
+                    )
+                    .is_ok_and(|value| value == expected)),
+                    "notification lost JSON value {expected}: {text}"
+                );
+            }
+        }
+    }
+}

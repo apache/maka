@@ -36,6 +36,9 @@ pub(super) async fn wait_until_clear(
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }
+        if log.has_pending_steering(invocation).await? {
+            crate::steering::close_interactions(log, invocation).await?;
+        }
         let pending = log.pending_interactions(&invocation.session_id).await?;
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);

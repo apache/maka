@@ -238,7 +238,7 @@ pub async fn seed_due_model_retry(
         drop(prompt);
         drop(request_tools);
         drop(surface);
-        if !tools.code_idle() || !effects.is_idle() {
+        if !tools.is_idle() || !effects.is_idle() {
             return Err(RunError::ReconciliationRequired(
                 "retry fixture preparation has not drained".into(),
             ));

@@ -62,6 +62,7 @@ pub enum ToolSettlement {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RejectionKind {
+    Superseded,
     Unavailable,
     InvalidInput,
     PolicyDenied,
@@ -74,6 +75,8 @@ pub enum RejectionKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, thiserror::Error)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolRejection {
+    #[error("not executed: superseded by new user input")]
+    Superseded,
     #[error("tool is unavailable")]
     Unavailable,
     #[error("invalid tool input: {message}")]
