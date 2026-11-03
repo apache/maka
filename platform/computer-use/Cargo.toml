@@ -40,6 +40,7 @@ native-desktop = [
     "dep:windows-sys",
     "dep:platform-linux",
     "dep:platform-macos",
+    "dep:screencapturekit",
     "dep:core-foundation",
     "dep:objc2",
     "dep:objc2-foundation",
@@ -108,6 +109,7 @@ imagesize.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 unicode-segmentation = { workspace = true, optional = true }
 platform-macos = { git = "https://github.com/maka-agent/cua", rev = "b97a7e7a97b1dabc669b7c362ba39691766df761", optional = true }
+screencapturekit = { version = "8.0.1", features = ["macos_15_0"], optional = true }
 core-foundation = { version = "0.10.1", optional = true }
 objc2 = { version = "0.6.5", optional = true }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSData", "NSString"], optional = true }

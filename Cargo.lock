@@ -7694,6 +7694,7 @@ dependencies = [
  "regex",
  "reqwest",
  "schemars 1.2.3",
+ "screencapturekit 8.0.1",
  "serde",
  "serde_json",
  "sha2 0.11.1",
