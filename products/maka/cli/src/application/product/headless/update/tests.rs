@@ -540,7 +540,43 @@ async fn incompatible_package_is_rejected_before_pending_or_source_changes() {
 async fn pending_preview_and_apply_recover_only_frozen_target_including_lost_acknowledgement() {
     for committed in [false, true] {
         let directory = tempfile::tempdir().unwrap();
-        let f = Fixture::new(directory.path()).await;
+        let mut f = Fixture::new(directory.path()).await;
+        let mut files = f.current.files().clone();
+        let mut manifest: Value = serde_json::from_slice(&files["maka.extension.json"]).unwrap();
+        for direction in ["imports", "exports"] {
+            let methods = &mut manifest["application"]["host"][direction]["service"]["contract"]["interface"]
+                ["methods"];
+            methods["write"] = methods["read"].clone();
+        }
+        files.insert(
+            "maka.extension.json".into(),
+            serde_json::to_vec(&manifest).unwrap(),
+        );
+        f.current = Package::new(files).unwrap();
+        let record = f.store.application_launch().await.unwrap().unwrap();
+        f.selection["productMethods"] = json!(["service"]);
+        let reference = f
+            .store
+            .read_application_metadata(f.deployment)
+            .await
+            .unwrap()
+            .unwrap()
+            .source
+            .reference;
+        assert!(
+            f.store
+                .compare_and_set_application_launch_configuration(
+                    reference,
+                    record.configuration,
+                    f.selection.clone(),
+                )
+                .await
+                .unwrap()
+        );
+        let mut expected_changes = f.expected_changes();
+        expected_changes.push(
+            "/publication/endpoints/service/grant/methods: follow current service contract".into(),
+        );
         let pending = f.stage().await;
         if committed {
             launch::ensure_replacement(
@@ -556,7 +592,7 @@ async fn pending_preview_and_apply_recover_only_frozen_target_including_lost_ack
         }
         let original_revision = if committed { 2 } else { 1 };
         let preview = synchronize(&f.store, false).await.unwrap();
-        assert_eq!(preview.changes, f.expected_changes());
+        assert_eq!(preview.changes, expected_changes);
         assert!(preview.changed && !preview.applied);
         assert_eq!(
             f.store.application_launch().await.unwrap().unwrap().pending,
@@ -575,7 +611,7 @@ async fn pending_preview_and_apply_recover_only_frozen_target_including_lost_ack
         );
         // This path does not inspect or reauthor from the executing distribution's bundle.
         let applied = synchronize(&f.store, true).await.unwrap();
-        assert_eq!(applied.changes, f.expected_changes());
+        assert_eq!(applied.changes, expected_changes);
         assert!(applied.applied);
         let loaded = f
             .store
@@ -586,7 +622,9 @@ async fn pending_preview_and_apply_recover_only_frozen_target_including_lost_ack
         assert_eq!(loaded.source().input, f.target());
         assert_eq!(loaded.source().reference.revision, 2);
         let record = f.store.application_launch().await.unwrap().unwrap();
-        assert_eq!(record.configuration, f.selection);
+        let mut expected_selection = f.selection.clone();
+        expected_selection["endpoints"]["service"]["grant"]["methods"] = json!(["read", "write"]);
+        assert_eq!(record.configuration, expected_selection);
         assert!(record.pending.is_none());
         f.store.drain().await;
     }

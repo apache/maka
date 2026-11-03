@@ -273,7 +273,9 @@ async fn prepare_saved(
         let loaded = store
             .commit_prepared_application(deployment, 0, prepared)
             .await?;
-        store.complete_application_launch(deployment).await?;
+        store
+            .complete_application_launch(deployment, serde_json::to_value(&selection)?)
+            .await?;
         return Ok((loaded, selection));
     }
     let record = store
@@ -281,7 +283,7 @@ async fn prepare_saved(
         .await?
         .ok_or("public Host selection missing")?;
     // A terminal launcher cannot accidentally reinterpret this Root as its Host.
-    let selection: Selection = serde_json::from_value(record.configuration.clone())?;
+    let mut selection: Selection = serde_json::from_value(record.configuration.clone())?;
     if let Some(pending) = record.pending {
         let preparation: Preparation = serde_json::from_slice(&pending)?;
         let packages = launch::decode_packages(preparation.packages)?;
@@ -291,10 +293,23 @@ async fn prepare_saved(
         } else {
             None
         };
-        if let Some(current) = &current {
-            launch_changes(current.plan(), &record.configuration)?;
+        if preparation.expected_revision != 0 {
+            let mut reference = store
+                .read_application_metadata(record.deployment)
+                .await?
+                .ok_or("public Host source missing")?
+                .source
+                .reference;
+            reference.revision = preparation.expected_revision;
+            let previous = store
+                .load_application_at(&reference)
+                .await?
+                .ok_or("prepared Host update source missing")?;
+            selection = launch_update(&previous, &frozen, &record.configuration)?.0;
+        } else if let Some(current) = &current {
+            publication::refresh_from_plan(&mut selection, current.plan())?;
         } else {
-            launch_changes(frozen.plan(), &record.configuration)?;
+            publication::refresh_from_plan(&mut selection, frozen.plan())?;
         }
         if preparation.expected_revision == 0 {
             launch::ensure(store, record.deployment, &preparation.input, &[], &packages).await?;
@@ -309,7 +324,9 @@ async fn prepare_saved(
             )
             .await?;
         }
-        store.complete_application_launch(record.deployment).await?;
+        store
+            .complete_application_launch(record.deployment, serde_json::to_value(&selection)?)
+            .await?;
     }
     let loaded = store
         .load_application(record.deployment)
@@ -470,39 +487,26 @@ pub(super) fn launch_changes(
     publication::refresh_from_plan(&mut selection, plan)
 }
 
+fn launch_update(
+    previous: &LoadedDeployment,
+    target: &PreparedApplication,
+    configuration: &Value,
+) -> Result<(Selection, Vec<String>), HostError> {
+    let mut selection = serde_json::from_value(configuration.clone())?;
+    let mut changes = publication::rebase(&mut selection, previous, target)?;
+    changes.extend(publication::refresh_from_plan(
+        &mut selection,
+        target.plan(),
+    )?);
+    Ok((selection, changes))
+}
+
 pub(super) async fn preview_update(store: &EventLog) -> Result<super::update::Outcome, HostError> {
-    let (mut outcome, target) = update::preview(store).await?;
-    let record = store
-        .application_launch()
-        .await?
-        .ok_or("public Host selection missing")?;
-    let changes = launch_changes(target.plan(), &record.configuration)?;
-    outcome.changed |= !changes.is_empty();
-    outcome.changes.extend(changes);
-    Ok(outcome)
+    update::preview(store).await
 }
 
 pub(super) async fn apply_update(store: &RootStore) -> Result<super::update::Outcome, HostError> {
-    // Recover exactly one frozen package target before reconciling launcher
-    // values. Calling prepare here would select the executing bundle again.
-    let mut outcome = update::synchronize(store, true).await?;
-    let record = store
-        .application_launch()
-        .await?
-        .ok_or("public Host selection missing")?;
-    let loaded = store
-        .load_application(record.deployment)
-        .await?
-        .ok_or("public Host source missing")?;
-    let changes = launch_changes(loaded.plan(), &record.configuration)?;
-    if changes.is_empty() {
-        return Ok(outcome);
-    }
-    publication::synchronize(store, &loaded).await?;
-    outcome.changed = true;
-    outcome.applied = true;
-    outcome.changes.extend(changes);
-    Ok(outcome)
+    update::synchronize(store, true).await
 }
 
 pub(crate) async fn configure_workspace_locations(
