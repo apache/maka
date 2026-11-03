@@ -833,6 +833,7 @@ impl Owner {
                     activation: activation.clone(),
                     package: instance.package.clone(),
                     services: NativeServices {
+                        selected_method: None,
                         activation: activation.clone(),
                         imports: self.owned[activation.instance()].imports.clone(),
                         exports: self.owned[activation.instance()].exports.clone(),
@@ -1375,6 +1376,11 @@ impl Owner {
                             let invocation = Invocation {
                                 scope: &scope,
                                 native_origin: self.native_origin(&scope),
+                                selected_native_method: self
+                                    .issuer
+                                    .evidence::<native_context::NativeOrigin>(&scope)
+                                    .and_then(|origin| origin.selected_method.as_deref())
+                                    .filter(|selected| selected.matches(&binding, &method)),
                                 consumer: binding.0.consumer(),
                                 provider: binding.provider(),
                                 export: binding.export(),
@@ -1680,7 +1686,7 @@ impl Owner {
     fn native_origin<'a>(&self, scope: &'a Scope) -> Option<&'a Activation> {
         self.issuer
             .evidence::<native_context::NativeOrigin>(scope)
-            .map(|origin| &origin.0)
+            .map(|origin| &origin.activation)
     }
     fn check_native_origin(&mut self, scope: &Scope) -> Result<()> {
         if let Some(origin) = self.native_origin(scope) {
@@ -1721,6 +1727,11 @@ impl Owner {
             self.policy.recover(RecoveryInvocation {
                 scope,
                 native_origin: self.native_origin(scope),
+                selected_native_method: self
+                    .issuer
+                    .evidence::<native_context::NativeOrigin>(scope)
+                    .and_then(|origin| origin.selected_method.as_deref())
+                    .filter(|selected| selected.recovers(consumer, reference)),
                 consumer,
                 reference,
             })

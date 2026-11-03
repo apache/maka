@@ -171,10 +171,10 @@ impl Input {
             }
             for targets in node.bindings.values_mut() {
                 for target in targets {
-                    if let Target::Instance { path, .. } = target {
-                        if let Some(alias) = path.first().and_then(|root| renames.get(root)) {
-                            path[0] = alias.clone();
-                        }
+                    if let Target::Instance { path, .. } = target
+                        && let Some(alias) = path.first().and_then(|root| renames.get(root))
+                    {
+                        path[0] = alias.clone();
                     }
                 }
             }
@@ -195,10 +195,10 @@ impl Input {
         }
         validate_nodes(&instances)?;
         let mut inherited_ui = base.ui.clone().unwrap_or_else(|| template.ui.clone());
-        if let Some(ui) = &mut inherited_ui {
-            if let Some(alias) = ui.path.first().and_then(|root| renames.get(root)) {
-                ui.path[0] = alias.clone();
-            }
+        if let Some(ui) = &mut inherited_ui
+            && let Some(alias) = ui.path.first().and_then(|root| renames.get(root))
+        {
+            ui.path[0] = alias.clone();
         }
         Ok(Self {
             base: None,

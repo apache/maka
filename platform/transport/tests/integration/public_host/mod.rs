@@ -705,6 +705,159 @@ async fn native_read(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_native_method_works_with_unchanged_saved_grants_after_restart() {
+    use maka_host_runtime::application::ServiceTarget;
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let directory = tempfile::tempdir().unwrap();
+        let namespaces = RootNamespaces {
+            ownership: directory.path().join("owners"),
+            control: directory.path().join("control"),
+        };
+        let root = directory.path().join("host");
+        let store = Arc::new(
+            support::setup(RootStore::open(Arc::new(
+                RootOwner::create(&root, &namespaces).unwrap(),
+            )))
+            .await
+            .unwrap(),
+        );
+        let deployment = Uuid::new_v4();
+        let (mut input, mut packages) = support::host();
+        let gateway = packages
+            .iter_mut()
+            .find(|package| package.manifest().id == "local.gateway")
+            .unwrap();
+        let mut declaration = gateway
+            .manifest()
+            .application
+            .as_ref()
+            .unwrap()
+            .declaration()
+            .clone();
+        declaration.host.as_mut().unwrap().implementation =
+            maka_plugin_core::package::Implementation::Native {
+                implementation: "test.native-caller".into(),
+            };
+        *gateway = support::counter::package("local.gateway", declaration, None);
+        input.instances.get_mut("gateway").unwrap().package = gateway.application_ref().into();
+        let source = store
+            .commit_application(deployment, 0, input, vec![], packages)
+            .await
+            .unwrap();
+        let configuration = HostConfiguration::PublicHost {
+            endpoints: BTreeMap::from([(
+                "business".into(),
+                HostEndpoint {
+                    consumer: support::identity(13),
+                    import: "business".into(),
+                    grant: Grant {
+                        methods: ["read".into(), "write".into()].into(),
+                        recovery: false,
+                    },
+                },
+            )]),
+            native: vec![],
+            product_methods: Default::default(),
+        };
+        let original = serde_json::to_value(&configuration).unwrap();
+        store
+            .select_committed_application_launch(source.clone(), original.clone())
+            .await
+            .unwrap();
+        store.shutdown().await.unwrap();
+        drop(store);
+        for _ in 0..2 {
+            let store = Arc::new(
+                support::setup(RootStore::open(Arc::new(
+                    RootOwner::open(&root, &namespaces).unwrap(),
+                )))
+                .await
+                .unwrap(),
+            );
+            let saved = store.application_launch().await.unwrap().unwrap();
+            let (native, mut activations) = native_caller();
+            let host = Host::open(
+                store.clone(),
+                deployment,
+                native,
+                Some(maka_host_js::factory(Default::default())),
+                serde_json::from_value(saved.configuration).unwrap(),
+            )
+            .await
+            .unwrap();
+            let services = activations.recv().await.unwrap();
+            assert_eq!(
+                native_read(&services).await.unwrap_err(),
+                "native service invocation is not granted"
+            );
+            let selected = services
+                .select_method(
+                    &ServiceTarget::Import {
+                        name: "business".into(),
+                    },
+                    "read",
+                )
+                .unwrap();
+            assert_eq!(
+                native_read(&selected).await.unwrap(),
+                serde_json::json!({"effects":0})
+            );
+            let request = selected
+                .request(
+                    maka_capabilities::call::Identity::Remote {
+                        request_id: Uuid::new_v4(),
+                    },
+                    CancellationToken::new(),
+                )
+                .unwrap();
+            let result = request
+                .mutate(
+                    "business",
+                    0,
+                    "write".into(),
+                    Value::Null,
+                    Uuid::new_v4(),
+                    maka_capabilities::call::Attachments::new(),
+                )
+                .unwrap()
+                .await;
+            assert_eq!(
+                result.unwrap_err(),
+                "native service invocation is not granted"
+            );
+            request.finish().await.unwrap();
+            assert_eq!(
+                native_read(&selected).await.unwrap(),
+                serde_json::json!({"effects":0})
+            );
+            assert_eq!(
+                store
+                    .application_launch()
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .configuration,
+                original
+            );
+            assert_eq!(
+                store
+                    .load_application(deployment)
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .source()
+                    .reference,
+                source
+            );
+            host.shutdown().await.unwrap();
+            drop((request, selected, services, host, store));
+        }
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn configured_native_grants_apply_live_survive_source_update_and_root_restart() {
     use maka_host_runtime::application::{host::Configuration, transport::NativeGrant};
     tokio::time::timeout(Duration::from_secs(30), async {
