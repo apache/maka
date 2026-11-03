@@ -6,111 +6,58 @@ import { Canvas, Path2D, Text, type CanvasRenderingContext2D } from 'nsh';
 import { platform } from 'nsh';
 import { lucide, type LucideElement } from './lucide';
 
-const glyphs = {
-  back: '‹',
-  sidebar: '◫',
-  split: '◫',
-  sidebarCollapse: '◁',
-  sidebarExpand: '▷',
-  plus: '+',
-  send: '↑',
-  stop: '■',
-  pause: 'Ⅱ',
-  play: '▶',
-  close: '×',
-  down: '⌄',
-  right: '›',
-  search: '⌕',
-  settings: '⚙',
-  folder: '📁',
-  refresh: '↻',
-  file: '📄',
-  terminal: '⌁',
-  command: '⌘',
-  copy: '⧉',
-  archive: '▤',
-  pin: '📌',
-  trash: '⌫',
-  wrap: '↵',
-  nowrap: '→',
-  code: '⌘',
-  markdown: 'M',
-  check: '✓',
-  more: '⋯',
-  latest: '↓',
-  paperclip: '📎',
-  queue: '≡',
-  edit: '✎',
-  image: '▧',
-  expand: '⛶',
-  fork: '⑂',
-  shield: '◇',
-  lock: '▣',
-  activity: '◌',
-  thinking: '◌',
-  statusRecorded: '●',
-  statusSuccess: '✓',
-  statusError: '×',
-  statusUnknown: '?',
-  statusStopped: 'Ⅱ',
-  statusDispatched: '↑',
-  statusPending: '○',
-  loader: '◌',
-  unread: '●',
-};
-
-const iconNames = {
-  back: 'chevron-left',
-  sidebar: 'panel-left',
-  split: 'columns-2',
-  sidebarCollapse: 'panel-left-close',
-  sidebarExpand: 'panel-left-open',
-  plus: 'plus',
-  send: 'arrow-up',
-  stop: 'square',
-  pause: 'pause',
-  play: 'play',
-  close: 'x',
-  down: 'chevron-down',
-  right: 'chevron-right',
-  search: 'search',
-  settings: 'settings',
-  folder: 'folder',
-  refresh: 'refresh-cw',
-  file: 'file',
-  terminal: 'square-terminal',
-  command: 'command',
-  copy: 'copy',
-  archive: 'archive',
-  pin: 'pin',
-  trash: 'trash',
-  wrap: 'text-wrap',
-  nowrap: 'move-right',
-  code: 'code',
-  markdown: 'markdown',
-  check: 'check',
-  more: 'ellipsis',
-  latest: 'arrow-down',
-  paperclip: 'paperclip',
-  queue: 'list-end',
-  edit: 'pencil',
-  image: 'image',
-  expand: 'maximize',
-  fork: 'git-fork',
-  shield: 'shield',
-  lock: 'lock',
-  activity: 'clock',
-  thinking: 'brain',
-  statusRecorded: 'circle-dot',
-  statusSuccess: 'circle-check',
-  statusError: 'circle-x',
-  statusUnknown: 'circle-question-mark',
-  statusStopped: 'circle-pause',
-  statusDispatched: 'circle-arrow-up',
-  statusPending: 'circle',
-  loader: 'loader-circle',
-  unread: 'circle',
-} satisfies Record<keyof typeof glyphs, keyof typeof lucide>;
+const icons = {
+  back: { lucide: 'chevron-left', glyph: '‹' },
+  sidebar: { lucide: 'panel-left', glyph: '◫' },
+  split: { lucide: 'columns-2', glyph: '◫' },
+  sidebarCollapse: { lucide: 'panel-left-close', glyph: '◁' },
+  sidebarExpand: { lucide: 'panel-left-open', glyph: '▷' },
+  plus: { lucide: 'plus', glyph: '+' },
+  send: { lucide: 'arrow-up', glyph: '↑' },
+  stop: { lucide: 'square', glyph: '■' },
+  pause: { lucide: 'pause', glyph: 'Ⅱ' },
+  play: { lucide: 'play', glyph: '▶' },
+  close: { lucide: 'x', glyph: '×' },
+  down: { lucide: 'chevron-down', glyph: '⌄' },
+  right: { lucide: 'chevron-right', glyph: '›' },
+  search: { lucide: 'search', glyph: '⌕' },
+  settings: { lucide: 'settings', glyph: '⚙' },
+  folder: { lucide: 'folder', glyph: '📁' },
+  refresh: { lucide: 'refresh-cw', glyph: '↻' },
+  file: { lucide: 'file', glyph: '📄' },
+  terminal: { lucide: 'square-terminal', glyph: '⌁' },
+  command: { lucide: 'command', glyph: '⌘' },
+  copy: { lucide: 'copy', glyph: '⧉' },
+  archive: { lucide: 'archive', glyph: '▤' },
+  pin: { lucide: 'pin', glyph: '📌' },
+  trash: { lucide: 'trash', glyph: '⌫' },
+  wrap: { lucide: 'text-wrap', glyph: '↵' },
+  nowrap: { lucide: 'move-right', glyph: '→' },
+  code: { lucide: 'code', glyph: '⌘' },
+  markdown: { lucide: 'markdown', glyph: 'M' },
+  check: { lucide: 'check', glyph: '✓' },
+  more: { lucide: 'ellipsis', glyph: '⋯' },
+  latest: { lucide: 'arrow-down', glyph: '↓' },
+  paperclip: { lucide: 'paperclip', glyph: '📎' },
+  queue: { lucide: 'list-end', glyph: '≡' },
+  edit: { lucide: 'pencil', glyph: '✎' },
+  image: { lucide: 'image', glyph: '▧' },
+  expand: { lucide: 'maximize', glyph: '⛶' },
+  fork: { lucide: 'git-fork', glyph: '⑂' },
+  shield: { lucide: 'shield', glyph: '◇' },
+  lock: { lucide: 'lock', glyph: '▣' },
+  activity: { lucide: 'clock', glyph: '◌' },
+  thinking: { lucide: 'brain', glyph: '◌' },
+  statusRecorded: { lucide: 'circle-dot', glyph: '●' },
+  statusSuccess: { lucide: 'circle-check', glyph: '✓' },
+  statusError: { lucide: 'circle-x', glyph: '×' },
+  statusUnknown: { lucide: 'circle-question-mark', glyph: '?' },
+  statusStopped: { lucide: 'circle-pause', glyph: 'Ⅱ' },
+  statusDispatched: { lucide: 'circle-arrow-up', glyph: '↑' },
+  statusPending: { lucide: 'circle', glyph: '○' },
+  loader: { lucide: 'loader-circle', glyph: '◌' },
+  unread: { lucide: 'circle', glyph: '●' },
+} satisfies Record<string, { lucide: keyof typeof lucide; glyph: string }>;
 
 const paths = new Map<string, Path2D>();
 const pointLists = new Map<string, number[]>();
@@ -164,7 +111,7 @@ function draw(cx: CanvasRenderingContext2D, el: LucideElement) {
   cx.stroke();
 }
 
-export function Icon(props: { name: keyof typeof glyphs; color: string; size?: number }) {
+export function Icon(props: { name: keyof typeof icons; color: string; size?: number }) {
   if (platform.isTerminal)
     return (
       <Text
@@ -181,7 +128,7 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
           { userSelect: 'none', pointerEvents: 'none' },
         ]}
       >
-        {glyphs[props.name]}
+        {icons[props.name].glyph}
       </Text>
     );
   return (
@@ -204,7 +151,7 @@ export function Icon(props: { name: keyof typeof glyphs; color: string; size?: n
           cx.fill();
           return;
         }
-        for (const el of lucide[iconNames[props.name]] as LucideElement[]) {
+        for (const el of lucide[icons[props.name].lucide] as LucideElement[]) {
           if (props.name === 'play' || props.name === 'stop' || props.name === 'pause') {
             // Transport controls retain their filled affordance.
             if (el.tag === 'path') cx.fill(paths.get(el.d)!);

@@ -83,3 +83,19 @@ Lucide 运行时依赖。映射维护在 `Icon.tsx`，例如 refresh → refresh
 activity → clock、nowrap → move-right。来源见 LICENSE、NOTICE 和来源审计。
 
 Lucide 没有对应的 Markdown 标记，因此保留 M/向下箭头，并适配同一网格。
+
+### 终端图标
+
+`Icon.tsx` 的每个条目在同一个 Workbench 名称下配对 Lucide 名称和终端字符。
+两项都必须填写，TypeScript 会校验 Lucide 名称是否存在于打包的几何数据中。
+当前所有名称都有字符；本次迁移保留原字符及终端固定的 16 × 16 布局，终端忽略
+图形界面的 `size` 参数。
+
+TUI 图标继续使用文本，按动作或状态选择字符，不从 Lucide 名称自动推导。
+例如 activity、thinking、loader 都使用 `◌`，statusSuccess 使用不带 Lucide 外圈的 `✓`。
+加载、回合导航和选择指示器保留各自的终端文本与布局。
+
+不要求图标字体，也不自动检测字体并替换字符。现有文件夹、文件、图钉、回形针等 emoji
+依赖用户终端的字体与字符单元宽度处理，外观可能与图形界面不同。新增图标时同时填写两项，
+优先选择含义清晰且不依赖字体私用区码点的文本符号；修改已有字符前，在终端实际上下文中
+检查裁切、对齐和含义。Lucide 名称没有可自动转换的 Unicode 等价字符。

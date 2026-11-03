@@ -87,3 +87,24 @@ Names map in `Icon.tsx` (for example `refresh` → `refresh-cw`, `edit` → `pen
 Upstream attribution is recorded in `LICENSE`, `NOTICE` and the source audit.
 
 The Markdown mark retains its M/down-arrow geometry because Lucide has no equivalent.
+
+### Terminal icons
+
+Each entry in `Icon.tsx` pairs a Lucide name with a terminal glyph under the same
+Workbench name. Both fields are required, and TypeScript checks the Lucide name
+against the bundled geometry. All current names have glyphs; this migration
+preserves their characters and the terminal's fixed 16 × 16 layout, which ignores
+the graphical `size` prop.
+
+TUI icons remain text. Glyphs are chosen for the action or status rather than
+derived from Lucide names: `activity`, `thinking` and `loader` all use `◌`, while
+`statusSuccess` uses `✓` without Lucide's enclosing circle. Loading, turn-rail and
+choice indicators retain their own terminal text and layout.
+
+No icon font is required; Workbench does not detect fonts or substitute glyphs. Existing emoji
+such as folder, file, pin and paperclip depend on the user's terminal font and
+cell-width handling; they may differ in appearance from the graphical icons.
+For a new icon, add both fields and prefer a recognizable text symbol without
+private-use font codepoints. Check it in terminal context for clipping, alignment
+and meaning before changing an existing glyph; Lucide has no automatic Unicode
+equivalent.
