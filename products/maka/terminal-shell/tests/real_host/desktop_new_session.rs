@@ -860,6 +860,8 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
             super::support::wait_draft(&desktop.client, &session, "Keep the sidebar compact."),
         )
         .await;
+    desktop.press("Messages").await;
+    desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-sending"));
     gate.release();
@@ -881,6 +883,26 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop.press("Send options").await;
     desktop.control("Add to queue").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-queue-menu"));
+    desktop.key("escape", false);
+    desktop
+        .until("Escape did not dismiss the send menu", || {
+            desktop.controls("Add to queue").is_empty().then_some(())
+        })
+        .await;
+    let observed = desktop
+        .wait(
+            "the active turn could not be observed after dismissing the menu",
+            desktop
+                .client
+                .query("agent", "observe", json!({"sessionId":session})),
+        )
+        .await
+        .unwrap();
+    assert_ne!(
+        observed["session"]["activity"], "idle",
+        "dismissing the send menu must not stop the active turn"
+    );
+    desktop.press("Send options").await;
     desktop.press("Add to queue").await;
     desktop
         .wait("explicit queue message was not accepted", async {
@@ -954,12 +976,18 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
         .type_text("Preserve this draft after stopping.")
         .await;
     desktop.control("Stop response").await;
+    if desktop.controls("Edit queued message 1").is_empty() {
+        desktop.press("Messages").await;
+    }
+    desktop.control("Edit queued message 1").await;
+    desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-active"));
     desktop.press("Model for queued and future messages").await;
     desktop.control("Choose model").await;
     desktop.artifact(&format!("steering-{theme}-{width_name}-model-scope"));
     desktop.key("escape", false);
+    desktop.press("Messages").await;
     desktop.press("Stop response").await;
     desktop
         .wait(
@@ -972,7 +1000,13 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
     desktop
         .expect_text("Preserve this draft after stopping.")
         .await;
+    assert!(
+        desktop.controls("Retry message").is_empty(),
+        "a failed message does not force the details panel open"
+    );
+    desktop.press("Messages").await;
     desktop.control("Retry message").await;
+    desktop.press("Focus message composer").await;
     desktop.key("right", false);
     desktop.artifact(&format!("steering-{theme}-{width_name}-stopped"));
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 3);

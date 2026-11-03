@@ -75,7 +75,12 @@ export const conversationMessages = {
     '右方向键使用 · Esc 忽略',
     '右方向鍵使用 · Esc 忽略',
   ],
-  'Outgoing messages': ['Outgoing messages', '待发送消息', '待傳送訊息'],
+  Messages: ['Messages', '消息', '訊息'],
+  '{count} · {problems} to review': [
+    '{count} · {problems} to review',
+    '{count} · {problems} 条待处理',
+    '{count} · {problems} 則待處理',
+  ],
   'Retry message': ['Retry message', '重试消息', '重試訊息'],
   'Check message status': ['Check message status', '检查消息状态', '檢查訊息狀態'],
   'Check status': ['Check status', '检查状态', '檢查狀態'],
@@ -686,7 +691,6 @@ export const conversationMessages = {
     '发送消息，或开始一项任务…',
     '傳送訊息，或開始一項任務…',
   ],
-  'Message queue': ['Message queue', '消息队列', '訊息佇列'],
   'Drop files here': ['Drop files here', '拖到这里添加文件', '拖到這裡加入檔案'],
   'Messages waiting for a turn': [
     'Messages waiting for a turn',
@@ -803,7 +807,6 @@ export const conversationMessages = {
   Provider: msg_connectionProvider,
   'Queue message': ['Queue message', '加入消息队列', '加入訊息佇列'],
   'Queued message editor': ['Queued message editor', '队列消息编辑器', '佇列訊息編輯器'],
-  'Queued messages': ['Queued messages', '队列消息', '佇列訊息'],
   Read: msg_permissionRead,
   'Read file': msg_toolReadAction,
   'Read lines {first}–{last} / {total}': [
