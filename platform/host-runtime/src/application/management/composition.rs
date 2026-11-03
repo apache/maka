@@ -478,7 +478,7 @@ impl Manager {
                                 } else if !configuration.is_empty() {
                                     source
                                         .input
-                                        .override_mut(&[name.clone()])
+                                        .override_mut(std::slice::from_ref(&name))
                                         .map_err(|error| error.to_string())?
                                         .parameters
                                         .extend(configuration);
@@ -489,7 +489,7 @@ impl Manager {
                                     source
                                         .input
                                         .configure(
-                                            &[name.clone()],
+                                            std::slice::from_ref(&name),
                                             configuration
                                                 .into_iter()
                                                 .map(|(key, value)| ConfigurationField {
