@@ -247,7 +247,7 @@ async fn compaction_waiting_keeps_background_elapsed_time_and_completion_uses_re
     .await;
     support::click_button(&mut view, "Complete compaction").await;
     wait_view(&mut view, |screen| {
-        screen.contains("Context compacted (2m 6s)") && !screen.contains("Compacting context")
+        screen.contains("Context compacted (1h 2m 6s)") && !screen.contains("Compacting context")
     })
     .await;
     let screen = view.snapshot();

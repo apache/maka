@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatDuration } from './duration';
 import { LoadingIndicator } from './Loading';
 import { createText, errorText } from './text';
 import { displayText, tr } from './locale';
@@ -74,8 +75,7 @@ function duration(turn: TurnPresentation, now?: number): string {
   const start = turn.timing?.startedAt;
   const end = turn.timing?.finished?.at ?? now;
   if (start == null || end == null || end < start) return '';
-  const seconds = Math.floor((end - start) / 1000);
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return formatDuration(end - start);
 }
 
 export function TurnSummary(props: {

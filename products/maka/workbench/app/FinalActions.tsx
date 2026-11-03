@@ -17,6 +17,7 @@
  * under the License.
  */
 
+import { formatDuration } from './duration';
 import { createText, UiError, errorText, message as uiMessage } from './text';
 import { tr } from './locale';
 import { cleanup, computed, inputAction, signal, Text, View } from 'nsh';
@@ -121,12 +122,7 @@ export function FinalActions(props: {
       timing?.finished && timing.finished.at >= timing.startedAt
         ? timing.finished.at - timing.startedAt
         : null;
-    const duration =
-      elapsed === null
-        ? ''
-        : elapsed < 60000
-          ? `${(elapsed / 1000).toFixed(1)}s`
-          : `${Math.floor(elapsed / 60000)}m ${Math.floor(elapsed / 1000) % 60}s`;
+    const duration = elapsed === null ? '' : formatDuration(elapsed, true);
     return [name, duration].filter(Boolean).join(' · ');
   };
   return (
