@@ -373,3 +373,221 @@ async fn actual_tool_images_are_immutable_scoped_and_reconstructed_without_paths
     drop(db);
     log.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn projection_images_beside_tool_content_are_readable_by_index() {
+    use maka_agent_facts::capability::ContentBlock;
+    fn encode(bytes: &[u8]) -> String {
+        const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+            for i in 0..4 {
+                out.push(if i <= chunk.len() {
+                    TABLE[(n >> (18 - 6 * i) & 63) as usize] as char
+                } else {
+                    '='
+                });
+            }
+        }
+        out
+    }
+    use maka_agent_facts::tool_output::{ToolContent, ToolOutput};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("shots.sqlite");
+    let log = EventLog::open(&path).await.unwrap();
+    log.create_session("shots", "shots", &Value::Null, 1)
+        .await
+        .unwrap();
+    log.append(&event("shots", opening())).await.unwrap();
+    log.append(&event("shots", request("shots"))).await.unwrap();
+    let call = maka_agent_facts::model::ModelToolCall {
+        id: "shot-call".into(),
+        name: "computer".into(),
+        input: Value::Null.into(),
+        provider_options: None,
+        provider_executed: false,
+    };
+    log.append(&event(
+        "shots",
+        Fact::ModelCompleted {
+            step_id: "step-shots".into(),
+            output: ModelCompletion {
+                compaction: None,
+                parts: completion_parts("step-shots".into(), vec![ModelPart::ToolCall { call }]),
+                finish_reason: maka_agent_facts::model::ModelFinishReason::ToolCalls,
+                usage: ModelUsage::default(),
+                provider_options: None,
+                response_id: None,
+                model: None,
+                timestamp: None,
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    log.append(&event(
+        "shots",
+        Fact::ToolDispatched {
+            presentation: None,
+            title: None,
+            operation_id: "step-shots:shot-call".into(),
+            call: ToolCallIdentity::provider("step-shots".into(), "shot-call".into()),
+            name: "computer".into(),
+            input: Value::Null,
+        },
+    ))
+    .await
+    .unwrap();
+    let gif = |comment: u8| {
+        let mut bytes = vec![
+            71, 73, 70, 56, 57, 97, 1, 0, 1, 0, 128, 0, 0, 0, 0, 0, 255, 255, 255, 33, 249, 4, 1,
+            0, 0, 0, 0, 44, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 1, 68, 0,
+        ];
+        bytes.extend([0x21, 0xfe, 1, comment, 0, 0x3b]);
+        bytes
+    };
+    let (first, second) = (gif(b'a'), gif(b'b'));
+    let media = |bytes: &[u8]| ToolContent::Media {
+        content: ContentBlock::Image {
+            data: encode(bytes),
+            mime_type: "image/gif".into(),
+        },
+        detail: None,
+    };
+    let template = event(
+        "shots",
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::Completed,
+        },
+    );
+    let (result, _) = maka_agent_facts::event::EventWrite::tool_success(
+        "shot-result".into(),
+        template.event().recorded_at,
+        template.event().invocation.clone(),
+        "step-shots:shot-call".into(),
+        ToolSuccess::content(
+            ToolOutput::Json(serde_json::json!({"done": true})),
+            vec![
+                ToolContent::Text("looked".into()),
+                media(&first),
+                media(&second),
+            ],
+        ),
+    )
+    .unwrap();
+    log.append(&result).await.unwrap();
+    let through = end(&log, "shots", InvocationOutcome::Completed).await;
+
+    let Page::Ready { chunks, .. } = log
+        .history_text(
+            "shots",
+            through,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+    let row = chunks
+        .iter()
+        .find(|chunk| chunk.role == Role::ToolResult)
+        .unwrap();
+    let result = row.tool.as_ref().unwrap().result.as_ref().unwrap();
+    assert!(!result.image);
+    assert_eq!(result.images, 2);
+    let call = chunks
+        .iter()
+        .find(|chunk| chunk.role == Role::ToolCall)
+        .unwrap();
+    let paired = call.tool.as_ref().unwrap().result.as_ref().unwrap();
+    assert_eq!(paired.images, 2);
+    let sequence = row.position;
+    for (index, bytes) in [(0, &first), (1, &second)] {
+        let chunk = log
+            .tool_image_at("shots", through, sequence, Some(index), 0, 8192)
+            .await
+            .unwrap();
+        assert_eq!(&chunk.bytes, bytes);
+        assert_eq!(chunk.mime_type, "image/gif");
+        assert_eq!(chunk.digest, content_digest(bytes));
+    }
+    assert!(
+        log.tool_image_at("shots", through, sequence, Some(2), 0, 8192)
+            .await
+            .is_err()
+    );
+    // Without an index the content itself must be the image.
+    assert!(
+        log.tool_image("shots", through, sequence, 0, 8192)
+            .await
+            .is_err()
+    );
+    assert!(
+        log.tool_image_at("shots", through, call.position, Some(0), 0, 8192)
+            .await
+            .is_err()
+    );
+
+    let source = log.get_session::<Value>("shots").await.unwrap().unwrap();
+    log.copy_session(
+        maka_event_log::sessions::SessionCopy {
+            source_session_id: "shots".into(),
+            target_session_id: "copy".into(),
+            expected_source_revision: source.revision,
+            purpose: maka_agent_facts::session::CopyPurpose::Branch {
+                position: maka_agent_facts::session::ForkPosition::End,
+                side_conversation: false,
+            },
+        },
+        &Value::Null,
+        2,
+    )
+    .await
+    .unwrap();
+    let copy_fence = *log.subscribe_commits().borrow();
+    let Page::Ready { chunks, .. } = log
+        .history_text(
+            "copy",
+            copy_fence,
+            Position::Start,
+            false,
+            maka_event_log::transcript::HistoryLimits {
+                max_bytes: 8192,
+                max_chunks: Some(8),
+                max_json_bytes: 64 * 1024,
+            },
+        )
+        .await
+        .unwrap();
+    let copied = chunks
+        .iter()
+        .find(|chunk| chunk.role == Role::ToolResult)
+        .unwrap();
+    assert_eq!(
+        copied
+            .tool
+            .as_ref()
+            .unwrap()
+            .result
+            .as_ref()
+            .unwrap()
+            .images,
+        2
+    );
+    assert_eq!(
+        log.tool_image_at("copy", copy_fence, copied.position, Some(1), 0, 8192)
+            .await
+            .unwrap()
+            .bytes,
+        second
+    );
+    log.close().await.unwrap();
+}

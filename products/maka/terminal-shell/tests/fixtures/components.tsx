@@ -527,6 +527,7 @@ function ToolStatuses() {
                           position: { sourceSequence: index(), itemIndex: 1 },
                           isError: item().settlement !== 'returned',
                           image: false,
+                          images: 0,
                         },
                 },
               })}

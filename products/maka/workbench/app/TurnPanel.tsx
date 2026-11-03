@@ -28,7 +28,7 @@ import type { Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
 import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
-import type { ImagePreview } from './ToolImage';
+import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
 const panelStyle = {
@@ -82,6 +82,13 @@ export function TurnSummary(props: {
   expanded: () => boolean;
   canFold: () => boolean;
   toggle(open: boolean): void;
+  /** Folded work keeps its images in reach; open work shows them on each tool. */
+  images?: {
+    sessionId: string;
+    through: () => number;
+    refs: () => ToolImageRef[];
+    preview(image: ImagePreview): void;
+  };
 }) {
   const label = () => {
     const outcome = turnOutcome(props.turn());
@@ -110,6 +117,16 @@ export function TurnSummary(props: {
           answerKey: props.turn().answerKey,
           open: !props.expanded(),
         })}
+        trailing={
+          <If when={props.images && !props.expanded() && props.images.refs().length > 0}>
+            <ToolImageStrip
+              sessionId={props.images!.sessionId}
+              through={props.images!.through}
+              images={props.images!.refs}
+              preview={props.images!.preview}
+            />
+          </If>
+        }
       >
         <Text
           style={[

@@ -202,6 +202,7 @@ fn result(
             tool_use_id,
             is_error,
             content: ToolContent::Text { text },
+            images: Vec::new(),
             metadata: metadata(),
         },
     }

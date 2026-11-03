@@ -127,6 +127,21 @@ impl EventLog {
         offset: u64,
         limit: usize,
     ) -> Result<ImageChunk, StoreError> {
+        self.tool_image_at(session, through, position, None, offset, limit)
+            .await
+    }
+
+    /// Without an index, the row's content must be the image. With one, select
+    /// that image among those the model received beside the row's content.
+    pub async fn tool_image_at(
+        &self,
+        session: &str,
+        through: u64,
+        position: RowPosition,
+        index: Option<u32>,
+        offset: u64,
+        limit: usize,
+    ) -> Result<ImageChunk, StoreError> {
         self.validate_root()?;
         crate::sessions::validate_id(session)?;
         sql_number(through)?;
@@ -141,16 +156,28 @@ impl EventLog {
                 super::bodycache::run(connection, move |tx| Box::pin(async move {
                     super::directory::ensure(tx, &session, through).await?;
                     super::bodycache::ensure(tx, &session, position).await?;
-                    let raw: String = sqlx::query_scalar(
-                        "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
+                    let query = match index {
+                        None => sqlx::query_scalar(
+                            "SELECT json_remove(json_extract(payload, '$.content'), '$.kind')
                  FROM temp.transcript_rows WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
                  AND json_extract(payload, '$.type') = 'tool_result'
-                 AND json_extract(payload, '$.content.kind') = 'image'
+                 AND json_extract(payload, '$.content.kind') = 'image' AND ?4 IS NULL
                  AND length(CAST(json_extract(payload, '$.content') AS BLOB)) <= 16384",
-                    )
+                        ),
+                        Some(_) => sqlx::query_scalar(
+                            "SELECT image.value
+                 FROM temp.transcript_rows, json_each(payload, '$.images') image
+                 WHERE session_id = ?1 AND source_sequence = ?2 AND item_index = ?3
+                 AND json_extract(payload, '$.type') = 'tool_result'
+                 AND image.key = ?4 AND image.type = 'object'
+                 AND length(CAST(image.value AS BLOB)) <= 16384",
+                        ),
+                    };
+                    let raw: String = query
                     .bind(&session)
                     .bind(source_sequence)
                     .bind(item_index)
+                    .bind(index.map(i64::from))
                     .fetch_optional(&mut *tx)
                     .await?
                     .ok_or_else(|| invalid("canonical tool image not found"))?;

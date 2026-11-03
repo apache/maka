@@ -312,7 +312,7 @@ impl ImageSource {
         match self {
             Self::Tool(source) => (
                 "toolImage",
-                json!({"sessionId":source.session_id,"through":source.through,"position":source.position,"offset":0}),
+                json!({"sessionId":source.session_id,"through":source.through,"position":source.position,"image":source.image,"offset":0}),
                 json!({"through":source.through,"position":source.position}),
             ),
             Self::Attachment(source) => (

@@ -26,7 +26,7 @@ CREATE TEMP TABLE transcript_directory (
  timestamp INTEGER NOT NULL, role TEXT NOT NULL, has_thinking INTEGER NOT NULL CHECK(has_thinking IN (0,1)),
  user_origin TEXT, state_status TEXT, tool_use_id TEXT, tool_name TEXT, tool_origin TEXT,
  parent_tool_call_id TEXT, parent_operation_id TEXT, has_args INTEGER, result_valid INTEGER,
- settlement TEXT, is_error INTEGER, content_kind TEXT, tool_title TEXT, presentation TEXT, duration_ms INTEGER,
+ settlement TEXT, is_error INTEGER, content_kind TEXT, image_count INTEGER, tool_title TEXT, presentation TEXT, duration_ms INTEGER,
  context_eligible INTEGER NOT NULL CHECK(context_eligible IN (0,1)),
  PRIMARY KEY(session_id,source_sequence,item_index), UNIQUE(session_id,message_id)
 );

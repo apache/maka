@@ -22,7 +22,7 @@ import { computed, inputAction, platform, Scroll, Text, View } from 'nsh';
 import type { HistoryTool } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Row } from './history';
 import type { ImagePreview } from './ImageThumbnail';
-import { ToolImage } from './ToolImage';
+import { ToolImage, ToolImageStrip, toolImages } from './ToolImage';
 import { createToolSource, OriginalToolSource, type ToolSourceRef } from './ToolSource';
 import { cardFamily, processFamily, toolArguments, toolResult } from './toolCards';
 import { ToolReader } from './ToolReader';
@@ -324,6 +324,8 @@ export function ToolCard(props: {
         })
       : [];
   const result = () => (tool() ? reference(tool()!, 'result') : null);
+  const images = () => toolImages(tool());
+  const imageThrough = () => props.row().metadataThrough ?? props.through();
   const fallbackState = (): { label: string; kind: StatusKind } => {
     const value = tool();
     if (value?.result) {
@@ -356,21 +358,33 @@ export function ToolCard(props: {
           value: !props.expanded(),
         })}
         trailing={
-          <If when={props.expanded()}>
-            <IconButton
-              label={tr('Toggle original tool details')}
-              tooltip={
-                props.original() ? tr('Show readable tool details') : tr('Show original tool data')
-              }
-              icon="code"
-              selected={props.original()}
-              onPress={inputAction(props.showOriginal, {
-                sessionId: props.sessionId,
-                key: props.ownerKey(),
-                value: !props.original(),
-              })}
-            />
-          </If>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+            <If when={!platform.isTerminal && images().length > 0}>
+              <ToolImageStrip
+                sessionId={props.sessionId}
+                through={imageThrough}
+                images={images}
+                preview={props.previewImage}
+              />
+            </If>
+            <If when={props.expanded()}>
+              <IconButton
+                label={tr('Toggle original tool details')}
+                tooltip={
+                  props.original()
+                    ? tr('Show readable tool details')
+                    : tr('Show original tool data')
+                }
+                icon="code"
+                selected={props.original()}
+                onPress={inputAction(props.showOriginal, {
+                  sessionId: props.sessionId,
+                  key: props.ownerKey(),
+                  value: !props.original(),
+                })}
+              />
+            </If>
+          </View>
         }
       >
         <Text
@@ -425,14 +439,17 @@ export function ToolCard(props: {
             }}
             contentStyle={{ gap: 16, paddingRight: platform.isTerminal ? 0 : 12 }}
           >
-            <If when={tool()?.result?.image}>
-              <ToolImage
-                sessionId={props.sessionId}
-                through={() => props.row().metadataThrough ?? props.through()}
-                position={tool()!.result!.position}
-                preview={props.previewImage}
-              />
-            </If>
+            <Each of={images()} key={(value) => value.key}>
+              {(value) => (
+                <ToolImage
+                  sessionId={props.sessionId}
+                  through={imageThrough}
+                  position={value().position}
+                  image={value().image}
+                  preview={props.previewImage}
+                />
+              )}
+            </Each>
             <Each of={references()} key={(value) => value.key}>
               {(value) => (
                 <Field

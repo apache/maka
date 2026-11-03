@@ -833,13 +833,14 @@ impl SessionStore {
         session: &str,
         through: u64,
         position: RowPosition,
+        index: Option<u32>,
         offset: u64,
         limit: usize,
     ) -> Result<ImageChunk, StoreError> {
         self.check_session(session)?;
         self.scoped()
             .await?
-            .tool_image(session, through, position, offset, limit)
+            .tool_image_at(session, through, position, index, offset, limit)
             .await
     }
 
