@@ -121,7 +121,6 @@ pub enum AssistantPart {
     CodexCompaction {
         item: Value,
     },
-    CodexCompactionTrigger,
     Text {
         text: String,
         #[serde(rename = "providerOptions", skip_serializing_if = "Option::is_none")]

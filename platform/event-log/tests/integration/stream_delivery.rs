@@ -148,6 +148,7 @@ async fn committed_model_parts_keep_large_bodies_and_metadata_out_of_delivery() 
     let completed = append(Fact::ModelCompleted {
         step_id: "step".into(),
         output: ModelCompletion {
+            compaction: None,
             parts: vec![CompletionPart::Ref(RecordedPartRef {
                 event_id: original.id.clone(),
                 ordinal: 0,

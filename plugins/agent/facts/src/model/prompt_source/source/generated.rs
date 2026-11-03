@@ -172,9 +172,7 @@ fn message_with_mcp(value: &Message, mcp: &mut std::collections::HashSet<String>
                                 ))),
                             }
                         }
-                        AssistantPart::CodexCompactionTrigger => {
-                            AssistantRecipe::CodexCompactionTrigger
-                        }
+
                         AssistantPart::Text {
                             text: value,
                             provider_options,

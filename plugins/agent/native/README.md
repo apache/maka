@@ -128,3 +128,9 @@ with the preserved suffix; another compact replaces that baseline. Session/globa
 compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
 Other providers retain ordinary text summarization. Native replay currently requires the producing
 model; cross-model admission and switch preflight are separate stack layers.
+
+The subscription provider declares native-compaction support in its resolved capabilities. Host
+freezes a single protocol operation; the Responses adapter adds the wire trigger and returns typed
+`NativeCompaction` only at stream completion. Engine and EventLog do not extract provider-options
+JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
+estimate; baseline reads derive producer/model facts from that original request.

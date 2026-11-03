@@ -84,6 +84,7 @@ async fn selected_python_runs_through_exec_grammar_catalog_and_durable_journal()
             },false).unwrap();
             writer.push(ModelEvent::ToolCall(call.clone()),std::time::SystemTime::now()).unwrap();
             writer.push(ModelEvent::Finished {
+                compaction: None,
                 reason:ModelFinishReason::ToolCalls,usage:Default::default(),provider_options:None,
             },std::time::SystemTime::now()).unwrap();
             let facts=[

@@ -128,6 +128,7 @@ fn model_completion(
 ) -> maka_agent_facts::model::recorded::ModelCompletion {
     use maka_agent_facts::model::recorded::{CompletionPart, ModelCompletion, ModelPartRecord};
     ModelCompletion {
+        compaction: None,
         parts: parts
             .into_iter()
             .enumerate()

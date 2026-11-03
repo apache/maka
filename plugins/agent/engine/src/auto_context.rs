@@ -87,7 +87,7 @@ fn cap_output(limit: u64, window: u64, retained: u64, thinking: u64) -> u64 {
 
 pub(super) fn due(input: &RunSettings, source: &ContextView) -> bool {
     let Some(ModelRequestContext {
-        operation: None,
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         declared_window: Some(window),
         ..
     }) = &input.context

@@ -177,6 +177,7 @@ fn completed(
         Fact::ModelCompleted {
             step_id: id.into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: vec![],
                 finish_reason: ModelFinishReason::Stop,
                 usage: ModelUsage {

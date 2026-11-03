@@ -263,9 +263,7 @@ async fn encode_message(
                         }
                         items.push(item(vec![F::Raw(value)]));
                     }
-                    AssistantRecipe::CodexCompactionTrigger => {
-                        items.push(item(vec![literal(br#"{"type":"compaction_trigger"}"#)]))
-                    }
+
                     AssistantRecipe::Text {
                         text: value,
                         provider_options,

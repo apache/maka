@@ -100,6 +100,7 @@ pub(super) fn request(id: &str, step: &str, source: Option<&ModelContextSource>)
 pub(super) async fn tool(log: &EventLog, id: &str, step: &str, text: String) -> EventWrite {
     log.append(&request(id, step, None)).await.unwrap();
     let output = ModelCompletion {
+        compaction: None,
         parts: vec![model_part(
             id,
             step,
@@ -270,6 +271,7 @@ pub(super) fn model_part(
 
 pub(super) fn summary_completion(invocation: &str, step: &str, text: &str) -> ModelCompletion {
     ModelCompletion {
+        compaction: None,
         parts: vec![model_part(
             invocation,
             step,

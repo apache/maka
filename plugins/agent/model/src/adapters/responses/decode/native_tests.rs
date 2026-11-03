@@ -40,7 +40,7 @@ fn native_result_is_opaque_metadata_only_after_completion() {
     let events = decoder
         .push(terminal("response.completed", vec![item()]))
         .unwrap();
-    assert!(events.iter().any(|event| matches!(event,ModelEvent::Finished { provider_options:Some(options),.. } if options["openai"]["compaction"] == item())));
+    assert!(events.iter().any(|event| matches!(event,ModelEvent::Finished { compaction:Some(output),.. } if output.item() == &item())));
     assert!(decoder.finished());
 }
 #[test]

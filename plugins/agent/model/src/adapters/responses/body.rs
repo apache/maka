@@ -39,9 +39,17 @@ pub(crate) struct RequestBody {
     config: Arc<Config>,
 }
 struct Config {
+    native_compaction: bool,
     language: maka_agent_facts::language::Language,
     options: Value,
     plaintext: Option<PlaintextResponses>,
+}
+fn closing(native_compaction: bool, comma: bool) -> http::Bytes {
+    http::Bytes::from_static(match (native_compaction, comma) {
+        (true, true) => br#",{"type":"compaction_trigger"}]}"#,
+        (true, false) => br#"{"type":"compaction_trigger"}]}"#,
+        (false, _) => b"]}",
+    })
 }
 impl RequestBody {
     pub fn new(
@@ -49,6 +57,13 @@ impl RequestBody {
         plaintext: Option<PlaintextResponses>,
         skip: usize,
     ) -> Result<Self> {
+        if request.operation == maka_agent_facts::context::ModelOperation::CodexCompaction
+            && plaintext.is_some()
+        {
+            return Err(Error::Invalid(
+                "native compaction requires ChatGPT Responses".into(),
+            ));
+        }
         let codec =
             super::request::wire_codec(request.language, plaintext, &request.provider_options);
         match request.prompt.wire(WireFormat::Responses) {
@@ -90,6 +105,8 @@ impl RequestBody {
             prompt: request.prompt.clone(),
             skip,
             config: Arc::new(Config {
+                native_compaction: request.operation
+                    == maka_agent_facts::context::ModelOperation::CodexCompaction,
                 language: request.language,
                 options: request.provider_options.clone(),
                 plaintext,
@@ -171,7 +188,10 @@ impl RequestBody {
                             ));
                         }
                         state.done = true;
-                        return Ok(Some((http::Bytes::from_static(b"]}"), state)));
+                        return Ok(Some((
+                            closing(state.config.native_compaction, state.comma),
+                            state,
+                        )));
                     };
                     if chunk.bytes.is_empty() {
                         if state.inside_item
@@ -241,7 +261,10 @@ impl RequestBody {
                     .map_err(source_error)?;
                 let Some(message) = message else {
                     state.done = true;
-                    return Ok(Some((http::Bytes::from_static(b"]}"), state)));
+                    return Ok(Some((
+                        closing(state.config.native_compaction, state.comma),
+                        state,
+                    )));
                 };
                 if state.skip > 0 {
                     state.skip -= 1;
@@ -325,6 +348,7 @@ mod tests {
             prompt,
             skip: 0,
             config: Arc::new(Config {
+                native_compaction: false,
                 language: maka_agent_facts::language::Language::En,
                 options: json!({"openai":{"store":false}}),
                 plaintext: None,
@@ -372,15 +396,17 @@ mod tests {
         use maka_agent_facts::model::prompt::AssistantPart;
         let item = json!({"type":"compaction","id":"cmp","encrypted_content":"opaque","unknown":{"keep":true}});
         let prompt = Prompt::from_messages(vec![Message::Assistant {
-            content: vec![
-                AssistantPart::CodexCompaction { item: item.clone() },
-                AssistantPart::CodexCompactionTrigger,
-            ],
+            content: vec![AssistantPart::CodexCompaction { item: item.clone() }],
             provider_options: None,
         }]);
-        let http_chunks: Vec<_> = body(prompt.clone()).chunks().try_collect().await.unwrap();
+        let native = |prompt| {
+            let mut body = body(prompt);
+            Arc::get_mut(&mut body.config).unwrap().native_compaction = true;
+            body
+        };
+        let http_chunks: Vec<_> = native(prompt.clone()).chunks().try_collect().await.unwrap();
         let http: Value = serde_json::from_slice(&http_chunks.concat()).unwrap();
-        let websocket_chunks: Vec<_> = body(prompt).websocket().try_collect().await.unwrap();
+        let websocket_chunks: Vec<_> = native(prompt).websocket().try_collect().await.unwrap();
         let websocket: Value = serde_json::from_slice(&websocket_chunks.concat()).unwrap();
         assert_eq!(http["input"], json!([item,{"type":"compaction_trigger"}]));
         assert_eq!(http["input"], websocket["input"]);

@@ -538,7 +538,7 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
 pub(super) async fn prepared_native(log: &EventLog, id: &str) -> Vec<EventWrite> {
     use maka_agent_facts::context::{
         CheckpointContent, CheckpointMode, CodexCompatibility, CodexRequestProvenance,
-        ModelRequestContext, ProviderOperation,
+        ModelOperation, ModelRequestContext,
     };
     log.append(&event(
         id,
@@ -572,7 +572,7 @@ pub(super) async fn prepared_native(log: &EventLog, id: &str) -> Vec<EventWrite>
     let mut requested = request(id, &source).event().clone();
     if let Fact::ModelRequested { context, .. } = &mut requested.fact {
         *context = Some(ModelRequestContext {
-            operation: Some(ProviderOperation::CodexCompaction),
+            operation: ModelOperation::CodexCompaction,
             codex: Some(producer.clone()),
             provider_id: "chatgpt".into(),
             context_window: Some(128_000),
@@ -587,7 +587,7 @@ pub(super) async fn prepared_native(log: &EventLog, id: &str) -> Vec<EventWrite>
     let output = model_output(
         id,
         &format!("{id}-summary"),
-        json!({"parts":[],"finish_reason":"stop","usage":{"output_tokens":12},"provider_options":{"openai":{"responseId":"native-response","compaction":item}}}),
+        json!({"parts":[],"finish_reason":"stop","usage":{"output_tokens":12},"compaction":item,"provider_options":{"openai":{"responseId":"native-response"}}}),
     );
     log.append(&event(
         id,
@@ -606,7 +606,10 @@ pub(super) async fn prepared_native(log: &EventLog, id: &str) -> Vec<EventWrite>
                 covered_through: source.source_evidence.high_water,
                 source_digest: source.source_evidence.digest,
                 previous_checkpoint_id: source.baseline.map(|b| b.event_id),
-                summary: CheckpointContent::native(item, producer, "test".into(), 12).unwrap(),
+                summary: CheckpointContent::native(
+                    &maka_agent_facts::model::NativeCompaction::new(item).unwrap(),
+                    12,
+                ),
                 summary_step_id: format!("{id}-summary"),
             },
         },

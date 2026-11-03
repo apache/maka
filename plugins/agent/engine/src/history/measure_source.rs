@@ -374,9 +374,7 @@ async fn describe_with(
                         measure.marker(b"codex-compaction");
                         measure.json(&item, false).await?;
                     }
-                    AssistantRecipe::CodexCompactionTrigger => {
-                        measure.marker(b"codex-compaction-trigger")
-                    }
+
                     AssistantRecipe::Text {
                         text,
                         provider_options,

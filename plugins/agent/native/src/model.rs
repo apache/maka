@@ -386,7 +386,7 @@ fn request_context(
     let input =
         maka_agent_facts::context::effective_input_limit(model.context_window, model.input_limit);
     let context = ModelRequestContext {
-        operation: None,
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         codex: None,
         provider_id: row.provider.name.clone(),
         context_window: input,

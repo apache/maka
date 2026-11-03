@@ -32,7 +32,6 @@ pub struct Request<'a> {
 #[derive(Debug, Clone)]
 pub enum Input {
     CodexCompaction(Value),
-    CodexCompactionTrigger,
     System(String),
     User(Vec<Content>),
     AssistantText {
@@ -199,7 +198,6 @@ fn encode_items(input: &[Input], reasoning: ReasoningMode, options: &Value) -> R
     for item in input {
         match item {
             Input::CodexCompaction(item) => items.push(item.clone()),
-            Input::CodexCompactionTrigger => items.push(json!({"type":"compaction_trigger"})),
             Input::System(text) => items.push(json!({"role":"system", "content":text})),
             Input::User(content) => items.push(json!({"role":"user", "content":content.iter().map(Content::encode).collect::<Vec<_>>()})),
             Input::AssistantText { text, replay } => {

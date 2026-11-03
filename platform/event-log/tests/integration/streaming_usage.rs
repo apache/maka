@@ -140,6 +140,7 @@ async fn complete(log: &EventLog, step: &str, mut builder: AttemptWriter, input:
         step,
         &mut builder,
         ModelEvent::Finished {
+            compaction: None,
             reason: ModelFinishReason::Stop,
             usage: ModelUsage {
                 input_tokens: Some(input),

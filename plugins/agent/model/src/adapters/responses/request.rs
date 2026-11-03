@@ -172,9 +172,7 @@ fn project(
                     AssistantPart::CodexCompaction { item } => {
                         input.push(Input::CodexCompaction(item.clone()))
                     }
-                    AssistantPart::CodexCompactionTrigger => {
-                        input.push(Input::CodexCompactionTrigger)
-                    }
+
                     AssistantPart::Reasoning {
                         text,
                         provider_options,

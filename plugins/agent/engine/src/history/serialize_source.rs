@@ -239,10 +239,7 @@ impl Encoder<'_> {
                 self.json(item).await?;
                 self.literal(b"}").await
             }
-            AssistantRecipe::CodexCompactionTrigger => {
-                self.literal(br#"{"type":"codex-compaction-trigger"}"#)
-                    .await
-            }
+
             AssistantRecipe::Text {
                 text,
                 provider_options,

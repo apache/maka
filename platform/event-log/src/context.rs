@@ -60,14 +60,22 @@ pub struct SourceEvidence {
 pub struct ContextBaseline {
     pub event_id: String,
     pub checkpoint: ContextCheckpoint,
-    native_output: Option<std::sync::Arc<serde_json::Value>>,
+    native: Option<NativeBaseline>,
 }
 
+#[derive(Debug)]
+pub struct NativeBaseline {
+    output: maka_agent_facts::model::NativeCompaction,
+    pub provenance: maka_agent_facts::context::CodexRequestProvenance,
+    pub model_id: String,
+}
 impl ContextBaseline {
+    pub fn native(&self) -> Option<&NativeBaseline> {
+        self.native.as_ref()
+    }
+
     pub fn native_item(&self) -> Option<&serde_json::Value> {
-        self.native_output
-            .as_ref()
-            .and_then(|options| options["openai"].get("compaction"))
+        self.native.as_ref().map(|native| native.output.item())
     }
 }
 

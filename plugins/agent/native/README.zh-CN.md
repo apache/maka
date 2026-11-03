@@ -116,3 +116,7 @@ ChatGPT 订阅的 `/compact` 使用 Responses 原生 `compaction_trigger` 控制
 后续请求回放该 checkpoint 与保留的后续历史；再次压缩会替换基线。
 会话、全局和一次性文字压缩提示词仍可编辑、保存，但不进入 ChatGPT 原生压缩请求。
 其他 provider 继续使用文字摘要。当前原生回放要求生产模型；跨模型准入和切换预检由后续 stack 层实现。
+
+订阅 Provider 在解析后的能力中声明原生压缩支持。Host 冻结一个协议操作，Responses 适配器负责追加触发命令，
+并只在流完成时返回有类型的 `NativeCompaction`。Engine 和 EventLog 无需再从 provider options JSON 提取结果。
+检查点头部只保留来源步骤引用、内容摘要和 token 估算，baseline 读取时从原始请求派生 producer/model。

@@ -389,7 +389,7 @@ async fn summary_overflow_keeps_media_multipart_and_checkpoint_corrections_as_ev
     let mut compact = context::input(&base, "final", true);
     compact.supports_vision = true;
     compact.context = Some(ModelRequestContext {
-        operation: None,
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         codex: None,
         provider_id: "fixture".into(),
         context_window: Some(10_000),

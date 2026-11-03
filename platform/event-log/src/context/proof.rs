@@ -219,7 +219,7 @@ pub(super) async fn validate(
     }
     match &checkpoint.summary {
         maka_agent_facts::context::CheckpointContent::Text(text) => {
-            if matches!(&request.fact, Fact::ModelRequested { context: Some(context), .. } if !context.model_operation().is_inference())
+            if matches!(&request.fact, Fact::ModelRequested { context: Some(context), .. } if !context.operation.is_inference())
             {
                 return Err(invalid("native request cannot install a text checkpoint"));
             }
@@ -236,8 +236,6 @@ pub(super) async fn validate(
         }
         maka_agent_facts::context::CheckpointContent::CodexNative {
             item_digest,
-            producer,
-            model_id: producer_model,
             estimated_tokens,
         } => {
             let Fact::ModelRequested {
@@ -247,19 +245,14 @@ pub(super) async fn validate(
             else {
                 return Err(invalid("native checkpoint has no producer context"));
             };
-            if context.model_operation()
-                != maka_agent_facts::context::ModelOperation::CodexCompaction
-                || context.codex.as_ref() != Some(producer)
-                || producer_model != model_id
+            if context.operation != maka_agent_facts::context::ModelOperation::CodexCompaction
+                || context.codex.is_none()
                 || output.usage.output_tokens.or(context.context_window) != Some(*estimated_tokens)
                 || output.finish_reason != maka_agent_facts::model::ModelFinishReason::Stop
                 || output
-                    .provider_options
+                    .compaction
                     .as_ref()
-                    .and_then(|options| options["openai"].get("compaction"))
-                    .map(maka_agent_facts::context::native_item_digest)
-                    .transpose()
-                    .map_err(invalid)?
+                    .map(|output| output.digest())
                     .as_ref()
                     != Some(item_digest)
             {

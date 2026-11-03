@@ -63,9 +63,7 @@ pub fn prompt_breakdown(prompt: &[Message]) -> PreparedContextBreakdown {
                         AssistantPart::CodexCompaction { .. } => {
                             bucket.estimated_tokens += 16;
                         }
-                        AssistantPart::CodexCompactionTrigger => {
-                            bucket.estimated_tokens += 1;
-                        }
+
                         AssistantPart::Text { text, .. }
                         | AssistantPart::Reasoning { text, .. } => add_text(bucket, text),
                         AssistantPart::ToolCall {

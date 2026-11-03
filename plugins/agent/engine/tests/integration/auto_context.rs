@@ -36,7 +36,7 @@ mod background;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
     Some(ModelRequestContext {
-        operation: None,
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         codex: None,
         provider_id: "openai".into(),
         context_window: Some(170_000),

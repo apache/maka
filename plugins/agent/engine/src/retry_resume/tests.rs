@@ -52,6 +52,7 @@ impl Session for Completed {
                 .events
                 .emit(
                     ModelEvent::Finished {
+                        compaction: None,
                         reason: ModelFinishReason::Stop,
                         usage: Default::default(),
                         provider_options: None,

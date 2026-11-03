@@ -130,6 +130,7 @@ async fn seed(
                 })
                 .collect();
             events.push(ModelEvent::Finished {
+                compaction: None,
                 reason: ModelFinishReason::ToolCalls,
                 usage: ModelUsage::default(),
                 provider_options: None,
@@ -153,6 +154,7 @@ async fn seed(
                 provider_options: None,
             });
             events.push(ModelEvent::Finished {
+                compaction: None,
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage::default(),
                 provider_options: None,

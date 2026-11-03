@@ -756,6 +756,7 @@ mod admission_tests {
             Fact::ModelCompleted {
                 step_id: "step".into(),
                 output: crate::model::recorded::ModelCompletion {
+                    compaction: None,
                     parts: vec![crate::model::recorded::CompletionPart::Own(
                         crate::model::recorded::ModelPartRecord {
                             ordinal: 0,

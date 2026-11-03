@@ -268,7 +268,7 @@ impl FrozenReplay {
             operation: context
                 .as_ref()
                 .map_or(maka_agent_facts::context::ModelOperation::Inference, |c| {
-                    c.model_operation()
+                    c.operation
                 }),
             language: configuration.language,
             provider: &self.provider,

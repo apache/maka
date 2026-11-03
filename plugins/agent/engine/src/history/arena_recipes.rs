@@ -36,7 +36,6 @@ const LIST: u64 = 2;
 const CONTENT_TEXT: u64 = 3;
 const CONTENT_MEDIA: u64 = 4;
 const CODEX_COMPACTION: u64 = 13;
-const CODEX_TRIGGER: u64 = 14;
 const ASSISTANT_TEXT: u64 = 5;
 const ASSISTANT_REASONING: u64 = 6;
 const ASSISTANT_CALL: u64 = 7;
@@ -416,7 +415,6 @@ impl ArenaRecipes {
                 let item = self.json(Some(item), budget, cancel).await?;
                 (CODEX_COMPACTION, [item.0, 0, 0, 0, 0, 0])
             }
-            AssistantRecipe::CodexCompactionTrigger => (CODEX_TRIGGER, [0; 6]),
             AssistantRecipe::Text {
                 text,
                 provider_options,
@@ -838,7 +836,6 @@ impl Decode for AssistantRecipe {
                         .await?
                         .ok_or_else(|| invalid("missing native compaction"))?,
                 },
-                CODEX_TRIGGER => Self::CodexCompactionTrigger,
                 ASSISTANT_TEXT => Self::Text {
                     text: store.read_text(Node(r[1])).await?,
                     provider_options: store.read_json(Node(r[2])).await?,

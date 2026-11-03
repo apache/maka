@@ -29,7 +29,7 @@ use tokio::{
 };
 use tokio_util::sync::CancellationToken;
 
-fn input(base: &str, id: &str, compact: bool) -> maka_agent_engine::RunInput {
+pub(super) fn input(base: &str, id: &str, compact: bool) -> maka_agent_engine::RunInput {
     let mut input = support::input(base, id, compact);
     input.configuration.workspace_identity = Some(
         maka_agent_facts::execution::WorkspaceIdentity::from_marker_id(
@@ -47,9 +47,10 @@ fn input(base: &str, id: &str, compact: bool) -> maka_agent_engine::RunInput {
         .insert("x-test".into(), "native-compaction".into());
     input.provider_options =
         json!({"openai":{"instructions":"Follow the conversation.","store":false}});
+    input.provider.capabilities.native_compaction = Some(true);
     input.configuration.compaction_prompt = Some("CUSTOM_TEXT_SUMMARY_MUST_NOT_BE_SENT".into());
     input.context = Some(ModelRequestContext {
-        operation: None,
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         codex: Some(CodexRequestProvenance {
             connection_id: "connection".into(),
             account_id: Some("account-a".into()),
@@ -65,7 +66,7 @@ fn input(base: &str, id: &str, compact: bool) -> maka_agent_engine::RunInput {
     });
     input
 }
-async fn respond(socket: &mut TcpStream, item: Value, response_id: &str) {
+pub(super) async fn respond(socket: &mut TcpStream, item: Value, response_id: &str) {
     let events = [
         json!({"type":"response.output_item.done","item":item}),
         json!({"type":"response.completed","response":{"id":response_id,"model":"test","output":[item],"usage":{"input_tokens":100,"output_tokens":30}}}),
@@ -76,10 +77,10 @@ async fn respond(socket: &mut TcpStream, item: Value, response_id: &str) {
         .collect::<String>();
     socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
 }
-fn message(text: &str) -> Value {
+pub(super) fn message(text: &str) -> Value {
     json!({"id":format!("msg-{text}"),"type":"message","role":"assistant","content":[{"type":"output_text","text":text}]})
 }
-fn native(id: &str) -> Value {
+pub(super) fn native(id: &str) -> Value {
     json!({"id":id,"type":"compaction","encrypted_content":format!("opaque-{id}"),"opaque_extension":{"keep":true}})
 }
 
@@ -131,7 +132,8 @@ async fn native_compact_replay_roll_forward_and_restart_preserve_opaque_items() 
         .baseline
         .unwrap();
     assert!(
-        matches!(&baseline.checkpoint.summary,CheckpointContent::CodexNative { model_id,estimated_tokens,.. } if model_id == "test" && *estimated_tokens == 30)
+        matches!(&baseline.checkpoint.summary,CheckpointContent::CodexNative { estimated_tokens,.. } if *estimated_tokens == 30)
+            && baseline.native().unwrap().model_id == "test"
     );
     assert_eq!(baseline.native_item(), Some(&native("cmp-2")));
     assert!(
@@ -487,15 +489,22 @@ async fn native_hash_change_can_recompact_an_existing_checkpoint_without_new_mes
         )
         .await
         .unwrap();
-    let checkpoint = log
+    let baseline = log
         .read_model_view("session", None)
         .await
         .unwrap()
         .baseline
-        .unwrap()
-        .checkpoint;
-    assert!(
-        matches!(checkpoint.summary,CheckpointContent::CodexNative { producer,.. } if producer.compatibility.as_ref().unwrap().comp_hash == "4000")
+        .unwrap();
+    assert_eq!(
+        baseline
+            .native()
+            .unwrap()
+            .provenance
+            .compatibility
+            .as_ref()
+            .unwrap()
+            .comp_hash,
+        "4000"
     );
     worker
         .run(
@@ -522,5 +531,51 @@ async fn native_hash_change_can_recompact_an_existing_checkpoint_without_new_mes
             .as_array()
             .unwrap()
             .contains(&native("after"))
+    );
+}
+
+#[tokio::test]
+async fn native_capability_without_subscription_facts_is_rejected_before_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = SessionFixture::open(&directory.path().join("events.sqlite"))
+        .await
+        .unwrap();
+    let worker = maka_agent_engine::Engine::new(
+        maka_model::ModelExecutor::new(std::time::Duration::from_secs(5)).unwrap(),
+        maka_tools::CodeExecutor::new(Default::default()).unwrap(),
+    )
+    .unwrap();
+    for missing_context in [true, false] {
+        let mut request = input(
+            "http://127.0.0.1:1/v1",
+            if missing_context {
+                "missing-context"
+            } else {
+                "missing-producer"
+            },
+            true,
+        );
+        if missing_context {
+            request.context = None;
+        } else {
+            request.context.as_mut().unwrap().codex = None;
+            request.provider_id = "openai".into();
+        }
+        let error = worker
+            .run(log.store(), request, CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, maka_agent_engine::RunError::InvalidInput(ref reason) if reason.contains("ChatGPT producer facts")),
+            "{error:?}"
+        );
+    }
+    worker.drain().await;
+    assert!(
+        log.read_model_view("session", None)
+            .await
+            .unwrap()
+            .baseline
+            .is_none()
     );
 }

@@ -220,17 +220,6 @@ impl PreparedPrompt {
         Ok(())
     }
 
-    pub async fn freeze_native_trigger(&self) -> Result<OwnedOverlay, crate::RunError> {
-        let owner = self.overlay_owner.clone().ok_or_else(|| {
-            crate::RunError::Internal("native control lacks overlay owner".into())
-        })?;
-        self.arena
-            .as_ref()
-            .ok_or_else(|| crate::RunError::Internal("native control lacks source owner".into()))?
-            .with_writer(move |_| Ok(OwnedOverlay::native_trigger().bound(owner)))
-            .await
-            .map_err(crate::RunError::Preparation)
-    }
     pub async fn freeze_summary_instruction(
         &self,
         text: Arc<String>,

@@ -82,9 +82,6 @@ impl OwnedOverlay {
         Self::new(TextOwner::Owned(text), MessageRole::User)
     }
     /// The label contains the complete separator, including the original blank line.
-    pub fn native_trigger() -> Self {
-        Self::new(TextOwner::Trigger, MessageRole::Assistant)
-    }
     pub fn checkpoint(source: Arc<ContextView>, label: &'static str) -> Option<Self> {
         let baseline = source.baseline.as_ref()?;
         let checkpoint = &baseline.checkpoint;
@@ -133,10 +130,7 @@ impl OwnedOverlay {
                 provider_options: None,
             },
             MessageRole::Assistant => MessageRecipe::Assistant {
-                content: Arc::new(NativeItem {
-                    value: source,
-                    trigger: matches!(text, TextOwner::Trigger),
-                }),
+                content: Arc::new(NativeItem { value: source }),
                 provider_options: None,
             },
             _ => unreachable!("generated overlay role"),
@@ -197,10 +191,7 @@ impl OwnedOverlay {
                 provider_options: None,
             },
             MessageRole::Assistant => MessageRecipe::Assistant {
-                content: Arc::new(NativeItem {
-                    value: source,
-                    trigger: matches!(self.0.text, TextOwner::Trigger),
-                }),
+                content: Arc::new(NativeItem { value: source }),
                 provider_options: None,
             },
             _ => unreachable!("generated overlay role"),
@@ -241,7 +232,7 @@ impl OwnedOverlay {
         metadata
     }
     pub fn is_native_checkpoint(&self) -> bool {
-        self.0.metadata.role == MessageRole::Assistant && !matches!(self.0.text, TextOwner::Trigger)
+        self.0.metadata.role == MessageRole::Assistant
     }
     pub fn identity(&self) -> &str {
         &self.0.metadata.logical_identity
@@ -265,14 +256,12 @@ impl OwnedOverlay {
             },
             MessageRole::User => Message::user(self.0.text.materialize()),
             MessageRole::Assistant => Message::Assistant {
-                content: vec![if matches!(self.0.text, TextOwner::Trigger) {
-                    maka_agent_facts::model::prompt::AssistantPart::CodexCompactionTrigger
-                } else {
+                content: vec![
                     maka_agent_facts::model::prompt::AssistantPart::CodexCompaction {
                         item: serde_json::from_str(self.0.text.parts()[0])
-                            .expect("native item JSON"),
-                    }
-                }],
+                            .expect("native checkpoint JSON"),
+                    },
+                ],
                 provider_options: None,
             },
             _ => unreachable!("generated overlay role"),
@@ -425,7 +414,6 @@ impl RecipeCursor<IdentifiedText> for BoundEmpty {
 
 #[derive(Clone)]
 enum TextOwner {
-    Trigger,
     Owned(Arc<String>),
     Checkpoint {
         source: Arc<ContextView>,
@@ -435,7 +423,6 @@ enum TextOwner {
 impl TextOwner {
     fn parts(&self) -> [&str; 2] {
         match self {
-            Self::Trigger => ["", ""],
             Self::Owned(text) => [text.as_str(), ""],
             Self::Checkpoint { source, label } => [
                 label,
@@ -465,7 +452,6 @@ impl TextOwner {
     }
     fn materialize(&self) -> String {
         match self {
-            Self::Trigger => String::new(),
             Self::Owned(text) => text.as_ref().clone(),
             Self::Checkpoint { .. } => {
                 let mut text = String::with_capacity(self.len());
@@ -479,11 +465,7 @@ impl TextOwner {
     fn commitment(&self, role: MessageRole) -> [u8; 32] {
         if role == MessageRole::Assistant {
             let mut hash = Sha256::new();
-            hash.update(if matches!(self, Self::Trigger) {
-                b"maka.codex-compaction-trigger.v1".as_slice()
-            } else {
-                b"maka.codex-checkpoint.v1".as_slice()
-            });
+            hash.update(b"maka.codex-checkpoint.v1");
             for part in self.parts() {
                 hash.update(part.as_bytes());
             }
@@ -626,7 +608,6 @@ fn arc_slice_bytes<T>(len: usize) -> usize {
 
 struct NativeItem {
     value: TextSource,
-    trigger: bool,
 }
 impl RecipeSource<AssistantRecipe> for NativeItem {
     fn len(&self) -> usize {
@@ -634,14 +615,8 @@ impl RecipeSource<AssistantRecipe> for NativeItem {
     }
     fn open(&self, start: usize) -> Box<dyn RecipeCursor<AssistantRecipe>> {
         Box::new(NativeCursor {
-            item: (start == 0).then(|| {
-                if self.trigger {
-                    AssistantRecipe::CodexCompactionTrigger
-                } else {
-                    AssistantRecipe::CodexCompaction {
-                        item: JsonSource::new(self.value.bytes().clone()),
-                    }
-                }
+            item: (start == 0).then(|| AssistantRecipe::CodexCompaction {
+                item: JsonSource::new(self.value.bytes().clone()),
             }),
         })
     }

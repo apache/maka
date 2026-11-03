@@ -160,15 +160,13 @@ async fn native_checkpoint_requires_exact_completed_payload_producer_and_budget(
         .unwrap();
     closed(&log, "main", 32, 1).await;
     let pair = fixtures::prepared_native(&log, "native").await;
-    for mutation in 0..4 {
+    for mutation in 0..2 {
         let mut forged = pair[0].event().clone();
         let Fact::ContextCheckpointRecorded { checkpoint } = &mut forged.fact else {
             panic!()
         };
         let CheckpointContent::CodexNative {
             item_digest,
-            producer,
-            model_id,
             estimated_tokens,
         } = &mut checkpoint.summary
         else {
@@ -176,8 +174,6 @@ async fn native_checkpoint_requires_exact_completed_payload_producer_and_budget(
         };
         match mutation {
             0 => *item_digest = format!("sha256:{}", "0".repeat(64)),
-            1 => producer.account_id = Some("forged".into()),
-            2 => *model_id = "another-model".into(),
             _ => *estimated_tokens = 0,
         }
         assert!(
@@ -191,8 +187,14 @@ async fn native_checkpoint_requires_exact_completed_payload_producer_and_budget(
         .capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
         .await
         .unwrap();
+    let baseline = source.baseline.unwrap();
+    assert_eq!(baseline.native().unwrap().model_id, "test");
+    assert_eq!(
+        baseline.native().unwrap().provenance.account_id.as_deref(),
+        Some("account")
+    );
     assert!(matches!(
-        source.baseline.unwrap().checkpoint.summary,
+        baseline.checkpoint.summary,
         CheckpointContent::CodexNative {
             estimated_tokens: 12,
             ..

@@ -59,8 +59,8 @@ pub fn effective_output_limit(configured: Option<u64>) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ModelRequestContext {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub operation: Option<ProviderOperation>,
+    #[serde(default, skip_serializing_if = "ModelOperation::is_inference")]
+    pub operation: ModelOperation,
     pub provider_id: String,
     /// Captured at request preparation; never reconstructed from a later catalog.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -80,18 +80,14 @@ pub struct ModelRequestContext {
     pub declared_window: Option<u64>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelOperation {
+    #[default]
     Inference,
     CodexCompaction,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderOperation {
-    CodexCompaction,
-}
 impl ModelOperation {
     pub fn is_inference(&self) -> bool {
         *self == Self::Inference
@@ -104,8 +100,6 @@ pub enum CheckpointContent {
     Text(String),
     CodexNative {
         item_digest: String,
-        producer: CodexRequestProvenance,
-        model_id: String,
         estimated_tokens: u64,
     },
 }
@@ -119,41 +113,12 @@ impl CheckpointContent {
     pub fn text(summary: TextSummary) -> Self {
         Self::Text(summary.text)
     }
-    pub fn native(
-        item: serde_json::Value,
-        producer: CodexRequestProvenance,
-        model_id: String,
-        estimated_tokens: u64,
-    ) -> Result<Self, &'static str> {
-        let item_digest = native_item_digest(&item)?;
-        Ok(Self::CodexNative {
-            item_digest,
-            producer,
-            model_id,
+    pub fn native(item: &crate::model::NativeCompaction, estimated_tokens: u64) -> Self {
+        Self::CodexNative {
+            item_digest: item.digest(),
             estimated_tokens,
-        })
-    }
-}
-
-pub fn native_item_digest(item: &serde_json::Value) -> Result<String, &'static str> {
-    if item["type"] != "compaction" || item["encrypted_content"].as_str().is_none_or(str::is_empty)
-    {
-        return Err("invalid native Codex compaction item");
-    }
-    use sha2::{Digest, Sha256};
-    struct DigestWriter(Sha256);
-    impl std::io::Write for DigestWriter {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.update(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
         }
     }
-    let mut digest = DigestWriter(Sha256::new());
-    serde_json::to_writer(&mut digest, item).expect("native item serializes to JSON");
-    Ok(format!("sha256:{}", hex::encode(digest.0.finalize())))
 }
 
 /// ChatGPT subscription facts. Account/connection identify provenance, not replay permission.
@@ -174,14 +139,8 @@ pub struct CodexCompatibility {
 }
 
 impl ModelRequestContext {
-    pub fn model_operation(&self) -> ModelOperation {
-        match self.operation {
-            None => ModelOperation::Inference,
-            Some(ProviderOperation::CodexCompaction) => ModelOperation::CodexCompaction,
-        }
-    }
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self.model_operation() == ModelOperation::CodexCompaction && self.codex.is_none() {
+        if self.operation == ModelOperation::CodexCompaction && self.codex.is_none() {
             return Err("native compaction requires ChatGPT provenance");
         }
         if let Some(codex) = &self.codex {
@@ -323,7 +282,6 @@ impl ContextCheckpoint {
     pub fn validate(&self) -> Result<(), &'static str> {
         if let CheckpointContent::CodexNative {
             item_digest,
-            model_id,
             estimated_tokens,
             ..
         } = &self.summary
@@ -332,7 +290,6 @@ impl ContextCheckpoint {
                 || !item_digest.as_bytes()[7..]
                     .iter()
                     .all(u8::is_ascii_hexdigit)
-                || model_id.is_empty()
                 || *estimated_tokens > 9_007_199_254_740_991)
         {
             return Err("invalid native Codex checkpoint");
@@ -364,7 +321,7 @@ mod tests {
     #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {
         let mut context = ModelRequestContext {
-            operation: None,
+            operation: ModelOperation::Inference,
             codex: None,
             provider_id: "😀".repeat(256),
             context_window: None,
@@ -406,7 +363,7 @@ mod tests {
     fn ordinary_context_and_text_checkpoint_keep_their_canonical_wire_shapes() {
         let original = serde_json::json!({"provider_id":"chatgpt","codex":{"connection_id":"connection","account_id":null,"compatibility":null}});
         let context: ModelRequestContext = serde_json::from_value(original.clone()).unwrap();
-        assert_eq!(context.model_operation(), ModelOperation::Inference);
+        assert_eq!(context.operation, ModelOperation::Inference);
         assert_eq!(serde_json::to_value(context).unwrap(), original);
         let text = serde_json::json!({"text":"checkpoint"});
         let summary: CheckpointContent = serde_json::from_value(text.clone()).unwrap();

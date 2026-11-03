@@ -32,7 +32,7 @@ use std::sync::Arc;
 
 pub struct Decoder {
     native_compaction: bool,
-    compaction: Option<Value>,
+    compaction: Option<maka_agent_facts::model::NativeCompaction>,
     inner: wire::decode::Decoder,
     plaintext: Option<PlaintextResponses>,
     pub observed_output: bool,
@@ -82,8 +82,13 @@ impl Decoder {
             ));
         }
         match &self.compaction {
-            None => self.compaction = Some(item),
-            Some(previous) if terminal && previous == &item => {}
+            None => {
+                self.compaction = Some(
+                    maka_agent_facts::model::NativeCompaction::new(item)
+                        .map_err(|e| super::Error::Invalid(e.into()))?,
+                )
+            }
+            Some(previous) if terminal && previous.item() == &item => {}
             _ => {
                 return Err(super::Error::Invalid(
                     "multiple native compaction output items".into(),
@@ -292,10 +297,8 @@ impl Decoder {
                     cache_write_tokens: usage.cache_write,
                     reasoning_tokens: usage.reasoning,
                 },
-                provider_options: match &self.compaction {
-                    Some(item) => Some(json!({"openai":{"responseId":response_id,"compaction":item}})),
-                    None => response_id.map(|id| json!({"openai":{"responseId":id}})),
-                },
+                compaction: self.compaction.clone(),
+                provider_options: response_id.map(|id| json!({"openai":{"responseId":id}})),
             },
         }
     }

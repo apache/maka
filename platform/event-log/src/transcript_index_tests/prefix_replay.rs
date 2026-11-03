@@ -49,6 +49,7 @@ async fn seed(log: &EventLog) -> Seed {
             Fact::ModelCompleted {
                 step_id: "step-a".into(),
                 output: ModelCompletion {
+                    compaction: None,
                     parts: completion_parts(
                         "step-a".into(),
                         calls

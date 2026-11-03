@@ -216,7 +216,7 @@ async fn settled_results_are_pruned_before_context_limits_and_survive_failed_sum
         let mut input = fixture::input(&base, "first", false);
         input.main_output_limit = Some(4000);
         input.context = Some(ModelRequestContext {
-            operation: None,
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             codex: None,
             provider_id: "openai".into(),
             // The archived pages fit; the original multi-megabyte tool output
