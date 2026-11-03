@@ -511,6 +511,10 @@ async fn desktop_multiline_drafts_keep_the_composer_bounded() {
         }
         let mut capped_height = None;
         for draft in [&text, &longer] {
+            eprintln!(
+                "[DEBUG-6589] pending={pending}, length={}, phase=short",
+                draft.len()
+            );
             desktop.type_text("short").await;
             let short = desktop
                 .until(
@@ -524,6 +528,10 @@ async fn desktop_multiline_drafts_keep_the_composer_bounded() {
                     },
                 )
                 .await;
+            eprintln!(
+                "[DEBUG-6589] pending={pending}, length={}, phase=multiline",
+                draft.len()
+            );
             desktop.type_text(draft).await;
             let height = desktop
                 .until(
