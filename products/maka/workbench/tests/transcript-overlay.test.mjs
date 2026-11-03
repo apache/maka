@@ -144,38 +144,34 @@ test('history window replacement releases retired rows, including work completed
   assert.deepEqual(texts(overlay, tail), ['next request']);
   // Off-tail overlays are not displayed. Terminal rows need not accumulate there.
   overlay.history(new Map(), null);
-  for (let step = 0; step < 64; step += 1) {
-    const sequence = 10 + step * 5;
-    const invocation = `run-${step}`;
-    overlay.event(event(sequence, { kind: 'opened' }, invocation));
-    overlay.page(
-      cut([textPart('reply', 'background reply')], {
-        invocationId: invocation,
-        turnId: invocation,
-        dependsOn: sequence + 1,
-      }),
-    );
-    overlay.event(
-      event(
-        sequence + 2,
-        { kind: 'part_committed', stepId: 'step', messageId: 'reply', ordinal: 0 },
-        invocation,
-      ),
-    );
-    overlay.event(
-      event(sequence + 3, { kind: 'step_ended', stepId: 'step', completed: true }, invocation),
-    );
-    overlay.event(event(sequence + 4, { kind: 'ended', failed: false }, invocation));
-  }
-  overlay.event(event(400, { kind: 'opened' }, 'current'));
+  overlay.event(event(10, { kind: 'opened' }, 'background'));
+  overlay.page(
+    cut([textPart('background-reply', 'background response')], {
+      invocationId: 'background',
+      turnId: 'background',
+      dependsOn: 11,
+    }),
+  );
+  assert.deepEqual(texts(overlay), ['background response']);
+  overlay.event(
+    event(
+      12,
+      { kind: 'part_committed', stepId: 'step', messageId: 'background-reply', ordinal: 0 },
+      'background',
+    ),
+  );
+  overlay.event(event(13, { kind: 'step_ended', stepId: 'step', completed: true }, 'background'));
+  overlay.event(event(14, { kind: 'ended', failed: false }, 'background'));
+  assert.deepEqual(texts(overlay), []);
+  overlay.event(event(15, { kind: 'opened' }, 'current'));
   overlay.page(
     cut([textPart('current-reply', 'current response')], {
       invocationId: 'current',
       turnId: 'current',
-      dependsOn: 401,
+      dependsOn: 16,
     }),
   );
-  overlay.history(index(tail), 401);
+  overlay.history(index(tail), 16);
   assert.deepEqual(texts(overlay, tail), ['next request', 'current response']);
 });
 
@@ -279,4 +275,51 @@ test('executor text survives snapshot reseeding and ends with the same canonical
   const history = [row('executor', 'hello world', 2)];
   overlay.history(index(history), 6);
   assert.deepEqual(texts(overlay, history), ['hello world']);
+});
+
+test('tool input preview keeps a multi-page Unicode patch through admission', () => {
+  const overlay = new TranscriptOverlay();
+  const input = JSON.stringify({
+    patch: '+const entry = "文件内容🦀";\n'.repeat(2000),
+  });
+  const chunks = input.match(/.{1,4096}/gu);
+  let offset = 0;
+  for (const text of chunks) {
+    overlay.page(
+      cut(
+        [
+          {
+            ...textPart('patch-input', text),
+            ordinal: null,
+            field: {
+              kind: 'tool_input',
+              toolUseId: 'patch',
+              name: 'ApplyPatch',
+              providerExecuted: false,
+            },
+            offset,
+            totalBytes: Buffer.byteLength(input),
+          },
+        ],
+        {
+          first: offset === 0,
+          last: offset + Buffer.byteLength(text) === Buffer.byteLength(input),
+        },
+      ),
+    );
+    offset += Buffer.byteLength(text);
+  }
+  assert.equal(overlay.snapshot().tools[0].detail, input);
+  overlay.event(
+    event(3, {
+      kind: 'tool_input_ready',
+      stepId: 'step',
+      toolUseId: 'patch',
+      name: 'ApplyPatch',
+      providerExecuted: false,
+    }),
+  );
+  overlay.event(event(4, { kind: 'tool_dispatched', toolUseId: 'patch', name: 'ApplyPatch' }));
+  assert.equal(overlay.snapshot().tools[0].phase, 'running');
+  assert.equal(overlay.snapshot().tools[0].detail, input);
 });

@@ -126,7 +126,6 @@ class PreviewAssembly {
       if (body.bytes > part.totalBytes) throw new Error('Preview body exceeds its declared size');
       this.bodies.set(key, body);
       if (part.field.kind === 'tool_input') {
-        body.text = Array.from(body.text).slice(-2048).join('');
         tools = this.tool(page, part.field, body.text, tools);
         continue;
       }
@@ -176,7 +175,7 @@ class PreviewAssembly {
       phase: 'preparing',
       startSequence: previous?.startSequence ?? page.dependsOn,
       inputReady: false,
-      detail: Array.from(text).slice(-2048).join(''),
+      detail: text,
       previewOrder: this.stepOrder,
     };
     return previous ? tools.map((tool) => (tool === previous ? next : tool)) : [...tools, next];
