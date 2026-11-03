@@ -22,10 +22,7 @@ import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { ContextGaugePreview } from './ContextGaugePreview';
 import { MessageRow } from '../../../workbench/app/MessageRow';
-import type {
-  ComposerSendStatus,
-  ComposerSession,
-} from '../../../../../packages/plugin-sdk/src/composer-view.js';
+import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
@@ -37,8 +34,6 @@ import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
 import type {
   AgentSession,
-  AgentQueue,
-  AgentComputerApps,
   InteractionRecord,
 } from '../../../../../packages/plugin-sdk/src/index.js';
 
@@ -141,39 +136,10 @@ function Consent() {
   );
 }
 
-function CompletionComposer(props: { details?: boolean }) {
+function CompletionComposer() {
   const draft = signal('');
-  const sends = signal<ComposerSendStatus[]>([]);
   const action = signal('No command');
   const lookup = signal('No lookup');
-  const queue = signal<AgentQueue>({
-    revision: 1,
-    entries: props.details
-      ? [{ messageId: 'queued-original', kind: 'followup', preview: 'QUEUED_ORIGINAL' }]
-      : [],
-  });
-  const makeApp = (id: string) => ({
-    stopped: false,
-    activity: {
-      invocation: {
-        session_id: 'original-session',
-        turn_id: 'original-turn',
-        run_id: 'original-run',
-        invocation_id: 'original-invocation',
-      },
-      operationId: id,
-      target: {
-        providerId: 'computer',
-        contractId: 'computer',
-        serverId: 'computer',
-        toolName: 'cua_repl',
-        capability: 'computer_use' as const,
-        scope: { kind: 'computer_app' as const, applicationId: id },
-      },
-      display: { name: `Fixture App ${id}`, appPath: `/applications/${id}`, risk: null },
-    },
-  });
-  const apps = signal<AgentComputerApps>({ entries: props.details ? [makeApp('one')] : [] });
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
@@ -192,15 +158,10 @@ function CompletionComposer(props: { details?: boolean }) {
     notice: () => '',
     metrics: () => '',
     recovering: () => false,
-    sends,
-    async retrySend(id) {
-      action.set(`retried:${id}`);
-      sends.set(sends().filter((item) => item.id !== id));
-    },
+    sends: () => [],
+    retrySend: unexpected,
     checkSend: unexpected,
-    async dismissSend(id) {
-      sends.set(sends().filter((item) => item.id !== id));
-    },
+    dismissSend: unexpected,
     invocation: () => null,
     prediction: {
       current: () => null,
@@ -235,16 +196,9 @@ function CompletionComposer(props: { details?: boolean }) {
     },
     queue: {
       sessionId: 'original-session',
-      snapshot: queue,
+      snapshot: () => ({ revision: 1, entries: [] }),
       running: () => false,
-      async read() {
-        return {
-          kind: 'ready',
-          revision: queue().revision,
-          message: 'QUEUED_ORIGINAL',
-          hasAttachments: false,
-        };
-      },
+      read: unexpected,
       change: unexpected,
     },
     projectMcp: {
@@ -256,15 +210,8 @@ function CompletionComposer(props: { details?: boolean }) {
       dismiss: unexpected,
     },
     computerAccess: {
-      snapshot: apps,
-      async stop(operationId) {
-        action.set(`stopped:${operationId}`);
-        apps.set({
-          entries: apps().entries.map((entry) =>
-            entry.activity.operationId === operationId ? { ...entry, stopped: true } : entry,
-          ),
-        });
-      },
+      snapshot: () => ({ entries: [] }),
+      stop: unexpected,
     },
     checklist: {
       read: unexpected,
@@ -276,20 +223,13 @@ function CompletionComposer(props: { details?: boolean }) {
             first
               ? ((first = false),
                 Promise.resolve({
-                  enabled: !!props.details,
+                  enabled: false,
                   revision: 1,
-                  total: props.details ? 2 : 0,
+                  total: 0,
                   completed: 0,
-                  current: props.details
-                    ? { content: 'TODO_CURRENT', status: 'in_progress' }
-                    : null,
+                  current: null,
                   offset: 0,
-                  items: props.details
-                    ? [
-                        { content: 'TODO_CURRENT', status: 'in_progress' },
-                        { content: 'TODO_NEXT', status: 'pending' },
-                      ]
-                    : [],
+                  items: [],
                   nextOffset: null,
                 }))
               : new Promise<null>((resolve) => {
@@ -354,57 +294,6 @@ function CompletionComposer(props: { details?: boolean }) {
   };
   return (
     <View style={{ flex: 1, justifyContent: 'flex-end' }}>
-      <If when={props.details}>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          <Button
-            accessibilityLabel="Add computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [...apps().entries, makeApp('two')] })}
-          >
-            <Text>Add computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Clear computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [] })}
-          >
-            <Text>Clear computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Restore computer access"
-            style={{ height: 32 }}
-            onPress={() => apps.set({ entries: [makeApp('one')] })}
-          >
-            <Text>Restore computer access</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Drain queued messages"
-            style={{ height: 32 }}
-            onPress={() => queue.set({ revision: queue().revision + 1, entries: [] })}
-          >
-            <Text>Drain queued messages</Text>
-          </Button>
-          <Button
-            accessibilityLabel="Fail outgoing message"
-            style={{ height: 32 }}
-            onPress={() =>
-              sends.set([
-                {
-                  id: 'failed-original',
-                  text: 'FAILED_MESSAGE',
-                  attachments: [],
-                  state: 'failed',
-                  detail: 'FIXTURE_SEND_FAILED',
-                  retryable: true,
-                  busy: false,
-                },
-              ])
-            }
-          >
-            <Text>Fail outgoing message</Text>
-          </Button>
-        </View>
-      </If>
       <Text>{action()}</Text>
       <Text>{lookup()}</Text>
       <Composer
@@ -687,8 +576,6 @@ mount(() =>
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer-details' ? (
-    <CompletionComposer details />
   ) : scenario === 'composer' ? (
     <CompletionComposer />
   ) : (
