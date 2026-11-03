@@ -257,7 +257,9 @@ impl Desktop {
                     return value;
                 }
                 tokio::task::yield_now().await;
-                self.wake.notified().await;
+                // A key sent before focus lands is lost and produces no wake, so
+                // a read that sends keys has to run again on its own.
+                let _ = tokio::time::timeout(Duration::from_millis(50), self.wake.notified()).await;
             }
         })
         .await
@@ -265,6 +267,23 @@ impl Desktop {
             self.artifact("failure");
             panic!("{stage}; observed: {:?}", self.outcome.lock().unwrap());
         })
+    }
+
+    /// Acts until `done`, slowly enough that a repeat does not undo what the
+    /// last act is still doing: toggle a menu shut, or press in the dialog it opened.
+    async fn retry(&self, stage: &str, done: impl Fn() -> bool, act: impl Fn()) {
+        let mut acted = None::<std::time::Instant>;
+        self.until(stage, || {
+            if done() {
+                return Some(());
+            }
+            if acted.is_none_or(|at| at.elapsed() >= Duration::from_secs(1)) {
+                act();
+                acted = Some(std::time::Instant::now());
+            }
+            None
+        })
+        .await
     }
 
     async fn wait<T>(&self, stage: &str, future: impl Future<Output = T>) -> T {
@@ -315,40 +334,44 @@ impl Desktop {
         .await;
     }
 
-    async fn input_text(&self) -> String {
-        let _ = self.platform.take_clipboard_write();
+    fn copy_input(&self) -> Option<String> {
+        // Outside an editor Ctrl+C interrupts, and its dialog refuses the focus
+        // being waited for.
+        self.platform.text_input_target()?;
         self.key("a", true);
         self.key("c", true);
-        self.until("the editor did not copy its contents", || {
-            self.platform
-                .take_clipboard_write()
-                .and_then(|item| item.text())
-        })
-        .await
+        self.platform
+            .take_clipboard_write()
+            .and_then(|item| item.text())
+    }
+
+    async fn input_text(&self) -> String {
+        let _ = self.platform.take_clipboard_write();
+        self.until("the editor did not copy its contents", || self.copy_input())
+            .await
     }
 
     async fn type_text(&self, text: &str) {
-        self.wait("the editor did not accept the draft", async {
-            loop {
-                self.key("a", true);
-                self.platform.paste(text).unwrap();
-                if self.input_text().await == text {
-                    return;
-                }
-                self.wake.notified().await;
-            }
+        let _ = self.platform.take_clipboard_write();
+        self.until("the editor did not accept the draft", || {
+            self.platform.text_input_target()?;
+            self.key("a", true);
+            self.platform.paste(text).unwrap();
+            self.copy_input().filter(|copied| copied == text)
         })
         .await;
     }
 
+    /// Enter does nothing until the typed draft can be sent.
+    async fn submit(&self) {
+        self.control("Send message").await;
+        self.key("enter", false);
+    }
+
     async fn expect_text(&self, text: &str) {
-        self.wait("the expected draft did not appear in the editor", async {
-            loop {
-                if self.input_text().await == text {
-                    return;
-                }
-                self.wake.notified().await;
-            }
+        let _ = self.platform.take_clipboard_write();
+        self.until("the expected draft did not appear in the editor", || {
+            self.copy_input().filter(|copied| copied == text)
         })
         .await;
     }
@@ -523,18 +546,23 @@ async fn desktop_prediction_preserves_the_request_and_inserts_an_undoable_draft(
         .await;
     desktop.press_at(save.center());
     desktop.press("Close settings").await;
-    assert_eq!(
-        desktop
-            .client
-            .query("settings", "assistantPreferences", json!({}))
-            .await
-            .unwrap()["predictions"]["ordinarySessionsOnly"],
-        true,
-    );
+    desktop
+        .wait("the prediction setting was not saved", async {
+            while desktop
+                .client
+                .query("settings", "assistantPreferences", json!({}))
+                .await
+                .unwrap()["predictions"]["ordinarySessionsOnly"]
+                != true
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     desktop.control("Focus message composer").await;
     desktop.new_draft().await;
     desktop.type_text("Review the patch.").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let mut reply = desktop.request(&mut fixture).await;
     let original = reply.body.clone();
     let session = desktop
@@ -790,7 +818,7 @@ async fn desktop_retries_a_failed_first_submission_in_the_same_session() {
         )
         .await;
     set_model_enabled(&desktop.client, true).await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let retry = desktop.request(&mut fixture).await;
     assert_image(&retry, "RETRIED_FIRST_MESSAGE", &bytes);
     retry.finish().await;
@@ -1325,7 +1353,14 @@ async fn desktop_provider_picker_searches_real_catalog_and_preserves_selection()
     desktop.type_text("no-such-provider-1793500567423").await;
     desktop.key("enter", false);
     desktop.control("Clear provider search").await;
-    assert!(desktop.controls("Connect Alibaba (China)").is_empty());
+    desktop
+        .until("search retained a provider it does not match", || {
+            desktop
+                .controls("Connect Alibaba (China)")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     desktop.artifact(&format!("provider-empty-{theme}-{layout}"));
     desktop.key("escape", false);
     desktop.control("Connect ChatGPT Subscription").await;
@@ -1749,9 +1784,21 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     let finished_goal = "Goal progress: Achieved";
     desktop.new_draft().await;
     desktop.type_text("KEEP_MY_DRAFT").await;
-    desktop.press("Add to message").await;
     let previous = desktop.platform.text_input_target();
-    desktop.press("Goal").await;
+    // A new draft can still move its composer, which closes the menu.
+    desktop
+        .retry(
+            "the Goal dialog did not open",
+            || !desktop.controls("Close Goal").is_empty(),
+            || {
+                let goal = desktop.controls("Goal");
+                let add = desktop.controls("Add to message");
+                if let [control] = if goal.is_empty() { &add[..] } else { &goal[..] } {
+                    desktop.press_at(control.center());
+                }
+            },
+        )
+        .await;
     desktop.target_after(previous).await;
     desktop.artifact("goal-before-objective");
     desktop.app.update(|cx| {
@@ -1860,7 +1907,7 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_MY_DRAFT").await;
     desktop.type_text("/goal Finish the follow-up").await;
-    desktop.key("enter", false);
+    desktop.submit().await;
     let next = desktop.request(&mut fixture).await;
     assert!(next.body.to_string().contains("Finish the follow-up"));
     desktop.press(active_goal).await;
@@ -1874,7 +1921,15 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
     desktop.request(&mut fixture).await.finish().await;
     desktop.press("Focus message composer").await;
     desktop.type_text("/goal").await;
-    desktop.key("enter", false);
+    // "/goal" opens a completion menu, and an Enter on the binding of a menu
+    // that just closed is lost.
+    desktop
+        .retry(
+            "/goal did not open the Goal dialog",
+            || !desktop.controls("Close Goal").is_empty(),
+            || desktop.key("enter", false),
+        )
+        .await;
     desktop.control("New Goal").await;
     desktop.key("escape", false);
     desktop
@@ -1961,9 +2016,20 @@ async fn desktop_child_conversations_expand_archived_ancestors_and_open_a_grandc
     let previous = desktop.platform.text_input_target();
     desktop.press("Open Verification worker").await;
     desktop.target_after(previous).await;
-    desktop.press("Focus message composer").await;
+    // A conversation that just opened still moves its composer under the press.
+    desktop
+        .retry(
+            "the composer did not take focus",
+            || desktop.platform.text_input_target().is_some(),
+            || {
+                if let [composer] = desktop.controls("Focus message composer")[..] {
+                    desktop.press_at(composer.center());
+                }
+            },
+        )
+        .await;
     desktop.type_text("OPENED_TREE_GRANDCHILD").await;
-    desktop.press("Send message").await;
+    desktop.submit().await;
     desktop.request(&mut fixture).await.finish().await;
     let history = desktop
         .client

@@ -27,6 +27,20 @@
 - [src/composition.ts](src/composition.ts)构造实例、绑定和安装身份。
 - [scripts/build.mjs](scripts/build.mjs)将包内容与组合生成代码输出到 `dist`。
 
+## 安装与升级
+
+默认安装在 `input.base` 中保存固定版本的 `maka.product.installation` composition 引用、用户 `overrides`，并在 `input.instances` 中保存独立新增的根实例。不可变基线包包含生成后的默认装配和安装输入（包括稳定的逻辑实例身份），不是另一份可编辑部署。根级展开不增加结构实例或 UUID 命名空间，已有会话和插件状态继续使用原身份。
+
+启动与 `application update-defaults` 的预览、应用共用同一条经过校验的源更新路径。升级替换基线引用并保留显式差量。运行时不识别或自动转换旧的扁平默认安装：这类安装应在启动新版本前，显式使用[一次性外部迁移工具](https://gist.github.com/M4n5ter/407366c4943e412e84d06dad3a1c3643/058b24ca4c7450e4e3e5cb2fd882e4b8b00284e3#file-readme-md)迁移。显式编写的扁平部署仍按原有方式更新选中的包，不会自动接入产品基线。
+
+配置差量可以用 `configurationFields` 记录精确的对象字段路径：省略字段的 `value` 表示删除，JSON `null` 则仍是一个值。已有 `configuration` 覆盖继续表示整个顶层字段替换。数组（包括工具列表）是用户的完整选择，不按显示名隐式合并。独立新增实例及完整组件替换保留其选择的包和配置。源编辑写回这些决定的拥有者，不保存展开后的默认图。详见 [composition 类型](../../../platform/plugin-core/src/composition.rs)及[根级组合](../../../platform/plugin-core/src/composition/root.rs)。
+
+模板可以提供默认根 UI。`input.ui` 显式选择其他根，`base.ui: null` 显式关闭继承的根。包、配置或绑定冲突会在持久化之前拒绝候选；已应用操作冻结其准确源和包字节进行恢复，不用更新的可执行文件重新生成目标。
+
+基线中的发布元数据只描述默认值，不授予权限。现有 native grants 和用户显式收窄的发布仍是权限事实源；`productMethods` 标记的端点继续遵守明确选择的“随服务契约更新方法集”策略。
+
+## 模型发现与子会话
+
 默认安装提供 `ModelList` 工具，与设置界面共用模型目录。以 `{ "kind": "start", "query": "...", "connectionId": "..." }` 开始查询（两个筛选项均可省略）。每项包含可直接用于 `SessionSend` / `SessionResume` 的 `selection`、支持与默认推理档位，以及有效限制。使用 `{ "kind": "continue", "revision": page.revision, "cursor": page.next }` 翻页；目录变化时重新查询。仅列出已启用连接中已启用且受运行时支持的模型，不保证远端连通性、凭证或额度可用；结果不包含凭证、URL 或请求覆盖内容。
 
 侧栏会话菜单中的**子会话**在独立、适应窗口大小的弹窗中显示后代树。展开箭头按需读取直接子会话，跨工作区且包含归档会话；点击标题打开对应会话。树沿用不可变的 `parentSessionId` 创建关系，而非 fork 的历史来源。深层树可横向滚动，长分支通过现有会话目录分页加载。

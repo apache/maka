@@ -151,8 +151,10 @@ async fn own_session_service_keeps_mutation_receipts_and_deduplicates_original_c
     let service = ServiceTarget::Export {
         name: EXPORT.into(),
     };
-    let request = fixture
+    let reader = fixture
         .services
+        .select_method(&service, "observe")
+        .unwrap()
         .request(
             Identity::Remote {
                 request_id: Uuid::new_v4(),
@@ -160,7 +162,7 @@ async fn own_session_service_keeps_mutation_receipts_and_deduplicates_original_c
             CancellationToken::new(),
         )
         .unwrap();
-    let observed = request
+    let observed = reader
         .call_target(
             &service,
             "observe".into(),
@@ -171,6 +173,18 @@ async fn own_session_service_keeps_mutation_receipts_and_deduplicates_original_c
         .await
         .unwrap();
     assert_eq!(observed["session"]["title"], "Original conversation");
+    reader.finish().await.unwrap();
+    let request = fixture
+        .services
+        .select_method(&service, "metadata")
+        .unwrap()
+        .request(
+            Identity::Remote {
+                request_id: Uuid::new_v4(),
+            },
+            CancellationToken::new(),
+        )
+        .unwrap();
     let input = json!({"sessionId":target,"expectedRevision":observed["session"]["revision"],"title":"Renamed by its own service","labels":["managed"]});
     let operation = Uuid::new_v4();
     let first = request

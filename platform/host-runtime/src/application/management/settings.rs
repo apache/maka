@@ -94,55 +94,12 @@ impl Manager {
             return rejected(ManagementRejection::InstanceUnavailable);
         };
         let mut configuration = instance.configuration.clone();
-        let changes = match apply(&mut configuration, &request.changes) {
-            Ok(changes) => changes,
-            Err(error) => return rejected_diagnostic(ManagementRejection::InvalidSource, error),
-        };
-        let [root, path @ ..] = instance.path.as_slice() else {
-            return Err("invalid managed path".into());
-        };
-        let node = source
-            .input
-            .instances
-            .get_mut(root)
-            .ok_or("managed root disappeared")?;
-        if path.is_empty() {
-            for key in changes {
-                node.configuration.parameters.remove(&key);
-                match configuration.get(&key) {
-                    Some(value) => {
-                        node.configuration.values.insert(key, value.clone());
-                    }
-                    None => {
-                        node.configuration.values.remove(&key);
-                    }
-                }
-            }
-        } else {
-            // Existing composition overrides replace top-level fields. Editing a nested
-            // leaf freezes only that containing field, not any unrelated binding or value.
-            if changes.iter().any(|key| configuration.get(key).is_none()) {
-                return rejected_diagnostic(
-                    ManagementRejection::InvalidSource,
-                    "an inherited field cannot be removed from this instance".into(),
-                );
-            }
-            let index = node.overrides.iter().position(|patch| patch.path == path);
-            let patch = if let Some(index) = index {
-                &mut node.overrides[index]
-            } else {
-                node.overrides
-                    .push(maka_plugin_core::composition::Override {
-                        path: path.to_vec(),
-                        ..Default::default()
-                    });
-                node.overrides.last_mut().unwrap()
-            };
-            for key in changes {
-                patch
-                    .configuration
-                    .insert(key.clone(), configuration[&key].clone());
-            }
+        if let Err(error) = apply(&mut configuration, &request.changes) {
+            return rejected_diagnostic(ManagementRejection::InvalidSource, error);
+        }
+        let fields = source_fields(&instance.configuration, &configuration, &request.changes);
+        if let Err(error) = source.input.configure(&instance.path, fields) {
+            return rejected_diagnostic(ManagementRejection::InvalidSource, error.to_string());
         }
         self.commit(
             request.expected_revision,
@@ -154,6 +111,42 @@ impl Manager {
         .await
     }
 }
+// Preserve the scope explicitly edited by the caller. Array elements belong to
+// an explicit whole-array selection; object fields remain sparse edits.
+fn source_fields(
+    original: &Value,
+    configuration: &Value,
+    changes: &[SettingChange],
+) -> Vec<maka_plugin_core::composition::ConfigurationField> {
+    let mut paths = BTreeSet::new();
+    for change in changes {
+        let mut old = Some(original);
+        let mut new = Some(configuration);
+        let mut path = Vec::new();
+        for key in &change.path {
+            if old.is_some_and(Value::is_array) || new.is_some_and(Value::is_array) {
+                break;
+            }
+            path.push(key.clone());
+            old = old.and_then(|value| value.get(key));
+            new = new.and_then(|value| value.get(key));
+        }
+        paths.insert(path);
+    }
+    let mut fields: Vec<maka_plugin_core::composition::ConfigurationField> = Vec::new();
+    for path in paths {
+        if fields.iter().any(|field| path.starts_with(&field.path)) {
+            continue;
+        }
+        let value = path
+            .iter()
+            .try_fold(configuration, |value, key| value.get(key))
+            .cloned();
+        fields.push(maka_plugin_core::composition::ConfigurationField { path, value });
+    }
+    fields
+}
+
 // Local $refs can repeat a large enum across many fields. Bound the encoded
 // projection as well as its row count, leaving room for source/path metadata.
 pub(super) fn settings_page(
@@ -208,21 +201,16 @@ fn json(value: &SettingValue) -> Result<Value> {
         SettingValue::Null => Value::Null,
     })
 }
-pub(super) fn apply(
-    configuration: &mut Value,
-    changes: &[SettingChange],
-) -> Result<BTreeSet<String>> {
+pub(super) fn apply(configuration: &mut Value, changes: &[SettingChange]) -> Result<()> {
     if changes.is_empty() {
         return Err("settings changes must not be empty".into());
     }
-    let mut touched = BTreeSet::new();
     let mut paths = BTreeSet::new();
     for change in changes {
         check_path(&change.path, false)?;
         if !paths.insert(change.path.clone()) {
             return Err("duplicate setting change".into());
         }
-        touched.insert(change.path[0].clone());
         let (key, parents) = change.path.split_last().unwrap();
         let mut current = &mut *configuration;
         for part in parents {
@@ -264,7 +252,7 @@ pub(super) fn apply(
             _ => return Err("settings parent is not a group".into()),
         }
     }
-    Ok(touched)
+    Ok(())
 }
 fn index(key: &str) -> Result<usize> {
     let index = key.parse::<usize>().map_err(|_| "invalid settings index")?;

@@ -25,6 +25,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{collections::BTreeMap, io::Write, path::PathBuf};
 
+mod baseline;
 mod headless;
 mod launch;
 mod update;
@@ -142,14 +143,6 @@ fn authoring() -> Result<String, HostError> {
     Ok(AUTHORING.into())
 }
 
-async fn author(
-    configuration: Value,
-    packages: &BTreeMap<String, Package>,
-) -> Result<(Sources, Value, PreparedApplication), HostError> {
-    let source = authoring()?;
-    verified_fingerprint(&source, packages, &bundle_fingerprint()?)?;
-    author_with_source(configuration, packages, &source).await
-}
 async fn author_with_source(
     mut configuration: Value,
     packages: &BTreeMap<String, Package>,
@@ -225,59 +218,6 @@ async fn author_with_source(
     Ok((sources, configuration, prepared))
 }
 
-async fn update_default_ui(
-    input: &Input,
-    packages: &BTreeMap<String, Package>,
-) -> Result<Input, HostError> {
-    let source = authoring()?;
-    let vm = Vm::pure(Default::default())?;
-    let result = match vm.load("maka-product-ui-update".into(), source) {
-        Ok(module) => {
-            let result = async {
-                let names: Vec<String> = serde_json::from_value(
-                    module
-                        .call(
-                            vec!["installationNames".into()],
-                            vec![serde_json::json!({})],
-                        )
-                        .await?,
-                )?;
-                let keys: BTreeMap<_, _> = input
-                    .instances
-                    .keys()
-                    .flat_map(|root| {
-                        names
-                            .iter()
-                            .map(move |name| (format!("{root}/{name}"), uuid::Uuid::new_v4()))
-                    })
-                    .collect();
-                let references: BTreeMap<_, _> = packages
-                    .iter()
-                    .map(|(name, package)| (name, package.application_ref()))
-                    .collect();
-                Ok::<Input, HostError>(serde_json::from_value(
-                    module
-                        .call(
-                            vec!["updateDefaultUi".into()],
-                            vec![
-                                serde_json::to_value(input)?,
-                                serde_json::to_value(references)?,
-                                serde_json::to_value(keys)?,
-                            ],
-                        )
-                        .await?,
-                )?)
-            }
-            .await;
-            let closed = module.close().await.map_err(HostError::from);
-            result.and_then(|value| closed.map(|()| value))
-        }
-        Err(error) => Err(error.into()),
-    };
-    vm.shutdown().await;
-    result
-}
-
 fn export(
     output: PathBuf,
     sources: Sources,
@@ -313,9 +253,6 @@ fn export(
     Ok(())
 }
 
-async fn installation(options: Value) -> Result<Value, HostError> {
-    installation_with_source(options, &authoring()?).await
-}
 async fn installation_with_source(options: Value, source: &str) -> Result<Value, HostError> {
     let vm = maka_js_runtime::plugin::Vm::pure(Default::default())?;
     let result = match vm.load("maka-product-installation".into(), source.to_owned()) {
@@ -359,11 +296,14 @@ fn selected(
         })
         .collect();
     let plan = maka_plugin_core::plan::Plan::prepare(input, &declarations, &remote)?;
-    let required: std::collections::BTreeSet<_> = plan
+    let mut required: std::collections::BTreeSet<_> = plan
         .instances()
         .values()
         .map(|instance| &instance.package)
         .collect();
+    if let Some(base) = &input.base {
+        required.insert(&base.package);
+    }
     Ok(packages
         .iter()
         .filter(|package| required.contains(&package.application_ref()))
