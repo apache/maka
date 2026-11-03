@@ -324,12 +324,24 @@ export function rewriteConversationCopyMessage(
   return message;
 }
 
+// Snapshot tool evidence can contain JSON-escaped quotes and newlines.
+const ATTACHMENT_RESOURCE_REF_PATTERN = /maka:\/\/runtime\/attachments\/[^\\\s)\]}>`'",;:!]+/g;
+
+/** The Artifact ids a text names inline; collection mirrors this rewrite site. */
+function textAttachmentResourceIds(text: string): readonly string[] {
+  const ids: string[] = [];
+  for (const candidate of text.match(ATTACHMENT_RESOURCE_REF_PATTERN) ?? []) {
+    const parsed = parseAttachmentResourceRef(candidate);
+    if (parsed) ids.push(parsed.artifactId);
+  }
+  return ids;
+}
+
 function rewriteAttachmentResourceRefs(
   text: string,
   artifactIds: ReadonlyMap<string, string>,
 ): string {
-  // Snapshot tool evidence can contain JSON-escaped quotes and newlines.
-  return text.replace(/maka:\/\/runtime\/attachments\/[^\\\s)\]}>`'",;:!]+/g, (candidate) => {
+  return text.replace(ATTACHMENT_RESOURCE_REF_PATTERN, (candidate) => {
     const parsed = parseAttachmentResourceRef(candidate);
     const artifactId = parsed ? artifactIds.get(parsed.artifactId) : undefined;
     return artifactId ? `maka://runtime/attachments/${artifactId}` : candidate;
@@ -1172,6 +1184,10 @@ function conversationCopyToolResults(
  * runtime-event attachments, and function_response / archived tool-result images.
  * Static agent_output snapshots also own their Artifacts; those can retain a
  * child Turn id outside the copied parent's turn closure and need explicit inclusion.
+ * Assistant character images (stickers) are the same sentinel case but live only
+ * as inline `maka://runtime/attachments` refs in message and snapshot text, the
+ * same texts `rewriteAttachmentResourceRefs` rewrites, so those texts are walked
+ * here too — an unmapped id would silently keep pointing at the source Session.
  */
 export function collectConversationCopySessionFileRefs(input: {
   readonly sourceSessionId: string;
@@ -1184,6 +1200,16 @@ export function collectConversationCopySessionFileRefs(input: {
       refs.add(ref.relativePath);
     }
   }
+  for (const message of input.messages) {
+    if (message.type === 'assistant') {
+      for (const artifactId of textAttachmentResourceIds(message.text)) refs.add(artifactId);
+    }
+  }
+  for (const event of input.runtimeEvents) {
+    if (event.content?.kind === 'text') {
+      for (const artifactId of textAttachmentResourceIds(event.content.text)) refs.add(artifactId);
+    }
+  }
   for (const { content, toolName } of conversationCopyToolResults(input)) {
     if (
       toolName === 'agent_output' &&
@@ -1191,6 +1217,11 @@ export function collectConversationCopySessionFileRefs(input: {
       isConversationCopyAgentOutputSnapshot(content.value)
     ) {
       for (const artifactId of content.value.artifactIds) refs.add(artifactId);
+      if (content.value.text !== undefined) {
+        for (const artifactId of textAttachmentResourceIds(content.value.text)) {
+          refs.add(artifactId);
+        }
+      }
     }
   }
   return refs;
