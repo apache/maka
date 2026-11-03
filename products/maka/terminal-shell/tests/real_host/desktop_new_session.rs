@@ -499,6 +499,58 @@ impl Desktop {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_multiline_drafts_keep_the_composer_bounded() {
+    let fixture = Fixture::open().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let text = "CREATE TABLE example (id BIGINT);\n".repeat(30);
+    let longer = format!("{text}{}", "\n".repeat(30));
+    for pending in [false, true] {
+        if pending {
+            desktop.new_draft().await;
+        }
+        let mut capped_height = None;
+        for draft in [&text, &longer] {
+            desktop.type_text("short").await;
+            let short = desktop
+                .until(
+                    "short composer did not return to its compact height",
+                    || {
+                        let controls = desktop.controls("Focus message composer");
+                        let [card] = controls.as_slice() else {
+                            return None;
+                        };
+                        (card.size.height <= px(150.0)).then_some(card.size.height)
+                    },
+                )
+                .await;
+            desktop.type_text(draft).await;
+            let height = desktop
+                .until(
+                    "multiline composer did not grow to a bounded height",
+                    || {
+                        let controls = desktop.controls("Focus message composer");
+                        let [card] = controls.as_slice() else {
+                            return None;
+                        };
+                        (card.size.height > short && card.size.height <= px(240.0))
+                            .then_some(card.size.height)
+                    },
+                )
+                .await;
+            if let Some(previous) = capped_height {
+                assert_eq!(
+                    height, previous,
+                    "additional lines should not grow the composer"
+                );
+            }
+            capped_height = Some(height);
+        }
+    }
+    desktop.close().await;
+    fixture.finish().await;
+}
+
 async fn images_fixture() -> Fixture {
     Fixture::configured(Options { images: true }).await
 }

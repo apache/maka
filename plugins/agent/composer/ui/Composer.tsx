@@ -803,6 +803,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           {
                             minHeight: hero() && !compact() ? 40 : 24,
                             maxHeight: compact() ? 64 : 144,
+                            flexShrink: 1,
                             color: C.text,
                             placeholderColor: C.muted,
                             ...bodyTextStyle,
