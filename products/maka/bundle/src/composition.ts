@@ -591,183 +591,97 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       ),
     });
   }
-  const ownMethods = new Map<string, Set<string>>();
-  for (const tool of configuration.agent.tools) {
-    if (tool.target.kind !== 'export') continue;
-    const methods = ownMethods.get(tool.target.name) ?? new Set<string>();
-    methods.add(tool.method);
-    ownMethods.set(tool.target.name, methods);
-  }
-  let native: NativeGrant[] = [];
-  if (
-    ownMethods.size ||
-    uiMethods.length ||
-    asksForms ||
-    asksQuestions ||
-    fileMethods.length ||
-    processMethods.length ||
-    skillCalls.length ||
-    executors.length
-  )
-    native = [
-      ...[...ownMethods].map(([name, methods]) => ({
+  const native: NativeGrant[] = [
+    ...executors.flatMap((executor) => [
+      ...(configuration.executorProcesses?.setupDirectory
+        ? [
+            {
+              origin: [keys.agent],
+              consumer: [keys.agent],
+              provider: [keys[executorPath(executor.name)]!],
+              export: 'setup',
+              methods: ['setup'],
+              recovery: true,
+            },
+          ]
+        : []),
+      {
         origin: [keys.agent],
         consumer: [keys.agent],
-        provider: [keys.agent],
-        export: name,
-        methods: [...methods],
+        provider: [keys[executorPath(executor.name)]!],
+        export: 'executor',
+        methods: ['execute'],
+        recovery: true,
+      },
+      ...[
+        {
+          provider: keys['protocol-processes'],
+          export: 'protocol',
+          methods: [
+            'run',
+            'input',
+            ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
+          ],
+        },
+        { provider: keys['workspace-files'], export: 'files', methods: ['readText', 'write'] },
+        { provider: keys.forms, export: 'forms', methods: ['ask'] },
+      ].map((grant) => ({
+        ...grant,
+        origin: [keys[executorPath(executor.name)]!],
+        consumer: [keys[executorPath(executor.name)]!],
+        provider: [grant.provider],
         recovery: true,
       })),
-      ...(uiMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['host-deployment-manager']],
-              export: 'Management',
-              methods: uiMethods,
-              recovery: true,
-            },
-          ]
-        : []),
-      ...executors.flatMap((executor) => [
-        ...(configuration.executorProcesses?.setupDirectory
-          ? [
-              {
-                origin: [keys.agent],
-                consumer: [keys.agent],
-                provider: [keys[executorPath(executor.name)]!],
-                export: 'setup',
-                methods: ['setup'],
-                recovery: true,
-              },
-            ]
-          : []),
-        {
-          origin: [keys.agent],
-          consumer: [keys.agent],
-          provider: [keys[executorPath(executor.name)]!],
-          export: 'executor',
-          methods: ['execute'],
-          recovery: true,
-        },
-        ...[
+    ]),
+    ...(computerMethods.length
+      ? [
           {
-            provider: keys['protocol-processes'],
-            export: 'protocol',
-            methods: [
-              'run',
-              'input',
-              ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
-            ],
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['workspace-computer']],
+            export: 'computer',
+            methods: ['state'],
+            recovery: true,
           },
-          { provider: keys['workspace-files'], export: 'files', methods: ['readText', 'write'] },
-          { provider: keys.forms, export: 'forms', methods: ['ask'] },
-        ].map((grant) => ({
-          ...grant,
-          origin: [keys[executorPath(executor.name)]!],
-          consumer: [keys[executorPath(executor.name)]!],
-          provider: [grant.provider],
-          recovery: true,
-        })),
-      ]),
-      ...(computerMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-computer']],
-              export: 'computer',
-              methods: [...computerMethods, 'state'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(webMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-web']],
-              export: 'web',
-              methods: [...webMethods, 'capture'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(skillCalls.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys.skills],
-              export: 'skills',
-              methods: skillCalls,
-              recovery: false,
-            },
-          ]
-        : []),
-      ...(asksForms
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys.forms],
-              export: 'forms',
-              methods: ['ask'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(asksQuestions
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys.questions],
-              export: 'questions',
-              methods: ['ask'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(fileMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-files']],
-              export: 'files',
-              methods: fileMethods,
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(processMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-processes']],
-              export: 'processes',
-              methods: processMethods,
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(processMethods.includes('health') && configuration.web
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys['workspace-processes']],
-              provider: [keys['workspace-web']],
-              export: 'web',
-              methods: ['probe'],
-              recovery: true,
-            },
-          ]
-        : []),
-    ];
+        ]
+      : []),
+    ...(webMethods.length
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['workspace-web']],
+            export: 'web',
+            methods: ['capture'],
+            recovery: true,
+          },
+        ]
+      : []),
+    ...(configuration.agent.skillLibrary
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys.skills],
+            export: 'skills',
+            methods: ['prepare', 'search'],
+            recovery: false,
+          },
+        ]
+      : []),
+    ...(processMethods.includes('health') && configuration.web
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys['workspace-processes']],
+            provider: [keys['workspace-web']],
+            export: 'web',
+            methods: ['probe'],
+            recovery: true,
+          },
+        ]
+      : []),
+  ];
   return { host, deployment: configuration.hostDeployment, endpoints, native };
 }
 
