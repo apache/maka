@@ -529,7 +529,7 @@ async fn desktop_multiline_drafts_keep_the_composer_bounded() {
                 desktop
                     .window
                     .update(cx, |view, _, _| {
-                        view.paste(nsh_core::PasteEvent::new(draft.as_str()))
+                        AppView::paste(view, nsh_core::PasteEvent::new(draft.as_str()))
                     })
                     .unwrap()
             });
