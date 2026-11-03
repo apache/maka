@@ -47,25 +47,28 @@ export type {
 const noopSubscription = (): (() => void) => () => undefined;
 
 export function createFakeTaskEntryServices(
-  overrides: Partial<TaskEntryServices> = {},
+  overrides: { [Service in keyof TaskEntryServices]?: Partial<TaskEntryServices[Service]> } = {},
 ): TaskEntryServices {
   return {
     catalog: {
       getCatalog: async () => ({ defaultProfileId: 'local', hosts: [] }),
       subscribeChanges: noopSubscription,
       addProject: async () => ({ ok: false, reason: 'cancelled' }),
+      restoreProject: async () => ({ ok: false, reason: 'cancelled' }),
       relinkProject: async () => ({ ok: false, reason: 'cancelled' }),
       renameProject: async () => undefined,
       archiveProject: async () => undefined,
-      restoreProject: async () => undefined,
+      ...overrides.catalog,
     },
     sessions: {
       relocateWorkspace: async () => ({ ok: false, reason: 'operation_unavailable' }),
+      relocateToDedicatedDirectory: async () => ({ ok: false, reason: 'operation_unavailable' }),
+      ...overrides.sessions,
     },
     folders: {
       openProjectFolder: async () => ({ kind: 'opened' }),
       openWorkspaceFolder: async () => ({ kind: 'opened' }),
+      ...overrides.folders,
     },
-    ...overrides,
   };
 }

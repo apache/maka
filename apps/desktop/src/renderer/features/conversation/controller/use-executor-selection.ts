@@ -37,6 +37,7 @@ export function useExecutorSelection(input: {
     key: string;
     catalog: readonly ExecutorCatalogEntry[];
     loading: boolean;
+    loadingIds?: readonly string[];
     error?: string;
   }>();
   const handoff = useRef<typeof snapshot>(undefined);
@@ -62,7 +63,47 @@ export function useExecutorSelection(input: {
   const refreshes = useRef(new Map<string, Promise<void>>());
   const pendingInvalidations = useRef(new Set<string>());
   const pendingForce = useRef(new Set<string>());
-  const refresh = useCallback((force = false): Promise<void> => {
+  const agentRefreshes = useRef(new Map<string, Promise<void>>());
+  const agentForce = useRef(new Set<string>());
+  const loadAgent = useCallback((id: string, force = false, attempt = revision.current): Promise<void> => {
+    const operationKey = JSON.stringify([key, attempt, id]);
+    const existing = agentRefreshes.current.get(operationKey);
+    if (existing) {
+      if (force) agentForce.current.add(operationKey);
+      return existing;
+    }
+    const applicable = () => current.current === key && revision.current === attempt;
+    setSnapshot(previous => applicable() && previous?.key === key ? {
+      ...previous, loading: true,
+      loadingIds: [...new Set([...(previous.loadingIds ?? []), id])],
+    } : previous);
+    const run = (async () => {
+      let observed: ExecutorCatalogEntry | undefined;
+      try {
+        observed = (await services.newTasks.getExecutors?.(input.target!, input.cwd!, force, id))?.find(entry => entry.id === id);
+      } catch { /* Keep successful choices on transient transport failures. */ }
+      if (!applicable()) return;
+      setSnapshot(previous => {
+        if (!applicable() || previous?.key !== key) return previous;
+        const loadingIds = (previous.loadingIds ?? []).filter(candidate => candidate !== id);
+        return { ...previous, loading: loadingIds.length > 0, loadingIds,
+          catalog: previous.catalog.map(entry => entry.id !== id ? entry : observed ??
+            (entry.readiness === 'ready' ? { ...entry, refreshFailed: true } : entry)),
+        };
+      });
+    })();
+    let tracked!: Promise<void>;
+    tracked = run.finally(() => {
+      if (agentRefreshes.current.get(operationKey) !== tracked) return;
+      agentRefreshes.current.delete(operationKey);
+      if (agentForce.current.delete(operationKey) && applicable()) void loadAgent(id, true, attempt);
+    });
+    agentRefreshes.current.set(operationKey, tracked);
+    return tracked;
+  }, [key, input.target?.hostId, input.target?.profileId, input.target?.projectId, input.cwd, services]);
+  const refresh = useCallback((force = false, agentId?: string): Promise<void> => {
+    if (agentId && !sessionId && services.newTasks.listExecutors)
+      return loadAgent(agentId, force);
     const existing = refreshes.current.get(key);
     if (existing) {
       if (force) {
@@ -78,13 +119,32 @@ export function useExecutorSelection(input: {
         return;
       }
       if (!sessionId && (!input.target || !input.cwd)) return;
-      const inherited = handoff.current?.key === key ? handoff.current : undefined;
+      const cached = sessionId ? services.sessions.readCachedExecutorState?.(sessionId) : undefined;
+      const inherited = handoff.current?.key === key ? handoff.current
+        : cached ? { key, catalog: cached, loading: false } : undefined;
       setSnapshot((previous) => {
         const seed = previous?.key === key ? previous : inherited;
+        // Polling and Session events revalidate every settled state silently,
+        // including disconnected Sessions. Only initial reads and explicit retries load.
+        if (sessionId && !force && !input.sessionPending && seed && !seed.loading)
+          return seed;
         return { key, catalog: seed?.catalog ?? [], loading: true };
       });
       if (sessionId && input.sessionPending) return;
       try {
+        if (!sessionId && services.newTasks.listExecutors) {
+          const roster = await services.newTasks.listExecutors(input.target!, input.cwd!);
+          if (current.current !== key || revision.current !== attempt) return;
+          setSnapshot(previous => {
+            if (current.current !== key || revision.current !== attempt) return previous;
+            const seed = previous?.key === key ? previous : inherited;
+            return { key, loading: roster.length > 0, loadingIds: roster.map(entry => entry.id),
+              catalog: roster.map(entry => seed?.catalog.find(known => known.id === entry.id) ?? entry),
+            };
+          });
+          await Promise.all(roster.map(entry => loadAgent(entry.id, force, attempt)));
+          return;
+        }
         const catalog = sessionId
           ? ((await services.sessions.getExecutorState?.(sessionId)) ?? [])
           : ((await services.newTasks.getExecutors?.(input.target!, input.cwd!, force)) ?? []);
@@ -112,12 +172,13 @@ export function useExecutorSelection(input: {
           });
       } catch (error) {
         if (current.current === key && revision.current === attempt)
-          setSnapshot({
+          setSnapshot(previous => ({
             key,
-            catalog: [],
+            catalog: previous?.key === key ? previous.catalog : inherited?.catalog ?? [],
             loading: false,
+            loadingIds: [],
             error: error instanceof Error ? error.message : 'Executor unavailable',
-          });
+          }));
       }
     })();
     let tracked!: Promise<void>;
@@ -131,6 +192,7 @@ export function useExecutorSelection(input: {
     return tracked;
   }, [
     key,
+    loadAgent,
     sessionId,
     executorId,
     input.sessionPending,
@@ -168,6 +230,8 @@ export function useExecutorSelection(input: {
       refreshes.current.delete(key);
       pendingInvalidations.current.delete(key);
       pendingForce.current.delete(key);
+      agentRefreshes.current.clear();
+      agentForce.current.clear();
       unsubscribe();
       unSession();
       clearTimeout(timer);
@@ -187,7 +251,9 @@ export function useExecutorSelection(input: {
       confirmed.configuration.mode === input.session?.executorConfig?.mode)
       setConfirmed(undefined);
   }, [key, confirmed, input.session?.executorConfig?.model, input.session?.executorConfig?.mode]);
-  const currentSnapshot = snapshot?.key === key ? snapshot : handoff.current?.key === key ? handoff.current : undefined;
+  const cached = sessionId ? services.sessions.readCachedExecutorState?.(sessionId) : undefined;
+  const currentSnapshot = snapshot?.key === key ? snapshot : handoff.current?.key === key ? handoff.current
+    : cached ? { key, catalog: cached, loading: false } : undefined;
   const catalog = currentSnapshot?.catalog ?? [];
   const inspected = catalog.find(candidate => candidate.id === executorId);
   // The catalog describes observed Agent state. The saved Session config is the
@@ -301,7 +367,17 @@ export function useExecutorSelection(input: {
           }
         : previous,
     );
-    await select({ executorId, configuration });
+    try {
+      await select({ executorId, configuration });
+    } catch (error) {
+      if (current.current === key) setSnapshot(previous => previous?.key === key ? {
+        ...previous,
+        catalog: previous.catalog.map(entry => entry.id === executorId &&
+          (entry.readiness === 'restoring' || entry.readiness === 'restorable')
+          ? { ...entry, readiness: 'restore_failed' } : entry),
+      } : previous);
+      throw error;
+    }
   };
   return {
     selection,
@@ -313,6 +389,7 @@ export function useExecutorSelection(input: {
     adoptSession,
     changing: changingKey === key,
     loading: !currentSnapshot || currentSnapshot.loading,
+    loadingIds: currentSnapshot?.loadingIds ?? (executorId && (!currentSnapshot || currentSnapshot.loading) ? [executorId] : []),
     error: currentSnapshot?.error,
   };
 }

@@ -56,7 +56,7 @@ export function useConversationTarget() {
     clearOwnedSessionState: commands.clearOwnedSessionState,
     isSessionSelected: commands.isSessionSelected,
     retiredSessionIds: commands.retiredSessionIds,
-    renderPublishedConversation: commands.renderPublishedConversation,
+    renderCompleteConversation: commands.renderCompleteConversation,
     refreshMessages: commands.refreshMessages,
     recordSessionChange: commands.recordSessionChange,
     activeId,

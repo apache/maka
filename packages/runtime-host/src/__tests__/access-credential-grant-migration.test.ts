@@ -18,9 +18,9 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import {
   ACCESS_FILE_NAME,
@@ -183,6 +183,62 @@ test('retired WorkHub grants are released without granting active-turn authority
   await writeAccessCredentialFile(path, file);
   const rewritten = JSON.parse(await readFile(path, 'utf8'));
   assert.deepEqual(rewritten.credentials, [{ ...original, operationGrants: ['host.status'] }]);
+});
+
+for (const status of ['pending', 'active', 'revoked'] as const) {
+  test(`retires the Goal wait grant from ${status} credentials without granting Session wait authority`, async (t) => {
+    const retainedGrants = ['host.status', 'goal.query', 'artifact.query'];
+    const original = {
+      ...storedCredential([...retainedGrants, 'goal.event-wait.cancel']),
+      status,
+      ...(status === 'pending' ? { expiresAt: '2099-01-01T00:00:00.000Z' } : {}),
+      ...(status === 'revoked' ? { revokedAt: '2026-01-02T00:00:00.000Z' } : {}),
+    };
+    const path = await writeAccessFile({
+      schemaVersion: 3,
+      credentials: [original],
+      sessionGrants: [],
+      turnAccessRequests: [],
+    });
+    t.after(() => rm(dirname(path), { recursive: true, force: true }));
+
+    const file = await readAccessCredentialFile(path);
+    const credential = file.credentials[0];
+    assert.ok(credential);
+    assert.deepEqual(unresolvedPersistedGrants(file), []);
+    assert.deepEqual(credential.grants, retainedGrants);
+    assert.deepEqual(effectiveOperationGrants(credential), retainedGrants);
+
+    await writeAccessCredentialFile(path, file);
+    const rewritten = JSON.parse(await readFile(path, 'utf8'));
+    assert.deepEqual(rewritten.credentials, [{ ...original, operationGrants: retainedGrants }]);
+    const reopened = await readAccessCredentialFile(path);
+    assert.deepEqual(reopened, file);
+    assert.deepEqual(unresolvedPersistedGrants(reopened), []);
+  });
+}
+
+test('retiring the Goal wait grant preserves separately granted Session wait authority', async (t) => {
+  const retainedGrants = ['host.status', 'session.event-waits.query', 'session.event-wait.cancel'];
+  const original = storedCredential([...retainedGrants, 'goal.event-wait.cancel']);
+  const path = await writeAccessFile({
+    schemaVersion: 3,
+    credentials: [original],
+    sessionGrants: [],
+    turnAccessRequests: [],
+  });
+  t.after(() => rm(dirname(path), { recursive: true, force: true }));
+
+  const file = await readAccessCredentialFile(path);
+  assert.deepEqual(unresolvedPersistedGrants(file), []);
+  await writeAccessCredentialFile(path, file);
+  const reopened = await readAccessCredentialFile(path);
+  const credential = reopened.credentials[0];
+  assert.ok(credential);
+  assert.deepEqual(effectiveOperationGrants(credential), retainedGrants);
+  assert.deepEqual(unresolvedPersistedGrants(reopened), []);
+  const rewritten = JSON.parse(await readFile(path, 'utf8'));
+  assert.deepEqual(rewritten.credentials, [{ ...original, operationGrants: retainedGrants }]);
 });
 
 test('retires the research grant while preserving the released credential across restart', async () => {

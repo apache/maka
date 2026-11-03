@@ -30,6 +30,8 @@ import type {
 import type { PendingAttachment } from '@maka/ui/composer-attachments';
 import type { ComposerStagingSubmission } from '../model/composer-staging-contract.js';
 
+import { composerSend, composerFollowUp } from './composer-follow-up.js';
+
 type RefBox<T> = { current: T };
 type WorkspaceFileReference = NonNullable<ComposerSendMetadata['workspaceFileReferences']>[number];
 
@@ -39,12 +41,19 @@ export type ComposerSlashCommand =
   | { kind: 'graph'; command: ParsedGraphCommand }
   | { kind: 'swarm'; command: ParsedSwarmCommand };
 
+/** Whether a submit starts a turn, which the Host runs under the Session's settings. */
+function startsTurn(command: ComposerSlashCommand | null): boolean {
+  if (!command) return true;
+  return (command.kind === 'swarm' || command.kind === 'graph') && command.command.kind === 'run_once';
+}
+
 export interface RevisionDraftIdentity {
   sourceSessionId: string;
   draftSessionId: string;
 }
 
 type SubmitOptions = {
+  replacesLocalMessageId?: string;
   directoryReferences?: NonNullable<TransientUserMessageProjection['directoryReferences']>;
   quotes?: readonly QuoteRef[];
   workspaceFileReferences?: readonly WorkspaceFileReference[];
@@ -76,6 +85,18 @@ export interface RevisionSendShellCopy {
  * tests must call it rather than re-implementing its ordering.
  */
 export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
+  /**
+   * #4695: the Session's setting writes observed since the user's submit.
+   * Settled before a revision copies the Session or the send starts.
+   */
+  sendSettlement?: { settled(): Promise<boolean> };
+  /**
+   * Captures the surface and selection this submit came from; the returned
+   * check says whether the user is still on it. Navigation keeps the Session
+   * id, so the id alone cannot answer that (#1433). Required so the
+   * production wiring cannot be dropped silently.
+   */
+  captureSubmitSurface: () => () => boolean;
   shellCopy: RevisionSendShellCopy;
   toastApi: {
     info(title: string, description?: string): void;
@@ -92,6 +113,7 @@ export interface RevisionSendPorts<TDraft extends RevisionDraftIdentity> {
     text: string,
     mode: FollowUpMode,
     metadata?: ComposerSendMetadata,
+    staging?: ComposerStagingSubmission,
   ) => Promise<boolean>;
   settleNewTaskImageNoticeOwner: (sourceSessionId?: string) => void;
   commitRevisionDraft: (draft: TDraft | null) => void;
@@ -137,26 +159,22 @@ export function createStagedFollowUp(ports: {
     text: string,
     placement: 'current_turn' | 'next_turn',
     pending: readonly PendingAttachment[] | undefined,
-    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences'>,
+    options: Pick<SubmitOptions, 'directoryReferences' | 'quotes' | 'workspaceFileReferences' | 'replacesLocalMessageId'>,
   ): Promise<boolean>;
   onError(sessionId: string, error: unknown): void;
 }): RevisionSendPorts<RevisionDraftIdentity>['enqueueFollowUp'] {
-  return async (sessionId, text, mode, metadata) => {
-    const staging = ports.captureStaging();
-    try {
-      const sent = await ports.enqueueMessage(sessionId, text,
-        mode === 'steer' ? 'current_turn' : 'next_turn', staging.submittableAttachments, {
-          ...staging.directoryOptions, quotes: staging.quotesForSend(),
-          workspaceFileReferences: metadata?.workspaceFileReferences,
-        });
-      if (!sent) return false;
-      staging.clearSubmittedContext(staging.submittableAttachments);
-      staging.clearQuotes();
-      return true;
-    } catch (error) {
-      ports.onError(sessionId, error);
-      return false;
-    }
+  return async (sessionId, text, mode, metadata, captured) => {
+    const staging = captured ?? ports.captureStaging();
+    return composerFollowUp({
+      pending: staging.submittableAttachments,
+      retainAttachments: staging.retainAttachments,
+      quotes: staging.quotesForSend() ?? [],
+      directoryOptions: staging.directoryOptions,
+      enqueueMessage: ports.enqueueMessage,
+      clearSubmittedContext: staging.clearSubmittedContext,
+      clearQuotes: staging.clearQuotes,
+      onError: ports.onError,
+    })(sessionId, text, mode, metadata);
   };
 }
 
@@ -172,17 +190,24 @@ export function createStagedFollowUp(ports: {
  */
 export function createRevisionAwareOnSend<TDraft extends RevisionDraftIdentity>(
   ports: RevisionAwareOnSendPorts<TDraft>,
-): (text: string, metadata?: ComposerSendMetadata) => Promise<boolean | void> {
-  return async function sendOwningItsTarget(
-    text: string,
-    metadata?: ComposerSendMetadata,
-  ): Promise<boolean | void> {
-    ports.setNewTaskSendPending(true);
-    try {
-      return await revisionAwareSend(ports, text, metadata);
-    } finally {
-      ports.setNewTaskSendPending(false);
-    }
+): (
+  text: string,
+  metadata?: ComposerSendMetadata,
+  captured?: ComposerStagingSubmission,
+  settlement?: { settled(): Promise<boolean> },
+) => Promise<boolean | void> {
+  return (text, metadata, captured, settlement) => {
+    const staging = captured ?? ports.captureStaging();
+    return composerSend({
+      pending: staging.submittableAttachments,
+      retainAttachments: staging.retainAttachments,
+      setPending: ports.setNewTaskSendPending,
+      send: (value, context) => revisionAwareSend({
+        ...ports,
+        captureStaging: () => staging,
+        ...(settlement ? { sendSettlement: settlement } : {}),
+      }, value, context),
+    })(text, metadata);
   };
 }
 
@@ -218,21 +243,36 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const queued = await ports.enqueueFollowUp(sessionId, text, followUpAtSubmit, {
       ...metadata,
       workspaceFileReferences,
-    });
+    }, staging);
     if (queued) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
     return queued;
   }
-  if (revisionSend && revision) {
-    const actionCopy = ports.revisionUnavailableCopy;
-    if (staging.hasPendingContext) {
-      ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionAttachmentsUnsupported);
+  // #4695: settle before a revision copies the source Session's settings and
+  // before the send reads them; a failed write keeps the draft. Only a submit
+  // that starts a turn runs under those settings, so local commands skip it.
+  const settlement = startsTurn(slashCommand) ? ports.sendSettlement : undefined;
+  if (settlement) {
+    const surfaceIsCurrent = ports.captureSubmitSurface();
+    if (
+      !(await settlement.settled()) ||
+      ports.activeIdRef.current !== sessionId ||
+      !surfaceIsCurrent()
+    ) {
       return false;
     }
+  }
+  if (revisionSend && revision) {
+    const actionCopy = ports.revisionUnavailableCopy;
     if (slashCommand) {
       ports.toastApi.info(actionCopy.revisionUnavailableTitle, actionCopy.revisionCommandUnsupported);
       return false;
     }
+    // The attachments / mixed-context refusals live inside the revision
+    // lifecycle (prepareRevisionSend), which toasts and stops the send.
     if (!(await ports.prepareRevisionSend(text))) return false;
+    // A source write can still fail while the copy is prepared. The child
+    // stays prepared, so an explicit retry sends into it like any refusal.
+    if (settlement && !(await settlement.settled())) return false;
   }
   if (slashCommand?.kind === 'compact') {
     const compactSessionId = ports.activeIdRef.current;
@@ -292,6 +332,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const ok = await ports.send(swarmCommand.task, pending, {
       turnOrchestration: { mode: 'swarm', source: 'slash_command' },
       ...staging.directoryOptions,
+      ...(metadata?.replacesLocalMessageId
+        ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
+        : {}),
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
@@ -341,6 +384,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
     const ok = await ports.send(graphCommand.task, pending, {
       turnOrchestration: { mode: 'graph', source: 'slash_command' },
       ...staging.directoryOptions,
+      ...(metadata?.replacesLocalMessageId
+        ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
+        : {}),
       ...(quotes ? { quotes } : {}),
       ...(metadata?.workspaceFileReferences?.length
         ? {
@@ -363,12 +409,20 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   const expectedRevisionDraft = revisionSend
     ? ports.revisionDraftRef.current
     : undefined;
-  const quotes = staging.quotesForSend();
+  // The re-key lands the plate's current quotes on the branch child before
+  // this send, while this invocation's captured submission still holds the
+  // source bucket's snapshot — read the re-keyed owner explicitly so the
+  // replacement carries exactly what the user staged, edits included
+  // (#5274 review).
+  const quotes = staging.quotesForSend(expectedRevisionDraft?.draftSessionId);
   const ok = await ports.send(text, pending, {
     waitForHostAdmission: revisionSend,
     targetSessionId: expectedRevisionDraft?.draftSessionId,
     onSessionResolved: ports.resolveNewTaskSessionHandler(),
     ...staging.directoryOptions,
+    ...(metadata?.replacesLocalMessageId
+      ? { replacesLocalMessageId: metadata.replacesLocalMessageId }
+      : {}),
     ...(quotes ? { quotes } : {}),
     ...(workspaceFileReferences.length
       ? { workspaceFileReferences }
@@ -376,7 +430,9 @@ export async function revisionAwareSend<TDraft extends RevisionDraftIdentity>(
   });
   if (ok !== false) {
     staging.clearSubmittedContext(pending);
-    if (quotes) staging.clearQuotes();
+    // A revision's quotes now live under the branch child's bucket; clear
+    // that owner explicitly rather than the snapshot the submission captured.
+    if (quotes) staging.clearQuotes(expectedRevisionDraft?.draftSessionId);
     ports.settleNewTaskImageNoticeOwner(sessionId);
     if (sessionId) delete ports.retractedWorkspaceReferencesRef.current[sessionId];
   }

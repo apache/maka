@@ -238,18 +238,29 @@ test('a supervisor fault is reported as a failure before its tree is stopped', {
   const directory = await mkdtemp(join(tmpdir(), 'maka-owned-fault-'));
   const late = join(directory, 'late');
   const escapedLate = join(directory, 'escaped-late');
-  // Throw inside the real supervisor once it has admitted the command; the
-  // test plays the Host on the other end of its lease channel.
+  const escapedReady = join(directory, 'escaped-ready');
+  const probe = join(directory, 'probe');
+  // The escaped descendant must exist before the supervisor discovers its
+  // tree. `started` only means the direct command was spawned.
   const preload = join(directory, 'fault.cjs');
   await writeFile(
     preload,
-    `const send = process.send.bind(process);
-process.send = (message, ...rest) => {
-  const result = send(message, ...rest);
-  if (message && message.kind === 'started') setImmediate(() => { throw new Error('injected fault'); });
-  return result;
-};`,
+    `process.on('message', (message) => {
+  if (message && message.kind === 'inject-test-fault') throw new Error('injected fault');
+});`,
   );
+  // Arm the writes only after the supervisor exits, so startup scheduling
+  // cannot spend a fixed timer's budget before the fault is injected.
+  const writeOnProbe = (path: string) => `const fs = require('node:fs');
+    const timer = setInterval(() => {
+      if (!fs.existsSync(${JSON.stringify(probe)})) return;
+      fs.writeFileSync(${JSON.stringify(path)}, 'late');
+      clearInterval(timer);
+    }, 10);
+    setInterval(() => {}, 1000);`;
+  const escaped = `${writeOnProbe(escapedLate)}
+    fs.writeFileSync(${JSON.stringify(`${escapedReady}.tmp`)}, String(process.pid));
+    fs.renameSync(${JSON.stringify(`${escapedReady}.tmp`)}, ${JSON.stringify(escapedReady)});`;
   const supervisor = fork(fileURLToPath(new URL('../owned-process-main.js', import.meta.url)), [], {
     execArgv: ['--require', preload],
     stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
@@ -258,6 +269,7 @@ process.send = (message, ...rest) => {
   const messages: Array<{ kind: string; message?: string }> = [];
   supervisor.on('message', (message) => messages.push(message as (typeof messages)[number]));
   const exited = new Promise((resolve) => supervisor.once('exit', resolve));
+  let escapedPid: number | undefined;
   try {
     supervisor.send({
       kind: 'launch',
@@ -266,22 +278,33 @@ process.send = (message, ...rest) => {
         '-e',
         // The command also starts a descendant in its own session, outside the
         // supervisor's process group: only the supervisor's tree walk reaches it.
-        `const { spawn } = require('node:child_process');
-        spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(escapedLate)}, 'late'), 1000); setInterval(() => {}, 1000);`)}], { detached: true, stdio: 'ignore' }).unref();
-        setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(late)}, 'late'), 1000);
-        setInterval(() => {}, 1000);`,
+        `${writeOnProbe(late)}
+        require('node:child_process').spawn(process.execPath, ['-e', ${JSON.stringify(escaped)}], { detached: true, stdio: 'ignore' }).unref();`,
       ],
       cwd: directory,
       env: process.env,
       shell: false,
       inheritedFds: [],
     });
+    const deadline = Date.now() + 5000;
+    while (escapedPid === undefined) {
+      try {
+        escapedPid = Number(await readFile(escapedReady, 'utf8'));
+        assert.ok(Number.isSafeInteger(escapedPid) && escapedPid > 0);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      }
+      assert.ok(Date.now() < deadline, 'Escaped descendant did not start');
+      if (escapedPid === undefined) await delay(10);
+    }
+    supervisor.send({ kind: 'inject-test-fault' });
     await exited;
     assert.deepEqual(
       messages.map((message) => message.kind),
       ['started', 'failed'],
     );
     assert.equal(messages[1]?.message, 'Command supervisor failed: injected fault');
+    await writeFile(probe, 'probe');
     await delay(1200);
     await assert.rejects(readFile(late), { code: 'ENOENT' });
     await assert.rejects(readFile(escapedLate), { code: 'ENOENT' });
@@ -294,6 +317,13 @@ process.send = (message, ...rest) => {
       }
     }
     supervisor.kill('SIGKILL');
+    if (escapedPid !== undefined) {
+      try {
+        process.kill(escapedPid, 'SIGKILL');
+      } catch {
+        /* already exited */
+      }
+    }
     await rm(directory, { recursive: true, force: true });
   }
 });

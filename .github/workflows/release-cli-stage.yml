@@ -110,7 +110,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: '22.19.0'
+          node-version: '22.23.4'
           registry-url: https://registry.npmjs.org
           package-manager-cache: false
       - name: Select the staged-publishing npm toolchain

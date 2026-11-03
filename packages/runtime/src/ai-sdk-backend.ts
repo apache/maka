@@ -67,6 +67,7 @@ import { AiSdkCompaction } from './ai-sdk-compaction.js';
 import type { AiSdkCompactionCapabilities } from './ai-sdk-compaction-contract.js';
 import type { ToolArtifactRecorder } from './tool-artifacts.js';
 import type { RunTraceRecorder } from './run-trace.js';
+import type { TurnFinishContext, TurnFinishDecision } from './plugin-turn-finish-service.js';
 import { getBuiltinPricing } from './telemetry/builtin-pricing.js';
 import { ProviderRequestTelemetry } from './provider-request-telemetry.js';
 import { AiSdkMessageProjection } from './ai-sdk-message-projection.js';
@@ -133,7 +134,12 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   /** Canonical-named tools available this session. */
   tools: MakaTool[];
   /** Trusted scoped catalog sampled before each logical model step. */
-  resolveTools?: () => readonly MakaTool[];
+  resolveTools?: (identity: {
+    readonly sessionId: string;
+    readonly turnId: string;
+    readonly runId?: string;
+    readonly invocationId?: string;
+  }) => readonly MakaTool[];
   /** Diagnostic-only Plan Mode/execution identity snapshot. */
   planTraceContext?: {
     mode: 'agent' | 'plan';
@@ -152,6 +158,8 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   now?: () => number;
   /** Optional cap on tool-call steps per turn; omitted means no step cap. */
   maxSteps?: number;
+  /** Checks a natural model finish before the current turn is sealed. */
+  beforeTurnFinish?: (context: TurnFinishContext) => Promise<TurnFinishDecision>;
   /** Timeout before first SDK stream event; default 30s. */
   streamConnectTimeoutMs?: number;
   /** Timeout between SDK/tool events; paused while a tool is active. Default 120s. */
@@ -178,7 +186,7 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
   recordToolInvocation?: ToolTelemetryRecorder;
   /** Optional Phase 2 SQLite T1/T2 boundary for real tool execution. */
   runtimeCommitSink?: RuntimeCommitSink;
-  /** Durable session-lifetime cumulative usage checkpoint after each completed provider step. */
+  /** Durable cumulative usage after completed steps and explicitly metered failed requests. */
   recordUsageCheckpoint?: (
     usage: NormalizedAiSdkUsage & { costUsd?: number },
   ) => void | Promise<void>;
@@ -243,8 +251,10 @@ export interface AiSdkBackendInput extends AiSdkCompactionCapabilities {
 }
 
 export interface ResolvedSystemPrompt {
+  /** Require a tool step until the Host-owned prerequisite is settled. */
+  readonly requireToolCall?: boolean;
   text?: string;
-  /** Per-step ephemeral user-role context, resolved once per logical request. */
+  /** Named host context: changes are appended durably once per logical request. */
   contexts?: readonly { readonly name: string; readonly text: string }[];
   sourceRevisions: readonly RunCompositionSourceRevision[];
 }
@@ -438,11 +448,18 @@ export class AiSdkBackend implements AgentBackend {
       : [];
   }
 
-  private snapshotToolAvailability(): {
+  private snapshotToolAvailability(identity: BackendSendInput): {
     hostTools: readonly MakaTool[];
     runtime: ToolAvailabilityRuntime;
   } {
-    const hostTools = Object.freeze([...(this.input.resolveTools?.() ?? this.input.tools)]);
+    const hostTools = Object.freeze([
+      ...(this.input.resolveTools?.({
+        sessionId: this.sessionId,
+        turnId: identity.turnId,
+        ...(identity.runId ? { runId: identity.runId } : {}),
+        ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
+      }) ?? this.input.tools),
+    ]);
     if (
       hostTools.some(
         (tool) => tool.name === MEMORY_REMEMBER_TOOL_NAME || tool.name === MEMORY_EXTRACT_TOOL_NAME,
@@ -491,6 +508,7 @@ export class AiSdkBackend implements AgentBackend {
     runId: string | undefined;
     invocationId: string | undefined;
     hostedInteraction: HostedInteractionBridge | undefined;
+    waitForSteering: BackendSendInput['waitForSteering'];
     orchestrationMode: EffectiveOrchestration['mode'];
     scope: () => AiSdkTurn;
   }): ToolRuntime {
@@ -510,6 +528,7 @@ export class AiSdkBackend implements AgentBackend {
       getPermissionPauseTarget: () => identity.scope().watchdog,
       turnId: identity.turnId,
       ...(identity.hostedInteraction ? { hostedInteraction: identity.hostedInteraction } : {}),
+      ...(identity.waitForSteering ? { waitForSteering: identity.waitForSteering } : {}),
       ...(identity.runId ? { runId: identity.runId } : {}),
       orchestrationMode: identity.orchestrationMode,
       ...(identity.invocationId ? { invocationId: identity.invocationId } : {}),
@@ -551,7 +570,7 @@ export class AiSdkBackend implements AgentBackend {
         messageProjection: this.messageProjection,
         providerTelemetry: this.providerTelemetry,
         compaction: this.compaction,
-        snapshotToolAvailability: () => this.snapshotToolAvailability(),
+        snapshotToolAvailability: () => this.snapshotToolAvailability(input),
         sessionActiveTools: this.sessionActiveTools,
         codeCellAdmission: this.codeCellAdmission,
         resolvedProviderOptions: this.resolvedProviderOptions,
@@ -567,6 +586,7 @@ export class AiSdkBackend implements AgentBackend {
             runId: owner.runId,
             invocationId: input.invocationId ?? input.runId,
             hostedInteraction: input.hostedInteraction,
+            waitForSteering: input.waitForSteering,
             orchestrationMode: owner.orchestration.mode,
             scope: () => owner,
           }),

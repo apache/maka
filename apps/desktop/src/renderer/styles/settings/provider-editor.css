@@ -88,3 +88,20 @@
   margin-block-start: 8px;
   accent-color: var(--primary);
 }
+
+/* The settings pane remains the only scroll owner. Sticky bottom keeps Save
+   reachable even when the model catalog extends far below the viewport. */
+.providerModelsSaveBar {
+  position: sticky;
+  bottom: 0;
+  z-index: var(--z-sticky);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-3);
+  padding: var(--space-4);
+  border-top: 1px solid var(--border);
+  background: var(--agents-content-area-bg);
+  font: var(--maka-text-supporting);
+}

@@ -49,6 +49,7 @@ import { useExternalAgentSettingsServices } from './services.js';
 
 type Props = {
   settings: AppSettings;
+  initialExecutorId?: string;
   onUpdate(
     patch: UpdateAppSettingsInput,
     guard?: RuntimeHostSettingsUpdateGuard,
@@ -72,7 +73,10 @@ function AntigravityLogo() {
   );
 }
 function ExternalAgentsContent(props: Props) {
-  const [showSetup, setShowSetup] = useState(false);
+  const [showSetup, setShowSetup] = useState(props.initialExecutorId === 'antigravity-acp');
+  useEffect(() => {
+    setShowSetup(props.initialExecutorId === 'antigravity-acp');
+  }, [props.initialExecutorId]);
   const copy = getExternalAgentsCopy(useUiLocale());
   const configured = Boolean(props.settings.externalAgents.antigravity.executable);
   if (showSetup) return <AntigravitySetup {...props} onBack={() => setShowSetup(false)} />;

@@ -89,6 +89,7 @@ const baseDesktopBuilderConfig = {
   files: [
     'dist/**/*',
     'dist-renderer/**/*',
+    'dist-assistant-web/**/*',
     'package.json',
     // Keep node-gyp's checkout-specific projects and link intermediates out.
     // Native addons, the Unix spawn helper and ConPTY's DLL/helper are runtime files.

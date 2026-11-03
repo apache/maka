@@ -35,6 +35,8 @@ import { useAppShellTurnPresentation } from '../../../application/contracts/turn
 import { getShellCopy } from '../../../locales/shell-copy.js';
 import { composerTurnGates, desktopComposerSlashCommands } from '../model/composer-turn-gates.js';
 import { executorComposerProps } from '../model/executor-composer.js';
+import { ExecutorBrandMark } from './executor-brand-marks.js';
+import type { LatestRequestUsage } from '../../../application/contracts/session-inspector/latest-request-usage.js';
 import { liveTurnFlags } from '../model/live-turn-flags.js';
 
 /** The displayed Session's Turn, read at chrome frequency. */
@@ -47,6 +49,7 @@ type ChatProps = ComponentProps<typeof ChatView>;
 type TranscriptProps = Pick<ChatProps,
   'onStreamingSettled' | 'messages' | 'transientMessages' | 'messageLoading' | 'messageLoadError' | 'messageLoadRetryPending' |
   'onRetryMessages' | 'hasEarlierHistory' | 'onLoadEarlierHistory' | 'transcriptTurnIndex' |
+  'hasLaterHistory' | 'onLoadLaterHistory' | 'onLoadLatestHistory' |
   'onLoadTranscriptTurn' | 'restoreTargetTurn' | 'onReadingAnchorChange' | 'viewportNavigation' |
   'deriveTurnPresentation' | 'safeResumeAction'
 > & {
@@ -54,8 +57,9 @@ type TranscriptProps = Pick<ChatProps,
   activeTurn: ReturnType<typeof chatTurnActivity>;
   sessionHealthModelPickerAvailable: boolean;
 };
-/** What the shell knows that the health notice's picker gate combines with the running Turn. */
+/** Shell-owned inputs for transcript action and health-notice gates. */
 type TranscriptGateInputs = {
+  activeSession?: ChatProps['activeSession'];
   /** The owner Session's execution boundary admits local interaction. */
   localInteractionAvailable: boolean;
   visible?: boolean;
@@ -71,7 +75,7 @@ export function ConversationTranscriptRegion<P extends object>(
   const turnReader = useComposerTurnReader();
   // Pending Turn-footer marks come from the submission owner that sets them.
   const deriveTurnPresentation = useAppShellTurnPresentation({
-    allowBranch: !turnReader.sharedSessionActive,
+    allowBranch: !turnReader.sharedSessionActive && !props.activeSession?.labels?.includes('personal-assistant'),
     activeId: turnReader.activeId,
     pendingTurnActions: turnReader.pendingTurnActions,
     uiLocale: useUiLocale(),
@@ -95,7 +99,10 @@ export function ConversationTranscriptRegion<P extends object>(
     onRetryMessages: sessionId ? () => { void commands.retryMessages(sessionId); } : undefined,
     viewportNavigation: workspace.ui.transcriptViewportNavigation,
     hasEarlierHistory: view.range?.sessionId === sessionId ? view.range?.hasOlder : undefined,
+    hasLaterHistory: view.range?.sessionId === sessionId ? view.range?.hasNewer : undefined,
     onLoadEarlierHistory: () => readingCommands.current?.loadEarlier(),
+    onLoadLaterHistory: () => readingCommands.current?.loadNewer(),
+    onLoadLatestHistory: () => readingCommands.current?.showLatest(),
     transcriptTurnIndex: view.turnIndex?.sessionId === sessionId ? view.turnIndex?.turns : undefined,
     onLoadTranscriptTurn: (turn) => readingCommands.current?.loadEarlier(turn.sequence),
     restoreTargetTurn: transcriptRestoreTarget(sessionId ? workspace.ui.transcriptReadingAnchorBySessionRef.current[sessionId] : undefined, load.unavailableTranscriptRestore),
@@ -128,7 +135,7 @@ type TurnGatedProps = ReturnType<typeof composerTurnGates> & ReturnType<typeof e
 type ComposerProps = SubmissionProps & TurnGatedProps & {
   /** The owner's editor handle; regions outside Conversation get named edits instead. */
   composerRef: ReturnType<typeof useConversationQueueCommands>['composer'];
-  processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsageTokens?: number;
+  processing: boolean; pendingMessages: ChatProps['transientMessages']; latestRequestUsage?: LatestRequestUsage;
   /** The owner Session's open interaction; the Composer slot answers it. */
   activeInteraction: ComposerInteraction | undefined;
   queuedMessages: UiComposerProps['queuedMessages'];
@@ -138,12 +145,13 @@ type ComposerProps = SubmissionProps & TurnGatedProps & {
 type ComposerGateInputs = {
   /** The displayed Session's catalog row: whether it has arrived, and its status. */
   sessionState: { loaded: boolean; status: SessionStatus | undefined };
-  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive' | 'sendPending'> & {
+  executorComposer: Omit<Parameters<typeof executorComposerProps>[1], 'activeId' | 'turnActive' | 'sendPending' | 'renderExecutorMark'> & {
     selection: Parameters<typeof executorComposerProps>[0];
   };
 };
 /** The shell's picker gates; an edit-and-resend draft narrows them here. */
 type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?: boolean };
+type OwnedComposerProps = ComposerProps & { canStageContext: boolean; allowAttachmentOnlySend?: boolean };
 /**
  * Lives in the persistent composer slot, outside the conditional transcript.
  * Submission state (send pending, Stop pending, the edit-and-resend draft) and
@@ -154,7 +162,7 @@ type ComposerPickGates = { contextPickEnabled?: boolean; directoryPickerEnabled?
  */
 export function ConversationComposerRegion<P extends object>(
   props: { surface: ComponentType<P>; usageModel?: string; usageRoute?: { llmConnectionId?: string } }
-    & ComposerGateInputs & Omit<P, keyof ComposerProps>,
+    & ComposerGateInputs & Omit<P, keyof OwnedComposerProps>,
 ) {
   const { surface, usageModel, usageRoute, sessionState, executorComposer, ...presentation } = props;
   const { workspace } = useConversationOwner();
@@ -175,13 +183,16 @@ export function ConversationComposerRegion<P extends object>(
   const { selection: executor, ...executorInput } = executorComposer;
   const view = useSyncExternalStore(workspace.composer.subscribe, workspace.composer.getSnapshot);
   const usage = useMemo(() => workspace.usage(usageModel, usageRoute?.llmConnectionId), [workspace, usageModel, usageRoute?.llmConnectionId]);
-  const latestRequestUsageTokens = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
+  const latestRequestUsage = useSyncExternalStore(usage.subscribe, usage.getSnapshot);
   const stopPending = useSessionUiRead(workspace.ui.reads, 'stop', activeId);
   const draft = submission.revisionDraft;
   const editing = draft !== null && activeId === draft.draftSessionId;
-  const gates = presentation as ComposerPickGates;
-  const owned: ComposerProps & ComposerPickGates = {
+  const gates = presentation as ComposerPickGates & Pick<UiComposerProps, 'renderProviderMark'>;
+  const owned: OwnedComposerProps & ComposerPickGates = {
     composerRef,
+    // Picking and sending staged context share the shell's single availability input.
+    canStageContext: gates.contextPickEnabled ?? false,
+    allowAttachmentOnlySend: gates.contextPickEnabled,
     activeInteraction: interaction,
     queuedMessages: queue?.entries,
     queuedMessageRevision: queue?.queueRevision,
@@ -196,6 +207,7 @@ export function ConversationComposerRegion<P extends object>(
     }),
     // Executor changes and sends stay locked until the pending send's Host admission settles.
     ...executorComposerProps(executor, {
+      renderExecutorMark: (entry) => <ExecutorBrandMark entry={entry} renderProviderMark={gates.renderProviderMark} />,
       ...executorInput, activeId, turnActive: turn.turnActive, sendPending: submission.newTaskSendPending,
     }),
     onSend: submission.onSend,
@@ -221,7 +233,7 @@ export function ConversationComposerRegion<P extends object>(
       : {}),
     processing: view.transientMessages.length > 0,
     pendingMessages: view.transientMessages,
-    latestRequestUsageTokens,
+    latestRequestUsage,
   };
   return createElement(surface, { ...presentation, ...owned } as unknown as P);
 }

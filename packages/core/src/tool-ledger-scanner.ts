@@ -141,11 +141,7 @@ export type GenericToolLedgerAppendValidation =
       eventId: string;
     };
 
-export type ToolLedgerTransitionKind =
-  | 'generic_append'
-  | 't1_prepare'
-  | 't2_outcome'
-  | 'recovery_bundle';
+export type ToolLedgerTransitionKind = 'generic_append' | 't1_prepare' | 't2_outcome';
 
 /** Every reason the ledger has for refusing a candidate event. */
 export type ToolLedgerRejectionCode =
@@ -708,15 +704,7 @@ function validateTransitionShape(
     (expectedTransition === 't2_outcome' &&
       actual.length === 1 &&
       actual[0] === 'function_response' &&
-      events[0]?.refs?.operationId !== undefined) ||
-    (expectedTransition === 'recovery_bundle' &&
-      ((actual.length === 2 &&
-        actual[0] === 'reconcile_result' &&
-        actual[1] === 'recovery_decision') ||
-        (actual.length === 3 &&
-          actual[0] === 'reconcile_result' &&
-          actual[1] === 'function_response' &&
-          actual[2] === 'recovery_decision')));
+      events[0]?.refs?.operationId !== undefined);
   if (valid) return { ok: true };
   return {
     ok: false,

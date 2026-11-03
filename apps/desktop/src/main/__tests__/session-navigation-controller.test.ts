@@ -17,10 +17,13 @@
  * under the License.
  */
 
+import { AssistantSessionVisibilityProvider } from '../../renderer/application/contracts/session-catalog/assistant-session-visibility.js';
 import { strict as assert } from 'node:assert';
 import { afterEach, describe, it } from 'node:test';
 import { act, createElement, type ReactNode } from 'react';
 import type { ProjectRecord } from '@maka/core/project';
+import { MakaClientSlotCore, MakaClientSlotProvider } from '@maka/ui/client-plugin';
+import { selectPaletteSessions } from '../../renderer/application/contracts/session-catalog/session-rail-visibility.js';
 import {
   LocaleProvider,
   useSessionRailData,
@@ -204,6 +207,7 @@ function navigationTree(
   shell: {
     activeSessionId: string;
     workHubActive: boolean;
+    surfaceObscured?: boolean;
     onOpenWorkHub?(): void;
   },
   sibling: ReactNode,
@@ -216,7 +220,7 @@ function navigationTree(
 ) {
   return createElement(LocaleProvider, {
     locale: 'en',
-    children: createElement(WorkHubEnablementProvider, { value: authorities.workHub ?? WORKHUB_OFF },
+    children: createElement(AssistantSessionVisibilityProvider, { value: { getSnapshot: () => false, subscribe: () => () => {}, setVisible: async () => {} } }, createElement(WorkHubEnablementProvider, { value: authorities.workHub ?? WORKHUB_OFF },
       createElement(OnboardingAuthorityProvider, { value: authorities.onboarding ?? onboardingWith(null) }, createElement(
       SessionNavigationServicesProvider,
       { services: fakeServices },
@@ -240,7 +244,7 @@ function navigationTree(
         },
         child,
       ),
-    ))),
+    )))),
   });
 }
 
@@ -312,7 +316,7 @@ describe('useSessionNavigationController', () => {
     );
     assert.deepEqual(
       controller().selectors.groups.map(({ label }) => label),
-      ['Project · Local', 'Project · Remote Mac', 'Project · Ubuntu'],
+      ['Project', 'Project', 'Project'],
     );
     assert.equal(
       controller().selectors.sessionMeta(linkedCatalog[2]!),
@@ -504,6 +508,29 @@ describe('useSessionNavigationReads', () => {
   afterEach(() => {
     latestReads = undefined;
     latestRail = undefined;
+  });
+
+  it('keeps the entry selected outside the rail, hides its overlay context in settings, and restores rows on unload', async () => {
+    const { root } = installReactRenderer();
+    const catalog = createSessionCatalogController();
+    const sessions = [session('assistant', { labels: ['plugin-owned'] }), session('normal')];
+    catalog.commitSessions(sessions);
+    const core = new MakaClientSlotCore();
+    const remove = core.register({ name: 'sidebar.navigation', id: 'fixture', sessionLabels: ['plugin-owned'] }, () => null);
+    const render = (surfaceObscured = false) => root.render(
+      createElement(MakaClientSlotProvider, { core }, navigationTree(
+        catalog, { activeSessionId: 'assistant', workHubActive: false, surfaceObscured },
+        null, createElement(RailProbe),
+      )),
+    );
+    await act(async () => render());
+    assert.deepEqual(latestRail?.sessions.map(item => item.id), ['normal']);
+    assert.equal(latestRail?.navigationSessionId, 'assistant');
+    assert.equal(latestRail?.activeId, undefined);
+    await act(async () => render(true));
+    assert.equal(latestRail?.navigationSessionId, undefined);
+    await act(async () => { remove(); });
+    assert.deepEqual(latestRail?.sessions.map(item => item.id), ['assistant', 'normal']);
   });
 
   it('projects linked, archived, hidden, side-conversation, Project, and Runtime Host Sessions once', async () => {
@@ -734,4 +761,20 @@ describe('createSessionOpenCommand', () => {
     );
     assert.equal(targets[1], null);
   });
+});
+
+
+it('plugin-owned Sessions stay addressable but are absent from ordinary and flagged rails', () => {
+  const assistant = session('assistant', { labels: ['plugin-owned'], isFlagged: true });
+  const normal = session('normal');
+  const sessions = [assistant, normal];
+  const labels = new Set(['plugin-owned']);
+  const rail = deriveSessionRail(sessions, assistant.id, item => sessionMatchesRail(item, labels));
+  assert.deepEqual(rail.sessions.map(item => item.id), ['normal']);
+  assert.equal(rail.activeRowId, undefined);
+  assert.equal(sessions.find(item => item.id === 'assistant'), assistant);
+  const catalog = createSessionCatalogController();
+  catalog.commitSessions(sessions);
+  assert.deepEqual(selectPaletteSessions(catalog.getState(), new Set(), labels).map(item => item.id), ['normal']);
+  assert.equal(sessionMatchesRail(assistant), true); // Removing the entry restores access via the ordinary list.
 });

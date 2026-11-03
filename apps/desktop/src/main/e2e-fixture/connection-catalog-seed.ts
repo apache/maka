@@ -32,6 +32,7 @@ import {
   resolveStorageRoot,
   tryAcquireInteractiveRootOwner,
 } from '@maka/storage/root-authority';
+import { CHECKIN_FIXTURE_CONNECTION, CHECKIN_FIXTURE_MODEL } from './scenarios-checkin.js';
 
 interface ConnectionSeed {
   readonly draft: ConnectionCatalogEntryDraft;
@@ -67,11 +68,42 @@ export async function seedSettingsConnectionCatalog(
   const showEmptyConnectionFirst = scenario === 'settings-connections';
   const zai = zaiSeed(now);
   const empty = emptySeed(showEmptyConnectionFirst);
+  if (scenario === 'checkin') {
+    await seedCatalog(workspaceRoot, {
+      connections: [checkinSeed(now), zai, empty],
+      defaultTarget: { slug: CHECKIN_FIXTURE_CONNECTION, modelId: CHECKIN_FIXTURE_MODEL },
+    });
+    return;
+  }
   const connections = showEmptyConnectionFirst ? [empty, zai] : [zai, empty];
   await seedCatalog(workspaceRoot, {
     connections,
     defaultTarget: { slug: 'zai-live', modelId: 'glm-5.1' },
   });
+}
+
+/**
+ * A real provider with a placeholder key: the person trying check-in replaces
+ * it with their own in Settings, and every check-in fixture Session already
+ * runs on it. The catalog needs some key before it records a model list.
+ */
+function checkinSeed(now: number): ConnectionSeed {
+  const models = [
+    fixtureModel(CHECKIN_FIXTURE_MODEL, { functionCalling: true }, 128_000),
+    fixtureModel('deepseek-v4-pro', { reasoning: true, functionCalling: true }, 128_000),
+  ];
+  return {
+    draft: {
+      slug: CHECKIN_FIXTURE_CONNECTION,
+      name: 'DeepSeek (check-in fixture, add your key)',
+      providerType: 'deepseek',
+      baseUrl: 'https://api.deepseek.com',
+      enabled: true,
+      enabledModelIds: models.map(({ id }) => id),
+    },
+    apiKey: 'replace-with-your-deepseek-key',
+    modelInventory: { models, fetchedAt: now - 5 * 60_000 },
+  };
 }
 
 function zaiSeed(now: number): ConnectionSeed {

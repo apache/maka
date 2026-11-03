@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import { defineShippedUiMessageCatalog, resolveUiMessageCatalog } from '@maka/core/ui-locale';
+
 import type { InspectorCopy } from './session-inspector/copy.js';
 
 import type { ChatConfigurationReason } from '@maka/core/connection-readiness';
@@ -41,6 +43,8 @@ export interface DesktopConversationCopy {
     revisionReadyTitle: string;
     revisionReadyDescription: string;
     revisionUnavailableTitle: string;
+    revisionDraftQuoteConflict: string;
+    revisionMixedContextUnsupported: string;
     revisionAttachmentsUnsupported: string;
     revisionTransformedTextUnsupported: string;
     revisionDraftAttachmentConflict: string;
@@ -73,6 +77,7 @@ export interface DesktopConversationCopy {
     labels: Record<'branch' | 'copy', string>;
     pending: string;
     branchRunning: string;
+    branchUnavailable: string;
     branchAborted: string;
     branch: string;
     copy: string;
@@ -286,6 +291,7 @@ const ZH_CALL_KIND: CallKindCopy = {
   goal_evaluation: '目标评估',
   session_title: '生成任务标题',
   session_recap: '任务回顾',
+  session_checkin: '签到',
   prompt_suggestion: '下一步输入建议',
   daily_review: '每日回顾',
   workhub_intent: 'WorkHub 意图识别',
@@ -299,6 +305,7 @@ const ZH_TW_CALL_KIND: CallKindCopy = {
   goal_evaluation: '目標評估',
   session_title: '生成任務標題',
   session_recap: '任務回顧',
+  session_checkin: '簽到',
   prompt_suggestion: '下一步輸入建議',
   daily_review: '每日回顧',
   workhub_intent: 'WorkHub 意圖識別',
@@ -312,6 +319,7 @@ const EN_CALL_KIND: CallKindCopy = {
   goal_evaluation: 'Goal evaluation',
   session_title: 'Task title',
   session_recap: 'Task recap',
+  session_checkin: 'Check-in',
   prompt_suggestion: 'Prompt suggestion',
   daily_review: 'Daily review',
   workhub_intent: 'WorkHub intent',
@@ -364,9 +372,9 @@ function enDetail(parts: readonly string[]): string {
   return parts.length > 0 ? `: ${parts.join(', ')}` : '';
 }
 
-const COPY = {
+const COPY = resolveUiMessageCatalog(defineShippedUiMessageCatalog<DesktopConversationCopy>()({
   'zh-CN': {
-    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；发送后将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；可直接重发或修改后发送', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '这条消息自带的附件不参与编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', folderNotAttachable: '文件夹不能作为附件添加。', folderNotAttachableUseReference: '文件夹不能作为附件添加，请改用“引用文件夹”。', imageAttachmentNotDirectTitle: '图片已作为附件添加', imageAttachmentNotDirectDescription: '当前模型不会直接接收图片。图片已作为附件提供给模型。', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', scrollMainToBottom: '滚动主对话到底部' },
+    actions: { stopFailedTitle: '停止失败', stopFailedFallback: '任务操作失败，请稍后重试。', refreshSessionsFailedTitle: '刷新任务列表失败', refreshSessionsFailedFallback: '刷新任务列表失败，请稍后重试。', conversationErrorTitle: '任务出错', conversationErrorFallback: '任务运行失败，请稍后重试。', branchCreatedTitle: '已创建分支', branchCreatedDescription: (name) => `新任务 ${name}`, revisionStartedTitle: '已创建修改版草稿', revisionStartedDescription: '原任务仍会保留；发送后将在新版本中继续', revisionReadyTitle: '可以修改并重发了', revisionReadyDescription: '已回到该消息之前；可直接重发或修改后发送', revisionUnavailableTitle: '暂时无法编辑这条消息', revisionAttachmentsUnsupported: '这条消息自带的附件不参与编辑并重发，请复制文字后新建消息。', revisionTransformedTextUnsupported: '通过显式技能发送的历史消息暂不支持编辑并重发，请复制文字后重新选择技能。', revisionDraftAttachmentConflict: 'Composer 中已有待发送附件，请先发送或移除附件，再编辑历史消息。', revisionDraftQuoteConflict: 'Composer 中已有暂存引用，请先发送或移除引用，再编辑历史消息。', revisionMixedContextUnsupported: '编辑期间新增的暂存内容不能与恢复的引用一起发送，请取消本次编辑后重试。', revisionCommandUnsupported: '修改消息时不能执行 /compact、/side 或编排命令，请取消修改后再试。', revisionAlreadyActive: '已有一条消息正在修改，请先发送或取消当前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已发送消息', revisionBannerDetail: '· 发送后创建新版本', operationFailedTitle: '操作失败', operationFailedFallback: '任务操作失败，请稍后重试。', attachmentFailedTitle: '添加附件失败', folderNotAttachable: '文件夹不能作为附件添加。', folderNotAttachableUseReference: '文件夹不能作为附件添加，请改用“引用文件夹”。', imageAttachmentNotDirectTitle: '图片已作为附件添加', imageAttachmentNotDirectDescription: '当前模型不会直接接收图片。图片已作为附件提供给模型。', tryAgain: '请稍后重试。', modelReboundTitle: '已切换到可用模型', modelReboundDescription: (modelId) => `原任务使用的连接已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '读取任务失败', scrollMainToBottom: '滚动主对话到底部' },
     model: {
       fakeBackendLabel: '本地模拟连接',
       setupTitle: '等待配置真实模型',
@@ -385,7 +393,7 @@ const COPY = {
         provider_retired: '当前任务绑定的连接，其登录方式已从 Maka 移除，无法用于发送。请到 设置 · 模型 改用其他连接后新建任务。',
       },
     },
-    footer: { labels: { branch: '分支', copy: '复制' }, pending: '正在处理…', branchRunning: '当前回答仍在进行中，结束后再分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
+    footer: { labels: { branch: '分支', copy: '复制' }, pending: '正在处理…', branchRunning: '当前回答仍在进行中，结束后再分支', branchUnavailable: '这是个人助手的后台回合，无法从它分支', branchAborted: '从中断前的上下文分支出新任务', branch: '基于此回答的上下文分支出新任务', copy: '复制回答到剪贴板', copyEmpty: '此回答尚无可复制的内容' },
     lineage: { regeneratedFrom: '重新生成自旧回答', regeneratedFromTooltip: '这是重新生成的并行回答，点击查看被保留的旧回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '点击跳转到重新生成的新回答' },
     workbar: {
       ariaLabel: '任务工作栏',
@@ -616,7 +624,7 @@ const COPY = {
     turnError: { streamTruncated: '响应中途断开。', requestRejected: '模型服务拒绝了请求，请检查模型与请求配置。', retryExhausted: '已达到自动重试次数上限。', retryDeclined: { side_effects: '本次已有工具活动，为避免重复操作，未自动重试。请先检查工具结果。', observable_output: '本次已有部分输出，未自动重试。请先检查已保留的内容。', policy: '按当前重试规则，本次未自动重试。', budget: '本次执行预算已用尽，未自动重试。' }, unknown: '出错了，暂时无法确定原因。', contextOverflow: '上下文超出模型窗口限制，减少附件或开启新任务。', timeout: '模型请求超时。', auth: '模型鉴权失败，请到设置里重新连接或登录。', providerBilling: '模型服务计费受限，请检查账号余额或订阅状态。', providerCapacity: '模型服务暂时满载。', rateLimit: '模型请求太频繁被限流了。', network: '网络连接失败，请检查网络。', provider: '模型服务返回错误。', stepCap: '达到工具调用步数上限，任务可能没做完。发消息让它继续。', tool: '工具调用失败，看一下上面的工具结果再决定要不要重试。', permission: '这一轮在等权限确认时结束了，重新发消息会再问一次。', restarted: '本地应用重启，上一轮没有完成', sandboxBoundaryClosed: '本地应用重启时，等待确认的「允许访问工作区以外的内容」请求已按拒绝关闭。重新发消息可以再决定一次。', executionState: { erroredTool: '这一轮有工具执行出错，先看它的结果，再决定要不要重发。', toolRan: '这一轮已经执行过工具，可能已经产生实际改动，重发前先看工具结果。' } },
   },
   'zh-TW': {
-    actions: { stopFailedTitle: '停止失敗', stopFailedFallback: '任務操作失敗，請稍後重試。', refreshSessionsFailedTitle: '重新整理任務列表失敗', refreshSessionsFailedFallback: '重新整理任務列表失敗，請稍後重試。', conversationErrorTitle: '任務出錯', conversationErrorFallback: '任務執行失敗，請稍後重試。', branchCreatedTitle: '已建立分支', branchCreatedDescription: (name) => `新任務 ${name}`, revisionStartedTitle: '已建立修改版草稿', revisionStartedDescription: '原任務仍會保留；傳送後將在新版本中繼續', revisionReadyTitle: '可以修改並重發了', revisionReadyDescription: '已回到該訊息之前；可直接重發或修改後傳送', revisionUnavailableTitle: '暫時無法編輯這條訊息', revisionAttachmentsUnsupported: '這條訊息自帶的附件不參與編輯並重發，請複製文字後建立訊息。', revisionTransformedTextUnsupported: '透過顯式技能傳送的歷史訊息暫不支援編輯並重發，請複製文字後重新選擇技能。', revisionDraftAttachmentConflict: 'Composer 中已有待發送附件，請先發送或移除附件，再編輯歷史訊息。', revisionCommandUnsupported: '修改訊息時不能執行 /compact、/side 或編排命令，請取消修改後再試。', revisionAlreadyActive: '已有一條訊息正在修改，請先發送或取消目前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已傳送訊息', revisionBannerDetail: '· 傳送後建立新版本', operationFailedTitle: '操作失敗', operationFailedFallback: '任務操作失敗，請稍後重試。', attachmentFailedTitle: '新增附件失敗', folderNotAttachable: '資料夾不能作為附件新增。', folderNotAttachableUseReference: '資料夾不能作為附件新增，請改用「引用資料夾」。', imageAttachmentNotDirectTitle: '圖片已作為附件新增', imageAttachmentNotDirectDescription: '目前模型不會直接接收圖片。圖片已作為附件提供給模型。', tryAgain: '請稍後重試。', modelReboundTitle: '已切換到可用模型', modelReboundDescription: (modelId) => `原任務使用的連線已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '讀取任務失敗', scrollMainToBottom: '滾動主對話到底部' },
+    actions: { stopFailedTitle: '停止失敗', stopFailedFallback: '任務操作失敗，請稍後重試。', refreshSessionsFailedTitle: '重新整理任務列表失敗', refreshSessionsFailedFallback: '重新整理任務列表失敗，請稍後重試。', conversationErrorTitle: '任務出錯', conversationErrorFallback: '任務執行失敗，請稍後重試。', branchCreatedTitle: '已建立分支', branchCreatedDescription: (name) => `新任務 ${name}`, revisionStartedTitle: '已建立修改版草稿', revisionStartedDescription: '原任務仍會保留；傳送後將在新版本中繼續', revisionReadyTitle: '可以修改並重發了', revisionReadyDescription: '已回到該訊息之前；可直接重發或修改後傳送', revisionUnavailableTitle: '暫時無法編輯這條訊息', revisionAttachmentsUnsupported: '這條訊息自帶的附件不參與編輯並重發，請複製文字後建立訊息。', revisionTransformedTextUnsupported: '透過顯式技能傳送的歷史訊息暫不支援編輯並重發，請複製文字後重新選擇技能。', revisionDraftAttachmentConflict: 'Composer 中已有待發送附件，請先發送或移除附件，再編輯歷史訊息。', revisionDraftQuoteConflict: 'Composer 中已有暫存引用，請先發送或移除引用，再編輯歷史訊息。', revisionMixedContextUnsupported: '編輯期間新增的暫存內容不能與恢復的引用一起傳送，請取消本次編輯後重試。', revisionCommandUnsupported: '修改訊息時不能執行 /compact、/side 或編排命令，請取消修改後再試。', revisionAlreadyActive: '已有一條訊息正在修改，請先發送或取消目前修改。', revisionCancelLabel: '取消', revisionBannerTitle: '正在修改已傳送訊息', revisionBannerDetail: '· 傳送後建立新版本', operationFailedTitle: '操作失敗', operationFailedFallback: '任務操作失敗，請稍後重試。', attachmentFailedTitle: '新增附件失敗', folderNotAttachable: '資料夾不能作為附件新增。', folderNotAttachableUseReference: '資料夾不能作為附件新增，請改用「引用資料夾」。', imageAttachmentNotDirectTitle: '圖片已作為附件新增', imageAttachmentNotDirectDescription: '目前模型不會直接接收圖片。圖片已作為附件提供給模型。', tryAgain: '請稍後重試。', modelReboundTitle: '已切換到可用模型', modelReboundDescription: (modelId) => `原任務使用的連線已不可用${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: '讀取任務失敗', scrollMainToBottom: '滾動主對話到底部' },
     model: {
       fakeBackendLabel: '本地模擬連線',
       setupTitle: '等待設定真實模型',
@@ -635,7 +643,7 @@ const COPY = {
         provider_retired: '目前任務繫結的連線，其登入方式已從 Maka 移除，無法用於傳送。請到 設定 · 模型 改用其他連線後建立任務。',
       },
     },
-    footer: { labels: { branch: '分支', copy: '複製' }, pending: '正在處理…', branchRunning: '目前回答仍在進行中，結束後再分支', branchAborted: '從中斷前的上下文分支出新任務', branch: '基於此回答的上下文分支出新任務', copy: '複製回答到剪貼簿', copyEmpty: '此回答尚無可複製的內容' },
+    footer: { labels: { branch: '分支', copy: '複製' }, pending: '正在處理…', branchRunning: '目前回答仍在進行中，結束後再分支', branchUnavailable: '這是個人助理的背景回合，無法從它分支', branchAborted: '從中斷前的上下文分支出新任務', branch: '基於此回答的上下文分支出新任務', copy: '複製回答到剪貼簿', copyEmpty: '此回答尚無可複製的內容' },
     lineage: { regeneratedFrom: '重新生成自舊回答', regeneratedFromTooltip: '這是重新生成的並行回答，點選檢視被保留的舊回答', regeneratedTo: '已重新生成 → 新回答', regeneratedToTooltip: '點選跳轉到重新生成的新回答' },
     workbar: {
       ariaLabel: '任務工作欄',
@@ -857,7 +865,7 @@ const COPY = {
     turnError: { streamTruncated: '回應中途斷開。', requestRejected: '模型服務拒絕了請求，請檢查模型與請求設定。', retryExhausted: '已達到自動重試次數上限。', retryDeclined: { side_effects: '本次已有工具活動，為避免重複操作，未自動重試。請先檢查工具結果。', observable_output: '本次已有部分輸出，未自動重試。請先檢查已保留的內容。', policy: '依目前重試規則，本次未自動重試。', budget: '本次執行預算已用盡，未自動重試。' }, unknown: '出錯了，暫時無法確定原因。', contextOverflow: '上下文超出模型視窗限制，減少附件或開啟新任務。', timeout: '模型請求逾時。', auth: '模型鑑權失敗，請到設定裡重新連線或登入。', providerBilling: '模型服務計費受限，請檢查帳號餘額或訂閱狀態。', providerCapacity: '模型服務暫時滿載。', rateLimit: '模型請求太頻繁而受到速率限制。', network: '網路連線失敗，請檢查網路。', provider: '模型服務回傳錯誤。', stepCap: '達到工具呼叫步數上限，任務可能尚未完成。傳送訊息讓它繼續。', tool: '工具呼叫失敗，先看上面的工具結果再決定是否重試。', permission: '這一輪在等待權限確認時結束，重新傳送訊息會再詢問一次。', restarted: '本機應用程式重啟，上一輪沒有完成', sandboxBoundaryClosed: '本機應用程式重啟時，等待確認的「允許存取工作區以外的內容」請求已按拒絕關閉。重新傳送訊息可以再次決定。', executionState: { erroredTool: '這一輪有工具執行出錯，先看它的結果，再決定是否重發。', toolRan: '這一輪已經執行過工具，可能已經產生實際變更，重發前先看工具結果。' } },
   },
   en: {
-    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; resend as is or edit first', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: "A message's own attachments are not rewritten by edit & resend. Copy the text into a new message instead.", revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', folderNotAttachable: 'Folders cannot be added as attachments.', folderNotAttachableUseReference: 'Folders cannot be added as attachments. Use Reference folder instead.', imageAttachmentNotDirectTitle: 'Image added as an attachment', imageAttachmentNotDirectDescription: 'The current model does not receive images directly. The image has been provided as an attachment.', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', scrollMainToBottom: 'Scroll main conversation to bottom' },
+    actions: { stopFailedTitle: 'Failed to stop', stopFailedFallback: 'The task action failed. Try again later.', refreshSessionsFailedTitle: 'Failed to refresh tasks', refreshSessionsFailedFallback: 'The task list could not be refreshed. Try again later.', conversationErrorTitle: 'Task error', conversationErrorFallback: 'The task run failed. Try again later.', branchCreatedTitle: 'Branch created', branchCreatedDescription: (name) => `New task: ${name}`, revisionStartedTitle: 'Edit draft ready', revisionStartedDescription: 'The original task is kept; sending creates a new version', revisionReadyTitle: 'Ready to edit and resend', revisionReadyDescription: 'Rewound to before that message; resend as is or edit first', revisionUnavailableTitle: 'This message cannot be edited yet', revisionAttachmentsUnsupported: "A message's own attachments are not rewritten by edit & resend. Copy the text into a new message instead.", revisionTransformedTextUnsupported: 'Edit & resend does not yet support messages sent with an explicit skill. Copy the text and select the skill again instead.', revisionDraftAttachmentConflict: 'The composer already has pending attachments. Send or remove them before editing a sent message.', revisionDraftQuoteConflict: 'The composer already has staged quotes. Send or remove them before editing a sent message.', revisionMixedContextUnsupported: 'Context staged during the edit cannot be sent alongside the restored quotes. Cancel the edit and start over.', revisionCommandUnsupported: 'You cannot run /compact, /side, or orchestration commands while editing a sent message. Cancel the edit first.', revisionAlreadyActive: 'Another message is already being edited. Send or cancel that edit first.', revisionCancelLabel: 'Cancel', revisionBannerTitle: 'Editing sent message', revisionBannerDetail: '· New version on send', operationFailedTitle: 'Action failed', operationFailedFallback: 'The task action failed. Try again later.', attachmentFailedTitle: 'Failed to add attachment', folderNotAttachable: 'Folders cannot be added as attachments.', folderNotAttachableUseReference: 'Folders cannot be added as attachments. Use Reference folder instead.', imageAttachmentNotDirectTitle: 'Image added as an attachment', imageAttachmentNotDirectDescription: 'The current model does not receive images directly. The image has been provided as an attachment.', tryAgain: 'Try again later.', modelReboundTitle: 'Switched to an available model', modelReboundDescription: (modelId) => `The previous connection is unavailable${modelId ? ` · ${modelId}` : ''}`, messageReadFailedTitle: 'Failed to load task', scrollMainToBottom: 'Scroll main conversation to bottom' },
     model: {
       fakeBackendLabel: 'Local simulation',
       setupTitle: 'Configure a real model',
@@ -876,7 +884,7 @@ const COPY = {
         provider_retired: 'The sign-in this task\u2019s connection uses was removed from Maka, so it cannot send. Switch to another connection in Settings · Models, then start a new task.',
       },
     },
-    footer: { labels: { branch: 'Branch', copy: 'Copy' }, pending: 'Working…', branchRunning: 'Wait for the current response to finish before branching', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
+    footer: { labels: { branch: 'Branch', copy: 'Copy' }, pending: 'Working…', branchRunning: 'Wait for the current response to finish before branching', branchUnavailable: 'This is a background assistant turn and cannot be branched', branchAborted: 'Branch from the context before the interruption', branch: 'Branch a new task from this response', copy: 'Copy response to clipboard', copyEmpty: 'This response has no content to copy' },
     lineage: { regeneratedFrom: 'Regenerated from previous response', regeneratedFromTooltip: 'This is a parallel regenerated response; click to view the retained previous response', regeneratedTo: 'Regenerated → New response', regeneratedToTooltip: 'Jump to the regenerated response' },
     workbar: {
       ariaLabel: 'Task workbar',
@@ -1113,7 +1121,7 @@ const COPY = {
     },
     turnError: { streamTruncated: 'The response stream ended before completion.', requestRejected: 'The model service rejected the request. Check the model and request configuration.', retryExhausted: 'The automatic retry limit was reached.', retryDeclined: { side_effects: 'Tool activity already occurred in this attempt. Automatic retry was declined to avoid repeating operations. Check the tool results first.', observable_output: 'This attempt already produced output, so it was not retried automatically. Check the retained content first.', policy: 'This attempt was not retried under the current retry policy.', budget: 'The execution budget was exhausted, so this attempt was not retried automatically.' }, unknown: 'Something went wrong; the cause is unknown.', contextOverflow: 'Context exceeded the model window. Reduce attachments or start a new task.', timeout: 'The model request timed out.', auth: 'Model authentication failed. Reconnect or sign in again from Settings.', providerBilling: 'Model billing is restricted. Check the account balance or subscription.', providerCapacity: 'The model service is temporarily at capacity.', rateLimit: 'Requests were rate-limited.', network: 'The network connection failed. Check the network.', provider: 'The model service returned an error.', stepCap: 'The tool-step limit was reached, so the task may be incomplete. Send a message to continue.', tool: 'A tool call failed. Check the tool result above before deciding whether to retry.', permission: 'This turn ended while waiting for permission. Send a message and it will ask again.', restarted: 'The app restarted before the previous turn completed', sandboxBoundaryClosed: 'The app restarted, so the pending request to reach outside the workspace was closed as denied. Send a message to decide again.', executionState: { erroredTool: 'A tool errored during this turn. Read its result before deciding whether to send another message.', toolRan: 'Tools already ran during this turn and may have made real changes. Read their results before sending another message.' } },
   },
-} satisfies UiCatalog<DesktopConversationCopy>;
+})) satisfies UiCatalog<DesktopConversationCopy>;
 
 export function getDesktopConversationCopy(locale: UiLocale): DesktopConversationCopy {
   return COPY[locale];

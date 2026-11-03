@@ -17,6 +17,8 @@
  * under the License.
  */
 
+import type { AssistantCard } from '@maka/core/assistant-card';
+
 import { deriveTurnRecords, isUserVisibleSessionSystemNote } from '@maka/core/session';
 import { foldTimeline } from './timeline-fold.js';
 import {
@@ -186,18 +188,32 @@ function systemNoteLabel(kind: string, data: unknown, locale: UiLocale): string 
 export function materializeTools(
   messages: readonly StoredMessage[],
 ): ToolActivityItem[] {
-  const results = new Map(
-    messages
-      .filter((message) => message.type === "tool_result")
-      .map((message) => [message.toolUseId, message]),
-  );
+  const latestCallsByUseId = new Map<
+    string,
+    Extract<StoredMessage, { type: "tool_call" }>
+  >();
+  const resultsByCall = new Map<
+    Extract<StoredMessage, { type: "tool_call" }>,
+    Extract<StoredMessage, { type: "tool_result" }>
+  >();
+  // Append order bounds an opaque ID's ownership: a result belongs to the latest
+  // preceding call, and a later call with that ID starts a new interval.
+  for (const message of messages) {
+    if (message.type === "tool_call") {
+      latestCallsByUseId.set(message.id, message);
+      continue;
+    }
+    if (message.type !== "tool_result") continue;
+    const call = latestCallsByUseId.get(message.toolUseId);
+    if (call) resultsByCall.set(call, message);
+  }
   const turnStatusById = new Map(
     deriveTurnRecords(messages).map((turn) => [turn.turnId, turn.status]),
   );
   return messages
     .filter((message) => message.type === "tool_call")
     .map((call) => {
-      const result = results.get(call.id);
+      const result = resultsByCall.get(call);
       return {
         toolUseId: call.id,
         toolName: call.toolName,
@@ -222,7 +238,7 @@ export function materializeTools(
 function materializeToolResultStatus(
   result: Extract<StoredMessage, { type: "tool_result" }>,
 ): ToolActivityItem["status"] {
-  return toolResultActivityStatus(result.isError, result.content);
+  return toolResultActivityStatus(result.isError, result.content, result.outcome);
 }
 
 /**
@@ -327,6 +343,8 @@ export type TurnTimelineItem =
     }
   | {
       kind: "text";
+      summary?: string;
+      card?: AssistantCard;
       interrupted?: true;
       text: string;
       messageId: string;
@@ -745,7 +763,10 @@ export function materializeTurns(
     else messagesByTurn.set(turnId, [message]);
     if (message.type === "user") {
       const user = chatItemFromUserMessage(message);
-      if (!turn.user) {
+      // A resumed Turn starts without a new root prompt. Its first user row can
+      // therefore be a steering message, which belongs at its event position
+      // in the timeline instead of being promoted to the Turn's opening prompt.
+      if (!turn.user && message.steeringEventId === undefined) {
         turn.user = user;
       }
     } else if (message.type === "assistant") {
@@ -790,16 +811,24 @@ export function materializeTurns(
     }
   }
 
-  // Second pass: build the canonical tool map. Live tools are applied
-  // separately by overlayLiveTurn so streaming deltas never force settled
-  // history to rematerialize.
-  const toolItemByUseId = new Map<string, ToolActivityItem>(
-    foldShellRunToolActivities(materializeTools(messages)).map((tool) => [
-      tool.toolUseId,
-      tool,
-    ]),
+  const toolCalls = messages.filter(
+    (message): message is Extract<StoredMessage, { type: "tool_call" }> =>
+      message.type === "tool_call",
   );
-  // Third pass: rebuild each turn's render timeline from its storage-ordered
+  const foldedTools = foldScopedShellRunToolActivities(
+    materializeTools(messages).map((item, index) => ({
+      turnId: toolCalls[index]!.turnId,
+      item,
+    })),
+  );
+  const toolItemsByTurnId = new Map<string, Map<string, ToolActivityItem>>();
+  for (const { turnId, item } of foldedTools) {
+    const turnTools = toolItemsByTurnId.get(turnId);
+    if (turnTools) turnTools.set(item.toolUseId, item);
+    else toolItemsByTurnId.set(turnId, new Map([[item.toolUseId, item]]));
+  }
+
+  // Second pass: rebuild each turn's render timeline from its storage-ordered
   // messages, interleaving a step's thinking/text with its paired tools. The
   // timeline is the turn's only tool authority; `tools` is flattened out of it
   // so the two can never disagree about which tools a turn holds (a tool_call
@@ -807,9 +836,10 @@ export function materializeTurns(
   // reaches exactly one timeline).
   for (const turnId of order) {
     const turn = byId.get(turnId)!;
+    const turnMessages = messagesByTurn.get(turnId) ?? [];
     turn.timeline = buildTurnTimeline(
-      messagesByTurn.get(turnId) ?? [],
-      toolItemByUseId,
+      turnMessages,
+      toolItemsByTurnId.get(turnId) ?? new Map(),
     );
     turn.tools = timelineTools(turn.timeline);
   }
@@ -837,24 +867,30 @@ export function finalAssistantReplyText(turn: TurnViewModel): string {
  * there, leaving an orphan tool row and a parent that never took the child's
  * revision.
  */
-export function foldShellRunToolActivities(
-  items: readonly ToolActivityItem[],
-): ToolActivityItem[] {
+interface ScopedToolActivityItem {
+  turnId: string;
+  item: ToolActivityItem;
+}
+
+function foldScopedShellRunToolActivities(
+  items: readonly ScopedToolActivityItem[],
+): ScopedToolActivityItem[] {
   const ownedRefs = new Set<string>();
-  for (const item of items) {
+  for (const { item } of items) {
     if (item.toolName === "Bash" && item.result?.kind === "shell_run")
       ownedRefs.add(item.result.ref);
   }
 
-  const folded: ToolActivityItem[] = [];
+  const folded: ScopedToolActivityItem[] = [];
   const parentIndexByRef = new Map<string, number>();
   const childResultsByRef = new Map<string, ShellRunToolResult[]>();
 
-  for (const item of items) {
+  for (const scopedItem of items) {
+    const { item } = scopedItem;
     const result = item.result?.kind === "shell_run" ? item.result : undefined;
     if (!result || item.toolName === "Bash") {
       if (result) parentIndexByRef.set(result.ref, folded.length);
-      folded.push(item);
+      folded.push(scopedItem);
       continue;
     }
     if (ownedRefs.has(result.ref)) {
@@ -864,14 +900,14 @@ export function foldShellRunToolActivities(
       if (item.toolName === "Read" || item.toolName === "StopBackgroundTask")
         continue;
     }
-    folded.push(item);
+    folded.push(scopedItem);
   }
 
   for (const [ref, results] of childResultsByRef) {
     const index = parentIndexByRef.get(ref)!;
     const parent = folded[index]!;
     let current =
-      parent.result?.kind === "shell_run" ? parent.result : undefined;
+      parent.item.result?.kind === "shell_run" ? parent.item.result : undefined;
     let changed = false;
     for (const result of results) {
       const merged = mergeShellRunStateWithDiagnostics(
@@ -884,18 +920,37 @@ export function foldShellRunToolActivities(
         changed = true;
       }
     }
-    if (changed && current) folded[index] = { ...parent, result: current };
+    if (changed && current)
+      folded[index] = { ...parent, item: { ...parent.item, result: current } };
   }
 
   return folded;
 }
 
+export function foldShellRunToolActivities(
+  items: readonly ToolActivityItem[],
+): ToolActivityItem[] {
+  return foldScopedShellRunToolActivities(
+    items.map((item) => ({ turnId: "", item })),
+  ).map(({ item }) => item);
+}
+
 function foldShellRunTurns(
   turns: readonly TurnViewModel[],
 ): readonly TurnViewModel[] {
-  return projectTurnTools(
-    turns,
-    foldShellRunToolActivities(turns.flatMap((turn) => turn.tools)),
+  const folded = foldScopedShellRunToolActivities(
+    turns.flatMap((turn) =>
+      turn.tools.map((item) => ({ turnId: turn.turnId, item })),
+    ),
+  );
+  const toolsByTurnId = new Map<string, ToolActivityItem[]>();
+  for (const { turnId, item } of folded) {
+    const turnTools = toolsByTurnId.get(turnId);
+    if (turnTools) turnTools.push(item);
+    else toolsByTurnId.set(turnId, [item]);
+  }
+  return turns.map(
+    (turn) => projectTurnTools([turn], toolsByTurnId.get(turn.turnId) ?? [])[0]!,
   );
 }
 
@@ -973,16 +1028,17 @@ function buildTurnTimeline(
 ): TurnTimelineItem[] {
   const raw: TurnTimelineItem[] = [];
   let pending: ToolActivityItem[] = [];
-  let sawUser = false;
+  let sawRootUser = false;
   const flushTools = (items: ToolActivityItem[]): void => {
     if (items.length > 0) raw.push({ kind: "tools", items });
   };
   for (const message of turnMessages) {
     if (message.type === "user") {
-      if (!sawUser) {
-        sawUser = true;
+      if (message.steeringEventId === undefined && !sawRootUser) {
+        sawRootUser = true;
         continue;
       }
+      if (message.steeringEventId === undefined) sawRootUser = true;
       flushTools(pending);
       pending = [];
       raw.push({
@@ -1029,6 +1085,8 @@ function buildTurnTimeline(
             raw.push({
               kind: "text",
               text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
+              ...(message.card !== undefined ? { card: message.card } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
               messageId: rowId,
               ts: message.ts,
@@ -1053,6 +1111,8 @@ function buildTurnTimeline(
           raw.push({
             kind: "text",
             text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
+              ...(message.card !== undefined ? { card: message.card } : {}),
             ...(message.interrupted ? { interrupted: true } : {}),
             messageId: rowId,
             ts: message.ts,
@@ -1092,6 +1152,44 @@ function chatItemFromContent(
       ? { inlineReferences: content.inlineReferences }
       : {}),
     ...(hostOrigin ? { hostOrigin } : {}),
+    ...projectImportedCodexQuotes(content),
+  };
+}
+
+/** Display only: persisted quotes would duplicate the context already in model-facing text. */
+function projectImportedCodexQuotes(content: MessageContent): Pick<ChatItem, 'text' | 'quotes'> | undefined {
+  const display = content.displayText;
+  if (display === undefined || content.quotes !== undefined || content.inlineReferences !== undefined) return undefined;
+  const text = content.text.replace(/\r\n/g, '\n');
+  const reply = /^\n*<send_user_message_question_reply>\n([\s\S]*)\n<\/send_user_message_question_reply>\n*$/.exec(text);
+  const match = reply ?? /^\n*# Response annotations:\n[^\n]+\n<response-annotations>\n([\s\S]*?)\n<\/response-annotations>(?:\n|$)/.exec(text);
+  if (!match) return undefined;
+  let entries: unknown;
+  try {
+    entries = JSON.parse(match[1]!);
+  } catch {
+    return undefined;
+  }
+  if (!Array.isArray(entries) || entries.length === 0) return undefined;
+  const quotes: QuoteRef[] = [];
+  for (const entry of entries) {
+    if (typeof entry !== 'object' || entry === null || Array.isArray(entry)) return undefined;
+    const quote = reply ? entry.question : entry.text;
+    const comment = reply ? entry.answer : entry.annotation;
+    if (
+      typeof quote !== 'string' || quote.length === 0 ||
+      (reply ? typeof comment !== 'string' : comment !== undefined && typeof comment !== 'string')
+    ) return undefined;
+    // Codex message IDs are not Maka turn IDs; do not invent local provenance.
+    quotes.push({ text: quote, ...(comment !== undefined ? { comment } : {}) });
+  }
+  // Only replace the exact display prefix produced by the Codex importer, not quoted user prose.
+  const prefix = quotes.map(({ text, comment }) => `“${text}”${comment ? `\n${comment}` : ''}`).join('\n\n');
+  if (display !== prefix && (reply || !display.startsWith(`${prefix}\n\n`))) return undefined;
+  return {
+    quotes,
+    text: [...quotes.flatMap((quote) => quote.comment ? [quote.comment] : []), display.slice(prefix.length + 2)]
+      .filter(Boolean).join('\n\n'),
   };
 }
 

@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { execFile, spawnSync } from 'node:child_process';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -56,6 +56,61 @@ const operator = (modulePath: string) => ({
   platform: 'posix' as const,
   nodePath: '/usr/bin/node',
   modulePath,
+});
+
+test('Windows SSH operator preserves native argv, environment, output and exit status', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'maka-operator-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const modulePath = join(directory, 'operator 中文.mjs');
+  await writeFile(
+    modulePath,
+    `import { readFileSync } from 'node:fs';process.stdout.write(JSON.stringify({args:process.argv.slice(2),env:process.env.MAKA_TEST_VALUE,stdin:readFileSync(0,'utf8')}));process.stderr.write('diagnostic');process.exitCode=37;`,
+  );
+  const args = [
+    'configure',
+    '--project-root-json',
+    JSON.stringify({ label: 'My project', path: 'C:\\项目\\' }),
+    '',
+    'space and trailing slash\\',
+    'embedded"quote',
+    'backslash\\"quote',
+    '%PATH%',
+    '!PATH!',
+    '&|<>',
+  ];
+  const environment = { MAKA_TEST_VALUE: 'literal "value" 中文' };
+  const command = runtimeHostSshOperatorRemoteCommand(
+    {
+      kind: 'node',
+      platform: 'win32',
+      nodePath: process.execPath,
+      modulePath,
+    },
+    args,
+    environment,
+  );
+  const encoded = command.split(' -EncodedCommand ')[1];
+  assert.ok(encoded);
+  const result = spawnSync(
+    'powershell.exe',
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', encoded],
+    {
+      encoding: 'utf8',
+      input: 'operator input 中文\n',
+      windowsHide: true,
+      timeout: 15_000,
+    },
+  );
+  assert.ifError(result.error);
+  assert.equal(result.status, 37, result.stderr);
+  assert.equal(result.stderr, 'diagnostic');
+  assert.deepEqual(JSON.parse(result.stdout), {
+    args,
+    env: environment.MAKA_TEST_VALUE,
+    stdin: 'operator input 中文\n',
+  });
 });
 
 test('SSH activation accepts a strict final frame that drains after process exit', async () => {

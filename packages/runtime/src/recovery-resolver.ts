@@ -82,7 +82,6 @@ export interface RuntimeRecoveryResolution {
     eventId: string;
   }>;
   hasCorruption: boolean;
-  requiresReconciliation: boolean;
 }
 
 export function resolveRuntimeRecovery(events: readonly RuntimeEvent[]): RuntimeRecoveryResolution {
@@ -116,8 +115,6 @@ export function resolveRuntimeRecovery(events: readonly RuntimeEvent[]): Runtime
     decisions,
     issues,
     hasCorruption,
-    requiresReconciliation:
-      !hasCorruption && decisions.some((decision) => decision.status === 'indeterminate'),
   };
 }
 
@@ -174,6 +171,8 @@ function decisionFromOperation(
   if (operation.reconcileEvents.length === 0 && operation.decisionEvents.length === 0) {
     return decision;
   }
+  // Historical bundles remain authoritative when reading an existing ledger.
+  // New uncertain calls are sealed as outcome_unknown, never reconciled.
   const recovery = interpretScannedToolRecovery(operation, eventOrder);
   if (recovery.kind !== 'valid') {
     decision.status = 'corruption';

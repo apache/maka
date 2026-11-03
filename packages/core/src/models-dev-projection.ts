@@ -36,6 +36,47 @@ import type { ModelMetadata } from './model-metadata.js';
 
 export const MODELS_DEV_SOURCE_URL = 'https://models.dev/api.json';
 
+// Direct API release facts take precedence over the lagging models.dev catalog.
+// https://platform.minimax.io/docs/guides/models-intro.md
+// https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md
+export const MINIMAX_TEXT_MODEL_IDS = ['MiniMax-M3.1-Flash', 'MiniMax-M3'] as const;
+const MINIMAX_TEXT_METADATA: Record<string, ModelMetadata> = Object.fromEntries(
+  MINIMAX_TEXT_MODEL_IDS.map((id) => [
+    id,
+    {
+      displayName: id,
+      lifecycle: 'active',
+      contextWindow: 1_000_000,
+      maxOutputTokens: 524_288,
+      capabilities: { vision: true, reasoning: true, functionCalling: true },
+      modalities: { input: ['text', 'image', 'video'], output: ['text'] },
+      thinkingOptions:
+        id === 'MiniMax-M3.1-Flash'
+          ? { efforts: ['low', 'medium', 'high', 'xhigh', 'max'] }
+          : { toggle: true },
+    },
+  ]),
+);
+
+/** Preserve non-text catalogs; this policy never touches saved connection models. */
+export function withMiniMaxTextCatalog<
+  T extends Partial<Record<ProviderType, Record<string, ModelMetadata>>>,
+>(metadata: T): T {
+  const result = { ...metadata };
+  for (const providerType of ['MiniMax', 'MiniMax-cn'] as const) {
+    if (!metadata[providerType]) continue;
+    result[providerType] = {
+      ...MINIMAX_TEXT_METADATA,
+      ...Object.fromEntries(
+        Object.entries(metadata[providerType]).filter(
+          ([, model]) => model.modalities?.output && !model.modalities.output.includes('text'),
+        ),
+      ),
+    };
+  }
+  return result;
+}
+
 /** Every provider access path Maka serves, and the models.dev provider it reads. */
 export const MODELS_DEV_PROVIDERS = {
   anthropic: 'anthropic',
@@ -212,7 +253,7 @@ export function projectModelsDevMetadata(
         .map(([id, model]) => [id, projectModelsDevModel(sourceId, id, provider, model)]),
     );
   }
-  return metadata;
+  return withMiniMaxTextCatalog(metadata);
 }
 
 export function projectModelsDevModel(

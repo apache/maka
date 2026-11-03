@@ -18,6 +18,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import { createRunCompositionSnapshot } from '@maka/core/run-composition';
 import { resolveModelVisionSupport } from '@maka/core/model-metadata';
 import { modelOverride } from '@maka/core/model-thinking';
@@ -25,7 +26,7 @@ import type { ModelCallAttempt } from '@maka/core/model-call-attempt';
 import type { ModelCallCommit } from '@maka/core/agent-run';
 import type { PermissionMode } from '@maka/core/permission';
 import { resolveCollaborationPermissionMode } from '@maka/core/collaboration';
-import { AiSdkBackend } from '@maka/runtime/ai-sdk-backend';
+import { AiSdkBackend, type AiSdkBackendInput } from '@maka/runtime/ai-sdk-backend';
 import {
   buildDefaultContextBudgetPolicy,
   resolveSelectedModelContextWindow,
@@ -45,6 +46,10 @@ import {
 import { stableHash, toolCatalogHash } from '@maka/runtime/request-shape';
 import { toolAvailabilityHash } from '@maka/runtime/tool-availability';
 import type { MakaTool } from '@maka/runtime/tool-runtime';
+import type {
+  TurnFinishContext,
+  TurnFinishDecision,
+} from '@maka/runtime/plugin-turn-finish-service';
 import {
   type BackendFactoryContext,
   type BackendPreparationContext,
@@ -80,6 +85,7 @@ export interface HostAiSdkBackendInput {
   readonly runtimePolicy: HostExecutionRuntimePolicyAuthority;
   readonly oauthCredentials: HostOAuthExecutionAuthority;
   readonly createRunComposer: HostRunComposerFactory;
+  readonly beforeTurnFinish?: (context: TurnFinishContext) => Promise<TurnFinishDecision>;
   readonly memoryExtraction?: HostMemoryExtractionCoordinator;
   readonly artifacts: HostExecutionArtifactAuthority;
   readonly contextOffload?: InteractiveContextOffloadReader;
@@ -223,6 +229,8 @@ async function buildHostAiSdkBackend(
             connectionId: input.context.header.llmConnectionId,
             providerStateIdentity: target.providerStateIdentity,
             modelId: target.model,
+            models: target.connection.models,
+            codexCompactionMetadataFetchedAt: target.connection.codexCompactionMetadataFetchedAt,
             providerOptions,
           }),
           textHistorySummarizer,
@@ -313,8 +321,8 @@ async function buildHostAiSdkBackend(
   };
   const recordRunComposition = input.context.recordRunComposition;
   const recordRequestComposition = input.context.recordRequestComposition;
-  const resolveModelTools = (): readonly MakaTool[] =>
-    modelComposition.resolveTools?.() ?? modelComposition.tools;
+  const resolveModelTools: NonNullable<AiSdkBackendInput['resolveTools']> = (identity) =>
+    modelComposition.resolveTools?.(identity) ?? modelComposition.tools;
   // RunComposition remains the immutable C0 baseline. Dynamic Tool changes
   // belong exclusively to RequestComposition epochs, so never re-sample them
   // while committing the baseline immediately before provider dispatch.
@@ -391,7 +399,7 @@ async function buildHostAiSdkBackend(
         apiKey,
         modelId: target.model,
         modelFactory,
-        tools: [...resolveModelTools()],
+        tools: [...initialModelTools],
         resolveTools: resolveModelTools,
         toolAvailability: modelComposition.toolAvailability,
         ...(modelComposition.planTraceContext
@@ -402,6 +410,21 @@ async function buildHostAiSdkBackend(
         contextBudget: buildDefaultContextBudgetPolicy({
           name: 'runtime-host-default-history-budget',
           modelId: target.model,
+          // Keep the three discovery workers compact without resetting their
+          // Sessions or in-flight work. Explicit model thresholds still win.
+          ...(input.context.header.labels?.includes(ASSISTANT_BACKGROUND_SESSION_LABEL) &&
+          contextWindow !== undefined
+            ? input.context.header.labels.some((label) =>
+                /^(assistant-quick-discovery|assistant-discovery|assistant-judgement):/.test(label),
+              )
+              ? {
+                  fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.7),
+                }
+              : input.context.header.labels.some((label) => label.startsWith('assistant-bot:')) &&
+                  contextWindow !== undefined
+                ? { fallbackCompactionThresholdTokens: Math.floor(contextWindow * 0.8) }
+                : {}
+            : {}),
         }),
         supportsVision: resolveModelVisionSupport(
           target.connection.providerType,
@@ -494,6 +517,7 @@ async function buildHostAiSdkBackend(
             ],
           };
         },
+        ...(input.beforeTurnFinish ? { beforeTurnFinish: input.beforeTurnFinish } : {}),
         lookupPricing: pricing,
         recordModelCallAttempt,
         assertModelCallAccountingReady,

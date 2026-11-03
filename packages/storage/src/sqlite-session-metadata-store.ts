@@ -4623,7 +4623,7 @@ export class SqliteSessionMetadataStore {
       const records = identities.map(({ sessionId, expectedVersion }) =>
         this.setArchivedSync(sessionId, expectedVersion, isArchived, archivedAt),
       );
-      if (isArchived) this.deleteGoalAuthorities(identities);
+      if (isArchived) this.deleteWorkflowAuthorities(identities);
       return records;
     });
   }
@@ -4702,17 +4702,21 @@ export class SqliteSessionMetadataStore {
           )
           .run(sessionId, deletedAt, retirementUnitId);
       }
-      this.deleteGoalAuthorities([...identities, ...archiveIdentities]);
+      this.deleteWorkflowAuthorities([...identities, ...archiveIdentities]);
       return identities.map((identity) => identity.sessionId);
     });
   }
 
-  private deleteGoalAuthorities(sessions: readonly VersionedSessionIdentity[]): void {
+  private deleteWorkflowAuthorities(sessions: readonly VersionedSessionIdentity[]): void {
     // Standalone metadata stores have no workflow schema. An operational lease
-    // guarantees that Goal authority shares this exact transaction boundary.
+    // guarantees that workflow authority shares this exact transaction boundary.
     if (!this.databaseLease) return;
     const remove = this.db.prepare('DELETE FROM workflow_goal_authority WHERE session_id = ?');
-    for (const { sessionId } of sessions) remove.run(sessionId);
+    const removeWaits = this.db.prepare('DELETE FROM workflow_event_waits WHERE session_id = ?');
+    for (const { sessionId } of sessions) {
+      remove.run(sessionId);
+      removeWaits.run(sessionId);
+    }
   }
 
   async remove(sessionId: string): Promise<boolean> {

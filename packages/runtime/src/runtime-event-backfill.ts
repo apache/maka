@@ -167,6 +167,8 @@ export function backfillRuntimeEventsFromStoredMessages(
             content: {
               kind: 'text',
               text: message.text,
+              ...(message.summary !== undefined ? { summary: message.summary } : {}),
+              ...(message.card !== undefined ? { card: message.card } : {}),
               ...(message.interrupted ? { interrupted: true } : {}),
             },
             actions: { stateDelta: recoveryState(now, message) },
@@ -286,6 +288,7 @@ export function backfillRuntimeEventsFromStoredMessages(
             name: call?.toolName ?? '',
             result: message.content,
             isError: message.isError,
+            ...(message.outcome ? { outcome: message.outcome } : {}),
             ...(message.providerExecuted !== undefined
               ? { providerExecuted: message.providerExecuted }
               : {}),

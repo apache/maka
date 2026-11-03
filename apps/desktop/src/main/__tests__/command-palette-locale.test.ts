@@ -66,6 +66,14 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
       const { createSessionCatalogController } = await import(
         '../../renderer/application/contracts/session-catalog/session-catalog-state.js'
       );
+      const { AssistantSessionVisibilityProvider, createAssistantSessionVisibility } = await import(
+        '../../renderer/application/contracts/session-catalog/assistant-session-visibility.js'
+      );
+      const assistantVisibility = createAssistantSessionVisibility({
+        read: async () => false,
+        write: async () => {},
+        subscribeChanges: () => () => {},
+      });
       const { LocaleProvider } = await import('@maka/ui');
       const { CommandPalette, OverlaysRoot, OverlaysServicesProvider } = await import(
         '../../renderer/features/overlays/index.js'
@@ -121,11 +129,11 @@ for (const locale of ['en', 'zh-CN', 'zh-TW'] as const) {
                 children: createElement(OverlaysRoot, {
                   children: (projection) => {
                     overlays = projection;
-                    return createElement(CommandPalette, {
+                    return createElement(AssistantSessionVisibilityProvider, { value: assistantVisibility }, createElement(CommandPalette, {
                       commands, sessionCatalog: createSessionCatalogController(),
                       hiddenSessionIds: new Set<string>(), activeSessionId: undefined,
                       onSelectSession: noop,
-                    });
+                    }));
                   },
                 }),
               }),

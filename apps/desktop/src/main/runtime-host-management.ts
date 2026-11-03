@@ -721,10 +721,10 @@ export function createDesktopRuntimeHostManagement(input: {
     if (provider) {
       const previousHostEpoch = provider.currentHostEpoch();
       execute = () => provider.configureProjectDirectories(
-          roots,
-          expectedConfigFingerprintValue,
-          allowInterruptActiveTasksValue,
-        );
+        requireProjectDirectoryRoots(roots, provider.platform),
+        expectedConfigFingerprintValue,
+        allowInterruptActiveTasksValue,
+      );
       reconnect = () => provider.awaitUpdatedConnection(previousHostEpoch, true);
     } else {
       const { managed, expectedTarget } = await activeManagedTarget(profileId);
@@ -735,7 +735,7 @@ export function createDesktopRuntimeHostManagement(input: {
           operator: managed.profile.operator,
           action: 'configure',
           expectedTarget,
-          projectDirectoryRoots: roots,
+          projectDirectoryRoots: requireProjectDirectoryRoots(roots, 'posix'),
           expectedConfigFingerprint: expectedConfigFingerprintValue,
           ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
         });
@@ -747,7 +747,7 @@ export function createDesktopRuntimeHostManagement(input: {
           operator: managed.control.operator,
           action: 'configure',
           expectedTarget,
-          projectDirectoryRoots: roots,
+          projectDirectoryRoots: requireProjectDirectoryRoots(roots, managed.control.operator.kind === 'node' ? managed.control.operator.platform : 'posix'),
           expectedConfigFingerprint: expectedConfigFingerprintValue,
           ...(allowInterruptActiveTasksValue ? { allowInterruptActiveTasks: true } : {}),
         });

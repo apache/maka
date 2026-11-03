@@ -64,13 +64,19 @@ test('unbound WSL connection has no mutation authority', async () => {
   assert.equal(blocker.replacement, undefined);
 });
 
-test('WSL handoff carries exact source identity and separately forwards interruption consent', async () => {
+test('WSL handoff keeps a recovered Node binding, source identity and interruption consent', async () => {
+  const recovered = { ...binding, profile: { ...profile,
+    operator: { ...profile.operator, nodePath: '/new/node' },
+  } };
   let changed = false;
   const policies: boolean[] = [];
   const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
-    resolveBinding: async () => changed ? undefined : binding,
+    resolveBinding: async () => changed ? undefined : recovered,
     resolvePackage: async () => ({ kind: 'npm', specifier: 'maka-agent@0.3.0' }),
-    status: async () => ({ schemaVersion: 1, kind: 'result', action: 'status', service }),
+    status: async (input) => {
+      assert.deepEqual(input.operator, recovered.profile.operator);
+      return { schemaVersion: 1, kind: 'result', action: 'status', service };
+    },
     update: async (input) => {
       assert.deepEqual(input.expectedHost, { hostEpoch: 'old-host', pid: 42 });
       assert.equal(input.expectedConfigFingerprint, service.configurationFingerprint);
@@ -131,3 +137,19 @@ test('development handoff never presents package integrity as a version', async 
     target: 'selected development build',
   });
 });
+
+for (const other of [
+  { ...profile, id: 'another-profile' },
+  { ...profile, rootId: 'b'.repeat(64) },
+  { ...profile, provider: { kind: 'wsl' as const, distribution: 'Other Ubuntu' } },
+  { ...profile, operator: { ...profile.operator, modulePath: '/another/operator.mjs' } },
+]) {
+  test(`WSL handoff rejects a binding with a different target: ${JSON.stringify(other)}`, async () => {
+    const blocker = await resolveDesktopWslHostHandoff(profile, incompatible(), new AbortController().signal, {
+      resolveBinding: async () => ({ ...binding, profile: other }),
+      resolvePackage: async () => assert.fail('a different target must not select an upgrade package'),
+      status: async () => assert.fail('a different target must not be invoked'),
+    });
+    assert.equal(blocker.replacement, undefined);
+  });
+}

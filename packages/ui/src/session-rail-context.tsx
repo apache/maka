@@ -58,6 +58,8 @@ export interface SessionMoveTarget {
 export interface SessionRailData {
   sessions: readonly SessionSummary[];
   activeId?: string;
+  /** Native conversation selection before ordinary-list filtering. */
+  navigationSessionId?: string;
   streamingSessionIds?: ReadonlySet<string>;
   staleSessionIds?: ReadonlySet<string>;
   worktreeSessionIds?: ReadonlySet<string>;
@@ -133,6 +135,7 @@ export interface SessionRailChrome {
   onSelect(selection: NavSelection): void;
   onNew(): void;
   onOpenSettings(): void;
+  personalAssistantNavigation?: ReactNode;
   workHubEntry?: {
     active: boolean;
     label: string;
@@ -143,9 +146,8 @@ export interface SessionRailChrome {
 /** What a click on a session row means, decided by the modifier held with it. */
 export type SessionRowPick =
   /**
-   * Plain click, and the adoption a menu makes when it opens on an unpicked
-   * row: the set becomes exactly this row. Opening the task is the row's own
-   * business — this names what happens to the SET.
+   * Plain click: the set becomes exactly this row. Opening the task is the
+   * row's own business — this names what happens to the SET.
    */
   | 'replace'
   /** ⌘/Ctrl: add or remove this one row, leaving the rest of the set alone. */

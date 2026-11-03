@@ -22,7 +22,7 @@ import { app, BrowserWindow, dialog, nativeTheme, screen, shell, type View, webF
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { appIconForTheme, type AppSettings } from '@maka/core/settings';
-import { readableAppIconPath } from './app-icon-surface.js';
+import { applyInitialWindowAppIcon, readableAppIconPath } from './app-icon-surface.js';
 import { isExternalUrl } from './external-link-guard.js';
 import { readSavedBounds, writeSavedBounds, SAFE_MIN_HEIGHT, SAFE_MIN_WIDTH, type SavedBounds } from './window-state.js';
 import { BrowserViewController } from './browser/controller.js';
@@ -121,12 +121,26 @@ export function safeSendToRenderer(channel: string, ...args: unknown[]): boolean
   if (mainWindow && !mainWindow.isDestroyed()) recipients.add(mainWindow.webContents);
   let emitted = false;
   for (const contents of recipients) {
-    if (!contents.isDestroyed()) {
-      contents.send(channel, ...args);
+    const frame = liveMainFrame(contents);
+    if (frame) {
+      frame.send(channel, ...args);
       emitted = true;
     }
   }
   return emitted;
+}
+
+function liveMainFrame(contents: Electron.WebContents): Electron.WebFrameMain | undefined {
+  if (contents.isDestroyed()) return undefined;
+  try {
+    const frame = contents.mainFrame;
+    return frame.isDestroyed() ? undefined : frame;
+  } catch {
+    // WebContents can outlive its Renderer generation. Electron may dispose
+    // the main frame between process loss/navigation and the replacement
+    // document, so broadcasts wait for the next live generation.
+    return undefined;
+  }
 }
 
 // The close button's centre sits on the same vertical line as the sidebar's
@@ -418,6 +432,11 @@ export function createMainWindowController(deps: MainWindowControllerDeps): Main
         allowRunningInsecureContent: false,
       },
     });
+    applyInitialWindowAppIcon(
+      mainWindow,
+      appIconForTheme(persistedAppearance ?? {}, isDark),
+      (error) => console.error('[icon] failed to set the initial app icon:', error),
+    );
     mainWindowShutdownSignal = signal;
     observeRendererProcess(mainWindow, signal);
     deps.onWindowConstructed?.();

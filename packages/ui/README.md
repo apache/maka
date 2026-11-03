@@ -25,7 +25,7 @@ The published Astryx API is a fixed dependency boundary. New consumers adapt to 
 
 ## Layer map
 
-Four export surfaces, in the order to look:
+Five export surfaces, in the order to look:
 
 | Surface | Role | Status |
 |---|---|---|

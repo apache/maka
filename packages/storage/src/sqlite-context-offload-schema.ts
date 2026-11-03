@@ -233,7 +233,7 @@ export function migrateSqliteContextOffloadDatabase(db: DatabaseSync): void {
     throw newerSchemaError(observedVersion);
   }
   if (observedVersion === SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION) {
-    validateSchema(db);
+    validateSqliteContextOffloadSchema(db);
     return;
   }
 
@@ -259,7 +259,7 @@ export function migrateSqliteContextOffloadDatabase(db: DatabaseSync): void {
       db.exec(`PRAGMA user_version = ${SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION}`);
       current = SQLITE_CONTEXT_OFFLOAD_SCHEMA_VERSION;
     }
-    validateSchema(db);
+    validateSqliteContextOffloadSchema(db);
     db.exec('COMMIT');
   } catch (error) {
     rollback(db);
@@ -278,7 +278,7 @@ export function readSqliteContextOffloadSchemaVersion(db: DatabaseSync): number 
   return value;
 }
 
-function validateSchema(db: DatabaseSync): void {
+export function validateSqliteContextOffloadSchema(db: DatabaseSync): void {
   const autoVacuum = db.prepare('PRAGMA auto_vacuum').get() as
     | { auto_vacuum?: unknown }
     | undefined;

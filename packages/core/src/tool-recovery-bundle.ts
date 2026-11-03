@@ -91,17 +91,6 @@ export type ScannedToolRecoveryInterpretation =
       message: string;
     };
 
-export class ToolRecoveryBundleValidationError extends Error {
-  readonly name = 'ToolRecoveryBundleValidationError';
-
-  constructor(
-    readonly code: ToolRecoveryBundleValidationCode,
-    message: string,
-  ) {
-    super(message);
-  }
-}
-
 export function validateToolRecoveryEventBundle(
   input: ToolRecoveryEventBundle,
 ): ToolRecoveryBundleValidationResult {
@@ -275,16 +264,8 @@ export function validateToolRecoveryEventBundle(
   return { ok: true, reconcile, decision };
 }
 
-export function assertToolRecoveryEventBundle(input: ToolRecoveryEventBundle): {
-  reconcile: ToolReconcileResultFact;
-  decision: ToolRecoveryDecisionFact;
-} {
-  const result = validateToolRecoveryEventBundle(input);
-  if (!result.ok) throw new ToolRecoveryBundleValidationError(result.code, result.message);
-  return { reconcile: result.reconcile, decision: result.decision };
-}
-
 /**
+ * Read compatibility for historical recovery bundles. Current tools never produce these facts.
  * Interprets the recovery tail of one scanner-owned operation. Resolver and
  * projection rebuild must consume this result instead of independently
  * assembling facts or defining their own causal-order rules.

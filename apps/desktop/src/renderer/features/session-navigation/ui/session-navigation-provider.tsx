@@ -17,6 +17,9 @@
  * under the License.
  */
 
+import { useShowAssistantBackgroundSessions } from '../../../application/contracts/session-catalog/assistant-session-visibility.js';
+import { useMakaClientNavigationSessionLabels } from '@maka/ui/client-plugin';
+
 import {
   useCallback,
   useLayoutEffect,
@@ -94,6 +97,8 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
   /** The rail subscribes the catalog itself: its rows are the churn it displays. */
   catalog: SessionCatalogController;
   activeSessionId: string | undefined;
+  /** Suppress conversation selection while settings or a modal owns the surface. */
+  surfaceObscured?: boolean;
   hiddenSessionIds: ReadonlySet<string>;
   projectScopes: readonly SessionNavigationProjectScope[];
   /** The activity projection subscribes here, without publishing through AppShell. */
@@ -108,6 +113,7 @@ export interface SessionNavigationProviderProps extends SessionNavigationChromeI
    */
   commandsRef: { current: SessionNavigationRowActions | null };
   children?: ReactNode;
+  personalAssistantNavigation?: ReactNode;
 }
 
 /**
@@ -127,6 +133,8 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     props.streamingSessions.getSnapshot,
   );
   const sessions = useExternalStoreSelector(props.catalog, selectSessions);
+  const entryLabels = useMakaClientNavigationSessionLabels();
+  const showAssistantBackgroundSessions = useShowAssistantBackgroundSessions();
   // Send outcomes come from the onboarding authority, not through AppShell.
   const sessionSendOutcomes = useOnboardingSessionSendOutcomes();
   const staleSessionIds = useExternalStoreSelector(
@@ -138,9 +146,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
   const rail = useMemo(
     () =>
       deriveSessionRail(sessions, props.activeSessionId, (session) =>
-        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session),
+        !props.hiddenSessionIds.has(session.id) && sessionMatchesRail(session, entryLabels, showAssistantBackgroundSessions),
       ),
-    [sessions, props.activeSessionId, props.hiddenSessionIds],
+    [sessions, props.activeSessionId, props.hiddenSessionIds, entryLabels, showAssistantBackgroundSessions],
   );
   const controller = useSessionNavigationController({
     rail,
@@ -259,6 +267,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
     () => ({
       sessions: rail.sessions,
       activeId: openRowId,
+      navigationSessionId: props.workHubActive || props.surfaceObscured ? undefined : props.activeSessionId,
       streamingSessionIds,
       staleSessionIds,
       worktreeSessionIds: controller.selectors.worktreeSessionIds,
@@ -292,6 +301,9 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       relinkableProjectIds,
       rail,
       staleSessionIds,
+      props.workHubActive,
+      props.activeSessionId,
+      props.surfaceObscured,
       streamingSessionIds,
       rowActions,
       sessionBadge,
@@ -325,6 +337,7 @@ export function SessionNavigationProvider(props: SessionNavigationProviderProps)
       props.onNew();
     },
     onOpenSettings: props.onOpenSettings,
+    personalAssistantNavigation: props.personalAssistantNavigation,
     workHubEntry: workHubEnabled && props.onOpenWorkHub ? {
       active: props.workHubActive,
       label: 'WorkHub',

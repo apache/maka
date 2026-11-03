@@ -575,5 +575,5 @@ function context(connectionId: string) {
 }
 
 function result(text: string) {
-  return { content: [{ type: 'text' as const, text }] };
+  return { outcome: 'success' as const, content: [{ type: 'text' as const, text }] };
 }

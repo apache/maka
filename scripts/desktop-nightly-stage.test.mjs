@@ -28,12 +28,16 @@ import { writeDesktopReleaseInput } from './desktop-nightly-fixture.mjs';
 import { addDesktopNightlyAttestation, stageDesktopNightly } from './desktop-nightly.mjs';
 import { verifyDesktopUpdateArtifacts } from './desktop-update-contract.mjs';
 
+const { version: productVersion } = JSON.parse(
+  await readFile(new URL('../package.json', import.meta.url), 'utf8'),
+);
+
 test('staging creates only the exact GitHub Release assets', async (t) => {
   const root = await mkdtemp(join(tmpdir(), 'maka-desktop-nightly-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const input = join(root, 'input');
   const output = join(root, 'output');
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   await mkdir(input);
   await writeDesktopReleaseInput(input, version, { nightly: true });
 
@@ -111,7 +115,7 @@ test('one attestation bundle is staged only as a GitHub Release asset', async (t
   t.after(() => rm(root, { recursive: true, force: true }));
   const output = join(root, 'output');
   const release = join(output, 'release');
-  const version = '0.2.0-dev.42.20260829';
+  const version = `${productVersion}-dev.42.20260829`;
   const bundle = join(root, 'bundle.json');
   const bytes = Buffer.from('one offline Sigstore bundle');
   await Promise.all([mkdir(release, { recursive: true }), writeFile(bundle, bytes)]);

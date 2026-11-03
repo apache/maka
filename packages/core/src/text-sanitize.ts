@@ -100,6 +100,11 @@ export interface SanitizeUnicodeOptions {
  */
 export function sanitizeUnicodeText(text: string, opts: SanitizeUnicodeOptions): string {
   const suffix = opts.truncatedSuffix ?? '…';
+  // A negative cap is clamped to zero: without it the loop never breaks (the
+  // whole input is expanded) and the slice's negative end keeps nearly the
+  // whole string — the opposite of the "hard cap" this option promises. Same
+  // boundary contract as truncateUtf16Safe's `maxUnits <= 0` guard.
+  const maxCodePoints = Math.max(0, opts.maxCodePoints);
   const cleaned = text
     .normalize('NFC')
     .replace(CONTROL_CHARS_REGEX, ' ')
@@ -111,10 +116,10 @@ export function sanitizeUnicodeText(text: string, opts: SanitizeUnicodeOptions):
   for (const point of cleaned) {
     points.push(point);
     // One extra point detects truncation without expanding the entire input.
-    if (opts.maxCodePoints >= 0 && points.length > opts.maxCodePoints) break;
+    if (points.length > maxCodePoints) break;
   }
-  if (points.length <= opts.maxCodePoints) return cleaned;
-  return points.slice(0, opts.maxCodePoints).join('') + suffix;
+  if (points.length <= maxCodePoints) return cleaned;
+  return points.slice(0, maxCodePoints).join('') + suffix;
 }
 
 /**

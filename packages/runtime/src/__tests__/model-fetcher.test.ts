@@ -28,6 +28,41 @@ import { startJsonServer, respondJson, closeAllJsonServers } from './conformance
 after(closeAllJsonServers);
 
 describe('model discovery', () => {
+  test('Inception uses chat-only discovery and reads its advertised capacity and features', async () => {
+    const outcome = await runConnectionModelDiscoveryEffect(
+      { providerType: 'inception', baseUrl: 'https://api.inceptionlabs.ai/v1' },
+      'inception-test-key',
+      {
+        fetch: async (input, init) => {
+          assert.equal(String(input), 'https://api.inceptionlabs.ai/v1/chat/completions/models');
+          assert.equal(
+            new Headers(init?.headers).get('authorization'),
+            'Bearer inception-test-key',
+          );
+          return Response.json({
+            data: [
+              {
+                id: 'mercury-3',
+                name: 'Inception: Mercury 3',
+                context_length: 1_000_000,
+                max_output_length: 131_072,
+                supported_features: ['tools', 'json_mode', 'structured_outputs'],
+              },
+            ],
+          });
+        },
+      },
+    );
+    assert.ok(outcome.ok);
+    assert.equal(outcome.models.length, 1);
+    const model = outcome.models[0];
+    assert.equal(model.id, 'mercury-3');
+    assert.equal(model.contextWindow, 1_000_000);
+    assert.equal(model.maxOutputTokens, 131_072);
+    assert.equal(model.capabilities?.functionCalling, true);
+    assert.equal(model.structuredOutput, true);
+  });
+
   test('all token metadata adapters preserve valid limits and omit invalid optional limits', async () => {
     const values = [
       [undefined, undefined],
@@ -381,8 +416,8 @@ describe('model discovery', () => {
       respondJson(response, 200, {
         models: [
           { slug: 'hidden-model', visibility: 'hide', priority: 0 },
-          { slug: 'gpt-5.6-sol', priority: 1, context_window: 372000 },
-          { slug: 'gpt-5.5', priority: 2, context_window: 272000 },
+          { slug: 'gpt-5.6-sol', priority: 1, context_window: 372000, comp_hash: '3000' },
+          { slug: 'gpt-5.5', priority: 2, context_window: 272000, comp_hash: '' },
           { slug: 'gpt-5.4-mini', priority: 3 },
           { slug: '', priority: 4 },
         ],
@@ -407,7 +442,7 @@ describe('model discovery', () => {
       { url: '/models?client_version=1.0.0', authorization: 'Bearer codex-oauth-token' },
     ]);
     assert.deepEqual(models, [
-      { id: 'gpt-5.6-sol', contextWindow: 372000 },
+      { id: 'gpt-5.6-sol', contextWindow: 372000, codexCompactionHash: '3000' },
       { id: 'gpt-5.5', contextWindow: 272000 },
       { id: 'gpt-5.4-mini' },
     ]);

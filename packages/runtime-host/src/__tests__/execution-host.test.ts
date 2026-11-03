@@ -357,6 +357,80 @@ test('production Host settles dispatched Client Capabilities before publishing R
   });
 });
 
+test('check-in reads Sessions through the composed Host', async () => {
+  await withExecutionRoot(async (fixture) => {
+    let host = await fixture.startHost();
+    let client = await connectClient(fixture.root);
+    try {
+      // No default model: the check-in stops before reading anything.
+      assert.deepEqual(
+        await client.request('session.checkin.generate', { effectId: 'checkin-1', since: null }),
+        { kind: 'failed', effectId: 'checkin-1', errorClass: 'configuration' },
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+
+    await seedCheckinDefaultModel(fixture.capability);
+    host = await fixture.startHost();
+    client = await connectClient(fixture.root);
+    try {
+      // The fixture Session has no user text, so a Host that can read it finds
+      // nothing to check in on; one that cannot read it fails the check-in.
+      assert.deepEqual(
+        await client.request('session.checkin.generate', { effectId: 'checkin-2', since: null }),
+        { kind: 'empty', effectId: 'checkin-2' },
+      );
+    } finally {
+      await client.close();
+      await fixture.stopHost(host);
+    }
+  });
+});
+
+async function seedCheckinDefaultModel(capability: StorageRootCapability): Promise<void> {
+  const owner = await tryAcquireInteractiveRootOwner(capability);
+  assert.ok(owner);
+  if (!owner) return;
+  try {
+    const policy = await openInteractiveRuntimePolicyStoresForWrite(owner.lease);
+    const current = await policy.connectionCatalog.getSnapshot();
+    const created = await policy.connectionCatalog.create({
+      expectedCatalogRevision: current.revision,
+      connection: {
+        slug: 'checkin-default',
+        name: 'Check-in default',
+        providerType: 'ollama',
+        enabled: true,
+        enabledModelIds: ['fake-model'],
+      },
+    });
+    assert.equal(created.kind, 'committed');
+    if (created.kind !== 'committed') return;
+    const connection = created.snapshot.connections.find(({ slug }) => slug === 'checkin-default');
+    assert.ok(connection);
+    if (!connection) return;
+    const fetch = await policy.operations.beginModelFetch(connection.connectionId);
+    assert.equal(fetch.kind, 'ready');
+    if (fetch.kind !== 'ready') return;
+    const fetched = await policy.operations.completeModelFetch(fetch.ticket, {
+      models: [{ id: 'fake-model' }],
+      source: 'fetched',
+      fetchedAt: Date.now(),
+    });
+    assert.equal(fetched.kind, 'committed');
+    if (fetched.kind !== 'committed') return;
+    const defaulted = await policy.connectionCatalog.setDefaultTarget({
+      expectedCatalogRevision: fetched.snapshot.revision,
+      target: { connectionId: connection.connectionId, modelId: 'fake-model' },
+    });
+    assert.equal(defaulted.kind, 'committed');
+  } finally {
+    await owner.close();
+  }
+}
+
 test('dual UDS Clients query the same persisted SessionTodo snapshot across Host restart', async () => {
   await withExecutionRoot(async (fixture) => {
     const initial: SessionTodoItem[] = Array.from({ length: 129 }, (_, index) => ({

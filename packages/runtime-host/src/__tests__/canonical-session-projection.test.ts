@@ -181,7 +181,8 @@ test('projects pending Interactions and preflights their combined snapshot capac
       rootAdmissions: new RootAdmissionOwner(stores.agentRunStore),
       messages,
     });
-    for (let index = 0; index < 5; index += 1) {
+    // Reserve space for the bounded wait summary as well as the Goal.
+    for (let index = 0; index < 4; index += 1) {
       const established = await stores.interactionStore.establishRequest(
         largePendingInteraction(session.id, index),
       );
@@ -190,10 +191,10 @@ test('projects pending Interactions and preflights their combined snapshot capac
 
     const canonical = await reader.read(session.id);
     assert.ok(canonical);
-    assert.equal(canonical.interactions.pending.length, 5);
+    assert.equal(canonical.interactions.pending.length, 4);
     assert.deepEqual(
       canonical.interactions.pending.map((interaction) => interaction.interactionId),
-      Array.from({ length: 5 }, (_, index) => `interaction-${index}`),
+      Array.from({ length: 4 }, (_, index) => `interaction-${index}`),
     );
 
     const emptyQueue = messages.projection(session.id);
@@ -237,7 +238,8 @@ test('projects pending Interactions and preflights their combined snapshot capac
 test('preflights queued steering at the exact in-flight snapshot boundary', async () => {
   await withStores(async (root, stores) => {
     const session = await stores.sessionStore.create(sessionInput(root));
-    for (let index = 0; index < 5; index += 1) {
+    // Reserve space for the bounded wait summary as well as the Goal.
+    for (let index = 0; index < 4; index += 1) {
       const established = await stores.interactionStore.establishRequest(
         largePendingInteraction(session.id, index),
       );
@@ -807,7 +809,9 @@ function largestFittingFollowupQueue(
       {
         entryId: 'large-entry',
         messageId: 'large-message',
-        content: { text: 'q'.repeat(TURN_MESSAGE_TEXT_MAX_BYTES) },
+        // A full maximum-size message plus the reserved Goal/wait no longer
+        // fits the shared frame; fill the remaining space with the searched tail.
+        content: { text: 'q'.repeat(TURN_MESSAGE_TEXT_MAX_BYTES / 2) },
         placement: 'next_turn',
         state: 'queued',
       },
@@ -840,3 +844,57 @@ function largestFittingFollowupQueue(
   }
   return queue(lower);
 }
+
+test('optional wait previews yield capacity to canonical facts and return when they fit', async () => {
+  await withStores(async (root, stores) => {
+    const session = await stores.sessionStore.create(sessionInput(root));
+    const waits: import('../protocol/index.js').SessionEventWaitsProjection = {
+      items: Array.from({ length: 64 }, (_, index) => ({
+        sessionId: session.id,
+        waitId: `wait-${index}`,
+        sourceTurnId: 'turn',
+        consumer: {
+          kind: 'tool_invocation',
+          runId: 'run',
+          invocationId: 'invocation',
+          operationId: `operation-${index}`,
+        },
+        resource: { providerId: 'test', resourceType: 'job', resourceId: 'job'.repeat(80) },
+        deadlineAt: null,
+        phase: 'observing',
+        observation: 'pending',
+        reasonCode: null,
+      })),
+      nextCursor: null,
+    };
+    const messages = createMessages(session.id, stores);
+    const reader = new CanonicalSessionProjectionReader({
+      stores,
+      rootAdmissions: new RootAdmissionOwner(stores.agentRunStore),
+      messages,
+      readEventWaits: async () => waits,
+    });
+    const canonical = await reader.read(session.id);
+    assert.ok(canonical);
+    assert.deepEqual(createSessionContinuitySnapshot(canonical, 1).eventWaits, waits);
+    const queue: SessionMessageQueueProjection = {
+      ...canonical.queue,
+      queueRevision: 1,
+      followup: [
+        {
+          entryId: 'entry',
+          messageId: 'message',
+          placement: 'next_turn',
+          state: 'queued',
+          content: { text: '界'.repeat(11_000) },
+        },
+      ],
+    };
+    assert.equal(await reader.fitsCandidate(session.id, { queue }), true);
+    const bounded = createSessionContinuitySnapshot({ ...canonical, queue }, 2);
+    assert.equal(bounded.eventWaits, undefined);
+    assert.deepEqual(bounded.queue, queue);
+    assert.equal(waits.items.length, 64, 'preview omission does not change the source collection');
+    assert.deepEqual(createSessionContinuitySnapshot(canonical, 3).eventWaits, waits);
+  });
+});

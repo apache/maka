@@ -64,7 +64,10 @@ async function harness(animate = false, displayFrequency = 60, revealMode: Windo
   let releasedViews = 0;
   let pointerDisplay = { x: 0, y: 0, width: 1200, height: 900 };
   class Contents extends EventEmitter {
-    mainFrame = {};
+    mainFrame = {
+      isDestroyed: () => this.destroyed,
+      send: (channel: string, ...args: unknown[]) => { this.sent.push([channel, ...args]); },
+    };
     destroyed = false;
     sent: [string, ...unknown[]][] = [];
     session = { setPermissionCheckHandler() {}, setPermissionRequestHandler() {} };
@@ -279,6 +282,33 @@ test('yields the docked native view to main-window overlays without replacing th
   assert.equal(h.container.visible, true);
   assert.equal(view.webContents.captures, 1);
   await assert.rejects(h.command(h.main.webContents, 'host', { ...host, occluded: 'yes' }), /Invalid WorkHub host/);
+  h.controller.dispose();
+});
+
+test('prepares a backdrop without yielding input or blocking later presentation commands', async () => {
+  const h = await harness();
+  const host = { visible: true, rect: { x: 200, y: 40, width: 800, height: 760 } };
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  assert.equal(h.views.length, 0, 'preparation does not create a renderer');
+  await h.command(h.main.webContents, 'host', host);
+  h.main.show();
+  const view = h.views[0]!;
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  await h.command(view.webContents, 'ready');
+  await assert.rejects(h.command(view.webContents, 'capture-backdrop'), /Only the main window/);
+  const started = deferred<void>();
+  const capture = deferred<{ toDataURL(): string }>();
+  view.webContents.capturePage = () => { started.resolve(); return capture.promise; };
+  const preparation = h.command(h.main.webContents, 'capture-backdrop');
+  await started.promise;
+  assert.equal(h.container.visible, true);
+  await h.command(h.main.webContents, 'host', { ...host, visible: false });
+  assert.equal(h.container.visible, false, 'a pending capture does not hold the command queue');
+  capture.resolve({ toDataURL: () => 'data:image/png;base64,frame' });
+  assert.equal(await preparation, 'data:image/png;base64,frame');
+  assert.equal(h.container.visible, false, 'a late capture cannot restore or replace the renderer');
+  assert.equal(await h.command(h.main.webContents, 'capture-backdrop'), undefined);
+  assert.equal(h.views.length, 1);
   h.controller.dispose();
 });
 
@@ -601,7 +631,7 @@ test('rejects unowned/subframe IPC and buffers navigation until main subscribes'
 test('application broadcasts include registered auxiliary renderers', async () => {
   const entry = fileURLToPath(new URL('../../../src/main/main-window.ts', import.meta.url));
   const output = await build({ entryPoints: [entry], bundle: false, write: false, format: 'cjs', platform: 'node', define: { 'import.meta.dirname': JSON.stringify('/app/dist/main') } });
-  const module = { exports: {} as { createMainWindowController: typeof createMainWindowController } };
+  const module = { exports: {} as { createMainWindowController: typeof createMainWindowController; safeSendToRenderer: typeof import('../main-window.js').safeSendToRenderer } };
   const auxiliaries = new Set<Electron.WebContents>();
   runInNewContext(output.outputFiles[0]!.text, {
     module, exports: module.exports, process,
@@ -619,13 +649,62 @@ test('application broadcasts include registered auxiliary renderers', async () =
     onRendererProcessGone: () => undefined,
   });
   const messages: string[] = [];
-  const renderer = Object.assign(new EventEmitter(), {
+  const destroyedFrame = {
+    isDestroyed: () => true,
+    send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  const liveFrame = {
     isDestroyed: () => false,
     send: (channel: string) => { messages.push(channel); },
+  } as unknown as Electron.WebFrameMain;
+  let mainFrame: Electron.WebFrameMain = destroyedFrame;
+  let mainFrameUnavailable = false;
+  let contentsDestroyed = false;
+  const renderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => contentsDestroyed,
   }) as unknown as Electron.WebContents;
+  Object.defineProperty(renderer, 'mainFrame', {
+    get: () => {
+      if (mainFrameUnavailable) throw new Error('Renderer frame is being replaced');
+      return mainFrame;
+    },
+  });
+  const { safeSendToRenderer } = module.exports;
+  assert.equal(safeSendToRenderer('settings:changed'), false);
   auxiliaries.add(renderer);
-  controller.send('settings:changed');
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  assert.deepEqual(messages, []);
+  const otherMessages: string[] = [];
+  const otherRenderer = Object.assign(new EventEmitter(), {
+    isDestroyed: () => false,
+    mainFrame: {
+      isDestroyed: () => false,
+      send: (channel: string) => { otherMessages.push(channel); },
+    },
+  }) as unknown as Electron.WebContents;
+  auxiliaries.add(otherRenderer);
+  assert.doesNotThrow(() => controller.send('settings:changed'));
+  assert.deepEqual(messages, []);
+  assert.deepEqual(otherMessages, ['settings:changed']);
+  mainFrameUnavailable = true;
+  assert.equal(safeSendToRenderer('settings:changed'), true);
+  assert.deepEqual(messages, []);
+  assert.deepEqual(otherMessages, ['settings:changed', 'settings:changed']);
+  auxiliaries.delete(otherRenderer);
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  auxiliaries.add(otherRenderer);
+  mainFrameUnavailable = false;
+  mainFrame = liveFrame;
+  assert.equal(safeSendToRenderer('settings:changed'), true);
   assert.deepEqual(messages, ['settings:changed']);
+  assert.equal(otherMessages.length, 3);
+  contentsDestroyed = true;
+  assert.equal(safeSendToRenderer('settings:changed'), true);
+  assert.deepEqual(messages, ['settings:changed']);
+  assert.equal(otherMessages.length, 4);
+  auxiliaries.delete(otherRenderer);
+  assert.equal(safeSendToRenderer('settings:changed'), false);
+  contentsDestroyed = false;
   auxiliaries.delete(renderer);
   controller.send('settings:changed');
   assert.deepEqual(messages, ['settings:changed']);

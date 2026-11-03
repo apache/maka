@@ -653,7 +653,7 @@ describe('models.dev provider conformance', () => {
     });
 
     assert.deepEqual(requestBody?.cache_control, { type: 'ephemeral' });
-    assert.deepEqual(requestBody?.thinking, { type: 'adaptive', display: 'summarized' });
+    assert.equal(requestBody?.thinking, undefined);
   });
 
   test('custom Messages models request summarized thinking only for a declared level', async () => {
@@ -716,6 +716,7 @@ describe('models.dev provider conformance', () => {
       {
         modelId: 'claude-sonnet-4-5',
         providerType: 'anthropic' as const,
+        thinkingLevel: 'on' as const,
         expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
       },
       {
@@ -728,12 +729,14 @@ describe('models.dev provider conformance', () => {
       {
         modelId: 'claude-opus-4-8',
         providerType: 'anthropic' as const,
+        thinkingLevel: 'high' as const,
         expectedThinking: { type: 'adaptive', display: 'summarized' },
+        expectedOutputConfig: { effort: 'high' },
       },
       {
         modelId: 'claude-sonnet-4',
         providerType: 'opencode' as const,
-        expectedThinking: { type: 'enabled', budget_tokens: 1_024 },
+        expectedThinking: undefined,
       },
       {
         modelId: 'anthropic/claude-opus-4.5',

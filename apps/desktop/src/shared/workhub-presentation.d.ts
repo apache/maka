@@ -55,6 +55,7 @@ export interface WorkHubPresentationBridge {
   ready(): Promise<void>;
   getSnapshot(): Promise<WorkHubPresentationSnapshot>;
   setHost(host: WorkHubHost): Promise<string | void>;
+  captureBackdrop(): Promise<string | void>;
   setConversationLayout(layout: { expanded: boolean; compactHeight: number; interactionPending?: boolean }): Promise<void>;
   progressReady(request: number): Promise<void>;
   resizeProgress(request: number, height: number): Promise<void>;

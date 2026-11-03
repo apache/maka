@@ -33,6 +33,7 @@ The root `DESIGN.md` owns shared product design intent. `docs/frontend-css-gover
 ## Audits
 
 - `maka-capability-audit-v1-2026-05.md` — a point-in-time capability and release-gate audit whose frontend authority references are no longer current.
+- [Deferred Goal wait integrations](./goal-wait-deferred-integrations-2026-10-24.en.md) ([中文](./goal-wait-deferred-integrations-2026-10-24.zh-CN.md)) — removed computer-observation and ACP-tool-bridge prototypes, their purpose and the scope that would justify separate introductions.
 
 ## Validation snapshots
 
@@ -83,3 +84,7 @@ The computer-use follow-up files are per-PR follow-up records, incident investig
 ## Benchmark logs
 
 - `economic-mechanisms-benchmark.md` — the first synthesis-cache benchmark entry for economic-mechanisms tracking issue #481 and slice #578. Current progress belongs in those issues.
+
+## Assistant plugin experiments
+
+`assistant-plugin-experiments/` preserves historical memory, initiative and follow-up test logs. These mix superseded designs and dated results and are excluded from extension packages. Current behavior and verification commands live in each plugin README. The private-data live-ten harness and removed task-overlay preview are retired; their old commands are not supported.

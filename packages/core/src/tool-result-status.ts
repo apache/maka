@@ -25,6 +25,16 @@ import type { ToolResultContent } from './events.js';
 import type { TurnStatus } from './session.js';
 
 export type SettledToolActivityStatus = 'completed' | 'errored' | 'interrupted';
+export type ToolCallOutcome = 'success' | 'error' | 'aborted';
+
+export function isToolCallOutcome(value: unknown): value is ToolCallOutcome {
+  return value === 'success' || value === 'error' || value === 'aborted';
+}
+
+export function requireToolCallOutcome(value: unknown): ToolCallOutcome {
+  if (!isToolCallOutcome(value)) throw new Error('Invalid tool call outcome');
+  return value;
+}
 
 /** A call that has started and has not settled. */
 export type InFlightToolActivityStatus = 'running';
@@ -79,7 +89,11 @@ export function isCancelledToolResultContent(content: ToolResultContent | undefi
 export function toolResultActivityStatus(
   isError: boolean,
   content: ToolResultContent | undefined,
+  outcome?: ToolCallOutcome,
 ): SettledToolActivityStatus {
+  if (outcome !== undefined) {
+    return outcome === 'success' ? 'completed' : outcome === 'aborted' ? 'interrupted' : 'errored';
+  }
   if (!isError) return 'completed';
   // Failed cancel (user stop / kill) — not a tool failure banner.
   if (isCancelledToolResultContent(content)) return 'interrupted';

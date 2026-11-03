@@ -22,6 +22,74 @@ import assert from 'node:assert/strict';
 import { parseGoalEvaluation, evaluateGoal } from '../goal-evaluator.js';
 
 describe('parseGoalEvaluation', () => {
+  const waitingCondition = {
+    resource: {
+      providerId: 'shell_run',
+      connectionId: null,
+      resourceType: 'background_task',
+      resourceId: 'task-1',
+    },
+    condition: { typeId: 'terminal', version: 1, parameters: {} },
+    deadlineAt: null,
+  };
+  test('retains an explicit nested waiting condition without inferring one from reason', () => {
+    const parsed = parseGoalEvaluation(
+      `Judgment:\n${JSON.stringify({
+        met: false,
+        waiting: true,
+        reason: 'Task remains pending {check}',
+        waitingCondition,
+      })}\nEnd.`,
+    );
+    assert.equal(parsed.evaluatorFailed, false);
+    assert.deepEqual(parsed.waitingCondition, waitingCondition);
+    assert.equal(
+      parseGoalEvaluation('{"waiting":true,"reason":"Wait for task-1 to finish"}').waitingCondition,
+      undefined,
+    );
+  });
+
+  for (const condition of [
+    { ...waitingCondition, deadlineAt: -1 },
+    { ...waitingCondition, userAuthorized: true },
+    { reason: 'Wait for CI' },
+    null,
+  ]) {
+    test(`retains waiting fallback for malformed condition ${JSON.stringify(condition)}`, () => {
+      const parsed = parseGoalEvaluation(
+        JSON.stringify({
+          met: false,
+          impossible: false,
+          progress: false,
+          waiting: true,
+          waitingCondition: condition,
+          reason: 'Background work is running',
+        }),
+      );
+      assert.equal(parsed.evaluatorFailed, false);
+      assert.equal(parsed.waiting, true);
+      assert.equal(parsed.met, false);
+      assert.equal(parsed.impossible, false);
+      assert.equal(parsed.progress, false);
+      assert.equal(parsed.waitingCondition, undefined);
+      assert.match(parsed.reason, /invalid waiting condition/i);
+      assert.match(parsed.reason, /Background work is running/);
+    });
+  }
+
+  test('does not attach a condition to a terminal or non-waiting verdict', () => {
+    for (const verdict of [
+      { met: true, waiting: true },
+      { met: false, impossible: true, waiting: true },
+      { met: false, waiting: false },
+    ]) {
+      assert.equal(
+        parseGoalEvaluation(JSON.stringify({ ...verdict, waitingCondition })).evaluatorFailed,
+        true,
+      );
+    }
+  });
+
   test('ignores a stray wait_seconds field in evaluator output', () => {
     const r = parseGoalEvaluation(
       '{"met": false, "waiting": true, "wait_seconds": 999999, "reason": "x"}',

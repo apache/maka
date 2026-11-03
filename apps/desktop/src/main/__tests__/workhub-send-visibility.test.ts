@@ -55,7 +55,6 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
   let steerResult: Awaited<ReturnType<WorkHubServices['enqueueMessage']>> = 'admitted';
   const executionQueries: string[][] = [];
   let executionResolutions: Awaited<ReturnType<WorkHubServices['queryMessageExecutions']>>['resolutions'] = [];
-  let newWorkDefaults: Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>> = {};
   let onSteer: ((input: Parameters<WorkHubServices['enqueueMessage']>) => void) | undefined;
   const interrupts: Array<{ sessionId: string; turnId: string; runId: string }> = [];
   let stopRetractions: string[] = [];
@@ -97,10 +96,6 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     listSessions: async () => [],
     modelChoices: async () => [],
     setDefaultModel: async () => {},
-    getNewWorkDefaults: async () => newWorkDefaults,
-    setNewWorkDefaults: async (_id: string, defaults: typeof newWorkDefaults) => {
-      newWorkDefaults = defaults;
-    },
     subscribeHosts: () => () => {},
     subscribeAvailability: () => () => {},
     subscribeSessions: () => () => {},
@@ -109,7 +104,7 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
       openCount++;
       if (failFirstRead && openCount === 1) throw new Error('transient initial read failure');
       publish = handler;
-      handler({ messages: [], ready: true, hasOlder: false });
+      handler({ messages: [], ready: true, hasOlder: false, historyComplete: true });
       return {
         observationChanged: () => {},
         loadEarlier: async () => { earlierLoads += 1; },
@@ -159,7 +154,9 @@ async function mountController(failFirstRead = false, overrides: Partial<WorkHub
     loseObservation() { projectExecution(false); },
     get earlierLoads() { return earlierLoads; },
     emit(event: Parameters<typeof observe>[0]) { observe(event); },
-    publish(messages: StoredMessage[]) { publish({ messages, ready: true, hasOlder: false }); },
+    publish(messages: StoredMessage[]) {
+      publish({ messages, ready: true, hasOlder: false, historyComplete: true });
+    },
   };
 }
 
@@ -214,70 +211,37 @@ test('WorkHub offers pre-session models and saves the selected default', async (
   assert.equal(h.controller.error, undefined);
 });
 
-test('WorkHub model selection configures only newly created work', async () => {
+test('WorkHub picker configures the persistent coordinating model', async () => {
   type Session = Awaited<ReturnType<WorkHubServices['getSession']>>;
-  const initial = {
-    id: JSON.stringify(['host-1', 'workhub-coordination']),
-    revision: 1, model: 'A', llmConnectionId: 'connection', llmConnectionSlug: 'provider',
-    runningTurnIds: [],
-  } as unknown as Session;
+  let saved = { id: JSON.stringify(['host-1', 'workhub-coordination']), revision: 1,
+    model: 'A', llmConnectionId: 'connection', llmConnectionSlug: 'provider', runningTurnIds: [] } as unknown as Session;
   let failSave = false;
-  const requests: Array<Awaited<ReturnType<WorkHubServices['getNewWorkDefaults']>>> = [];
+  const requests: Array<Parameters<WorkHubServices['configureModel']>[1]> = [];
   const h = await mountController(false, {
-    getSession: async () => initial,
-    getNewWorkDefaults: async () => ({}),
-    setNewWorkDefaults: async (_id, defaults) => {
+    getSession: async () => saved,
+    configureModel: async (_id, input) => {
       if (failSave) throw new Error('configuration failed');
-      requests.push(defaults);
+      requests.push(input);
+      saved = { ...saved, revision: saved.revision + 1, model: input.modelTarget.model,
+        thinkingLevel: input.thinkingLevel ?? undefined };
+      return { kind: 'committed', session: {} as never };
     },
   });
   await act(async () => {
-    await h.controller.changeExecutor({
-      executorId: 'codex.app-server',
-      model: 'gpt-6-astra',
-      thinkingLevel: 'high',
-    });
+    await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' }, 'high');
   });
-  assert.deepEqual(requests[0], {
-    executorId: 'codex.app-server',
-    executorModel: 'gpt-6-astra',
-    thinkingLevel: 'high',
-  });
-  assert.equal(h.controller.session?.model, 'A', 'the coordination Session keeps its own model');
-  assert.equal(h.controller.session?.revision, 1);
-
+  assert.equal(requests[0]?.expectedRevision, 1);
+  assert.equal(h.controller.session?.model, 'C');
+  assert.equal(h.controller.session?.revision, 2);
   await act(async () => { await h.controller.changeThinkingLevel('max'); });
   assert.equal(requests.at(-1)?.thinkingLevel, 'max');
-  assert.equal(requests.at(-1)?.executorModel, 'gpt-6-astra');
-
-  await act(async () => {
-    await h.controller.changeModel({
-      llmConnectionId: 'connection',
-      llmConnectionSlug: 'provider',
-      model: 'C',
-    });
-  });
-  assert.deepEqual(requests.at(-1), {
-    model: { llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'C' },
-  });
-  assert.equal(h.controller.session?.model, 'A');
-
   failSave = true;
   await act(async () => {
-    await h.controller.changeModel({
-      llmConnectionId: 'connection',
-      llmConnectionSlug: 'provider',
-      model: 'D',
-    });
+    await h.controller.changeModel({ llmConnectionId: 'connection', llmConnectionSlug: 'provider', model: 'D' });
   });
-  assert.equal(h.controller.newWorkDefaults.model?.model, 'C', 'failed writes retain the saved default');
+  assert.equal(h.controller.session?.model, 'C');
   assert.equal(h.controller.error, 'configuration failed');
   assert.equal(h.controller.configuringModel, false);
-
-  const count = requests.length;
-  await act(async () => { h.admit('busy-turn'); });
-  await act(async () => { await h.controller.changeThinkingLevel('high'); });
-  assert.equal(requests.length, count, 'running coordination turns freeze new-work defaults');
 });
 
 test('WorkHub stops presenting execution on observation loss while retaining the Stop target', async () => {
@@ -797,6 +761,162 @@ test('loading earlier history reaches WorkHub’s transcript', async () => {
   const h = await mountController();
   await h.controller.loadEarlier();
   assert.equal(h.earlierLoads, 1);
+});
+
+test('WorkHub completes transcript history before deriving whole-session state', async () => {
+  const targets: (number | undefined)[] = [];
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      const recent: StoredMessage = {
+        type: 'assistant', id: 'recent', turnId: 'recent-turn', ts: 2,
+        modelId: 'model', text: 'recent answer',
+      };
+      handler({ messages: [recent], ready: true, hasOlder: true, historyComplete: false });
+      return {
+        observationChanged() {},
+        async loadEarlier(throughSequence) {
+          targets.push(throughSequence);
+          handler({
+            messages: [
+              { type: 'user', id: 'old', turnId: 'old-turn', ts: 1, text: 'old request' },
+              recent,
+            ],
+            ready: true,
+            hasOlder: false,
+            historyComplete: true,
+          });
+        },
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+
+  assert.deepEqual(targets, [0]);
+  assert.equal(h.controller.transcript.historyComplete, true);
+  assert.deepEqual(h.controller.transcript.messages.map(({ id }) => id), ['old', 'recent']);
+});
+
+test('WorkHub retries an incomplete full-history read after the next ready snapshot', async () => {
+  let publishSnapshot!: Parameters<WorkHubServices['openTranscript']>[1];
+  let loads = 0;
+  const recent: StoredMessage = {
+    type: 'assistant', id: 'recent', turnId: 'recent-turn', ts: 2,
+    modelId: 'model', text: 'recent answer',
+  };
+  const incomplete = {
+    messages: [recent], ready: true, hasOlder: true, historyComplete: false,
+  };
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      publishSnapshot = handler;
+      handler(incomplete);
+      return {
+        observationChanged() {},
+        async loadEarlier() {
+          loads += 1;
+          if (loads === 1) return;
+          handler({
+            messages: [
+              { type: 'user', id: 'old', turnId: 'old-turn', ts: 1, text: 'old request' },
+              recent,
+            ],
+            ready: true,
+            hasOlder: false,
+            historyComplete: true,
+          });
+        },
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+
+  assert.equal(loads, 1);
+  assert.equal(
+    h.controller.error,
+    'Could not load the complete task history. Retry to restore WorkHub links and filters.',
+  );
+  await act(async () => {
+    publishSnapshot(incomplete);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+  assert.equal(loads, 2);
+  assert.equal(h.controller.transcript.historyComplete, true);
+  assert.equal(h.controller.error, undefined);
+});
+
+test('WorkHub clears an incomplete-history error when a manual read completes history', async () => {
+  let publishSnapshot!: Parameters<WorkHubServices['openTranscript']>[1];
+  const recent: StoredMessage = {
+    type: 'assistant', id: 'recent', turnId: 'recent-turn', ts: 2,
+    modelId: 'model', text: 'recent answer',
+  };
+  let loads = 0;
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      publishSnapshot = handler;
+      handler({ messages: [recent], ready: true, hasOlder: true, historyComplete: false });
+      return {
+        observationChanged() {},
+        async loadEarlier() {
+          loads += 1;
+          if (loads > 1) {
+            publishSnapshot({ messages: [recent], ready: true, hasOlder: false, historyComplete: true });
+          }
+        },
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+  assert.match(h.controller.error ?? '', /complete task history/);
+
+  await act(async () => { await h.controller.loadEarlier(); });
+
+  assert.equal(h.controller.transcript.historyComplete, true);
+  assert.equal(h.controller.error, undefined);
+});
+
+test('WorkHub retries an uncertain send before an incomplete-history read', async () => {
+  const h = await mountController(false, {
+    openTranscript: async (_sessionId, handler) => {
+      handler({ messages: [], ready: true, hasOlder: true, historyComplete: false });
+      return {
+        observationChanged() {},
+        async loadEarlier() {},
+        async close() {},
+      };
+    },
+  });
+  await act(async () => { await new Promise<void>((resolve) => setImmediate(resolve)); });
+  assert.match(h.controller.error ?? '', /complete task history/);
+
+  let sent!: Promise<boolean>;
+  await act(async () => { sent = h.controller.send('retain uncertain send', []); });
+  const turnId = h.requests[0]!.turnId;
+  await act(async () => {
+    h.admission.reject(new RuntimeHostRequestInterruptedError(
+      'workhub.coordination.answer', 'command', 'dispatched', 'connection_lost',
+    ));
+    assert.equal(await sent, true);
+  });
+  assert.doesNotMatch(h.controller.error ?? '', /complete task history/);
+
+  const openCount = h.openCount;
+  const requestCount = h.requests.length;
+  h.resetAdmission();
+  await act(async () => {
+    h.controller.retry();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
+  assert.equal(h.openCount, openCount, 'send recovery does not reopen transcript history');
+  assert.equal(h.requests.length, requestCount + 1);
+  await act(async () => {
+    h.admit(turnId);
+    h.admission.resolve({ turnId });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  });
 });
 
 test('follow-up admission before an uncertain response keeps its successor placement', async () => {

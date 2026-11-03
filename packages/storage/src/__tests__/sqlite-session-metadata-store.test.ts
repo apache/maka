@@ -58,6 +58,77 @@ import {
 import { SQLITE_AGENT_GRAPH_CONTROL_TABLES } from '../sqlite-session-metadata-schema.js';
 
 describe('SqliteSessionMetadataStore', () => {
+  test('standalone metadata lifecycle remains compatible without workflow tables', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'maka-standalone-metadata-lifecycle-'));
+    const path = join(root, 'metadata.sqlite');
+    const store = createSqliteSessionMetadataStore(path);
+    try {
+      for (const id of ['archived', 'removed', 'retired', 'archived-with-retirement']) {
+        await store.create(
+          fullHeader({
+            id,
+            parentSessionId: undefined,
+            branchOfTurnId: undefined,
+            revisionRootSessionId: undefined,
+            revisionParentSessionId: undefined,
+            revisionOfTurnId: undefined,
+            revisionIndex: undefined,
+            revisionState: undefined,
+          }),
+        );
+      }
+      const inspection = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.deepEqual(
+          inspection.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'workflow_%'").all(),
+          [],
+        );
+      } finally {
+        inspection.close();
+      }
+      await store.setArchivedVersioned([{ sessionId: 'archived', expectedVersion: 1 }], true);
+      assert.equal((await store.read('archived')).header.isArchived, true);
+      assert.equal(await store.remove('removed'), true);
+      assert.deepEqual(
+        await store.removeVersioned(
+          [{ sessionId: 'retired', expectedVersion: 1 }],
+          [{ sessionId: 'archived-with-retirement', expectedVersion: 1 }],
+        ),
+        ['retired'],
+      );
+      assert.equal((await store.read('archived-with-retirement')).header.isArchived, true);
+    } finally {
+      store.close();
+    }
+    try {
+      const inspection = new DatabaseSync(path, { readOnly: true });
+      try {
+        assert.deepEqual(
+          inspection.prepare("SELECT name FROM sqlite_schema WHERE name LIKE 'workflow_%'").all(),
+          [],
+        );
+        assert.deepEqual(
+          inspection
+            .prepare('SELECT session_id FROM session_metadata ORDER BY session_id')
+            .all()
+            .map((row) => row.session_id),
+          ['archived', 'archived-with-retirement'],
+        );
+        assert.deepEqual(
+          inspection
+            .prepare('SELECT session_id FROM session_metadata_tombstones ORDER BY session_id')
+            .all()
+            .map((row) => row.session_id),
+          ['removed', 'retired'],
+        );
+      } finally {
+        inspection.close();
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test('migrates version 38 and resumes the body-free Coordination index idempotently', async () => {
     const root = await mkdtemp(join(tmpdir(), 'maka-coordination-index-migration-'));
     const path = join(root, 'state.sqlite');

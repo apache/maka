@@ -45,8 +45,6 @@ import {
   type SessionEventFrame,
   type SessionRuntimeResourcePtyDataFrame,
   type OrderedSubscriptionFrame,
-  type SessionSteeringEvent,
-  type SessionToolEvent,
   type SessionTranscriptAdvancedFrame,
   type SessionTranscriptPageInput,
   type OperationOutcome,
@@ -104,6 +102,7 @@ type RuntimeSessionForwardedEventType =
   | 'tool_result_preview'
   | 'tool_result'
   | 'steering_message'
+  | 'context_compaction_applied'
   | 'provider_retry';
 
 export type RuntimeSessionForwardedEvent = Extract<
@@ -2011,7 +2010,15 @@ function projectSessionEvent(
   >,
   sessionId: string,
   shared = false,
-): SessionToolEvent | SessionSteeringEvent {
+): SessionEventFrame['event'] {
+  if (event.type === 'context_compaction_applied') {
+    return {
+      type: event.type,
+      id: event.id,
+      turnId: event.turnId,
+      ts: event.ts,
+    };
+  }
   if (event.type === 'steering_message') {
     // The durable steering echo: forwarded verbatim so subscribers render the
     // interjection in place instead of depending on observing the transient
@@ -2084,7 +2091,8 @@ function projectSessionEvent(
         type: event.type,
         ...identity,
         ...(event.operationId === undefined ? {} : { operationId: event.operationId }),
-        status: event.isError ? 'errored' : 'completed',
+        status:
+          event.outcome === 'aborted' ? 'interrupted' : event.isError ? 'errored' : 'completed',
         ...(event.isError && event.content.kind === 'text' && event.content.sandboxFailure
           ? { sandboxFailureReason: event.content.sandboxFailure.reason }
           : {}),

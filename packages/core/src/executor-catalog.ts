@@ -43,6 +43,11 @@ export type ExecutorReadiness =
   | 'restore_failed'
   | 'history_gap';
 
+/** Existing conversations restore their external connection as part of execution. */
+export function canExecuteExistingConversation(readiness: ExecutorReadiness | undefined): boolean {
+  return readiness === 'ready' || readiness === 'restorable' || readiness === 'restore_failed';
+}
+
 export interface ExecutorModelChoice {
   readonly id: string;
   readonly name: string;
@@ -73,6 +78,8 @@ export interface ExecutorCatalogEntry {
   readonly supportsAttachments: boolean;
   readonly supportsModelChange: boolean;
   readonly supportsModeChange?: boolean;
+  /** A transient discovery refresh failed; the last successful choices remain usable. */
+  readonly refreshFailed?: boolean;
 }
 
 export function isExecutorConfiguration(value: unknown): value is ExecutorConfiguration {
@@ -138,7 +145,8 @@ export function normalizeCatalogEntry(
     !isExecutorConfiguration({ mode: value.currentMode }) ||
     typeof value.supportsAttachments !== 'boolean' ||
     typeof value.supportsModelChange !== 'boolean' ||
-    (value.supportsModeChange !== undefined && typeof value.supportsModeChange !== 'boolean')
+    (value.supportsModeChange !== undefined && typeof value.supportsModeChange !== 'boolean') ||
+    (value.refreshFailed !== undefined && typeof value.refreshFailed !== 'boolean')
   )
     throw new TypeError('Executor catalog is invalid');
   const usedModels = new Set<string>();
@@ -214,6 +222,7 @@ export function normalizeCatalogEntry(
     ...(value.currentMode !== undefined ? { currentMode: value.currentMode } : {}),
     supportsAttachments: value.supportsAttachments,
     supportsModelChange: value.supportsModelChange,
+    ...(value.refreshFailed !== undefined ? { refreshFailed: value.refreshFailed } : {}),
     ...(value.supportsModeChange !== undefined
       ? { supportsModeChange: value.supportsModeChange }
       : {}),

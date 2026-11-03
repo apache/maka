@@ -24,12 +24,17 @@ interface TranscriptRangeController<Message> {
     range(): {
       readonly sessionId: string;
       readonly hasOlder: boolean;
+      readonly hasNewer?: boolean;
       readonly ready: boolean;
       readonly generation?: string;
     };
     snapshot(): { readonly messages: readonly Message[] };
   };
   loadEarlier(throughSequence?: number): Promise<void>;
+  loadNewer?(): Promise<void>;
+  seek?(sequence: number): Promise<void>;
+  showLatest?(): Promise<void>;
+  readComplete?(): Promise<readonly Message[]>;
 }
 
 interface SearchTarget {
@@ -127,6 +132,33 @@ export function currentTranscriptRange<Range extends { readonly sessionId: strin
   }
 }
 
+export async function readCompleteTranscript<Message>(
+  controllerRef: { readonly current: TranscriptRangeController<Message> | undefined },
+  sessionRef: { readonly current: string | undefined },
+  sessionId: string,
+): Promise<readonly Message[]> {
+  const controller = controllerRef.current;
+  const current = () => sessionRef.current === sessionId && controllerRef.current === controller;
+  const available = currentTranscriptRange(controller, sessionId);
+  if (!controller || !current()) {
+    throw new Error('The active task changed before its transcript could be exported');
+  }
+  if (!available?.ready || available.generation?.startsWith('cached:')) {
+    throw new Error('The complete task transcript is not available');
+  }
+  if (controller.readComplete) {
+    const messages = await controller.readComplete();
+    if (!current()) throw new Error('The active task changed before its transcript could be exported');
+    return messages;
+  }
+  await controller.loadEarlier(0);
+  const complete = currentTranscriptRange(controller, sessionId);
+  if (!current() || !complete?.ready || complete.generation?.startsWith('cached:') || complete.hasOlder || complete.hasNewer) {
+    throw new Error('The complete task transcript is not available');
+  }
+  return controller.store.snapshot().messages;
+}
+
 export function transcriptRestoreTarget(
   anchor: TranscriptReadingAnchor | undefined,
   unavailableTurnId: string | undefined,
@@ -179,7 +211,7 @@ export function restoreSessionTranscriptRange<Message>(options: {
     return;
   }
   const { lookupTurn } = options;
-  if (range.hasOlder && !command.loaded && lookupTurn) {
+  if ((range.hasOlder || range.hasNewer) && !command.loaded && lookupTurn) {
     const loading = {};
     command.loading = loading;
     const current = () => options.lifecycle.isCurrent(command) && options.isCurrent(sessionId, controller);
@@ -191,7 +223,7 @@ export function restoreSessionTranscriptRange<Message>(options: {
     void lookupTurn(sessionId, turnId)
       .then((sequence) => {
         if (sequence === undefined || !current()) return;
-        return controller.loadEarlier(sequence);
+        return controller.seek ? controller.seek(sequence) : controller.loadEarlier(sequence);
       })
       .then(
         () => {

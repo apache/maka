@@ -42,7 +42,7 @@ export function appShellCommandOptions(
     clientPathsAccessible: false,
     connections: [],
     defaultConnection: null,
-    renderPublishedConversation: () => '',
+    renderCompleteConversation: async () => '',
     newTaskProfileId: 'new-task-profile',
     settingsOpen: false,
     settingsProfileId: undefined,
@@ -71,10 +71,11 @@ export function appShellCommandOptions(
     setPermissionMode: async () => true,
     setThemePref() {},
     toastApi: {
-      success: (title) => toasts.push(`success:${title}`),
-      info() {},
+      toast: () => '', warning: () => '', confirm: async () => false, dismiss() {},
+      success: (title) => String(toasts.push(`success:${title}`)),
+      info: () => '',
       error: (title, description, _details, target) =>
-        toasts.push(`error:${title}:${description}:${JSON.stringify(target)}`),
+        String(toasts.push(`error:${title}:${description}:${JSON.stringify(target)}`)),
     },
     ...overrides,
   };

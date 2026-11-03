@@ -337,3 +337,15 @@ async function withFixture(
     await rm(root, { recursive: true, force: true });
   }
 }
+
+
+test('directory imports cannot publish a manifest expanded beyond the store limit', async () => {
+  await withFixture(async ({ source, stateRoot }) => {
+    await writeSourcePack(source);
+    const large = manifest({ idleVariants: Array.from({ length: 40 }, () => ({ frames: Array(256).fill(0), fps: 2, loop: true })) });
+    await writeFile(join(source, 'pet.json'), JSON.stringify(large));
+    const store = createPetPackStore(stateRoot);
+    await assert.rejects(importPetPackFromDirectory({ sourceDirectory: source, store }));
+    assert.deepEqual(await store.list(), []);
+  });
+});

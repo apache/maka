@@ -32,6 +32,7 @@ import { MarkdownBody } from '../markdown-body.js';
 import type { TurnViewModel } from '../materialize.js';
 
 const originalGlobals = {
+  CSS: globalThis.CSS,
   document: globalThis.document,
   matchMedia: globalThis.matchMedia,
   requestAnimationFrame: globalThis.requestAnimationFrame,
@@ -56,6 +57,7 @@ function domRoot() {
   Object.assign(globalThis, {
     document,
     window,
+    CSS: { escape: String, supports: () => false },
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {} }),
     requestAnimationFrame: () => 1,
     cancelAnimationFrame() {},
@@ -68,13 +70,43 @@ function domRoot() {
   return { container, root };
 }
 
+test('summary toggle retains Markdown formatting and never hides or reloads the sticker', async () => {
+  const { container, root } = domRoot();
+  const sticker = 'maka://runtime/attachments/assistant_sticker_' + 'd'.repeat(64);
+  let reads = 0;
+  await act(async () => {
+    root.render(<LocaleProvider locale="en"><SessionAttachmentProvider sessionId="summary-sticker" readBytes={async () => {
+      reads++;
+      return { ok: true, base64: 'c3RpY2tlcg==', mimeType: 'image/png' };
+    }}><MarkdownBody summary="Short preview" text={`**Full answer**\n\n- First\n- Second\n\n![Reaction](${sticker})`} separateStickers /></SessionAttachmentProvider></LocaleProvider>);
+  });
+  const body = container.querySelector('.maka-message-summary-body')!;
+  const toggle = container.querySelector<HTMLButtonElement>('.maka-message-summary-toggle')!;
+  const image = container.querySelector('img[alt="Reaction"]')!;
+  assert.ok(image);
+  assert.equal(image.closest('[hidden]'), null);
+  assert.equal(body.hasAttribute('hidden'), true);
+  await act(async () => { toggle.click(); });
+  assert.equal(body.hasAttribute('hidden'), false);
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  assert.equal(body.querySelector('strong')?.textContent, 'Full answer');
+  assert.equal(body.querySelectorAll('li').length, 2);
+  await act(async () => { toggle.click(); });
+  assert.equal(body.hasAttribute('hidden'), true);
+  assert.equal(container.querySelector('img[alt="Reaction"]'), image);
+  assert.equal(image.closest('[hidden]'), null);
+  assert.equal(reads, 1);
+});
+
 async function renderAttachmentMarkdown(text: string, readBytes: ReadAttachmentBytes) {
   const { container, root } = domRoot();
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody text={text} />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
   return { container, root };
@@ -169,7 +201,20 @@ test('renders a session attachment referenced by assistant Markdown', async () =
   assert.deepEqual(readRef, { sessionId: 'session-1', artifactId: 'attachment-123' });
 });
 
-test('keeps unreadable assistant attachments as named placeholders', async () => {
+test('only Host sticker references receive the compact image presentation', async () => {
+  const hash = 'bf810d6e9d50f443d6e9aa0434b095d01eb978463c7096060ab5dae34d1cb530';
+  const { container } = await renderAttachmentMarkdown([
+    `![sticker](maka://runtime/attachments/assistant_sticker_${hash})`,
+    `![photo](maka://runtime/attachments/assistant_character_${hash})`,
+    '![ordinary](maka://runtime/attachments/attachment-123)',
+  ].join('\n\n'), async () => ({ ok: true, base64: 'aW1n', mimeType: 'image/png' }));
+  assert.equal(container.querySelectorAll('.maka-chat-sticker').length, 1);
+  assert.ok(container.querySelector('.maka-chat-sticker img[alt="sticker"]'));
+  assert.equal(container.querySelector('img[alt="photo"]')?.closest('.maka-chat-sticker'), null);
+  assert.equal(container.querySelector('img[alt="ordinary"]')?.closest('.maka-chat-sticker'), null);
+});
+
+test('explains unreadable assistant attachments and offers retry', async () => {
   const cases: Array<[string, ReadAttachmentBytes]> = [
     ['missing', async () => ({ ok: false, reason: 'not_found' })],
     ['document', async () => ({ ok: true, base64: 'cGRm', mimeType: 'application/pdf' })],
@@ -188,7 +233,9 @@ test('keeps unreadable assistant attachments as named placeholders', async () =>
       readBytes,
     );
     assert.equal(container.querySelector('img'), null);
-    assert.ok(container.textContent.includes(`[${name}]`));
+    assert.ok(container.textContent.includes(name));
+    assert.ok(container.textContent.includes("Could not load the image"));
+    assert.equal(container.querySelector("button")?.textContent, "Retry");
   }
 });
 
@@ -218,14 +265,10 @@ test('retries an attachment image after a transient read failure', async () => {
       ? { ok: false, reason: 'read_failed' }
       : { ok: true, base64: 'cmVjb3ZlcmVk', mimeType: 'image/png' };
   };
-  const { container, root } = await renderAttachmentMarkdown(markdown, readBytes);
+  const { container } = await renderAttachmentMarkdown(markdown, readBytes);
   assert.equal(container.querySelector('img'), null);
   await act(async () => {
-    root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
-        <MarkdownBody key="retry" text={markdown} />
-      </SessionAttachmentProvider>,
-    );
+    container.querySelector('button')!.click();
   });
 
   const image = container.querySelector('img[alt="preview"]');
@@ -244,22 +287,26 @@ test('renders an attachment when a streaming Markdown image becomes complete', a
   });
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody
           text="![preview](maka://runtime/attachments/attachment-"
           streaming
           settledText=""
         />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
   assert.equal(container.querySelector('img'), null);
 
   await act(async () => {
     root.render(
-      <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
+      <LocaleProvider locale="en">
+        <SessionAttachmentProvider sessionId="session-1" readBytes={readBytes}>
         <MarkdownBody text={markdown} streaming settledText={markdown} />
-      </SessionAttachmentProvider>,
+      </SessionAttachmentProvider>
+      </LocaleProvider>,
     );
   });
 

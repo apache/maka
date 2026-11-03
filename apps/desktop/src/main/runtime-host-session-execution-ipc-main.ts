@@ -30,6 +30,7 @@ import {
   RuntimeHostRequestInterruptedError,
 } from '@maka/runtime-host/client';
 import {
+  HOST_OPERATION_SPECS,
   MESSAGE_QUEUE_MAX_ENTRIES,
   type TurnMessageExecutionResolution,
 } from '@maka/runtime-host/protocol';
@@ -78,6 +79,7 @@ import {
 } from "./runtime-host-session-observer.js";
 import type {
   DesktopTranscriptOpenMode,
+  DesktopTranscriptPosition,
   DesktopTranscriptTailAcknowledgement,
 } from '../preload/transcript-contract.js';
 import type { DesktopSessionStopResult } from '../preload/bridge-contract.js';
@@ -117,6 +119,7 @@ type RuntimeHostSessionExecutionClient = Pick<
   | "copySession"
   | "getSession"
   | "generatePromptSuggestion"
+  | "generateCheckin"
   | "ingestAttachment"
   | "interruptTurn"
   | "openSession"
@@ -166,6 +169,7 @@ async function submitMessageWithReconnect(
 }
 
 export interface RuntimeHostSessionExecutionIpcDeps {
+  retireCancelledMessages?: (sessionId: string, messageIds: readonly string[]) => void;
   client: RuntimeHostSessionExecutionClient;
   observer: RuntimeHostSessionObserver;
   attachmentApprovals: AttachmentApprovalRegistry;
@@ -235,6 +239,7 @@ export interface RuntimeHostSessionObservationIpcDeps {
     RuntimeHostSessionObservationRegistry,
     | 'acknowledgeTranscriptTail'
     | 'loadEarlierTranscript'
+    | 'loadNewerTranscript'
     | 'observe'
     | 'trackRenderer'
     | 'openTranscript'
@@ -268,7 +273,7 @@ export function registerRuntimeHostSessionObservationIpc(
   );
   ipcMain.handle(
     'sessions:transcript:open',
-    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown) => {
+    async (event, sessionId: unknown, consumerId: unknown, mode: unknown, resumeFrom: unknown, position: unknown) => {
       deps.observations.trackRenderer(event.sender);
       return observationIpcResult(
         deps.observations.openTranscript(
@@ -277,6 +282,7 @@ export function registerRuntimeHostSessionObservationIpc(
           event.sender as RuntimeHostTranscriptTarget,
           normalizeTranscriptOpenMode(mode),
           optionalSequence(resumeFrom, 'Desktop transcript resume position'),
+          normalizeTranscriptPosition(position),
         ),
       );
     },
@@ -296,6 +302,9 @@ export function registerRuntimeHostSessionObservationIpc(
     'sessions:transcript:read-turn',
     (_event, sessionId: unknown, turnId: unknown) =>
       deps.observations.readTranscriptTurn(requiredId(sessionId, 'Session'), requiredId(turnId, 'Turn')),
+  );
+  ipcMain.handle('sessions:transcript:load-newer', (event, consumerId: unknown) =>
+    deps.observations.loadNewerTranscript(requiredId(consumerId, 'Transcript consumer'), event.sender.id),
   );
   ipcMain.handle('sessions:transcript:acknowledge-tail', async (event, input: unknown) => {
     await deps.observations.acknowledgeTranscriptTail(
@@ -366,6 +375,7 @@ export function registerRuntimeHostSessionExecutionIpc(
       if (new Set(cancelledMessageIds).size !== cancelledMessageIds.length) {
         throw new Error('Duplicate cancelled Message identities');
       }
+      deps.retireCancelledMessages?.(normalizedSessionId, cancelledMessageIds);
       return { cancelledMessageIds };
     },
   );
@@ -393,6 +403,12 @@ export function registerRuntimeHostSessionExecutionIpc(
 
   ipcMain.handle('sessions:generatePromptSuggestion', async (_event, sessionId: unknown) =>
     deps.client.generatePromptSuggestion(requiredId(sessionId, 'Session')),
+  );
+
+  ipcMain.handle('sessions:generateCheckin', async (_event, input: unknown) =>
+    deps.client.generateCheckin(
+      HOST_OPERATION_SPECS['session.checkin.generate'].decodeInput(input),
+    ),
   );
 
   handleReconnectableRead(ipcMain, 'sessions:listTurns', async (_event, sessionId: unknown) =>
@@ -871,6 +887,20 @@ function normalizeTranscriptOpenMode(mode: unknown): DesktopTranscriptOpenMode {
   throw new Error('Invalid Desktop transcript open mode');
 }
 
+function normalizeTranscriptPosition(value: unknown): DesktopTranscriptPosition | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object') throw new Error('Invalid Desktop transcript position');
+  const position = value as Record<string, unknown>;
+  if ('turnId' in position) return { turnId: requiredId(position.turnId, 'Transcript Turn') };
+  const sequence = optionalSequence(position.sequence, 'Desktop transcript sequence');
+  const throughSequence = optionalSequence(position.throughSequence, 'Desktop transcript range end');
+  if (sequence === undefined || (throughSequence !== undefined && throughSequence < sequence) ||
+    (position.hasOlder !== undefined && typeof position.hasOlder !== 'boolean')) {
+    throw new Error('Invalid Desktop transcript range');
+  }
+  return { sequence, throughSequence, hasOlder: position.hasOlder as boolean | undefined };
+}
+
 function optionalSequence(value: unknown, label: string): number | undefined {
   if (value === undefined || value === null) return undefined;
   if (Number.isSafeInteger(value) && (value as number) >= 0) return value as number;
@@ -916,7 +946,7 @@ function retainedAttachmentsForSession(
 function createRuntimeHostSessionStop(
   deps: Pick<
     RuntimeHostSessionExecutionIpcDeps,
-    "beforeStop" | "client" | "observer" | "emitSessionsChanged"
+    "beforeStop" | "client" | "observer" | "emitSessionsChanged" | "retireCancelledMessages"
   >,
   newId: () => string = randomUUID,
 ): (
@@ -942,6 +972,7 @@ function createRuntimeHostSessionStop(
             }),
           () => deps.client.getSession(sessionId),
         );
+        deps.retireCancelledMessages?.(sessionId, [entry.messageId]);
         deps.emitSessionsChanged('status-change', sessionId);
         return { kind: 'retracted', messageId: entry.messageId };
       }
@@ -983,6 +1014,7 @@ function createRuntimeHostSessionStop(
       turnId: turn.turnId,
       runId: turn.runId,
     });
+    deps.retireCancelledMessages?.(sessionId, interrupted.retracted.map((message) => message.messageId));
     deps.emitSessionsChanged("turn-status-change", sessionId, {
       turnId: turn.turnId,
     });

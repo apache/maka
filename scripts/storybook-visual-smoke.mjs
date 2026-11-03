@@ -178,6 +178,19 @@ export function catalogJobs(
           viewport: { width, height: 900 },
         }));
       }
+      // Refresh failures must preserve both single-row and wrapped Composer layouts in every shipped locale.
+      if (entry.id === 'product-shell-official-appshell--new-chat-catalog-refresh-failure') {
+        return ['en', 'zh-CN', 'zh-TW'].flatMap((locale) =>
+          [RENDER_VIEWPORT, NARROW_RENDER_VIEWPORT].map((viewport) => ({
+            storyId: entry.id,
+            colorScheme: 'light',
+            forcedColors: 'none',
+            palette: 'default',
+            locale,
+            viewport,
+          })),
+        );
+      }
       // These diagnostics must wrap in both locales at the reading measure
       // and in a narrow Desktop window; toolbar defaults cover neither matrix.
       if (entry.id === 'product-shell-official-appshell--long-system-notes') {
@@ -549,10 +562,12 @@ async function runCli() {
     );
   }
   const { chromium } = await import('@playwright/test');
-  // Headless Chromium paints no platform scrollbar, so anything a scrollbar
-  // can occlude is inert here and on CI. `SMOKE_HEADED=1` is how you check
-  // those by hand, on the platform whose scrollbar overlays the content.
-  const browser = await chromium.launch({ headless: process.env.SMOKE_HEADED !== '1' });
+  // Keep native scrollbar geometry in headless layout checks. Playwright hides
+  // scrollbars by default, masking the space classic scrollbars consume.
+  const browser = await chromium.launch({
+    headless: process.env.SMOKE_HEADED !== '1',
+    ignoreDefaultArgs: ['--hide-scrollbars'],
+  });
   const server = await startStaticServer(staticDir);
   let problems;
   try {

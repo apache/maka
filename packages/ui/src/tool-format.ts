@@ -165,7 +165,12 @@ export function formatRedactedJson(value: unknown): string {
   }
 }
 
+/** `formatToolIntent` without the display cap — for comparisons, not rows. */
+export function normalizeToolIntent(intent: string): string {
+  return redactSecrets(intent.replace(/\s+/g, ' ').trim());
+}
+
 export function formatToolIntent(intent: string): string {
-  const safe = redactSecrets(intent.replace(/\s+/g, ' ').trim());
+  const safe = normalizeToolIntent(intent);
   return safe.length > 240 ? `${safe.slice(0, 240)}…` : safe;
 }

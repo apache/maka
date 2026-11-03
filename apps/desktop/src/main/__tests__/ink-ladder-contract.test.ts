@@ -52,18 +52,20 @@ const SOURCE_EXTENSIONS = ['.css', '.ts', '.tsx'];
 
 const RETIRED_INK = ['--foreground-secondary', '--foreground-dimmed'];
 
-// These reads intentionally consume layout declarations, never colours.
+// These reads intentionally consume layout and font declarations, never colours.
 // Keep this exact: an unknown property must still fail the palette guard.
-const LAYOUT_DECLARATION_READS = new Set([
+const NON_COLOR_DECLARATION_READS = new Set([
   '--maka-session-workbar-width', // Restore the inline width declaration after a drag.
   '--maka-focused-composer-space', // Assert the measured pixel clearance in the layout story.
   '--agents-content-area-gap', // Assert the titlebar gutter reserves the plate seam in the shell story.
+  '--font-family-body',
+  '--font-family-code',
 ]);
 
 function unapprovedCustomPropertyReads(source: string): string[] {
   return [...withoutComments(source).matchAll(/getPropertyValue\(\s*['"`](--[a-z0-9-]+)/g)]
     .map((match) => match[1]!)
-    .filter((name) => !LAYOUT_DECLARATION_READS.has(name));
+    .filter((name) => !NON_COLOR_DECLARATION_READS.has(name));
 }
 
 async function sourceFilesUnder(root: string): Promise<string[]> {
@@ -232,14 +234,17 @@ describe('mode expression', () => {
     );
   });
 
-  it('allows the explicit layout reads without admitting palette or unknown properties', () => {
+  it('allows the explicit layout and font reads without admitting palette or unknown properties', () => {
     assert.deepEqual(unapprovedCustomPropertyReads(`
       frame.style.getPropertyValue('--maka-session-workbar-width');
       getComputedStyle(frame).getPropertyValue('--maka-focused-composer-space');
+      getComputedStyle(frame).getPropertyValue('--font-family-body');
+      getComputedStyle(frame).getPropertyValue('--font-family-code');
       getComputedStyle(frame).getPropertyValue('--foreground');
       getComputedStyle(frame).getPropertyValue("--background");
       getComputedStyle(frame).getPropertyValue('--maka-brand');
       frame.style.getPropertyValue('--maka-unknown-width');
-    `), ['--foreground', '--background', '--maka-brand', '--maka-unknown-width']);
+      getComputedStyle(frame).getPropertyValue('--font-family-unknown');
+    `), ['--foreground', '--background', '--maka-brand', '--maka-unknown-width', '--font-family-unknown']);
   });
 });
