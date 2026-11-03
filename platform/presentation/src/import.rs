@@ -94,6 +94,7 @@ pub(super) fn project(
             content: ToolContent::Json {
                 value: output.clone(),
             },
+            images: Vec::new(),
             metadata: ToolMetadata::Imported {
                 model_visibility: Hidden::Hidden,
             },

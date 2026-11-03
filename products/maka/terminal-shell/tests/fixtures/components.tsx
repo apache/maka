@@ -138,8 +138,11 @@ function Consent() {
   );
 }
 
-function CompletionComposer() {
+function CompletionComposer(props: { prediction?: boolean }) {
   const draft = signal('');
+  const prediction = signal<{ sourceTurnId: string; text: string } | null>(
+    props.prediction ? { sourceTurnId: 'prediction-turn', text: 'Review the changes.' } : null,
+  );
   const action = signal('No command');
   const lookup = signal('No lookup');
   const unexpected = (): never => {
@@ -166,8 +169,11 @@ function CompletionComposer() {
     dismissSend: unexpected,
     invocation: () => null,
     prediction: {
-      current: () => null,
-      dismiss: unexpected,
+      current: prediction,
+      dismiss(sourceTurnId) {
+        if (prediction()?.sourceTurnId !== sourceTurnId) throw new Error('Wrong prediction source');
+        prediction.set(null);
+      },
     },
     stopping: () => false,
     resumable: () => null,
@@ -186,8 +192,8 @@ function CompletionComposer() {
     }),
     refreshModel: unexpected,
     previewImage: unexpected,
-    submit: unexpected,
-    sendRendered: unexpected,
+    submit: () => action.set('message:sent'),
+    sendRendered: () => action.set('message:sent'),
     stop: unexpected,
     permissions: {
       sessionId: 'original-session',
@@ -632,6 +638,7 @@ function ToolStatuses() {
                           position: { sourceSequence: index(), itemIndex: 1 },
                           isError: item().settlement !== 'returned',
                           image: false,
+                          images: 0,
                         },
                 },
               })}
@@ -683,8 +690,8 @@ mount(() =>
     <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
-  ) : scenario === 'composer' ? (
-    <CompletionComposer />
+  ) : scenario === 'composer' || scenario === 'composer-prediction' ? (
+    <CompletionComposer prediction={scenario === 'composer-prediction'} />
   ) : (
     <Consent />
   ),

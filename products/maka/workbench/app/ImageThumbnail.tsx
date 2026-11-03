@@ -18,6 +18,7 @@
  */
 
 import { textTooltip } from './ui';
+import { Tooltip } from 'nsh/base';
 import { createText } from './text';
 import { cleanup, inputAction, signal, Text, View, Image } from 'nsh';
 import { Button } from 'nsh/base';
@@ -25,6 +26,7 @@ import { windowSize } from 'nsh';
 import type { ViewRef } from 'nsh';
 import { C, captionTextStyle, controlStyle } from './ui';
 import { Icon } from './Icon';
+import { ImageViewer } from './ImageViewer';
 import { tr } from './locale';
 import type {
   AgentToolImageRead,
@@ -46,12 +48,16 @@ export function ImageThumbnail(props: {
   source: PreviewSource;
   uri: string;
   compact?: boolean;
+  /** A thumbnail small enough for a one-line row; failures show in its tooltip. */
+  mini?: boolean;
   label?: string;
   tooltip?: string;
   preview(image: ImagePreview): void;
 }) {
   const source = props.source;
   const uri = props.uri;
+  const small = props.compact || props.mini;
+  const box = props.mini ? { width: 32, height: 24 } : { width: 64, height: 64 };
   const action = Object.freeze({ sessionId: source.read.sessionId, uri });
   const size = signal<{ width: number; height: number } | null>(null);
   const error = createText();
@@ -63,8 +69,14 @@ export function ImageThumbnail(props: {
   });
   const owns = (selected: typeof action) =>
     selected.sessionId === action.sessionId && selected.uri === action.uri;
+  // A mini thumbnail opens the image over the window, leaving the side panels as they are.
+  const viewing = signal(false);
   const preview = (selected: typeof action) => {
     const originalButton = button;
+    if (props.mini) {
+      if (alive && owns(selected) && size()) viewing.set(true);
+      return;
+    }
     if (alive && owns(selected) && size())
       props.preview({
         source,
@@ -77,6 +89,19 @@ export function ImageThumbnail(props: {
         },
       });
   };
+  // Hovering a mini thumbnail floats a larger copy; pressing it still opens the viewer.
+  const hoverSize = () => {
+    const value = size();
+    if (!value) return { width: 0, height: 0 };
+    const scale = Math.min(1, 480 / value.width, 320 / value.height);
+    return { width: Math.round(value.width * scale), height: Math.round(value.height * scale) };
+  };
+  const caption = () =>
+    size()
+      ? `${size()!.width} × ${size()!.height}`
+      : error()
+        ? tr('Image unavailable')
+        : tr('Loading image…');
   const retry = (selected: typeof action) => {
     if (!alive || !owns(selected) || !error()) return;
     size.set(null);
@@ -86,7 +111,7 @@ export function ImageThumbnail(props: {
   return (
     <View
       style={
-        props.compact
+        small
           ? { flexDirection: 'row', alignItems: 'flex-start', gap: 8, flexShrink: 0 }
           : { gap: 16 }
       }
@@ -96,29 +121,44 @@ export function ImageThumbnail(props: {
           button = node;
         }}
         accessibilityLabel={props.label ?? tr('Open image preview')}
-        tooltip={textTooltip(() =>
-          props.compact
-            ? `${props.tooltip ?? props.label ?? tr('Open image preview')}\n${
-                size()
-                  ? `${size()!.width} × ${size()!.height}`
-                  : error()
-                    ? tr('Image unavailable')
-                    : tr('Loading image…')
-              }`
-            : undefined,
-        )}
+        tooltip={
+          props.mini ? (
+            <Tooltip
+              disabled={!size() && !error()}
+              class="rounded-md border border-border bg-popover p-1"
+            >
+              <View style={{ gap: 4 }}>
+                <If when={size()}>
+                  <Image src={uri} style={[{ ...hoverSize() }, { objectFit: 'contain' }]} />
+                </If>
+                <Text class="text-xs text-popover-foreground">{caption()}</Text>
+              </View>
+            </Tooltip>
+          ) : (
+            textTooltip(() =>
+              small
+                ? `${props.tooltip ?? props.label ?? tr('Open image preview')}\n${
+                    size()
+                      ? `${size()!.width} × ${size()!.height}`
+                      : error()
+                        ? tr('Image unavailable')
+                        : tr('Loading image…')
+                  }`
+                : undefined,
+            )
+          )
+        }
         disabled={!size()}
         onPress={inputAction(preview, action)}
         style={
-          props.compact
+          small
             ? {
-                width: 64,
-                height: 64,
+                ...box,
                 flexShrink: 0,
                 backgroundColor: C.surface,
                 borderWidth: 1,
                 borderColor: C.line,
-                borderRadius: 8,
+                borderRadius: props.mini ? 4 : 8,
                 overflow: 'hidden',
               }
             : {
@@ -129,10 +169,10 @@ export function ImageThumbnail(props: {
                 gap: 8,
               }
         }
-        hoverStyle={props.compact ? { borderColor: C.secondary } : {}}
-        focusStyle={props.compact ? { borderColor: C.accent } : {}}
+        hoverStyle={small ? { borderColor: C.secondary } : {}}
+        focusStyle={small ? { borderColor: C.accent } : {}}
       >
-        <If when={!props.compact}>
+        <If when={!small}>
           <Text style={{ ...captionTextStyle, color: size() ? C.accent : C.muted }}>
             {size()
               ? tr('Open image · {width} × {height}', {
@@ -159,26 +199,25 @@ export function ImageThumbnail(props: {
               }}
               style={[
                 {
-                  width: props.compact ? 64 : 320,
+                  width: small ? box.width : 320,
                   maxWidth: '100%',
-                  height: props.compact
-                    ? 64
+                  height: small
+                    ? box.height
                     : Math.max(64, Math.min(192, Math.floor(windowSize().height / 48) * 16)),
                 },
-                { objectFit: props.compact ? 'cover' : 'contain' },
+                { objectFit: small ? 'cover' : 'contain' },
               ]}
             />
           )}
         </Each>
-        <If when={props.compact && !size()}>
+        <If when={small && !size()}>
           <View
             style={[
               {
                 position: 'absolute',
                 top: 0,
                 left: 0,
-                width: 64,
-                height: 64,
+                ...box,
                 alignItems: 'center',
                 justifyContent: 'center',
               },
@@ -189,7 +228,16 @@ export function ImageThumbnail(props: {
           </View>
         </If>
       </Button>
-      <If when={error()}>
+      <If when={viewing() && size()}>
+        <ImageViewer
+          image={{ uri, ...size()!, title: tr('Original image') }}
+          close={() => {
+            viewing.set(false);
+            if (alive) button?.focus();
+          }}
+        />
+      </If>
+      <If when={!props.mini && error()}>
         <View
           style={{
             width: props.compact ? 240 : undefined,

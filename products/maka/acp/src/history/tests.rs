@@ -38,7 +38,7 @@ fn chunk(sequence: u64, role: &str, tool: &str, offset: u64, text: &str) -> Hist
             "call":{"position":position(if role == "tool_call" { sequence } else { sequence - 1 }),"name":"Read",
                 "ancestorToolUseIds":[],"title":null,"pending":role == "tool_call","dispatched":role == "tool_result"},
             "result":if role == "tool_result" { json!({"position":position(sequence),"settlement":"returned",
-                "isError":false,"image":false}) } else { Value::Null }
+                "isError":false,"image":false,"images":0}) } else { Value::Null }
         }
     })).unwrap()
 }

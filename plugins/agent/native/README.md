@@ -121,16 +121,21 @@ These are local latency/load policies, not protocol
 limits. The TTL governs new catalog observations; recorded producer facts and checkpoints do not
 expire with that cache. Once capture finishes, proactive compaction executes alongside Main.
 
-ChatGPT subscription `/compact` uses the Responses native `compaction_trigger` control.
+Connections use ordinary text summarization by default. Model connection settings expose
+**Provider server-side compaction** only when the provider's configuration schema declares
+`serverSideCompaction`. The setting is saved per connection; currently ChatGPT subscription
+supports it. When enabled, manual and automatic compaction use the Responses native
+`compaction_trigger` control.
 The engine installs its opaque checkpoint only after the producing stream completes and storage
 validates the same source fence and producer request. Subsequent requests replay the checkpoint
 with the preserved suffix; another compact replaces that baseline. Session/global/custom text
 compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
-Other providers retain ordinary text summarization. Native replay currently requires the producing
-model; cross-model admission and switch preflight are separate stack layers.
+With the setting off, text compaction prompts apply as usual. Native replay currently requires
+the producing model; cross-model admission and switch preflight are separate stack layers.
 
-The subscription provider declares native-compaction support in its resolved capabilities. Host
-freezes a single protocol operation; the Responses adapter adds the wire trigger and returns typed
+The subscription provider selects native compaction in its resolved capabilities only when the
+connection opts in. Disabling it preserves replay of existing native checkpoints; the next
+compaction produces a text summary. Host freezes a single protocol operation; the Responses adapter adds the wire trigger and returns typed
 `NativeCompaction` only at stream completion. Engine and EventLog do not extract provider-options
 JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
 estimate; baseline reads derive producer/model facts from that original request.

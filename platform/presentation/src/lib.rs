@@ -39,7 +39,7 @@ use maka_agent_facts::tool_output::ToolOutput;
 use message::timestamp;
 pub use message::tool_message_id;
 pub use message::{
-    Content, Hidden, Message, Thinking, ToolContent, ToolMetadata, TurnState, Visible,
+    Content, Hidden, Message, Thinking, ToolContent, ToolImage, ToolMetadata, TurnState, Visible,
 };
 
 #[derive(Debug, thiserror::Error)]

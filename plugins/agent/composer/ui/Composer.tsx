@@ -135,21 +135,11 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
       sourceTurnId: suggestion.sourceTurnId,
       text: suggestion.text,
     };
-    const bindings = ['right', 'enter'].map((key) =>
+    const bindings = ['tab', 'right', 'enter'].map((key) =>
       keymap.bind(key, () => acceptSuggestedMessage(offered), {
         when: 'always',
         within: editor.node,
       }),
-    );
-    bindings.push(
-      keymap.bind(
-        'escape',
-        () => {
-          if (props.session() === owner && suggestedMessage() === suggestion)
-            owner.prediction.dismiss(suggestion.sourceTurnId);
-        },
-        { when: 'always', within: editor.node },
-      ),
     );
     return () => bindings.forEach((unbind) => unbind());
   });
@@ -313,7 +303,9 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         'escape',
         () => {
           if (completion.composing()) return;
-          stop();
+          const suggestion = suggestedMessage();
+          if (suggestion) props.session()!.prediction.dismiss(suggestion.sourceTurnId);
+          else stop();
         },
         { when: 'always', within: node },
       );
@@ -850,7 +842,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                           {suggestedMessage()!.text}{' '}
                           <Button
                             accessibilityLabel={tr('Use suggested message')}
-                            tooltip={textTooltip(() => tr('Right arrow to use · Esc to dismiss'))}
+                            tooltip={textTooltip(() => tr('Tab to use · Esc to dismiss'))}
                             onPress={inputAction(acceptSuggestedMessage, {
                               sessionId: owner!.sessionId,
                               sourceTurnId: suggestedMessage()!.sourceTurnId,
@@ -870,7 +862,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                             focusStyle={controlFocusStyle()}
                           >
                             <Text style={{ ...captionTextStyle, color: `${C.muted}80` }}>
-                              {tr('Use suggestion')}
+                              {tr('Press Tab to accept')}
                             </Text>
                           </Button>
                         </Text>

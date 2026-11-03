@@ -128,6 +128,7 @@ import {
   TurnSummary,
   turnOutcome,
 } from '../../../../products/maka/workbench/app/TurnPanel';
+import { turnImages } from '../../../../products/maka/workbench/app/ToolImage';
 import type {
   GroupViewState,
   LiveActivity,
@@ -2966,11 +2967,20 @@ export function Conversation(props: ConversationProps) {
                         const first = projection().turns.get(initial.turnId);
                         if (!first) return <View />;
                         const turn = () => projection().turns.get(initial.turnId) ?? first;
+                        const images = computed(() =>
+                          turnImages(projection().rowsById.values(), initial.turnId),
+                        );
                         return (
                           <TurnSummary
                             turn={turn}
                             expanded={() => turnExpanded(turn())}
                             canFold={() => canFoldTurn(turn())}
+                            images={{
+                              sessionId,
+                              through: () => latestKnown,
+                              refs: images,
+                              preview: props.previewImage,
+                            }}
                             toggle={(open) => {
                               turnState(initial.turnId).expanded.set({
                                 open,
