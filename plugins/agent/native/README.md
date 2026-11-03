@@ -99,8 +99,11 @@ connection and observed `comp_hash` in `ModelRequested.context`; these are prove
 not same-account replay restrictions. Discovery does not change selected models. A fresh
 Host obtains its own account observation before recording compatibility evidence.
 
-Accepted work retains user choices (provider configuration, selected-model overrides and body
-controls), not resolved inventory capacities. Each logical request resolves one current model
+Accepted work retains its selected model, thinking/tool policy, model overrides and body controls,
+not resolved inventory capacities. Later default or presentation edits apply to subsequently
+accepted messages. Each step and restored work continue using the captured user choices. Provider
+identity, connection availability, credential authorization and the resolved transport route are
+still checked before execution. Each logical request resolves one current model
 observation into its context, capabilities, options and output budget; physical retries reuse the
 already frozen request. Catalog changes alone therefore do not invalidate queued/restored work.
 

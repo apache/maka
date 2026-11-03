@@ -494,7 +494,7 @@ async fn host_shutdown_settles_shared_discovery_without_publishing_a_proof() {
 }
 
 async fn source_fixture(f: &Fixture) -> super::super::Source {
-    use super::super::{AcceptedModel, Source};
+    use super::super::{AcceptedModel, ExecutionRoute, Source};
     use maka_agent_facts::{
         composition::{SourceKind, SourceRevision},
         execution::{CodeLanguage, ToolMode},
@@ -534,7 +534,7 @@ async fn source_fixture(f: &Fixture) -> super::super::Source {
             editing_tools: None,
             public_model: None,
             provider: material.connection.provider.clone(),
-            provider_configuration: material.connection.configuration.clone(),
+            route: ExecutionRoute::new(&model),
             model_override: None,
             body_overlay: None,
         },
@@ -613,10 +613,12 @@ async fn discovery_recovery_and_restoration_use_one_current_request_snapshot() {
         )
         .await
         .unwrap();
+    let unchanged = source.capture().await.unwrap();
     assert!(
-        source.capture().await.is_err(),
-        "real user control changes invalidate accepted work"
+        unchanged.provider.body_overlay.is_none(),
+        "accepted body controls remain frozen"
     );
+    assert_eq!(unchanged.context, next.context);
     f.close().await;
 }
 

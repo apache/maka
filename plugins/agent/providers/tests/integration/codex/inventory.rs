@@ -215,16 +215,22 @@ fn wire(model: &maka_agent_ports::provider::Model) -> serde_json::Value {
 
 #[test]
 fn subscription_inventory_rejects_invalid_compaction_hashes() {
-    for hash in [
-        json!(""),
-        json!("x".repeat(129)),
-        json!(" hash"),
-        json!("hash\n"),
-        json!(42),
-    ] {
+    for hash in [json!(""), json!(" hash"), json!("hash\n"), json!(42)] {
         let bytes =
             serde_json::to_vec(&json!({"models":[{"slug":"fixture-model","comp_hash":hash}]}))
                 .unwrap();
         assert!(maka_providers::codex::decode_model_inventory(&bytes).is_err());
     }
+}
+
+#[test]
+fn subscription_inventory_preserves_long_compaction_hashes() {
+    let hash = "x".repeat(129);
+    let bytes =
+        serde_json::to_vec(&json!({"models":[{"slug":"fixture-model","comp_hash":hash}]})).unwrap();
+    let models = maka_providers::codex::decode_model_inventory(&bytes).unwrap();
+    assert_eq!(
+        models[0].codex_compaction_hash.as_deref(),
+        Some(hash.as_str())
+    );
 }
