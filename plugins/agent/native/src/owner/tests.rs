@@ -39,6 +39,9 @@ mod skills;
 
 mod attachments;
 
+#[cfg(unix)]
+mod checkpoints;
+
 mod fork;
 
 mod files;

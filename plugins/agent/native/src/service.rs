@@ -360,6 +360,32 @@ impl Handler for Agent {
                     }
                     encode(created)
                 }
+                "previewHistoryCheckpoint" => encode(
+                    owner
+                        .preview_history_checkpoint(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "publishHistoryCheckpoint" => {
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .publish_history_checkpoint(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
+                }
+                "historyCheckpointReceipt" => encode(
+                    owner
+                        .history_checkpoint_receipt(decode(input)?, context)
+                        .await?,
+                ),
+                "historyCheckpointHead" => encode(
+                    owner
+                        .history_checkpoint_head(decode(input)?, context.scope())
+                        .await?,
+                ),
+                "readHistoryCheckpoint" => {
+                    owner.read_history_checkpoint(decode(input)?, context).await
+                }
                 "fork" => {
                     let operation = context.operation().ok_or("agent_mutation_required")?;
                     encode(
