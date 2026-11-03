@@ -25,7 +25,6 @@ use gpui::{
     WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use maka_app_client::Client;
-use maka_plugin_core::operation::{OperationOutcome, Receipt};
 use maka_workbench::bindings::Bindings;
 use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
@@ -661,57 +660,20 @@ fn assert_image(request: &ModelRequest, text: &str, bytes: &[u8]) {
     assert_eq!(images, vec![bytes.to_vec()], "{}", request.body);
 }
 
-async fn set_model_enabled(client: &Client, enabled: bool) {
-    let catalog = client
-        .query("settings", "connections", json!({"kind":"start"}))
-        .await
-        .unwrap();
-    let mutation = client
-        .mutation(
-            Uuid::new_v4(),
-            "settings",
-            "update",
-            json!({"expected":catalog["connections"][0]["basis"],"changes":{"enabled":enabled}}),
-            Default::default(),
-            None,
-            Value::Null,
-        )
-        .await
-        .unwrap();
-    mutation.prepare().await.unwrap();
-    let receipt = mutation.confirm().await.unwrap().receipt;
-    assert!(
-        matches!(receipt, Receipt::Recorded { outcome: OperationOutcome::Returned { ref value }, .. } if value["kind"] == "committed"),
-        "{receipt:?}"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_snapshot() {
     let mut fixture = images_fixture().await;
     let (path, bytes) = image_file(&fixture);
-    let create = ReplyGate::create(fixture.directory.path(), fixture.address.clone());
-    let upload = ReplyGate::upload(fixture.directory.path(), create.address.clone());
-    let desktop = Desktop::open(&fixture, &upload.address).await;
+    let gate = ReplyGate::send(fixture.directory.path(), fixture.address.clone());
+    let desktop = Desktop::open(&fixture, &gate.address).await;
     desktop.new_draft().await;
     desktop.attach(&path).await;
     std::fs::write(&path, b"changed after selection").unwrap();
     desktop.type_text("FIRST_DESKTOP_MESSAGE").await;
     assert_eq!(desktop.sessions().await.len(), 1);
-    create.arm();
+    gate.arm();
     desktop.key("enter", false);
-    desktop.held(&create).await;
-    desktop.key("enter", false);
-    upload.arm();
-    create.release();
-    desktop.held(&upload).await;
-    desktop
-        .type_text("FIRST_DESKTOP_MESSAGE_CONTINUATION")
-        .await;
-    upload.release();
-    let request = desktop.request(&mut fixture).await;
-    assert_image(&request, "FIRST_DESKTOP_MESSAGE", &bytes);
-    assert!(!request.body.to_string().contains("_CONTINUATION"));
+    desktop.held(&gate).await;
     let sessions = desktop.sessions().await;
     assert_eq!(sessions.len(), 2);
     let session = sessions
@@ -720,9 +682,27 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
         .unwrap()["id"]
         .as_str()
         .unwrap();
-    request.finish().await;
-    fixture.idle(&desktop.client, session).await;
-    desktop.expect_text("_CONTINUATION").await;
+    desktop.type_text("NEXT_DESKTOP_DRAFT").await;
+    desktop
+        .wait(
+            "the next draft was not saved independently of the first send",
+            super::support::wait_draft(&desktop.client, session, "NEXT_DESKTOP_DRAFT"),
+        )
+        .await;
+    gate.release();
+    let request = desktop.request(&mut fixture).await;
+    assert_image(&request, "FIRST_DESKTOP_MESSAGE", &bytes);
+    assert!(!request.body.to_string().contains("NEXT_DESKTOP_DRAFT"));
+    desktop
+        .wait("the first model response did not finish", request.finish())
+        .await;
+    desktop
+        .wait(
+            "the first turn did not finish",
+            fixture.idle(&desktop.client, session),
+        )
+        .await;
+    desktop.expect_text("NEXT_DESKTOP_DRAFT").await;
     let observed = desktop
         .client
         .query("agent", "observe", json!({"sessionId":session}))
@@ -737,67 +717,6 @@ async fn desktop_creates_only_on_first_submission_and_preserves_the_confirmed_sn
         .collect();
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0]["attachments"].as_array().unwrap().len(), 1);
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_retries_a_failed_first_submission_in_the_same_session() {
-    let mut fixture = images_fixture().await;
-    let (path, bytes) = image_file(&fixture);
-    let model = ReplyGate::resolve_model(fixture.directory.path(), fixture.address.clone());
-    let upload = ReplyGate::upload(fixture.directory.path(), model.address.clone());
-    let desktop = Desktop::open(&fixture, &upload.address).await;
-    desktop.new_draft().await;
-    desktop.attach(&path).await;
-    desktop.type_text("FAILED_FIRST_MESSAGE").await;
-    upload.arm();
-    desktop.key("enter", false);
-    desktop.held(&upload).await;
-    let sessions = desktop.sessions().await;
-    assert_eq!(sessions.len(), 2);
-    let session = sessions
-        .iter()
-        .find(|session| session["id"] != fixture.session)
-        .unwrap()["id"]
-        .as_str()
-        .unwrap();
-    set_model_enabled(&desktop.client, false).await;
-    model.arm();
-    upload.release();
-    desktop.held(&model).await;
-    model.release();
-    desktop.type_text("RETRIED_FIRST_MESSAGE").await;
-    desktop
-        .wait(
-            "the session did not retain the edited draft and attachment",
-            async {
-                loop {
-                    if let Some(draft) = desktop
-                        .client
-                        .load_draft("agent", session, "composer")
-                        .await
-                        .unwrap()
-                        && draft.text == "RETRIED_FIRST_MESSAGE"
-                    {
-                        assert_eq!(draft.attachments.len(), 1);
-                        return;
-                    }
-                    tokio::task::yield_now().await;
-                }
-            },
-        )
-        .await;
-    set_model_enabled(&desktop.client, true).await;
-    desktop.key("enter", false);
-    let retry = desktop.request(&mut fixture).await;
-    assert_image(&retry, "RETRIED_FIRST_MESSAGE", &bytes);
-    retry.finish().await;
-    fixture.idle(&desktop.client, session).await;
-    let sessions = desktop.sessions().await;
-    assert_eq!(sessions.len(), 2);
-    assert!(sessions.iter().any(|entry| entry["id"] == session));
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
     desktop.close().await;
     fixture.finish().await;

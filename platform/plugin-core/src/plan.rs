@@ -193,14 +193,14 @@ impl Plan {
     ) -> Result<(Self, Vec<PackageChange>), Error> {
         let mut selected = input.clone();
         let mut base_change = None;
-        if let Some(base) = &mut selected.base {
-            if let Some(next) = replace(&base.package).filter(|next| next != &base.package) {
-                base.package = next.clone();
-                base_change = Some(PackageChange {
-                    path: Vec::new(),
-                    package: next,
-                });
-            }
+        if let Some(base) = &mut selected.base
+            && let Some(next) = replace(&base.package).filter(|next| next != &base.package)
+        {
+            base.package = next.clone();
+            base_change = Some(PackageChange {
+                path: Vec::new(),
+                package: next,
+            });
         }
         let input = selected.materialize(packages)?;
         composition::validate_nodes(&input.instances)?;

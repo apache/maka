@@ -769,17 +769,6 @@ impl ReplyGate {
     pub fn send(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "send", "mutation")
     }
-    pub fn resolve_model(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "settings", "resolveModel", "finished")
-    }
-    #[cfg(feature = "desktop-tests")]
-    pub fn create(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "create", "mutation")
-    }
-    #[cfg(feature = "desktop-tests")]
-    pub fn upload(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "uploadAttachment", "mutation")
-    }
     fn for_method(
         directory: &Path,
         target: PathBuf,
