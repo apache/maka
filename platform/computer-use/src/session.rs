@@ -356,7 +356,13 @@ impl Session {
                 .invoke_in_turn(command, invocation, cancellation, language)
                 .await;
             #[cfg(target_os = "macos")]
-            let result = result.map_err(crate::macos::tcc::explain);
+            if let Err(error) = result {
+                return Err(
+                    tokio::task::spawn_blocking(move || crate::macos::tcc::explain(error))
+                        .await
+                        .map_err(failed)?,
+                );
+            }
             result
         }
     }
@@ -455,7 +461,7 @@ impl Session {
             Command::GetState { .. } => {
                 let (browsers, mut errors) = self.browsers.state().await;
                 #[cfg(target_os = "macos")]
-                if let Err(error) = crate::macos::require_desktop() {
+                if let Err(error) = crate::macos::require_desktop().await {
                     errors.push(error.to_string());
                 }
                 let apps = match self.apps(session, cancellation, language).await {
@@ -485,7 +491,7 @@ impl Session {
             }
             Command::GetApp { target } => {
                 #[cfg(target_os = "macos")]
-                crate::macos::require_desktop()?;
+                crate::macos::require_desktop().await?;
                 #[cfg(target_os = "macos")]
                 let expected = invocation.app_target().cloned();
                 #[cfg(target_os = "macos")]
@@ -929,7 +935,7 @@ impl Session {
             })
         })?;
         #[cfg(target_os = "macos")]
-        crate::macos::require_desktop()?;
+        crate::macos::require_desktop().await?;
         let pid = target
             .window
             .pid
@@ -1045,7 +1051,11 @@ impl Session {
         self.verify(handle, session, cancellation, language).await?;
         // A macOS observation always captures the window image.
         #[cfg(target_os = "macos")]
-        crate::macos::tcc::require(crate::macos::tcc::Grant::ScreenRecording)?;
+        tokio::task::spawn_blocking(|| {
+            crate::macos::tcc::require(crate::macos::tcc::Grant::ScreenRecording)
+        })
+        .await
+        .map_err(failed)??;
         let ax = !matches!(kind, ObservationKind::Screenshot);
         let screenshot = !matches!(kind, ObservationKind::Ax);
         let capture_image = screenshot || cfg!(target_os = "macos");

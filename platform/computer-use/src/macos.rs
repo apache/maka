@@ -56,7 +56,13 @@ unsafe extern "C" {
     fn CGSessionCopyCurrentDictionary() -> core_foundation::dictionary::CFDictionaryRef;
 }
 
-pub(crate) fn require_desktop() -> Result<(), ToolError> {
+pub(crate) async fn require_desktop() -> Result<(), ToolError> {
+    tokio::task::spawn_blocking(require_desktop_blocking)
+        .await
+        .map_err(failed)?
+}
+
+pub(crate) fn require_desktop_blocking() -> Result<(), ToolError> {
     use core_foundation::{
         boolean::{CFBooleanGetTypeID, kCFBooleanTrue},
         dictionary::CFDictionaryGetValue,
