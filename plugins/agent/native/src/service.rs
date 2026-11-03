@@ -858,6 +858,7 @@ impl Handler for Agent {
                                 &input.session_id,
                                 input.through,
                                 input.position,
+                                input.image,
                                 input.offset,
                                 32 * 1024,
                             )

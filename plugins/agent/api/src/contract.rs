@@ -1503,6 +1503,9 @@ pub struct ToolImageRead {
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub through: u64,
     pub position: RowPosition,
+    /// Selects one of `HistoryToolResult.images`; absent when the content is the image.
+    #[serde(default)]
+    pub image: Option<u32>,
     #[schemars(range(max = 9_007_199_254_740_991u64))]
     pub offset: u64,
 }
@@ -2020,7 +2023,7 @@ mod tests {
         page["chunks"] = json!([{
             "messageId":"result", "field":"body", "turnId":"turn", "timestamp":1, "role":"tool_result",
             "position":{"sourceSequence":1,"itemIndex":0}, "offset":0, "totalBytes":0, "text":"",
-            "tool":{"toolUseId":"call", "call":null, "result":{"position":{"sourceSequence":1,"itemIndex":0},"isError":true, "image":false,"settlement":null}}
+            "tool":{"toolUseId":"call", "call":null, "result":{"position":{"sourceSequence":1,"itemIndex":0},"isError":true, "image":false,"images":0,"settlement":null}}
         }]);
         assert!(validator.is_valid(&page));
         let tool = page["chunks"][0]
