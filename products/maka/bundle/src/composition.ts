@@ -198,131 +198,6 @@ const selectUiBindings = (bindings: UiBindings, imports: readonly string[]): UiB
     imports.flatMap((name) => (bindings[name] === undefined ? [] : [[name, bindings[name]]])),
   );
 
-/** Reauthor the bundled UI subgraph before validating updated package pins. */
-export function updateDefaultUi(
-  source: CompositionInput,
-  packages: Record<PackageName, PackageRef>,
-  candidateKeys: Record<string, string>,
-): CompositionInput {
-  if (!packages.workbench) return source;
-  const owns = (
-    node: CompositionNode | undefined,
-    name: PackageName,
-    entry: 'ui' | 'host',
-  ): node is CompositionNode =>
-    node?.usePackage === entry &&
-    node.package.source === 'pinned' &&
-    node.package.package.id === packages[name]?.id;
-  const roots = Object.entries(source.instances).filter(([, node]) =>
-    owns(node, 'workbench', 'ui'),
-  );
-  if (roots.length === 0) return source;
-  const next: CompositionInput = { ...source, instances: { ...source.instances } };
-  const findOwned = (name: PackageName, entry: 'ui' | 'host') =>
-    owns(next.instances[name], name, entry)
-      ? ([name, next.instances[name]!] as const)
-      : Object.entries(next.instances).find(([, node]) => owns(node, name, entry));
-  const gateway = findOwned('gateway', 'host')?.[1];
-  const fallback: UiBindings = { ...gateway?.bindings };
-  for (const [name, packageName, exportName] of [
-    ['management', 'host-deployment-manager', 'Management'],
-    ['receipts', 'receipts', 'Receipts'],
-  ] as const) {
-    const provider = findOwned(packageName, 'host');
-    if (fallback[name] === undefined && provider)
-      fallback[name] = [{ kind: 'instance', path: [provider[0]], export: exportName }];
-  }
-  for (const [rootName, root] of roots) {
-    const separate = roots.length > 1 && rootName !== 'workbench-ui';
-    const aliases = { ...defaultUiAliases, 'workbench-ui': rootName };
-    if (separate) {
-      aliases['conversations-ui'] = `${rootName}-conversations-ui`;
-      aliases['settings-ui'] = `${rootName}-settings-ui`;
-      aliases['workspace-files-ui'] = `${rootName}-workspace-files-ui`;
-    }
-    const selected = new Set<DefaultUiName>();
-    const selectViews = (owner: DefaultUiName, node: CompositionNode) => {
-      const views: Readonly<Record<string, { instance: DefaultUiName; id: string }>> =
-        defaultUi[owner].views;
-      for (const [slot, view] of Object.entries(views)) {
-        if (selected.has(view.instance)) continue;
-        const target = node.configuration?.values?.[slot] as UiTarget | undefined;
-        if (
-          target?.path.length === 1 &&
-          owns(next.instances[target.path[0]!], defaultUi[view.instance].package, 'ui')
-        ) {
-          aliases[view.instance] = target.path[0]!;
-          selected.add(view.instance);
-        }
-      }
-    };
-    selectViews('workbench-ui', root!);
-    const conversation = next.instances[aliases['conversations-ui']];
-    if (owns(conversation, 'conversations', 'ui')) selectViews('conversations-ui', conversation);
-    const additions: DefaultUiName[] = [];
-    for (const name of defaultUiNames) {
-      if (name === 'workbench-ui') continue;
-      const packageName = defaultUi[name].package;
-      const isolated = roots.length > 1 && name !== 'composer-ui';
-      const existing = owns(next.instances[aliases[name]], packageName, 'ui')
-        ? ([aliases[name], next.instances[aliases[name]]!] as const)
-        : isolated
-          ? undefined
-          : findOwned(packageName, 'ui');
-      if (existing) {
-        aliases[name] = existing[0];
-        if (name === 'conversations-ui') selectViews(name, existing[1]!);
-        continue;
-      }
-      const preferred = aliases[name];
-      let alias = preferred;
-      let suffix = 2;
-      while (next.instances[alias] !== undefined) alias = `${preferred}-${suffix++}`;
-      aliases[name] = alias;
-      additions.push(name);
-    }
-    for (const name of additions) {
-      const key = candidateKeys[`${rootName}/${name}`]!;
-      next.instances[aliases[name]] = defaultUiNode(name, packages, key, aliases);
-    }
-    const configure = (name: DefaultUiName, node: CompositionNode): CompositionNode => ({
-      ...node,
-      configuration: {
-        ...node.configuration,
-        values: { ...defaultUiValues(name, aliases), ...node.configuration?.values },
-      },
-    });
-    next.instances[rootName] = { ...configure('workbench-ui', root!), bindings: {} };
-    const inherited = {
-      ...fallback,
-      ...root!.bindings,
-      ...next.instances[aliases['conversations-ui']]!.bindings,
-    };
-    for (const name of defaultUiNames) {
-      if (name === 'workbench-ui') continue;
-      const alias = aliases[name];
-      const node = configure(name, next.instances[alias]!);
-      next.instances[alias] =
-        name !== 'composer-ui'
-          ? {
-              ...node,
-              bindings: {
-                ...(name === 'conversations-ui'
-                  ? inherited
-                  : selectUiBindings(
-                      inherited,
-                      name === 'settings-ui' ? settingsUiImports : workspaceUiImports,
-                    )),
-                ...node.bindings,
-              },
-            }
-          : node;
-    }
-  }
-  return next;
-}
-
-/** The shared business Host owns services independently of either shell. */
 function settingsComposition(configuration: CompositionConfiguration) {
   const { packages, keys } = configuration;
   const local = (name: InstanceName, exportName: string): BindingTarget => ({
@@ -716,183 +591,97 @@ function agentComposition(configuration: CompositionConfiguration): ApplicationS
       ),
     });
   }
-  const ownMethods = new Map<string, Set<string>>();
-  for (const tool of configuration.agent.tools) {
-    if (tool.target.kind !== 'export') continue;
-    const methods = ownMethods.get(tool.target.name) ?? new Set<string>();
-    methods.add(tool.method);
-    ownMethods.set(tool.target.name, methods);
-  }
-  let native: NativeGrant[] = [];
-  if (
-    ownMethods.size ||
-    uiMethods.length ||
-    asksForms ||
-    asksQuestions ||
-    fileMethods.length ||
-    processMethods.length ||
-    skillCalls.length ||
-    executors.length
-  )
-    native = [
-      ...[...ownMethods].map(([name, methods]) => ({
+  const native: NativeGrant[] = [
+    ...executors.flatMap((executor) => [
+      ...(configuration.executorProcesses?.setupDirectory
+        ? [
+            {
+              origin: [keys.agent],
+              consumer: [keys.agent],
+              provider: [keys[executorPath(executor.name)]!],
+              export: 'setup',
+              methods: ['setup'],
+              recovery: true,
+            },
+          ]
+        : []),
+      {
         origin: [keys.agent],
         consumer: [keys.agent],
-        provider: [keys.agent],
-        export: name,
-        methods: [...methods],
+        provider: [keys[executorPath(executor.name)]!],
+        export: 'executor',
+        methods: ['execute'],
+        recovery: true,
+      },
+      ...[
+        {
+          provider: keys['protocol-processes'],
+          export: 'protocol',
+          methods: [
+            'run',
+            'input',
+            ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
+          ],
+        },
+        { provider: keys['workspace-files'], export: 'files', methods: ['readText', 'write'] },
+        { provider: keys.forms, export: 'forms', methods: ['ask'] },
+      ].map((grant) => ({
+        ...grant,
+        origin: [keys[executorPath(executor.name)]!],
+        consumer: [keys[executorPath(executor.name)]!],
+        provider: [grant.provider],
         recovery: true,
       })),
-      ...(uiMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['host-deployment-manager']],
-              export: 'Management',
-              methods: uiMethods,
-              recovery: true,
-            },
-          ]
-        : []),
-      ...executors.flatMap((executor) => [
-        ...(configuration.executorProcesses?.setupDirectory
-          ? [
-              {
-                origin: [keys.agent],
-                consumer: [keys.agent],
-                provider: [keys[executorPath(executor.name)]!],
-                export: 'setup',
-                methods: ['setup'],
-                recovery: true,
-              },
-            ]
-          : []),
-        {
-          origin: [keys.agent],
-          consumer: [keys.agent],
-          provider: [keys[executorPath(executor.name)]!],
-          export: 'executor',
-          methods: ['execute'],
-          recovery: true,
-        },
-        ...[
+    ]),
+    ...(computerMethods.length
+      ? [
           {
-            provider: keys['protocol-processes'],
-            export: 'protocol',
-            methods: [
-              'run',
-              'input',
-              ...(configuration.executorProcesses?.setupDirectory ? ['launch'] : []),
-            ],
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['workspace-computer']],
+            export: 'computer',
+            methods: ['state'],
+            recovery: true,
           },
-          { provider: keys['workspace-files'], export: 'files', methods: ['readText', 'write'] },
-          { provider: keys.forms, export: 'forms', methods: ['ask'] },
-        ].map((grant) => ({
-          ...grant,
-          origin: [keys[executorPath(executor.name)]!],
-          consumer: [keys[executorPath(executor.name)]!],
-          provider: [grant.provider],
-          recovery: true,
-        })),
-      ]),
-      ...(computerMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-computer']],
-              export: 'computer',
-              methods: [...computerMethods, 'state'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(webMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-web']],
-              export: 'web',
-              methods: [...webMethods, 'capture'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(skillCalls.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys.skills],
-              export: 'skills',
-              methods: skillCalls,
-              recovery: false,
-            },
-          ]
-        : []),
-      ...(asksForms
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys.forms],
-              export: 'forms',
-              methods: ['ask'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(asksQuestions
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys.questions],
-              export: 'questions',
-              methods: ['ask'],
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(fileMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-files']],
-              export: 'files',
-              methods: fileMethods,
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(processMethods.length
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys.agent],
-              provider: [keys['workspace-processes']],
-              export: 'processes',
-              methods: processMethods,
-              recovery: true,
-            },
-          ]
-        : []),
-      ...(processMethods.includes('health') && configuration.web
-        ? [
-            {
-              origin: [keys.agent],
-              consumer: [keys['workspace-processes']],
-              provider: [keys['workspace-web']],
-              export: 'web',
-              methods: ['probe'],
-              recovery: true,
-            },
-          ]
-        : []),
-    ];
+        ]
+      : []),
+    ...(webMethods.length
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys['workspace-web']],
+            export: 'web',
+            methods: ['capture'],
+            recovery: true,
+          },
+        ]
+      : []),
+    ...(configuration.agent.skillLibrary
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys.agent],
+            provider: [keys.skills],
+            export: 'skills',
+            methods: ['prepare', 'search'],
+            recovery: false,
+          },
+        ]
+      : []),
+    ...(processMethods.includes('health') && configuration.web
+      ? [
+          {
+            origin: [keys.agent],
+            consumer: [keys['workspace-processes']],
+            provider: [keys['workspace-web']],
+            export: 'web',
+            methods: ['probe'],
+            recovery: true,
+          },
+        ]
+      : []),
+  ];
   return { host, deployment: configuration.hostDeployment, endpoints, native };
 }
 

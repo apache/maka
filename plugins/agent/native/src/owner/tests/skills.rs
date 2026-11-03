@@ -41,7 +41,7 @@ async fn next(listener: &TcpListener) -> (TcpStream, Value) {
     (socket, result)
 }
 #[tokio::test]
-async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_http() {
+async fn selected_skill_tools_use_actual_agent_context_without_duplicate_grants_over_http() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().join("selected");
@@ -51,98 +51,88 @@ async fn selected_skill_tools_use_actual_agent_context_and_original_grants_over_
         std::fs::write(root.join("review/SKILL.md"), format!("---\nname: review\ndescription: Review changes\nrequired-tools: SkillSearch Skill\nallowed-tools: Superuser\n---\n{instructions}")).unwrap();
         std::fs::write(root.join("unavailable/SKILL.md"), "---\nname: unavailable\ndescription: Review changes\nrequired-tools: Superuser\n---\nCannot run").unwrap();
         std::fs::write(root.join("review/references/guide.txt"), "资源 🦀 ".repeat(4000)).unwrap();
-        for granted in [true, false] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let setup = service_tools::Setup::skills(root.clone());
-            let setup = if granted { setup } else { setup.without_grant() };
-            let f = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(setup)).await;
-            let original = f.owner.settings.tools.clone();
-            for (change, expected) in [
-                ("json", "agent_skill_tool_projection_required"),
-                ("method", "agent_skill_tool_method_invalid"),
-                ("binding", "unknown service import: absent"),
-            ] {
-                let mut invalid = original.clone();
-                match change {
-                    "json" => invalid[0].input = contract::ToolInput::Json,
-                    "method" => invalid[0].method = "list".into(),
-                    "binding" => invalid[0].target = maka_host_runtime::application::ServiceTarget::Import { name: "absent".into() },
-                    _ => unreachable!(),
-                }
-                assert_eq!(crate::tools::catalog(f.services.clone(), f.store.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some(expected));
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let setup = service_tools::Setup::skills(root.clone()).without_grant();
+        let f = Fixture::with_services(&format!("http://{}/v1", listener.local_addr().unwrap()), None, None, Some(setup)).await;
+        let original = f.owner.settings.tools.clone();
+        for (change, expected) in [
+            ("json", "agent_skill_tool_projection_required"),
+            ("method", "agent_skill_tool_method_invalid"),
+            ("binding", "unknown service import: absent"),
+        ] {
+            let mut invalid = original.clone();
+            match change {
+                "json" => invalid[0].input = contract::ToolInput::Json,
+                "method" => invalid[0].method = "list".into(),
+                "binding" => invalid[0].target = maka_host_runtime::application::ServiceTarget::Import { name: "absent".into() },
+                _ => unreachable!(),
             }
-            let session = f.create("Skill tools").await;
-            f.send(&session).await.unwrap();
-            let (mut socket, _) = listener.accept().await.unwrap();
-            let sent = request(&mut socket).await;
-            let schemas = sent["tools"].as_array().unwrap();
-            assert_eq!(schemas.len(), 2);
-            for tool in schemas {
-                assert!(tool["function"]["parameters"]["properties"].get("tools").is_none());
-                assert_eq!(tool["function"]["parameters"]["additionalProperties"], false);
-            }
-            tool(&mut socket, "SkillSearch", json!({"query":"Review"})).await;
-            let (mut socket, result) = next(&listener).await;
-            if granted {
-                assert_eq!(result["totalEligible"], 1, "{result}");
-                assert_eq!(result["matches"][0]["ref"], "source:fixture:review");
-                let revision = result["revision"].clone();
-                tool(&mut socket, "Skill", json!({"name":"source:fixture:review","revision":revision})).await;
-                let (mut loaded_socket, loaded) = next(&listener).await;
-                assert_eq!(loaded["kind"], "loaded", "{loaded}");
-                assert!(loaded["instructions"].as_str().unwrap().contains("references/guide.txt"));
-                assert_eq!(loaded["declaredTools"], json!(["Superuser"]));
-                assert_eq!(loaded["receipt"]["success"], true);
-                let mut complete = loaded["instructions"].as_str().unwrap().to_owned();
-                let mut continuation = loaded["next"].clone();
-                assert!(!continuation.is_null());
-                while !continuation.is_null() {
-                    tool(&mut loaded_socket, "Skill", continuation).await;
-                    let (next_socket, page) = next(&listener).await;
-                    assert_eq!(page["kind"], "loaded");
-                    assert_eq!(page["instructionOffset"], complete.len());
-                    complete.push_str(page["instructions"].as_str().unwrap());
-                    continuation = page["next"].clone();
-                    loaded_socket = next_socket;
-                }
-                assert_eq!(complete, instructions);
-                tool(&mut loaded_socket, "Skill", json!({"name":"source:fixture:review","revision":revision,"resource":{"path":"references/guide.txt"}})).await;
-                let (mut resource_socket, resource) = next(&listener).await;
-                assert_eq!(resource["kind"], "resource", "{resource}");
-                assert!(!resource["next"].is_null());
-                tool(&mut resource_socket, "Skill", resource["next"].clone()).await;
-                let (mut continued_socket, continued) = next(&listener).await;
-                assert_eq!(continued["kind"], "resource");
-                assert_eq!(continued["revision"], revision);
-                assert_ne!(continued["next"], resource["next"]);
-                tool(&mut continued_socket, "SkillSearch", json!({"query":"Review","tools":["Superuser"]})).await;
-                let (last_socket, rejected) = next(&listener).await;
-                assert_ne!(rejected["totalEligible"], 2, "{rejected}");
-                assert!(rejected.to_string().to_lowercase().contains("invalid"), "{rejected}");
-                socket = last_socket;
-            } else {
-                assert_eq!(result, "native service invocation is not granted");
-                assert!(result.get("revision").is_none());
-            }
-            response(&mut socket).await;
-            f.drained().await;
-            if granted {
-                let prefix = f.prefix(&session, 1024, 4 * 1024 * 1024).await;
-                let titles: Vec<_> = prefix.events.iter().filter_map(|row| match &row.event.fact {
-                    maka_agent_facts::event::Fact::ToolDispatched { title, .. } => title.as_ref(),
-                    _ => None,
-                }).collect();
-                for (locale, expected) in [
-                    ("en", ["Search skills · Review", "Read skill · source:fixture:review", "Read skill resource · source:fixture:review / references/guide.txt"]),
-                    ("zh-CN", ["搜索技能 · Review", "读取技能 · source:fixture:review", "读取技能资源 · source:fixture:review / references/guide.txt"]),
-                    ("zh-TW", ["搜尋技能 · Review", "讀取技能 · source:fixture:review", "讀取技能資源 · source:fixture:review / references/guide.txt"]),
-                ] {
-                    for expected in expected { assert!(titles.iter().any(|title| title.resolve(locale) == expected), "{titles:?}"); }
-                }
-            }
-            f.app.shutdown().await.unwrap();
-            f.config.shutdown().await.unwrap();
+            assert_eq!(crate::tools::catalog(f.services.clone(), f.store.clone(), f.config.clone(), &invalid, vec![], Default::default()).err().as_deref(), Some(expected));
         }
+        let session = f.create("Skill tools").await;
+        f.send(&session).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let schemas = sent["tools"].as_array().unwrap();
+        assert_eq!(schemas.len(), 2);
+        for tool in schemas {
+            assert!(tool["function"]["parameters"]["properties"].get("tools").is_none());
+            assert_eq!(tool["function"]["parameters"]["additionalProperties"], false);
+        }
+        tool(&mut socket, "SkillSearch", json!({"query":"Review"})).await;
+        let (mut socket, result) = next(&listener).await;
+        assert_eq!(result["totalEligible"], 1, "{result}");
+        assert_eq!(result["matches"][0]["ref"], "source:fixture:review");
+        let revision = result["revision"].clone();
+        tool(&mut socket, "Skill", json!({"name":"source:fixture:review","revision":revision})).await;
+        let (mut loaded_socket, loaded) = next(&listener).await;
+        assert_eq!(loaded["kind"], "loaded", "{loaded}");
+        assert!(loaded["instructions"].as_str().unwrap().contains("references/guide.txt"));
+        assert_eq!(loaded["declaredTools"], json!(["Superuser"]));
+        assert_eq!(loaded["receipt"]["success"], true);
+        let mut complete = loaded["instructions"].as_str().unwrap().to_owned();
+        let mut continuation = loaded["next"].clone();
+        assert!(!continuation.is_null());
+        while !continuation.is_null() {
+            tool(&mut loaded_socket, "Skill", continuation).await;
+            let (next_socket, page) = next(&listener).await;
+            assert_eq!(page["kind"], "loaded");
+            assert_eq!(page["instructionOffset"], complete.len());
+            complete.push_str(page["instructions"].as_str().unwrap());
+            continuation = page["next"].clone();
+            loaded_socket = next_socket;
+        }
+        assert_eq!(complete, instructions);
+        tool(&mut loaded_socket, "Skill", json!({"name":"source:fixture:review","revision":revision,"resource":{"path":"references/guide.txt"}})).await;
+        let (mut resource_socket, resource) = next(&listener).await;
+        assert_eq!(resource["kind"], "resource", "{resource}");
+        assert!(!resource["next"].is_null());
+        tool(&mut resource_socket, "Skill", resource["next"].clone()).await;
+        let (mut continued_socket, continued) = next(&listener).await;
+        assert_eq!(continued["kind"], "resource");
+        assert_eq!(continued["revision"], revision);
+        assert_ne!(continued["next"], resource["next"]);
+        tool(&mut continued_socket, "SkillSearch", json!({"query":"Review","tools":["Superuser"]})).await;
+        let (last_socket, rejected) = next(&listener).await;
+        assert_ne!(rejected["totalEligible"], 2, "{rejected}");
+        assert!(rejected.to_string().to_lowercase().contains("invalid"), "{rejected}");
+        socket = last_socket;
+        response(&mut socket).await;
+        f.drained().await;
+        let prefix = f.prefix(&session, 1024, 4 * 1024 * 1024).await;
+        let titles: Vec<_> = prefix.events.iter().filter_map(|row| match &row.event.fact {
+            maka_agent_facts::event::Fact::ToolDispatched { title, .. } => title.as_ref(),
+            _ => None,
+        }).collect();
+        for (locale, expected) in [
+            ("en", ["Search skills · Review", "Read skill · source:fixture:review", "Read skill resource · source:fixture:review / references/guide.txt"]),
+            ("zh-CN", ["搜索技能 · Review", "读取技能 · source:fixture:review", "读取技能资源 · source:fixture:review / references/guide.txt"]),
+            ("zh-TW", ["搜尋技能 · Review", "讀取技能 · source:fixture:review", "讀取技能資源 · source:fixture:review / references/guide.txt"]),
+        ] {
+            for expected in expected { assert!(titles.iter().any(|title| title.resolve(locale) == expected), "{titles:?}"); }
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
         let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(service_tools::Setup::forms())).await;
         let mut invalid = f.owner.settings.tools.clone();
         invalid[0].input = contract::ToolInput::Skill;

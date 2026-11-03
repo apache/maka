@@ -32,7 +32,9 @@ mod resource_ingress;
 pub mod transport;
 pub use caller::Caller;
 pub use context::Context;
-pub use native_context::{NativeContext, NativePersistence, NativeRequest, NativeServices};
+pub use native_context::{
+    NativeContext, NativePersistence, NativeRequest, NativeServices, SelectedNativeMethod,
+};
 pub use resource_ingress::{
     CallResources, RESOURCE_CHUNK_LIMIT, ResourceCapture, ResourceCapturer, ResourceDescriptor,
 };
@@ -121,6 +123,9 @@ pub struct Invocation<'a> {
     /// Host-verified original native activation, if this call belongs to native
     /// domain work. This observation does not grant any imported method.
     pub native_origin: Option<&'a Activation>,
+    /// Host-verified capability for this exact captured native method. It has
+    /// no wire representation or public constructor.
+    pub selected_native_method: Option<&'a SelectedNativeMethod>,
     pub consumer: &'a Activation,
     pub provider: &'a Activation,
     pub export: &'a str,
@@ -133,6 +138,9 @@ pub struct Invocation<'a> {
 pub struct RecoveryInvocation<'a> {
     pub scope: &'a Scope,
     pub native_origin: Option<&'a Activation>,
+    /// Host-verified capability for this exact captured native method. It has
+    /// no wire representation or public constructor.
+    pub selected_native_method: Option<&'a SelectedNativeMethod>,
     pub consumer: &'a Activation,
     pub reference: &'a RecoveryRef,
 }
