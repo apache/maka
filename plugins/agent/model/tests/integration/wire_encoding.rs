@@ -262,3 +262,67 @@ async fn notifications_keep_all_output_formats_without_a_second_provider_receipt
         }
     }
 }
+
+#[tokio::test]
+async fn captured_chat_reasoning_replay_keeps_the_selected_field() {
+    use maka_provider_protocol::{
+        chat_completions::request as chat, input as wire, output::ReasoningField,
+    };
+    for field in [ReasoningField::Content, ReasoningField::Reasoning] {
+        let mut input = request(
+            ProviderKind::OpenaiCompatible {
+                name: "ollama-cloud".into(),
+            },
+            "http://localhost/v1".into(),
+        );
+        input.provider_options = json!({"maka":{"openAiChatReasoningField":field}});
+        let encoding = WireEncoding::new(
+            input.language,
+            &input.provider,
+            &input.provider_options,
+            &input.tools,
+        )
+        .unwrap();
+        let messages = vec![Message::Assistant {
+            content: vec![
+                AssistantPart::Reasoning {
+                    text: "思考".into(),
+                    provider_options: None,
+                },
+                AssistantPart::Text {
+                    text: "reply".into(),
+                    provider_options: None,
+                },
+            ],
+            provider_options: None,
+        }];
+        drop(input);
+        let frozen = encoding.prepare_source(Arc::new(maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(&messages)), resources()).await.unwrap();
+        let mut expected = json!({"role":"assistant","content":"reply"});
+        expected[field.as_str()] = json!("思考");
+        assert_eq!(items(&frozen).await, vec![expected.clone()]);
+        let direct = chat::messages(
+            &[wire::Message::Assistant {
+                parts: vec![
+                    wire::AssistantPart::Reasoning {
+                        text: "思考".into(),
+                        extensions: None,
+                    },
+                    wire::AssistantPart::Text {
+                        text: "reply".into(),
+                        extensions: None,
+                    },
+                ],
+                extensions: None,
+            }],
+            &chat::PromptOptions {
+                provider_namespace: "ollama-cloud".into(),
+                metadata_namespace: "ollamaCloud".into(),
+                multipart_tool_content: false,
+                reasoning_field: field,
+            },
+        )
+        .unwrap();
+        assert_eq!(direct, vec![expected]);
+    }
+}

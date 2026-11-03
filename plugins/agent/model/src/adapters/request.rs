@@ -172,6 +172,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             "messages",
         )
     } else {
+        let policy = super::wire::chat_policy(&request.provider_options)?;
         let namespace = match request.provider.kind {
             ProviderKind::OpenaiCompatible { name } => name,
             ProviderKind::OpenaiChatCompletions => "openai".into(),
@@ -215,7 +216,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             },
             &chat_completions::request::Config {
                 provider_namespace: namespace.clone(),
-                include_usage: true,
+                include_usage: policy.include_usage,
                 ..Default::default()
             },
         )
@@ -224,6 +225,7 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
             provider_namespace: namespace.clone(),
             metadata_namespace: prepared.metadata_namespace.clone(),
             multipart_tool_content: false,
+            reasoning_field: policy.reasoning_field,
         };
         if let Some(wire) = request
             .prompt

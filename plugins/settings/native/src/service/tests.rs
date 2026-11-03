@@ -333,3 +333,26 @@ async fn model_search_returns_executable_selections_and_effective_thinking_metad
     assert_eq!(empty["choices"], json!([]));
     fixture.finish().await;
 }
+
+#[tokio::test]
+async fn ollama_cloud_enabled_models_appear_in_settings_choices() {
+    let fixture = Fixture::new().await;
+    let revision = fixture.configuration.catalog().await.unwrap().revision;
+    let committed = fixture.configuration.create_connection(serde_json::from_value(json!({
+        "expectedCatalogRevision":revision,
+        "connection":{
+            "slug":"ollama-cloud","name":"Ollama Cloud",
+            "provider":{"packageId":maka_providers::api::ID,"entryId":maka_providers::api::ID,"scope":"profile","name":"ollama-cloud"},
+            "configuration":{"baseUrl":"https://ollama.com/v1"},
+            "enabled":true,"enabledModelIds":["deepseek-v4-flash"]
+        }
+    })).unwrap()).await.unwrap();
+    assert!(matches!(committed, CatalogMutationResult::Committed { .. }));
+    let page = fixture.models(json!({"kind":"start"})).await.unwrap();
+    assert_eq!(page["choices"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        page["choices"][0]["selection"]["modelId"],
+        "deepseek-v4-flash"
+    );
+    fixture.finish().await;
+}

@@ -427,7 +427,7 @@ async fn encode(
             }
             if nonempty_reasoning {
                 fields.push((
-                    "reasoning_content",
+                    options.reasoning_field.as_str(),
                     assistant::plan(parts, assistant::Mode::Reasoning)?,
                 ));
             }

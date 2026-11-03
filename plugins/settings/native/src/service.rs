@@ -111,9 +111,13 @@ async fn model_choice(
     snapshot: Arc<maka_providers::catalog::Snapshot>,
 ) -> Option<ModelChoice> {
     let overrides = row.model_overrides.as_ref().and_then(|all| all.get(model));
-    let metadata = model_metadata(row, model, overrides.cloned(), snapshot)
-        .await
-        .ok()?;
+    let metadata = match model_metadata(row, model, overrides.cloned(), snapshot).await {
+        Ok(metadata) => metadata,
+        Err(error) => {
+            tracing::warn!(%error, model_id = model, connection_id = %row.connection_id, "Model choice unavailable");
+            return None;
+        }
+    };
     Some(model_choice_from_metadata(row, model, overrides, metadata))
 }
 async fn model_defaults(
