@@ -159,7 +159,7 @@ impl Owner {
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: false,
-            allowed_tools: session.configuration.tools.clone(),
+            allowed_tools: self.admitted_tools(&input.session_id, &session.configuration.tools),
             background: None,
             internal_tools: Arc::default(),
             internal_bindings: Arc::default(),

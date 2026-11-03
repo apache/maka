@@ -678,7 +678,7 @@ impl Owner {
             collaboration_mode: configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: configuration.tool_discovery,
-            allowed_tools: session.configuration.tools.clone(),
+            allowed_tools: self.admitted_tools(&input.session_id, &session.configuration.tools),
             background: None,
             internal_tools: selected_catalog.definitions.clone(),
             internal_bindings: selected_catalog.bindings.clone(),
