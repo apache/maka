@@ -35,6 +35,7 @@ struct DiscoveryProvider {
     started: Semaphore,
     release: Semaphore,
     fail: AtomicBool,
+    hash: Mutex<String>,
 }
 impl Provider for DiscoveryProvider {
     fn resolve(&self, request: Resolve) -> BoxFuture<'_, Result<Model, Error>> {
@@ -64,7 +65,9 @@ impl Provider for DiscoveryProvider {
                 return Err(Error::Http(503));
             }
             let mut model = ModelInfo::new("model-a");
-            model.codex_compaction_hash = Some("3000".into());
+            model.codex_compaction_hash = Some(self.hash.lock().unwrap().clone());
+            model.context_window = Some(200_000);
+            model.max_output_tokens = Some(128_000);
             Ok(vec![model])
         })
     }
@@ -124,6 +127,7 @@ impl Fixture {
             started: Semaphore::new(0),
             release: Semaphore::new(0),
             fail: AtomicBool::new(false),
+            hash: Mutex::new("3000".into()),
         });
         let real = maka_providers::codex::Codex::new(Arc::new(
             maka_providers::catalog::Snapshot::bundled().unwrap(),
@@ -423,6 +427,7 @@ async fn restart_refreshes_persisted_inventory_and_expired_proof_cannot_stamp_re
 }
 
 fn resolved_model(info: ModelInfo) -> Model {
+    let main_output_limit = info.max_output_tokens;
     Model {
         adapter: maka_providers::codex::ADAPTER.into(),
         protocol: maka_agent_ports::model::ProviderKind::OpenaiResponses,
@@ -430,54 +435,17 @@ fn resolved_model(info: ModelInfo) -> Model {
         info,
         thinking_levels: vec![],
         provider_options: json!({"openai":{"store":false}}),
-        main_output_limit: None,
+        main_output_limit,
     }
 }
 
 #[tokio::test]
 async fn logical_step_captures_provenance_and_failure_keeps_same_model_usable() {
-    use super::super::{AcceptedModel, ExecutionBasis, Source, request_context};
     use maka_agent_engine::ModelSource;
-    use maka_agent_facts::{
-        composition::{SourceKind, SourceRevision},
-        execution::{CodeLanguage, ToolMode},
-    };
     let f = Fixture::new().await;
     f.provider.release.add_permits(1);
     f.refresh().await;
-    let material = f
-        .store
-        .observe_model(f.binding.clone())
-        .await
-        .unwrap()
-        .unwrap();
-    let model = resolved_model(material.connection.models[0].clone());
-    let source = Source {
-        configuration: f.store.clone(),
-        credentials: f.credentials.clone(),
-        definition: f.definition.clone(),
-        session: "session".into(),
-        revision: SourceRevision {
-            kind: SourceKind::ModelProvider,
-            name: "chatgpt".into(),
-            package_id: "maka.codex".into(),
-            entry_id: "maka.codex".into(),
-            activation: "fixture".into(),
-            revision: "1".into(),
-        },
-        accepted: AcceptedModel {
-            binding: f.binding.clone(),
-            thinking_level: None,
-            tool_mode: ToolMode::for_model("model-a", &model.base_url, None),
-            code_language: CodeLanguage::default(),
-            editing_tools: None,
-            context: request_context(&material.connection, &model.info).unwrap(),
-            public_model: None,
-            provider: material.connection.provider.clone(),
-            provider_configuration: material.connection.configuration.clone(),
-            basis: ExecutionBasis::new(&model, &material.connection),
-        },
-    };
+    let source = source_fixture(&f).await;
     let prepared = source.capture().await.unwrap();
     let frozen = serde_json::to_vec(&prepared.context).unwrap();
     let captured = prepared.context.unwrap().codex.unwrap();
@@ -523,4 +491,148 @@ async fn host_shutdown_settles_shared_discovery_without_publishing_a_proof() {
             .is_empty()
     );
     f.store.shutdown().await.unwrap();
+}
+
+async fn source_fixture(f: &Fixture) -> super::super::Source {
+    use super::super::{AcceptedModel, Source};
+    use maka_agent_facts::{
+        composition::{SourceKind, SourceRevision},
+        execution::{CodeLanguage, ToolMode},
+    };
+    let material = f
+        .store
+        .observe_model(f.binding.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    let model = resolved_model(
+        material
+            .connection
+            .models
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ModelInfo::new("model-a")),
+    );
+    Source {
+        configuration: f.store.clone(),
+        credentials: f.credentials.clone(),
+        definition: f.definition.clone(),
+        session: "session".into(),
+        revision: SourceRevision {
+            kind: SourceKind::ModelProvider,
+            name: "chatgpt".into(),
+            package_id: "maka.codex".into(),
+            entry_id: "maka.codex".into(),
+            activation: "fixture".into(),
+            revision: "1".into(),
+        },
+        accepted: AcceptedModel {
+            binding: f.binding.clone(),
+            thinking_level: None,
+            tool_mode: ToolMode::for_model("model-a", &model.base_url, None),
+            code_language: CodeLanguage::default(),
+            editing_tools: None,
+            public_model: None,
+            provider: material.connection.provider.clone(),
+            provider_configuration: material.connection.configuration.clone(),
+            model_override: None,
+            body_overlay: None,
+        },
+    }
+}
+
+#[tokio::test]
+async fn discovery_recovery_and_restoration_use_one_current_request_snapshot() {
+    use maka_agent_engine::ModelSource;
+    let f = Fixture::new().await;
+    let source = source_fixture(&f).await;
+    f.provider.fail.store(true, Ordering::SeqCst);
+    f.provider.release.add_permits(1);
+    let first = source.capture().await.unwrap();
+    assert_eq!(first.main_output_limit, None);
+    assert_eq!(first.context.as_ref().unwrap().context_window, None);
+    let accepted = serde_json::to_vec(&source.accepted).unwrap();
+
+    // Advance only the failed discovery backoff, without sleeping or changing user configuration.
+    let (_, receiver) = watch::channel(Some(Outcome::Failed {
+        retry_at: Instant::now(),
+    }));
+    f.credentials
+        .inventory
+        .entries
+        .lock()
+        .unwrap()
+        .get_mut(&f.binding.connection_id)
+        .unwrap()
+        .result = receiver;
+    f.provider.fail.store(false, Ordering::SeqCst);
+    f.provider.release.add_permits(1);
+    let next = source.capture().await.unwrap();
+    assert_eq!(next.main_output_limit, Some(128_000));
+    assert_eq!(next.context.as_ref().unwrap().context_window, Some(200_000));
+    assert_eq!(
+        next.context.as_ref().unwrap().declared_window,
+        Some(170_000)
+    );
+    assert!(
+        next.context
+            .as_ref()
+            .unwrap()
+            .codex
+            .as_ref()
+            .unwrap()
+            .compatibility
+            .is_some()
+    );
+    assert_eq!(
+        first.main_output_limit, None,
+        "prepared requests remain frozen"
+    );
+    assert_eq!(first.context.as_ref().unwrap().context_window, None);
+
+    let restored = super::super::Source::restore(
+        f.store.clone(),
+        f.credentials.clone(),
+        serde_json::from_slice(&accepted).unwrap(),
+        "session".into(),
+        source.revision.clone(),
+    )
+    .unwrap();
+    let after_restart = restored.capture().await.unwrap();
+    assert_eq!(after_restart.main_output_limit, next.main_output_limit);
+    assert_eq!(after_restart.context, next.context);
+
+    let row = f.store.catalog().await.unwrap().connections.remove(0);
+    f.store
+        .update_connection(
+            serde_json::from_value(json!({
+                "expected":{"connectionId":row.connection_id,"revision":row.revision},
+                "changes":{"requestBodyOverlay":{"temperature":0.5}}
+            }))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        source.capture().await.is_err(),
+        "real user control changes invalidate accepted work"
+    );
+    f.close().await;
+}
+
+#[tokio::test]
+async fn inventory_accepts_opaque_hashes_longer_than_a_local_guess() {
+    use maka_agent_engine::ModelSource;
+    let f = Fixture::new().await;
+    let hash = "opaque-hash".repeat(64);
+    *f.provider.hash.lock().unwrap() = hash.clone();
+    f.provider.release.add_permits(1);
+    let request = source_fixture(&f).await.capture().await.unwrap();
+    let context = request.context.unwrap();
+    context.validate().unwrap();
+    assert_eq!(
+        context.codex.unwrap().compatibility.unwrap().comp_hash,
+        hash
+    );
+    f.close().await;
 }

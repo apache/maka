@@ -289,10 +289,7 @@ impl ModelInfo {
     pub fn validate(&self) -> Result<(), String> {
         validation::text(&self.id)?;
         if let Some(hash) = &self.codex_compaction_hash
-            && (hash.is_empty()
-                || hash.len() > 128
-                || hash.trim() != hash
-                || hash.chars().any(char::is_control))
+            && (hash.is_empty() || hash.trim() != hash || hash.chars().any(char::is_control))
         {
             return Err("invalid Codex compaction hash".into());
         }

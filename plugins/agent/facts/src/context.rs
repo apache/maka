@@ -108,7 +108,6 @@ impl ModelRequestContext {
             }
             if let Some(proof) = &codex.compatibility
                 && (proof.comp_hash.is_empty()
-                    || proof.comp_hash.len() > 128
                     || proof.comp_hash.trim() != proof.comp_hash
                     || proof.comp_hash.chars().any(char::is_control)
                     || proof.fetched_at > 9_007_199_254_740_991)

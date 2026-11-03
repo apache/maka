@@ -98,3 +98,17 @@ Cancelling one waiter leaves shared work with the Host. Each request records its
 connection and observed `comp_hash` in `ModelRequested.context`; these are provenance,
 not same-account replay restrictions. Discovery does not change selected models. A fresh
 Host obtains its own account observation before recording compatibility evidence.
+
+Accepted work retains user choices (provider configuration, selected-model overrides and body
+controls), not resolved inventory capacities. Each logical request resolves one current model
+observation into its context, capabilities, options and output budget; physical retries reuse the
+already frozen request. Catalog changes alone therefore do not invalidate queued/restored work.
+
+A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
+background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts
+at 270 seconds to leave 30 seconds before the 300-second catalog TTL. Its 15-second deadline
+bounds this foreground delay; failure uses the existing model with no new compatibility claim,
+then retries after a jittered 30–60-second backoff to avoid a request storm. Warm and backed-off
+preparations do not wait for network discovery. These are local latency/load policies, not protocol
+limits. The TTL governs new catalog observations; recorded producer facts and checkpoints do not
+expire with that cache. Once capture finishes, proactive compaction executes alongside Main.

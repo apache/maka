@@ -24,8 +24,8 @@ pub(crate) mod oauth;
 use futures_util::future::BoxFuture;
 use maka_agent_engine::{ModelSource, PreparedModel, RunError};
 use maka_agent_facts::composition::SourceRevision;
-use maka_agent_facts::configuration::ModelCapabilities;
 use maka_agent_facts::configuration::ModelInfo;
+use maka_agent_facts::configuration::ModelOverride;
 use maka_agent_facts::configuration::ModelSelection;
 use maka_agent_facts::context::ModelRequestContext;
 use maka_agent_facts::execution::EditingTools;
@@ -43,32 +43,6 @@ use serde_json::Value;
 use std::sync::Arc;
 use tracing::Instrument;
 
-/// Only parameters actually supplied to execution. Catalog labels, tests and
-/// other models are observations, not a mutable authority over an accepted run.
-#[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ExecutionBasis {
-    adapter: String,
-    protocol: maka_agent_facts::model::request::ProviderKind,
-    base_url: String,
-    capabilities: ModelCapabilities,
-    options: Value,
-    main_output_limit: Option<u64>,
-    body_overlay: Option<Value>,
-}
-impl ExecutionBasis {
-    fn new(model: &Model, row: &maka_agent_facts::configuration::ConnectionCatalogEntry) -> Self {
-        Self {
-            adapter: model.adapter.clone(),
-            protocol: model.protocol.clone(),
-            base_url: model.base_url.clone(),
-            capabilities: model.info.capabilities.unwrap_or_default(),
-            options: model.provider_options.clone(),
-            main_output_limit: model.main_output_limit,
-            body_overlay: row.request_body_overlay.clone(),
-        }
-    }
-}
 /// Accepted route facts, without credentials or live activation handles.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -86,13 +60,13 @@ pub(crate) struct AcceptedModel {
     /// None captures an unfiltered tool selection.
     #[serde(deserialize_with = "Option::deserialize")]
     pub editing_tools: Option<EditingTools>,
-    context: ModelRequestContext,
-    /// Public defaults at admission only; account reports and overrides stay live.
+    /// Public defaults at admission; account model observations are resolved per request.
     #[serde(deserialize_with = "Option::deserialize")]
     public_model: Option<ModelInfo>,
     provider: maka_agent_facts::provider::Identity,
     provider_configuration: Value,
-    basis: ExecutionBasis,
+    model_override: Option<ModelOverride>,
+    body_overlay: Option<Value>,
 }
 #[derive(Clone)]
 pub(crate) struct Credentials {
@@ -179,7 +153,6 @@ impl Source {
                 configuration,
                 credentials,
                 accepted: AcceptedModel {
-                    context: request_context(row, &model.info)?,
                     public_model,
                     editing_tools: Some(editing_tools(row, &selection.model_id, &model.base_url)),
                     tool_mode: ToolMode::for_model(
@@ -202,7 +175,9 @@ impl Source {
                     thinking_level,
                     provider: row.provider.clone(),
                     provider_configuration: row.configuration.clone(),
-                    basis: ExecutionBasis::new(&model, row),
+                    model_override: row.model_overrides.as_ref()
+                        .and_then(|models| models.get(&model.info.id)).cloned(),
+                    body_overlay: row.request_body_overlay.clone(),
                 },
                 definition,
                 session,
@@ -304,7 +279,7 @@ impl Source {
             Some(snapshot) => Some(snapshot.credential().clone()),
             None => None,
         };
-        let mut request_context = self.accepted.context.clone();
+        let mut request_context = request_context(row, &model.info)?;
         if model.adapter == maka_providers::codex::ADAPTER {
             let mut provenance = self
                 .credentials
@@ -465,6 +440,20 @@ impl Source {
             );
             return Err(unavailable());
         }
+        let model_override = row
+            .model_overrides
+            .as_ref()
+            .and_then(|models| models.get(&self.accepted.binding.model));
+        if model_override != self.accepted.model_override.as_ref()
+            || row.request_body_overlay != self.accepted.body_overlay
+        {
+            tracing::warn!(
+                stage = "accepted_model_observation",
+                cause = "accepted_controls_changed",
+                "Model preparation failed"
+            );
+            return Err(unavailable());
+        }
         let model = resolve(
             &self.definition,
             row,
@@ -472,14 +461,6 @@ impl Source {
             self.accepted.thinking_level,
         )
         .await?;
-        if ExecutionBasis::new(&model, row) != self.accepted.basis {
-            tracing::warn!(
-                stage = "accepted_model_observation",
-                cause = "accepted_execution_basis_changed",
-                "Model preparation failed"
-            );
-            return Err(unavailable());
-        }
         Ok((material, model))
     }
     /// The original accepted route, with the least declared reasoning for a short auxiliary task.

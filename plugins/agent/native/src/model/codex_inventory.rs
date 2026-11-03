@@ -38,7 +38,6 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 const MAX_AGE: u64 = 300;
 const REFRESH_AT: u64 = 270;
-const MAX_ENTRIES: usize = 1024;
 
 type Waiter = watch::Receiver<Option<Outcome>>;
 struct Entry {
@@ -107,14 +106,6 @@ impl Authority {
                     let wall = now();
                     let monotonic = Instant::now();
                     entries.retain(|_, entry| reusable(&entry.result.borrow(), wall, monotonic));
-                    if !entries.contains_key(&binding.connection_id) && entries.len() >= MAX_ENTRIES
-                    {
-                        tracing::warn!(
-                            stage = "codex_inventory_capacity",
-                            "ChatGPT inventory refresh capacity reached"
-                        );
-                        return;
-                    }
                     let (sender, receiver) = watch::channel(None);
                     entries.insert(
                         binding.connection_id.clone(),
