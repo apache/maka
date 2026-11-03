@@ -26,6 +26,7 @@ pub struct PromptOptions {
     pub provider_namespace: String,
     pub metadata_namespace: String,
     pub multipart_tool_content: bool,
+    pub reasoning_field: crate::output::ReasoningField,
 }
 fn metadata<'a>(extensions: &'a Extensions, namespace: &str) -> Option<&'a Value> {
     extensions.as_ref()?.get(namespace)
@@ -370,10 +371,16 @@ pub fn messages(messages: &[Message], options: &PromptOptions) -> Result<Vec<Val
                 continue;
             }
         };
-        result.push(overlay(
-            serde_json::to_value(wire).expect("message"),
-            extensions,
-        ));
+        let mut wire = serde_json::to_value(wire).expect("message");
+        if options.reasoning_field == crate::output::ReasoningField::Reasoning
+            && let Some(reasoning) = wire
+                .as_object_mut()
+                .expect("message")
+                .remove("reasoning_content")
+        {
+            wire["reasoning"] = reasoning;
+        }
+        result.push(overlay(wire, extensions));
     }
     Ok(result)
 }

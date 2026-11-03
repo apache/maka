@@ -65,8 +65,6 @@ fn check_execution(adapter: &RuntimeAdapter, wire: Wire) -> Result<(), Error> {
             responses: Some(_), ..
         } if wire == Wire::OpenaiResponses => true,
         AdapterKind::OpenaiCompatible {
-            include_usage: None,
-            replay_assistant_reasoning_as: None,
             replay_assistant_reasoning_details: None,
             normalize_usage: None,
             ..
@@ -83,7 +81,7 @@ pub(crate) struct Route<'a> {
     pub wire: Wire,
     pub kind: ProviderKind,
     pub base_url: String,
-    adapter: &'a RuntimeAdapter,
+    pub(super) adapter: &'a RuntimeAdapter,
 }
 
 impl Route<'_> {
