@@ -59,7 +59,7 @@ async function flush() {
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
-function setup() {
+function setup({ beforeQueryReturns } = {}) {
   const queued = [];
   let waiting;
   let latest = snapshot(4);
@@ -74,7 +74,11 @@ function setup() {
             }),
       close: async () => {},
     }),
-    query: async () => latest,
+    query: async () => {
+      const read = latest;
+      await beforeQueryReturns?.();
+      return read;
+    },
   };
   const control = async (_method, request) => {
     sent.push(request.revision);
@@ -103,6 +107,13 @@ test('a stale stream snapshot does not undo what a change returned', async () =>
   assert.equal(goal.view().current.revision, 5);
   assert.equal(await goal.change('resume'), true);
   assert.deepEqual(sent, [4, 5]);
+});
+
+test('a change whose query is overtaken by the stream keeps the newer snapshot', async () => {
+  const { goal, push } = setup({ beforeQueryReturns: () => push(snapshot(6)) });
+  await push(snapshot(4));
+  assert.equal(await goal.change('pause'), true);
+  assert.equal(goal.view().current.revision, 6);
 });
 
 test('a stale snapshot of the previous Goal, or of none, does not replace a newer Goal', async () => {
