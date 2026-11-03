@@ -53,27 +53,6 @@ fn effective_options(provider: &ProviderConfig, options: &Value) -> Result<Value
     Ok(options)
 }
 
-#[derive(serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct ChatPolicy {
-    #[serde(default = "include_usage")]
-    pub include_usage: bool,
-    #[serde(default, rename = "openAiChatReasoningField")]
-    pub reasoning_field: maka_provider_protocol::output::ReasoningField,
-}
-fn include_usage() -> bool {
-    true
-}
-pub(super) fn chat_policy(options: &Value) -> Result<ChatPolicy, ModelError> {
-    serde_json::from_value(
-        options
-            .get("maka")
-            .cloned()
-            .unwrap_or_else(|| serde_json::json!({})),
-    )
-    .map_err(|error| ModelError::Adapter(error.to_string()))
-}
-
 pub(super) fn chat_options(
     kind: &ProviderKind,
     options: &Value,
@@ -88,7 +67,13 @@ pub(super) fn chat_options(
         &prompt::extensions(Some(options.clone()))?,
         false,
     );
-    prompt_options.reasoning_field = chat_policy(options)?.reasoning_field;
+    prompt_options.reasoning_field = options
+        .get("maka")
+        .and_then(|options| options.get("openAiChatReasoningField"))
+        .map(|value| serde_json::from_value(value.clone()))
+        .transpose()
+        .map_err(|error| ModelError::Adapter(error.to_string()))?
+        .unwrap_or_default();
     Ok(prompt_options)
 }
 pub(super) fn chat_codec(language: Language, options: &chat::PromptOptions) -> String {
