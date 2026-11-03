@@ -17,11 +17,13 @@
  * under the License.
  */
 
-import { mount, platform, signal, Text, View, type JSX } from 'nsh';
+import { AnimatedValue, mount, platform, signal, Text, View, windowSize, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
 import { ContextGaugePreview } from './ContextGaugePreview';
 import { MessageRow } from '../../../workbench/app/MessageRow';
+import type { MessageViewState } from '../../../workbench/app/MessageRow';
+import { TurnPanel, type GroupViewState } from '../../../workbench/app/TurnPanel';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
@@ -487,6 +489,109 @@ function WorkspacePages(props: { busy: boolean }) {
   );
 }
 
+function ActivityFollow() {
+  const atEnd = signal(false);
+  const count = signal(10);
+  const reading = signal(false);
+  const rows = new Map<string, Row>();
+  const states = new Map<string, MessageViewState>();
+  const state: GroupViewState = {
+    open: signal(true),
+    following: signal(true),
+    offset: new AnimatedValue(0),
+    measured: new Map(),
+    lease: 0,
+    opening: 'bottom',
+    visibleRows: signal(new Set<string>()),
+    rowNodes: new Map(),
+  };
+  const ids = () => ['tool', ...Array.from({ length: count() }, (_, i) => `activity-${i + 1}`)];
+  return (
+    <HostProvider value={{} as Host}>
+      <View style={{ flex: 1 }}>
+        <Text>{`Activity count: ${count()} · ${reading() ? 'Reading history' : 'Following latest'} · ${atEnd() ? 'At activity end' : 'Above activity end'}`}</Text>
+        <Button
+          accessibilityLabel="Read older activity"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={() => {
+            state.list?.scrollToIndex({ index: 0, viewPosition: 0, animated: false });
+            state.list?.focus();
+          }}
+        >
+          <Text>Read older activity</Text>
+        </Button>
+        <Button
+          accessibilityLabel="Append activity"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={() => count.set(count() + 1)}
+        >
+          <Text>Append activity</Text>
+        </Button>
+        <Button
+          accessibilityLabel="One line above latest"
+          style={{ height: 32, flexShrink: 0 }}
+          onPress={async () => {
+            const y = await state.offset.getValue();
+            state.list?.scrollToOffset({ offset: Math.max(0, y - 16), animated: false });
+          }}
+        >
+          <Text>One line above latest</Text>
+        </Button>
+        <TurnPanel
+          group={() => ({
+            kind: 'process',
+            key: 'process',
+            turnId: 'turn',
+            members: [],
+            rowIds: ids(),
+            toolIds: ['tool'],
+            closed: false,
+          })}
+          turn={() => ({
+            turnId: 'turn',
+            timing: null,
+            active: true,
+            finalOutputIds: [],
+            interleavedInput: false,
+          })}
+          toolActivity={() => undefined}
+          toolProgress={() => null}
+          state={state}
+          row={(id) => {
+            if (!rows.has(id))
+              rows.set(id, {
+                key: id,
+                messageId: id,
+                field: 'body',
+                role: id === 'tool' ? 'tool_call' : 'assistant',
+                text:
+                  id === 'tool'
+                    ? Array.from({ length: 25 }, (_, i) => `Tool source line ${i + 1}`).join('\n')
+                    : `Live ${id}`,
+              });
+            return rows.get(id);
+          }}
+          rowState={(id) => {
+            if (!states.has(id))
+              states.set(id, { expanded: signal(false), sourceMode: signal(false) });
+            return states.get(id)!;
+          }}
+          sessionId="activity-session"
+          through={() => 1}
+          viewport={windowSize}
+          activity={() => ({ kind: 'working', detail: '' })}
+          reveal={() => {}}
+          previewImage={() => {}}
+          openLink={async () => {}}
+          userScroll={() => {}}
+          reading={(away) => reading.set(away)}
+          settled={(end) => atEnd.set(end)}
+        />
+      </View>
+    </HostProvider>
+  );
+}
+
 function ToolStatuses() {
   const cases = [
     { settlement: 'returned', dispatched: true },
@@ -547,7 +652,9 @@ function ToolStatuses() {
 
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
 mount(() =>
-  scenario === 'context-gauge' ? (
+  scenario === 'activity-follow' ? (
+    <ActivityFollow />
+  ) : scenario === 'context-gauge' ? (
     <ContextGaugePreview />
   ) : scenario === 'tool-statuses' ? (
     <ToolStatuses />

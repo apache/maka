@@ -75,6 +75,61 @@ async fn component(scenario: &'static str) -> AppView {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn activity_resumes_following_after_reading_an_expanded_tool() {
+    let mut view = component("activity-follow").await;
+    wait_view(&mut view, |screen| screen.contains("Live activity-10")).await;
+    support::click_button(&mut view, "Read older activity").await;
+    support::click_button(&mut view, "Toggle tool Tool details").await;
+    wait_view(&mut view, |screen| screen.contains("Tool source line 1")).await;
+    support::click_button(&mut view, "Append activity").await;
+    wait_view(&mut view, |screen| screen.contains("Activity count: 11")).await;
+    assert!(view.snapshot().contains("Tool source line 1"));
+    assert!(!view.snapshot().contains("Live activity-11"));
+
+    let list = view
+        .accessibility_snapshot()
+        .into_iter()
+        .find(|node| node.label == "Turn activity")
+        .unwrap();
+    let column = ((list.frame.origin.x.0 + list.frame.size.width.0) / 8.0).ceil() as u16 - 1;
+    let row = (list.frame.origin.y.0 / 16.0).ceil() as u16 + 1;
+    for _ in 0..40 {
+        view.handle_event(TerminalEvent::Mouse(crossterm::event::MouseEvent {
+            kind: crossterm::event::MouseEventKind::ScrollDown,
+            column,
+            row,
+            modifiers: KeyModifiers::NONE,
+        }));
+        view.poll().unwrap();
+        support::tick(&mut view);
+        tokio::task::yield_now().await;
+    }
+    wait_view(&mut view, |screen| screen.contains("Live activity-11")).await;
+    support::click_button(&mut view, "Append activity").await;
+    wait_view(&mut view, |screen| screen.contains("Live activity-12")).await;
+
+    support::click_button(&mut view, "One line above latest").await;
+    wait_view(&mut view, |screen| screen.contains("Above activity end")).await;
+    support::click_button(&mut view, "Append activity").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("Live activity-13") && screen.contains("At activity end")
+    })
+    .await;
+
+    let terminal_rows = 100;
+    view.resize(120, terminal_rows);
+    let activity_height = f32::from(terminal_rows) * 16.0 / 2.0;
+    wait_view_state(&mut view, |view, screen| {
+        screen.contains("Live activity-13")
+            && screen.contains("At activity end")
+            && view.accessibility_snapshot().iter().any(|node| {
+                node.label == "Turn activity" && node.frame.size.height.0 == activity_height
+            })
+    })
+    .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sandbox_choice_preserves_the_original_session_and_approval_setting() {
     let mut view = component("sandbox").await;
     support::click_button(&mut view, "Sandbox and approvals").await;
