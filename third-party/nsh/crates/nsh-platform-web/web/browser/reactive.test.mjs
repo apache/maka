@@ -731,6 +731,22 @@ test("what a component's children read runs them alone, never the expression tha
   dispose(); close();
 });
 
+test("functions in a branch's array and in nested arrays stay when a sibling changes", { skip: !path }, async () => {
+  const { api, dom, close } = await fixture();
+  const outer = api.signal(0), inner = api.signal(0);
+  let made = 0, dispose;
+  const child = () => { made++; return "child"; };
+  api.root(stop => {
+    dispose = stop;
+    dom.rt.insert(dom.rt.element("view"), [() => outer(), () => [child, () => inner()]]);
+    dom.rt.insert(dom.rt.element("view"), [[child, () => inner()]]);
+  });
+  assert.equal(made, 2);
+  outer.set(1); inner.set(1);
+  assert.equal(made, 2);
+  dispose(); close();
+});
+
 test("native video loads nest their size as the native JS host does", { skip: !path }, async () => {
   const f = await fixture();
   try {

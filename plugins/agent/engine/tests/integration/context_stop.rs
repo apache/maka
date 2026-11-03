@@ -23,6 +23,7 @@ use maka_agent_engine::RunError;
 use maka_agent_facts::event::Fact;
 use maka_agent_facts::event::InvocationOutcome;
 use maka_agent_facts::event::ModelInterruption;
+use maka_agent_facts::model::recorded::ModelObservation;
 use std::sync::Arc;
 use support::*;
 use tokio::{
@@ -116,7 +117,7 @@ async fn stopping_summary_drains_attempt_without_checkpoint_or_retry() {
     assert!(
         !stopped.iter().any(|event| matches!(&event.event.fact,
         Fact::ModelObserved { step_id, event } if step_id == summary_step
-            && !matches!(event, maka_agent_facts::model::recorded::ModelObservation::Finished { .. }))),
+            && !matches!(event, ModelObservation::ResponseMetadata { .. } | ModelObservation::Finished { .. }))),
         "cancelled private summary prose must not become durable history"
     );
     assert!(stopped.iter().any(|event| matches!(

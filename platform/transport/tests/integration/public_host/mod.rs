@@ -396,7 +396,10 @@ async fn reconnect_captures_the_replacement_host_registration() {
         assert!(matches!(refreshed.receive().await.unwrap(), Reply::Finished { result: Ok(ref value), cleanup: Ok(()) } if value["effects"] == 0));
         original.close().await.unwrap();
         connected.close().await.unwrap();
-        assert!(Client::retire(&fixture.address, fixture.host.epoch()).await.unwrap());
+        // The replacement is visible before the old VM finishes shutting down.
+        while !Client::retire(&fixture.address, fixture.host.epoch()).await.unwrap() {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
         fixture.serving.await.unwrap().unwrap();
     }).await.unwrap();
 }
