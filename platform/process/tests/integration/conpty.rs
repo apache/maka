@@ -245,16 +245,7 @@ async fn drain(io: &PtyIo) -> Vec<u8> {
 
 #[tokio::test]
 async fn git_bash_command_uses_conpty_and_preserves_exit_status() {
-    let candidates = [
-        std::env::var_os("MAKA_TEST_GIT_BASH").map(PathBuf::from),
-        std::env::var_os("USERPROFILE")
-            .map(|root| PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")),
-        std::env::var_os("ProgramFiles").map(|root| PathBuf::from(root).join(r"Git\bin\bash.exe")),
-    ];
-    let Some(bash) = candidates.into_iter().flatten().find(|path| path.is_file()) else {
-        eprintln!("Git Bash not installed on this Windows runner");
-        return;
-    };
+    let bash = super::git_bash();
     let cwd = tempfile::tempdir().unwrap();
     let executor = maka_process::ShellExecutor::new(cwd.path(), maka_sandbox::Sandbox::Disabled)
         .unwrap()
@@ -284,20 +275,7 @@ async fn git_bash_command_uses_conpty_and_preserves_exit_status() {
 
 #[tokio::test]
 async fn git_bash_interactive_terminal_keeps_workspace_cwd() {
-    let bash = std::env::var_os("MAKA_TEST_GIT_BASH")
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("USERPROFILE")
-                .map(|root| PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe"))
-        })
-        .or_else(|| {
-            std::env::var_os("ProgramFiles")
-                .map(|root| PathBuf::from(root).join(r"Git\bin\bash.exe"))
-        });
-    let Some(bash) = bash.filter(|path| path.is_file()) else {
-        eprintln!("Git Bash not installed on this Windows runner");
-        return;
-    };
+    let bash = super::git_bash();
     let cwd = tempfile::tempdir().unwrap();
     let executor = maka_process::ShellExecutor::new(cwd.path(), maka_sandbox::Sandbox::Disabled)
         .unwrap()

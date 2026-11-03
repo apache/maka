@@ -269,43 +269,51 @@ mod tests {
         let store = maka_config::ConfigurationStore::for_root(owner.clone())
             .await
             .unwrap();
-        let bash = std::env::var_os("MAKA_TEST_GIT_BASH")
-            .map(std::path::PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("USERPROFILE").map(|root| {
-                    std::path::PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")
-                })
-            })
-            .or_else(|| {
-                std::env::var_os("ProgramFiles")
-                    .map(|root| std::path::PathBuf::from(root).join(r"Git\bin\bash.exe"))
-            });
+        let explicit = std::env::var_os("MAKA_TEST_GIT_BASH").map(std::path::PathBuf::from);
+        if let Some(path) = &explicit {
+            assert!(
+                path.is_file(),
+                "MAKA_TEST_GIT_BASH does not identify a file: {}",
+                path.display()
+            );
+        }
+        let bash = [
+            explicit,
+            std::env::var_os("USERPROFILE").map(|root| {
+                std::path::PathBuf::from(root).join(r"scoop\apps\git\current\bin\bash.exe")
+            }),
+            std::env::var_os("ProgramFiles")
+                .map(|root| std::path::PathBuf::from(root).join(r"Git\bin\bash.exe")),
+        ]
+        .into_iter()
+        .flatten()
+        .find(|path| path.is_file())
+        .expect("Git Bash is required; set MAKA_TEST_GIT_BASH to its bash.exe");
         let invalid = update(&store, serde_json::json!({
             "expectedRevision":0,
             "mutation":{"kind":"shell","value":{"preference":"git_bash","executable":r"C:\no-such-git-bash\bash.exe","titles":true}}
         })).await.unwrap();
         assert_eq!(invalid["kind"], "rejected");
         assert_eq!(store.runtime_policy().await.unwrap().revision, 0);
-        if let Some(path) = bash.filter(|path| path.is_file()) {
-            let saved = update(&store, serde_json::json!({
+        let path = bash;
+        let saved = update(&store, serde_json::json!({
                 "expectedRevision":0,
                 "mutation":{"kind":"shell","value":{"preference":"git_bash","executable":path.to_string_lossy(),"titles":true}}
             })).await.unwrap();
-            assert_eq!(saved["kind"], "committed");
-            store.shutdown().await.unwrap();
-            let reopened = maka_config::ConfigurationStore::for_root(owner)
+        assert_eq!(saved["kind"], "committed");
+        store.shutdown().await.unwrap();
+        let reopened = maka_config::ConfigurationStore::for_root(owner)
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .runtime_policy()
                 .await
-                .unwrap();
-            assert_eq!(
-                reopened
-                    .runtime_policy()
-                    .await
-                    .unwrap()
-                    .policy
-                    .shell
-                    .preference,
-                maka_agent_facts::configuration::policy::ShellPreference::GitBash
-            );
-        }
+                .unwrap()
+                .policy
+                .shell
+                .preference,
+            maka_agent_facts::configuration::policy::ShellPreference::GitBash
+        );
     }
 }

@@ -54,8 +54,7 @@ impl ShellPlan {
             #[cfg(windows)]
             Self::GitBash(path) => {
                 let mut command = Command::new(path, cwd);
-                let _ = login;
-                command.args(["-c", source]);
+                command.args([if login { "-lc" } else { "-c" }, source]);
                 command
             }
             #[cfg(windows)]

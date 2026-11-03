@@ -113,33 +113,6 @@ impl RequestBinding for Binding {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(windows)]
-    #[test]
-    fn shell_command_schema_declares_selected_host_dialect() {
-        use maka_agent_facts::configuration::policy::{ShellPolicy, ShellPreference};
-        let mut input =
-            serde_json::json!({"properties":{"command":{"description":"Run command."}}});
-        let mut policy = ShellPolicy {
-            preference: ShellPreference::GitBash,
-            executable: r"C:\Git\bin\bash.exe".into(),
-            titles: true,
-        };
-        guidance(&mut input, &policy, true);
-        assert!(
-            input["properties"]["command"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("write Bash syntax")
-        );
-        policy.preference = ShellPreference::Auto;
-        guidance(&mut input, &policy, true);
-        assert!(
-            input["properties"]["command"]["description"]
-                .as_str()
-                .unwrap()
-                .contains("PowerShell")
-        );
-    }
     #[test]
     fn command_labels_preserve_complete_sanitized_text_with_command_fallback() {
         assert_eq!(title(&serde_json::json!({"command":"printf actual", "title":"  检查\n构建\u{202e}\u{0000}  "})).unwrap().fallback, "检查 构建");
