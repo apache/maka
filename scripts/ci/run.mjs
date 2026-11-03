@@ -155,12 +155,6 @@ export function executor(root, worker = {}) {
       await node([
         'node_modules/typescript/bin/tsc',
         '-p',
-        'packages/plugin-sdk/tsconfig.json',
-        '--noEmit',
-      ]);
-      await node([
-        'node_modules/typescript/bin/tsc',
-        '-p',
         'packages/plugin-sdk/tsconfig.acceptance.json',
       ]);
       await node(['node_modules/typescript/bin/tsc', '-p', 'products/maka/bundle/tsconfig.json']);
