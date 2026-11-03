@@ -1618,6 +1618,31 @@ export const conversationMessages = {
     '此對話已變更。請核對目前沙箱設定後重新選擇。',
   ],
   'Application access request': ['Application access request', '应用访问请求', '應用程式存取請求'],
+  'System permission request': ['System permission request', '系统权限请求', '系統權限請求'],
+  '{application} needs these macOS permissions to use the computer. Turn them on in System Settings; the request continues on its own once they are on.':
+    [
+      '{application} needs these macOS permissions to use the computer. Turn them on in System Settings; the request continues on its own once they are on.',
+      '{application} 需要以下 macOS 权限才能操作电脑。请在系统设置中打开，打开后请求会自动继续。',
+      '{application} 需要以下 macOS 權限才能操作電腦。請在系統設定中開啟，開啟後請求會自動繼續。',
+    ],
+  Accessibility: ['Accessibility', '辅助功能', '輔助使用'],
+  'Screen & System Audio Recording': [
+    'Screen & System Audio Recording',
+    '录屏与系统录音',
+    '螢幕與系統錄音',
+  ],
+  'If {application} is not listed, reopen System Settings, or add it with the + button.': [
+    'If {application} is not listed, reopen System Settings, or add it with the + button.',
+    '如果列表中没有 {application}，请重新打开系统设置，或用 + 按钮添加。',
+    '如果清單中沒有 {application}，請重新打開系統設定，或用 + 按鈕加入。',
+  ],
+  'Open {name} settings': ['Open {name} settings', '打开{name}设置', '開啟{name}設定'],
+  'System Settings could not be opened.': [
+    'System Settings could not be opened.',
+    '无法打开系统设置。',
+    '無法開啟系統設定。',
+  ],
+  'System permissions granted': ['System permissions granted', '系统权限已开启', '系統權限已開啟'],
   'Application access denied': [
     'Application access denied',
     '已拒绝应用访问',

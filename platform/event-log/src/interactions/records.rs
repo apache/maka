@@ -87,6 +87,10 @@ pub(crate) fn equivalent(left: &InteractionOutcome, right: &InteractionOutcome) 
             },
         ) => left == right,
         (
+            InteractionOutcome::SystemPermissionGranted { .. },
+            InteractionOutcome::SystemPermissionGranted { .. },
+        ) => true,
+        (
             InteractionOutcome::Closure { reason: left, .. },
             InteractionOutcome::Closure { reason: right, .. },
         ) => left == right,

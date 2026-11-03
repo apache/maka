@@ -98,6 +98,9 @@ async fn diagnostic_state(fixture: &Fixture, session: &str) -> String {
                         maka_agent_facts::interaction::InteractionRequest::ComputerApp {
                             ..
                         } => "computer_app",
+                        maka_agent_facts::interaction::InteractionRequest::SystemPermission {
+                            ..
+                        } => "system_permission",
                     };
                     (record.request_id, kind)
                 })

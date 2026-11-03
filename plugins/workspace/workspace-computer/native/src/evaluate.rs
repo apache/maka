@@ -372,6 +372,19 @@ impl Computer {
             }
             targets.push(api::audio_target());
         }
+        let required = maka_computer_use::system_permission::required(&command);
+        if !required.is_empty() {
+            system_permission::ensure(
+                self,
+                &call,
+                basis,
+                required,
+                &operation_id,
+                &cancellation,
+                &cell,
+            )
+            .await?;
+        }
         let subject = {
             let mut desktop = tokio::select! { biased;
                 () = cancellation.cancelled() => return Err(failed("Computer Use cancelled before app resolution").into()),

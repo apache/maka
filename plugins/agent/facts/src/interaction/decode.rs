@@ -105,6 +105,14 @@ fn request(v: &Value) -> Result<InteractionRequest> {
                 authority_revision: field(v, "authorityRevision")?,
             }
         }
+        Some("system_permission") => {
+            shape(v, &["kind", "toolUseId", "grants", "application"])?;
+            InteractionRequest::SystemPermission {
+                tool_use_id: field(v, "toolUseId")?,
+                grants: field(v, "grants")?,
+                application: field(v, "application")?,
+            }
+        }
         Some("form") => {
             shape(v, &["kind", "toolUseId", "message", "requester", "fields"])?;
             let input = crate::capability::form_decode::decode_input(&serde_json::json!({
@@ -173,6 +181,10 @@ fn answer(v: &Value) -> Result<InteractionAnswer> {
             shape(v, &["kind"])?;
             InteractionAnswer::ComputerAppCancel {}
         }
+        Some("system_permission_cancel") => {
+            shape(v, &["kind"])?;
+            InteractionAnswer::SystemPermissionCancel {}
+        }
         Some("form") => InteractionAnswer::Form {
             result: result(v, false)?,
         },
@@ -218,6 +230,10 @@ fn outcome(v: &Value) -> Result<InteractionOutcome> {
                 decision: field(v, "decision")?,
                 committed_at,
             }
+        }
+        Some("system_permission_granted") => {
+            shape(v, &["kind", "committedAt"])?;
+            InteractionOutcome::SystemPermissionGranted { committed_at }
         }
         Some("closure") => {
             shape(v, &["kind", "reason", "committedAt"])?;

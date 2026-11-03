@@ -24,6 +24,7 @@ use maka_agent_facts::interaction::InteractionRecord;
 use maka_agent_facts::interaction::InteractionRequest;
 use maka_agent_facts::interaction::{
     ComputerAppDecision, ComputerAppPlatform, ComputerAppRisk, GrantCapability, GrantScope,
+    SystemPermissionGrant,
 };
 use maka_sandbox::grant;
 
@@ -227,6 +228,41 @@ pub(super) fn request(snapshot: &InteractionRecord) -> Result<Callback, crate::E
                 )),
             ))
         }
+        // The Host settles this itself once the operating-system grants exist,
+        // so the client is only told where to grant them and can only cancel.
+        InteractionRequest::SystemPermission {
+            tool_use_id,
+            grants,
+            application,
+        } => {
+            let names = grants
+                .iter()
+                .map(|grant| match grant {
+                    SystemPermissionGrant::Accessibility => "Accessibility",
+                    SystemPermissionGrant::ScreenRecording => "Screen Recording",
+                })
+                .collect::<Vec<_>>()
+                .join(" and ");
+            Ok(Callback::Permission(
+                acp::RequestPermissionRequest::new(
+                    acp::SessionId::new(snapshot.session_id.as_str()),
+                    format!("{application} needs {names}"),
+                    vec![acp::PermissionOption::new(
+                        "reject_once",
+                        "Cancel",
+                        acp::PermissionOptionKind::RejectOnce,
+                    )],
+                )
+                .description(format!(
+                    "Grant {names} to {application} in System Settings > Privacy & Security. \
+                     The tool call continues automatically once the access is granted."
+                ))
+                .subject(acp::RequestPermissionSubject::from(
+                    acp::ToolCallUpdate::new(acp::ToolCallId::new(tool_use_id.as_str()))
+                        .raw_input(serde_json::to_value(&snapshot.request)?),
+                )),
+            ))
+        }
         _ => Err("Expected a permission interaction".into()),
     }
 }
@@ -327,6 +363,20 @@ pub(super) fn answer(
             };
             InteractionAnswer::ComputerApp { decision }
         }
+        InteractionRequest::SystemPermission { .. } => match response.outcome {
+            acp::RequestPermissionOutcome::Cancelled => {
+                InteractionAnswer::SystemPermissionCancel {}
+            }
+            acp::RequestPermissionOutcome::Selected(selected)
+                if selected.option_id.0.as_ref() == "reject_once" =>
+            {
+                InteractionAnswer::SystemPermissionCancel {}
+            }
+            acp::RequestPermissionOutcome::Selected(_) => {
+                return Err("Client selected an unoffered system permission option".into());
+            }
+            _ => return Err("Unsupported ACP permission outcome".into()),
+        },
         _ => return Err("Expected a permission interaction".into()),
     })
 }
@@ -489,6 +539,70 @@ mod tests {
         );
         for response in [
             json!({"outcome":{"outcome":"selected","optionId":"allow"}}),
+            json!({"outcome":{"outcome":"_future_approval"}}),
+        ] {
+            assert!(answer(&record, response).is_err());
+        }
+    }
+
+    fn system_permission() -> InteractionRecord {
+        snapshot(InteractionRequest::SystemPermission {
+            tool_use_id: "tool_system".into(),
+            grants: vec![
+                SystemPermissionGrant::Accessibility,
+                SystemPermissionGrant::ScreenRecording,
+            ],
+            application: "Maka Host".into(),
+        })
+    }
+
+    #[test]
+    fn system_permission_prompt_names_grants_and_offers_only_cancel() {
+        let record = system_permission();
+        let Callback::Permission(callback) =
+            request(&record, &acp::ClientCapabilities::default()).unwrap()
+        else {
+            panic!("permission callback");
+        };
+        assert_eq!(
+            callback.title,
+            "Maka Host needs Accessibility and Screen Recording"
+        );
+        assert_eq!(
+            callback.description.as_deref(),
+            Some(
+                "Grant Accessibility and Screen Recording to Maka Host in System Settings > Privacy & Security. The tool call continues automatically once the access is granted."
+            )
+        );
+        assert_eq!(
+            serde_json::to_value(&callback.options).unwrap(),
+            json!([{"optionId":"reject_once","name":"Cancel","kind":"reject_once"}])
+        );
+        let Some(acp::RequestPermissionSubject::ToolCall(subject)) = callback.subject else {
+            panic!("tool subject");
+        };
+        let subject = serde_json::to_value(subject).unwrap();
+        assert_eq!(subject["toolCall"]["toolCallId"], "tool_system");
+        assert_eq!(
+            subject["toolCall"]["rawInput"]["grants"],
+            json!(["accessibility", "screen_recording"])
+        );
+    }
+
+    #[test]
+    fn system_permission_answers_can_only_cancel() {
+        let record = system_permission();
+        for response in [
+            json!({"outcome":{"outcome":"cancelled"}}),
+            json!({"outcome":{"outcome":"selected","optionId":"reject_once"}}),
+        ] {
+            assert_eq!(
+                answer(&record, response).unwrap(),
+                InteractionAnswer::SystemPermissionCancel {}
+            );
+        }
+        for response in [
+            json!({"outcome":{"outcome":"selected","optionId":"allow_once"}}),
             json!({"outcome":{"outcome":"_future_approval"}}),
         ] {
             assert!(answer(&record, response).is_err());
