@@ -1260,6 +1260,7 @@ pub enum QueueMutationResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentQueueRejection")]
 pub enum QueueRejection {
+    NotYourMessage,
     Closed,
     Missing,
     InFlight,

@@ -241,7 +241,7 @@ export function installation(
     [
       'editQueue',
       'SessionEditQueue',
-      'Update, retract, promote or reorder queued messages using the observed queue revision and original message IDs. Keep the existing admission rather than resending an uncertain message.',
+      'Update, retract, promote or reorder only messages sent by your own conversation, using the observed queue revision and original message IDs. Human messages and other conversations’ messages cannot be edited, even in a child you manage. Keep the existing admission rather than resending an uncertain message.',
     ],
     [
       'work',

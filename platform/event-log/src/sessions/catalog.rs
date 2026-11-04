@@ -231,14 +231,10 @@ impl Selection {
         } else {
             ""
         };
-        let roots = if self.filter.roots_only {
-            "AND json_extract(configuration, '$.parentSessionId') IS NULL"
-        } else {
-            ""
-        };
-        let sql = format!(
-            "SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility} {parent} {roots}"
-        );
+        // Attention includes children hidden by the normal root-only sidebar;
+        // owner, scope, title and archive predicates still match the inbox.
+        let sql =
+            format!("SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility} {parent}");
         let query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))
             .bind(if self.filter.archived_only {
                 2

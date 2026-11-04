@@ -42,6 +42,7 @@ export type Browsing = {
   scope(): BrowserScope;
   filter(): AgentSessionFilter;
   sessions(): BrowserSession[];
+  needsYouCount(): number;
   projects(): BrowserProject[];
   loading(): boolean;
   error(): string;
@@ -79,6 +80,7 @@ export function createBrowsing(host: Host): Browsing {
   const scope = signal<BrowserScope>({ kind: 'all' });
   const filter = signal<AgentSessionFilter>('all');
   const sessions = signal<BrowserSession[]>([]);
+  const needsYouCount = signal(0);
   const projects = signal<BrowserProject[]>([]);
   const loading = signal(true);
   const error = createText();
@@ -92,7 +94,7 @@ export function createBrowsing(host: Host): Browsing {
   const list = async (read: CatalogRead, position: AgentSessionPosition): Promise<SessionPage> =>
     host.query('agent', 'list', {
       filter: read.filter,
-      rootsOnly: true,
+      rootsOnly: read.filter !== 'needs_you',
       scope: read.scope,
       position,
     });
@@ -146,12 +148,15 @@ export function createBrowsing(host: Host): Browsing {
     batch(() => {
       loading.set(clear || sessions().length === 0);
       error.set('');
-      if (clear) sessions.set([]);
+      if (clear) {
+        sessions.set([]);
+        needsYouCount.set(0);
+      }
     });
     void (async () => {
       const opened: Subscription = await host.subscribe('agent', 'catalog', {
         filter: read.filter,
-        rootsOnly: true,
+        rootsOnly: read.filter !== 'needs_you',
         scope: read.scope,
         position: { kind: 'start' },
       });
@@ -207,6 +212,7 @@ export function createBrowsing(host: Host): Browsing {
         read.extend = false;
         batch(() => {
           sessions.set(snapshot);
+          needsYouCount.set(next.needsYouCount);
           loading.set(false);
           error.set('');
         });
@@ -336,6 +342,7 @@ export function createBrowsing(host: Host): Browsing {
     scope,
     filter,
     sessions,
+    needsYouCount,
     projects,
     loading,
     error,

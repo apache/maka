@@ -428,6 +428,89 @@ async fn pinned_sessions_lead_cross_partition_pages_and_unpin_invalidates_cursor
 }
 
 #[tokio::test]
+async fn root_sidebar_counts_pending_children_without_listing_them() {
+    use crate::sessions::CatalogSelection;
+    let (_dir, root) = fixture().await;
+    for (id, parent, archived) in [
+        ("owned_root", None, false),
+        ("owned_child", Some("owned_root"), false),
+        ("owned_archived", Some("owned_root"), true),
+        ("owned_hidden", Some("owned_root"), false),
+        ("foreign_child", Some("owned_root"), false),
+    ] {
+        root.create_session(id, id, &json!({"title":id,"parentSessionId":parent}), 1)
+            .await
+            .unwrap();
+        if parent.is_some() {
+            let request = serde_json::from_value(json!({
+                "sessionId":id,"turnId":"turn","runId":"run","requestId":format!("request-{id}"),"createdAt":2,
+                "request":{"kind":"form","toolUseId":"tool","message":"Answer","requester":{"name":"Tool"},"fields":[]},"outcome":null
+            })).unwrap();
+            root.session(id)
+                .await
+                .unwrap()
+                .establish_interaction(&request)
+                .await
+                .unwrap();
+        }
+        if archived {
+            root.session(id)
+                .await
+                .unwrap()
+                .change_session_archived::<Value>(id, None, true, 3)
+                .await
+                .unwrap();
+        }
+    }
+    hidden(&root, "owned_hidden").await;
+    let scope = |title_query: &str| CatalogScope::Owned {
+        id_prefix: "owned_".into(),
+        selection: CatalogSelection::All,
+        title_query: title_query.into(),
+    };
+    let sidebar = CatalogFilter {
+        roots_only: true,
+        include_archived: false,
+        ..filter()
+    };
+    let page = root
+        .scoped_sessions::<Value>(scope(""), None, SessionPosition::Start, sidebar)
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&page), ["owned_root"]);
+    assert_eq!(page.pending_session_count, 1);
+    let inbox = CatalogFilter {
+        roots_only: false,
+        pending_only: true,
+        ..sidebar
+    };
+    let page = root
+        .scoped_sessions::<Value>(scope(""), None, SessionPosition::Start, inbox)
+        .await
+        .unwrap();
+    assert_eq!(page_ids(&page), ["owned_child"]);
+    assert_eq!(page.pending_session_count, 1);
+    for (title, count) in [("owned_root", 0), ("owned_child", 1)] {
+        let page = root
+            .scoped_sessions::<Value>(scope(title), None, SessionPosition::Start, sidebar)
+            .await
+            .unwrap();
+        assert_eq!(page.pending_session_count, count);
+        let pending = root
+            .scoped_sessions::<Value>(scope(title), None, SessionPosition::Start, inbox)
+            .await
+            .unwrap();
+        let expected = if title == "owned_child" {
+            vec!["owned_child".to_owned()]
+        } else {
+            vec![]
+        };
+        assert_eq!(page_ids(&pending), expected);
+    }
+    root.drain().await;
+}
+
+#[tokio::test]
 async fn child_pages_cross_partitions_and_keep_archived_parents_traversable() {
     use crate::sessions::CatalogSelection;
     let (_dir, root) = fixture().await;

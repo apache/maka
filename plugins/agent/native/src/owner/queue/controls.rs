@@ -191,6 +191,29 @@ impl Owner {
             }
             None => None,
         };
+        match &parent.identity {
+            maka_capabilities::call::Identity::Remote { .. } => {}
+            maka_capabilities::call::Identity::Agent { invocation, .. } => {
+                let authored =
+                    |entry: &maka_event_log::message_admissions::PendingMessageAdmission| {
+                        matches!(&entry.source.message.origin,
+                        Some(maka_agent_facts::message::MessageOrigin::Session { invocation: source })
+                            if source.session_id == invocation.session_id)
+                    };
+                let permitted = match &input.edit {
+                    QueueAction::Reorder { message_ids } => queue
+                        .entries
+                        .iter()
+                        .filter(|entry| message_ids.contains(&entry.source.message.message_id))
+                        .all(authored),
+                    _ => authored(entry.expect("targeted queue edit")),
+                };
+                if !permitted {
+                    return rejected(QueueRejection::NotYourMessage);
+                }
+            }
+            _ => return rejected(QueueRejection::NotYourMessage),
+        }
         let edit = match input.edit {
             QueueAction::Retract { message_id } => QueueEdit::Retract {
                 message_id,

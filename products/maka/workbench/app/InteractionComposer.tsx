@@ -274,9 +274,6 @@ export function InteractionComposer({
     return (
       !!current &&
       !current.outcome &&
-      (current.request.kind !== 'system_permission' ||
-        sessionApprovalRequest()?.answer.kind === 'system_permission_cancel') &&
-      current.request.kind !== 'session_approval' &&
       (current.request.kind !== 'service_approval' ||
         (completeArguments() && !argumentBusy() && !argumentError()))
     );
@@ -850,6 +847,12 @@ export function InteractionComposer({
                     {tr('Approve only the proposed child decision shown below.')}
                   </Text>
                 </If>
+                <If when={sessionApprovalRequest() && child()}>
+                  <SessionApprovalRequest
+                    child={child()!}
+                    answer={sessionApprovalRequest()!.answer}
+                  />
+                </If>
                 <If when={detailRequest()?.kind === 'service_approval'}>
                   <View style={{ gap: 4 }}>
                     <Text
@@ -1104,12 +1107,6 @@ export function InteractionComposer({
                       </View>
                     )}
                   </Each>
-                </If>
-                <If when={sessionApprovalRequest() && child()}>
-                  <SessionApprovalRequest
-                    child={child()!}
-                    answer={sessionApprovalRequest()!.answer}
-                  />
                 </If>
                 <If when={request()?.kind === 'form'}>
                   <FormRequest

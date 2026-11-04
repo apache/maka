@@ -89,6 +89,11 @@ fn every_row_kind_preserves_positions_measures_and_independent_flags() {
             payload: position,
             steering: false,
         },
+        RowDirectory::AttributedUser {
+            payload: position,
+            steering: true,
+            origin: json(43, ValueKind::Object),
+        },
         RowDirectory::ImportedUser { payload: position },
         RowDirectory::ImportedAssistant { payload: position },
         RowDirectory::ExecutorText { payload: position },

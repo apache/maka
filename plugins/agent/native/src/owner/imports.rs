@@ -343,6 +343,10 @@ impl Owner {
                     managed: false,
                     authority_session_id: None,
                 };
+                let policy = self
+                    .creation_policy(scope)
+                    .await
+                    .map_err(|_| Failure::Unavailable)?;
                 let record = self
                     .store
                     .import_session(
@@ -356,16 +360,13 @@ impl Owner {
                             backend: None,
                             compaction_prompt: None,
                             collaboration_mode: CollaborationMode::Agent,
-                            tools: None,
+                            tools: policy.tools,
                             title,
                             title_is_manual: true,
                             pinned: false,
                             labels: vec![],
                             workspace,
-                            permissions: self
-                                .creation_permissions(scope)
-                                .await
-                                .map_err(|_| Failure::Unavailable)?,
+                            permissions: policy.permissions,
                             boundary_revision: 0,
                         },
                         transcript.records,

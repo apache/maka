@@ -87,15 +87,25 @@ impl Owner {
         request_id: &str,
     ) -> Result<InteractionRecord, String> {
         self.session(session_id).await?;
-        self.store
+        self.find_interaction(session_id, request_id)
+            .await?
+            .ok_or_else(|| "agent_interaction_unavailable".into())
+    }
+
+    async fn find_interaction(
+        &self,
+        session_id: &str,
+        request_id: &str,
+    ) -> Result<Option<InteractionRecord>, String> {
+        Ok(self
+            .store
             .session(session_id)
             .await
             .map_err(|error| error.to_string())?
             .interaction(request_id)
             .await
             .map_err(|_| "agent_interactions_unavailable")?
-            .filter(|record| record.session_id == session_id)
-            .ok_or_else(|| "agent_interaction_unavailable".into())
+            .filter(|record| record.session_id == session_id))
     }
     async fn commit_response(
         &self,
@@ -122,14 +132,8 @@ impl Owner {
             return reject(InteractionRejection::Unavailable);
         }
         let Some(record) = self
-            .store
-            .session(&input.session_id)
-            .await
-            .map_err(|error| error.to_string())?
-            .interaction(&input.request_id)
-            .await
-            .map_err(|_| "agent_interactions_unavailable")?
-            .filter(|record| record.session_id == input.session_id)
+            .find_interaction(&input.session_id, &input.request_id)
+            .await?
         else {
             return reject(InteractionRejection::Unavailable);
         };

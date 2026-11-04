@@ -33,6 +33,7 @@ mod bot_tests;
 mod computer_controls;
 
 mod service_tools;
+mod session_approval_settlement;
 mod session_parent_authority;
 mod session_tools;
 mod skill_preparation;

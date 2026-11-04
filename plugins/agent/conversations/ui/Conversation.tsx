@@ -543,13 +543,25 @@ export function Conversation(props: ConversationProps) {
     previousGroups = next.entries;
     return next;
   });
+  // Origins belong to durable inputs and the queue, not token-driven previews.
+  const senderIds = computed(
+    () => {
+      const ids = new Set<string>();
+      for (const row of rows()) {
+        const id = senderSession(row.origin);
+        if (id !== null) ids.add(id);
+      }
+      for (const entry of queued()?.entries ?? []) {
+        const id = senderSession(entry.origin);
+        if (id !== null) ids.add(id);
+      }
+      return ids;
+    },
+    { equals: (left, right) => left.size === right.size && [...left].every((id) => right.has(id)) },
+  );
   const senders = createMessageSenders(
     host,
-    () =>
-      Array.from(projection().rowsById.values()).flatMap((row) => {
-        const id = senderSession(row.origin);
-        return id === null ? [] : [id];
-      }),
+    senderIds,
     (id) => props.knownSession?.(id),
     () => props.openSessionBeside,
   );

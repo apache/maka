@@ -18,7 +18,7 @@
  */
 
 import { cleanup, effect, signal } from 'nsh';
-import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { AgentSessionPage, MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
 
 type SenderSession = { title: string };
@@ -33,33 +33,71 @@ export function senderSession(origin: MessageOrigin | null | undefined): string 
 
 /** One mounted history window owns only its currently referenced, unknown sources. */
 export function createMessageSenders(
-  host: Pick<Host, 'query'>,
+  host: Pick<Host, 'subscribe'>,
   ids: () => Iterable<string>,
   known: (id: string) => SenderSession | undefined,
   openBeside: () => MessageSenders['openBeside'],
 ): MessageSenders {
-  const sources = new Map<string, { session: SenderSession | null }>();
+  type Source = {
+    session: SenderSession | null;
+    stream: { next(): Promise<AgentSessionPage | null>; close(): Promise<void> } | null;
+  };
+  const sources = new Map<string, Source>();
   const revision = signal(0);
+  const close = (entry: Source) => {
+    const stream = entry.stream;
+    entry.stream = null;
+    if (stream) void stream.close().catch(() => {});
+  };
   effect(() => {
     const wanted = new Set(ids());
-    for (const id of sources.keys()) {
-      if (!wanted.has(id) || known(id)) sources.delete(id);
+    for (const [id, entry] of sources) {
+      if (!wanted.has(id) || known(id)) {
+        sources.delete(id);
+        close(entry);
+      }
     }
     for (const id of wanted) {
       if (known(id) || sources.has(id)) continue;
-      const entry: { session: SenderSession | null } = { session: null };
+      const entry: Source = { session: null, stream: null };
       sources.set(id, entry);
-      void host.query('agent', 'observe', { sessionId: id }).then(
-        ({ session }) => {
+      void (async () => {
+        // Catalog metadata follows renames without observing the source's stream.
+        const stream = await host.subscribe('agent', 'catalog', {
+          filter: 'all',
+          includeArchived: true,
+          position: { kind: 'at', cursor: id },
+        });
+        if (sources.get(id) !== entry) {
+          await stream.close();
+          return;
+        }
+        entry.stream = stream;
+        for (;;) {
+          const page = await stream.next();
           if (sources.get(id) !== entry) return;
-          entry.session = { title: session.title };
+          if (page === null) throw new Error('Sender metadata updates ended.');
+          const session = page.sessions.find((session) => session.id === id);
+          const next = session ? { title: session.title } : null;
+          if (entry.session?.title === next?.title) continue;
+          entry.session = next;
           revision.set(revision() + 1);
-        },
-        () => {}, // Missing or unavailable sources retain the generic badge.
-      );
+        }
+      })()
+        .catch(() => {
+          // Missing or unavailable sources retain the generic badge.
+          if (sources.get(id) === entry && entry.session !== null) {
+            entry.session = null;
+            revision.set(revision() + 1);
+          }
+        })
+        .finally(() => close(entry));
     }
   });
-  cleanup(() => sources.clear());
+  cleanup(() => {
+    for (const entry of sources.values()) close(entry);
+    sources.clear();
+  });
   return {
     session(id) {
       revision();

@@ -20,12 +20,14 @@
 //! Canonical interaction facts. The store owns append-only outcome commitment.
 use maka_sandbox::grant;
 use serde::{Deserialize, Serialize};
+mod approval;
 mod decode;
 mod question;
 #[cfg(test)]
 mod tests;
 mod validation;
 use crate::capability::{FormField, FormRequester, FormResult};
+pub use approval::{ApprovalAllow, ComputerAppApproval, PermissionApproval, SessionApprovalAnswer};
 pub use question::{InteractionQuestion, QuestionOption};
 pub use validation::{MAX_SAFE_INTEGER, entity_id};
 
@@ -176,7 +178,7 @@ pub enum InteractionRequest {
         basis: crate::workspace::PermissionBasis,
         session_id: String,
         request_id: String,
-        answer: Box<InteractionAnswer>,
+        answer: SessionApprovalAnswer,
     },
     /// Consent for one already journaled service call; never a service grant.
     ServiceApproval {

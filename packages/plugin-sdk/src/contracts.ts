@@ -3895,6 +3895,7 @@ export const contracts = {
               AgentQueueRejection: {
                 type: 'string',
                 enum: [
+                  'not_your_message',
                   'closed',
                   'missing',
                   'in_flight',
@@ -10113,7 +10114,7 @@ export const contracts = {
                         type: 'string',
                       },
                       answer: {
-                        $ref: '#/$defs/InteractionAnswer',
+                        $ref: '#/$defs/SessionApprovalAnswer',
                       },
                     },
                     additionalProperties: false,
@@ -10373,22 +10374,10 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['id', 'permissionEpoch'],
               },
-              InteractionAnswer: {
+              SessionApprovalAnswer: {
+                description:
+                  "Only access-expanding child decisions can require a parent's human confirmation.",
                 oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'session_approval',
-                      },
-                      decision: {
-                        $ref: '#/$defs/Decision',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'decision'],
-                  },
                   {
                     type: 'object',
                     properties: {
@@ -10397,7 +10386,7 @@ export const contracts = {
                         const: 'service_approval',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision',
+                        $ref: '#/$defs/ApprovalAllow',
                       },
                     },
                     additionalProperties: false,
@@ -10411,7 +10400,7 @@ export const contracts = {
                         const: 'permissions',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision2',
+                        $ref: '#/$defs/PermissionApproval',
                       },
                     },
                     additionalProperties: false,
@@ -10422,76 +10411,10 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'question',
-                      },
-                      answers: {
-                        type: 'array',
-                        items: {
-                          type: ['string', 'null'],
-                        },
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'answers'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'form',
-                      },
-                    },
-                    unevaluatedProperties: false,
-                    oneOf: [
-                      {
-                        type: 'object',
-                        properties: {
-                          action: {
-                            type: 'string',
-                            const: 'accept',
-                          },
-                          values: {
-                            type: 'object',
-                            additionalProperties: {
-                              $ref: '#/$defs/FormValue',
-                            },
-                          },
-                        },
-                        required: ['action', 'values'],
-                      },
-                      {
-                        type: 'object',
-                        properties: {
-                          action: {
-                            type: 'string',
-                            const: 'decline',
-                          },
-                        },
-                        required: ['action'],
-                      },
-                      {
-                        type: 'object',
-                        properties: {
-                          action: {
-                            type: 'string',
-                            const: 'cancel',
-                          },
-                        },
-                        required: ['action'],
-                      },
-                    ],
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'client_capability',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision',
+                        $ref: '#/$defs/ApprovalAllow',
                       },
                     },
                     additionalProperties: false,
@@ -10505,53 +10428,20 @@ export const contracts = {
                         const: 'computer_app',
                       },
                       decision: {
-                        $ref: '#/$defs/ComputerAppDecision',
+                        $ref: '#/$defs/ComputerAppApproval',
                       },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision'],
                   },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'computer_app_cancel',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'system_permission_cancel',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
                 ],
               },
-              Decision: {
+              ApprovalAllow: {
                 type: 'string',
-                enum: ['allow', 'deny'],
+                enum: ['allow'],
               },
-              Decision2: {
+              PermissionApproval: {
                 oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      decision: {
-                        type: 'string',
-                        const: 'deny',
-                      },
-                    },
-                    required: ['decision'],
-                    additionalProperties: false,
-                  },
                   {
                     type: 'object',
                     properties: {
@@ -10668,29 +10558,9 @@ export const contracts = {
                 type: 'string',
                 enum: ['once', 'turn', 'session'],
               },
-              FormValue: {
-                anyOf: [
-                  {
-                    type: 'string',
-                  },
-                  {
-                    type: 'number',
-                    format: 'double',
-                  },
-                  {
-                    type: 'boolean',
-                  },
-                  {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                ],
-              },
-              ComputerAppDecision: {
+              ComputerAppApproval: {
                 type: 'string',
-                enum: ['once', 'session', 'always', 'deny'],
+                enum: ['once', 'session', 'always'],
               },
               PermissionRequest: {
                 description:
@@ -11369,6 +11239,66 @@ export const contracts = {
                     required: ['kind', 'reason', 'committedAt'],
                   },
                 ],
+              },
+              Decision: {
+                type: 'string',
+                enum: ['allow', 'deny'],
+              },
+              Decision2: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'deny',
+                      },
+                    },
+                    required: ['decision'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
+                      permissions: {
+                        $ref: '#/$defs/Permissions',
+                      },
+                      scope: {
+                        $ref: '#/$defs/Scope2',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['decision', 'permissions', 'scope'],
+                  },
+                ],
+              },
+              FormValue: {
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  {
+                    type: 'boolean',
+                  },
+                  {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                ],
+              },
+              ComputerAppDecision: {
+                type: 'string',
+                enum: ['once', 'session', 'always', 'deny'],
               },
               ClosureReason: {
                 type: 'string',
@@ -17256,7 +17186,7 @@ export const contracts = {
                         type: 'string',
                       },
                       answer: {
-                        $ref: '#/$defs/InteractionAnswer',
+                        $ref: '#/$defs/SessionApprovalAnswer',
                       },
                     },
                     additionalProperties: false,
@@ -17516,22 +17446,10 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['id', 'permissionEpoch'],
               },
-              InteractionAnswer: {
+              SessionApprovalAnswer: {
+                description:
+                  "Only access-expanding child decisions can require a parent's human confirmation.",
                 oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'session_approval',
-                      },
-                      decision: {
-                        $ref: '#/$defs/Decision',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'decision'],
-                  },
                   {
                     type: 'object',
                     properties: {
@@ -17540,7 +17458,7 @@ export const contracts = {
                         const: 'service_approval',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision',
+                        $ref: '#/$defs/ApprovalAllow',
                       },
                     },
                     additionalProperties: false,
@@ -17554,7 +17472,7 @@ export const contracts = {
                         const: 'permissions',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision2',
+                        $ref: '#/$defs/PermissionApproval',
                       },
                     },
                     additionalProperties: false,
@@ -17565,76 +17483,10 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
-                        const: 'question',
-                      },
-                      answers: {
-                        type: 'array',
-                        items: {
-                          type: ['string', 'null'],
-                        },
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind', 'answers'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'form',
-                      },
-                    },
-                    unevaluatedProperties: false,
-                    oneOf: [
-                      {
-                        type: 'object',
-                        properties: {
-                          action: {
-                            type: 'string',
-                            const: 'accept',
-                          },
-                          values: {
-                            type: 'object',
-                            additionalProperties: {
-                              $ref: '#/$defs/FormValue',
-                            },
-                          },
-                        },
-                        required: ['action', 'values'],
-                      },
-                      {
-                        type: 'object',
-                        properties: {
-                          action: {
-                            type: 'string',
-                            const: 'decline',
-                          },
-                        },
-                        required: ['action'],
-                      },
-                      {
-                        type: 'object',
-                        properties: {
-                          action: {
-                            type: 'string',
-                            const: 'cancel',
-                          },
-                        },
-                        required: ['action'],
-                      },
-                    ],
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
                         const: 'client_capability',
                       },
                       decision: {
-                        $ref: '#/$defs/Decision',
+                        $ref: '#/$defs/ApprovalAllow',
                       },
                     },
                     additionalProperties: false,
@@ -17648,53 +17500,20 @@ export const contracts = {
                         const: 'computer_app',
                       },
                       decision: {
-                        $ref: '#/$defs/ComputerAppDecision',
+                        $ref: '#/$defs/ComputerAppApproval',
                       },
                     },
                     additionalProperties: false,
                     required: ['kind', 'decision'],
                   },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'computer_app_cancel',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'system_permission_cancel',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
                 ],
               },
-              Decision: {
+              ApprovalAllow: {
                 type: 'string',
-                enum: ['allow', 'deny'],
+                enum: ['allow'],
               },
-              Decision2: {
+              PermissionApproval: {
                 oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      decision: {
-                        type: 'string',
-                        const: 'deny',
-                      },
-                    },
-                    required: ['decision'],
-                    additionalProperties: false,
-                  },
                   {
                     type: 'object',
                     properties: {
@@ -17811,29 +17630,9 @@ export const contracts = {
                 type: 'string',
                 enum: ['once', 'turn', 'session'],
               },
-              FormValue: {
-                anyOf: [
-                  {
-                    type: 'string',
-                  },
-                  {
-                    type: 'number',
-                    format: 'double',
-                  },
-                  {
-                    type: 'boolean',
-                  },
-                  {
-                    type: 'array',
-                    items: {
-                      type: 'string',
-                    },
-                  },
-                ],
-              },
-              ComputerAppDecision: {
+              ComputerAppApproval: {
                 type: 'string',
-                enum: ['once', 'session', 'always', 'deny'],
+                enum: ['once', 'session', 'always'],
               },
               PermissionRequest: {
                 description:
@@ -18512,6 +18311,66 @@ export const contracts = {
                     required: ['kind', 'reason', 'committedAt'],
                   },
                 ],
+              },
+              Decision: {
+                type: 'string',
+                enum: ['allow', 'deny'],
+              },
+              Decision2: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'deny',
+                      },
+                    },
+                    required: ['decision'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
+                      permissions: {
+                        $ref: '#/$defs/Permissions',
+                      },
+                      scope: {
+                        $ref: '#/$defs/Scope2',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['decision', 'permissions', 'scope'],
+                  },
+                ],
+              },
+              FormValue: {
+                anyOf: [
+                  {
+                    type: 'string',
+                  },
+                  {
+                    type: 'number',
+                    format: 'double',
+                  },
+                  {
+                    type: 'boolean',
+                  },
+                  {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                ],
+              },
+              ComputerAppDecision: {
+                type: 'string',
+                enum: ['once', 'session', 'always', 'deny'],
               },
               ClosureReason: {
                 type: 'string',
@@ -26909,6 +26768,7 @@ export const contracts = {
               AgentQueueRejection: {
                 type: 'string',
                 enum: [
+                  'not_your_message',
                   'closed',
                   'missing',
                   'in_flight',

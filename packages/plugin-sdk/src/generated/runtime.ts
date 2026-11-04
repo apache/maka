@@ -1290,6 +1290,7 @@ export type AgentQueueMutationResult =
       reason: AgentQueueRejection;
     };
 export type AgentQueueRejection =
+  | 'not_your_message'
   | 'closed'
   | 'missing'
   | 'in_flight'
@@ -3357,7 +3358,7 @@ export type InteractionRequest =
       basis: PermissionBasis;
       sessionId: string;
       requestId: string;
-      answer: InteractionAnswer;
+      answer: SessionApprovalAnswer;
     }
   | {
       kind: 'service_approval';
@@ -3421,6 +3422,33 @@ export type InteractionRequest =
       application: string;
       applicationLocation?: SystemPermissionApplicationLocation | null;
     };
+/**
+ * Only access-expanding child decisions can require a parent's human confirmation.
+ */
+export type SessionApprovalAnswer =
+  | {
+      kind: 'service_approval';
+      decision: ApprovalAllow;
+    }
+  | {
+      kind: 'permissions';
+      decision: PermissionApproval;
+    }
+  | {
+      kind: 'client_capability';
+      decision: ApprovalAllow;
+    }
+  | {
+      kind: 'computer_app';
+      decision: ComputerAppApproval;
+    };
+export type ApprovalAllow = 'allow';
+export type PermissionApproval = {
+  decision: 'allow';
+  permissions: Permissions;
+  scope: Scope2;
+};
+export type ComputerAppApproval = 'once' | 'session' | 'always';
 export type FormField = {
   name: string;
   label: string;

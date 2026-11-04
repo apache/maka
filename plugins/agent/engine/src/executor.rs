@@ -163,15 +163,15 @@ fn attributed_content(
     sources: &[RootSourceMessage],
     language: maka_agent_facts::language::Language,
 ) -> maka_agent_facts::input::MessageInput {
-    use maka_agent_facts::message::MessageOrigin;
     let contents = sources
         .iter()
         .map(|source| {
             let mut content = source.message.content.clone();
-            let header = source.message.origin.as_ref().map_or_else(
-                || format!("{}null]\n", MessageOrigin::prompt_header_prefix(language)),
-                |origin| origin.prompt_header(language),
-            );
+            let header = source
+                .message
+                .origin
+                .as_ref()
+                .map_or_else(String::new, |origin| origin.prompt_header(language));
             let offset = header.encode_utf16().count() as u64;
             content.text.insert_str(0, &header);
             if let Some(display) = &mut content.display_text {

@@ -77,23 +77,11 @@ export const conversationMessages = {
     '仅批准下方展示的子会话决定。',
     '僅核准下方顯示的子對話決定。',
   ],
-  'Open the child conversation to review its delegated request.': [
-    'Open the child conversation to review its delegated request.',
-    '请打开子会话审核其委托请求。',
-    '請開啟子對話審核其委派請求。',
-  ],
-  'Only the proposed cancellation can be confirmed here. System access is granted in OS settings.':
-    [
-      'Only the proposed cancellation can be confirmed here. System access is granted in OS settings.',
-      '这里只能确认拟提交的取消操作，系统权限需在操作系统设置中授予。',
-      '這裡只能確認擬提交的取消操作，系統權限需在作業系統設定中授予。',
-    ],
   'The child request is already closed. Refresh the parent request.': [
     'The child request is already closed. Refresh the parent request.',
     '子会话请求已关闭，请刷新父会话请求。',
     '子對話請求已關閉，請重新整理父對話請求。',
   ],
-  'Not included': ['Not included', '未包含', '未包含'],
   'The Host returned a different child request.': [
     'The Host returned a different child request.',
     'Host 返回了不同的子会话请求。',

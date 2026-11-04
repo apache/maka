@@ -21,7 +21,7 @@ use super::*;
 use crate::owner::ResolvedConfiguration;
 use maka_agent_facts::{
     event::Invocation,
-    interaction::{Decision, InteractionOutcome},
+    interaction::{Decision, InteractionOutcome, SessionApprovalAnswer},
     tools::ToolCallContext,
 };
 use maka_capabilities::call::{Identity, Scope};
@@ -31,7 +31,7 @@ use std::sync::Arc;
 
 enum ChildConfirmation {
     Allowed,
-    Denied,
+    Denied(InteractionAnswer),
     ChildSettled,
     Withdrawn,
 }
@@ -73,7 +73,7 @@ impl Owner {
                 if session.configuration.parent_session_id.as_deref()
                     == Some(invocation.session_id.as_str()) =>
             {
-                let store = self.scoped_store(scope, &invocation.session_id).await?;
+                let store = self.caller_store(scope)?;
                 maka_agent_authority::permissions::live(&store, invocation)
                     .await
                     .map_err(|error| error.to_string())?;
@@ -105,9 +105,14 @@ impl Owner {
         if let Some(reason) = self.interaction_rejection(scope, &input.session_id).await? {
             return Ok(InteractionResult::Rejected { reason });
         }
-        let record = self
-            .interaction(&input.session_id, &input.request_id)
-            .await?;
+        let Some(record) = self
+            .find_interaction(&input.session_id, &input.request_id)
+            .await?
+        else {
+            return Ok(InteractionResult::Rejected {
+                reason: InteractionRejection::Unavailable,
+            });
+        };
         if input.answer.validate_for_request(&record.request).is_err() {
             return Ok(InteractionResult::Rejected {
                 reason: InteractionRejection::InvalidAnswer,
@@ -124,10 +129,11 @@ impl Owner {
                     record: Box::new(record),
                 });
             }
-            let store = self.scoped_store(scope, &invocation.session_id).await?;
+            let store = self.caller_store(scope)?;
             let parent = maka_agent_authority::permissions::live(&store, invocation)
                 .await
                 .map_err(|error| error.to_string())?;
+            let mut human_denied = false;
             if !self
                 .may_approve(&record, &input.answer, &parent, invocation, scope)
                 .await?
@@ -140,11 +146,20 @@ impl Owner {
                     });
                 }
                 match self
-                    .confirm_child_response(&record, &input.answer, &parent, operation, scope)
+                    .confirm_child_response(
+                        &record,
+                        SessionApprovalAnswer::try_from(&input.answer).map_err(str::to_owned)?,
+                        &parent,
+                        operation,
+                        scope,
+                    )
                     .await?
                 {
                     ChildConfirmation::Allowed => {}
-                    ChildConfirmation::Denied => input.answer = denied(input.answer)?,
+                    ChildConfirmation::Denied(answer) => {
+                        input.answer = answer;
+                        human_denied = true;
+                    }
                     ChildConfirmation::Withdrawn => {
                         return Ok(InteractionResult::Rejected {
                             reason: InteractionRejection::Unavailable,
@@ -171,7 +186,9 @@ impl Owner {
             let current = maka_agent_authority::permissions::live(&store, invocation)
                 .await
                 .map_err(|error| error.to_string())?;
-            if current.permission_basis() != parent.permission_basis() {
+            // A committed human denial grants nothing; a permission edit must
+            // not discard it. Stop and invocation liveness still fence settlement.
+            if !human_denied && current.permission_basis() != parent.permission_basis() {
                 return Ok(InteractionResult::Rejected {
                     reason: InteractionRejection::AuthorizationChanged,
                 });
@@ -217,7 +234,7 @@ impl Owner {
                         },
                 },
             ) => {
-                let store = self.scoped_store(scope, &invocation.session_id).await?;
+                let store = self.caller_store(scope)?;
                 let grants = store
                     .permission_grants(invocation, None, &parent.permission_basis())
                     .await
@@ -280,8 +297,7 @@ impl Owner {
                     return Ok(true);
                 }
                 let granted = self
-                    .scoped_store(scope, &invocation.session_id)
-                    .await?
+                    .caller_store(scope)?
                     .client_capability_grant(&invocation.session_id, target)
                     .await
                     .map_err(|error| error.to_string())?;
@@ -304,7 +320,7 @@ impl Owner {
     async fn confirm_child_response(
         &self,
         child: &InteractionRecord,
-        answer: &InteractionAnswer,
+        answer: SessionApprovalAnswer,
         parent: &ResolvedConfiguration,
         operation: &RecoveryRef,
         scope: &Scope,
@@ -333,11 +349,11 @@ impl Owner {
                 basis: parent.permission_basis(),
                 session_id: child.session_id.clone(),
                 request_id: child.request_id.clone(),
-                answer: Box::new(answer.clone()),
+                answer: answer.clone(),
             },
             outcome: None,
         };
-        let store = self.scoped_store(scope, &invocation.session_id).await?;
+        let store = self.caller_store(scope)?;
         let child_store = self
             .store
             .session(&child.session_id)
@@ -386,30 +402,12 @@ impl Owner {
         match outcome {
             InteractionOutcome::SessionApprovalDecision { decision, .. } => Ok(match decision {
                 Decision::Allow => ChildConfirmation::Allowed,
-                Decision::Deny => ChildConfirmation::Denied,
+                Decision::Deny => ChildConfirmation::Denied(answer.denied()),
             }),
             InteractionOutcome::Closure { .. } => Ok(ChildConfirmation::Withdrawn),
             _ => Err("agent_interaction_confirmation_invalid".into()),
         }
     }
-}
-
-fn denied(answer: InteractionAnswer) -> Result<InteractionAnswer, String> {
-    Ok(match answer {
-        InteractionAnswer::ServiceApproval { .. } => InteractionAnswer::ServiceApproval {
-            decision: Decision::Deny,
-        },
-        InteractionAnswer::Permissions { .. } => InteractionAnswer::Permissions {
-            decision: grant::Decision::Deny,
-        },
-        InteractionAnswer::ClientCapability { .. } => InteractionAnswer::ClientCapability {
-            decision: Decision::Deny,
-        },
-        InteractionAnswer::ComputerApp { .. } => InteractionAnswer::ComputerApp {
-            decision: maka_agent_facts::interaction::ComputerAppDecision::Deny,
-        },
-        _ => return Err("agent_interaction_confirmation_denied".into()),
-    })
 }
 
 async fn child_answered(

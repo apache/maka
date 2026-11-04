@@ -194,6 +194,26 @@ impl Runs {
         self.controls.contains_key(session) || self.preparing.contains_key(session)
     }
 }
+struct CreationPolicy {
+    permissions: WorkspacePermissions,
+    tools: Option<Vec<String>>,
+}
+
+fn intersect_tools(
+    requested: Option<Vec<String>>,
+    ceiling: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (requested, ceiling) {
+        (Some(names), Some(ceiling)) => Some(
+            names
+                .into_iter()
+                .filter(|name| ceiling.contains(name))
+                .collect(),
+        ),
+        (requested, ceiling) => requested.or(ceiling),
+    }
+}
+
 pub(crate) struct Owner {
     graphs: Option<Arc<crate::workhub::tasks::graph::Graphs>>,
     pub store: Arc<RootStore>,
@@ -710,18 +730,55 @@ impl Owner {
             .ok_or("agent_session_unavailable")?;
         resolve_session(session)
     }
-    pub(super) async fn creation_permissions(
+    pub(crate) fn caller_store(
         &self,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<WorkspacePermissions, String> {
-        let Some(invocation) = scope.identity.agent() else {
-            return Ok(self.settings.permissions.clone());
-        };
-        let store = self.scoped_store(scope, &invocation.session_id).await?;
-        maka_agent_authority::permissions::live(&store, invocation)
-            .await
-            .map(|configuration| configuration.permissions)
+    ) -> Result<maka_event_log::SessionStore, String> {
+        let invocation = scope.identity.agent().ok_or("agent_invocation_required")?;
+        let custody = scope
+            .execution()
+            .ok_or("agent_execution_custody_required")?;
+        self.store
+            .session_for_execution(custody.as_ref(), invocation)
             .map_err(|error| error.to_string())
+    }
+
+    async fn creation_policy(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<CreationPolicy, String> {
+        let Some(invocation) = scope.identity.agent() else {
+            return Ok(CreationPolicy {
+                permissions: self.settings.permissions.clone(),
+                tools: None,
+            });
+        };
+        // Accepted coordinator work may resume after its original turn ended.
+        // Custody, when held, selects the real caller store; workspace donors do not.
+        let store = match scope.execution() {
+            Some(_) => self.caller_store(scope)?,
+            None => self
+                .store
+                .session(&invocation.session_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        };
+        let caller = store
+            .get::<StoredSessionConfiguration>()
+            .await
+            .map_err(|error| error.to_string())?
+            .filter(|session| !session.archived)
+            .ok_or("agent_session_unavailable")?;
+        let caller = resolve_session(caller)?.configuration;
+        Ok(CreationPolicy {
+            permissions: caller.permissions,
+            // The Bot delegates workers; its own conversational tool list is not their ceiling.
+            tools: if self.bot.is(&invocation.session_id) {
+                None
+            } else {
+                caller.tools
+            },
+        })
     }
 
     pub async fn create(
@@ -752,8 +809,9 @@ impl Owner {
                 reason: Rejection::Closed,
             });
         }
-        let permissions = self.creation_permissions(scope).await?;
-        let mut tools = input.tools;
+        let policy = self.creation_policy(scope).await?;
+        let permissions = policy.permissions;
+        let mut tools = intersect_tools(input.tools, policy.tools);
         // SendUser and sleep follow Bot identity, never a requested tool list.
         if tools.as_ref().is_some_and(|names| {
             names
@@ -772,13 +830,6 @@ impl Owner {
                 });
             }
         }
-        // A Session the Bot creates follows the ordinary creation rules and is only
-        // recorded under the Bot as its parent. The Bot's own tool list says what it
-        // may call itself; it is not the ceiling for the workers it delegates to.
-        let bot_caller = scope
-            .identity
-            .agent()
-            .is_some_and(|source| self.bot.is(&source.session_id));
         let selected = match input.workspace {
             WorkspaceSelection::IsolatedGit { selection } => {
                 let Some(workspace) = self.isolated_workspace(selection, operation, scope).await?
@@ -843,20 +894,6 @@ impl Owner {
                 {
                     return Ok(Created::Rejected {
                         reason: Rejection::WorkspaceUnavailable,
-                    });
-                }
-                // User creation reuses a workspace; Agent derivation also
-                // inherits the parent's tool ceiling.
-                if scope.identity.agent().is_some()
-                    && !bot_caller
-                    && let Some(parent) = session.configuration.tools
-                {
-                    tools = Some(match tools {
-                        None => parent,
-                        Some(names) => names
-                            .into_iter()
-                            .filter(|name| parent.contains(name))
-                            .collect(),
                     });
                 }
                 session.configuration.workspace

@@ -1762,29 +1762,6 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     })
     .await;
     let parent = fixture.session.clone();
-    let store = fixture.store.session(&parent).await.unwrap();
-    let mut configuration = store
-        .get_session::<StoredSessionConfiguration>(&parent)
-        .await
-        .unwrap()
-        .unwrap()
-        .configuration;
-    let prefix = parent.rsplit_once('_').unwrap().0;
-    let child = format!("{prefix}_{}", Uuid::new_v4().simple());
-    configuration.parent_session_id = Some(parent.clone());
-    configuration.title = "Verify sandbox delegation".into();
-    configuration.backend = Some(
-        serde_json::from_value(json!({
-            "kind":"model", "connectionId":fixture.selection["connectionId"],
-            "modelId":fixture.selection["modelId"], "thinkingLevel":null,
-        }))
-        .unwrap(),
-    );
-    fixture
-        .store
-        .create_session(&child, &child, &configuration, 1)
-        .await
-        .unwrap();
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
@@ -1802,7 +1779,7 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         .tool_call("tool_search", json!({"query":"Session"}))
         .await;
     let discovered = desktop.request(&mut fixture).await;
-    for name in ["SessionSend", "SessionRespond"] {
+    for name in ["SessionCreate", "SessionSend", "SessionRespond"] {
         assert!(
             discovered.body["tools"]
                 .as_array()
@@ -1813,7 +1790,29 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             discovered.body
         );
     }
-    discovered.tool_call("SessionSend", json!({
+    discovered
+        .tool_call(
+            "SessionCreate",
+            json!({
+                "title":"Verify sandbox delegation","labels":[],
+                "workspace":{"kind":"session","sessionId":parent},
+            }),
+        )
+        .await;
+    let created_reply = desktop.request(&mut fixture).await;
+    let created: Value = serde_json::from_str(
+        created_reply.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(created["kind"], "created", "{created}");
+    let child = created["session"]["id"].as_str().unwrap().to_owned();
+    created_reply.tool_call("SessionSend", json!({
         "sessionId":child, "message":"Verify the sandbox boundary. Write the verification report only after approval.",
         "model":fixture.selection,
     })).await;
@@ -1874,23 +1873,27 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             .unwrap()
             .matches
     );
+    desktop.press("Waiting for you").await;
+    desktop
+        .control("Actions for Verify sandbox delegation")
+        .await;
+    desktop.artifact("child-needs-you-inbox");
+    desktop.press("Waiting for you").await;
+    desktop
+        .until("child remained in the normal root sidebar", || {
+            desktop
+                .controls("Actions for Verify sandbox delegation")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
     parent_reply.tool_call("SessionRespond", json!({
         "sessionId":child,"requestId":record.request_id,
         "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}
     })).await;
     desktop.control("Approve child decision").await;
-    let child_link = desktop.control("Verify sandbox delegation").await;
+    desktop.control("Verify sandbox delegation").await;
     desktop.artifact("parent-child-approval");
-    desktop
-        .platform
-        .dispatch_input(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
-            position: child_link.center() + point(px(0.0), px(100.0)),
-            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
-            modifiers: Modifiers::default(),
-            touch_phase: gpui::TouchPhase::Moved,
-        }))
-        .unwrap();
-    desktop.artifact("parent-child-proposed-decision");
     desktop.press("Approve child decision").await;
     let mut parent_reply = desktop.request(&mut fixture).await;
     let settled = desktop
@@ -1939,18 +1942,12 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     desktop.press("Child conversations").await;
     desktop.press("Open Verify sandbox delegation").await;
     desktop.control("From NSH real Agent").await;
-    desktop.artifact("child-attributed-message");
     desktop.press("From NSH real Agent").await;
     desktop.control("Close side pane").await;
     desktop
         .until(
             "source conversation did not load its reply beside the child",
-            || {
-                desktop
-                    .controls("Copy message")
-                    .into_iter()
-                    .find(|bounds| bounds.left() >= px(768.0))
-            },
+            || (desktop.controls("Copy message").len() == 2).then_some(()),
         )
         .await;
     desktop.artifact("source-conversation-beside");
