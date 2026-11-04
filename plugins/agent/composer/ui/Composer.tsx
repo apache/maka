@@ -408,134 +408,132 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
         paddingBottom: hero() || !platform.isTerminal ? 16 : 8,
       }}
     >
-      {props.request}
-      <View style={{ flexShrink: 0 }}>
-        <If when={hero()}>
-          <View style={{ gap: compact() ? 8 : 16, paddingBottom: 12 }}>
-            <View
+      <If when={hero()}>
+        <View style={{ flexShrink: 0, gap: compact() ? 8 : 16, paddingBottom: 12 }}>
+          <View
+            style={{
+              flexDirection: 'row',
+              flexWrap: 'wrap',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 12,
+              paddingVertical: compact() ? 8 : 16,
+            }}
+          >
+            <If when={windowSize().height >= 336}>
+              <Image src={logo} style={[{ width: 32, height: 32 }, { objectFit: 'contain' }]} />
+            </If>
+            <Text
               style={{
-                flexDirection: 'row',
-                flexWrap: 'wrap',
-                alignItems: 'center',
-                justifyContent: 'center',
-                gap: 12,
-                paddingVertical: compact() ? 8 : 16,
+                color: C.text,
+                fontSize: compact() ? 20 : 26,
+                lineHeight: 32,
+                fontWeight: '500',
               }}
             >
-              <If when={windowSize().height >= 336}>
-                <Image src={logo} style={[{ width: 32, height: 32 }, { objectFit: 'contain' }]} />
-              </If>
-              <Text
-                style={{
-                  color: C.text,
-                  fontSize: compact() ? 20 : 26,
-                  lineHeight: 32,
-                  fontWeight: '500',
-                }}
-              >
-                {tr('Make something remarkable.')}
-              </Text>
-            </View>
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexWrap: 'wrap',
-                gap: 8,
-              }}
-            >
-              <If
-                when={props.workspacePicker}
-                else={
-                  <Button
-                    accessibilityLabel={tr('Choose composer workspace')}
-                    tooltip={textTooltip(
-                      () => props.session()?.workspace() || tr('Choose workspace'),
-                    )}
-                    onPress={props.chooseWorkspace}
-                    style={{
-                      ...controlStyle,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      maxWidth: '100%',
-                      minWidth: 0,
-                      flexShrink: 1,
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.surface }}
-                    focusStyle={{ backgroundColor: C.raised }}
-                  >
-                    <Icon name="folder" color={C.secondary} />
-                    <Text
-                      style={[
-                        { color: C.secondary, fontSize: 13, flexShrink: 1 },
-                        { numberOfLines: 1 },
-                      ]}
-                    >
-                      {workspaceLabel()}
-                    </Text>
-                    <Icon name="down" color={C.secondary} />
-                  </Button>
-                }
-              >
-                {props.workspacePicker}
-              </If>
-              <If
-                when={noConnections()}
-                else={
-                  <Button
-                    accessibilityLabel={tr('Connections & models')}
-                    onPress={props.settings}
-                    style={{
-                      ...controlStyle,
-                      flexDirection: 'row',
-                      alignItems: 'center',
-                      gap: 8,
-                    }}
-                    hoverStyle={{ backgroundColor: C.surface }}
-                    focusStyle={{ backgroundColor: C.raised }}
-                  >
-                    <Text style={{ color: C.muted, fontSize: 13 }}>
-                      {tr('Connections & models')}
-                    </Text>
-                  </Button>
-                }
-              >
+              {tr('Make something remarkable.')}
+            </Text>
+          </View>
+          <View
+            style={{
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <If
+              when={props.workspacePicker}
+              else={
                 <Button
-                  accessibilityLabel={tr('Add a model connection')}
+                  accessibilityLabel={tr('Choose composer workspace')}
+                  tooltip={textTooltip(
+                    () => props.session()?.workspace() || tr('Choose workspace'),
+                  )}
+                  onPress={props.chooseWorkspace}
+                  style={{
+                    ...controlStyle,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    maxWidth: '100%',
+                    minWidth: 0,
+                    flexShrink: 1,
+                    gap: 8,
+                  }}
+                  hoverStyle={{ backgroundColor: C.surface }}
+                  focusStyle={{ backgroundColor: C.raised }}
+                >
+                  <Icon name="folder" color={C.secondary} />
+                  <Text
+                    style={[
+                      { color: C.secondary, fontSize: 13, flexShrink: 1 },
+                      { numberOfLines: 1 },
+                    ]}
+                  >
+                    {workspaceLabel()}
+                  </Text>
+                  <Icon name="down" color={C.secondary} />
+                </Button>
+              }
+            >
+              {props.workspacePicker}
+            </If>
+            <If
+              when={noConnections()}
+              else={
+                <Button
+                  accessibilityLabel={tr('Connections & models')}
                   onPress={props.settings}
                   style={{
                     ...controlStyle,
                     flexDirection: 'row',
                     alignItems: 'center',
                     gap: 8,
-                    backgroundColor: C.accent,
                   }}
-                  hoverStyle={{ backgroundColor: C.accentHover }}
-                  focusStyle={{ backgroundColor: C.accentHover }}
+                  hoverStyle={{ backgroundColor: C.surface }}
+                  focusStyle={{ backgroundColor: C.raised }}
                 >
-                  <Text
-                    style={{
-                      color: C.background,
-                      fontSize: 13,
-                      fontWeight: '600',
-                    }}
-                  >
-                    {tr('Add a model connection')}
-                  </Text>
+                  <Text style={{ color: C.muted, fontSize: 13 }}>{tr('Connections & models')}</Text>
                 </Button>
-              </If>
-            </View>
-            <If when={noConnections()}>
-              <Text style={{ color: C.muted, fontSize: 13, textAlign: 'center' }}>
-                {tr(
-                  'Conversations need a model. Add a connection with your API key or account first.',
-                )}
-              </Text>
+              }
+            >
+              <Button
+                accessibilityLabel={tr('Add a model connection')}
+                onPress={props.settings}
+                style={{
+                  ...controlStyle,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 8,
+                  backgroundColor: C.accent,
+                }}
+                hoverStyle={{ backgroundColor: C.accentHover }}
+                focusStyle={{ backgroundColor: C.accentHover }}
+              >
+                <Text
+                  style={{
+                    color: C.background,
+                    fontSize: 13,
+                    fontWeight: '600',
+                  }}
+                >
+                  {tr('Add a model connection')}
+                </Text>
+              </Button>
             </If>
           </View>
-        </If>
+          <If when={noConnections()}>
+            <Text style={{ color: C.muted, fontSize: 13, textAlign: 'center' }}>
+              {tr(
+                'Conversations need a model. Add a connection with your API key or account first.',
+              )}
+            </Text>
+          </If>
+        </View>
+      </If>
+      {props.request}
+      <View style={{ flexShrink: 0 }}>
         <If when={props.session()?.error()}>
           <Text style={[{ color: C.danger }, { userSelect: 'text' }]}>
             {props.session()?.error()}

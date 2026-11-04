@@ -75,6 +75,7 @@ import {
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
+  textTooltip,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
 import {
@@ -95,7 +96,10 @@ import type {
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
-import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
+import {
+  WorkspacePicker,
+  locateWorkspaceDirectory,
+} from '../../../../products/maka/workbench/app/WorkspacePicker';
 import {
   RecentWorkspaces,
   type RecentWorkspace,
@@ -189,6 +193,7 @@ type SavedComposer = {
   version: 1;
   recent: RecentWorkspace[];
   draft: Omit<PendingDraft, 'files'> | null;
+  fileIds?: string[];
 };
 export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
@@ -276,8 +281,10 @@ export function createConversationUi(
   let composerStorage: Awaited<ReturnType<Host['loadComposer']>> | null = null;
   cleanup(() => composerStorage?.dispose());
   let savedComposer = '';
-  let savedFiles = '';
+  let acknowledgedComposer: SavedComposer | null = null;
+  let savedFiles: string | null = '';
   let composerWrite: Promise<void> | null = null;
+  const retryingComposer = signal(false);
   const memoryValue = (): SavedComposer => {
     const value = pending();
     const { files: _files, ...draft } = value ?? { files: [] };
@@ -285,13 +292,13 @@ export function createConversationUi(
       version: 1,
       recent: recentWorkspaces(),
       draft: value ? (draft as SavedComposer['draft']) : null,
+      fileIds: value?.files.map((item) => item.id) ?? [],
     };
   };
-  const flushComposer = (): Promise<void> => {
+  const flushComposer = (retry = false): Promise<void> => {
     if (platform.isTerminal || side) return Promise.resolve();
-    if (!composerKnown())
-      return Promise.reject(new UiError('The new conversation is still loading.'));
-    if (!composerStorage)
+    if (retryingComposer() && !retry) return composerWrite ?? Promise.resolve();
+    if (!composerKnown() || !composerStorage)
       return Promise.reject(new UiError('The new conversation is still loading.'));
     const value = memoryValue();
     const encoded = JSON.stringify(value);
@@ -302,6 +309,7 @@ export function createConversationUi(
     composerWrite = composerStorage
       .save(value, identities === savedFiles ? null : files)
       .then(() => {
+        acknowledgedComposer = value;
         composerSaveError.set('');
       })
       .catch((reason) => {
@@ -312,8 +320,53 @@ export function createConversationUi(
     savedFiles = identities;
     return composerWrite;
   };
+  const retryComposer = async () => {
+    if (retryingComposer()) return;
+    retryingComposer.set(true);
+    try {
+      await composerWrite?.catch(() => undefined);
+      const stored = await host.loadComposer();
+      try {
+        if (!alive) return;
+        const latest = stored.value() as SavedComposer | null;
+        const base = acknowledgedComposer;
+        // Recent-folder changes can merge. A different draft (including its
+        // attachment identities) must never be silently overwritten.
+        if (
+          JSON.stringify([latest?.draft ?? null, latest?.fileIds ?? []]) !==
+          JSON.stringify([base?.draft ?? null, base?.fileIds ?? []])
+        )
+          throw new UiError(
+            'The new conversation changed in another window. Your unsaved draft is still here.',
+          );
+        const recent = [...recentWorkspaces(), ...(latest?.recent ?? [])];
+        recentWorkspaces.set(
+          recent
+            .filter(
+              (item, index) => recent.findIndex((other) => other.path === item.path) === index,
+            )
+            .slice(0, 8),
+        );
+        composerStorage?.dispose();
+        composerStorage = stored;
+        savedComposer = '';
+        savedFiles = null;
+        await flushComposer(true);
+        error.set('');
+      } finally {
+        if (composerStorage !== stored) stored.dispose();
+      }
+    } catch (reason) {
+      composerSaveError.set(errorText(reason));
+      report(reason);
+    } finally {
+      retryingComposer.set(false);
+    }
+  };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path) return;
+    if (workspace.kind === 'session')
+      workspace = recentWorkspaces().find((item) => item.path === path)?.workspace ?? workspace;
     recentWorkspaces.set(
       [{ workspace, path }, ...recentWorkspaces().filter((item) => item.path !== path)].slice(0, 8),
     );
@@ -322,6 +375,7 @@ export function createConversationUi(
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
   const pendingText = computed(() => pending()?.text ?? '');
   const pendingSending = signal(false);
+  const pendingDraftConflict = signal(false);
   const pendingFiles = computed(() => pending()?.files ?? []);
   const pendingIntake = signal<Promise<void> | null>(null);
   const pendingFileBusy = () => pendingIntake() !== null;
@@ -456,9 +510,10 @@ export function createConversationUi(
   });
   effect(() => {
     const known = composerKnown();
+    const retrying = retryingComposer();
     pending();
     recentWorkspaces();
-    if (known && !platform.isTerminal && !side)
+    if (known && !retrying && !platform.isTerminal && !side)
       untracked(() => {
         void flushComposer().catch(report);
       });
@@ -765,10 +820,21 @@ export function createConversationUi(
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
           : (workspace.selection.segments.at(-1) ?? ''));
-      if (!label && workspace.kind === 'session') {
+      if (workspace.kind === 'session') {
         const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
+        const roots = await host.query('agent', 'directories', { kind: 'roots' });
         if (!alive || selected() !== expectedSessionId) return;
         label = observed.session.workspace.path;
+        const found = roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
+        if (found)
+          workspace = {
+            kind: 'directory',
+            selection: {
+              rootId: found.root.selection.rootId,
+              segments: [...found.root.selection.segments, ...found.names!],
+              directoryIdentity: observed.session.workspace.directoryIdentity,
+            },
+          };
       }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
@@ -1042,6 +1108,7 @@ export function createConversationUi(
         )
           return;
         pendingSending.set(true);
+        pendingDraftConflict.set(false);
         void (async () => {
           try {
             error.set('');
@@ -1140,10 +1207,12 @@ export function createConversationUi(
               });
             requireUnchangedDraft();
             const stored = await loadDraft(host.session(id));
-            if (stored.revision > 0)
+            if (stored.revision > 0) {
+              pendingDraftConflict.set(true);
               throw new UiError(
                 'The conversation draft changed. Open the conversation to review it.',
               );
+            }
             prefills.set(id, {
               text,
               send: sendFirst,
@@ -1620,7 +1689,12 @@ export function createConversationUi(
     let responseConfirmed = false;
     let failed = false;
     try {
-      const originals = await host.pendingControls();
+      const originals = (await host.pendingControls()).map(
+        ({ id, method, sessionId, correlation }) => ({ id, method, sessionId, correlation }),
+      );
+      const creating = pendingCreateAttempt();
+      if (creating && !originals.some((operation) => operation.id === creating))
+        originals.push({ id: creating, method: 'create', sessionId: null, correlation: null });
       for (const original of originals) {
         try {
           const reply = await host.recoverControl(original.id);
@@ -1807,8 +1881,6 @@ export function createConversationUi(
       instance: current?.instance ?? null,
     });
     if (!alive || selected() !== id) return;
-    const session = browsing.sessions().find((item) => item.id === id);
-    if (session) rememberWorkspace({ kind: 'session', sessionId: id }, session.workspace.path);
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
     handle()?.focus();
@@ -1895,10 +1967,10 @@ export function createConversationUi(
         composerStorage = stored;
         recentWorkspaces.set(value?.recent ?? []);
         if (value?.draft) {
-          const files = stored.files().map((file) => {
+          const files = stored.files().map((file, index) => {
             const metadata = file.metadata() as { name: string; bytes: number };
             return {
-              id: file.id,
+              id: value.fileIds?.[index] ?? file.id,
               name: metadata.name,
               bytes: metadata.bytes,
               imageUri: file.imageUri(),
@@ -1906,9 +1978,10 @@ export function createConversationUi(
             };
           });
           pending.set({ ...value.draft, files });
-          savedFiles = files.map((item) => item.id).join('/');
+          savedFiles = files.map((item) => item.file.id).join('/');
         }
         savedComposer = JSON.stringify(memoryValue());
+        acknowledgedComposer = value;
         composerKnown.set(true);
         if (pendingWorkspace()) {
           if (pendingBackend()) void pendingModel.refreshModel();
@@ -1930,7 +2003,7 @@ export function createConversationUi(
       }
     })().catch(report);
   createPendingRecovery({
-    pending: () => !controlsKnown() || controls().length > 0,
+    pending: () => !controlsKnown() || controls().length > 0 || pendingCreateAttempt() !== null,
     blocked: () => !composerKnown() || recovering() || busy(),
     recover: recoverControls,
   });
@@ -2038,12 +2111,6 @@ export function createConversationUi(
       const originalOverlay = overlay();
       const visible = shell()?.visible();
       if (owner && !(await owner.flushDraft())) return false;
-      try {
-        await flushComposer();
-      } catch (reason) {
-        report(reason);
-        return false;
-      }
       return (
         alive &&
         handle() === owner &&
@@ -2166,13 +2233,11 @@ export function createConversationUi(
                           ...prefill,
                           committed: async () => {
                             if (pendingHandoff() !== id()) return;
-                            rememberWorkspace(
-                              { kind: 'session', sessionId: id() },
-                              pendingWorkspaceLabel(),
-                            );
                             replacePending(null);
-                            await flushComposer();
                             pendingHandoff.set(null);
+                            // The destination already saved the draft. Failure
+                            // to retire this redundant copy must not block it.
+                            await flushComposer().catch(report);
                           },
                         }
                       );
@@ -2231,14 +2296,21 @@ export function createConversationUi(
                   <If when={selected() === null && workspaceError()}>
                     <View
                       style={{
-                        padding: 12,
-                        marginBottom: 12,
-                        borderRadius: 8,
-                        backgroundColor: C.surface,
-                        gap: 8,
+                        marginBottom: 8,
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        columnGap: 12,
+                        rowGap: 4,
                       }}
                     >
-                      <Text style={{ ...bodyTextStyle, color: C.danger }}>{workspaceError()}</Text>
+                      <Text
+                        tooltip={textTooltip(workspaceError)}
+                        style={{ ...bodyTextStyle, color: C.secondary }}
+                      >
+                        {tr('Folder unavailable')}
+                      </Text>
                       <View style={{ flexDirection: 'row', gap: 8 }}>
                         <Button
                           accessibilityLabel={tr('Choose another folder…')}
@@ -2262,6 +2334,36 @@ export function createConversationUi(
                         </Button>
                       </View>
                     </View>
+                  </If>
+                  <If when={composerSaveError()}>
+                    <Button
+                      accessibilityLabel={tr('Retry saving draft')}
+                      disabled={retryingComposer()}
+                      onPress={inputAction(() => {
+                        void retryComposer();
+                      }, null)}
+                      style={controlStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={{ color: C.accent }}>{tr('Retry saving draft')}</Text>
+                    </Button>
+                  </If>
+                  <If when={selected() === null && pendingDraftConflict() && pendingCreated()}>
+                    <Button
+                      accessibilityLabel={tr('Keep as new draft')}
+                      onPress={inputAction(() => {
+                        updatePending({ target: null });
+                        pendingDraftConflict.set(false);
+                        error.set('');
+                        focusComposer();
+                      }, null)}
+                      style={controlStyle}
+                      hoverStyle={controlHoverStyle()}
+                      focusStyle={controlFocusStyle()}
+                    >
+                      <Text style={{ color: C.accent }}>{tr('Keep as new draft')}</Text>
+                    </Button>
                   </If>
                   <Each<ConversationHandle>
                     of={handle() ? [handle()!] : []}

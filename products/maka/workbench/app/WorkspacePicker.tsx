@@ -69,6 +69,12 @@ const below = (root: string, path: string) => {
     ? names.slice(base.length)
     : null;
 };
+/** The innermost Host location containing a path, and the names below it. */
+export const locateWorkspaceDirectory = (rows: AgentDirectory[], path: string) =>
+  rows
+    .map((root) => ({ root, names: root.path ? below(root.path, path) : null }))
+    .filter((found) => found.names !== null)
+    .sort((a, b) => a.names!.length - b.names!.length)[0] ?? null;
 const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export function WorkspacePicker(props: {
@@ -241,12 +247,6 @@ export function WorkspacePicker(props: {
       throw new UiError('The Host returned a different directory view. Reopen the folder.');
     return page.roots;
   };
-  /** The location `path` is in (the innermost one) and the names below it. */
-  const locate = (rows: AgentDirectory[], path: string) =>
-    rows
-      .map((root) => ({ root, names: root.path ? below(root.path, path) : null }))
-      .filter((found) => found.names !== null)
-      .sort((a, b) => a.names!.length - b.names!.length)[0] ?? null;
   /** Adds `path` as a workspace location and waits until the Host serves it. */
   const addLocation = async (path: string) => {
     if (operations.pending().length)
@@ -269,7 +269,7 @@ export function WorkspacePicker(props: {
     if (value?.status !== 'committed')
       throw new UiError('The Host rejected these workspace locations.');
     for (let attempt = 0; attempt < 20; attempt++) {
-      const found = locate(await roots(), path);
+      const found = locateWorkspaceDirectory(await roots(), path);
       if (found) return found;
       await pause(500);
     }
@@ -277,7 +277,8 @@ export function WorkspacePicker(props: {
   };
   /** The selection of the folder at `path`, adding a location for it when none holds it. */
   const resolve = async (path: string) => {
-    const { root, names } = locate(await roots(), path) ?? (await addLocation(path));
+    const { root, names } =
+      locateWorkspaceDirectory(await roots(), path) ?? (await addLocation(path));
     let directory = root;
     for (const name of names!) {
       let after: string | null = null;

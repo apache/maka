@@ -17,8 +17,8 @@
  * under the License.
  */
 
-import { inputAction, Scroll, Text, View, windowSize } from 'nsh';
-import { Button, Popover } from 'nsh/base';
+import { Text, View, windowSize } from 'nsh';
+import { Select } from 'nsh/base';
 import type { BrowserWorkspace } from './browsing';
 import { Icon } from './Icon';
 import { tr } from './locale';
@@ -37,7 +37,30 @@ export function RecentWorkspaces(props: {
   disabled(): boolean;
 }) {
   return (
-    <Popover
+    <Select
+      style={{ minWidth: 0, flexShrink: 1 }}
+      accessibilityLabel={tr('Choose composer workspace')}
+      disabled={props.disabled()}
+      value={props.path() || null}
+      items={[
+        ...props.recent().map((item) => ({
+          value: item.path,
+          title: tr('Use folder {path}', { path: item.path }),
+          group: 'recent',
+        })),
+        {
+          value: 'browse',
+          title: tr('Choose another folder…'),
+          ...(props.recent().length ? { group: 'browse' } : {}),
+        },
+      ]}
+      onChange={({ value }) => {
+        if (value === 'browse') props.browse();
+        else {
+          const selected = props.recent().find((item) => item.path === value);
+          if (selected) props.choose(selected);
+        }
+      }}
       open={props.open()}
       onOpenChange={({ open }) => props.changed(open)}
       placement="bottom"
@@ -45,7 +68,7 @@ export function RecentWorkspaces(props: {
       offset={8}
       margin={8}
       popupStyle={{
-        width: 360,
+        width: 392,
         maxWidth: Math.max(0, windowSize().width - 16),
         maxHeight: Math.min(380, windowSize().height - 32),
         padding: 6,
@@ -56,87 +79,85 @@ export function RecentWorkspaces(props: {
         borderRadius: 12,
       }}
       trigger={
-        <Button
-          accessibilityLabel={tr('Choose composer workspace')}
+        <View
           tooltip={textTooltip(() => props.path() || tr('Choose workspace'))}
-          disabled={props.disabled()}
-          onPress={inputAction(() => props.changed(!props.open()), null)}
           style={{
             ...controlStyle,
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
             maxWidth: '100%',
+            minWidth: 0,
+            flexShrink: 1,
           }}
           hoverStyle={controlHoverStyle()}
           focusStyle={controlFocusStyle()}
         >
           <Icon name="folder" color={C.secondary} />
-          <Text style={[{ fontSize: 13, color: C.secondary, flexShrink: 1 }, { numberOfLines: 1 }]}>
+          <Text
+            style={[
+              { fontSize: 13, color: C.secondary, flexShrink: 1, textOverflow: 'ellipsis-middle' },
+              { numberOfLines: 1 },
+            ]}
+          >
             {props.path() ? name(props.path()) : tr('Choose workspace')}
           </Text>
           <Icon name="down" color={C.secondary} />
-        </Button>
+        </View>
       }
-    >
-      <Text style={{ color: C.muted, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 }}>
-        {tr('Recent folders')}
-      </Text>
-      <Scroll style={{ flexShrink: 1, minHeight: 0 }}>
-        <Each of={props.recent()} key={(item) => item.path}>
-          {(item) => (
-            <Button
-              accessibilityLabel={tr('Use folder {path}', { path: item().path })}
-              tooltip={textTooltip(() => item().path)}
-              onPress={inputAction(props.choose, item())}
-              style={{
-                ...controlStyle,
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: 10,
-                paddingHorizontal: 10,
-              }}
-              hoverStyle={controlHoverStyle()}
-              focusStyle={controlFocusStyle()}
-            >
-              <Icon name="folder" color={C.secondary} />
-              <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
-                <Text style={[{ fontSize: 13, color: C.text }, { numberOfLines: 1 }]}>
-                  {name(item().path)}
-                </Text>
-                <Text style={[{ fontSize: 12, color: C.muted }, { numberOfLines: 1 }]}>
-                  {item().path}
-                </Text>
-              </View>
-              <If when={item().path === props.path()}>
-                <Icon name="check" color={C.accent} />
-              </If>
-            </Button>
-          )}
-        </Each>
-        <If when={props.recent().length === 0}>
-          <Text style={{ fontSize: 13, color: C.muted, padding: 10 }}>
-            {tr('No recent folders')}
+      itemStyle={{ padding: 0 }}
+      renderGroup={(group) =>
+        group.title === 'recent' ? (
+          <Text style={{ color: C.muted, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 }}>
+            {tr('Recent folders')}
           </Text>
-        </If>
-      </Scroll>
-      <View style={{ height: 1, backgroundColor: C.line, margin: 4 }} />
-      <Button
-        accessibilityLabel={tr('Choose another folder…')}
-        onPress={inputAction(props.browse, null)}
-        style={{
-          ...controlStyle,
-          flexDirection: 'row',
-          alignItems: 'center',
-          gap: 10,
-          paddingHorizontal: 10,
-        }}
-        hoverStyle={controlHoverStyle()}
-        focusStyle={controlFocusStyle()}
-      >
-        <Icon name="folder" color={C.secondary} />
-        <Text style={{ fontSize: 13, color: C.text }}>{tr('Choose another folder…')}</Text>
-      </Button>
-    </Popover>
+        ) : (
+          <View style={{ height: 1, backgroundColor: C.line, margin: 4 }} />
+        )
+      }
+      renderItem={(item) => (
+        <View
+          tooltip={item.value === 'browse' ? undefined : textTooltip(() => item.value)}
+          style={{
+            ...controlStyle,
+            flexDirection: 'row',
+            alignItems: 'center',
+            justifyContent: 'flex-start',
+            gap: 10,
+            paddingHorizontal: 10,
+            paddingVertical: 8,
+            minHeight: item.value === 'browse' ? 36 : 54,
+            backgroundColor: item.highlighted ? C.raised : 'transparent',
+          }}
+        >
+          <Icon name="folder" color={C.secondary} />
+          <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
+            <Text style={[{ fontSize: 13, color: C.text }, { numberOfLines: 1 }]}>
+              {item.value === 'browse' ? tr('Choose another folder…') : name(item.value)}
+            </Text>
+            <If when={item.value !== 'browse'}>
+              <Text
+                style={[
+                  {
+                    fontSize: 12,
+                    color: C.muted,
+                    width: '100%',
+                    textOverflow: 'ellipsis-middle',
+                  },
+                  { numberOfLines: 1 },
+                ]}
+              >
+                {item.value}
+              </Text>
+            </If>
+          </View>
+          <View style={{ width: 16 }}>
+            <If when={item.selected}>
+              <Icon name="check" color={C.accent} />
+            </If>
+          </View>
+        </View>
+      )}
+    />
   );
 }

@@ -38,7 +38,6 @@ import {
 
 export const workspaceMessages = {
   'Recent folders': ['Recent folders', '最近使用', '最近使用'],
-  'No recent folders': ['No recent folders', '还没有使用过的目录', '尚未使用過目錄'],
   'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'The new conversation is still loading.': [
@@ -342,6 +341,14 @@ export const workspaceMessages = {
   'Retry current diff': ['Retry current diff', '重试当前差异', '重試目前差異'],
   'Retry current file': ['Retry current file', '重试当前文件', '重試目前檔案'],
   'Retry folder': ['Retry folder', '重试文件夹', '重試資料夾'],
+  'Folder unavailable': ['Folder unavailable', '文件夹不可用', '資料夾無法使用'],
+  'Retry saving draft': ['Retry saving draft', '重试保存草稿', '重試儲存草稿'],
+  'Keep as new draft': ['Keep as new draft', '保留为新草稿', '保留為新草稿'],
+  'The new conversation changed in another window. Your unsaved draft is still here.': [
+    'The new conversation changed in another window. Your unsaved draft is still here.',
+    '新对话已在另一窗口中更改。未保存的草稿仍保留在此处。',
+    '新對話已在另一視窗中變更。未儲存的草稿仍保留在此處。',
+  ],
   'Retry image: {name}': ['Retry image: {name}', '重试加载图片：{name}', '重新載入圖片：{name}'],
   'Retry image': ['Retry image', '重试加载图片', '重新載入圖片'],
   'Retry terminal observation': ['Retry terminal observation', '重试终端观察', '重試終端觀察'],

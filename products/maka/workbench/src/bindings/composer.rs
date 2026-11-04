@@ -22,14 +22,8 @@ use maka_capabilities::call::ReadResource;
 use maka_ui_support::file::{FileSnapshot, FileSnapshotWriter};
 use nsh_core::element::{Arg, JsHost, JsIn, JsOwned, JsValue, PropError, Ret, TsTypes};
 use nsh_core::{JsonValue, prelude::*};
-use std::{io::Write, sync::Arc};
-use tokio::sync::{mpsc, oneshot};
-
-struct Edit {
-    value: JsonValue,
-    files: Option<Vec<Arc<FileSnapshot>>>,
-    reply: oneshot::Sender<Result<(), String>>,
-}
+use std::{cell::Cell, io::Write, sync::Arc};
+use tokio::sync::oneshot;
 
 pub struct StagedSelection(pub Instance<uploads::StagedFile>);
 impl JsValue for StagedSelection {
@@ -47,7 +41,9 @@ impl JsValue for StagedSelection {
 #[class]
 pub struct ComposerSnapshot {
     owner: Arc<Owner>,
-    writes: mpsc::UnboundedSender<Edit>,
+    client: maka_app_client::Client,
+    revision: u64,
+    previous: Cell<Option<oneshot::Receiver<Result<u64, String>>>>,
     value: JsonValue,
     files: Vec<Arc<FileSnapshot>>,
 }
@@ -75,19 +71,33 @@ impl ComposerSnapshot {
                 .map(|file| file.0.with(|file| file.snapshot.clone()))
                 .collect()
         });
-        let (reply, received) = oneshot::channel();
-        this.with(|state| {
-            state.writes.send(Edit {
-                value,
-                files,
-                reply,
-            })
-        })
-        .map_err(|_| "Composer storage is closed")?;
+        let (reply, next) = oneshot::channel();
+        let (owner, client, revision, previous) = this.with(|state| {
+            (
+                state.owner.clone(),
+                state.client.clone(),
+                state.revision,
+                state.previous.replace(Some(next)),
+            )
+        });
         drop(this);
-        received
-            .await
-            .map_err(|_| "Composer storage stopped before saving")?
+        // Only admitted writes are native tasks. Closing the bindings drains
+        // them without waiting for the JS window to dispose this handle.
+        execute(owner, async move {
+            let result = async {
+                let revision = match previous {
+                    Some(previous) => previous
+                        .await
+                        .map_err(|_| "Composer storage stopped before saving")??,
+                    None => revision,
+                };
+                save(&client, revision, value, files).await
+            }
+            .await;
+            let _ = reply.send(result.clone());
+            result.map(|_| ())
+        })
+        .await
     }
 }
 
@@ -118,32 +128,11 @@ pub(super) async fn load(
         .map_err(|e| e.to_string())?
     })
     .await?;
-    let (writes, mut edits) = mpsc::unbounded_channel::<Edit>();
-    // The native owner drains admitted edits even after the JS window is destroyed.
-    owner.spawn(async move {
-        let mut revision = revision;
-        let mut failed: Option<String> = None;
-        while let Some(edit) = edits.recv().await {
-            let result = if let Some(error) = &failed {
-                Err(error.clone())
-            } else {
-                save(&client, revision, edit.value, edit.files).await
-            };
-            match result {
-                Ok(next) => {
-                    revision = next;
-                    let _ = edit.reply.send(Ok(()));
-                }
-                Err(error) => {
-                    failed = Some(error.clone());
-                    let _ = edit.reply.send(Err(error));
-                }
-            }
-        }
-    })?;
     Ok(Instance::new(ComposerSnapshot {
         owner,
-        writes,
+        client,
+        revision,
+        previous: Cell::new(None),
         value,
         files,
     }))
