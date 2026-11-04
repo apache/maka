@@ -87,7 +87,7 @@ pub fn main() -> std::process::ExitCode {
         AppSource::DevServer(format!("ws://127.0.0.1:{DEFAULT_PORT}{WS_PATH}"))
     });
     options.title = "nsh".to_owned();
-    run_app(source, options)
+    run_app(source, options, |_| {})
 }
 
 /// `1200x800` → `(1200, 800)` (points; both positive).

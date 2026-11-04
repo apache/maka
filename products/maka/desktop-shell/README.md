@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-`maka-desktop-shell` runs the [workbench](../workbench/README.md) in a window of its own through NSH's GPUI backend, on macOS, Windows and Linux. It is the application the [terminal shell](../terminal-shell/README.md) runs, compiled into the executable. On a graphical desktop the workbench's headers are the window's title bar, and the application menu carries its commands and their shortcuts.
+`maka-desktop-shell` runs the [workbench](../workbench/README.md) in a window of its own through NSH's Direct2D backend on Windows and GPUI on macOS and Linux. It is the application the [terminal shell](../terminal-shell/README.md) runs, compiled into the executable. On a graphical desktop the workbench's headers are the window's title bar, and the application menu carries its commands and their shortcuts.
 
 Build from the repository root:
 
@@ -48,8 +48,32 @@ Opened directly, from Finder, the Dock or a file manager, the shell has none of 
 
 Closing the window, the quit menu item and the quit key all close the window; the shell then detaches from the Host and exits. The launcher detaches as well, so the Host finishes the work it accepted and stops once no client is left. Cancelling the launcher stops only its shell.
 
-The window opens on the display, at the position and size, and in the full-screen or maximized state it had when it last closed, as recorded in `clients/desktop-window.json` in the Root. If that display is gone it opens centered on the main display; if too little of its top edge would be on the display to grab, it opens centered there.
+The GPUI window opens on the display, at the position and size, and in the full-screen or maximized state it had when it last closed, as recorded in `clients/desktop-window.json` in the Root. If that display is gone it opens centered on the main display; if too little of its top edge would be on the display to grab, it opens centered there.
 
-If the Host stops while the window is open (it crashed, or was retired over its clients), the shell notices within a few seconds, connects to the Root's next Host, starting one through the launcher as `maka desktop` does, and loads the workbench again in the same window. The workbench starts over, as when the desktop opens; a turn the stopped Host was running shows as stopped. Until a Host is reached the window keeps the last workbench, whose actions fail, and the shell retries with growing pauses of up to 30 seconds. It reconnects only while the Root it opened is still at its path: a moved or deleted Root is not initialized afresh.
+If the Host stops while the GPUI window is open (it crashed, or was retired over its clients), the shell notices within a few seconds, connects to the Root's next Host, starting one through the launcher as `maka desktop` does, and loads the workbench again in the same window. The workbench starts over, as when the desktop opens; a turn the stopped Host was running shows as stopped. Until a Host is reached the window keeps the last workbench, whose actions fail, and the shell retries with growing pauses of up to 30 seconds. It reconnects only while the Root it opened is still at its path: a moved or deleted Root is not initialized afresh.
 
 On macOS, a non-empty `MAKA_APPKIT` runs the workbench on NSH's AppKit backend instead of GPUI. This backend is experimental and not the default. It saves the window's frame in the application's defaults rather than in `clients/desktop-window.json`, without the full-screen state. If the Host stops, the window keeps the last workbench and does not reconnect. It refuses plugin changes that need a UI reload, and it posts no system notifications.
+
+## Windows Direct2D
+
+Run in an ordinary PowerShell terminal, from the repository root:
+
+```powershell
+npm ci
+cargo build -p maka-cli -p maka-desktop-shell
+.\target\debug\maka.exe desktop --root "$env:USERPROFILE\.maka\direct2d"
+```
+
+Use the Windows Rust/MSVC prerequisites in [native build tooling](../../../scripts/rust/README.md) and [NSH's Windows guide](../../../third-party/nsh/docs/dev/windows.md). Install the lockfile's JavaScript dependencies before building: missing npm packages can otherwise survive as unresolved runtime imports in generated plugin bundles. Rebuild the CLI's embedded UI packages after correcting an incomplete dependency installation.
+
+Windows has one desktop backend: Direct2D. There is no backend feature switch or GPUI fallback. Its native directory chooser runs on a dedicated COM apartment thread. This runner connects to the admitted Host for the lifetime of its window and does not reconnect after that Host stops. It rejects UI reload requests and system notifications explicitly. Window activation follows Win32 activation messages, text-size changes apply immediately, and the workbench's exit command closes the native window.
+
+## Verification
+
+```powershell
+cargo test -p maka-desktop-shell
+cargo test --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows --lib
+cargo clippy --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows --all-targets -- -D warnings
+```
+
+For performance comparisons, build both shells with the same release profile and use the same Host executable, viewport and initial data. Measure shell startup separately from Host admission. Do not compare an error-boundary screen against a fully loaded workbench.

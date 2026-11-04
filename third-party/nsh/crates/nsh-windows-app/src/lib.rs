@@ -25,7 +25,7 @@ pub fn main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
-    run_app(AppSource::Bundle(bundle), options)
+    run_app(AppSource::Bundle(bundle), options, |_| {})
 }
 
 /// Runs the Rust app whose root is `root` (until its window closes), with
@@ -33,7 +33,7 @@ pub fn main() -> std::process::ExitCode {
 #[cfg(windows)]
 pub fn run_rust(root: nsh_platform_windows::Root) -> std::process::ExitCode {
     let (_, options) = setup();
-    nsh_platform_windows::run_app(nsh_platform_windows::AppSource::Rust(root), options)
+    nsh_platform_windows::run_app(nsh_platform_windows::AppSource::Rust(root), options, |_| {})
 }
 
 /// Built without the feature `js`: runs Rust apps only ([`run_rust`]).

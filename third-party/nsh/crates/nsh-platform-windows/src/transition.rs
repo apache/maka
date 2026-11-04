@@ -89,12 +89,49 @@ fn animate(surface: &Rc<Surface>, view: &NshView, f: impl FnOnce(&mut Live)) {
     }
 }
 
+/// A new cell assignment discards its old transitions, but keeps keyframes.
+pub(crate) fn retired(view: &NshView) {
+    let mut state = view.state_mut();
+    if let Some(live) = state.live.as_deref_mut() {
+        live.stop_frame();
+        live.stop_style();
+        live.recolor(Default::default());
+        live.revive();
+        if live.idle() {
+            state.live = None;
+        }
+    }
+}
+
+/// Resume a retained subtree without restarting its configured animations.
+pub(crate) fn resume(surface: &Rc<Surface>, view: &NshView) {
+    view.state_mut().parked = false;
+    if view.parent_view().is_some() {
+        // A retained list cell brings its descendants back without restyling.
+        let mut pending = vec![view.clone()];
+        while let Some(node) = pending.pop() {
+            pending.extend(node.child_views());
+            if node.state().live.is_some() {
+                animate(surface, &node, |_| {});
+            }
+        }
+    }
+}
+
+fn parked(view: &NshView) -> bool {
+    let mut node = Some(view.clone());
+    while let Some(view) = node {
+        if view.state().parked {
+            return true;
+        }
+        node = view.parent_view();
+    }
+    false
+}
+
 /// `view` was inserted into its parent.
 pub(crate) fn inserted(surface: &Rc<Surface>, view: &NshView, animation: Option<&LayoutAnimation>) {
-    if view.state().live.is_some() {
-        // Ticks stop while a view is out of the tree; going on resumes them.
-        animate(surface, view, |_| {});
-    }
+    resume(surface, view);
     if view.state().live.as_ref().is_some_and(|l| l.dying()) {
         // Back (or moved) before its removal finished animating (which
         // also makes it take the pointer again).
@@ -218,6 +255,12 @@ fn ancestor_dying(view: &NshView) -> bool {
 /// One frame of `view`'s animations at `now` (ms): false once nothing is
 /// left to animate (the frame client is dropped).
 fn tick(surface: &Rc<Surface>, view: &NshView, now: f64) -> bool {
+    if parked(view) {
+        if let Some(live) = view.state_mut().live.as_deref_mut() {
+            live.set_ticking(false);
+        }
+        return false;
+    }
     if !view.attached() {
         // Out of the tree: a deleted subtree stops for good (dropping the
         // client releases it); a view only moved out resumes when it is
@@ -281,6 +324,99 @@ mod tests {
     use nsh_core::geometry::{Percentage, deg};
 
     use super::*;
+
+    #[test]
+    fn retired_rows_suspend_descendant_keyframes_and_resume_on_insert() {
+        use nsh_core::{KeyframeAnimation, Keyframes, MountItem, ROOT_ID};
+        for kind in [ViewKind::View, ViewKind::Screen] {
+            let surface = Surface::new(Default::default());
+            let apply = |item| surface.mounter.borrow_mut().apply(&surface, &item);
+            let parent = if kind == ViewKind::Screen {
+                apply(MountItem::Create {
+                    id: 4,
+                    kind: ViewKind::Stack,
+                });
+                apply(MountItem::Insert {
+                    parent: ROOT_ID,
+                    child: 4,
+                    before: None,
+                });
+                4
+            } else {
+                ROOT_ID
+            };
+            apply(MountItem::Create { id: 2, kind });
+            apply(MountItem::Create {
+                id: 3,
+                kind: ViewKind::View,
+            });
+            apply(MountItem::Insert {
+                parent: 2,
+                child: 3,
+                before: None,
+            });
+            apply(MountItem::Insert {
+                parent,
+                child: 2,
+                before: None,
+            });
+            let child = surface.view(3).unwrap();
+            child.state_mut().style.animation = Some(KeyframeAnimation::new(Keyframes::Spin));
+            style_changed(&surface, &child, &ViewStyle::default());
+            assert!(tick(&surface, &child, 0.0));
+            assert!(tick(&surface, &child, 250.0));
+            let angle = child
+                .state()
+                .live
+                .as_ref()
+                .unwrap()
+                .extra()
+                .unwrap()
+                .rotate
+                .to_degrees();
+            assert!(close(angle, 90.0));
+            let frame = child.state().frame;
+            let mut target = frame;
+            target.size.width = Points(100.0);
+            child.state_mut().live.as_mut().unwrap().move_frame(
+                frame,
+                target,
+                LayoutAnimation::LINEAR.update.unwrap(),
+            );
+            apply(MountItem::RetireListCell {
+                id: 2,
+                request: 1,
+                roots: vec![2],
+            });
+            assert!(
+                frame_target(&child).is_none(),
+                "retirement clears the old assignment's layout transition"
+            );
+            assert!(!tick(&surface, &child, 500.0));
+            surface.tick();
+            apply(MountItem::Insert {
+                parent,
+                child: 2,
+                before: None,
+            });
+            assert!(!surface.view(2).unwrap().state().concealed);
+            assert!(child.state().live.as_ref().unwrap().ticking());
+            assert!(tick(&surface, &child, 750.0));
+            let angle = child
+                .state()
+                .live
+                .as_ref()
+                .unwrap()
+                .extra()
+                .unwrap()
+                .rotate
+                .to_degrees();
+            assert!(
+                close(angle, 270.0),
+                "the retained keyframe must not restart"
+            );
+        }
+    }
 
     fn close(a: f32, b: f32) -> bool {
         (a - b).abs() < 1e-3

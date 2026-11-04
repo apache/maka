@@ -162,6 +162,7 @@ pub(crate) struct ViewState {
     pub(crate) fade: f32,
     /// Not drawn and not hit (screens below the top one of a stack).
     pub(crate) concealed: bool,
+    pub(crate) parked: bool,
     /// Scroll state (scroll views).
     pub(crate) scroll: Option<ScrollState>,
     /// Text content (text views).
@@ -201,6 +202,7 @@ impl ViewState {
             shift: (0.0, 0.0),
             fade: 1.0,
             concealed: false,
+            parked: false,
             scroll: matches!(kind, ViewKind::Scroll).then(ScrollState::default),
             text: None,
             image: None,
