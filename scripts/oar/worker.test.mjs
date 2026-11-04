@@ -21,6 +21,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
+import { runtimes } from '../../plugins/agent/oar-executor/worker/runtimes.mjs';
 import { scriptedRuntime } from '@botiverse/oar/testing';
 import { Channel } from '../../plugins/agent/oar-executor/worker/channel.mjs';
 import {
@@ -245,6 +247,155 @@ test('discovery preserves OAR absence and authentication states without invoking
     kind: 'unauthenticated',
     detail: 'Sign in through the vendor',
   });
+});
+
+test('settings metadata lists exactly the shipped OAR runtimes without machine discovery', async () => {
+  const metadata = JSON.parse(
+    await readFile(
+      new URL('../../plugins/agent/oar-executor/runtimes.json', import.meta.url),
+      'utf8',
+    ),
+  );
+  assert.deepEqual(
+    metadata,
+    [...runtimes.values()].map((runtime) => ({ id: runtime.id, name: runtime.brand.name })),
+  );
+});
+
+test('catalog keeps vendor installation and model failures local to their runtime', async () => {
+  const available = { kind: 'available', via: 'bundled' };
+  const records = await Promise.all([
+    catalog(
+      {
+        id: 'bad-install',
+        installation: async () => {
+          throw new Error('probe failed');
+        },
+      },
+      '/workspace',
+    ),
+    catalog(
+      {
+        id: 'claude',
+        installation: async () => available,
+        listModels: async () => {
+          throw new Error('claude exited before answering list_models');
+        },
+      },
+      '/workspace',
+    ),
+    catalog(
+      {
+        id: 'codex',
+        installation: async () => available,
+        listModels: async () => ({ kind: 'ok', models: [{ id: 'healthy-model' }] }),
+      },
+      '/workspace',
+    ),
+  ]);
+  assert.deepEqual(records, [
+    { runtime: 'bad-install', installation: { kind: 'error', detail: 'probe failed' } },
+    {
+      runtime: 'claude',
+      installation: available,
+      models: { kind: 'error', detail: 'claude exited before answering list_models' },
+    },
+    {
+      runtime: 'codex',
+      installation: available,
+      models: { kind: 'ok', models: [{ id: 'healthy-model' }] },
+    },
+  ]);
+});
+
+async function discoveryWorker(request) {
+  // Replace only the runtime providers; exercise the production stdin/stdout worker.
+  const runtimeUrl = new URL(
+    '../../plugins/agent/oar-executor/worker/runtimes.mjs',
+    import.meta.url,
+  ).href;
+  const source = `export const runtimes = new Map([
+    ['codex', {id:'codex',brand:{name:'Codex'},installation:async()=>({kind:'available'}),authStatus:async()=>({kind:'logged_in',source:'fixture'}),listModels:async()=>({kind:'ok',models:[{id:'healthy-model'}]})}],
+    ['claude', {id:'claude',brand:{name:'Claude'},installation:async()=>({kind:'available'}),listModels:async()=>{throw new Error('claude exited before answering list_models')}}],
+    ['unselected', {id:'unselected',installation:()=>{throw new Error('unselected runtime must never be probed')}}]
+  ]);`;
+  const hook = `import {registerHooks} from 'node:module';registerHooks({load(url,context,next){return url===${JSON.stringify(runtimeUrl)}?{format:'module',source:${JSON.stringify(source)},shortCircuit:true}:next(url,context)}});`;
+  const child = spawn(
+    process.execPath,
+    [
+      '--import',
+      'data:text/javascript,' + encodeURIComponent(hook),
+      fileURLToPath(new URL('../../plugins/agent/oar-executor/worker/main.mjs', import.meta.url)),
+    ],
+    { stdio: ['pipe', 'pipe', 'pipe'], timeout: 10000 },
+  );
+  let stdout = '';
+  let stderr = '';
+  child.stdout.setEncoding('utf8').on('data', (chunk) => {
+    stdout += chunk;
+  });
+  child.stderr.setEncoding('utf8').on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const exited = new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('close', resolve);
+  });
+  child.stdin.write(`${JSON.stringify(request)}\n`);
+  assert.equal(await exited, 0, stderr);
+  return JSON.parse(stdout).value;
+}
+
+test('worker discovery only probes explicitly selected runtimes and retains a healthy sibling', async () => {
+  const records = await discoveryWorker({
+    kind: 'catalog',
+    runtimes: ['codex', 'claude'],
+    cwd: '/workspace',
+  });
+  assert.deepEqual(
+    records.map((record) => record.runtime),
+    ['codex', 'claude'],
+  );
+  assert.deepEqual(records[0].models, { kind: 'ok', models: [{ id: 'healthy-model' }] });
+  assert.deepEqual(records[1].models, {
+    kind: 'error',
+    detail: 'claude exited before answering list_models',
+  });
+  assert.deepEqual(
+    await discoveryWorker({ kind: 'status', runtimes: ['codex'], cwd: '/workspace' }),
+    [
+      {
+        id: 'codex',
+        name: 'Codex',
+        installation: { kind: 'available' },
+        authentication: { kind: 'authenticated', source: 'fixture' },
+        models: { kind: 'ready', count: 1 },
+        canInstall: false,
+        installLines: [],
+      },
+    ],
+  );
+  const unknown = await discoveryWorker({
+    kind: 'catalog',
+    runtimes: ['codex', 'cluade'],
+    cwd: '/workspace',
+  });
+  assert.deepEqual(unknown[0].models, { kind: 'ok', models: [{ id: 'healthy-model' }] });
+  assert.deepEqual(unknown[1], {
+    runtime: 'cluade',
+    installation: { kind: 'unsupported', reason: 'Unknown OAR runtime: cluade' },
+  });
+  const unknownStatus = await discoveryWorker({
+    kind: 'status',
+    runtimes: ['cluade'],
+    cwd: '/workspace',
+  });
+  assert.equal(unknownStatus[0].installation.kind, 'unsupported');
+  assert.equal(unknownStatus[0].installation.detail, 'Unknown OAR runtime: cluade');
+  for (const kind of ['catalog', 'status']) {
+    assert.deepEqual(await discoveryWorker({ kind, runtimes: [], cwd: '/workspace' }), []);
+    assert.deepEqual(await discoveryWorker({ kind, cwd: '/workspace' }), []);
+  }
 });
 
 test('setup delegates only supported OAR installation operations and never substitutes a registry installer', async () => {

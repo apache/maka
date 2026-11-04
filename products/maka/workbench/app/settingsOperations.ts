@@ -167,16 +167,11 @@ export function createSettingsOperations(host: Host) {
               await afterKnown(original, value);
               const result = record(value) && record(value.result) ? value.result : null;
               if (result?.kind === 'unsupported')
-                throw new UiError('Error: {detail}', {
-                  detail: typeof result.detail === 'string' ? result.detail : String(result.reason),
-                });
-              if (result?.kind === 'failed') {
-                if (typeof result.output === 'string' && result.output)
-                  throw new UiError('Error: {detail}', { detail: result.output });
+                throw new UiError('Automatic installation is not supported in Maka.');
+              if (result?.kind === 'failed')
                 throw new UiError(
                   'External agent installation failed. Refresh to check its status.',
                 );
-              }
               if (
                 !result ||
                 !['plan', 'installed', 'already_installed', 'available', 'not_found'].includes(

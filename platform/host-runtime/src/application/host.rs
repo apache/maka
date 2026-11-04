@@ -583,19 +583,11 @@ impl Host {
                             return Err("foreign UI deployment source".into());
                         }
                         drop(gate.take());
-                        let loaded = self
-                            .store
-                            .load_application_at(&source)
+                        self.store
+                            .read_application_metadata_at(&source)
                             .await
                             .map_err(|error| error.to_string())?
                             .ok_or("UI deployment source not found")?;
-                        loaded
-                            .plan()
-                            .instances()
-                            .get(&instance)
-                            .filter(|entry| !entry.disabled && entry.ui_entry().is_some())
-                            .ok_or("UI consumer is not declared and enabled")?;
-                        drop(loaded);
                         let application = self.application.client();
                         let bindings = tokio::select! {
                             biased;

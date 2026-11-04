@@ -99,7 +99,7 @@ export async function execute(runtime, request, host) {
 }
 
 export async function catalog(runtime, cwd) {
-  const installation = await runtime.installation();
+  const installation = await observe(() => runtime.installation());
   if (installation.kind !== 'available') return { runtime: runtime.id, installation };
   if (!runtime.listModels)
     return {
@@ -107,7 +107,7 @@ export async function catalog(runtime, cwd) {
       installation,
       models: { kind: 'unsupported', reason: 'Runtime has no model discovery' },
     };
-  const models = await runtime.listModels(installation, { cwd });
+  const models = await observe(() => runtime.listModels(installation, { cwd }));
   return { runtime: runtime.id, installation, models };
 }
 

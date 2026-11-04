@@ -403,6 +403,7 @@ test('the external-agent UI worker fixture reaches real CLI tests', () => {
 test('OAR source, worker tests and native fixture reach the Host suite and product build', () => {
   for (const path of [
     'plugins/agent/oar-executor/worker/main.mjs',
+    'plugins/agent/oar-executor/runtimes.json',
     'plugins/agent/native/tests/support/oar-worker.mjs',
     'scripts/oar/build.mjs',
     'scripts/oar/worker.test.mjs',

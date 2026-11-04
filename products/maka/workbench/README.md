@@ -111,8 +111,10 @@ equivalent.
 
 ## External agents
 
-Open **Settings → External agents**, or choose **External agents** in the model picker. Enable only after reviewing and confirming that external agents use their own permissions, tools and existing accounts outside the Maka session sandbox. This does not widen ordinary plugin, Code Mode or Computer Use permissions.
+Open **Settings → External agents**, or choose **External agents** in the model picker. Each runtime has its own switch and is off by default. Merely listing a runtime does not probe its installation, check its account or discover its models. Enable only the agents you want to use; each enable requires an unchecked permission acknowledgement and a separate confirmation. Cancellation changes nothing.
 
-The page shows installation, native sign-in and model-discovery status, including unavailable, unsupported and unknown results. Sign in through the vendor’s own login flow, then refresh; Maka does not copy or manage these credentials. For supported installers, review the vendor installation plan and confirm installation separately. Nothing installs or updates automatically.
+External agents use their own permissions, native tools and existing accounts, and can read and write files, run commands and access the network outside the Maka session sandbox. Other Maka permissions are unchanged. Each switch updates the conversation Agent and WorkHub coordinator atomically in the deployment source. Turning one agent off preserves its executable and arguments, leaves other agents alone, and does not uninstall or sign out. Admitted work remains under Maka-owned settlement.
 
-Enabling updates the actual conversation Agent and WorkHub coordinator together in one source revision. Disabling preserves launch settings and does not uninstall or sign out; admitted work retains Maka-owned settlement. No deployment-file editing is required.
+Enabled agents show a short status; expand **Details** for diagnostics. Sign in through the vendor’s native login flow, then refresh. Supported automatic installers require a reviewed installation plan and a separate **Install** action. Nothing installs or updates automatically.
+
+Antigravity cannot currently be installed automatically through Maka/OAR. Its [official installation guide](https://antigravity.google/docs/ide/extensions/zed) describes editor-based installation. OAR still needs to find the installed agent server through `PATH` or `OAR_ANTIGRAVITY_BIN`; it does not scan the editor’s installation directory. Opening the guide is not an installation plan and does not install anything.

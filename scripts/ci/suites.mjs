@@ -42,7 +42,7 @@ export const productInputs = [
   'scripts/rust/product.mjs',
 ];
 const oarInputs = [
-  'plugins/agent/oar-executor/worker',
+  'plugins/agent/oar-executor',
   'plugins/agent/native/tests/support/oar-worker.mjs',
   'scripts/oar',
   'scripts/asf-source-release.mjs',

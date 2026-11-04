@@ -29,6 +29,18 @@ appendFileSync(traceFile, `${JSON.stringify(request)}\n`);
 const state = JSON.parse(readFileSync(stateFile, 'utf8'));
 const statuses = [
   {
+    id: 'claude',
+    name: 'Claude Code',
+    installation: { kind: 'available' },
+    authentication: { kind: 'authenticated', source: 'native Claude account' },
+    models: {
+      kind: 'error',
+      detail: 'Claude listModels failed: fixture-vendor-error',
+    },
+    canInstall: true,
+    installLines: [],
+  },
+  {
     id: 'codex',
     name: 'Codex',
     installation: { kind: 'available', version: '1.0' },
@@ -40,7 +52,7 @@ const statuses = [
   {
     id: 'antigravity',
     name: 'Antigravity',
-    installation: { kind: 'available' },
+    installation: state.antigravityMissing ? { kind: 'not_found' } : { kind: 'available' },
     authentication: {
       kind: state.signedIn ? 'authenticated' : 'unauthenticated',
       source: 'native login status',
@@ -52,17 +64,20 @@ const statuses = [
     installLines: [],
   },
   {
-    id: 'unknown',
-    name: 'Unknown runtime',
+    id: 'grok',
+    name: 'Grok Build',
     installation: { kind: 'available' },
-    authentication: { kind: 'unknown', detail: 'Vendor cannot determine account status' },
+    authentication: {
+      kind: 'unknown',
+      detail: 'Vendor cannot determine account status',
+    },
     models: { kind: 'unavailable' },
     canInstall: false,
     installLines: [],
   },
   {
     id: 'qwen',
-    name: 'Qwen',
+    name: 'Qwen Code',
     installation: state.installed
       ? { kind: 'available', version: 'fixture-installed' }
       : { kind: 'not_found' },
@@ -81,10 +96,29 @@ const statuses = [
     installLines: [],
   },
 ];
+let selected = [];
+if (request.kind === 'status' || request.kind === 'catalog') {
+  const ids = request.runtime === undefined ? request.runtimes : [request.runtime];
+  if (!Array.isArray(ids) || ids.length === 0)
+    throw new Error('The Host must supply a nonempty explicit runtime selection');
+  selected = ids.map((id) => {
+    const runtime = statuses.find((runtime) => runtime.id === id);
+    if (!runtime) throw new Error(`Unexpected selected runtime ${id}`);
+    for (const phase of request.kind === 'status'
+      ? ['installation', 'authentication', 'models']
+      : ['installation', 'models']) {
+      appendFileSync(
+        traceFile,
+        `${JSON.stringify({ kind: 'runtime_call', runtime: id, phase })}\n`,
+      );
+    }
+    return runtime;
+  });
+}
 let value;
-if (request.kind === 'status') value = statuses;
+if (request.kind === 'status') value = selected;
 else if (request.kind === 'catalog') {
-  const catalog = statuses.map((runtime) => ({
+  const catalog = selected.map((runtime) => ({
     runtime: runtime.id,
     installation: runtime.installation,
     models:
@@ -108,7 +142,10 @@ else if (request.kind === 'catalog') {
       : catalog.find((runtime) => runtime.runtime === request.runtime);
 } else if (request.kind === 'setup') {
   if (request.runtime === 'qoder')
-    value = { kind: 'unsupported', detail: 'Fixture platform has no Qoder installer' };
+    value = {
+      kind: 'unsupported',
+      detail: 'Fixture platform has no Qoder installer',
+    };
   else if (request.runtime !== 'qwen')
     throw new Error(`Unexpected setup runtime ${request.runtime}`);
   else if (request.action === 'plan')

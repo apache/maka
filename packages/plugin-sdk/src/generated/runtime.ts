@@ -5450,6 +5450,12 @@ export interface ExecutorSetupBinding {
 export interface AgentOarConfiguration {
   enabled?: boolean;
   /**
+   * Each runtime requires explicit opt-in, even when the legacy gate is enabled.
+   */
+  runtimes?: {
+    [k: string]: boolean | undefined;
+  };
+  /**
    * Absent selects the worker shipped beside the Maka executable.
    */
   executable?: string | null;
@@ -5676,6 +5682,7 @@ export interface AgentExternalAgentsRead {
 export interface AgentExternalAgents {
   target: AgentExternalAgentsTarget;
   configured: boolean;
+  runtimes: AgentExternalRuntimeOption[];
   state: AgentExternalAgentsState;
 }
 export interface AgentExternalAgentsTarget {
@@ -5689,6 +5696,11 @@ export interface AgentDataSource {
   stateDomain: string;
   deployment: string;
   namespace: InstanceId;
+}
+export interface AgentExternalRuntimeOption {
+  id: string;
+  name: string;
+  enabled: boolean;
 }
 export interface AgentExternalRuntime {
   id: string;

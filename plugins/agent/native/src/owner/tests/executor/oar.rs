@@ -312,7 +312,7 @@ async fn native_oar_live_codex_executes_high_and_resumes_the_native_conversation
     tokio::time::timeout(Duration::from_secs(180), async {
         let worker = std::env::var("MAKA_OAR_TEST_WORKER").expect("Set MAKA_OAR_TEST_WORKER to the actual worker under test");
         let f = Fixture::configured("http://127.0.0.1:9/v1",None,None,None,|settings| {
-            settings.oar = Some(maka_agent_api::executor::OarConfiguration { enabled: true,executable:Some(worker),args:vec![]});
+            settings.oar = Some(maka_agent_api::executor::OarConfiguration { enabled: true,runtimes:BTreeMap::from([("codex".into(),true)]),executable:Some(worker),args:vec![]});
         }).await;
         let mut create = f.create_input("Live OAR execution").await;
         create["backend"] = json!({"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"gpt-6-astra","thinkingLevel":"high"}}});
@@ -469,27 +469,45 @@ async fn cancelled_single_runtime_query_drains_terminal_and_allows_clean_retirem
 #[tokio::test]
 async fn external_agents_disabled_and_inspect_never_start_workers_or_admit_disabled_send() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        for configured_oar in [false, true] {
-            let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
-                if configured_oar {
-                    settings.oar.as_mut().unwrap().enabled = false;
-                } else {
-                    settings.oar = None;
-                }
-            })
-            .await;
+        for configuration in ["absent", "disabled", "legacy", "unselected"] {
+            let configured_oar = configuration != "absent";
+            let (f, listener) =
+                configured("http://127.0.0.1:9/v1", |settings| match configuration {
+                    "absent" => settings.oar = None,
+                    "disabled" => settings.oar.as_mut().unwrap().enabled = false,
+                    "legacy" => {
+                        let mut legacy =
+                            serde_json::to_value(settings.oar.as_ref().unwrap()).unwrap();
+                        legacy.as_object_mut().unwrap().remove("runtimes");
+                        settings.oar = Some(serde_json::from_value(legacy).unwrap());
+                    }
+                    "unselected" => {
+                        settings.oar.as_mut().unwrap().runtimes =
+                            BTreeMap::from([("codex".into(), false)])
+                    }
+                    _ => unreachable!(),
+                })
+                .await;
             for inspect in [false, true] {
                 let result = f
                     .query("externalAgents", json!({"inspect":inspect}))
                     .await
                     .unwrap();
                 assert_eq!(
-                    result,
-                    json!({
-                        "target":{"source":f.owner.data_source, "path":["oar"]},
-                        "configured":configured_oar,"state":{"kind":"disabled"}
-                    })
+                    result["target"],
+                    json!({"source":f.owner.data_source, "path":["oar"]})
                 );
+                assert_eq!(result["configured"], configured_oar);
+                assert_eq!(result["state"], json!({"kind":"disabled"}));
+                let runtimes = result["runtimes"].as_array().unwrap();
+                assert_eq!(
+                    runtimes
+                        .iter()
+                        .find(|runtime| runtime["id"] == "codex")
+                        .unwrap(),
+                    &json!({"id":"codex", "name":"Codex", "enabled":false})
+                );
+                assert!(runtimes.iter().all(|runtime| runtime["enabled"] == false));
             }
             let session = f.create("Disabled external agent").await;
             let error = f
@@ -508,6 +526,15 @@ async fn external_agents_disabled_and_inspect_never_start_workers_or_admit_disab
             .unwrap();
         assert_eq!(inspected["state"], json!({"kind":"enabled"}));
         assert_eq!(inspected["configured"], true);
+        assert_eq!(
+            inspected["runtimes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|runtime| runtime["id"] == "codex")
+                .unwrap(),
+            &json!({"id":"codex", "name":"Codex", "enabled":true})
+        );
         assert!(listener.accept().now_or_never().is_none());
         let status = f.query("externalAgents", json!({})).await.unwrap();
         assert_eq!(status["state"]["kind"], "ready");
@@ -628,6 +655,85 @@ async fn external_agents_cancelled_status_settles_without_poisoning_next_query()
         packet(&mut trace, "status").await;
         release(&mut trace).await;
         assert_eq!(query.await.unwrap()["state"]["kind"], "ready");
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_oar_runtime_opt_in_gates_queries_and_admission_before_starting_workers() {
+    use maka_agent_ports::executor::{Backend as _, Error, Request};
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.oar.as_mut().unwrap().runtimes = BTreeMap::from([
+                ("codex".into(), true),
+                ("antigravity".into(), false),
+            ]);
+        }).await;
+        let cwd = f.owner.oar_cwd().await.unwrap().unwrap();
+        for runtime in ["antigravity", "claude"] {
+            for kind in ["catalog", "setup"] {
+                let error = f.owner.executors.oar_query(
+                    cwd.clone(),
+                    json!({"kind":kind,"runtime":runtime,"action":"probe","cwd":cwd}),
+                    CancellationToken::new(),
+                ).await.unwrap_err();
+                assert!(matches!(error, Error::Invalid(ref message) if message == &format!("OAR runtime is not enabled: {runtime}")), "{error}");
+            }
+        }
+        for runtime in ["antigravity", "claude", "codex"] {
+            let selection = executor::Selection {
+                executor: "oar".into(),
+                settings: maka_agent_facts::executor::Settings {
+                    runtime: Some(runtime.into()),
+                    ..Default::default()
+                },
+            };
+            let backend = f.owner.executors.select(selection.clone()).unwrap();
+            let result = backend.admit_execution(Request {
+                language: maka_agent_facts::language::Language::En,
+                invocation: maka_agent_facts::event::Invocation {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                conversation_key: "conversation".into(),
+                content: serde_json::from_value(json!({"text":"must not start"})).unwrap(),
+                cwd: cwd.clone(),
+                instructions: None,
+                settings: selection.settings,
+            });
+            if runtime == "codex" {
+                assert_eq!(result.unwrap().identity.entry_id, "oar");
+            } else {
+                let error = result.err().expect("unselected runtime admission must fail");
+                assert!(matches!(error, Error::Invalid(ref message) if message == &format!("OAR runtime is not enabled: {runtime}")), "{error}");
+            }
+        }
+        assert!(listener.accept().now_or_never().is_none());
+        let inspected = f.query("externalAgents", json!({"inspect":true})).await.unwrap();
+        let enabled = inspected["runtimes"].as_array().unwrap().iter()
+            .filter(|runtime| runtime["enabled"] == true)
+            .map(|runtime| runtime["id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(enabled, vec!["codex"]);
+        assert!(listener.accept().now_or_never().is_none());
+        let catalog = f.owner.executors.oar_query(
+            cwd.clone(),
+            json!({"kind":"catalog","runtimes":["antigravity"],"cwd":cwd}),
+            CancellationToken::new(),
+        ).await.unwrap().unwrap();
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        assert_eq!(packet(&mut trace, "catalog").await["request"]["runtimes"], json!(["codex"]));
+        assert_eq!(catalog.as_array().unwrap().len(), 1);
+        assert_eq!(catalog[0]["runtime"], "codex");
+        let status = f.query("externalAgents", json!({})).await.unwrap();
+        assert_eq!(status["state"]["kind"], "ready");
+        assert_eq!(status["state"]["runtimes"].as_array().unwrap().len(), 1);
+        assert_eq!(status["state"]["runtimes"][0]["id"], "codex");
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        assert_eq!(packet(&mut trace, "status").await["request"]["runtimes"], json!(["codex"]));
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

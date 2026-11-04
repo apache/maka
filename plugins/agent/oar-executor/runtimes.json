@@ -1,0 +1,38 @@
+[
+  {
+    "id": "antigravity",
+    "name": "Antigravity"
+  },
+  {
+    "id": "claude",
+    "name": "Claude Code"
+  },
+  {
+    "id": "codebuddy",
+    "name": "CodeBuddy Code"
+  },
+  {
+    "id": "codex",
+    "name": "Codex"
+  },
+  {
+    "id": "grok",
+    "name": "Grok Build"
+  },
+  {
+    "id": "kimi",
+    "name": "Kimi Code"
+  },
+  {
+    "id": "opencode",
+    "name": "OpenCode"
+  },
+  {
+    "id": "qoder",
+    "name": "Qoder"
+  },
+  {
+    "id": "qwen",
+    "name": "Qwen Code"
+  }
+]
