@@ -77,8 +77,6 @@ impl Owner {
         self.todo.bind(self);
         self.bot.bind(self);
         self.goals.bind(self);
-        self.plans.bind(self);
-        self.start_plans();
         self.start_goals();
         self.start_schedules();
         self.start_bot_wake();
@@ -340,7 +338,6 @@ impl Owner {
                     runs.controls.remove(session);
                 }
                 self.goals.execution_changed();
-                self.plans.execution_changed();
                 Ok(None)
             }
             Err(error) => {
@@ -379,7 +376,6 @@ impl Owner {
             self.title_after_message(running.invocation().clone(), model.clone());
         }
         self.goals.execution_changed();
-        self.plans.execution_changed();
         runs.controls.insert(
             running.invocation().session_id.clone(),
             Control {
@@ -854,15 +850,14 @@ impl Owner {
         basis
             .validate_background_target(&session)
             .map_err(RunError::InvalidInput)?;
-        if (!matches!(
-            basis.background_kind,
-            BackgroundKind::Plan(_) | BackgroundKind::Goal(_)
-        ) && session.configuration.collaboration_mode != basis.collaboration_mode)
-            || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
-            || session.archived
+        if session.archived
             || session.configuration.workspace != basis.workspace
             || session.configuration.binding != basis.binding
-            || session.configuration.tools != basis.allowed_tools
+            || !self.accepted_tools_match(
+                &invocation.session_id,
+                &session.configuration.tools,
+                &basis.allowed_tools,
+            )
         {
             return Err(RunError::InvalidInput(
                 "agent_session_configuration_changed".into(),
@@ -957,15 +952,14 @@ impl Owner {
             }
             let session = self.session(&invocation.session_id).await?;
             basis.validate_background_target(&session)?;
-            if (!matches!(
-                basis.background_kind,
-                BackgroundKind::Plan(_) | BackgroundKind::Goal(_)
-            ) && session.configuration.collaboration_mode != basis.collaboration_mode)
-                || (basis.collaboration_mode == CollaborationMode::Plan && !self.settings.plans)
-                || session.archived
+            if session.archived
                 || session.configuration.workspace != basis.workspace
                 || session.configuration.binding != basis.binding
-                || session.configuration.tools != basis.allowed_tools
+                || !self.accepted_tools_match(
+                    &invocation.session_id,
+                    &session.configuration.tools,
+                    &basis.allowed_tools,
+                )
                 || (basis.executor.is_some() && basis.allowed_tools.is_some())
             {
                 return Err("agent_session_configuration_changed".into());
@@ -1068,11 +1062,6 @@ impl Owner {
             collaboration_mode: basis.collaboration_mode,
             orchestration_mode: if let Some(epoch) = &basis.graph {
                 graph::behavior(epoch)
-            } else if matches!(basis.background_kind, BackgroundKind::Plan(_)) {
-                plan::EXECUTION
-                    .to_owned()
-                    .try_into()
-                    .expect("Plan behavior")
             } else {
                 BehaviorId::default()
             },

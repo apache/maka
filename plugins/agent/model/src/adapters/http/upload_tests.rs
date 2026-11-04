@@ -264,6 +264,7 @@ async fn usage_rejection_reopens_frozen_input_once_with_the_exact_header_variant
     };
     let result = run(
         Request {
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language: Default::default(),
             provider: maka_agent_ports::model::Provider {
                 kind: crate::ProviderKind::OpenaiCompatible {

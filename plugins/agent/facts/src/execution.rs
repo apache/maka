@@ -25,9 +25,11 @@ use serde::{Deserialize, Serialize};
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CollaborationMode {
+    /// Durable sessions and invocations still carry this field. Planning mode no
+    /// longer exists, so a record written in it continues as an ordinary session.
     #[default]
+    #[serde(alias = "plan")]
     Agent,
-    Plan,
 }
 
 /// A native tool surface selected by the Host, independent of plugin tool names.
@@ -269,5 +271,18 @@ impl TryFrom<String> for WorkspaceIdentity {
 impl From<WorkspaceIdentity> for String {
     fn from(identity: WorkspaceIdentity) -> Self {
         identity.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CollaborationMode;
+
+    #[test]
+    fn a_record_written_in_planning_mode_reads_as_agent() {
+        assert_eq!(
+            serde_json::from_str::<CollaborationMode>(r#""plan""#).unwrap(),
+            CollaborationMode::Agent
+        );
     }
 }

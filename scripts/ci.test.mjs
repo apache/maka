@@ -18,6 +18,11 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
 
@@ -56,6 +61,8 @@ function fixture() {
       ],
       ['maka-schema', 'tools/schema'],
       ['maka-workbench', 'products/maka/workbench'],
+      ['maka-process', 'platform/process'],
+      ['maka-settings-native', 'plugins/settings/native'],
       ['maka-ui-build', 'tools/ui-build'],
     ]),
     nsh: workspace([['nsh-core', 'third-party/nsh/crates/nsh-core']]),
@@ -103,7 +110,7 @@ test('a path dependency affects consumers across owning workspaces', () => {
 
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {
   const plan = fixture()(['packages/plugin-sdk/src/runtime/client.ts']);
-  for (const id of ['root', 'bridge', 'desktop', 'clippy', 'contracts', 'product'])
+  for (const id of ['root', 'bridge', 'desktop', 'contracts', 'product'])
     assert.ok(plan.suites[id], id);
   assert.equal(plan.suites.root.filter, 'all()');
   assert.equal(plan.suites.native, undefined);
@@ -130,17 +137,27 @@ test('reviewed notices and distributed dependency licenses select the product ve
 });
 
 test('embedded Markdown remains an input even when it belongs to another Cargo package', () => {
-  const plan = fixture()(['platform/computer-use/skills/maka-cua/SKILL.md']);
-  assert.equal(plan.suites.root.filter, 'all()');
-  assert.ok(plan.suites.bridge);
-  assert.ok(plan.suites.native);
-  assert.equal(plan.full, false);
+  for (const path of [
+    'platform/computer-use/skills/maka-cua/SKILL.md',
+    'platform/computer-use/src/api.md',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites.root);
+    assert.ok(plan.suites.bridge);
+    assert.ok(plan.suites.native);
+    assert.equal(plan.full, false);
+  }
 });
 
 test('documentation is cheap while shared and unknown source inputs request full validation', () => {
   const select = fixture();
-  const docs = select(['docs/guide.md', 'README.md']);
-  assert.deepEqual(Object.keys(docs.suites), ['tooling']);
+  const docs = select([
+    'docs/guide.md',
+    'README.md',
+    'platform/host/README.md',
+    'products/maka/workbench/README.md',
+  ]);
+  assert.deepEqual(Object.keys(docs.suites), []);
   assert.deepEqual(docs.workers, []);
   for (const path of [
     '.cargo/config.toml',
@@ -157,10 +174,9 @@ test('documentation is cheap while shared and unknown source inputs request full
 test('the aggregate accepts only successful planned work, including every selected matrix', () => {
   const full = createPlan({ root, revision: 'head' });
   const results = Object.fromEntries(
-    ['plan', 'tooling', 'suites', 'root-build', 'root-tests'].map((id) => [
-      id,
-      { result: 'success' },
-    ]),
+    ['plan', 'tooling', 'suites', 'root-build', 'root-tests', 'desktop-build', 'desktop-tests'].map(
+      (id) => [id, { result: 'success' }],
+    ),
   );
   checkResults(full, results, true);
   for (const id of Object.keys(results)) {
@@ -176,7 +192,8 @@ test('the aggregate accepts only successful planned work, including every select
   const narrow = fixture()(['tools/schema/src/main.rs']);
   checkResults(narrow, { ...results, 'root-tests': { result: 'skipped' } }, false);
   const docs = fixture()(['docs/guide.md']);
-  checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'success' } });
+  checkResults(docs, { plan: { result: 'success' }, tooling: { result: 'skipped' } });
+  assert.throws(() => checkResults(docs, { plan: { result: 'failure' } }), /did not succeed/);
 });
 
 test('Mermaid dependency patches, UI fixtures and outline font inputs reach their consumers', () => {
@@ -193,4 +210,61 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
   assert(
     plan(['third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf']).suites.root,
   );
+});
+
+test('Host identity inputs execute real macOS tests, including changes outside Cargo', () => {
+  for (const path of [
+    'scripts/rust/build-cli.mjs',
+    'scripts/rust/build-cli.test.mjs',
+    'scripts/rust/pack-cli.mjs',
+    'scripts/rust/run-cli.mjs',
+    'products/maka/cli/src/deployment/host_identity.rs',
+    'platform/code-runtime/src/lib.rs',
+    'packages/plugin-sdk/src/runtime/client.ts',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['macos-host'], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes('macos-host'));
+    assert.equal(runners.length, 1, path);
+    assert.equal(runners[0].runner, 'macos-latest', path);
+    assert.equal(runners[0].javascript, true, path);
+  }
+});
+
+test('Windows shell changes run native Git Bash behavior tests on Windows', () => {
+  for (const path of [
+    'platform/process/src/shell.rs',
+    'plugins/settings/native/src/preferences.rs',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['windows-shell'], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes('windows-shell'));
+    assert.deepEqual(
+      runners.map((worker) => worker.runner),
+      ['windows-latest'],
+      path,
+    );
+  }
+});
+
+test('native behavior verification selects nextest on macOS and Windows', () => {
+  const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
+  try {
+    for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
+      const output = join(temporary, role);
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'tool-list'],
+        {
+          env: { ...process.env, MAKA_CI_ROLE: role, MAKA_CI_NEXTEST: '', GITHUB_OUTPUT: output },
+        },
+      );
+      assert.equal(
+        readFileSync(output, 'utf8'),
+        role !== 'native-ubuntu' ? 'tools=cargo-nextest\n' : 'tools=\n',
+      );
+    }
+  } finally {
+    rmSync(temporary, { recursive: true, force: true });
+  }
 });

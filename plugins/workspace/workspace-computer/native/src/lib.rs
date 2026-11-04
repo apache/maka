@@ -27,6 +27,7 @@ mod browser_popup;
 mod evaluate;
 mod native_monitor;
 mod sessions;
+mod system_permission;
 
 use futures_util::{FutureExt, future::BoxFuture};
 use maka_agent_facts::{tool_call::ToolOrigin, tools::ToolError};

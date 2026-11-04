@@ -19,7 +19,7 @@
 
 //! Explicit Host sources retain their composition while selected package pins advance.
 use super::super::{
-    Package, selected,
+    Package, baseline, selected,
     update::{Outcome, Scope},
 };
 use super::{HostError, Input, Preparation, Roots, Selection, launch};
@@ -50,15 +50,13 @@ pub(in super::super) async fn synchronize(
     } else {
         None
     };
-    synchronize_loaded(apply.then_some(store), record, current, base)
-        .await
-        .map(|(outcome, _)| outcome)
+    synchronize_loaded(apply.then_some(store), record, current, base).await
 }
 
 /// Offline preview reads only the existing control database; no runtime partition opens.
 pub(in super::super) async fn preview(
     store: &maka_event_log::EventLog,
-) -> Result<(Outcome, PreparedApplication), HostError> {
+) -> Result<Outcome, HostError> {
     let record = store
         .application_launch()
         .await?
@@ -80,7 +78,7 @@ async fn synchronize_loaded(
     record: Launch,
     current: Option<maka_event_log::applications::LoadedDeployment>,
     base: Option<maka_event_log::applications::LoadedDeployment>,
-) -> Result<(Outcome, PreparedApplication), HostError> {
+) -> Result<Outcome, HostError> {
     let selection: Selection = serde_json::from_value(record.configuration.clone())?;
     selection.validate()?;
     if let Some(pending) = &record.pending {
@@ -112,18 +110,23 @@ async fn synchronize_loaded(
         } else {
             PreparedApplication::new(preparation.input, vec![], packages)?
         };
-        super::launch_changes(
-            target.input(),
-            target.packages(),
-            target.plan(),
-            &record.configuration,
-        )?;
+        let changes = if initializing {
+            super::launch_changes(target.plan(), &record.configuration)?
+        } else {
+            super::launch_update(
+                base.as_ref().ok_or("prepared Host update source missing")?,
+                &target,
+                &record.configuration,
+            )?
+            .1
+        };
+        outcome.changes.extend(changes);
         if let Some(store) = apply {
             // Recover only this frozen operation, even under a newer executable.
             super::prepare_saved(store, Roots::Saved).await?;
             outcome.applied = true;
         }
-        return Ok((outcome, target));
+        return Ok(outcome);
     }
     let version = tokio::task::spawn_blocking(super::super::bundle_fingerprint).await??;
     let packages = tokio::task::spawn_blocking(super::super::packages).await??;
@@ -167,6 +170,68 @@ pub(super) fn management_available(
     })
 }
 
+async fn live_document(
+    client: &maka_host_runtime::application::host::Client,
+    reference: &maka_plugin_core::deployment::DeploymentRef,
+) -> Result<Input, HostError> {
+    let mut offset = 0;
+    let mut document = String::new();
+    loop {
+        let page: maka_plugin_core::deployment::management::DeploymentDocumentChunk =
+            serde_json::from_value(
+                query_management(
+                    client,
+                    "readDocument",
+                    serde_json::json!({
+                        "source":reference,"offset":offset,
+                    }),
+                )
+                .await?,
+            )?;
+        if &page.source != reference || page.offset != offset {
+            return Err("product document changed source".into());
+        }
+        document.push_str(&page.text);
+        match page.next {
+            Some(next) if next == document.len() && next < page.total_bytes => offset = next,
+            None if document.len() == page.total_bytes => break,
+            _ => return Err("product document cursor is invalid".into()),
+        }
+    }
+    Ok(
+        serde_json::from_str::<maka_plugin_core::deployment::management::DeploymentDocument>(
+            &document,
+        )?
+        .input,
+    )
+}
+
+async fn live_baseline(
+    client: &maka_host_runtime::application::host::Client,
+    reference: &maka_plugin_core::deployment::DeploymentRef,
+    package: &PackageRef,
+) -> Result<baseline::Metadata, HostError> {
+    let mut offset = 0;
+    let mut bytes = String::new();
+    loop {
+        let page: maka_plugin_core::deployment::management::PackageSourceChunk =
+            serde_json::from_value(query_management(client, "readPackage", serde_json::json!({
+                "source":reference,"package":package,"path":"installation.json","offset":offset,
+            })).await?)?;
+        bytes.push_str(
+            page.text
+                .as_deref()
+                .ok_or("product baseline metadata unavailable")?,
+        );
+        match page.next {
+            Some(next) if next == bytes.len() && next > offset => offset = next,
+            Some(_) => return Err("product baseline cursor did not advance".into()),
+            None => break,
+        }
+    }
+    Ok(serde_json::from_str(&bytes)?)
+}
+
 pub(crate) async fn live_update_available(
     client: &maka_host_runtime::application::host::Client,
 ) -> Result<bool, HostError> {
@@ -188,17 +253,43 @@ pub(crate) async fn live_update_available(
     let authoring = super::super::authoring()?;
     super::super::verified_fingerprint(&authoring, &packages, &version)?;
     let replacements = bundled_replacements(&packages)?;
-    if super::super::update_default_ui(&metadata.source.input, &packages).await?
-        != metadata.source.input
-        || pins(&metadata.source.input)
-            .values()
-            .any(|package| replacement(package, &replacements).is_some())
-        || (metadata
-            .source
-            .input
-            .instances
-            .values()
-            .any(|node| node.use_package == PackageUse::Composition)
+    if let Some(base) = &metadata.source.input.base
+        && base.package.id == baseline::ID
+    {
+        // Product instances and user pins have different owners. Inspect only
+        // the immutable baseline generation inputs, not every user-selected pin.
+        if !management_available(client, &publication.configuration, &["readPackage"]) {
+            return Ok(false);
+        }
+        let desired = live_baseline(client, &metadata.source.reference, &base.package).await?;
+        let helper = std::env::current_exe()?;
+        if desired.release != version || desired.environment.helper != helper {
+            return Ok(true);
+        }
+        if metadata.source.reference != *client.source()
+            && management_available(client, &publication.configuration, &["readDocument"])
+        {
+            let original = live_document(client, client.source()).await?;
+            if let Some(original) = &original.base
+                && original.package.id == baseline::ID
+            {
+                let saved = live_baseline(client, client.source(), &original.package).await?;
+                return Ok(saved.release != version || saved.environment.helper != helper);
+            }
+        }
+        return Ok(false);
+    }
+
+    if pins(&metadata.source.input)
+        .values()
+        .any(|package| replacement(package, &replacements).is_some())
+        || ((metadata.source.input.base.is_some()
+            || metadata
+                .source
+                .input
+                .instances
+                .values()
+                .any(|node| node.use_package == PackageUse::Composition))
             && live_plan_needs_update(client, &metadata.source.reference, &replacements).await?)
     {
         return Ok(true);
@@ -303,9 +394,7 @@ async fn synchronize_packages(
         .load_application(record.deployment)
         .await?
         .ok_or("public Host source missing")?;
-    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled)
-        .await
-        .map(|(outcome, _)| outcome)
+    synchronize_loaded_packages(apply.then_some(store), record, loaded, bundled).await
 }
 
 async fn synchronize_loaded_packages(
@@ -313,7 +402,7 @@ async fn synchronize_loaded_packages(
     record: Launch,
     loaded: maka_event_log::applications::LoadedDeployment,
     bundled: BTreeMap<String, Package>,
-) -> Result<(Outcome, PreparedApplication), HostError> {
+) -> Result<Outcome, HostError> {
     if !loaded.source().remote_exports.is_empty() {
         return Err("public Host source cannot use remote observations".into());
     }
@@ -324,8 +413,32 @@ async fn synchronize_loaded_packages(
         available.insert(package.application_ref(), package.clone());
     }
     let available: Vec<_> = available.into_values().collect();
-    let input = super::super::update_default_ui(&loaded.source().input, &bundled).await?;
-    let next = updated_source(input, &available, &replacements)?;
+    let source = super::super::authoring()?;
+    let release = super::super::bundle_fingerprint()?;
+    let rebuilt = baseline::rebase(
+        &loaded.source().input,
+        loaded.packages(),
+        &bundled,
+        record.deployment,
+        &source,
+        &release,
+    )
+    .await?;
+    let mut available = available;
+    let next = if let Some((input, package)) = rebuilt {
+        available.push(package);
+        input
+    } else if loaded
+        .source()
+        .input
+        .base
+        .as_ref()
+        .is_some_and(|base| base.package.id == baseline::ID)
+    {
+        loaded.source().input.clone()
+    } else {
+        updated_source(loaded.source().input.clone(), &available, &replacements)?
+    };
     let changes = changes(Some(&loaded.source().input), &next);
     let mut outcome = Outcome {
         scope: Scope::SelectedPackages,
@@ -339,20 +452,24 @@ async fn synchronize_loaded_packages(
             loaded.source().remote_exports.clone(),
             loaded.packages().to_vec(),
         )?;
-        super::launch_changes(
-            target.input(),
-            target.packages(),
-            target.plan(),
-            &record.configuration,
-        )?;
-        return Ok((outcome, target));
+        let (_, changes) = super::launch_update(&loaded, &target, &record.configuration)?;
+        outcome.changed = !changes.is_empty();
+        outcome.changes.extend(changes);
+        if let Some(store) = apply {
+            super::publication::synchronize(store, &loaded).await?;
+            outcome.applied = outcome.changed;
+        }
+        return Ok(outcome);
     }
-    let old_required: BTreeSet<_> = loaded
+    let mut old_required: BTreeSet<_> = loaded
         .plan()
         .instances()
         .values()
         .map(|instance| instance.package.clone())
         .collect();
+    if let Some(base) = &loaded.source().input.base {
+        old_required.insert(base.package.clone());
+    }
     let mut inventory: BTreeMap<_, _> = loaded
         .packages()
         .iter()
@@ -364,12 +481,9 @@ async fn synchronize_loaded_packages(
     }
     let packages: Vec<_> = inventory.into_values().collect();
     let target = PreparedApplication::new(next, vec![], packages)?;
-    super::launch_changes(
-        target.input(),
-        target.packages(),
-        target.plan(),
-        &record.configuration,
-    )?;
+    outcome
+        .changes
+        .extend(super::launch_update(&loaded, &target, &record.configuration)?.1);
     if let Some(store) = apply {
         let preparation = Preparation {
             expected_revision: loaded.source().reference.revision,
@@ -392,7 +506,7 @@ async fn synchronize_loaded_packages(
         super::prepare_saved(store, Roots::Saved).await?;
         outcome.applied = true;
     }
-    Ok((outcome, target))
+    Ok(outcome)
 }
 
 pub(super) fn validate_target(input: &Input, packages: &[Package]) -> Result<(), HostError> {
@@ -430,6 +544,7 @@ fn updated_source(
     available: &[Package],
     replacements: &BTreeMap<String, PackageRef>,
 ) -> Result<Input, HostError> {
+    super::decisions::source(&mut input, replacements)?;
     let mut declarations = maka_plugin_core::package::Packages::default();
     for package in available {
         declarations.insert_checked(
@@ -447,7 +562,27 @@ fn updated_source(
             replacement(package, replacements).cloned()
         })?;
     for PackageChange { path, package } in changes {
-        let (root, relative) = path.split_first().ok_or("selected instance path missing")?;
+        let Some((root, relative)) = path.split_first() else {
+            input.base.as_mut().ok_or("root baseline missing")?.package = package;
+            continue;
+        };
+        if !input.instances.contains_key(root) {
+            let overrides = &mut input
+                .base
+                .as_mut()
+                .ok_or("inherited root missing")?
+                .overrides;
+            if let Some(patch) = overrides.iter_mut().find(|patch| patch.path == path) {
+                patch.package = Some(package);
+            } else {
+                overrides.push(Override {
+                    path,
+                    package: Some(package),
+                    ..Override::default()
+                });
+            }
+            continue;
+        }
         let node = input
             .instances
             .get_mut(root)
@@ -505,18 +640,21 @@ fn changes(previous: Option<&Input>, next: &Input) -> Vec<String> {
             })
         })
         .collect();
+    if previous.and_then(|input| input.base.as_ref()) != next.base.as_ref() {
+        changes.push("/base: update product baseline and user overrides".into());
+    }
     if let Some(previous) = previous {
         for (name, node) in &next.instances {
             if let Some(old) = previous.instances.get(name) {
                 let name = name.replace('~', "~0").replace('/', "~1");
                 if old.configuration != node.configuration {
                     changes.push(format!(
-                        "/instances/{name}/configuration: update bundled UI layout"
+                        "/instances/{name}/configuration: update source overrides"
                     ));
                 }
                 if old.bindings != node.bindings {
                     changes.push(format!(
-                        "/instances/{name}/bindings: update bundled UI layout"
+                        "/instances/{name}/bindings: update source overrides"
                     ));
                 }
             }

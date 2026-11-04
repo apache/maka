@@ -18,14 +18,26 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { packNativeCli } from './pack-cli.mjs';
 
-test('native archives carry the CLI and desktop shell without a terminal sidecar', async () => {
+test('native archives carry the CLI and desktop shell without a terminal sidecar', async (t) => {
+  if (process.platform !== 'darwin') {
+    const execute = childProcess.execFileSync;
+    t.mock.method(childProcess, 'execFileSync', (command, args, options) =>
+      command === '/usr/bin/codesign' ? Buffer.alloc(0) : execute(command, args, options),
+    );
+    syncBuiltinESMExports();
+    t.after(() => {
+      t.mock.restoreAll();
+      syncBuiltinESMExports();
+    });
+  }
   const root = await mkdtemp(join(tmpdir(), 'maka-shell-package-'));
   const previous = process.cwd();
   try {
@@ -49,6 +61,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       'maka.exe',
       'maka-desktop-shell',
       'maka-desktop-shell.exe',
+      'maka-host-shell',
       'maka-service.exe',
       'maka-python-worker',
       'maka-python-worker.exe',
@@ -72,7 +85,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       const macos = value('--target') === 'darwin-arm64';
       const bundle = 'package/bin/Maka.app/Contents/';
       const shell = macos ? bundle + 'MacOS/maka-desktop-shell' : 'package/bin/' + (windows ? 'maka-desktop-shell.exe' : 'maka-desktop-shell');
-      assert.equal(execFileSync('tar', ['-xOf', archive, shell], {encoding:'utf8'}), shell.split('/').pop() + ' bytes');
+      if (!macos || process.platform !== 'darwin') assert.equal(execFileSync('tar', ['-xOf', archive, shell], {encoding:'utf8'}), shell.split('/').pop() + ' bytes');
       if (process.platform !== 'win32') assert.match(execFileSync('tar', ['-tvzf', archive, shell], {encoding:'utf8'}), /^-rwx/);
       assert.equal(files.includes('package/bin/maka-service.exe'), windows);
       assert.ok(files.includes('package/bin/' + (windows ? 'maka-python-worker.exe' : 'maka-python-worker')));
@@ -85,6 +98,20 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
         assert.match(plist, /<key>CFBundleIdentifier<\/key>\n  <string>org.apache.maka.desktop<\/string>/);
         assert.match(plist, /<key>CFBundleShortVersionString<\/key>\n  <string>0.2.0<\/string>/);
         assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Resources/Maka.icns']).subarray(0, 4).toString(), 'icns');
+        if (process.platform !== 'darwin') {
+          assert.equal(execFileSync('tar', ['-xOf', archive, bundle + 'Helpers/Maka Host.app/Contents/MacOS/maka-host-shell'], {encoding:'utf8'}), 'maka-host-shell bytes');
+        } else {
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const unpacked = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'maka-signed-archive-'));
+          try {
+            execFileSync('tar', ['-xzf', archive, '-C', unpacked]);
+            const app = path.join(unpacked, 'package/bin/Maka.app');
+            for (const [bundle, id] of [[app, 'org.apache.maka.desktop'], [path.join(app, 'Contents/Helpers/Maka Host.app'), 'org.apache.maka.host']]) {
+              execFileSync('/usr/bin/codesign', ['--verify', '--strict', '--test-requirement', '=identifier "' + id + '"', bundle]);
+            }
+          } finally { fs.rmSync(unpacked, {recursive: true, force: true}); }
+        }
       }
       for (const name of ['DISCLAIMER', 'LICENSE', 'NOTICE', 'THIRD_PARTY_NOTICES.txt']) {
         assert.equal(execFileSync('tar', ['-xOf', archive, 'package/' + name], {encoding:'utf8'}), 'reviewed ' + name);
@@ -95,6 +122,15 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
     );
     process.chdir(root);
     for (const target of ['darwin-arm64', 'linux-x64-gnu', 'win32-x64']) {
+      for (const name of ['maka-desktop-shell', 'maka-host-shell']) {
+        await writeFile(
+          join(root, 'build', name),
+          process.platform === 'darwin' && target === 'darwin-arm64'
+            ? await readFile('/usr/bin/true')
+            : name + ' bytes',
+        );
+      }
+
       const result = await packNativeCli({
         target,
         version: '0.2.0-rust-preview.fixture',

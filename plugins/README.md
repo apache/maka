@@ -26,7 +26,7 @@ A plugin is declared by a leaf `package.ts`. It lists executable entries, config
 | Family | What it owns |
 | --- | --- |
 | [agent](agent/README.md) | Conversations, model execution, tools, goals and scheduling |
-| [workspace](workspace/README.md) | Files, processes, Web and Jev services |
+| [workspace](workspace/README.md) | Files, processes, Web and Decisions API services |
 | [settings](settings/native/README.md) | Connections, credentials and preferences |
 | [skills](skills/native/README.md) | Skill discovery, reads and publication |
 | [interactions](interactions/native/README.md) | Questions and forms |
@@ -37,6 +37,8 @@ A plugin is declared by a leaf `package.ts`. It lists executable entries, config
 For an existing plugin, start with its declaration and follow its selected implementation. Native entries select an implementation supplied by the executable; JavaScript entries name their bundled local module. Neither a family directory nor a linked crate activates a plugin.
 
 Packages declare `application.host`, `application.ui`, or a composition template. Each deployment instance selects its entry through `usePackage: host / ui / composition`; a pure UI plugin needs no placeholder Host service. The [terminal shell](../products/maka/terminal-shell/README.md) and [desktop shell](../products/maka/desktop-shell/README.md) run the same [NSH workbench](../products/maka/workbench/README.md), sharing dynamic UI modules and public Host capabilities. A package may declare a `root` contribution to provide the entire application; the deployment source selects it through `ui: { path, id }`. Maka’s default workbench is an ordinary UI package, and a missing root never falls back to it. Installation implies user trust, so UI plugins use the existing workbench capabilities directly.
+
+A deployment may also select an immutable root composition through `base.package`, applying the same overrides to its inherited children while keeping independent roots in `instances`. Unlike a structural composition instance, this adds no parent or identity namespace. `remove` records a deletion; `configurationFields` records exact object-field edits, with an omitted value deleting a field and explicit null remaining a value. Whole-field `configuration` overrides retain their replacement semantics. The template's `ui` is inherited unless the source selects another root or explicitly clears `base.ui`. See the [product baseline model](../products/maka/bundle/README.md#installation-and-upgrades) and [canonical types](../platform/plugin-core/src/composition.rs).
 
 A UI entry can declare service imports and bind them to Host exports, including its own package's backend. `UiContext.application` is the native application client bound to those imports, retaining the Client, journal and original receipts. `UiContext.services[importName][index]` selects a particular provider, including imports with multiple providers; `UiContext.operations` recovers that instance’s original mutation receipts. Keep business controllers local to their owning activation and its application client. The full `UiContext.host` and `maka/host` remain available to trusted UI code, including root and catalog integration. See the [UI authoring guide](../skills/maka-plugin-authoring/references/ui-plugins.md).
 
@@ -71,3 +73,5 @@ Plugin lists use the package author's `displayName` and `description`. Describe 
 ```
 
 The plugin manager displays and searches this copy. Missing translations fall back to the default copy, then the instance name or package ID. Labels should predict the action or destination, following [Apple's guidance on clear names](https://developer.apple.com/videos/play/wwdc2026/290/). Use familiar icons with accessible labels and tooltips for common actions; keep explicit text for consequential or unfamiliar actions. Shell lists use their native virtualized controls and preserve the visible row; data cursors remain an implementation detail.
+
+Configured Agent service tools capture permission for exactly their selected method on the original binding. Do not duplicate those direct calls in the Host's `native` grants. Independent background preparation, executor callbacks and cross-component delegation still require their explicit grants; tool confirmation, filesystem/network permissions and resource checks remain separate. Existing saved tool configurations acquire this behavior when the new native implementation starts, without rewriting deployment sources or launcher grants.

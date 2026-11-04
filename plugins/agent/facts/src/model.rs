@@ -153,6 +153,9 @@ pub enum ModelPart {
     },
 }
 
+mod compaction;
+pub use compaction::NativeCompaction;
+
 /// Runtime-owned stream vocabulary; provider chunk names never enter storage.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", content = "data", rename_all = "snake_case")]
@@ -200,6 +203,8 @@ pub enum ModelEvent {
         timestamp: Option<String>,
     },
     Finished {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        compaction: Option<NativeCompaction>,
         reason: ModelFinishReason,
         usage: ModelUsage,
         provider_options: Option<Value>,
@@ -208,6 +213,8 @@ pub enum ModelEvent {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelStep {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<NativeCompaction>,
     pub parts: Vec<ModelPart>,
     pub finish_reason: ModelFinishReason,
     pub usage: ModelUsage,

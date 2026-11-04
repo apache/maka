@@ -334,6 +334,7 @@ async fn provider_dispatch_requires_the_exact_accepted_local_call() {
         Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: [false, true]
                     .into_iter()
                     .enumerate()

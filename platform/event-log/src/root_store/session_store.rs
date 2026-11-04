@@ -121,6 +121,40 @@ impl SessionStore {
             .await
     }
 
+    pub async fn message_delivery(
+        &self,
+        session: &str,
+        message: &str,
+    ) -> Result<crate::message_queue::MessageDelivery, StoreError> {
+        self.check_session(session)?;
+        self.scoped()
+            .await?
+            .message_delivery(session, message)
+            .await
+    }
+
+    pub async fn has_pending_steering(&self, invocation: &Invocation) -> Result<bool, StoreError> {
+        self.check_session(&invocation.session_id)?;
+        self.scoped().await?.has_pending_steering(invocation).await
+    }
+
+    pub async fn yield_running_tools(&self, invocation: &Invocation) -> Result<(), StoreError> {
+        self.check_session(&invocation.session_id)?;
+        self.scoped().await?.yield_running_tools(invocation).await
+    }
+
+    pub async fn unread_tool_results(
+        &self,
+        invocation: &Invocation,
+        observed: u64,
+    ) -> Result<bool, StoreError> {
+        self.check_session(&invocation.session_id)?;
+        self.scoped()
+            .await?
+            .unread_tool_results(invocation, observed)
+            .await
+    }
+
     pub async fn continuation_for_source(
         &self,
         source: &RunBoundary,
@@ -352,6 +386,10 @@ impl SessionStore {
     ) -> Result<Artifact, StoreError> {
         self.check_session(&artifact.session_id)?;
         self.scoped().await?.commit_artifact(artifact, bytes).await
+    }
+
+    pub async fn invocation_stopped(&self, invocation: &str) -> Result<bool, StoreError> {
+        self.scoped().await?.invocation_stopped(invocation).await
     }
 
     pub async fn interrupt_message_queue(
@@ -795,13 +833,14 @@ impl SessionStore {
         session: &str,
         through: u64,
         position: RowPosition,
+        index: Option<u32>,
         offset: u64,
         limit: usize,
     ) -> Result<ImageChunk, StoreError> {
         self.check_session(session)?;
         self.scoped()
             .await?
-            .tool_image(session, through, position, offset, limit)
+            .tool_image_at(session, through, position, index, offset, limit)
             .await
     }
 

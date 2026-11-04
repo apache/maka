@@ -193,6 +193,124 @@ async fn native_browser_consent_accepts_original_producer_and_rejects_foreign_pr
 }
 
 #[tokio::test]
+async fn native_system_permission_is_listed_cancellable_and_producer_granted() {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fixture = Fixture::new(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+        )
+        .await;
+        let session = fixture.create("System permission").await;
+        let started = fixture.send(&session).await.unwrap();
+        let (mut held, _) = listener.accept().await.unwrap();
+        request(&mut held).await;
+        let store = fixture.session(&session).await;
+        let invocation = store
+            .session_projection::<maka_agent_api::session::StoredSessionConfiguration>(&session)
+            .await
+            .unwrap()
+            .unwrap()
+            .root_turn
+            .unwrap()
+            .invocation;
+        let observed: Result<(), String> = async {
+            for id in ["system_cancelled", "system_granted"] {
+                let record = InteractionRecord {
+                    session_id: session.clone(),
+                    turn_id: invocation.turn_id.clone(),
+                    run_id: invocation.run_id.clone(),
+                    request_id: id.into(),
+                    created_at: 1,
+                    outcome: None,
+                    request: maka_agent_facts::interaction::InteractionRequest::SystemPermission {
+                        tool_use_id: "computer_tool".into(),
+                        grants: vec![
+                            maka_agent_facts::interaction::SystemPermissionGrant::Accessibility,
+                            maka_agent_facts::interaction::SystemPermissionGrant::ScreenRecording,
+                        ],
+                        application: "Maka Host".into(),
+                        application_location: None,
+                    },
+                };
+                store
+                    .establish_run_interaction(&invocation, &record)
+                    .await
+                    .map_err(|error| error.to_string())?;
+            }
+            let listed = fixture
+                .query("pendingInteractions", json!({"sessionId":session}))
+                .await?;
+            for id in ["system_cancelled", "system_granted"] {
+                let entries = listed["entries"].as_array().ok_or("pending entries")?;
+                if !entries.contains(
+                    &json!({"requestId":id,"kind":"system_permission","toolUseId":"computer_tool"}),
+                ) {
+                    return Err(format!("system permission was not listed: {listed}"));
+                }
+            }
+            let respond = |answer: Value| {
+                fixture.mutation(
+                    2,
+                    "respond",
+                    json!({"sessionId":session,"requestId":"system_cancelled","answer":answer}),
+                    Uuid::new_v4(),
+                )
+            };
+            let foreign = respond(json!({"kind":"computer_app_cancel"})).await?;
+            if foreign != json!({"kind":"rejected","reason":"invalid_answer"}) {
+                return Err(format!("foreign cancel was accepted: {foreign}"));
+            }
+            if respond(json!({"kind":"system_permission_granted"}))
+                .await
+                .is_ok()
+            {
+                return Err("a user answer claimed the system grant".into());
+            }
+            let cancelled = respond(json!({"kind":"system_permission_cancel"})).await?;
+            if cancelled["kind"] != "recorded"
+                || cancelled["record"]["outcome"]["kind"] != "closure"
+                || cancelled["record"]["outcome"]["reason"] != "producer_cancelled"
+            {
+                return Err(format!(
+                    "system permission cancel was not recorded: {cancelled}"
+                ));
+            }
+            let granted = store
+                .commit_interaction_outcome(
+                    "system_granted",
+                    InteractionOutcome::SystemPermissionGranted { committed_at: 2 },
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            if !granted.matches
+                || granted.record.outcome
+                    != Some(InteractionOutcome::SystemPermissionGranted { committed_at: 2 })
+            {
+                return Err("producer grant was not committed".into());
+            }
+            Ok(())
+        }
+        .await;
+        fixture
+            .mutation(
+                2,
+                "stop",
+                json!({"sessionId":session,"invocationId":started["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        fixture.drained().await;
+        fixture.app.shutdown().await.unwrap();
+        fixture.config.shutdown().await.unwrap();
+        observed.unwrap();
+    })
+    .await
+    .expect("native system permission fixture timed out");
+}
+
+#[tokio::test]
 async fn native_question_roundtrip_is_bound_owned_and_first_wins() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

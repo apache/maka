@@ -121,6 +121,37 @@ export function ConnectionForm(props: { settings: ModelSettingsOwner }) {
               </Text>
               <ChoiceIndicator kind="switch" checked={form().enabled} disabled={disabled()} />
             </Button>
+            <If when={owner.supportsServerSideCompaction()}>
+              <Button
+                disabled={disabled()}
+                selected={form().serverSideCompaction}
+                accessibilityLabel={tr('Provider server-side compaction')}
+                onPress={inputAction(owner.toggleServerSideCompaction, {
+                  ...owner.action(),
+                  enabled: !form().serverSideCompaction,
+                })}
+                style={{
+                  ...controlStyle,
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: 12,
+                  paddingHorizontal: 0,
+                }}
+                hoverStyle={controlHoverStyle()}
+                focusStyle={controlFocusStyle()}
+                activeStyle={{ backgroundColor: C.raised }}
+                disabledStyle={controlDisabledStyle}
+              >
+                <Text style={{ ...captionTextStyle, color: C.text, flex: 1 }}>
+                  {tr('Provider server-side compaction')}
+                </Text>
+                <ChoiceIndicator
+                  kind="switch"
+                  checked={form().serverSideCompaction}
+                  disabled={disabled()}
+                />
+              </Button>
+            </If>
           </View>
           <If when={form().baseline}>
             <View style={{ gap: 12 }}>

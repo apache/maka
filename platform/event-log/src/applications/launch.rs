@@ -135,14 +135,19 @@ impl EventLog {
         })).await
     }
 
-    /// Called by the trusted launcher after its original source commits have
-    /// been confirmed. Never changes an application head or connection input.
-    pub async fn complete_application_launch(&self, deployment: Uuid) -> Result<(), StoreError> {
+    /// Publish the prepared connection configuration and clear recovery only
+    /// after the frozen source commits have been confirmed.
+    pub async fn complete_application_launch(
+        &self,
+        deployment: Uuid,
+        configuration: Value,
+    ) -> Result<(), StoreError> {
         self.application_domain()?;
+        let configuration = serde_json::to_string(&configuration)?;
         self.connection.run(move |connection| Box::pin(async move {
             let mut tx = connection.begin_with("BEGIN IMMEDIATE").await?;
-            let changed = sqlx::query("UPDATE application_launch SET pending=NULL WHERE singleton=1 AND deployment=?")
-                .bind(deployment.to_string()).execute(&mut *tx).await?.rows_affected();
+            let changed = sqlx::query("UPDATE application_launch SET configuration=?, pending=NULL WHERE singleton=1 AND deployment=?")
+                .bind(configuration).bind(deployment.to_string()).execute(&mut *tx).await?.rows_affected();
             if changed != 1 { return Err(invalid("launcher selection changed")); }
             tx.commit().await.map_err(StoreError::CommitUnknown)
         })).await

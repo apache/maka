@@ -158,16 +158,15 @@ impl PreparedPrompt {
         Ok(())
     }
 
-    pub fn overlay_plan_bytes(system: bool, checkpoint: bool, summary: bool) -> usize {
-        let adapters =
-            Self::overlay_metadata_bytes(system, usize::from(checkpoint), usize::from(summary));
+    pub fn overlay_plan_bytes(system: bool, checkpoint: bool, suffixes: usize) -> usize {
+        let adapters = Self::overlay_metadata_bytes(system, usize::from(checkpoint), suffixes);
         if adapters == 0 {
             return 0;
         }
         // The source template and one attempt/fit view can coexist.
         2 * adapters
             + usize::from(checkpoint) * OwnedOverlay::checkpoint_metadata_bytes()
-            + usize::from(summary) * OwnedOverlay::user_metadata_bytes()
+            + suffixes * OwnedOverlay::user_metadata_bytes()
             + 2 * (2 * std::mem::size_of::<usize>() + std::mem::size_of::<Vec<OwnedOverlay>>())
     }
 
@@ -177,8 +176,17 @@ impl PreparedPrompt {
         context: Arc<maka_event_log::context::ContextView>,
         checkpoint_label: &'static str,
         summary: bool,
+        instruction: Option<Arc<String>>,
     ) -> Result<(), crate::RunError> {
-        let bytes = Self::overlay_plan_bytes(system.is_some(), context.baseline.is_some(), summary);
+        let suffixes = usize::from(summary) + usize::from(instruction.is_some());
+        let bytes =
+            Self::overlay_plan_bytes(system.is_some(), context.baseline.is_some(), suffixes)
+                .checked_add(OwnedOverlay::checkpoint_payload_bytes(&context))
+                .ok_or_else(|| {
+                    crate::RunError::Preparation(std::io::Error::other(
+                        "native overlay size overflow",
+                    ))
+                })?;
         if bytes == 0 {
             return Ok(());
         }
@@ -195,17 +203,19 @@ impl PreparedPrompt {
         let arena = self.arena.as_ref().ok_or_else(|| {
             crate::RunError::Internal("request overlays lack their original worker".into())
         })?;
-        let (system, checkpoint) = arena
+        let (system, checkpoint, instruction) = arena
             .with_writer(move |_| {
                 let system = system.map(|text| OwnedOverlay::system(text).bound(owner.clone()));
                 let checkpoint = OwnedOverlay::checkpoint(context, checkpoint_label)
-                    .map(|overlay| overlay.bound(owner));
-                Ok((system, checkpoint))
+                    .map(|overlay| overlay.bound(owner.clone()));
+                let instruction = instruction.map(|text| OwnedOverlay::user(text).bound(owner));
+                Ok((system, checkpoint, instruction))
             })
             .await
             .map_err(crate::RunError::Preparation)?;
         self.system = system;
         self.prefix = Arc::new(checkpoint.into_iter().collect());
+        self.suffix = Arc::new(instruction.into_iter().collect());
         self.rebuild_recipes();
         Ok(())
     }
@@ -297,6 +307,12 @@ impl PreparedPrompt {
         wire::compile(self, language, provider, options, tools, cancellation).await
     }
 
+    pub fn native_checkpoint_identity(&self) -> Option<&str> {
+        self.prefix
+            .first()
+            .filter(|overlay| overlay.is_native_checkpoint())
+            .map(OwnedOverlay::identity)
+    }
     pub fn breakdown(&self) -> PreparedContextBreakdown {
         let mut result = self.body.breakdown().clone();
         for overlay in self

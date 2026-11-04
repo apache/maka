@@ -205,6 +205,10 @@ pub enum Fact {
         operation_id: String,
         observation: Box<maka_plugin_core::operation::OperationReply>,
     },
+    /// The caller stopped observing an operation that is still executing.
+    ToolYielded {
+        operation_id: String,
+    },
     ToolSettled {
         operation_id: String,
         outcome: ToolOutcome,
@@ -266,6 +270,7 @@ impl Fact {
             Self::ModelCompleted { .. } => "model_completed",
             Self::ToolDispatched { .. } => "tool_dispatched",
             Self::ToolOperationObserved { .. } => "tool_operation_observed",
+            Self::ToolYielded { .. } => "tool_yielded",
             Self::ToolSettled { .. } => "tool_settled",
             Self::ToolNotified { .. } => "tool_notified",
             Self::ToolRejected { .. } => "tool_rejected",
@@ -277,6 +282,7 @@ impl Fact {
         match self {
             Self::ToolDispatched { operation_id, .. }
             | Self::ToolOperationObserved { operation_id, .. }
+            | Self::ToolYielded { operation_id }
             | Self::ToolSettled { operation_id, .. }
             | Self::ToolRejected { operation_id, .. } => Some(operation_id),
             Self::ModelRequested { step_id, .. }
@@ -290,6 +296,7 @@ impl Fact {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelInterruption {
+    Steered,
     Cancelled,
     TimedOut,
     Failed,
@@ -402,7 +409,9 @@ impl LogPrefix {
                 | Fact::ExecutorObserved { .. }
                 | Fact::ModelObserved { .. }
                 | Fact::ToolRejected { .. } => {}
-                Fact::ToolNotified { .. } | Fact::ToolOperationObserved { .. } => {}
+                Fact::ToolNotified { .. }
+                | Fact::ToolOperationObserved { .. }
+                | Fact::ToolYielded { .. } => {}
                 Fact::ModelRequested { step_id, .. } => {
                     model_steps.insert(step_id.clone());
                 }

@@ -124,6 +124,7 @@ pub(super) fn step(facts: &mut Vec<Fact>, id: &str, text: bool, native: bool) {
     facts.push(Fact::ModelCompleted {
         step_id: id.into(),
         output: ModelCompletion {
+            compaction: None,
             parts,
             finish_reason: ModelFinishReason::ToolCalls,
             usage: Default::default(),

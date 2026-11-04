@@ -66,6 +66,7 @@ import { Icon } from './Icon';
 import { CapabilityRequest, computerCapability } from './CapabilityRequest';
 import { FormRequest } from './FormRequest';
 import { ComputerAppRequest } from './ComputerAppRequest';
+import { SystemPermissionRequest, systemPermissionName } from './SystemPermissionRequest';
 import { computerAppOptions } from './interaction-computer-app';
 import {
   formSubmission,
@@ -183,6 +184,7 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
     return outcome.decision === 'allow'
       ? uiMessage('Capability allowed')
       : uiMessage('Capability denied');
+  if (outcome.kind === 'system_permission_granted') return uiMessage('System permissions granted');
   if (outcome.kind === 'computer_app_decision')
     return outcome.decision === 'deny'
       ? uiMessage('Application access denied')
@@ -196,6 +198,41 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
           ),
         });
   return uiMessage('Request closed · {reason}', { reason: outcome.reason.replaceAll('_', ' ') });
+}
+
+export function SystemPermissionActions(props: {
+  request: SystemPermissionRequest;
+  actions: string[];
+  disabled?: boolean;
+  onCancel: () => void;
+  onAction: (action: string) => void;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 8 }}>
+      <InteractionAction
+        label={tr('Cancel request')}
+        disabled={props.disabled}
+        onPress={props.onCancel}
+      />
+      <Each of={props.request.grants.filter((grant) => props.actions.includes(grant))}>
+        {(grant) => (
+          <InteractionAction
+            label={tr('Open {name} settings', { name: systemPermissionName(grant()) })}
+            primary={grant() === props.request.grants[0]}
+            disabled={props.disabled}
+            onPress={() => props.onAction(grant())}
+          />
+        )}
+      </Each>
+      <If when={props.actions.includes('reveal_application')}>
+        <InteractionAction
+          label={tr('Show permission application in Finder')}
+          disabled={props.disabled}
+          onPress={() => props.onAction('reveal_application')}
+        />
+      </If>
+    </View>
+  );
 }
 
 export function InteractionComposer({
@@ -227,6 +264,7 @@ export function InteractionComposer({
   const argumentBusy = signal(false),
     argumentError = createText();
   let argumentPosition: HistoryRowPosition | null = null;
+  const systemActions = signal<string[]>([]);
   let alive = true;
   cleanup(() => {
     alive = false;
@@ -256,6 +294,14 @@ export function InteractionComposer({
     const current = request();
     return current?.kind === 'computer_app' ? current : null;
   };
+  const systemPermissionRequest = () => {
+    const current = request();
+    return current?.kind === 'system_permission' ? current : null;
+  };
+  // A cancel answer has a kind of its own; it applies to its request kind.
+  const cancels = (answer: InteractionAnswer) =>
+    (answer.kind === 'computer_app_cancel' && !!computerAppRequest()) ||
+    (answer.kind === 'system_permission_cancel' && !!systemPermissionRequest());
   const sameRecord = (value: InteractionRecord | null | undefined) =>
     value?.sessionId === sessionId && value?.requestId === requestId;
   const ownsAction = (owner: InteractionOwner) =>
@@ -265,7 +311,9 @@ export function InteractionComposer({
     return current ? JSON.stringify(current.questions) : null;
   };
   const responseIdentity = () =>
-    formRequest() || capabilityRequest() || computerAppRequest() ? JSON.stringify(request()) : null;
+    formRequest() || capabilityRequest() || computerAppRequest() || systemPermissionRequest()
+      ? JSON.stringify(request())
+      : null;
   const form = () => formSubmission(formRequest()?.fields ?? [], formDrafts());
   const changeForm = (
     choice: InteractionOwner & {
@@ -448,6 +496,12 @@ export function InteractionComposer({
       ]);
       if (!alive) return;
       if (!sameRecord(canonical)) throw new UiError('The Host returned a different request.');
+      const actions =
+        canonical.request.kind === 'system_permission' && !canonical.outcome
+          ? await host.systemPermissionActions(sessionId, requestId)
+          : [];
+      if (!alive) return;
+      systemActions.set(actions);
       record.set(canonical);
       uncertain.set(unresolved);
       pending.set(list.entries.some((entry) => entry.requestId === requestId));
@@ -489,12 +543,7 @@ export function InteractionComposer({
     if (ownsAction(owner)) void refresh();
   };
   const respond = async (answer: InteractionAnswer) => {
-    if (
-      blocked() ||
-      (answer.kind !== request()?.kind &&
-        !(answer.kind === 'computer_app_cancel' && computerAppRequest()))
-    )
-      return;
+    if (blocked() || (answer.kind !== request()?.kind && !cancels(answer))) return;
     busy.set(true);
     error.set('');
     try {
@@ -578,6 +627,15 @@ export function InteractionComposer({
     if (kind === 'computer_app') return { kind, decision: 'deny' };
     return null;
   };
+  const openSystemPermissionAction = async (action: string) => {
+    error.set('');
+    try {
+      await host.systemPermissionAction(sessionId, requestId, action);
+    } catch (reason) {
+      if (alive) error.set(String(reason));
+    }
+  };
+
   const deny = () => {
     const answer = denialAnswer();
     if (answer) void respond(answer);
@@ -592,16 +650,17 @@ export function InteractionComposer({
   ) => {
     if (!ownsAction(rendered) || blocked()) return;
     const answer = JSON.parse(rendered.answerJSON) as InteractionAnswer | null;
-    if (
-      !answer ||
-      (answer.kind !== request()?.kind &&
-        !(answer.kind === 'computer_app_cancel' && computerAppRequest()))
-    )
-      return;
+    if (!answer || (answer.kind !== request()?.kind && !cancels(answer))) return;
     if (answer.kind === 'question' && rendered.questionsJSON !== questionIdentity()) return;
     if (answer.kind === 'service_approval' && rendered.sourceJSON !== sourceIdentity()) return;
     if (
-      ['form', 'client_capability', 'computer_app', 'computer_app_cancel'].includes(answer.kind) &&
+      [
+        'form',
+        'client_capability',
+        'computer_app',
+        'computer_app_cancel',
+        'system_permission_cancel',
+      ].includes(answer.kind) &&
       rendered.requestJSON !== responseIdentity()
     )
       return;
@@ -668,6 +727,7 @@ export function InteractionComposer({
           form: tr('Form request'),
           client_capability: tr('Capability request'),
           computer_app: tr('Application access request'),
+          system_permission: tr('System permission request'),
         }[current.kind]
       : tr('Review request');
   };
@@ -993,6 +1053,12 @@ export function InteractionComposer({
                 <If when={computerAppRequest()}>
                   <ComputerAppRequest request={computerAppRequest()!} />
                 </If>
+                <If when={systemPermissionRequest()}>
+                  <SystemPermissionRequest
+                    request={systemPermissionRequest()!}
+                    canLocate={systemActions().includes('reveal_application')}
+                  />
+                </If>
               </View>
             }
           >
@@ -1067,6 +1133,15 @@ export function InteractionComposer({
               gap: 8,
             }}
           >
+            <If when={systemPermissionRequest() && !record()?.outcome}>
+              <SystemPermissionActions
+                request={systemPermissionRequest()!}
+                actions={systemActions()}
+                disabled={blocked()}
+                onCancel={answerBinding({ kind: 'system_permission_cancel' })}
+                onAction={(action) => void openSystemPermissionAction(action)}
+              />
+            </If>
             <If when={computerAppRequest() && !record()?.outcome}>
               <InteractionAction
                 label={tr('Cancel request')}

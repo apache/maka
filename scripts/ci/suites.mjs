@@ -93,12 +93,7 @@ export const suites = {
   'native-build': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: embeddedInputs,
-  },
-  clippy: {
-    workspace: 'root',
-    packages: 'workspace',
-    extraInputs: embeddedInputs,
+    extraInputs: [...embeddedInputs, 'scripts/rust/build-cli.mjs'],
   },
   contracts: {
     workspace: 'root',
@@ -173,16 +168,48 @@ export const suites = {
     filter:
       'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
   },
+  'macos-host': {
+    workspace: 'root',
+    packages: ['maka-cli', 'maka-host-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-cli', '--bin', 'maka', '--no-default-features'],
+    filter: 'test(deployment::host_identity::tests::)',
+    extraInputs: [
+      ...embeddedInputs,
+      'scripts/rust/build-cli.mjs',
+      'scripts/rust/build-cli.test.mjs',
+      'scripts/rust/pack-cli.mjs',
+      'scripts/rust/pack-cli.test.mjs',
+      'scripts/rust/run-cli.mjs',
+      'scripts/rust/run-cli.test.mjs',
+    ],
+  },
+  'windows-shell': {
+    workspace: 'root',
+    packages: ['maka-process', 'maka-settings-native', 'maka-agent-native'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-process',
+      '-p',
+      'maka-settings-native',
+      '-p',
+      'maka-agent-native',
+    ],
+    filter:
+      'test(git_bash) | test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice)',
+  },
   native: {
     workspace: 'root',
     packages: ['maka-computer-use'],
+    cargoArgs: ['--locked', '-p', 'maka-computer-use', '--lib', '--features', 'native-desktop'],
+    filter: 'test(macos::controller::tests::) | test(macos::tcc::tests::)',
   },
 };
 
 export const workers = [
   {
-    id: 'variants',
-    suites: ['bridge', 'desktop', 'native-build'],
+    id: 'bridge',
+    suites: ['bridge'],
     runner: 'ubuntu-latest',
     workspace: 'root',
     dependencies: 'headless',
@@ -190,13 +217,13 @@ export const workers = [
     compile: true,
   },
   {
-    id: 'clippy',
-    suites: ['clippy'],
+    id: 'packaging',
+    suites: ['native-build'],
     runner: 'ubuntu-latest',
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
-    compile: true,
+    compile: false,
   },
   {
     id: 'product',
@@ -205,7 +232,7 @@ export const workers = [
     workspace: 'root',
     dependencies: 'headless',
     javascript: true,
-    compile: true,
+    compile: false,
   },
   {
     id: 'termina',
@@ -236,11 +263,16 @@ export const workers = [
   },
   ...['ubuntu', 'macos', 'windows'].map((os) => ({
     id: `native-${os}`,
-    suites: ['native'],
+    suites:
+      os === 'macos'
+        ? ['native', 'macos-host']
+        : os === 'windows'
+          ? ['native', 'windows-shell']
+          : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
     dependencies: os === 'ubuntu' ? 'computer-use' : '',
-    javascript: false,
+    javascript: os === 'macos' || os === 'windows',
     compile: true,
   })),
 ];

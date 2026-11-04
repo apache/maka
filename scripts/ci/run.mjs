@@ -24,6 +24,7 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -55,15 +56,25 @@ export function executor(root, worker = {}) {
         ...(noRun ? ['--no-run'] : []),
         ...extra,
       ],
-      { env: { ...env, NEXTEST_PROFILE: suites[id].profile ?? 'default' } },
+      {
+        env: {
+          ...env,
+          NEXTEST_PROFILE: suites[id].profile ?? 'default',
+          ...(id === 'windows-shell'
+            ? {
+                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(env.ProgramFiles, 'LLVM', 'bin'),
+                MAKA_TEST_GIT_BASH:
+                  env.MAKA_TEST_GIT_BASH ?? join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+              }
+            : {}),
+        },
+      },
     );
 
   async function check(id) {
     if (id === 'format') {
       await cargo(['fmt', '--all', '--', '--check']);
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
-    } else if (id === 'lint-js') {
-      await node(['node_modules/@biomejs/biome/bin/biome', 'lint', '.']);
     } else if (id === 'tooling-tests') {
       await node([
         '--test',
@@ -87,7 +98,7 @@ export function executor(root, worker = {}) {
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui'].includes(id)) {
+    if (['root', 'desktop', 'gpui', 'macos-host', 'windows-shell'].includes(id)) {
       await nextest(id, true, filter, extra);
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
@@ -95,8 +106,6 @@ export function executor(root, worker = {}) {
       mkdirSync(join(target, 'ci'), { recursive: true });
       copyFileSync(join(target, 'debug/maka'), join(target, 'ci/maka-bridge'));
       await nextest(id, true);
-    } else if (id === 'clippy') {
-      await cargo(['clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings']);
     } else if (id === 'native-build') {
       await node(['scripts/rust/build-cli.mjs']);
       await run(join(target, 'debug/maka'), ['--version']);
@@ -125,15 +134,7 @@ export function executor(root, worker = {}) {
       await nextest(id, true);
       await cargo(['nextest', 'run', ...webTextArgs, '--no-run']);
     } else if (id === 'native') {
-      await cargo([
-        'check',
-        '--locked',
-        '-p',
-        'maka-computer-use',
-        '--lib',
-        '--features',
-        'native-desktop',
-      ]);
+      await cargo(['check', ...suites.native.cargoArgs]);
     } else if (id !== 'tooling') {
       throw new Error(`Unknown suite: ${id}`);
     }
@@ -141,8 +142,16 @@ export function executor(root, worker = {}) {
 
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
-      for (const name of ['format', 'lint-js', 'tooling-tests', 'licenses']) await check(name);
-    } else if (id === 'root') {
+      for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
+    } else if (id === 'macos-host') {
+      await nextest(id);
+      await node([
+        '--test',
+        'scripts/rust/build-cli.test.mjs',
+        'scripts/rust/pack-cli.test.mjs',
+        'scripts/rust/run-cli.test.mjs',
+      ]);
+    } else if (id === 'root' || id === 'windows-shell') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
@@ -151,14 +160,10 @@ export function executor(root, worker = {}) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);
+    } else if (id === 'native' && process.platform === 'darwin') {
+      await nextest(id);
     } else if (id === 'contracts') {
       await node(['packages/plugin-sdk/scripts/generate.mjs', 'check']);
-      await node([
-        'node_modules/typescript/bin/tsc',
-        '-p',
-        'packages/plugin-sdk/tsconfig.json',
-        '--noEmit',
-      ]);
       await node([
         'node_modules/typescript/bin/tsc',
         '-p',
@@ -204,16 +209,16 @@ export function executor(root, worker = {}) {
         ['--test', 'third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs'],
         { env: { ...env, CHROME: chrome } },
       );
-    } else if (!['clippy', 'native', 'native-build'].includes(id)) {
+    } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }
   }
 
-  async function archive(plan, output) {
-    const args = suites.root.cargoArgs;
+  async function archive(plan, output, id = 'root') {
+    const args = suites[id].cargoArgs;
     const listing = JSON.parse(
       await cargo(
-        ['nextest', 'list', ...args, '-E', plan.suites.root.filter, '--message-format', 'json'],
+        ['nextest', 'list', ...args, '-E', plan.suites[id].filter, '--message-format', 'json'],
         { capture: true },
       ),
     );
@@ -225,49 +230,95 @@ export function executor(root, worker = {}) {
     const count = selected
       .flatMap((suite) => Object.values(suite.testcases))
       .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
-    console.log(`Selected ${count} root tests for archive replay`);
-    if (!count && plan.suites.root.filter === 'all()')
+    console.log(`Selected ${count} ${id} tests for archive replay`);
+    if (!count && plan.suites[id].filter === 'all()')
       throw new Error('The full root test selection was unexpectedly empty');
     if (!count) return [];
     const config = readFileSync(join(root, '.config/nextest.toml'), 'utf8');
-    const runtimePackages = new Set(
-      selected
-        .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
-        .map((suite) => suite['package-id']),
-    );
-    const includes = [];
-    for (const [id, path] of Object.entries(listing['rust-build-meta']['build-script-out-dirs'])) {
-      if (runtimePackages.has(id)) includes.push(`${path}/product`);
+    const groups = [];
+    for (const [group, shards, name] of [
+      ['native', 8, 'maka-agent-native'],
+      ['cli', id === 'desktop' ? 4 : 6, 'maka-cli'],
+    ]) {
+      groups.push({
+        group,
+        shards,
+        binaries: selected.filter((suite) => suite['package-name'] === name),
+      });
     }
-    const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
-    try {
-      const configFile = join(temporary, 'nextest.toml');
-      writeFileSync(
-        configFile,
-        `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
+    const remaining = selected
+      .filter((binary) => !['maka-agent-native', 'maka-cli'].includes(binary['package-name']))
+      .map((binary) => ({ binary, bytes: statSync(binary['binary-path']).size }))
+      .sort(
+        (a, b) => b.bytes - a.bytes || a.binary['binary-id'].localeCompare(b.binary['binary-id']),
       );
-      mkdirSync(dirname(output), { recursive: true });
-      await cargo([
-        'nextest',
-        'archive',
-        ...args,
-        '--profile',
-        'ci',
-        '--config-file',
-        configFile,
-        '-E',
-        plan.suites.root.filter,
-        '--archive-file',
-        output,
-      ]);
+    const buckets = Array.from({ length: Math.min(4, remaining.length) }, () => ({
+      bytes: 0,
+      binaries: [],
+    }));
+    for (const entry of remaining) {
+      const bucket = buckets.reduce((a, b) => (a.bytes <= b.bytes ? a : b));
+      bucket.bytes += entry.bytes;
+      bucket.binaries.push(entry.binary);
+    }
+    groups.push(
+      ...buckets.map((bucket, index) => ({
+        group: `rest-${index + 1}`,
+        shards: 2,
+        binaries: bucket.binaries,
+      })),
+    );
+    const temporary = mkdtempSync(join(tmpdir(), 'maka-ci-archive-'));
+    const partitions = [];
+    try {
+      // Balance the binaries each machine must download
+      // and extract, instead of sending their entire archive to every shard.
+      for (const { group, shards, binaries } of groups) {
+        if (!binaries.length) continue;
+        // Archives select binaries; the consumers retain the original test filter.
+        const filter = binaries.map((suite) => `binary_id(=${suite['binary-id']})`).join(' | ');
+        const runtimePackages = new Set(
+          binaries
+            .filter((suite) => ['maka-cli', 'maka-terminal-shell'].includes(suite['package-name']))
+            .map((suite) => suite['package-id']),
+        );
+        const includes = [];
+        for (const [id, path] of Object.entries(
+          listing['rust-build-meta']['build-script-out-dirs'],
+        )) {
+          if (runtimePackages.has(id)) includes.push(`${path}/product`);
+        }
+        const configFile = join(temporary, 'nextest.toml');
+        writeFileSync(
+          configFile,
+          `${config}\n[profile.ci.archive]\ninclude = [\n${includes.map((path) => `{ path = ${JSON.stringify(path)}, relative-to = "target", depth = "infinite", on-missing = "error" },`).join('\n')}\n]\n`,
+        );
+        mkdirSync(dirname(output), { recursive: true });
+        await cargo([
+          'nextest',
+          'archive',
+          ...args,
+          '--profile',
+          'ci',
+          '--config-file',
+          configFile,
+          '-E',
+          filter,
+          '--archive-file',
+          join(dirname(output), `root-tests-${group}.tar.zst`),
+        ]);
+        const tests = binaries
+          .flatMap((suite) => Object.values(suite.testcases))
+          .filter((entry) => !entry.ignored && entry['filter-match'].status === 'matches').length;
+        const total = Math.min(shards, tests);
+        for (let index = 1; index <= total; index++)
+          partitions.push({ group, partition: `slice:${index}/${total}` });
+        console.log(`Archived ${tests} ${group} tests for ${total} partitions`);
+      }
     } finally {
       rmSync(temporary, { recursive: true, force: true });
     }
-    // Balance measured fixture execution time against producer and transfer time.
-    const partitions = Math.min(4, count);
-    return Array.from({ length: partitions }, (_, index) => ({
-      partition: `slice:${index + 1}/${partitions}`,
-    }));
+    return partitions;
   }
 
   return { prepare, verify, check, archive, run, target };

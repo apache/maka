@@ -129,6 +129,7 @@ async fn ready_with_cleanup(
         },
     );
     let request = ModelRequest {
+        operation: maka_agent_facts::context::ModelOperation::Inference,
         language: Language::En,
         provider: ProviderConfig {
             image_input: None,

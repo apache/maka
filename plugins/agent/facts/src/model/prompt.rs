@@ -118,6 +118,9 @@ pub enum FileData {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
 pub enum AssistantPart {
+    CodexCompaction {
+        item: Value,
+    },
     Text {
         text: String,
         #[serde(rename = "providerOptions", skip_serializing_if = "Option::is_none")]
@@ -175,7 +178,7 @@ impl ToolResult {
     }
 }
 
-/// JSON-only APIs require exactly one result per call. Supplemental Code Mode
+/// JSON-only APIs require exactly one result per call. Supplemental tool
 /// output is carried as a labelled observation, never a second settlement.
 pub fn notification_fallback(
     messages: Vec<Message>,
@@ -201,14 +204,30 @@ pub fn notification_fallback(
             let mut result = Vec::new();
             for part in content {
                 if part.is_notification() {
-                    if let ToolOutput::Text(text) = part.output {
-                        let id = part.tool_call_id;
-                        result.push(Message::user(match language {
-                            Language::En => format!("[Notification from exec {id}]\n{text}"),
-                            Language::ZhCn => format!("[来自 exec {id} 的通知]\n{text}"),
-                            Language::ZhTw => format!("[來自 exec {id} 的通知]\n{text}"),
-                        }));
+                    let id = part.tool_call_id;
+                    let header = match language {
+                        Language::En => format!("[Notification from tool {id}]"),
+                        Language::ZhCn => format!("[来自工具 {id} 的通知]"),
+                        Language::ZhTw => format!("[來自工具 {id} 的通知]"),
+                    };
+                    let mut content = vec![ContentPart::text(header)];
+                    match part.output {
+                        ToolOutput::Text(text) => content.push(ContentPart::text(text)),
+                        ToolOutput::Json(value) => {
+                            content.push(ContentPart::text(value.to_string()))
+                        }
+                        ToolOutput::ErrorText(text) => {
+                            content.push(ContentPart::text(format!("Error: {text}")))
+                        }
+                        ToolOutput::ErrorJson(value) => {
+                            content.push(ContentPart::text(format!("Error: {value}")))
+                        }
+                        ToolOutput::Content(parts) => content.extend(parts),
                     }
+                    result.push(Message::User {
+                        content,
+                        provider_options: None,
+                    });
                 } else {
                     result.push(Message::Tool {
                         content: vec![part],

@@ -591,6 +591,17 @@ mod tests {
                 b"<plist version=\"1.0\"/>\n",
             );
             append("bin/Maka.app/Contents/Resources/Maka.icns", b"icns");
+            append(
+                "bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/Info.plist",
+                b"<plist version=\"1.0\"/>\n",
+            );
+            append(target.host_shell().unwrap(), &binary);
+            for name in [
+                "bin/Maka.app/Contents/_CodeSignature/CodeResources",
+                "bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/_CodeSignature/CodeResources",
+            ] {
+                append(name, b"<plist version=\"1.0\"/>\n");
+            }
             for name in ["DISCLAIMER", "LICENSE", "NOTICE", "THIRD_PARTY_NOTICES.txt"] {
                 append(
                     &format!("bin/Maka.app/Contents/Resources/{name}"),
@@ -893,6 +904,20 @@ mod tests {
                 Some("bin/maka-python-worker.exe"),
             ),
             (macos, None, false, Some("bin/Maka.app/Contents/Info.plist")),
+            (
+                macos,
+                None,
+                false,
+                Some("bin/Maka.app/Contents/_CodeSignature/CodeResources"),
+            ),
+            (
+                macos,
+                None,
+                false,
+                Some(
+                    "bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/_CodeSignature/CodeResources",
+                ),
+            ),
             (
                 macos,
                 None,

@@ -78,6 +78,9 @@ struct NativeApprovalData {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum NativeApprovalCapture {
     Ordinary {},
+    Shell {
+        shell: maka_agent_facts::configuration::policy::ShellPolicy,
+    },
     Web {
         basis: maka_web_api::contract::Basis,
     },
@@ -94,10 +97,9 @@ impl NativeApprovalData {
         if data.selected.selection.confirmation != ToolConfirmation::Required
             || !matches!(
                 (data.selected.selection.input, &data.capture),
-                (
-                    ToolInput::Json | ToolInput::Shell,
-                    NativeApprovalCapture::Ordinary {}
-                ) | (ToolInput::Web, NativeApprovalCapture::Web { .. })
+                (ToolInput::Json, NativeApprovalCapture::Ordinary {})
+                    | (ToolInput::Shell, NativeApprovalCapture::Shell { .. })
+                    | (ToolInput::Web, NativeApprovalCapture::Web { .. })
                     | (ToolInput::Skill, NativeApprovalCapture::Skill { .. })
             )
         {
@@ -114,8 +116,6 @@ pub(crate) struct Catalog {
     pub basis: Vec<SelectedTool>,
     /// Derived from actual bound contracts and methods, never display names.
     pub editing: Vec<(String, EditingTools)>,
-    /// Planning eligibility follows the actual service contract and method.
-    pub planning: Vec<String>,
     pub executor: Arc<dyn maka_agent_engine::NativeApprovalExecutor>,
 }
 
@@ -144,8 +144,6 @@ pub(crate) fn catalog(
             Some((selection.name.clone(), style))
         })
         .collect();
-    let mut planning = Vec::new();
-    let questions_contract = maka_interactions_api::questions::contract();
     let web_contract = maka_web_api::contract();
     let mut web_bindings = std::collections::BTreeMap::<ServiceTarget, Vec<Service>>::new();
     let mut shell_bindings = Vec::new();
@@ -197,18 +195,6 @@ pub(crate) fn catalog(
             } else {
                 None
             };
-            if (binding.contract() == &file_contract
-                && matches!(
-                    selection.method.as_str(),
-                    "readText" | "readImage" | "glob" | "grep"
-                ))
-                || (binding.contract() == &web_contract
-                    && matches!(selection.method.as_str(), "fetch" | "search"))
-                || (binding.contract() == &questions_contract && selection.method == "ask")
-            {
-                planning.push(selection.name.clone());
-            }
-
             if !method.resources.is_empty()
                 || match selection.result {
                     ToolResult::Json => method.mode == MethodMode::Subscription,
@@ -285,7 +271,7 @@ pub(crate) fn catalog(
                 binding: binding.execution_basis().into(),
             });
             let service = Service {
-                services: services.clone(),
+                services: services.select_method(&selection.target, &selection.method)?,
                 store: store.clone(),
                 binding: binding.execution_basis().into(),
                 target: format!(
@@ -307,6 +293,7 @@ pub(crate) fn catalog(
                 title_kind,
                 mode: method.mode,
                 web_basis: None,
+                shell: None,
             };
             if selection.input == ToolInput::Skill {
                 skill_bindings.push((selection.name.clone(), Arc::new(SkillBinding(service.clone()))));
@@ -397,7 +384,6 @@ pub(crate) fn catalog(
         tools: catalog,
         basis,
         editing,
-        planning,
         executor: Arc::new(ApprovalExecutor {
             services: native_services,
         }),
@@ -441,6 +427,7 @@ impl maka_agent_engine::NativeApprovalExecutor for ApprovalExecutor {
                 })?;
             match data.capture {
                 NativeApprovalCapture::Web { basis } => service.web_basis = Some(basis),
+                NativeApprovalCapture::Shell { shell } => service.shell = Some(shell),
                 NativeApprovalCapture::Skill { tool_names } => {
                     service.tool_names = ToolNames::Configured(tool_names.into())
                 }
@@ -562,6 +549,7 @@ impl ToolNames {
 
 #[derive(Clone)]
 struct Service {
+    shell: Option<maka_agent_facts::configuration::policy::ShellPolicy>,
     web_basis: Option<maka_web_api::contract::Basis>,
     tool_names: ToolNames,
     services: NativeServices,
@@ -585,6 +573,7 @@ impl ToolPreparer for Service {
         cancellation: CancellationToken,
     ) -> PreparationFuture {
         let self_store = self.store.clone();
+        let shell = self.shell.clone();
         let service_capture = self.web_basis.clone();
         let captured_names = self.tool_names.clone();
         let tool_names = self.tool_names.clone();
@@ -642,6 +631,7 @@ impl ToolPreparer for Service {
                 .or_else(|| default_title.and_then(|kind| kind.render(&input)));
             let presentation = selection.presentation.clone();
             let service = Service {
+                shell: shell.clone(),
                 web_basis,
                 tool_names,
                 services,
@@ -677,7 +667,12 @@ impl ToolPreparer for Service {
                         ToolInput::Skill => NativeApprovalCapture::Skill {
                             tool_names: captured_names.capture(),
                         },
-                        ToolInput::Json | ToolInput::Shell => NativeApprovalCapture::Ordinary {},
+                        ToolInput::Shell => NativeApprovalCapture::Shell {
+                            shell: shell.ok_or_else(|| ToolRejection::PreparationFailed {
+                                message: "Shell tool has no request capture".into(),
+                            })?,
+                        },
+                        ToolInput::Json => NativeApprovalCapture::Ordinary {},
                     },
                 };
                 PreparedEffect::native_approval(
@@ -730,6 +725,7 @@ impl Service {
         cancellation: CancellationToken,
     ) -> maka_agent_facts::tools::ToolFuture<ToolSuccess> {
         let Self {
+            shell,
             web_basis,
             tool_names,
             services,
@@ -749,6 +745,13 @@ impl Service {
                     let mut input = input;
                     if let Some(fields) = input.as_object_mut() {
                         fields.remove("title");
+                        fields.insert(
+                            "shell".into(),
+                            serde_json::to_value(shell.ok_or_else(|| {
+                                ToolError::Failed("Shell tool has no request capture".into())
+                            })?)
+                            .map_err(|error| ToolError::Failed(error.to_string()))?,
+                        );
                     }
                     input
                 }
@@ -954,7 +957,7 @@ fn mutation_result(reply: OperationReply, language: Language) -> Result<ToolSucc
 }
 
 // Skills compare requirements with the actual workspace/request tool ceiling.
-// Keeping this on the request binding also respects plans and editing styles.
+// Keeping this on the request binding also respects editing styles.
 struct SkillBinding(Service);
 impl maka_tools::request::RequestBinding for SkillBinding {
     fn bind(

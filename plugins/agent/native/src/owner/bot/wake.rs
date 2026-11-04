@@ -127,7 +127,7 @@ impl Owner {
     pub(crate) async fn use_bot_model(
         &self,
         scope: &maka_capabilities::call::Scope,
-        model: &mut crate::contract::ModelSelection,
+        model: &mut Option<crate::contract::ModelSelection>,
     ) {
         let Some(source) = scope.identity.agent() else {
             return;
@@ -148,11 +148,11 @@ impl Owner {
             .find(|entry| entry.connection_id == binding.connection_id)
             .filter(|entry| entry.enabled_model_ids.contains(&binding.model))
         {
-            *model = crate::contract::ModelSelection {
+            *model = Some(crate::contract::ModelSelection {
                 connection_id: entry.connection_id.clone(),
                 revision: entry.revision,
                 model_id: binding.model.clone(),
-            };
+            });
         }
     }
 

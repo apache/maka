@@ -41,7 +41,6 @@ import type { StagedFile } from 'maka/host';
 import type {
   AgentInteractionResult,
   AgentWorkspaceAccess,
-  CollaborationMode,
   ModelSelection,
   UiTarget,
 } from '../../../../packages/plugin-sdk/src/generated/runtime.js';
@@ -95,6 +94,7 @@ import type {
   CommandEntry,
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
+import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
 import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
@@ -176,7 +176,6 @@ type PendingDraft = {
   backend: ModelBackend | null;
   access: AgentWorkspaceAccess | null;
   requests: boolean | null;
-  mode: CollaborationMode;
   modelChosen: boolean;
   files: PendingFile[];
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
@@ -267,15 +266,6 @@ export function createConversationUi(
   const pendingPicker = signal(false);
   const pendingAccess = computed(() => pending()?.access ?? null);
   const pendingRequests = computed(() => pending()?.requests ?? null);
-  // Known from the last conversation read; a new one cannot ask the Host first.
-  const plansEnabled = signal<boolean | null>(null);
-  effect(() => {
-    const enabled = handle()?.plan.view()?.enabled;
-    if (enabled !== undefined) plansEnabled.set(enabled);
-  });
-  const pendingMode = computed(() =>
-    plansEnabled() === false ? 'agent' : (pending()?.mode ?? 'agent'),
-  );
   const pendingBackend = computed(() => pending()?.backend ?? null);
   const pendingModelChosen = computed(() => pending()?.modelChosen ?? false);
   const pendingModelDetails = signal<ModelDetails>({
@@ -707,7 +697,6 @@ export function createConversationUi(
         backend: null,
         access: null,
         requests: null,
-        mode: 'agent',
         modelChosen: false,
         files: [],
         target: null,
@@ -868,12 +857,6 @@ export function createConversationUi(
             updatePending({ requests });
           }
         },
-        mode: () => (plansEnabled() === false ? null : pendingMode()),
-        selectMode: (mode: CollaborationMode) => {
-          if (owns() && !pendingSending() && pendingMode() !== mode) {
-            updatePending({ mode });
-          }
-        },
       },
       changeDraft: (text: string) => {
         if (owns() && pendingText() !== text) {
@@ -919,7 +902,6 @@ export function createConversationUi(
         const files = staged.map((item) => item.file);
         const access = pendingAccess();
         const requests = pendingRequests();
-        const mode = pendingMode();
         if (
           !owns() ||
           !workspace ||
@@ -987,7 +969,7 @@ export function createConversationUi(
               id = result.session.id as string;
             }
             requireUnchangedDraft();
-            if (reusingSession || access !== null || requests !== null || mode !== 'agent') {
+            if (reusingSession || access !== null || requests !== null) {
               if (
                 !controlsKnown() ||
                 controls().some(
@@ -1006,35 +988,18 @@ export function createConversationUi(
               const permissionsChanged =
                 settings.access !== session.permissions.access ||
                 settings.requestPermissions !== session.permissions.requestPermissions;
-              const modeChanged = mode !== (session.collaborationMode ?? 'agent');
-              if (permissionsChanged || modeChanged) {
+              if (permissionsChanged) {
                 const changed = await control('metadata', {
                   sessionId: id,
                   expectedRevision: session.revision,
                   title: session.title,
                   labels: session.labels,
-                  ...(permissionsChanged ? { permissions: { settings, revokeGrants: true } } : {}),
-                  ...(modeChanged ? { collaborationMode: mode } : {}),
+                  permissions: { settings, revokeGrants: true },
                 });
-                if (
-                  changed.kind === 'rejected' &&
-                  modeChanged &&
-                  changed.reason === 'tools_unavailable'
-                ) {
-                  // This Agent does not plan: say so once and send in agent mode next time.
-                  plansEnabled.set(false);
-                  updatePending({ mode: 'agent' });
-                  throw new UiError('Plans are unavailable in this Agent.');
-                }
                 if (changed.kind !== 'committed')
-                  throw new UiError(
-                    permissionsChanged
-                      ? 'Sandbox settings rejected: {reason}'
-                      : 'Planning mode could not start: {reason}',
-                    {
-                      reason: changed.reason ?? changed.kind,
-                    },
-                  );
+                  throw new UiError('Sandbox settings rejected: {reason}', {
+                    reason: changed.reason ?? changed.kind,
+                  });
               }
             }
             const choice = await control('selectBackend', {
@@ -1269,15 +1234,19 @@ export function createConversationUi(
     if (closeCommand(context) && handle()?.connected())
       void handle()?.stop(context.invocationId).catch(report);
   };
-  const commandPlan = (context: ActionContext) => {
-    if (!closeCommand(context)) return;
+  const commandQueue = (context: ActionContext) => {
+    if (!closeCommand(context)) return false;
     const owner = handle();
-    if (owner) {
-      void owner.plan.selectMode(owner.plan.mode() === 'plan' ? 'agent' : 'plan');
-      return;
-    }
-    const draft = pendingComposer();
-    draft.permissions.selectMode(pendingMode() === 'plan' ? 'agent' : 'plan');
+    if (!owner) return false;
+    owner.sendRendered({
+      owner: owner.sessionId,
+      text: owner.draft(),
+      backend: owner.backend(),
+      attachments: owner.attachments.ids(),
+      delivery: 'queue',
+    });
+    owner.focus();
+    return true;
   };
   const pendingGoalError = createText();
   const goalCreating = signal(false);
@@ -1869,8 +1838,8 @@ export function createConversationUi(
                 () =>
                   selected() === source.sessionId &&
                   overlay() === null &&
-                  (contribution.id !== 'stop' ||
-                    ownedContributions().get('stop')?.key !== contribution.key ||
+                  (!['stop', 'queue'].includes(contribution.id) ||
+                    ownedContributions().get(contribution.id)?.key !== contribution.key ||
                     (handle() === expectedOwner &&
                       expectedOwner?.invocation() === expectedInvocation)),
               );
@@ -1883,9 +1852,11 @@ export function createConversationUi(
       ];
     });
   };
+  // Queue acts on the existing draft rather than consuming a slash command.
   const composerCommands = computed(() =>
     commands({ instance: null, sessionId: selected() }).filter(
-      (command): command is ComposerCommand => command.trigger !== undefined,
+      (command): command is ComposerCommand =>
+        command.trigger !== undefined && command.id !== ownedContributions().get('queue')?.key,
     ),
   );
   const sessionHandle: ConversationSessionHandle = {
@@ -2274,6 +2245,7 @@ export function createConversationUi(
                       return (
                         <ModelSelect
                           owner={owner}
+                          running={() => owner.invocation() !== null}
                           instance={() => {
                             const current = overlay();
                             return current?.kind === 'models' &&
@@ -2432,15 +2404,19 @@ export function createConversationUi(
       if (['compact', 'latest', 'history-focus', 'activity-focus'].includes(id))
         return handle() !== null;
       if (id === 'stop') return !!handle()?.connected() && handle()?.invocation() != null;
-      if (id === 'plan') {
+      if (id === 'queue') {
         const owner = handle();
-        if (!owner) return pending() !== null && plansEnabled() !== false;
-        const phase = owner.plan.view()?.current.execution?.phase;
         return (
-          !!owner.plan.view()?.enabled &&
-          owner.invocation() === null &&
-          phase !== 'awaiting_admission' &&
-          phase !== 'active'
+          !!owner &&
+          owner.connected() &&
+          owner.editable() &&
+          owner.invocation() !== null &&
+          !owner.blockedReason() &&
+          (!!owner.draft().trim() || owner.attachments.files().length > 0) &&
+          !matchComposerCommand(
+            commandCandidates().map((entry) => entry.metadata),
+            owner.draft(),
+          )
         );
       }
       return true;
@@ -2492,8 +2468,8 @@ export function createConversationUi(
             ...source,
             invocationId: handle()?.invocation() ?? null,
           });
-        case 'plan':
-          return commandPlan(source);
+        case 'queue':
+          return commandQueue(source);
       }
     },
     async prepareReload() {
@@ -2517,6 +2493,11 @@ function projectComposerSession(
 ): ComposerSession<JSX.Element> {
   return {
     sessionId: owner.sessionId,
+    prediction: owner.prediction,
+    sends: owner.sends,
+    retrySend: owner.retrySend,
+    checkSend: owner.checkSend,
+    dismissSend: owner.dismissSend,
     computerAccess: owner.computerAccess,
     completion: {
       files: (query, directory) =>
@@ -2560,7 +2541,6 @@ function projectComposerSession(
       error: owner.permissions.error,
       select: owner.permissions.select,
     },
-    plan: owner.plan,
     goal: owner.goal,
     projectMcp: {
       proposal: owner.projectMcp.proposal,

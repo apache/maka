@@ -45,7 +45,7 @@ pub(super) enum Input {
         required_tools: BTreeSet<String>,
     },
     Rejected {
-        reason: SkillInputRejection,
+        reason: SendRejection,
         skills: Option<maka_skills::SkillInvocationResult>,
     },
 }
@@ -159,7 +159,7 @@ impl Owner {
             collaboration_mode: session.configuration.collaboration_mode,
             background_kind: BackgroundKind::Schedule,
             tool_discovery: false,
-            allowed_tools: session.configuration.tools.clone(),
+            allowed_tools: self.admitted_tools(&input.session_id, &session.configuration.tools),
             background: None,
             internal_tools: Arc::default(),
             internal_bindings: Arc::default(),
@@ -244,7 +244,7 @@ impl Owner {
             };
             return match catalog.prepare_invocation(&message.text, &[], language) {
                 maka_skills::PreparedInvocation::Blocked(invocation) => {
-                    reject(SkillInputRejection::SkillsUnavailable, Some(invocation))
+                    reject(SendRejection::SkillsUnavailable, Some(invocation))
                 }
                 maka_skills::PreparedInvocation::Passthrough => Ok(Input::Ready {
                     message,
@@ -313,7 +313,7 @@ impl Owner {
         let result = match result {
             Ok(value) => serde_json::from_value::<Preparation>(value)
                 .map_err(|_| "agent_skill_preparation_invalid")?,
-            Err(_) => return reject(SkillInputRejection::SkillsUnavailable, None),
+            Err(_) => return reject(SendRejection::SkillsUnavailable, None),
         };
         let (text, record, required_tools) = match result {
             Preparation::Ready {
@@ -322,7 +322,7 @@ impl Owner {
                 required_tools,
             } => (text, record, required_tools),
             Preparation::Blocked { invocation } => {
-                return reject(SkillInputRejection::SkillsUnavailable, Some(invocation));
+                return reject(SendRejection::SkillsUnavailable, Some(invocation));
             }
         };
         record

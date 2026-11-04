@@ -169,6 +169,25 @@ fn returned(cleanup: OperationCleanup) -> Receipt {
     }
 }
 
+async fn reserve(journal: &Journal, operation: &mut Operation) {
+    if let Some(reference) = &mut operation.draft {
+        let previous = journal.load_draft(&reference.key).await.unwrap();
+        let draft = journal
+            .save_draft(
+                &reference.key,
+                previous.map(|draft| draft.revision),
+                "frozen send".into(),
+            )
+            .await
+            .unwrap();
+        reference.revision = draft.revision;
+        operation.correlation = json!({"draft":draft,"selection":{"delivery":"steer"}});
+        journal.reserve_send(operation).await.unwrap();
+    } else {
+        journal.reserve(operation).await.unwrap();
+    }
+}
+
 #[tokio::test]
 async fn every_recovery_list_skips_resolved_history_in_the_actual_journal_path() {
     let directory = tempfile::tempdir().unwrap();
@@ -226,26 +245,30 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
             original.session_id = Some(key.session_id.clone());
             original.correlation = json!({"kind":CONTROL_KIND,"owner":service_owner(&key),"operationId":"native-effect-A"});
         }
-        journal.reserve(&original).await.unwrap();
+        reserve(&journal, &mut original).await;
         let mut other_domain = original.clone();
         other_domain.id = Uuid::from_u128(base + 1);
         other_domain.host.state_domain = "other".into();
-        journal.reserve(&other_domain).await.unwrap();
+        reserve(&journal, &mut other_domain).await;
         let mut other_deployment = original.clone();
         other_deployment.id = Uuid::from_u128(base + 2);
         other_deployment.host.deployment = Uuid::from_u128(999);
-        journal.reserve(&other_deployment).await.unwrap();
+        reserve(&journal, &mut other_deployment).await;
         let mut abandoned = original.clone();
         abandoned.id = Uuid::from_u128(base + 3);
-        journal.reserve(&abandoned).await.unwrap();
+        reserve(&journal, &mut abandoned).await;
         journal.abandon(&host, abandoned.id).await.unwrap();
+        if matches!(list, List::Drafts) {
+            assert_eq!(
+                list.read(&journal, &key, &host).await,
+                [original.id, abandoned.id]
+            );
+            journal.dismiss_send(abandoned.id).await.unwrap();
+        }
         if matches!(list, List::Drafts | List::Uploads | List::Terminals) {
             let mut other_key = key.clone();
             other_key.session_id = "another-session".into();
-            journal
-                .reserve(&operation(list, base + 4, &host, &other_key))
-                .await
-                .unwrap();
+            reserve(&journal, &mut operation(list, base + 4, &host, &other_key)).await;
         }
         eligible.push(original);
     }
@@ -287,7 +310,7 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
     journal
         .save_draft(
             &key,
-            None,
+            Some(journal.load_draft(&key).await.unwrap().unwrap().revision),
             DraftEdit {
                 text: "adopt rejected upload".into(),
                 attachments: vec![],
@@ -302,6 +325,11 @@ async fn recovery_indexes_preserve_exact_owners_and_eligibility_transitions_afte
             .await
             .unwrap();
     }
+    assert_eq!(
+        List::Drafts.read(&journal, &key, &host).await,
+        [eligible[0].id]
+    );
+    journal.dismiss_send(eligible[0].id).await.unwrap();
     for list in LISTS {
         assert!(
             list.read(&journal, &key, &host).await.is_empty(),

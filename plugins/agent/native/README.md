@@ -21,13 +21,14 @@
 
 [简体中文](README.zh-CN.md)
 
-[`HistoryCheckpointPublisher`](src/checkpoints.rs) is an internal trusted-assembly
-coordinator for history-only checkpoints. It binds the native Session namespace
-and complete original `RecoveryRef`, then uses the Root-owned capture/publication
-and recovery implementation. It does not register a service method or model tool.
-A future service adapter must perform Host admission and settle the original
-operation from the durable publication receipt; callers cannot supply their own
-authority scope. Workspace capture and restore/activation are outside this API.
+[`HistoryCheckpointPublisher`](src/checkpoints.rs) binds the admitted native Session
+namespace and original `RecoveryRef` to Root-owned history capture and recovery.
+The [service adapter](src/owner/checkpoints.rs) exposes explicit management methods
+with Host admission, original receipt authorization and bounded subscription reads.
+Publication receipts resolve checkpoint success without fabricating generic Host
+cleanup confirmation. See the [API workflow](../api/README.md#history-checkpoint-management)
+and [manual baseline](src/owner/tests/checkpoints/benchmark.rs). Workspace capture,
+restore/activation and model tools are outside this API.
 
 `agent.fork` captures a source revision and an explicit `position`: `end`, `through_turn`, or `before_turn` with a logical Turn ID, or `start` for empty history. `before_turn` excludes the complete target Turn and accepts the first Turn to create an empty conversation. The Host resolves the boundary from canonical history in the copy transaction; clients do not need a preceding Turn or the sampled history landmarks. The returned branch retains that position, and the source conversation is unchanged.
 
@@ -81,8 +82,6 @@ The default composition enables `recaps`. The Session recap command reads cached
 
 The default composition enables `goals`. `/goal` or the composer’s + menu opens its panel; `/goal <objective>` starts immediately. Goals continue through the existing Session queue without an iteration limit. `CreateGoal`, `GetGoal` and `GoalStatus` work in Direct and Code Mode; the current objective, progress and budget accompany model requests, including after compaction. A model-created Goal owns its creating turn. Pause stops current work; Resume continues with the selected model and settings; Cancel targets only that Goal. Transient execution failures remain recoverable. Token budgets are optional scheduling thresholds checked between turns; missing usage is reported as incomplete rather than stopping work, and users can adjust budgets. Reads expose current usage, remaining budget and active elapsed time; completed usage stays frozen after cleanup. Original operation identities and receipts survive restart, and sealed Host handoffs use their reserved successors rather than replaying effects. Incognito, archived Sessions and changed execution prerequisites require user action before further execution.
 
-The default composition enables `plans`. The Plan command switches an idle conversation into Planning mode, whose tool selection permits inspection, questions and `SubmitPlan` but no workspace mutation or autonomous delegation. Submission ends that Turn without executing. Approving the displayed proposal freezes its artifact, selected model, workspace and permission boundary; implementation enters the original Agent queue. `update_plan` also works in Code Mode and reports every frozen step, but completion requires both all steps completed/skipped and successful execution with physical cleanup. Explicit resume preserves the artifact and progress while obtaining a new approval. Cancel targets only the original Plan invocation. Durable decisions, bounded read-only history and original approval receipts survive restart; stale boundaries and Incognito prevent new execution.
-
 WorkHub coordinator conversations can select Graph or Swarm. Graph decisions and original WorkHub task assignments commit atomically; the existing task owner retains dispatch, dependency input capture, control receipts and cleanup. The five Graph tools expose published targets, bounded work/result/history reads, updates and yielding. Swarm wakes the supervisor for attention or a settled batch. Historical inputs must name selected final results from an earlier finished epoch; result inputs use bounded 16 KiB previews with complete result pagination available. Original session, epoch and permission boundaries remain enforced across stop, queueing and restart.
 
 WorkHub task and graph notifications retain their recorded source in history and have distinct message labels.
@@ -92,3 +91,51 @@ WorkHub tasks list newest accepted work first. Each task detail includes its rec
 Reusable WorkHub presets store an explicit connection and model. New ordinary and Graph tasks resolve that target against current settings, so unrelated connection edits do not invalidate the preset. Accepted tasks retain their captured selection and tools; changing or disabling a preset does not rewrite them. New routes report unavailable presets, connections or models before accepting work.
 
 [Source](src/lib.rs) · [Cargo manifest](Cargo.toml)
+
+[Performance baseline](checkpoint-baseline.md)
+
+ChatGPT subscription requests use the Host-owned [account inventory](src/model/codex_inventory.rs).
+Logical model-step preparation shares per-connection discovery, refreshes its five-minute
+compatibility cache on demand, and retries failed discovery after a short jittered backoff.
+Cancelling one waiter leaves shared work with the Host. Each request records its account,
+connection and observed `comp_hash` in `ModelRequested.context`; these are provenance,
+not same-account replay restrictions. Discovery does not change selected models. A fresh
+Host obtains its own account observation before recording compatibility evidence.
+
+Accepted work retains its selected model, thinking/tool policy, model overrides and body controls,
+not resolved inventory capacities. Later default or presentation edits apply to subsequently
+accepted messages. Each step and restored work continue using the captured user choices. Provider
+identity, connection availability, credential authorization and the resolved transport route are
+still checked before execution. Each logical request resolves one current model
+observation into its context, capabilities, options and output budget; physical retries reuse the
+already frozen request. Catalog changes alone therefore do not invalidate queued/restored work.
+
+A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
+background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts
+at 270 seconds to leave 30 seconds before the 300-second catalog TTL. Each discovery has a 15-second deadline; account replacement may first await the old flight and
+then the new identity’s discovery. This is not a 15-second deadline for the complete model request.
+Failure uses the existing model with no new compatibility claim,
+then retries after a jittered 30–60-second backoff to avoid a request storm. Warm and backed-off
+preparations do not wait for network discovery; credential resolution follows its existing policy.
+These are local latency/load policies, not protocol
+limits. The TTL governs new catalog observations; recorded producer facts and checkpoints do not
+expire with that cache. Once capture finishes, proactive compaction executes alongside Main.
+
+Connections use ordinary text summarization by default. Model connection settings expose
+**Provider server-side compaction** only when the provider's configuration schema declares
+`serverSideCompaction`. The setting is saved per connection; currently ChatGPT subscription
+supports it. When enabled, manual and automatic compaction use the Responses native
+`compaction_trigger` control.
+The engine installs its opaque checkpoint only after the producing stream completes and storage
+validates the same source fence and producer request. Subsequent requests replay the checkpoint
+with the preserved suffix; another compact replaces that baseline. Session/global/custom text
+compaction prompts remain editable and saved, but do not enter native ChatGPT compaction requests.
+With the setting off, text compaction prompts apply as usual. Native replay currently requires
+the producing model; cross-model admission and switch preflight are separate stack layers.
+
+The subscription provider selects native compaction in its resolved capabilities only when the
+connection opts in. Disabling it preserves replay of existing native checkpoints; the next
+compaction produces a text summary. Host freezes a single protocol operation; the Responses adapter adds the wire trigger and returns typed
+`NativeCompaction` only at stream completion. Engine and EventLog do not extract provider-options
+JSON for this result. Checkpoint headers retain the producing-step reference, digest and token
+estimate; baseline reads derive producer/model facts from that original request.

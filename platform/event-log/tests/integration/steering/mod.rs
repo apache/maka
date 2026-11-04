@@ -101,6 +101,7 @@ async fn steering_is_exact_once_session_scoped_and_atomic_with_rebuildable_user_
         Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: owned_parts(
                     &invocation("a").invocation_id,
                     "step",

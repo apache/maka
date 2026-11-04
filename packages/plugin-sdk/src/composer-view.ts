@@ -24,7 +24,6 @@ import type {
   AgentFileCandidates,
   AgentQueue,
   AgentExecution,
-  AgentPlanView,
   AgentGoalView,
   GoalControl,
   AgentResumable,
@@ -36,7 +35,6 @@ import type {
   AgentWorkspacePermissions,
   AgentWorkspaceAccess,
   ClientDraftAttachment,
-  CollaborationMode,
   ModelSelection,
   ThinkingLevel,
   WorkspacePath,
@@ -83,6 +81,17 @@ export interface ComposerSendAction {
   text: string;
   backend: ComposerBackend;
   attachments: string[];
+  delivery?: 'steer' | 'queue';
+}
+
+export interface ComposerSendStatus {
+  id: string;
+  text: string;
+  attachments: ClientDraftAttachment[];
+  state: 'sending' | 'accepted' | 'failed' | 'unknown';
+  detail: string;
+  retryable: boolean;
+  busy: boolean;
 }
 
 export interface ComposerImagePreview {
@@ -162,20 +171,7 @@ export interface PendingComposerPermissions {
   pending(): boolean;
   selectAccess(access: AgentWorkspaceAccess): void;
   selectRequests(request: boolean): void;
-  /**
-   * Applied with the sandbox settings once the conversation exists; null when
-   * this Agent does not plan.
-   */
-  mode(): CollaborationMode | null;
-  selectMode(mode: CollaborationMode): void;
 }
-
-export type ComposerPlanAction =
-  | { kind: 'approve'; proposalId: string; proposalRevision: number }
-  | { kind: 'revise'; proposalId: string }
-  | { kind: 'abandon'; proposalId: string }
-  | { kind: 'resume'; executionId: string }
-  | { kind: 'cancel'; executionId: string };
 
 export interface ComposerGoal {
   view(): AgentGoalView | null;
@@ -183,17 +179,6 @@ export interface ComposerGoal {
   error(): string;
   create(objective: string, tokenBudget: number | null): Promise<boolean>;
   change(action: GoalControl, budget?: { tokenBudget: number | null }): Promise<boolean>;
-}
-
-export interface ComposerPlan {
-  /** Null until the first read; `enabled` says whether this Agent plans at all. */
-  view(): AgentPlanView | null;
-  mode(): CollaborationMode | null;
-  pending(): boolean;
-  error(): string;
-  selectMode(mode: CollaborationMode): Promise<void>;
-  /** Approving or resuming runs the Plan with the conversation's current model. */
-  change(action: ComposerPlanAction): Promise<void>;
 }
 
 type McpConfiguration = Extract<
@@ -213,6 +198,12 @@ export interface ComposerProjectMcp {
 export interface ComposerComputerAccess {
   snapshot(): AgentComputerApps;
   stop(operationId: string): Promise<void>;
+}
+
+/** A suggested draft is separate from the text the user is editing. */
+export interface ComposerPrediction {
+  current(): { sourceTurnId: string; text: string } | null;
+  dismiss(sourceTurnId: string): void;
 }
 
 export interface ComposerChecklistSource {
@@ -236,12 +227,12 @@ export interface ComposerCompletionSource {
 /** A stable projection of the resident session, without its lifecycle or subscriptions. */
 export interface ComposerSession<Element = unknown> {
   readonly sessionId: string;
+  readonly prediction: ComposerPrediction;
   readonly queue: ComposerQueue;
   readonly attachments: ComposerAttachments<Element>;
   readonly permissions: ComposerPermissions;
   readonly projectMcp: ComposerProjectMcp;
   readonly checklist: ComposerChecklistSource;
-  readonly plan: ComposerPlan;
   readonly goal?: ComposerGoal;
   readonly computerAccess: ComposerComputerAccess;
   readonly completion: ComposerCompletionSource;
@@ -257,6 +248,10 @@ export interface ComposerSession<Element = unknown> {
   empty(): boolean;
   error(): string;
   notice(): string;
+  sends(): ComposerSendStatus[];
+  retrySend(id: string): Promise<void>;
+  checkSend(id: string): Promise<void>;
+  dismissSend(id: string): Promise<void>;
   recovering(): boolean;
   connected(): boolean;
   invocation(): string | null;

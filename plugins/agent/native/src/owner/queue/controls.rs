@@ -118,7 +118,29 @@ impl Owner {
                         .is_some_and(|files| !files.is_empty()),
                     message: entry.source.unprepared_content.text.clone(),
                 },
-                None => QueueMessageResult::Missing,
+                None => {
+                    let state = self
+                        .store
+                        .session(&input.session_id)
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .message_delivery(&input.session_id, &input.message_id)
+                        .await
+                        .map_err(|error| error.to_string())?;
+                    QueueMessageResult::Missing {
+                        reason: match state {
+                            maka_event_log::message_queue::MessageDelivery::Delivered => {
+                                QueueMessageMissingReason::Delivered
+                            }
+                            maka_event_log::message_queue::MessageDelivery::Cancelled => {
+                                QueueMessageMissingReason::Cancelled
+                            }
+                            maka_event_log::message_queue::MessageDelivery::Unknown => {
+                                QueueMessageMissingReason::Unknown
+                            }
+                        },
+                    }
+                }
             },
         )
     }

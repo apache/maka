@@ -224,12 +224,16 @@ pub(super) async fn replay<W>(
         let recipes = prompt
             .recipes()
             .ok_or_else(|| invalid("continuation lacks a frozen logical directory"))?;
+        let checkpoint = prompt.native_checkpoint_identity();
         let mut cursor = recipes.open_metadata(0);
         let mut first_is_user = None;
         let mut last_is_stable = false;
         while let Some(message) = cursor.next().await.map_err(RunError::Preparation)? {
             if cancellation.is_cancelled() {
                 return Err(RunError::Cancelled);
+            }
+            if first_is_user.is_none() && checkpoint == Some(message.logical_identity.as_ref()) {
+                continue;
             }
             if message.role != MessageRole::System && first_is_user.is_none() {
                 first_is_user = Some(message.role == MessageRole::User);

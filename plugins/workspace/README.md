@@ -26,7 +26,7 @@ Workspace services can be composed independently of the Agent engine. Each leaf 
 - [Files](workspace-files/native/README.md) uses the file [engine](workspace-files/engine/README.md) and pure [patch parser](workspace-files/patch/README.md).
 - [Processes](workspace-processes/native/README.md) owns commands, terminals and protocol processes.
 - [Web](workspace-web/native/README.md) provides fetch and search; its [API crate](workspace-web/api/README.md) contains the declarations.
-- [Jev](workspace-jev/native/README.md) exposes the structured evaluation [engine](workspace-jev/engine/README.md).
+- [Decisions API](workspace-decisions-api/native/README.md) exposes the structured evaluation [engine](workspace-decisions-api/engine/README.md).
 - Computer Use exposes `cua_repl` and `cua_reset` through the [native provider](workspace-computer/native/src/lib.rs). Each conversation needs explicit access approval. Changing its permission boundary invalidates that grant; Explore mode cannot operate the computer. REPL variables and target bindings last until reset or Host shutdown, while the conversation grant survives restart. Desktop and browser connections are selected in the provider configuration.
 
 The shared [API](api/README.md) defines workspace contracts. [Support](support/README.md) handles configured roots, directory selection and private-path exclusions. A service receives its resource limits and authority explicitly; a path in request JSON cannot widen them.

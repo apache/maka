@@ -812,6 +812,44 @@ impl Owner {
         }
         self.bot.load().await.map_err(|error| error.to_string())
     }
+    /// The tools a Session may use when new work is admitted. The Bot's are derived
+    /// from the coordination policy and the current composition, so a newer build's
+    /// tools reach an existing Bot; every other Session keeps its explicit selection.
+    /// Work already accepted keeps the list it was admitted with.
+    pub(super) fn admitted_tools(
+        &self,
+        session: &str,
+        configured: &Option<Vec<String>>,
+    ) -> Option<Vec<String>> {
+        if self.settings.bot && self.bot.is(session) {
+            return Some(
+                COORDINATION_TOOLS
+                    .iter()
+                    .filter(|name| self.tools.contains(name))
+                    .map(|name| (*name).to_owned())
+                    .collect(),
+            );
+        }
+        configured.clone()
+    }
+    /// Whether an accepted message still matches its Session's tool selection. The
+    /// Bot's list is policy-derived, so an accepted one stays valid as long as it is
+    /// still within the coordination policy.
+    pub(super) fn accepted_tools_match(
+        &self,
+        session: &str,
+        configured: &Option<Vec<String>>,
+        accepted: &Option<Vec<String>>,
+    ) -> bool {
+        if self.settings.bot && self.bot.is(session) {
+            return accepted.as_ref().is_some_and(|names| {
+                names
+                    .iter()
+                    .all(|name| COORDINATION_TOOLS.contains(&name.as_str()))
+            });
+        }
+        configured == accepted
+    }
     /// Append the Bot's standing instructions to the behavior frozen for a message
     /// admitted to the Bot Session. Other Sessions are unchanged.
     pub(super) fn bot_behavior(

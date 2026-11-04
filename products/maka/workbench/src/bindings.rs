@@ -26,6 +26,7 @@ mod links;
 mod mutation;
 mod plugins;
 mod settings;
+mod system_permission;
 mod terminal;
 mod terminal_grid;
 mod ui_services;
@@ -66,7 +67,7 @@ struct Scope {
     client: ApplicationClient,
     session: String,
     /// Sends reserved by `reserve_send` until `confirm_send` takes them.
-    reserved: StdMutex<HashMap<Uuid, maka_app_client::Mutation>>,
+    reserved: StdMutex<HashMap<Uuid, maka_app_client::DraftSend>>,
 }
 
 /// Root services and session scopes within the Host admitted by the launcher.
@@ -553,6 +554,40 @@ impl ApplicationHost {
         Ok(Instance::new(original))
     }
 
+    pub async fn system_permission_actions(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+    ) -> Result<Vec<String>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let record = system_permission::read(&client, &session_id, &request_id).await?;
+            Ok(system_permission::actions(
+                &record,
+                &owner.client.source().state_domain,
+            ))
+        })
+        .await
+    }
+
+    pub async fn system_permission_action(
+        this: Instance<Self>,
+        session_id: String,
+        request_id: String,
+        action: String,
+    ) -> Result<(), String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        execute(owner.clone(), async move {
+            let client = source.resolve(&owner).await?;
+            let record = system_permission::read(&client, &session_id, &request_id).await?;
+            system_permission::perform(&record, &owner.client.source().state_domain, &action).await
+        })
+        .await
+    }
+
     /// Query any service exposed by the original Host catalogue.
     pub async fn query(
         this: Instance<Self>,
@@ -996,10 +1031,10 @@ impl ScopedHost {
     ) -> Result<String, String> {
         let scope = this.with(|host| host.scope.clone());
         execute(scope.owner.clone(), async move {
-            let client = scope.client.resolve(&scope.owner).await?;
+            let client = scope.client.local(&scope.owner).await?;
             let id = Uuid::new_v4();
             let mutation = client
-                .send_draft(id, AGENT, &scope.session, EDITOR, draft_revision, selection)
+                .reserve_send_draft(id, AGENT, &scope.session, EDITOR, draft_revision, selection)
                 .await?;
             scope.reserved.lock().unwrap().insert(id, mutation);
             Ok(id.to_string())
@@ -1021,9 +1056,56 @@ impl ScopedHost {
                 .unwrap()
                 .remove(&id)
                 .ok_or("send was not reserved by this view")?;
+            let mutation = mutation.open().await?;
             mutation.prepare().await?;
             let reply = mutation.confirm().await?;
             Ok(serde_json::json!({"operationId": id, "reply": reply}))
+        })
+        .await
+    }
+
+    /// Freeze a new attempt of a confirmed unsent message without touching the editor.
+    pub async fn retry_send(
+        this: Instance<Self>,
+        operation_id: String,
+        selection: JsonValue,
+    ) -> Result<String, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let original = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, original).await?;
+            let id = Uuid::new_v4();
+            let send = client.retry_send(original, id, selection).await?;
+            scope.reserved.lock().unwrap().insert(id, send);
+            Ok(id.to_string())
+        })
+        .await
+    }
+
+    /// Observe the native message ledger without replaying the original send.
+    pub async fn send_delivery(
+        this: Instance<Self>,
+        operation_id: String,
+    ) -> Result<JsonValue, String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            serde_json::to_value(client.send_delivery(id).await?).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    /// Hide one original message without replaying or cancelling it.
+    pub async fn dismiss_send(this: Instance<Self>, operation_id: String) -> Result<(), String> {
+        let scope = this.with(|host| host.scope.clone());
+        let id = Uuid::parse_str(&operation_id).map_err(|error| error.to_string())?;
+        execute(scope.owner.clone(), async move {
+            let client = scope.client.local(&scope.owner).await?;
+            scope.owned_operation(&client, id).await?;
+            client.dismiss_send(id).await
         })
         .await
     }
@@ -1064,6 +1146,7 @@ impl ScopedHost {
         execute(scope.owner.clone(), async move {
             let client = scope.client.local(&scope.owner).await?;
             scope.owned_operation(&client, id).await?;
+            scope.reserved.lock().unwrap().remove(&id);
             let operation = client.abandon_unprepared(id).await?;
             serde_json::to_value(operation).map_err(|error| error.to_string())
         })

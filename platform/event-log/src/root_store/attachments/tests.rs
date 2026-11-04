@@ -394,6 +394,7 @@ async fn cross_partition_image_freezes_at_target_consumption_and_survives_bundle
         .append(&event(Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: owned_parts(
                     &invocation.invocation_id,
                     "step",

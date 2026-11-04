@@ -54,6 +54,8 @@ fn request(id: &str, step: &str, purpose: ModelPurpose, source: &ModelContextSou
             model_id: "test".into(),
             purpose,
             context: Some(ModelRequestContext {
+                operation: maka_agent_facts::context::ModelOperation::Inference,
+                codex: None,
                 provider_id: "openai".into(),
                 context_window: Some(10_000),
                 model_context_window: None,

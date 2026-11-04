@@ -158,7 +158,12 @@ async fn interrupted_provider_history_can_be_compacted_after_reopen() {
         log.append_batch(&pair).await.unwrap();
         let view = log.read_model_view("session", None).await.unwrap();
         assert_eq!(
-            view.baseline.unwrap().checkpoint.summary.text,
+            view.baseline
+                .unwrap()
+                .checkpoint
+                .summary
+                .text_value()
+                .unwrap(),
             fixtures::SUMMARY,
             "{case}"
         );

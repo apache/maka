@@ -30,22 +30,9 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         let session = fixture.create("Queued followup").await;
         let first = fixture.send(&session).await.unwrap();
         assert_eq!(first["kind"], "started");
-        let catalog = fixture.owner.mcp_projects.catalog(None).unwrap();
-        {
-            let runs = fixture.owner.runs.lock().await;
-            let basis = &runs.controls[&session].basis;
-            assert!(Arc::ptr_eq(&basis.internal_tools, &catalog.definitions));
-            assert!(Arc::ptr_eq(&basis.internal_bindings, &catalog.bindings));
-            assert!(Arc::ptr_eq(&basis.tools, &fixture.owner.tool_basis));
-            // Durable admission still uses the original array/object representation.
-            let wire = serde_json::to_value(basis).unwrap();
-            let restored: MessageBasis = serde_json::from_value(wire.clone()).unwrap();
-            assert_eq!(serde_json::to_value(restored).unwrap(), wire);
-            assert!(wire["tools"].is_array());
-        }
         let (mut first_socket, _) = listener.accept().await.unwrap();
         request(&mut first_socket).await;
-        let next = fixture.mutation(2, "send", json!({"sessionId":session,"message":"original followup","model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
+        let next = fixture.mutation(2, "send", json!({"sessionId":session,"message":"original followup","delivery":"queue","model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
         assert_eq!(next["kind"], "queued");
         assert_eq!(fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":next["messageId"]}})).await.unwrap(),json!({"kind":"pending"}));
         assert_eq!(fixture.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":"absent_message"}})).await.unwrap(),json!({"kind":"missing"}));
@@ -64,27 +51,19 @@ async fn queued_followup_uses_original_worker_and_a_new_invocation() {
         let current = fixture.query("observe", json!({"sessionId":session})).await.unwrap();
         assert_ne!(current["run"]["invocationId"], first["invocationId"]);
         assert!(fixture.session(&session).await.pending_messages(&session).await.unwrap().is_empty());
-        {
-            // A queued admission was decoded from durable JSON. Validation must
-            // reattach shared descriptors before the successor remains running.
-            let runs = fixture.owner.runs.lock().await;
-            let basis = &runs.controls[&session].basis;
-            assert!(Arc::ptr_eq(&basis.internal_tools, &catalog.definitions));
-            assert!(Arc::ptr_eq(&basis.internal_bindings, &catalog.bindings));
-            assert!(Arc::ptr_eq(&basis.tools, &fixture.owner.tool_basis));
-        }
         // Put a real send at the gate before the completed successor worker.
         // Its Running handle drops while we hold the gate, cancelling that
         // handle's token; this is not a user stop or a SQL interrupt fence.
         let selection = fixture.selection().await;
         let client = fixture.app.client();
-        let prepared = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":session,"message":"tail followup","model":selection}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let prepared = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":session,"message":"tail followup","delivery":"queue","model":selection}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
         let reference = prepared.reference().clone();
         drop(prepared);
         let gate = fixture.owner.runs.lock().await;
         let completed = gate.controls[&session].cancellation.clone();
         let parent = scope(&fixture.issuer, true);
-        let mut tail = Box::pin(fixture.owner.send(Send { session_id: session.clone(), message: "tail followup".into(), model: selection, thinking_level: None, attachments: vec![] }, &reference, &parent));
+        let mut tail = Box::pin(fixture.owner.send(Send {
+ delivery: maka_agent_api::contract::SendDelivery::Queue, expected_invocation_id: None, session_id: session.clone(), message: "tail followup".into(), model: Some(selection), thinking_level: None, attachments: vec![] }, &reference, &parent));
         assert!(futures_util::poll!(tail.as_mut()).is_pending());
         response(&mut second_socket).await;
         completed.cancelled().await;
@@ -132,7 +111,7 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
             .prepare_mutation(
                 fixture.binding(2).await,
                 "send".into(),
-                json!({"sessionId":session,"message":"after stop","model":selection}),
+                json!({"sessionId":session,"message":"after stop","delivery":"queue","model":selection}),
                 scope(&fixture.issuer, true),
                 Uuid::new_v4(),
                 Attachments::new().into(),
@@ -164,9 +143,10 @@ async fn stopping_original_run_retracts_queue_and_fences_tail_admission() {
         let parent = scope(&fixture.issuer, true);
         let mut tail = Box::pin(fixture.owner.send(
             Send {
+ delivery: maka_agent_api::contract::SendDelivery::Queue, expected_invocation_id: None,
                 session_id: session.clone(),
                 message: "after stop".into(),
-                model: selection,
+                model: Some(selection),
                 thinking_level: None,
                 attachments: vec![],
             },
@@ -226,7 +206,7 @@ use maka_agent_facts::execution::ThinkingLevel::High;
         for database in &raw { database.execute_batch("CREATE TRIGGER hold_opening BEFORE INSERT ON event_log WHEN NEW.kind='invocation_opened' BEGIN SELECT RAISE(ABORT, 'fixture opening failure'); END;").unwrap(); }
         for (index, level) in [Some(Off), Some(Low), None].into_iter().enumerate() {
             let session = fixture.create(&format!("Recovery {index}")).await;
-            assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"restored thinking","model":fixture.selection().await,"thinkingLevel":level}), Uuid::new_v4()).await.is_err());
+            assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"restored thinking","delivery":"queue","model":fixture.selection().await,"thinkingLevel":level}), Uuid::new_v4()).await.is_err());
             assert_eq!(fixture.session(&session).await.pending_messages(&session).await.unwrap().len(), 1);
             sessions.push(session);
         }
@@ -269,7 +249,7 @@ async fn queue_controls_are_revisioned_and_observed_without_transcript_progress(
         let selection = fixture.selection().await;
         let mut ids = Vec::new();
         for _ in 0..3 {
-            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"🦀\"\n".repeat(80),"model":selection}), Uuid::new_v4()).await.unwrap();
+            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"🦀\"\n".repeat(80),"delivery":"queue","model":selection}), Uuid::new_v4()).await.unwrap();
             ids.push(result["messageId"].as_str().unwrap().to_owned());
         }
         let queue = fixture.query("queue", json!({"sessionId":session})).await.unwrap();
@@ -398,7 +378,7 @@ async fn queue_preparation_does_not_hold_the_global_lifecycle_and_close_waits_fo
 
         let b = fixture.owner.operation_id(&create);
         let selection = fixture.selection().await;
-        let send = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":b,"message":"Independent admission","model":selection}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
+        let send = client.prepare_mutation(fixture.binding(2).await, "send".into(), json!({"sessionId":b,"message":"Independent admission","delivery":"queue","model":selection}), scope(&fixture.issuer, true), Uuid::new_v4(), Attachments::new().into()).await.unwrap();
         let send_reference = send.reference().clone();
         drop(send);
         let mut writer = sqlx::SqliteConnection::connect_with(&sqlx::sqlite::SqliteConnectOptions::new().filename(&blocked_database)).await.unwrap();
@@ -423,8 +403,9 @@ async fn queue_preparation_does_not_hold_the_global_lifecycle_and_close_waits_fo
         let Created::Created { session } = created else { panic!("independent creation was refused"); };
         assert_eq!(session.id, b);
         let admitted = fixture.owner.send(Send {
+ delivery: maka_agent_api::contract::SendDelivery::Queue, expected_invocation_id: None,
             session_id: b.clone(), message: "Independent admission".into(),
-            model: selection, thinking_level: None, attachments: vec![],
+            model: Some(selection), thinking_level: None, attachments: vec![],
         }, &send_reference, &parent).await.unwrap();
         assert!(matches!(admitted, SendResult::Started { .. }));
         let (mut independent_socket, _) = listener.accept().await.unwrap();

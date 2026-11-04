@@ -20,6 +20,18 @@
 import type { Catalog } from '../../../../plugins/shared/locale.js';
 
 export const composerMessages = {
+  'Suggested message: {message}': [
+    'Suggested message: {message}',
+    '消息建议：{message}',
+    '訊息建議：{message}',
+  ],
+  'Use suggested message': ['Use suggested message', '使用建议消息', '使用建議訊息'],
+  'Press Tab to accept': ['Press Tab to accept', '按 Tab 使用', '按 Tab 使用'],
+  'Tab to use · Esc to dismiss': [
+    'Tab to use · Esc to dismiss',
+    'Tab 使用 · Esc 忽略',
+    'Tab 使用 · Esc 略過',
+  ],
   'Compacting context… ({duration})': [
     'Compacting context… ({duration})',
     '正在压缩（{duration}）',

@@ -77,12 +77,38 @@ pub struct NativeServices {
     pub(super) exports: Arc<BTreeMap<String, Binding>>,
     pub(super) dispatch: Weak<Dispatch>,
     pub(super) issuer: Issuer,
+    pub(super) selected_method: Option<Arc<SelectedNativeMethod>>,
     pub(super) preparation_resources:
         maka_capabilities::model_preparation::ModelPreparationResources,
 }
 /// Private origin evidence can only be created through the Host's native factory
 /// context. Public Identity remains observation and is never an authorization.
-pub(super) struct NativeOrigin(pub Activation);
+pub(super) struct NativeOrigin {
+    pub activation: Activation,
+    pub selected_method: Option<Arc<SelectedNativeMethod>>,
+}
+
+/// An in-memory method capability captured by trusted native initialization.
+/// It is never serialized or reconstructed from model-provided identifiers.
+pub struct SelectedNativeMethod {
+    pub(super) binding: Binding,
+    pub(super) method: String,
+}
+impl SelectedNativeMethod {
+    pub(super) fn matches(&self, binding: &Binding, method: &str) -> bool {
+        self.binding.consumer() == binding.consumer()
+            && self.binding.provider() == binding.provider()
+            && self.binding.registration_epoch() == binding.registration_epoch()
+            && self.binding.export() == binding.export()
+            && self.method == method
+    }
+    pub(super) fn recovers(&self, consumer: &Activation, reference: &RecoveryRef) -> bool {
+        self.binding.consumer() == consumer
+            && self.binding.provider().instance() == &reference.namespace
+            && self.binding.export() == reference.export
+            && self.method == reference.method
+    }
+}
 impl NativeServices {
     /// Shared Host allocation admission for model capture and streaming uploads.
     pub fn model_preparation_resources(
@@ -100,6 +126,24 @@ impl NativeServices {
     /// Own exports cannot execute until activation has successfully published them.
     pub fn binding(&self, target: &ServiceTarget) -> Result<&Binding> {
         super::context::select_service(&self.imports, &self.exports, target)
+    }
+    /// Capture the exact method selected by a native tool declaration. Requests
+    /// made from this handle authorize only that original binding and method;
+    /// auxiliary calls still require the embedding's independent native grants.
+    pub fn select_method(&self, target: &ServiceTarget, method: &str) -> Result<Self> {
+        let binding = self.binding(target)?;
+        let Interface::Service { methods } = &binding.contract().interface else {
+            return Err("selected native method requires a service".into());
+        };
+        if !methods.contains_key(method) {
+            return Err("selected native service method is unavailable".into());
+        }
+        let mut selected = self.clone();
+        selected.selected_method = Some(Arc::new(SelectedNativeMethod {
+            binding: binding.clone(),
+            method: method.into(),
+        }));
+        Ok(selected)
     }
     /// The native owner supplies its domain work's identity and cancellation.
     /// A request is inert until ordinary call/subscribe/mutate/recover admission succeeds.
@@ -125,7 +169,10 @@ impl NativeServices {
         cancellation: CancellationToken,
         execution: Option<Arc<dyn maka_agent_facts::tools::ExecutionCustody>>,
     ) -> Result<NativeRequest> {
-        let origin = NativeOrigin(self.activation.clone());
+        let origin = NativeOrigin {
+            activation: self.activation.clone(),
+            selected_method: self.selected_method.clone(),
+        };
         let scope = match execution {
             Some(execution) => {
                 self.issuer

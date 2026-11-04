@@ -109,7 +109,7 @@ async fn attachment_upload_send_queue_and_resource_read_keep_session_and_receipt
             assert!(f.mutation(2, "send", json!({"sessionId":target,"message":"","attachments":ids,"model":f.selection().await}), Uuid::new_v4()).await.is_err());
         }
         let model = f.selection().await;
-        let send = |body: &str| f.mutation(2, "send", json!({"sessionId":session,"message":body,"attachments":[id],"model":model}), Uuid::new_v4());
+        let send = |body: &str| f.mutation(2, "send", json!({"sessionId":session,"message":body,"attachments":[id],"delivery":"queue","model":model}), Uuid::new_v4());
         assert_eq!(send("").await.unwrap()["kind"], "started");
         let (mut socket, _) = listener.accept().await.unwrap();
         let sent = request(&mut socket).await;

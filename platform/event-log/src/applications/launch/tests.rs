@@ -138,7 +138,10 @@ async fn host_configuration_cas_checks_source_and_original_authority_on_retries(
             .await
             .unwrap()
     );
-    store.complete_application_launch(deployment).await.unwrap();
+    store
+        .complete_application_launch(deployment, previous.clone())
+        .await
+        .unwrap();
     assert!(
         !store
             .compare_and_set_application_launch_configuration(

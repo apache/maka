@@ -204,6 +204,7 @@ async fn responses_http_preserves_reasoning_and_raw_tool_identity_across_steps()
         let schema = json!({"type":"object","properties":{"text":{"type":"string"}},"required":["text"],"additionalProperties":false});
         for index in 0..2 {
             let request = ModelRequest {
+                operation: maka_agent_facts::context::ModelOperation::Inference,
                 language: maka_agent_facts::language::Language::En,
                 provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenaiResponses, model: "gpt-5".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()), headers: BTreeMap::from([("x-test-provider".into(), "responses".into())]), body_overlay: Some(serde_json::Map::from_iter([("fixture_context".into(), json!({"route":"responses"}))])) },
                 prompt: serde_json::from_value::<Vec<maka_model::prompt::Message>>(json!(prompt)).unwrap().into(),
@@ -458,6 +459,7 @@ async fn plaintext_responses_replays_only_its_declared_carrier_after_a_tool_step
             for index in 0..2 {
                 let executor = ModelExecutor::new(Duration::from_secs(5)).unwrap();
                 let request = ModelRequest {
+                    operation: maka_agent_facts::context::ModelOperation::Inference,
                     language: maka_agent_facts::language::Language::En,
                     provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(), kind: ProviderKind::OpenResponses(contract),
                         model: "plain".into(), base_url: base_url.clone(), auth: maka_model::ProviderAuth::ApiKey("local-test-key".into()),
@@ -523,6 +525,7 @@ async fn plaintext_responses_does_not_turn_transport_eof_into_success() {
         });
         let executor = ModelExecutor::new(Duration::from_secs(3)).unwrap();
         let mut stream = executor.stream(ModelRequest {
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language: maka_agent_facts::language::Language::En,
             provider: ProviderConfig { image_input: None, adapter: None, capabilities: Default::default(), network: Default::default(),
                 kind: ProviderKind::OpenResponses(PlaintextResponses { reasoning_replay: PlaintextReasoningReplay::PlaintextSummary, compatibility: None }),

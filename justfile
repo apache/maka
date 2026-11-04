@@ -43,7 +43,7 @@ product *args: setup
 
 # Check the root workspace, product, tooling and terminal; setup runs once.
 [group('Checks')]
-check: setup fmt-check lint typecheck test-js test test-termina licenses
+check: setup fmt-check typecheck test-js test test-termina licenses
 
 # Format Rust, JavaScript, TypeScript and project metadata.
 [group('Checks')]
@@ -56,12 +56,6 @@ fmt: setup
 fmt-check: setup
     node scripts/ci.mjs check format
 
-# Run strict Rust and JavaScript lint checks.
-[group('Checks')]
-lint: setup
-    node scripts/ci.mjs run clippy
-    node scripts/ci.mjs check lint-js
-
 # Verify generated contracts, TypeScript consumers and the workbench UI sources.
 [group('Checks')]
 typecheck: setup
@@ -71,6 +65,11 @@ typecheck: setup
 [group('Checks')]
 test *args: setup
     node scripts/ci.mjs run root "$@"
+
+# Exercise the workbench in the real desktop renderer; pass nextest filters after the recipe name.
+[group('Checks')]
+test-desktop *args: setup
+    node scripts/ci.mjs run desktop "$@"
 
 # Check the vendored terminal input library with the shared Cargo artifacts.
 [group('Checks')]

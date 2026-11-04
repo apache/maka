@@ -42,6 +42,7 @@ enum StepState {
     #[default]
     Assembling,
     Finished {
+        compaction: Option<super::NativeCompaction>,
         reason: ModelFinishReason,
         usage: ModelUsage,
         provider_options: Option<Arc<Value>>,
@@ -333,6 +334,7 @@ impl StepBuilder {
                 }
             }
             ModelEvent::Finished {
+                compaction,
                 reason,
                 usage,
                 provider_options,
@@ -353,6 +355,7 @@ impl StepBuilder {
                     return Err(invalid("provider tool result missing"));
                 }
                 self.state = StepState::Finished {
+                    compaction,
                     reason,
                     usage,
                     provider_options: shared_options.or_else(|| provider_options.map(Arc::new)),
@@ -362,16 +365,18 @@ impl StepBuilder {
         Ok(())
     }
     pub fn finish(self) -> Result<ModelStep, ModelError> {
-        let (finish_reason, usage, provider_options) = match self.state {
+        let (finish_reason, usage, provider_options, compaction) = match self.state {
             StepState::Assembling => return Err(invalid("model step missing finish")),
             StepState::Poisoned => return Err(invalid("model step previously failed")),
             StepState::Finished {
+                compaction,
                 reason,
                 usage,
                 provider_options,
-            } => (reason, usage, provider_options),
+            } => (reason, usage, provider_options, compaction),
         };
         Ok(ModelStep {
+            compaction,
             parts: self
                 .parts
                 .into_iter()
@@ -428,6 +433,7 @@ mod tests {
                 provider_options: Some(json!({"openai":{"itemId":"item"}})),
             },
             ModelEvent::Finished {
+                compaction: None,
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
                     input_tokens: Some(3),

@@ -370,6 +370,11 @@ async fn describe_with(
             while let Some(part) = cursor.next().await? {
                 last_is_tool_result = matches!(part, AssistantRecipe::ToolResult(_));
                 match part {
+                    AssistantRecipe::CodexCompaction { item } => {
+                        measure.marker(b"codex-compaction");
+                        measure.json(&item, false).await?;
+                    }
+
                     AssistantRecipe::Text {
                         text,
                         provider_options,
@@ -433,7 +438,7 @@ async fn describe_with(
                     }
                     AssistantRecipe::ToolResult(result) => {
                         let id = measure.result(&result).await?;
-                        if result.kind == ToolResultKind::Settled {
+                        if result.kind == ToolResultKind::Output {
                             settled.push(id, budget, cancellation).await?;
                         }
                     }
@@ -451,7 +456,7 @@ async fn describe_with(
             let mut cursor = content.open(0);
             while let Some(result) = cursor.next().await? {
                 let id = measure.result(&result).await?;
-                if result.kind == ToolResultKind::Settled {
+                if result.kind == ToolResultKind::Output {
                     settled.push(id, budget, cancellation).await?;
                 }
             }

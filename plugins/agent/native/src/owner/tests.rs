@@ -20,8 +20,6 @@
 mod http_fixture;
 mod memory_release;
 
-mod plan_tests;
-
 mod goal_tests;
 
 mod recap_tests;
@@ -41,6 +39,9 @@ mod skills;
 
 mod attachments;
 
+#[cfg(unix)]
+mod checkpoints;
+
 mod fork;
 
 mod files;
@@ -49,6 +50,8 @@ mod file_browsing;
 
 mod health;
 mod processes;
+#[cfg(windows)]
+mod windows_shell;
 
 mod protocol_processes;
 
@@ -76,8 +79,8 @@ mod queue;
 mod mcp;
 mod selection;
 
+mod decisions_api_tests;
 mod git;
-mod jev_tests;
 mod web_tests;
 
 mod worktrees;
@@ -259,7 +262,39 @@ fn application_package(name: &str, entry: EntryDeclaration) -> Package {
     Package::new(files).unwrap()
 }
 fn input(settings: &Configuration) -> (Input, Vec<Package>) {
-    application_input(settings, package(true), package(false))
+    let needs_settings = settings.tools.iter().any(|tool| {
+        matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Import { name } if name == "settings")
+    });
+    let mut provider = entry(true);
+    if needs_settings {
+        provider.imports.insert(
+            "settings".into(),
+            Import {
+                contract: maka_settings_native::contract::contract(),
+                cardinality: Cardinality::One,
+            },
+        );
+    }
+    let (mut input, packages) = application_input(
+        settings,
+        application_package("agent", provider),
+        package(false),
+    );
+    if needs_settings {
+        input
+            .instances
+            .get_mut("provider")
+            .unwrap()
+            .bindings
+            .insert(
+                "settings".into(),
+                vec![Target::Instance {
+                    path: vec!["settings".into()],
+                    export: maka_settings_native::EXPORT.into(),
+                }],
+            );
+    }
+    (input, packages)
 }
 fn application_input(
     settings: &Configuration,
@@ -312,6 +347,7 @@ fn application_input(
         ..node(key, &consumer)
     };
     let input = Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             (
@@ -711,16 +747,13 @@ impl Fixture {
             FixtureApplication::Agent => match peer {
                 Some(peer) => (peer.issuer(), peer),
                 None => {
-                    let native = tooling.as_ref().map(service_tools::Setup::policy).or_else(|| {
-                        let methods = settings.tools.iter().filter(|tool|
-                            matches!(&tool.target, maka_host_runtime::application::ServiceTarget::Export { name } if name == EXPORT)
-                        ).map(|tool| tool.method.clone()).collect::<std::collections::BTreeSet<_>>();
-                        (!methods.is_empty()).then(|| Arc::new(maka_transport::transport::PeerPolicy::with_native_grants(vec![
-                            maka_transport::transport::NativeGrant {
-                                origin: id(1), consumer: id(1), provider: id(1), export: EXPORT.into(), methods, recovery: true,
-                            }
-                        ]).unwrap()))
-                    });
+                    let native = tooling
+                        .as_ref()
+                        .map(service_tools::Setup::policy)
+                        .or_else(|| {
+                            (!settings.tools.is_empty())
+                                .then(|| Arc::new(maka_transport::transport::PeerPolicy::default()))
+                        });
                     let issuer = native
                         .as_ref()
                         .map(|policy| policy.issuer())
@@ -835,7 +868,7 @@ impl Fixture {
         self.mutation(
             2,
             "send",
-            json!({"sessionId":session,"message":"Hello","model":self.selection().await}),
+            json!({"sessionId":session,"message":"Hello","delivery":"queue","model":self.selection().await}),
             Uuid::new_v4(),
         )
         .await
@@ -1224,9 +1257,11 @@ async fn cleanup_case(panic: bool) {
             .owner
             .send(
                 Send {
+                    delivery: maka_agent_api::contract::SendDelivery::Queue,
+                    expected_invocation_id: None,
                     session_id: session.clone(),
                     message: "after failed cleanup".into(),
-                    model: selection,
+                    model: Some(selection),
                     thinking_level: None,
                     attachments: vec![],
                 },
@@ -1405,6 +1440,6 @@ fn provide_without_workhub(registry: &mut NativeRegistry) -> Result<(), String> 
     maka_interactions_native::questions::provide(registry)?;
     maka_interactions_native::forms::provide(registry)?;
     maka_web::provide(registry)?;
-    maka_jev_native::provide(registry)?;
+    maka_decisions_api_native::provide(registry)?;
     Ok(())
 }

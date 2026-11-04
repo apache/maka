@@ -195,6 +195,7 @@ async fn recorded_provider_parts_keep_original_bodies_and_reject_cross_step_refs
                 provider_options: None,
             },
             ModelEvent::Finished {
+                compaction: None,
                 reason: ModelFinishReason::Stop,
                 usage: ModelUsage {
                     input_tokens: Some(3),

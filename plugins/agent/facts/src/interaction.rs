@@ -138,9 +138,22 @@ pub enum Decision {
     Deny,
 }
 
+/// A macOS privacy grant (TCC) that the Host process itself needs before native
+/// Computer Use can run. This is operating-system state the user changes in
+/// System Settings, not a Maka grant; the Host observes it and commits the outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SystemPermissionGrant {
+    /// System Settings > Privacy & Security > Accessibility.
+    Accessibility,
+    /// System Settings > Privacy & Security > Screen & System Audio Recording.
+    ScreenRecording,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ClosureReason {
+    Steered,
     TurnStopped,
     TurnTerminal,
     ProducerCancelled,
@@ -199,6 +212,27 @@ pub enum InteractionRequest {
         allow_always: bool,
         authority_revision: u64,
     },
+    /// Missing operating-system grants the waiting tool call needs. The producer
+    /// polls the real grant state and commits `SystemPermissionGranted` itself;
+    /// the user can only cancel.
+    SystemPermission {
+        tool_use_id: String,
+        /// Distinct missing grants.
+        #[schemars(length(min = 1))]
+        grants: Vec<SystemPermissionGrant>,
+        /// The application name the operating system lists in its settings.
+        #[schemars(length(min = 1))]
+        application: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        application_location: Option<SystemPermissionApplicationLocation>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SystemPermissionApplicationLocation {
+    pub file_url: String,
+    pub state_domain: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
@@ -224,6 +258,7 @@ pub enum InteractionAnswer {
         decision: ComputerAppDecision,
     },
     ComputerAppCancel {},
+    SystemPermissionCancel {},
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
@@ -259,6 +294,8 @@ pub enum InteractionOutcome {
         decision: ComputerAppDecision,
         committed_at: u64,
     },
+    /// Producer-committed once every requested system grant is present; no answer maps here.
+    SystemPermissionGranted { committed_at: u64 },
     Closure {
         reason: ClosureReason,
         committed_at: u64,
@@ -274,6 +311,7 @@ impl InteractionOutcome {
             | Self::FormAnswer { committed_at, .. }
             | Self::ClientCapabilityDecision { committed_at, .. }
             | Self::ComputerAppDecision { committed_at, .. }
+            | Self::SystemPermissionGranted { committed_at }
             | Self::Closure { committed_at, .. } => *committed_at,
         }
     }
@@ -302,10 +340,12 @@ impl InteractionAnswer {
                 decision,
                 committed_at,
             },
-            Self::ComputerAppCancel {} => InteractionOutcome::Closure {
-                reason: ClosureReason::ProducerCancelled,
-                committed_at,
-            },
+            Self::ComputerAppCancel {} | Self::SystemPermissionCancel {} => {
+                InteractionOutcome::Closure {
+                    reason: ClosureReason::ProducerCancelled,
+                    committed_at,
+                }
+            }
             Self::Form { result } => InteractionOutcome::FormAnswer {
                 result,
                 committed_at,
@@ -344,7 +384,7 @@ impl InteractionAnswer {
                 },
             ) => left == right,
             (
-                Self::ComputerAppCancel {},
+                Self::ComputerAppCancel {} | Self::SystemPermissionCancel {},
                 InteractionOutcome::Closure {
                     reason: ClosureReason::ProducerCancelled,
                     ..

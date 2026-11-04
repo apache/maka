@@ -249,6 +249,35 @@ impl InteractionRequest {
                     return Err("Invalid computer application authority revision");
                 }
             }
+            Self::SystemPermission {
+                tool_use_id,
+                grants,
+                application,
+                application_location,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                if grants.is_empty() {
+                    return Err("System permission request requires a grant");
+                }
+                if grants
+                    .iter()
+                    .enumerate()
+                    .any(|(index, grant)| grants[..index].contains(grant))
+                {
+                    return Err("Duplicate system permission grant");
+                }
+                if application.trim().is_empty()
+                    || application.trim() != application
+                    || application.chars().any(char::is_control)
+                {
+                    return Err("Invalid system permission application name");
+                }
+                if let Some(location) = application_location {
+                    location.bundle_url()?;
+                }
+            }
         }
         Ok(())
     }
@@ -286,7 +315,8 @@ impl InteractionOutcome {
                 | InteractionRequest::ServiceApproval { .. }
                 | InteractionRequest::Question { .. }
                 | InteractionRequest::Permissions { .. }
-                | InteractionRequest::ComputerApp { .. },
+                | InteractionRequest::ComputerApp { .. }
+                | InteractionRequest::SystemPermission { .. },
                 Self::Closure {
                     reason: ClosureReason::TimedOut,
                     ..
@@ -317,6 +347,7 @@ impl InteractionOutcome {
             ) => question::validate_answer_count(answers, questions),
             (_, Self::Closure { .. })
             | (InteractionRequest::ServiceApproval { .. }, Self::ServiceApprovalDecision { .. })
+            | (InteractionRequest::SystemPermission { .. }, Self::SystemPermissionGranted { .. })
             | (
                 InteractionRequest::ClientCapability { .. },
                 Self::ClientCapabilityDecision { .. },
@@ -387,7 +418,10 @@ impl InteractionAnswer {
                 Self::ComputerApp { decision },
                 InteractionRequest::ComputerApp { allow_always, .. },
             ) => decision.validate_for(*allow_always),
-            (Self::ComputerAppCancel {}, InteractionRequest::ComputerApp { .. }) => Ok(()),
+            (Self::ComputerAppCancel {}, InteractionRequest::ComputerApp { .. })
+            | (Self::SystemPermissionCancel {}, InteractionRequest::SystemPermission { .. }) => {
+                Ok(())
+            }
             _ => Err("Interaction answer does not match request"),
         }
     }
@@ -447,4 +481,36 @@ fn windows_absolute(path: &str) -> bool {
                 && unc(&rest[4..]));
     }
     drive(&path) || path.strip_prefix("\\\\").is_some_and(unc)
+}
+
+impl SystemPermissionApplicationLocation {
+    pub fn bundle_url(&self) -> Result<url::Url, &'static str> {
+        if self.state_domain.len() != 64
+            || !self
+                .state_domain
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err("Invalid system permission Host identity");
+        }
+        let url =
+            url::Url::parse(&self.file_url).map_err(|_| "Invalid permission application URL")?;
+        if url.scheme() != "file"
+            || url.host_str().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+        {
+            return Err("Permission application must be a local bundle URL");
+        }
+        let path = url.path().trim_end_matches('/');
+        if !path.starts_with('/')
+            || !path
+                .rsplit('.')
+                .next()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
+        {
+            return Err("Permission application must be an absolute app bundle");
+        }
+        Ok(url)
+    }
 }

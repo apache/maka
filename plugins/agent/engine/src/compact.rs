@@ -36,7 +36,7 @@ pub(super) struct Job {
     prompt: crate::prepared_prompt::PreparedPrompt,
     surface: Arc<crate::request_composition::Surface>,
     definitions: Vec<Arc<maka_model::ToolDefinition>>,
-    instruction: crate::prepared_prompt::OwnedOverlay,
+    instruction: Option<crate::prepared_prompt::OwnedOverlay>,
 }
 
 pub(super) async fn run(
@@ -65,6 +65,18 @@ pub(super) async fn capture(
     continuation_base: Option<u64>,
 ) -> Result<Option<Job>, RunError> {
     input.refresh_model(cancellation).await?;
+    let native = input.provider.capabilities.native_compaction == Some(true);
+    if native
+        && input
+            .context
+            .as_ref()
+            .and_then(|context| context.codex.as_ref())
+            .is_none()
+    {
+        return Err(RunError::InvalidInput(
+            "native compaction requires ChatGPT producer facts".into(),
+        ));
+    }
     let source = Arc::new(tokio::select! {
         biased;
         _ = cancellation.cancelled() => return Err(RunError::Cancelled),
@@ -119,7 +131,7 @@ pub(super) async fn capture(
     // A relocated project can change the admitted cwd since the last Main.
     composition.dynamic_context = crate::request_composition::session_context(input);
     // Reuse the Main system/tool prefix for provider prefix caching. The summary
-    // instruction is appended after history; execution binds the current adapter
+    // instruction, when used, follows history; execution binds the current adapter
     // and model revision on this admitted route.
     composition.sources.retain(|source| {
         !matches!(
@@ -134,6 +146,10 @@ pub(super) async fn capture(
         .extend(input.model_revision.iter().cloned());
     let definitions = composition.tools.clone();
     let mut captured = input.clone();
+    if native {
+        captured.context.as_mut().expect("native context").operation =
+            maka_agent_facts::context::ModelOperation::CodexCompaction;
+    }
     if let Some(options) = &composition.provider_options {
         captured.provider_options = options.clone();
     }
@@ -156,20 +172,26 @@ pub(super) async fn capture(
     .await?;
     let arena = prompt.arena().cloned();
     let result = async {
-        if !has_new_history && !context_input::needs_compaction(&captured, &prompt) {
+        if !native && !has_new_history && !context_input::needs_compaction(&captured, &prompt) {
             return Ok(None);
         }
-        let instruction = prompt
-            .freeze_summary_instruction(Arc::new(
-                captured
-                    .configuration
-                    .compaction_prompt
-                    .clone()
-                    .unwrap_or_else(|| {
-                        default_compaction_prompt(captured.configuration.language).into()
-                    }),
-            ))
-            .await?;
+        let instruction = if native {
+            None
+        } else {
+            Some(
+                prompt
+                    .freeze_summary_instruction(Arc::new(
+                        captured
+                            .configuration
+                            .compaction_prompt
+                            .clone()
+                            .unwrap_or_else(|| {
+                                default_compaction_prompt(captured.configuration.language).into()
+                            }),
+                    ))
+                    .await?,
+            )
+        };
         Ok(Some(Job {
             input: captured,
             source: model_attempt::RequestSource::from(source.as_ref()),
@@ -211,17 +233,26 @@ impl Job {
         let arena = prompt.arena().cloned();
         let result = async {
             let mut input_budget = context_input::summary_budget(&input)
-                .saturating_sub(instruction.breakdown().estimated_tokens())
+                .saturating_sub(
+                    instruction
+                        .as_ref()
+                        .map_or(0, |instruction| instruction.breakdown().estimated_tokens()),
+                )
                 .saturating_sub(context_input::json_tokens(&definitions));
-            reserve_summary(
-                &prompt,
-                &instruction,
-                &input,
-                &definitions,
-                input_budget,
-                cancellation,
-            )
-            .await?;
+            let native = input.context.as_ref().is_some_and(|c| {
+                c.operation == maka_agent_facts::context::ModelOperation::CodexCompaction
+            });
+            if let Some(instruction) = &instruction {
+                reserve_summary(
+                    &prompt,
+                    instruction,
+                    &input,
+                    &definitions,
+                    input_budget,
+                    cancellation,
+                )
+                .await?;
+            }
             let mut overflowed = false;
             loop {
                 let mut request = if overflowed {
@@ -235,7 +266,9 @@ impl Job {
                 } else {
                     prompt.clone()
                 };
-                request.push(instruction.clone());
+                if let Some(instruction) = &instruction {
+                    request.push(instruction.clone());
+                }
                 let result = model_attempt::execute_once(
                     inner,
                     &input,
@@ -256,7 +289,7 @@ impl Job {
                     Ok(output) => output,
                     Err(RunError::Model(maka_model::ModelError::ContextOverflow {
                         observed_output: false,
-                    })) if input_budget > 256 => {
+                    })) if !native && input_budget > 256 => {
                         input_budget = input_budget
                             .min(prompt.breakdown().estimated_tokens())
                             .max(1)
@@ -270,7 +303,27 @@ impl Job {
                     unreachable!("Summary request returns its summary business result");
                 };
                 let summary = match summary {
-                    Ok(summary) => summary,
+                    Ok(model_attempt::SummaryOutput::Text(summary)) if !native => {
+                        maka_agent_facts::context::CheckpointContent::text(summary)
+                    }
+                    Ok(model_attempt::SummaryOutput::CodexNative { item, tokens }) if native => {
+                        maka_agent_facts::context::CheckpointContent::native(
+                            &item,
+                            tokens
+                                .or_else(|| input.context.as_ref().and_then(|c| c.context_window))
+                                .ok_or_else(|| {
+                                    RunError::InvalidInput(
+                                        "native checkpoint has no token usage or model capacity"
+                                            .into(),
+                                    )
+                                })?,
+                        )
+                    }
+                    Ok(_) => {
+                        return Err(RunError::InvalidInput(
+                            "compaction result has the wrong kind".into(),
+                        ));
+                    }
                     Err(defect) => return Ok(failed(&defect.to_string())),
                 };
                 let checkpoint = RuntimeEvent::new(

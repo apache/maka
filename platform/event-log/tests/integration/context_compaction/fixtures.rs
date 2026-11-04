@@ -83,16 +83,18 @@ pub(super) fn model_output(
 
 pub(super) fn output_summary(
     output: &maka_agent_facts::model::recorded::ModelCompletion,
-) -> TextSummary {
+) -> maka_agent_facts::context::CheckpointContent {
     use maka_agent_facts::model::recorded::CompletionPart;
-    TextSummary::from_parts(
-        output.finish_reason,
-        output.parts.iter().map(|part| match part {
-            CompletionPart::Own(record) => record.part.as_ref(),
-            CompletionPart::Ref(_) => panic!("summary fixture owns its result"),
-        }),
+    maka_agent_facts::context::CheckpointContent::text(
+        TextSummary::from_parts(
+            output.finish_reason,
+            output.parts.iter().map(|part| match part {
+                CompletionPart::Own(record) => record.part.as_ref(),
+                CompletionPart::Ref(_) => panic!("summary fixture owns its result"),
+            }),
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 
 fn step(id: &str, step: &str, text: &str) -> ModelCompletion {
@@ -531,4 +533,96 @@ async fn adoption_markers_are_durable_timed_and_hidden_from_recall() {
             log.close().await.unwrap();
         }
     }
+}
+
+pub(super) async fn prepared_native(log: &EventLog, id: &str) -> Vec<EventWrite> {
+    use maka_agent_facts::context::{
+        CheckpointContent, CheckpointMode, CodexCompatibility, CodexRequestProvenance,
+        ModelOperation, ModelRequestContext,
+    };
+    log.append(&event(
+        id,
+        Fact::InvocationOpened {
+            configuration: None,
+            input: InvocationInput::ContextCompact {
+                request_fingerprint: id.into(),
+            },
+        },
+    ))
+    .await
+    .unwrap();
+    let source = log
+        .capture_compaction_context(
+            "session",
+            Some(id),
+            &CheckpointMode::Standalone,
+            100_000,
+            64 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+    let producer = CodexRequestProvenance {
+        connection_id: "connection".into(),
+        account_id: Some("account".into()),
+        compatibility: Some(CodexCompatibility {
+            comp_hash: "3000".into(),
+            fetched_at: 1,
+        }),
+    };
+    let mut requested = request(id, &source).event().clone();
+    if let Fact::ModelRequested { context, .. } = &mut requested.fact {
+        *context = Some(ModelRequestContext {
+            operation: ModelOperation::CodexCompaction,
+            codex: Some(producer.clone()),
+            provider_id: "chatgpt".into(),
+            context_window: Some(128_000),
+            model_context_window: Some(128_000),
+            declared_window: None,
+        });
+    }
+    log.append(&EventWrite::plain(requested).unwrap())
+        .await
+        .unwrap();
+    let item = json!({"type":"compaction","id":"native","encrypted_content":"opaque","extension":{"kept":true}});
+    let output = model_output(
+        id,
+        &format!("{id}-summary"),
+        json!({"parts":[],"finish_reason":"stop","usage":{"output_tokens":12},"compaction":item,"provider_options":{"openai":{"responseId":"native-response"}}}),
+    );
+    log.append(&event(
+        id,
+        Fact::ModelCompleted {
+            step_id: format!("{id}-summary"),
+            output,
+        },
+    ))
+    .await
+    .unwrap();
+    let checkpoint = event(
+        id,
+        Fact::ContextCheckpointRecorded {
+            checkpoint: ContextCheckpoint {
+                mode: CheckpointMode::Standalone,
+                covered_through: source.source_evidence.high_water,
+                source_digest: source.source_evidence.digest,
+                previous_checkpoint_id: source.baseline.map(|b| b.event_id),
+                summary: CheckpointContent::native(
+                    &maka_agent_facts::model::NativeCompaction::new(item).unwrap(),
+                    12,
+                ),
+                summary_step_id: format!("{id}-summary"),
+            },
+        },
+    );
+    let terminal = event(
+        id,
+        Fact::InvocationEnded {
+            outcome: InvocationOutcome::ContextCompactFinished {
+                outcome: CompactOutcome::Compacted {
+                    checkpoint_id: checkpoint.event().id.clone(),
+                },
+            },
+        },
+    );
+    vec![checkpoint, terminal]
 }

@@ -62,7 +62,7 @@ The composer is the reference:
 - Toolbar controls share one center line, with labels and chevrons at one spacing.
 - The card and the reading column share both edges.
 
-Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points past the reading column so their glyphs land on its edges, sidebar labels share one lane, and table text starts where code block text does.
+Elsewhere the same rule holds: icon buttons and disclosure rows reach 8 points past the reading column so their glyphs land on its edges, sidebar icons, workspace names and conversation titles share one left edge, and table text starts where code block text does.
 
 ## States
 

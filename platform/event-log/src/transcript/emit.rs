@@ -193,6 +193,31 @@ fn owned_references(
 ) -> Result<(), StoreError> {
     use maka_agent_facts::attachment::StorageRef;
     use maka_presentation::{Content, ToolContent};
+    // Projection images only add display; one this Session cannot own is dropped, not a conflict.
+    if let Content::ToolResult { images, .. } = &mut message.content {
+        let mut owned = Vec::with_capacity(images.len());
+        for mut image in std::mem::take(images) {
+            if let StorageRef::SessionFile {
+                session_id,
+                relative_path,
+            } = &image.reference
+            {
+                let id: Option<String> = db
+                    .prepare_cached(crate::artifacts::history::RESOLVE_SQL)?
+                    .query_row(params![session, &**session_id, &**relative_path], |row| {
+                        row.get(0)
+                    })
+                    .optional()?;
+                let Some(relative_path) = id else { continue };
+                image.reference = StorageRef::SessionFile {
+                    session_id: session.into(),
+                    relative_path,
+                };
+                owned.push(image);
+            }
+        }
+        *images = owned;
+    }
     let refs: Vec<_> = match &mut message.content {
         Content::User { attachments, .. } => attachments
             .iter_mut()

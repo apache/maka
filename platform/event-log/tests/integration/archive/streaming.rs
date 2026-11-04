@@ -84,6 +84,7 @@ async fn prune_preserves_streaming_accepted_call() {
         Fact::ModelCompleted {
             step_id: "step".into(),
             output: ModelCompletion {
+                compaction: None,
                 parts: vec![CompletionPart::Ref(RecordedPartRef {
                     event_id: accepted.event().id.clone(),
                     ordinal: 0,

@@ -17,6 +17,9 @@
  * under the License.
  */
 
+mod root;
+pub use root::RootComposition;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use schemars::JsonSchema;
@@ -49,6 +52,10 @@ impl InstanceId {
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "CompositionInput")]
 pub struct Input {
+    /// Optional immutable root composition. Its children remain deployment roots,
+    /// so selecting a baseline does not prepend a namespace to instance identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<RootComposition>,
     pub instances: BTreeMap<String, Node>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui: Option<UiTarget>,
@@ -134,6 +141,9 @@ impl Configuration {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Template {
+    /// Default UI selection when this template is used at deployment scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ui: Option<UiTarget>,
     #[serde(default)]
     pub parameters: BTreeMap<String, Parameter>,
     #[serde(default)]
@@ -155,11 +165,12 @@ pub struct Parameter {
     pub default: Option<Value>,
 }
 
-fn present<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+fn present<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
 {
-    Value::deserialize(deserializer).map(Some)
+    T::deserialize(deserializer).map(Some)
 }
 
 /// An override belongs to its containing structural instance. Missing paths fail;
@@ -168,6 +179,9 @@ where
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Override {
     pub path: Vec<String>,
+    /// A persistent deletion, distinct from disabling an instance.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remove: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub package: Option<PackageRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -176,6 +190,8 @@ pub struct Override {
     pub parameters: BTreeMap<String, Value>,
     #[serde(default)]
     pub configuration: BTreeMap<String, Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub configuration_fields: Vec<ConfigurationField>,
     #[serde(default)]
     pub bindings: BTreeMap<String, Vec<Target>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -197,6 +213,261 @@ pub enum Target {
         instance: InstanceId,
         export: String,
     },
+}
+
+/// An exact object-field edit. Missing value deletes the field; JSON null is a value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ConfigurationField {
+    pub path: Vec<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present"
+    )]
+    pub value: Option<Value>,
+}
+
+impl ConfigurationField {
+    fn insert(fields: &mut Vec<Self>, field: Self) -> Result<(), Error> {
+        if let Some(parent) = fields
+            .iter_mut()
+            .find(|old| field.path.starts_with(&old.path))
+        {
+            if field.path == parent.path {
+                parent.value = field.value;
+                return Ok(());
+            }
+            if parent.value.is_none() && field.value.is_none() {
+                return Ok(());
+            }
+            let value = parent
+                .value
+                .get_or_insert_with(|| Value::Object(Default::default()));
+            let relative = &field.path[parent.path.len()..];
+            let mut configuration = Configuration {
+                values: BTreeMap::from([("value".into(), value.clone())]),
+                ..Configuration::default()
+            };
+            let mut path = vec!["value".into()];
+            path.extend_from_slice(relative);
+            Self {
+                path,
+                value: field.value,
+            }
+            .apply(&mut configuration)?;
+            *value = configuration.values.remove("value").unwrap();
+            return Ok(());
+        }
+        fields.retain(|old| !old.path.starts_with(&field.path));
+        fields.push(field);
+        Ok(())
+    }
+
+    fn apply(&self, configuration: &mut Configuration) -> Result<(), Error> {
+        let (root, path) = self
+            .path
+            .split_first()
+            .ok_or_else(|| Error::Composition("empty configuration field path".into()))?;
+        if path.is_empty() {
+            configuration.parameters.remove(root);
+            match &self.value {
+                Some(value) => {
+                    configuration.values.insert(root.clone(), value.clone());
+                }
+                None => {
+                    configuration.values.remove(root);
+                }
+            }
+            return Ok(());
+        }
+        let create = self.value.is_some();
+        let current = if create {
+            Some(
+                configuration
+                    .values
+                    .entry(root.clone())
+                    .or_insert_with(|| Value::Object(Default::default())),
+            )
+        } else {
+            configuration.values.get_mut(root)
+        };
+        let Some(mut current) = current else {
+            return Ok(());
+        };
+        for field in &path[..path.len() - 1] {
+            let object = current.as_object_mut().ok_or_else(|| {
+                Error::Composition(format!(
+                    "configuration field parent is not an object: {:?}",
+                    self.path
+                ))
+            })?;
+            let next = if create {
+                Some(
+                    object
+                        .entry(field.clone())
+                        .or_insert_with(|| Value::Object(Default::default())),
+                )
+            } else {
+                object.get_mut(field)
+            };
+            let Some(next) = next else {
+                return Ok(());
+            };
+            current = next;
+        }
+        let object = current.as_object_mut().ok_or_else(|| {
+            Error::Composition(format!(
+                "configuration field parent is not an object: {:?}",
+                self.path
+            ))
+        })?;
+        match &self.value {
+            Some(value) => {
+                object.insert(path.last().unwrap().clone(), value.clone());
+            }
+            None => {
+                object.remove(path.last().unwrap());
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Override {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        validate_path(&self.path)?;
+        if self.remove
+            && (self.package.is_some()
+                || self.use_package.is_some()
+                || !self.parameters.is_empty()
+                || !self.configuration.is_empty()
+                || !self.configuration_fields.is_empty()
+                || !self.bindings.is_empty()
+                || self.disabled.is_some())
+        {
+            return Err(Error::Composition(
+                "a deletion cannot contain instance edits".into(),
+            ));
+        }
+        let mut paths = BTreeSet::new();
+        for field in &self.configuration_fields {
+            if field.path.is_empty() || !paths.insert(&field.path) {
+                return Err(Error::Composition(
+                    "empty or duplicate configuration field path".into(),
+                ));
+            }
+            if self
+                .configuration_fields
+                .iter()
+                .any(|other| other.path != field.path && other.path.starts_with(&field.path))
+            {
+                return Err(Error::Composition(
+                    "overlapping configuration field edits".into(),
+                ));
+            }
+        }
+        if let Some(package) = &self.package {
+            package.validate()?;
+        }
+        for (name, targets) in &self.bindings {
+            crate::name(name)?;
+            for target in targets {
+                target.validate()?;
+            }
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, patch: Self) -> Result<(), Error> {
+        for key in patch.configuration.keys() {
+            self.configuration_fields
+                .retain(|field| field.path.first() != Some(key));
+        }
+        for field in patch.configuration_fields {
+            ConfigurationField::insert(&mut self.configuration_fields, field)?;
+        }
+        self.configuration.extend(patch.configuration);
+        self.bindings.extend(patch.bindings);
+        self.parameters.extend(patch.parameters);
+        if patch.package.is_some() {
+            self.package = patch.package;
+        }
+        if patch.use_package.is_some() {
+            self.use_package = patch.use_package;
+        }
+        if patch.disabled.is_some() {
+            self.disabled = patch.disabled;
+        }
+        self.remove |= patch.remove;
+        Ok(())
+    }
+}
+
+impl Node {
+    pub(crate) fn apply_overrides(
+        &mut self,
+        alias: &str,
+        overrides: &[Override],
+        parameters: &BTreeMap<String, Value>,
+    ) -> Result<(), Error> {
+        self.configuration = Configuration {
+            values: self.configuration.resolve(parameters)?,
+            ..Configuration::default()
+        };
+        let mut children: BTreeMap<_, _> = self
+            .overrides
+            .iter()
+            .map(|patch| (patch.path.clone(), patch.clone()))
+            .collect();
+        for patch in overrides.iter().filter(|patch| patch.path[0] == alias) {
+            patch.validate()?;
+            if patch.path.len() == 1 {
+                if patch.remove {
+                    return Err(Error::Composition("cannot edit a removed instance".into()));
+                }
+                if let Some(package) = &patch.package {
+                    self.package = package.clone().into();
+                }
+                if let Some(use_package) = patch.use_package {
+                    self.use_package = use_package;
+                }
+                for (field, value) in &patch.parameters {
+                    self.parameters.parameters.remove(field);
+                    self.parameters.values.insert(field.clone(), value.clone());
+                }
+                for (field, value) in &patch.configuration {
+                    self.configuration.parameters.remove(field);
+                    self.configuration
+                        .values
+                        .insert(field.clone(), value.clone());
+                }
+                for field in &patch.configuration_fields {
+                    field.apply(&mut self.configuration)?;
+                }
+                self.bindings.extend(patch.bindings.clone());
+                if let Some(disabled) = patch.disabled {
+                    self.disabled = disabled;
+                }
+            } else {
+                let mut relative = patch.clone();
+                relative.path.remove(0);
+                if relative.remove {
+                    children.insert(relative.path.clone(), relative);
+                } else {
+                    children
+                        .entry(relative.path.clone())
+                        .or_insert_with(|| Override {
+                            path: relative.path.clone(),
+                            ..Override::default()
+                        })
+                        .merge(relative)?;
+                }
+            }
+        }
+        self.overrides = children.into_values().collect();
+        Ok(())
+    }
 }
 
 impl Target {
@@ -247,28 +518,41 @@ impl Node {
                 target.validate()?;
             }
         }
-        let mut paths = BTreeSet::new();
-        for patch in &self.overrides {
-            validate_path(&patch.path)?;
-            if let Some(package) = &patch.package {
-                package.validate()?;
-            }
-            if !paths.insert(&patch.path) {
-                return Err(Error::Composition("duplicate override path".into()));
-            }
-            for (name, targets) in &patch.bindings {
-                crate::name(name)?;
-                for target in targets {
-                    target.validate()?;
-                }
-            }
-        }
+        validate_overrides(&self.overrides)?;
         Ok(())
     }
 }
 
 impl Template {
+    pub(crate) fn resolve_parameters(
+        &self,
+        mut supplied: BTreeMap<String, Value>,
+    ) -> Result<BTreeMap<String, Value>, Error> {
+        for name in supplied.keys() {
+            if !self.parameters.contains_key(name) {
+                return Err(Error::Composition(format!(
+                    "undeclared template parameter: {name}"
+                )));
+            }
+        }
+        for (name, parameter) in &self.parameters {
+            if !supplied.contains_key(name) {
+                supplied.insert(
+                    name.clone(),
+                    parameter.default.clone().ok_or_else(|| {
+                        Error::Composition(format!("missing template parameter: {name}"))
+                    })?,
+                );
+            }
+            crate::validate_value(&parameter.schema, &supplied[name])?;
+        }
+        Ok(supplied)
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
+        if let Some(ui) = &self.ui {
+            ui.validate()?;
+        }
         crate::package::validate_imports(&self.imports)?;
         for (name, parameter) in &self.parameters {
             crate::name(name)?;
@@ -293,6 +577,26 @@ pub(crate) fn validate_nodes(nodes: &BTreeMap<String, Node>) -> Result<(), Error
         if !keys.insert(node.key) {
             return Err(Error::Composition(
                 "sibling instances share a source identity".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_overrides(overrides: &[Override]) -> Result<(), Error> {
+    let mut paths = BTreeSet::new();
+    for patch in overrides {
+        patch.validate()?;
+        if !paths.insert(&patch.path) {
+            return Err(Error::Composition("duplicate override path".into()));
+        }
+        if patch.remove
+            && overrides
+                .iter()
+                .any(|other| other.path != patch.path && other.path.starts_with(&patch.path))
+        {
+            return Err(Error::Composition(
+                "deletion conflicts with a descendant override".into(),
             ));
         }
     }

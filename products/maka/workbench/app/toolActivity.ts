@@ -40,12 +40,6 @@ type Delivery = {
   fact: any;
 };
 
-function snippet(text: string): string {
-  // A UTF-16 suffix is at most twice the retained codepoint budget. Taking the
-  // final codepoints also drops a possible leading half-surrogate from slicing.
-  return Array.from(text.slice(-4096)).slice(-2048).join('');
-}
-
 export function updateToolActivity(active: ToolActivity[], event: Delivery): ToolActivity[] {
   const fact = event.fact;
   const matches = (tool: ToolActivity) =>
@@ -57,7 +51,7 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
     toolUseId: fact.toolUseId,
     stepId: fact.stepId,
     startSequence: event.sequence,
-    name: snippet(fact.name),
+    name: fact.name,
     source,
     phase,
     inputReady: false,
@@ -69,9 +63,12 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
       next = {
         ...(previous ?? start(fact.providerExecuted ? 'provider' : 'native', 'preparing')),
         stepId: fact.stepId,
-        name: snippet(fact.name),
+        name: fact.name,
         source: fact.providerExecuted ? 'provider' : 'native',
-        startSequence: previous?.startSequence ?? event.sequence,
+        startSequence:
+          previous?.previewOrder === undefined
+            ? (previous?.startSequence ?? event.sequence)
+            : event.sequence,
         previewOrder: undefined,
         inputReady: true,
         phase: fact.providerExecuted ? 'running' : 'preparing',
@@ -82,9 +79,12 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
         ...(previous ?? start('native', 'running')),
         source: 'native',
         previewOrder: undefined,
-        startSequence: previous?.startSequence ?? event.sequence,
+        startSequence:
+          previous?.previewOrder === undefined
+            ? (previous?.startSequence ?? event.sequence)
+            : event.sequence,
         phase: 'running',
-        name: snippet(fact.name),
+        name: fact.name,
         title: fact.title,
       };
       break;
@@ -94,13 +94,13 @@ export function updateToolActivity(active: ToolActivity[], event: Delivery): Too
         source: 'executor',
         phase: 'running',
         stepId: event.invocationId,
-        name: snippet(fact.name),
+        name: fact.name,
         inputReady: true,
       };
       break;
     case 'executor_tool_progress':
       if (!previous || previous.source !== 'executor') return active;
-      next = { ...previous, detail: snippet(fact.text) };
+      next = { ...previous, detail: fact.text };
       break;
     case 'tool_rejected':
     case 'tool_settled':
@@ -153,7 +153,5 @@ export function toolActivitySummary(
   title?: string,
 ): string {
   const detail = tool.detail.replace(/\s+/g, ' ').trim();
-  return [phaseLabel, tool.name, title ? snippet(title) : undefined, detail]
-    .filter(Boolean)
-    .join(' · ');
+  return [phaseLabel, tool.name, title, detail].filter(Boolean).join(' · ');
 }

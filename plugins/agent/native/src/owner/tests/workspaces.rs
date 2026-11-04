@@ -320,3 +320,35 @@ async fn replaced_directory_marker_and_removed_publication_refuse_before_message
     fixture.app.shutdown().await.unwrap();
     fixture.config.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_user_can_start_a_conversation_in_the_workspace_of_an_archived_one() {
+    let fixture = Fixture::new("http://127.0.0.1:1/v1", None).await;
+    let archived = fixture.create("To be archived").await;
+    let changed = fixture
+        .mutation(
+            2,
+            "changeSession",
+            json!({"sessionId":archived,"expectedRevision":1,"action":"archive"}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(changed["session"]["archived"], true);
+    let created = fixture
+        .mutation(
+            2,
+            "create",
+            json!({"title":"Fresh","labels":[],"workspace":{"kind":"session","sessionId":archived}}),
+            Uuid::new_v4(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created["kind"], "created", "{created}");
+    assert_eq!(
+        created["session"]["workspace"],
+        changed["session"]["workspace"]
+    );
+    fixture.app.shutdown().await.unwrap();
+    fixture.config.shutdown().await.unwrap();
+}

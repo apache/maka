@@ -171,6 +171,7 @@ mod tests {
     }
     fn request() -> Request {
         Request {
+            operation: maka_agent_facts::context::ModelOperation::Inference,
             language: Language::En,
             provider: Provider {
                 kind: ProviderKind::OpenaiResponses,

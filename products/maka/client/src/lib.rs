@@ -51,6 +51,7 @@ pub type Result<T> = std::result::Result<T, String>;
 
 const CONTROL_METHODS: &[&str] = &[
     "create",
+    "predictNextMessage",
     "trustProjectMcp",
     "selectBackend",
     "compact",
@@ -65,7 +66,6 @@ const CONTROL_METHODS: &[&str] = &[
     "changeSession",
     "fork",
     "openBot",
-    "changePlan",
     "changeGoal",
 ];
 const CONTROL_KIND: &str = "agent-control";
@@ -853,10 +853,9 @@ impl Client {
         }
         Ok(saved)
     }
-    /// Read the exact saved text in Rust. UI callers provide only its revision
-    /// and model selection; editing a subsequent revision remains independent.
+    /// Transfer one saved draft to a recoverable send before opening a Host call.
     #[allow(clippy::too_many_arguments)]
-    pub async fn send_draft(
+    pub async fn reserve_send_draft(
         &self,
         id: Uuid,
         endpoint: &str,
@@ -864,7 +863,7 @@ impl Client {
         editor: &str,
         revision: u64,
         selection: Value,
-    ) -> Result<Mutation> {
+    ) -> Result<DraftSend> {
         let key = self.draft_key(endpoint, session, editor).await?;
         let draft = self
             .0
@@ -878,38 +877,131 @@ impl Client {
         if draft.text.trim().is_empty() && draft.attachments.is_empty() {
             return Err("saved draft is empty or already consumed".into());
         }
-        let mut input = selection
-            .as_object()
-            .cloned()
-            .ok_or("send selection must be an object")?;
-        input.insert("sessionId".into(), Value::String(session.into()));
-        input.insert("message".into(), Value::String(draft.text));
-        input.insert(
-            "attachments".into(),
-            serde_json::to_value(
-                draft
-                    .attachments
-                    .iter()
-                    .map(|attachment| &attachment.id)
-                    .collect::<Vec<_>>(),
-            )
-            .map_err(error)?,
-        );
+        if !selection.is_object() {
+            return Err("send selection must be an object".into());
+        }
+        let snapshot = journal::SendSnapshot { draft, selection };
         let operation = Operation {
             id,
             host: self.0.source.clone(),
             endpoint: endpoint.into(),
             method: "send".into(),
             session_id: Some(session.into()),
-            correlation: Value::Null,
+            correlation: serde_json::to_value(snapshot).map_err(error)?,
             draft: Some(DraftReference { key, revision }),
             upload: None,
             abandoned: false,
             reference: None,
             receipt: None,
         };
-        self.begin_mutation(operation, Value::Object(input), Attachments::new())
-            .await
+        let preparation = self
+            .0
+            .journal
+            .preparation_lease(false)
+            .await?
+            .expect("shared preparation lease");
+        self.0.journal.reserve_send(&operation).await?;
+        Ok(DraftSend {
+            client: self.clone(),
+            operation,
+            preparation,
+        })
+    }
+
+    /// Retry only a known unsent attempt, preserving its content and the new editor draft.
+    pub async fn retry_send(
+        &self,
+        original: Uuid,
+        id: Uuid,
+        selection: Value,
+    ) -> Result<DraftSend> {
+        let previous = self.operation(original).await?;
+        if previous.draft.is_none()
+            || previous.method != "send"
+            || (!journal::retryable_send(&previous)
+                && self.send_delivery(original).await? != SendDelivery::Cancelled)
+        {
+            return Err("original send must be confirmed unsent before retrying".into());
+        }
+        if !selection.is_object() {
+            return Err("send selection must be an object".into());
+        }
+        let mut snapshot: journal::SendSnapshot =
+            serde_json::from_value(previous.correlation).map_err(error)?;
+        snapshot.selection = selection;
+        let operation = Operation {
+            id,
+            host: previous.host,
+            endpoint: previous.endpoint,
+            method: previous.method,
+            session_id: previous.session_id,
+            correlation: serde_json::to_value(snapshot).map_err(error)?,
+            draft: previous.draft,
+            upload: None,
+            abandoned: false,
+            reference: None,
+            receipt: None,
+        };
+        let preparation = self
+            .0
+            .journal
+            .preparation_lease(false)
+            .await?
+            .expect("shared preparation lease");
+        self.0.journal.retry_send(original, &operation).await?;
+        Ok(DraftSend {
+            client: self.clone(),
+            operation,
+            preparation,
+        })
+    }
+
+    /// Observe delivery using the native message ledger, independently of the queue view.
+    pub async fn send_delivery(&self, id: Uuid) -> Result<SendDelivery> {
+        let operation = self.operation(id).await?;
+        let Some((message, mut revision)) = journal::queued_send(&operation) else {
+            return Ok(SendDelivery::Unknown);
+        };
+        loop {
+            let reply = self
+                .query(
+                    &operation.endpoint,
+                    "queueMessage",
+                    serde_json::json!({
+                        "sessionId": operation.session_id,
+                        "messageId": message,
+                        "expectedRevision": revision,
+                    }),
+                )
+                .await?;
+            match reply["kind"].as_str() {
+                Some("ready") => return Ok(SendDelivery::Accepted),
+                Some("revision_conflict") => {
+                    revision = reply["actual"].as_u64().ok_or("invalid queue revision")?;
+                }
+                Some("missing") => {
+                    return match reply["reason"].as_str() {
+                        Some("delivered") => {
+                            self.0.journal.dismiss_send(id).await?;
+                            Ok(SendDelivery::Delivered)
+                        }
+                        Some("cancelled") => Ok(SendDelivery::Cancelled),
+                        Some("unknown") => Ok(SendDelivery::Unknown),
+                        _ => Err("invalid message delivery reason".into()),
+                    };
+                }
+                _ => return Err("invalid message delivery result".into()),
+            }
+        }
+    }
+
+    /// Dismiss presentation without cancelling or changing the original outcome.
+    pub async fn dismiss_send(&self, id: Uuid) -> Result<()> {
+        let operation = self.operation(id).await?;
+        if operation.draft.is_none() || operation.method != "send" {
+            return Err("original operation is not a draft send".into());
+        }
+        self.0.journal.dismiss_send(id).await
     }
 
     pub async fn operation(&self, id: Uuid) -> Result<Operation> {
@@ -929,13 +1021,18 @@ impl Client {
         }
         Ok(operation)
     }
-    /// Only this shell's unsettled Agent controls on the current Host deployment.
+    /// This shell's user-initiated unsettled controls on the current Host deployment.
+    /// Automatic predictions retain their receipts without prompting for manual recovery.
     pub async fn pending_controls(&self) -> Result<Vec<Operation>> {
         let owner = self.service_owner("agent").await?;
-        self.0
+        Ok(self
+            .0
             .journal
             .pending_controls(&self.0.source, &owner)
-            .await
+            .await?
+            .into_iter()
+            .filter(|operation| operation.method != "predictNextMessage")
+            .collect())
     }
     /// Stop prompting for this original without cancelling, replaying, or changing its outcome.
     pub async fn dismiss_control(&self, id: Uuid) -> Result<()> {
@@ -1053,8 +1150,7 @@ impl Client {
         }
         Ok(operation)
     }
-    /// Durable attempts for this exact Agent/editor owner. A reserved attempt
-    /// without a reference remains unknown and cannot be sent again.
+    /// Unacknowledged send presentations, including failures with frozen content.
     pub async fn pending_operations(
         &self,
         endpoint: &str,
@@ -1220,6 +1316,63 @@ impl Client {
             owner.children.lock().await.remove(id);
         }
         Ok(())
+    }
+}
+
+/// Current native disposition of an accepted message.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SendDelivery {
+    Accepted,
+    Delivered,
+    Cancelled,
+    Unknown,
+}
+
+/// A locally frozen send. Its lease prevents recovery from abandoning a live preparation.
+pub struct DraftSend {
+    client: Client,
+    operation: Operation,
+    preparation: std::fs::File,
+}
+impl DraftSend {
+    pub fn id(&self) -> Uuid {
+        self.operation.id
+    }
+
+    pub async fn open(self) -> Result<Mutation> {
+        let snapshot: journal::SendSnapshot =
+            serde_json::from_value(self.operation.correlation.clone()).map_err(error)?;
+        let mut input = snapshot
+            .selection
+            .as_object()
+            .cloned()
+            .ok_or("send selection must be an object")?;
+        input.insert(
+            "sessionId".into(),
+            serde_json::to_value(&self.operation.session_id).map_err(error)?,
+        );
+        input.insert("message".into(), Value::String(snapshot.draft.text));
+        input.insert(
+            "attachments".into(),
+            serde_json::to_value(
+                snapshot
+                    .draft
+                    .attachments
+                    .iter()
+                    .map(|attachment| &attachment.id)
+                    .collect::<Vec<_>>(),
+            )
+            .map_err(error)?,
+        );
+        self.client
+            .open_mutation(
+                self.operation,
+                Value::Object(input),
+                Attachments::new(),
+                self.preparation,
+            )
+            .await
     }
 }
 

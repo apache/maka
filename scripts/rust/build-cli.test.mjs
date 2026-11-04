@@ -59,7 +59,20 @@ async function repository(root) {
   await writeFile(join(root, 'assets/logo.png'), logo());
 }
 
+function mockCodesign(t) {
+  const execute = childProcess.execFileSync;
+  t.mock.method(childProcess, 'execFileSync', (command, args, options) =>
+    command === '/usr/bin/codesign' ? Buffer.alloc(0) : execute(command, args, options),
+  );
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+}
+
 test('CLI builds use the requested target and artifact path', async (t) => {
+  mockCodesign(t);
   const root = await mkdtemp(join(tmpdir(), 'maka-build-cli-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceRoot = join(root, 'extracted-source');
@@ -124,6 +137,7 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     const macos = triple.includes('-apple-darwin');
     await mkdir(binaryDirectory, { recursive: true });
     await writeFile(join(binaryDirectory, 'maka-desktop-shell'), 'shell bytes');
+    await writeFile(join(binaryDirectory, 'maka-host-shell'), 'host shell bytes');
     executable = join(binaryDirectory, triple.includes('-windows-') ? 'maka.exe' : 'maka');
     const inputManifest = join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json');
     await mkdir(dirname(inputManifest), { recursive: true });
@@ -171,6 +185,21 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       assert.equal(icon.readUInt32BE(12), icon.length - 8);
       assert.deepEqual(icon.subarray(16), logo());
       assert.deepEqual(await readdir(join(contents, 'Resources')), ['Maka.icns']);
+      const host = join(contents, 'Helpers/Maka Host.app/Contents');
+      assert.equal(await readFile(join(host, 'MacOS/maka-host-shell'), 'utf8'), 'host shell bytes');
+      if (process.platform !== 'win32')
+        assert.equal((await lstat(join(host, 'MacOS/maka-host-shell'))).mode & 0o777, 0o755);
+      const hostPlist = await readFile(join(host, 'Info.plist'), 'utf8');
+      for (const [key, value] of [
+        ['CFBundleExecutable', 'maka-host-shell'],
+        ['CFBundleIdentifier', 'org.apache.maka.host'],
+        ['CFBundleName', 'Maka Host'],
+      ])
+        assert.ok(hostPlist.includes(`<key>${key}</key>\n  <string>${value}</string>`), key);
+      assert.ok(hostPlist.includes('<key>LSUIElement</key>\n  <true/>'));
+      assert.ok(!hostPlist.includes('1.2.3'));
+      if (process.platform === 'darwin')
+        childProcess.execFileSync('plutil', ['-lint', join(host, 'Info.plist')]);
     }
     assert.equal(invocation.command, 'cargo');
     assert.equal(invocation.options.cwd, root);
@@ -181,6 +210,7 @@ test('CLI builds use the requested target and artifact path', async (t) => {
       'maka-cli',
       '-p',
       'maka-desktop-shell',
+      ...(macos ? ['-p', 'maka-host-shell'] : []),
       '-p',
       'maka-python-runtime',
       '--release',
@@ -201,6 +231,7 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   const development = join(root, process.env.CARGO_TARGET_DIR, 'debug');
   await mkdir(development, { recursive: true });
   await writeFile(join(development, 'maka-desktop-shell'), 'shell bytes');
+  await writeFile(join(development, 'maka-host-shell'), 'host shell bytes');
   executable = join(development, process.platform === 'win32' ? 'maka.exe' : 'maka');
   assert.equal(
     (
@@ -219,6 +250,7 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     'maka-cli',
     '-p',
     'maka-desktop-shell',
+    ...(rustTarget().includes('-apple-darwin') ? ['-p', 'maka-host-shell'] : []),
     '-p',
     'maka-python-runtime',
     '--timings',
@@ -229,6 +261,10 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   await writeFile(
     join(sourceRoot, 'target/aarch64-apple-darwin/release/maka-desktop-shell'),
     'shell bytes',
+  );
+  await writeFile(
+    join(sourceRoot, 'target/aarch64-apple-darwin/release/maka-host-shell'),
+    'host shell bytes',
   );
   executable = join(sourceRoot, 'target/aarch64-apple-darwin/release/maka');
   assert.equal(
@@ -248,12 +284,14 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   await assert.rejects(buildCli({ release: true, repositoryRoot: root }), /Maka build failed: 1/u);
 });
 
-test('a failed bundle staging keeps the previous Maka.app', async () => {
+test('a failed bundle staging keeps the previous Maka.app', async (t) => {
+  mockCodesign(t);
   const root = await mkdtemp(join(tmpdir(), 'maka-bundle-staging-'));
   try {
     await repository(root);
     const shell = join(root, 'maka-desktop-shell');
     await writeFile(shell, 'original shell');
+    await writeFile(join(root, 'maka-host-shell'), 'host shell');
     const destination = join(root, 'bin/Maka.app');
     await mkdir(dirname(destination));
     await stageDesktopBundle(root, shell, destination);
@@ -271,4 +309,44 @@ test('a failed bundle staging keeps the previous Maka.app', async () => {
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test('the Host app has a valid stable bundle signature', {
+  skip: process.platform !== 'darwin',
+}, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'maka-host-signature-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await repository(root);
+  const shell = join(root, 'maka-desktop-shell');
+  await writeFile(shell, await readFile('/usr/bin/true'));
+  await writeFile(join(root, 'maka-host-shell'), await readFile('/usr/bin/true'));
+  const destination = join(root, 'Maka.app');
+  const helper = join(destination, 'Contents/Helpers/Maka Host.app');
+  const identity = () => {
+    const verify = childProcess.spawnSync(
+      '/usr/bin/codesign',
+      ['--verify', '--strict', '--test-requirement', '=identifier "org.apache.maka.host"', helper],
+      { encoding: 'utf8' },
+    );
+    assert.equal(verify.status, 0, verify.stderr);
+    const display = childProcess.spawnSync(
+      '/usr/bin/codesign',
+      ['--display', '--verbose=4', helper],
+      { encoding: 'utf8' },
+    );
+    assert.equal(display.status, 0, display.stderr);
+    assert.match(display.stderr, /^Identifier=org\.apache\.maka\.host$/m);
+    const hash = /^CDHash=(.+)$/m.exec(display.stderr)?.[1];
+    assert.ok(hash, display.stderr);
+    return hash;
+  };
+  await stageDesktopBundle(root, shell, destination);
+  const first = identity();
+  await writeFile(join(root, 'Cargo.toml'), manifest.replace('1.2.3-beta.1', '1.2.4'));
+  await stageDesktopBundle(root, shell, destination);
+  assert.equal(
+    identity(),
+    first,
+    'an unrelated product version must not change the Host privacy identity',
+  );
 });

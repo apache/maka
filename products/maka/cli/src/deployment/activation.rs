@@ -251,25 +251,31 @@ pub(super) async fn connect_or_launch(
                             let capture = maka_host_runtime::logs::Source::from_owner(&owner)?
                                 .open_capture()?;
                             drop(owner);
+                            let (program, leading) =
+                                super::host_identity::command(&deployment.executable).await?;
                             child = Some(
                                 detached::spawn(
-                                    &deployment.executable,
+                                    &program,
                                     &[
-                                        "host",
-                                        "candidate",
-                                        "--root",
-                                        deployment
-                                            .root_path
-                                            .to_str()
-                                            .ok_or("State Root must be UTF-8")?,
-                                        "--expected-root-id",
-                                        &deployment.root_id,
-                                        "--startup-attempt-id",
-                                        &Uuid::new_v4().to_string(),
-                                        "--owner-stdin",
-                                        "--initial-connection-timeout-ms",
-                                        "30000",
-                                    ],
+                                        leading.iter().map(String::as_str).collect::<Vec<_>>(),
+                                        vec![
+                                            "host",
+                                            "candidate",
+                                            "--root",
+                                            deployment
+                                                .root_path
+                                                .to_str()
+                                                .ok_or("State Root must be UTF-8")?,
+                                            "--expected-root-id",
+                                            &deployment.root_id,
+                                            "--startup-attempt-id",
+                                            &Uuid::new_v4().to_string(),
+                                            "--owner-stdin",
+                                            "--initial-connection-timeout-ms",
+                                            "30000",
+                                        ],
+                                    ]
+                                    .concat(),
                                     Some(capture),
                                 )
                                 .await?,

@@ -178,6 +178,7 @@ fn node(package: &Package, key: u128, provider: bool) -> Node {
 }
 fn input(provider: &Package, consumer: &Package) -> Input {
     Input {
+        base: None,
         ui: None,
         instances: BTreeMap::from([
             ("provider".into(), node(provider, 1, true)),

@@ -181,6 +181,10 @@ export function createHost(application: UiHost) {
           };
     },
     query,
+    systemPermissionActions: (sessionId: string, requestId: string) =>
+      nativeHost.systemPermissionActions(sessionId, requestId),
+    systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
+      nativeHost.systemPermissionAction(sessionId, requestId, action),
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
     stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
@@ -244,6 +248,12 @@ export function useHost(): Host {
 export type { ScopedHost };
 // Native draft results always include attachments, including [] for an empty draft.
 type SavedDraft = ClientDraft & Required<Pick<ClientDraft, 'attachments'>>;
+export type SendOperation = Omit<ClientOperation, 'correlation'> & {
+  correlation: {
+    draft: SavedDraft;
+    selection: { delivery: 'steer' | 'queue'; [key: string]: unknown };
+  };
+};
 export const loadDraft = (scope: ScopedHost) => scope.loadDraft() as Promise<SavedDraft>;
 export const saveDraft = (scope: ScopedHost, revision: number, edit: ClientDraftEdit) =>
   scope.saveDraft(revision, edit) as Promise<SavedDraft>;
@@ -253,11 +263,18 @@ export const reserveSend = (scope: ScopedHost, revision: number, selection: unkn
 export async function confirmSend(scope: ScopedHost, id: string) {
   return attempt(await scope.confirmSend(id));
 }
-export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<ClientOperation[]>;
+export const pendingSends = (scope: ScopedHost) => scope.pending() as Promise<SendOperation[]>;
+export const retrySend = (scope: ScopedHost, id: string, selection: unknown) =>
+  scope.retrySend(id, selection) as Promise<string>;
+export const dismissSend = (scope: ScopedHost, id: string) =>
+  scope.dismissSend(id) as Promise<void>;
+export type SendDelivery = 'accepted' | 'delivered' | 'cancelled' | 'unknown';
+export const sendDelivery = (scope: ScopedHost, id: string) =>
+  scope.sendDelivery(id) as Promise<SendDelivery>;
 export const recoverSend = (scope: ScopedHost, id: string) =>
   scope.recover(id) as Promise<OperationReply>;
 export const abandonSend = (scope: ScopedHost, id: string) =>
-  scope.abandonUnprepared(id) as Promise<ClientOperation>;
+  scope.abandonUnprepared(id) as Promise<SendOperation>;
 export const findUpload = (scope: ScopedHost, id: string) =>
   scope.findUpload(id) as Promise<ClientOperation | null>;
 export const recoverUpload = (scope: ScopedHost, id: string) =>

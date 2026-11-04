@@ -296,6 +296,8 @@ pub(super) struct AttachmentPickerProps {
     pub path_placeholder: Prop<String>,
     pub upload_label: Prop<String>,
     pub uploading_label: Prop<String>,
+    pub text_style: Prop<element::TextPartStyle>,
+    pub border_color: Prop<Hsla>,
     #[prop(default)]
     pub visible: Prop<bool>,
     #[prop(default)]
@@ -346,55 +348,61 @@ pub(super) fn AttachmentPicker(
             });
         });
     });
-    view().child(when(props.visible, move || {
-        let submit = begin.clone();
-        let click = begin.clone();
-        view()
-            .gap(px(8.0))
-            .child(text(move || props.path_label.get()))
-            .child(
-                input()
-                    .value(path)
-                    .placeholder(move || props.path_placeholder.get())
-                    .label(move || props.path_label.get())
-                    .auto_focus(true)
-                    .readonly(move || busy.get() || props.disabled.get())
-                    .on_change(move |value: &str| path.set(value.to_owned()))
-                    .on_submit(move |value: &str| {
-                        path.set(value.to_owned());
-                        submit();
+    view()
+        .inline_style(move || element::Style::from(props.text_style.get()))
+        .child(when(props.visible, move || {
+            let submit = begin.clone();
+            let click = begin.clone();
+            view()
+                .gap(px(8.0))
+                .child(text(move || props.path_label.get()))
+                .child(
+                    input()
+                        .value(path)
+                        .placeholder(move || props.path_placeholder.get())
+                        .label(move || props.path_label.get())
+                        .auto_focus(true)
+                        .readonly(move || busy.get() || props.disabled.get())
+                        .on_change(move |value: &str| path.set(value.to_owned()))
+                        .on_submit(move |value: &str| {
+                            path.set(value.to_owned());
+                            submit();
+                        })
+                        .h(px(32.0))
+                        .px_2()
+                        .border_1()
+                        .border_color(move || AdaptiveColor::from(props.border_color.get()))
+                        .rounded_md(),
+                )
+                .child(
+                    Button::element(ButtonProps {
+                        disabled: Prop::bind(move || {
+                            busy.get() || props.disabled.get() || path.get().is_empty()
+                        }),
+                        accessibility_label: Prop::bind(move || {
+                            Some(props.upload_label.get().into())
+                        }),
+                        ..Default::default()
                     })
-                    .h(px(32.0))
-                    .px_2()
+                    .on_event(move |event: &ButtonEvent| {
+                        if matches!(event, ButtonEvent::Press) {
+                            click();
+                        }
+                    })
+                    .child(text(move || {
+                        if busy.get() {
+                            props.uploading_label.get()
+                        } else {
+                            props.upload_label.get()
+                        }
+                    }))
+                    .px_3()
+                    .py_2()
                     .border_1()
+                    .border_color(move || AdaptiveColor::from(props.border_color.get()))
                     .rounded_md(),
-            )
-            .child(
-                Button::element(ButtonProps {
-                    disabled: Prop::bind(move || {
-                        busy.get() || props.disabled.get() || path.get().is_empty()
-                    }),
-                    accessibility_label: Prop::bind(move || Some(props.upload_label.get().into())),
-                    ..Default::default()
-                })
-                .on_event(move |event: &ButtonEvent| {
-                    if matches!(event, ButtonEvent::Press) {
-                        click();
-                    }
-                })
-                .child(text(move || {
-                    if busy.get() {
-                        props.uploading_label.get()
-                    } else {
-                        props.upload_label.get()
-                    }
-                }))
-                .px_3()
-                .py_2()
-                .border_1()
-                .rounded_md(),
-            )
-    }))
+                )
+        }))
 }
 
 fn status(id: Uuid, kind: &str, name: &str, error: Option<&str>) -> JsonValue {

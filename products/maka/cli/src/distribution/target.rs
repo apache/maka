@@ -109,11 +109,14 @@ impl Target {
         match self {
             Self::DarwinArm64 | Self::DarwinX64 => &[
                 "bin/Maka.app/Contents/Info.plist",
+                "bin/Maka.app/Contents/_CodeSignature/CodeResources",
                 "bin/Maka.app/Contents/Resources/Maka.icns",
                 "bin/Maka.app/Contents/Resources/DISCLAIMER",
                 "bin/Maka.app/Contents/Resources/LICENSE",
                 "bin/Maka.app/Contents/Resources/NOTICE",
                 "bin/Maka.app/Contents/Resources/THIRD_PARTY_NOTICES.txt",
+                "bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/Info.plist",
+                "bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/_CodeSignature/CodeResources",
             ],
             _ => &[],
         }
@@ -132,6 +135,14 @@ impl Target {
             || name == self.python_worker()
             || name == self.desktop_executable()
             || Some(name) == self.service_executable()
+            || Some(name) == self.host_shell()
+    }
+
+    /// The executable of the identity the Host runs under on macOS; see
+    /// `deployment/host_identity.rs`.
+    pub fn host_shell(self) -> Option<&'static str> {
+        matches!(self, Self::DarwinArm64 | Self::DarwinX64)
+            .then_some("bin/Maka.app/Contents/Helpers/Maka Host.app/Contents/MacOS/maka-host-shell")
     }
 
     pub fn service_executable(self) -> Option<&'static str> {

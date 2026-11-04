@@ -23,6 +23,17 @@ mod connect;
 mod control;
 mod diagnostics;
 mod entry;
+#[cfg(target_os = "macos")]
+mod host_identity;
+#[cfg(not(target_os = "macos"))]
+mod host_identity {
+    /// Only macOS runs the Host under an identity of its own.
+    pub(super) async fn command(
+        executable: &std::path::Path,
+    ) -> Result<(std::path::PathBuf, Vec<String>), String> {
+        Ok((executable.to_owned(), Vec::new()))
+    }
+}
 mod local;
 mod logs;
 mod package;

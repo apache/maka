@@ -31,6 +31,18 @@ use maka_agent_facts::configuration::validation::revision;
 use sqlx::SqliteConnection;
 
 impl ConfigurationStore {
+    pub async fn set_message_predictions(
+        &self,
+        expected_revision: u64,
+        settings: maka_agent_facts::configuration::policy::MessagePredictionSettings,
+    ) -> Result<RuntimePolicyMutationResult> {
+        settings.validate().map_err(ConfigError::Invalid)?;
+        self.update_policy(expected_revision, move |policy| {
+            policy.predictions = settings
+        })
+        .await
+    }
+
     pub async fn set_language(
         &self,
         expected_revision: u64,
@@ -114,17 +126,25 @@ impl ConfigurationStore {
         .await
     }
 
-    pub async fn set_shell_titles(
+    pub async fn set_shell(
         &self,
         expected_revision: u64,
-        enabled: bool,
+        value: maka_agent_facts::configuration::policy::ShellPolicy,
     ) -> Result<RuntimePolicyMutationResult> {
-        self.update_policy(expected_revision, move |policy| {
-            policy.shell.titles = enabled
-        })
-        .await
+        let input =
+            maka_agent_facts::configuration::policy::normalize_mutation(serde_json::json!({
+                "expectedRevision": expected_revision,
+                "operation": { "kind": "set_shell", "value": value }
+            }))
+            .map_err(ConfigError::Invalid)?;
+        let maka_agent_facts::configuration::policy::RuntimePolicyMutation::SetShell { value } =
+            input.operation
+        else {
+            unreachable!("normalized set_shell operation")
+        };
+        self.update_policy(expected_revision, move |policy| policy.shell = value)
+            .await
     }
-
     async fn update_policy(
         &self,
         expected_revision: u64,

@@ -60,6 +60,23 @@ pub struct SourceEvidence {
 pub struct ContextBaseline {
     pub event_id: String,
     pub checkpoint: ContextCheckpoint,
+    native: Option<NativeBaseline>,
+}
+
+#[derive(Debug)]
+pub struct NativeBaseline {
+    output: maka_agent_facts::model::NativeCompaction,
+    pub provenance: maka_agent_facts::context::CodexRequestProvenance,
+    pub model_id: String,
+}
+impl ContextBaseline {
+    pub fn native(&self) -> Option<&NativeBaseline> {
+        self.native.as_ref()
+    }
+
+    pub fn native_item(&self) -> Option<&serde_json::Value> {
+        self.native.as_ref().map(|native| native.output.item())
+    }
 }
 
 /// Immutable selection metadata for paged model-history rendering. The view
