@@ -182,25 +182,6 @@ export type AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointFrame =
       digest: string;
       bytes: number;
     };
-export type AgentSkillCandidatesInput_AgentSkillCandidatesBackend =
-  | {
-      kind: 'model';
-      model: AgentSkillCandidatesInput_ModelSelection;
-      thinkingLevel?: AgentSkillCandidatesInput_ThinkingLevel | null;
-    }
-  | {
-      kind: 'executor';
-      selection: AgentSkillCandidatesInput_AgentExecutorSelection;
-    };
-export type AgentSkillCandidatesInput_ThinkingLevel =
-  | 'off'
-  | 'minimal'
-  | 'low'
-  | 'medium'
-  | 'high'
-  | 'xhigh'
-  | 'max'
-  | 'ultra';
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
@@ -533,11 +514,6 @@ export interface ServiceMethods {
       input: Runtime.AgentQueueMutation;
       output: Runtime.AgentQueueMutationResult;
     };
-    execute: {
-      mode: 'mutation';
-      input: Runtime.AgentExecute;
-      output: Runtime.AgentSendResult;
-    };
     execution: {
       mode: 'query';
       input: Runtime.AgentExecutionRead;
@@ -688,6 +664,21 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentMetadata;
       output: Runtime.AgentMetadataResult;
+    };
+    model: {
+      mode: 'query';
+      input: Runtime.AgentModelRead;
+      output: Runtime.AgentModelResult;
+    };
+    models: {
+      mode: 'query';
+      input: Runtime.AgentModelsRead;
+      output: Runtime.AgentModelsPage;
+    };
+    oarSetup: {
+      mode: 'mutation';
+      input: Runtime.AgentOarSetup;
+      output: Runtime.AgentOarSetupResult;
     };
     observe: {
       mode: 'query';
@@ -918,7 +909,7 @@ export interface ServiceMethods {
        */
       input: {
         sessionId: string;
-        backend: AgentSkillCandidatesInput_AgentSkillCandidatesBackend;
+        backend: Runtime.AgentBackendPreference;
         query: string;
       };
       output: {
@@ -1914,25 +1905,6 @@ export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointInventor
 export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSession {
   id: string;
   revision: number;
-}
-/**
- * Stable model identity, resolved from current connection settings at admission.
- */
-export interface AgentSkillCandidatesInput_ModelSelection {
-  connectionId: string;
-  modelId: string;
-  [k: string]: unknown | undefined;
-}
-export interface AgentSkillCandidatesInput_AgentExecutorSelection {
-  executor: string;
-  settings: AgentSkillCandidatesInput_ExecutorSettings;
-}
-/**
- * Executor-owned model selection, independent of Host model connections.
- */
-export interface AgentSkillCandidatesInput_ExecutorSettings {
-  model?: string | null;
-  thinkingLevel?: AgentSkillCandidatesInput_ThinkingLevel | null;
 }
 export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   reference: string;

@@ -125,7 +125,7 @@ async fn associate_change_and_clear_catalog_model_without_changing_request_ident
             "connectionId":refreshed["target"]["connectionId"], "modelId":"fixture-model"
         })).await.unwrap()["choice"]["selection"].clone();
         let sent = support::mutate(&client, "send", json!({
-            "sessionId":fixture.session, "message":"Check the catalog association", "model":selection
+            "sessionId":fixture.session, "message":"Check the catalog association", "backend":{"kind":"model","connectionId":selection["connectionId"],"modelId":selection["modelId"]}
         })).await;
         assert_eq!(sent["kind"], "started");
         let mut request = fixture.next_request().await;

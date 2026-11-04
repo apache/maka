@@ -130,9 +130,18 @@ impl Target {
         }
     }
 
+    pub fn oar_worker(self) -> &'static str {
+        if self == Self::Win32X64 {
+            "bin/maka-oar-worker.exe"
+        } else {
+            "bin/maka-oar-worker"
+        }
+    }
+
     pub fn is_executable(self, name: &str) -> bool {
         name == self.executable()
             || name == self.python_worker()
+            || name == self.oar_worker()
             || name == self.desktop_executable()
             || Some(name) == self.service_executable()
             || Some(name) == self.host_shell()

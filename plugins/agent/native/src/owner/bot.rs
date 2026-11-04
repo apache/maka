@@ -135,6 +135,8 @@ pub(super) struct Bot {
     /// admits one Host per Root, so a claim absent here has no live creator.
     creating: std::sync::Mutex<std::collections::HashSet<String>>,
     changed: tokio::sync::watch::Sender<()>,
+    /// Workers whose stored watch could not be read, so each is reported once.
+    unreadable: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 /// Registers a live creation for as long as it is held.
 pub(super) struct Creating<'a> {
@@ -163,6 +165,7 @@ impl Bot {
             current: RwLock::new(None),
             creating: Default::default(),
             changed: tokio::sync::watch::channel(()).0,
+            unreadable: Default::default(),
         }
     }
     /// Read the registered Bot before any queued work is scheduled.
@@ -720,6 +723,7 @@ impl Owner {
             },
         };
         let create = Create {
+            backend: None,
             automatic_title: false,
             tools: Some(tools),
             title: input.title.unwrap_or_else(|| "Bot".into()),
@@ -1097,7 +1101,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 ""
             });
             if sessions {
-                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。SessionSend 的 model 填你自己正在用的模型就行，Host 会让 worker 用你的模型运行。它每做完一轮都会叫醒你；醒来后先用会话读取工具看它的实际结果，再决定告诉用户还是继续派活，不要假装它已经做完。");
+                text.push_str("需要动手做的事，用 SessionCreate 新建一个会话，再用 SessionSend 把任务交给它；同一件事可以并行开多个。使用 ModelList 的带来源 selection 作为 backend；省略时沿用会话偏好。原生模型 worker 继承你的模型，显式执行器选择保留其来源。它每做完一轮都会叫醒你；醒来后先用会话读取工具看它的实际结果，再决定告诉用户还是继续派活，不要假装它已经做完。");
             }
             if skills {
                 text.push_str("技能只是说明文档，其中需要上述被禁止能力的步骤你不能自己执行，不要把技能清单当作你自己的能力介绍给用户。");
@@ -1124,7 +1128,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 ""
             });
             if sessions {
-                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。SessionSend 的 model 填你自己正在用的模型就行，Host 會讓 worker 用你的模型執行。它每做完一輪都會叫醒你；醒來後先用會話讀取工具看它的實際結果，再決定告訴使用者還是繼續派活，不要假裝它已經做完。");
+                text.push_str("需要動手做的事，用 SessionCreate 新建一個會話，再用 SessionSend 把任務交給它；同一件事可以平行開多個。使用 ModelList 的帶來源 selection 作為 backend；省略時沿用會話偏好。原生模型 worker 繼承你的模型，明確的執行器選擇保留其來源。它每做完一輪都會叫醒你；醒來後先用會話讀取工具看它的實際結果，再決定告訴使用者還是繼續派活，不要假裝它已經做完。");
             }
             if skills {
                 text.push_str("技能只是說明文件，其中需要上述被禁止能力的步驟你不能自己執行，不要把技能清單當作你自己的能力介紹給使用者。");
@@ -1151,7 +1155,7 @@ pub(super) fn bot_prompt(language: Language, held: &[String]) -> String {
                 ""
             });
             if sessions {
-                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. For SessionSend's model, give the model you yourself run on; the Host runs the worker on your model. Each time a worker finishes a run it wakes you; then read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work, and never claim it is done before you have seen that. ");
+                text.push_str("Hands-on work goes to a new conversation: create it with SessionCreate and give it the task with SessionSend; independent pieces can run in parallel. Use a source-tagged ModelList selection as backend; omission keeps the session preference. Native workers inherit your model; explicit executors keep their own source. Each time a worker finishes a run it wakes you; then read its actual result with the conversation read tools before deciding whether to tell the user or hand out more work, and never claim it is done before you have seen that. ");
             }
             if skills {
                 text.push_str("Skills are only documents: steps in them that need the abilities you lack are not yours to run, and the skill list is not a description of what you can do, so do not present it to the user as your abilities. ");

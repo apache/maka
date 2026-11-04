@@ -112,8 +112,9 @@ impl Owner {
         let Some(library) = &self.skills else {
             return Ok(SkillCandidates::default());
         };
-        let SkillCandidatesBackend::Model {
-            model,
+        let BackendPreference::Model {
+            connection_id,
+            model_id,
             thinking_level,
         } = input.backend
         else {
@@ -122,7 +123,10 @@ impl Owner {
         let editing = match crate::model::candidate_editing_tools(
             &self.configuration,
             &self.catalog,
-            model,
+            maka_agent_facts::configuration::ModelSelection {
+                connection_id,
+                model_id,
+            },
             thinking_level,
         )
         .await

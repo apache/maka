@@ -30,7 +30,7 @@ async fn send(f: &Fixture, session: &str, message: &str, operation: Uuid) -> Val
     f.mutation(
         2,
         "send",
-        json!({"sessionId":session,"message":message,"delivery":"queue","model":f.selection().await}),
+        json!({"sessionId":session,"message":message,"delivery":"queue","backend":model_backend(&f.selection().await)}),
         operation,
     )
     .await

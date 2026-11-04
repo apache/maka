@@ -285,6 +285,7 @@ impl Hub {
             .0
             .create(
                 crate::contract::Create {
+                    backend: None,
                     automatic_title: false,
                     tools: None,
                     title: "WorkHub".into(),

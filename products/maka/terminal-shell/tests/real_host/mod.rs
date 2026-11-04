@@ -123,10 +123,9 @@ async fn fill(view: &mut AppView, label: &str, value: &str) {
     commit_native_events(view).await;
 }
 fn model_menu_closed(view: &AppView) -> bool {
-    !view
-        .accessibility_snapshot()
-        .iter()
-        .any(|node| node.label == "Close model selection" || node.label == "Search models")
+    !view.accessibility_snapshot().iter().any(|node| {
+        node.label == "Close model selection" || node.label == "Search models and sources"
+    })
 }
 fn selected_command<'a>(nodes: &'a [AccessibleNode], title: &str) -> Option<&'a AccessibleNode> {
     nodes.iter().find(|button| {

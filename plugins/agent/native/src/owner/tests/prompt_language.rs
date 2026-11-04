@@ -164,7 +164,7 @@ async fn two_existing_sessions_use_current_language_for_each_new_capture() {
             receipts.push(select_language(&fixture, language).await);
             for (index, session) in sessions.iter().enumerate() {
                 let original = format!("LANGUAGE_ORIGINAL_{index}_{language}_🦀\n原样引用 \\\"untouched\\\"");
-                let sent = fixture.mutation(2, "send", json!({"sessionId":session,"message":original,"model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
+                let sent = fixture.mutation(2, "send", json!({"sessionId":session,"message":original,"backend":model_backend(&fixture.selection().await)}), Uuid::new_v4()).await.unwrap();
                 let (mut socket, _) = listener.accept().await.unwrap();
                 let outgoing = request(&mut socket).await;
                 response(&mut socket).await;

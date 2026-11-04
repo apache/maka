@@ -168,7 +168,7 @@ async fn reuse(protocol: u8) {
         let (mut fixture, control, trace, configuration) = setup(protocol).await;
         activate_backend(&mut fixture, true, None, true, Some(configuration.clone()), &[]).await;
         let session = fixture.create("ACP native").await;
-        let accepted = fixture.mutation(2,"execute",json!({"sessionId":session,"message":"first", "executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let accepted = fixture.mutation(2,"send",json!({"sessionId":session,"message":"first", "backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         assert_eq!(accepted["kind"],"started");
         // Network is consented through the original Session interaction, never
         // granted merely by installing the ACP configuration.
@@ -183,7 +183,7 @@ async fn reuse(protocol: u8) {
         fixture.drained().await;
         let observed = work(&fixture,&session,&accepted).await;
         assert_eq!(observed["execution"]["state"],"completed","{observed}");
-        let second = fixture.mutation(2,"execute",json!({"sessionId":session,"message":"second", "executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let second = fixture.mutation(2,"send",json!({"sessionId":session,"message":"second", "backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         fixture.drained().await;
         let observed = work(&fixture,&session,&second).await;
         assert_eq!(observed["execution"]["state"],"completed","{observed}");
@@ -195,7 +195,7 @@ async fn reuse(protocol: u8) {
         assert!(!requests.iter().any(|v|v["method"]=="session/load"));
         activate_backend(&mut fixture, false, None, true, Some(configuration), &[]).await;
         assert!(std::process::Command::new("/bin/kill").args(["-0",pid.trim()]).output().unwrap().status.code().is_some_and(|c| c!=0));
-        let third = fixture.mutation(2,"execute",json!({"sessionId":session,"message":"third", "executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let third = fixture.mutation(2,"send",json!({"sessionId":session,"message":"third", "backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         let _probe = if protocol != 2 { Some(control.accept().await.unwrap().0) } else { None };
         let (_stream, _) = control.accept().await.unwrap();
         fixture.drained().await;
@@ -211,7 +211,7 @@ async fn reuse(protocol: u8) {
 }
 
 async fn execute(f: &Fixture, session: &str, text: &str) -> Value {
-    let result = f.mutation(2,"execute",json!({"sessionId":session,"message":text,"executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+    let result = f.mutation(2,"send",json!({"sessionId":session,"message":text,"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
     assert_eq!(result["kind"], "started", "{result}");
     result
 }
@@ -541,7 +541,7 @@ async fn attachment_prompt(protocol: u8) {
             let uploaded = super::super::attachments::upload(&f, &session, name, bytes, Uuid::new_v4()).await.unwrap();
             ids.push(uploaded["attachment"]["id"].clone());
         }
-        let first = f.mutation(2,"execute",json!({"sessionId":session,"message":"","attachments":ids,"executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let first = f.mutation(2,"send",json!({"sessionId":session,"message":"","attachments":ids,"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         assert_eq!(first["kind"],"started");
         let permission = super::super::files::pending(&f, &session).await;
         super::super::files::answer(&f, &permission, Some("session")).await;
@@ -571,7 +571,7 @@ async fn attachment_prompt(protocol: u8) {
         let mut large_image = vec![255;800_000];
         large_image[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
         let large = super::super::attachments::upload(&f, &session, "large.png", &large_image, Uuid::new_v4()).await.unwrap();
-        let large_execution = f.mutation(2,"execute",json!({"sessionId":session,"message":"complete large image","attachments":[large["attachment"]["id"]],"executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let large_execution = f.mutation(2,"send",json!({"sessionId":session,"message":"complete large image","attachments":[large["attachment"]["id"]],"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         f.drained().await;
         let large_observed = work(&f,&session,&large_execution).await;
         let third = execute(&f, &session, "after complete attachment").await;
@@ -613,14 +613,14 @@ async fn native_acp_rejects_unsupported_media_then_accepts_plain_text_attachment
         activate_backend(&mut f,true,None,true,Some(configuration),&[]).await;
         let session=f.create("Text-only peer").await;
         let image=super::super::attachments::upload(&f,&session,"image.png",b"\x89PNG\r\n\x1a\nactual image",Uuid::new_v4()).await.unwrap();
-        let accepted=f.mutation(2,"execute",json!({"sessionId":session,"message":"inspect image","attachments":[image["attachment"]["id"]],"executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let accepted=f.mutation(2,"send",json!({"sessionId":session,"message":"inspect image","attachments":[image["attachment"]["id"]],"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         let permission=super::super::files::pending(&f,&session).await;
         super::super::files::answer(&f,&permission,Some("session")).await;
         let (_first,_)=control.accept().await.unwrap();
         f.drained().await;
         assert_eq!(work(&f,&session,&accepted).await["execution"]["state"],"failed");
         let text=super::super::attachments::upload(&f,&session,"notes.txt",b"actual text attachment",Uuid::new_v4()).await.unwrap();
-        let accepted=f.mutation(2,"execute",json!({"sessionId":session,"message":"inspect text","attachments":[text["attachment"]["id"]],"executor":{"executor":"external","settings":{}}}),Uuid::new_v4()).await.unwrap();
+        let accepted=f.mutation(2,"send",json!({"sessionId":session,"message":"inspect text","attachments":[text["attachment"]["id"]],"backend":{"kind":"executor","selection":{"executor":"external","settings":{}}}}),Uuid::new_v4()).await.unwrap();
         let (_second,_)=control.accept().await.unwrap();
         f.drained().await;
         assert_eq!(work(&f,&session,&accepted).await["execution"]["state"],"completed");

@@ -145,7 +145,7 @@ pub enum Outcome {
     },
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("executor outcome is unknown")]
     Unknown,

@@ -33,7 +33,7 @@ async fn manual_compaction_has_receipt_busy_stop_and_one_shot_prompt() {
         assert_eq!(prompts["compactionPrompt"], "GLOBAL COMPACTION");
         assert_eq!(prompts["defaultCompactionPrompt"], "GLOBAL COMPACTION");
         let other = f.create("Independent compaction prompt").await;
-        let sending = f.mutation(2,"send",json!({"sessionId":session,"message":"original-needle-429","model":f.selection().await}),Uuid::new_v4()).await.unwrap();
+        let sending = f.mutation(2,"send",json!({"sessionId":session,"message":"original-needle-429","backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         let before = f.query("compactionPrompt", json!({"sessionId":session})).await.unwrap();

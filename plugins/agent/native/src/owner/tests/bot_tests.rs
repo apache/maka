@@ -142,7 +142,7 @@ async fn bot_identity_alone_grants_send_user() {
             .to_owned();
         assert!(!f.owner.bot.is(&derived));
         assert!(!sees_send_user(&f, &listener, &derived).await);
-        let first = f.mutation(2, "send", json!({"sessionId":bot,"message":"a turn to fork","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
+        let first = f.mutation(2, "send", json!({"sessionId":bot,"message":"a turn to fork","backend":model_backend(&f.selection().await)}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         response(&mut socket).await;
@@ -635,7 +635,7 @@ async fn input_while_the_bot_runs_is_queued_not_rejected() {
             .mutation(
                 2,
                 "send",
-                json!({"sessionId":bot,"message":"one more thing","model":f.selection().await}),
+                json!({"sessionId":bot,"message":"one more thing","backend":model_backend(&f.selection().await)}),
                 Uuid::new_v4(),
             )
             .await
@@ -935,7 +935,7 @@ async fn bot_sleep_allows_prediction_without_waking_or_speaking() {
         f.mutation(
             2,
             "send",
-            json!({"sessionId":bot,"message":"are you there?","model":f.selection().await}),
+            json!({"sessionId":bot,"message":"are you there?","backend":model_backend(&f.selection().await)}),
             Uuid::new_v4(),
         )
         .await
@@ -1238,7 +1238,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":ordinary,"message":"hello","model":f.selection().await}),
+            json!({"sessionId":ordinary,"message":"hello","backend":model_backend(&f.selection().await)}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -1271,7 +1271,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+            json!({"sessionId":worker,"message":"Do the task","backend":model_backend(&f.selection().await)}),
         )
         .await;
         let mut worker_socket = None;
@@ -1318,7 +1318,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
     .unwrap();
 }
 
-async fn worker_wake(worker_first: bool) {
+async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(
@@ -1336,6 +1336,10 @@ async fn worker_wake(worker_first: bool) {
         )
         .await;
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        if unreadable_watch {
+            // Sorts before any worker id, so a scan meets it first.
+            f.owner.bot.plant_unreadable_watch("0-unreadable").await;
+        }
         f.send(&bot).await.unwrap();
 
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -1357,7 +1361,7 @@ async fn worker_wake(worker_first: bool) {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+            json!({"sessionId":worker,"message":"Do the task","backend":model_backend(&f.selection().await)}),
         )
         .await;
         let mut worker_socket = None;
@@ -1416,10 +1420,15 @@ async fn worker_wake(worker_first: bool) {
 
 #[tokio::test]
 async fn the_bot_is_woken_once_when_its_worker_finishes() {
-    worker_wake(false).await;
+    worker_wake(false, false).await;
+}
+
+#[tokio::test]
+async fn a_watch_this_build_cannot_read_does_not_stop_other_workers_waking_the_bot() {
+    worker_wake(false, true).await;
 }
 
 #[tokio::test]
 async fn a_report_for_a_worker_that_finished_while_the_bot_ran_waits_for_the_bot() {
-    worker_wake(true).await;
+    worker_wake(true, false).await;
 }

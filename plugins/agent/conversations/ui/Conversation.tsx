@@ -97,7 +97,12 @@ import type {
   ComposerSendStatus,
 } from '../../../../packages/plugin-sdk/src/composer-view.js';
 import type { AttachmentDraft } from '../../../../products/maka/workbench/app/attachmentDraft';
-import { sameRoute } from '../../../../products/maka/workbench/app/modelSelection';
+import {
+  sameRoute,
+  sameBackend,
+  routeKey,
+  backendName,
+} from '../../../../products/maka/workbench/app/modelSelection';
 import type {
   BackendIdentity,
   ModelDetails,
@@ -170,6 +175,7 @@ import type {
   AgentHistoryPage,
   AgentMarkReadResult,
   AgentSession,
+  AgentRunBackend,
   HistoryPosition,
   OperationReply,
   AgentPendingInteractions,
@@ -346,6 +352,7 @@ export function Conversation(props: ConversationProps) {
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
+  const runBackend = signal<AgentRunBackend | null>(null);
   const toolProgressById = computed(
     () =>
       new Map(
@@ -367,7 +374,7 @@ export function Conversation(props: ConversationProps) {
   const goal = createSessionGoal(host, sessionId, props.control, permissions, () => selection());
   const projectMcp = createProjectMcp(host, sessionId, props.control);
   const runTurn = signal<string | null>(null);
-  const backend = signal<any>(null);
+  const backend = signal<BackendIdentity>(null);
   const interactions = signal<AgentPendingInteractions>({
     revision: -1,
     entries: [],
@@ -414,7 +421,7 @@ export function Conversation(props: ConversationProps) {
     text: string;
     files: DraftAttachment[];
     edit: AttachmentEdit & { text: string };
-    selection: Record<string, unknown>;
+    selection: ReturnType<typeof sendSelection>;
     revision?: number;
     error: UiText | null;
   };
@@ -1064,11 +1071,12 @@ export function Conversation(props: ConversationProps) {
       run.set(observed.run?.state ?? 'idle');
       compacting.set(observed.compacting);
       invocation.set(observed.run?.invocationId ?? null);
+      runBackend.set(observed.run?.backend ?? null);
       runTurn.set(observed.run?.turnId ?? null);
       messagePrediction.source(
         observed.session.parentSessionId === null ? completedTurn : null,
         trigger,
-        JSON.stringify(backendIdentity(backend())),
+        JSON.stringify(backend()),
       );
       if (!observed.run) stoppingRun.set(null);
       runThrough = observed.through;
@@ -1200,6 +1208,7 @@ export function Conversation(props: ConversationProps) {
             messagePrediction.source(null, 'live');
             run.set('running');
             invocation.set(event.invocationId);
+            runBackend.set(null);
             runTurn.set(event.turnId);
             requestMetadata(rows().find((row) => row.turnId === event.turnId));
             void observe().catch(report);
@@ -1225,6 +1234,7 @@ export function Conversation(props: ConversationProps) {
             predictionTriggerTurn = fact.failed ? null : event.turnId;
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
+            runBackend.set(null);
             compacting.set(null);
             runTurn.set(null);
             stoppingRun.set(null);
@@ -1653,23 +1663,9 @@ export function Conversation(props: ConversationProps) {
     startSave();
   };
 
-  const backendIdentity = (value: any): BackendIdentity =>
-    value?.kind === 'model'
-      ? {
-          connectionId: value.connectionId,
-          modelId: value.modelId,
-          thinkingLevel: value.thinkingLevel ?? null,
-        }
-      : null;
-  const sameBackend = (left: BackendIdentity, right: BackendIdentity) =>
-    left === null || right === null
-      ? left === right
-      : left.connectionId === right.connectionId &&
-        left.modelId === right.modelId &&
-        left.thinkingLevel === right.thinkingLevel;
   // Choosing a model answers the earlier send's complaint; other errors stay.
   effect(() => {
-    if (backendIdentity(backend()) === null) return;
+    if (backend() === null) return;
     untracked(() => {
       if (error() === tr('Choose a model before sending.')) error.set('');
     });
@@ -1677,8 +1673,8 @@ export function Conversation(props: ConversationProps) {
   // Metadata follows the route's value, not observe()'s newly allocated backend
   // objects or live stream state. The durable backend remains the only choice.
   const modelRoute = computed(() => {
-    const value = backendIdentity(backend());
-    return value === null ? null : JSON.stringify([value.connectionId, value.modelId]);
+    const value = backend();
+    return value === null ? null : routeKey(value);
   });
   const modelProjection = signal<{
     route: string | null;
@@ -1700,7 +1696,7 @@ export function Conversation(props: ConversationProps) {
   const refreshModel = (): Promise<void> => {
     if (!alive) return Promise.resolve();
     const route = modelRoute();
-    const captured = backendIdentity(backend());
+    const captured = backend();
     if (route === null || captured === null) {
       modelGeneration += 1;
       modelRead = null;
@@ -1717,10 +1713,7 @@ export function Conversation(props: ConversationProps) {
     const task = Promise.resolve().then(async () => {
       try {
         if (!current()) return;
-        const result = await host.query('settings', 'resolveModel', {
-          connectionId: captured.connectionId,
-          modelId: captured.modelId,
-        });
+        const result = await host.query('agent', 'model', { backend: captured });
         if (!current()) return;
         modelProjection.set({
           route,
@@ -1730,7 +1723,7 @@ export function Conversation(props: ConversationProps) {
               : {
                   kind: 'unavailable',
                   message: uiMessage('Model unavailable: {model}.', {
-                    model: captured.modelId,
+                    model: backendName(captured),
                   }),
                 },
         });
@@ -1755,20 +1748,17 @@ export function Conversation(props: ConversationProps) {
     const observed = await observe();
     if (!alive) return null;
     const backend = observed.session.backend ?? observed.rememberedBackend;
-    if (expectedBackend !== undefined && !sameBackend(backendIdentity(backend), expectedBackend))
+    if (expectedBackend !== undefined && !sameBackend(backend ?? null, expectedBackend))
       throw new UiError('The model changed before confirmation. Send again to confirm it.');
-    if (backend?.kind !== 'model') throw new UiError('Choose a model before sending.');
-    const resolved = await host.query('settings', 'resolveModel', {
-      connectionId: backend.connectionId,
-      modelId: backend.modelId,
-    });
+    if (backend?.kind !== 'model') throw new UiError('This action requires a native model.');
+    const resolved = await host.query('agent', 'model', { backend });
     if (!alive) return null;
     if (resolved.kind !== 'ready')
       throw new UiError('Model unavailable: {model}. Choose another model.', {
         model: backend.modelId,
       });
     return {
-      model: resolved.choice.selection,
+      model: { connectionId: backend.connectionId, modelId: backend.modelId },
       thinkingLevel: backend.thinkingLevel ?? null,
     };
   };
@@ -1781,7 +1771,7 @@ export function Conversation(props: ConversationProps) {
       invocation(),
       readState().revision,
       readState().through,
-      backendIdentity(backend()),
+      backend(),
       props.continuationPending(),
     ]),
   );
@@ -1791,17 +1781,14 @@ export function Conversation(props: ConversationProps) {
     untracked(() => {
       if (props.continuationPending()) return;
       resumable.set(null);
-      const selected = backendIdentity(backend());
-      if (!ready() || archived() || invocation() || !selected) return;
+      const selected = backend();
+      if (!ready() || archived() || invocation() || selected?.kind !== 'model') return;
       void (async () => {
-        const resolved = await host.query('settings', 'resolveModel', {
-          connectionId: selected.connectionId,
-          modelId: selected.modelId,
-        });
+        const resolved = await host.query('agent', 'model', { backend: selected });
         if (!alive || !current || resolved.kind !== 'ready') return;
         const value = await host.query('agent', 'resumable', {
           sessionId,
-          model: resolved.choice.selection,
+          model: { connectionId: selected.connectionId, modelId: selected.modelId },
           thinkingLevel: selected.thinkingLevel,
         });
         if (alive && current) resumable.set(value);
@@ -1826,7 +1813,7 @@ export function Conversation(props: ConversationProps) {
       observed.source.sessionId !== source.sessionId ||
       observed.source.invocationId !== source.invocationId ||
       observed.source.highWater !== source.highWater ||
-      !sameBackend(backendIdentity(backend()), expectedBackend)
+      !sameBackend(backend(), expectedBackend)
     )
       return;
     resuming.set(true);
@@ -1882,24 +1869,26 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
+  const nativeSteer = (delivery: 'steer' | 'queue') =>
+    delivery === 'steer' && invocation() !== null && runBackend() === 'model';
   const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
     const expectedInvocationId = invocation() ?? undefined;
-    if (delivery === 'steer' && expectedInvocationId !== undefined)
-      return { delivery, expectedInvocationId };
-    const selected = backendIdentity(backend());
+    if (expectedInvocationId !== undefined && runBackend() === null)
+      throw new UiError('Loading session history… Your draft is kept.');
+    if (nativeSteer(delivery)) return { delivery, expectedInvocationId };
+    const selected = backend();
     if (expectedBackend !== undefined && !sameBackend(selected, expectedBackend))
       throw new UiError('The model changed before confirmation. Send again to confirm it.');
     if (!selected) throw new UiError('Choose a model before sending.');
     const details = modelDetails();
     if (details.kind !== 'ready')
       throw new UiError('Model unavailable: {model}. Choose another model.', {
-        model: selected.modelId,
+        model: backendName(selected),
       });
     return {
       delivery,
       expectedInvocationId,
-      model: details.choice.selection,
-      thinkingLevel: selected.thinkingLevel,
+      backend: selected,
     };
   };
 
@@ -1912,7 +1901,8 @@ export function Conversation(props: ConversationProps) {
         : tr('History unavailable. Retrying automatically; your draft is kept.');
     if (ready() && transcriptStatus() !== 'live')
       return tr('Reconnecting updates… Your draft is kept.');
-    if (!ready()) return tr('Loading session history… Your draft is kept.');
+    if (!ready() || (invocation() !== null && runBackend() === null))
+      return tr('Loading session history… Your draft is kept.');
     if (archived() && formerBot())
       return tr(
         'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
@@ -1948,7 +1938,7 @@ export function Conversation(props: ConversationProps) {
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
     try {
-      if (frozen.selection.model !== undefined && !(await projectMcp.check())) {
+      if (frozen.selection.backend?.kind === 'model' && !(await projectMcp.check())) {
         await abandonSend(client, id);
         sendError(id, new UiError('Approve workspace connections, then retry this message.'));
         return;
@@ -2306,8 +2296,7 @@ export function Conversation(props: ConversationProps) {
       owner !== sessionId ||
       draft() !== text ||
       !attachments.same(files) ||
-      ((delivery !== 'steer' || invocation() === null) &&
-        !sameBackend(backendIdentity(backend()), expectedBackend))
+      (!nativeSteer(delivery) && !sameBackend(backend(), expectedBackend))
     )
       return;
     void send(text, expectedBackend, false, delivery);
@@ -2373,7 +2362,7 @@ export function Conversation(props: ConversationProps) {
     editable: () => draftReady() && !savingFailed(),
     loading: () => !ready() || !draftReady(),
     blockedReason: sendBlockedReason,
-    backend: () => backendIdentity(backend()),
+    backend,
     modelDetails,
     refreshModel,
     permissions,
@@ -2542,11 +2531,11 @@ export function Conversation(props: ConversationProps) {
     async compact(prompt) {
       if (!alive) return;
       if (invocation() !== null) throw new UiError('Wait for the current run before compacting.');
-      const expectedBackend = backendIdentity(backend());
+      const expectedBackend = backend();
       if (expectedBackend === null) throw new UiError('Choose a model before compacting.');
       const model = await selection(expectedBackend);
       if (!alive || model === null) return;
-      if (!sameBackend(backendIdentity(backend()), expectedBackend))
+      if (!sameBackend(backend(), expectedBackend))
         throw new UiError('The model changed before confirmation. Send again to confirm it.');
       const result = await props.control('compact', {
         sessionId,

@@ -608,8 +608,9 @@ async fn model_queue_edits_can_only_change_messages_authored_by_the_calling_sess
         let child = create_child(&listener, &mut parent_socket, &parent, "Child actor").await;
         let child = child["id"].as_str().unwrap();
         let mut child_socket = start(&f, &listener, child).await;
+        let backend = model_backend(&f.selection().await);
         let queued = f.mutation(2, "send", json!({
-            "sessionId":parent,"message":"Human instruction","delivery":"queue","model":f.selection().await,
+            "sessionId":parent,"message":"Human instruction","delivery":"queue","backend":backend,
         }), Uuid::new_v4()).await.unwrap();
         assert_eq!(queued["kind"], "queued");
         let queue = f.query("queue", json!({"sessionId":parent})).await.unwrap();
@@ -626,7 +627,7 @@ async fn model_queue_edits_can_only_change_messages_authored_by_the_calling_sess
         }
         assert_eq!(f.query("queue", json!({"sessionId":parent})).await.unwrap(), queue);
         let sent = tool(&listener, &mut child_socket, "SessionSend", json!({
-            "sessionId":parent,"message":"My queued message","delivery":"queue","model":f.selection().await,
+            "sessionId":parent,"message":"My queued message","delivery":"queue","backend":backend,
         })).await;
         let sent: Value = serde_json::from_str(&sent).unwrap();
         assert_eq!(sent["kind"], "queued", "{sent}");
@@ -643,7 +644,7 @@ async fn model_queue_edits_can_only_change_messages_authored_by_the_calling_sess
         assert_eq!(owned["origin"]["invocation"]["session_id"], child);
         let parent_invocation = f.query("observe", json!({"sessionId":parent})).await.unwrap()["run"]["invocationId"].clone();
         let from_parent = tool(&listener, &mut parent_socket, "SessionSend", json!({
-            "sessionId":child,"message":"Parent-authored instruction","delivery":"queue","model":f.selection().await,
+            "sessionId":child,"message":"Parent-authored instruction","delivery":"queue","backend":backend,
         })).await;
         let from_parent: Value = serde_json::from_str(&from_parent).unwrap();
         assert_eq!(from_parent["kind"], "queued");

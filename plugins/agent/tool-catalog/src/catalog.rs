@@ -18,7 +18,7 @@
  */
 
 use crate::{PreparationFuture, ToolCallContext};
-use jsonschema::Validator;
+use jsonschema::{Validator, error::ValidationErrorKind};
 use maka_agent_facts::tool_call::ToolRejection;
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::Arc};
@@ -264,11 +264,62 @@ impl ToolCatalog {
         }
         if !entry.validator.is_valid(input) {
             return Err(ToolRejection::InvalidInput {
-                message: "arguments do not match the declared schema".into(),
+                message: schema_mismatch(&entry.validator, input),
             });
         }
         Ok(())
     }
+}
+
+/// How many schema errors a rejection names; the model fixes the first ones first.
+const SHOWN_ERRORS: usize = 3;
+
+/// Why `input` fails its schema, so the model can correct the call: where each of
+/// the first errors is and what it is, with the values masked since they can be long.
+fn schema_mismatch(validator: &Validator, input: &Value) -> String {
+    let mut reasons = Vec::new();
+    let mut more = 0;
+    for error in validator.iter_errors(input) {
+        if reasons.len() == SHOWN_ERRORS {
+            more += 1;
+            continue;
+        }
+        let path = error.instance_path().to_string();
+        let mut reason = if path.is_empty() {
+            error.masked().to_string()
+        } else {
+            format!("{path}: {}", error.masked())
+        };
+        // Only a value of the wrong kind can be a structure sent as its text; a string
+        // failing a string rule (length, pattern) is meant to be a string.
+        let wrong_kind = matches!(
+            error.kind(),
+            ValidationErrorKind::Type { .. }
+                | ValidationErrorKind::AnyOf { .. }
+                | ValidationErrorKind::OneOfNotValid { .. }
+        );
+        if wrong_kind && encodes_json(error.instance()) {
+            reason.push_str(" (it is a JSON-encoded string; pass the object or array itself)");
+        }
+        reasons.push(reason);
+    }
+    let mut message = String::from("arguments do not match the declared schema");
+    if !reasons.is_empty() {
+        message.push_str(": ");
+        message.push_str(&reasons.join("; "));
+    }
+    if more > 0 {
+        message.push_str(&format!("; and {more} more"));
+    }
+    message
+}
+
+/// A string holding a JSON object or array, the usual way a model mistakes a
+/// structured argument.
+fn encodes_json(value: &Value) -> bool {
+    value.as_str().is_some_and(|text| {
+        serde_json::from_str::<Value>(text).is_ok_and(|value| value.is_object() || value.is_array())
+    })
 }
 
 impl ToolCatalog {

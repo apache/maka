@@ -32,6 +32,7 @@ pub struct TurnBoundary {
     pub opening_event_id: String,
     pub invocation: Invocation,
     pub input: InvocationInput,
+    pub configuration: Option<Box<maka_agent_facts::execution::InvocationConfiguration>>,
     pub state: InvocationState,
     root: Option<root::Origin>,
 }
@@ -312,7 +313,11 @@ pub(crate) async fn project(
     connection: &mut sqlx::SqliteConnection,
     opening: RuntimeEvent,
 ) -> Result<TurnBoundary, StoreError> {
-    let Fact::InvocationOpened { input, .. } = opening.fact else {
+    let Fact::InvocationOpened {
+        input,
+        configuration,
+    } = opening.fact
+    else {
         return Err(StoreError::InvalidTransition(
             "invalid stored invocation opening".into(),
         ));
@@ -361,6 +366,7 @@ pub(crate) async fn project(
         opening_event_id: opening.id,
         invocation: opening.invocation,
         input,
+        configuration,
         state,
     })
 }

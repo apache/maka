@@ -175,7 +175,7 @@ async fn recall_native_model_tools_expand_exclude_active_turn_and_retain_materia
         let image_bytes = base64::engine::general_purpose::STANDARD.decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGMQNE5uAAACKAEoAfdvjgAAAABJRU5ErkJggg==").unwrap();
         let image = attachments::upload(&f,&source,"image.png",&image_bytes,Uuid::new_v4()).await.unwrap()["attachment"]["id"].as_str().unwrap().to_owned();
         let target = f.create("Current conversation").await;
-        let started = f.mutation(2,"send",json!({"sessionId":target,"message":"café current turn must be excluded","model":f.selection().await}),Uuid::new_v4()).await.unwrap();
+        let started = f.mutation(2,"send",json!({"sessionId":target,"message":"café current turn must be excluded","backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
         assert_eq!(started["kind"],"started");
         for (name,input,previous,complete_context) in [
             ("Recall",json!({"terms":["café","second","third","fourth","fifth","sixth","seventh","eighth","ninth"],"limit":26}), None, false),

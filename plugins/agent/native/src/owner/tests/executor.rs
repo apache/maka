@@ -488,7 +488,7 @@ async fn activate_backend(
     fixture.services = services;
 }
 fn input_for(session: &str, message: &str) -> Value {
-    json!({"sessionId":session,"message":message,"executor":{"executor":"external","settings":{"model":"backend-model","thinkingLevel":"high"}}})
+    json!({"sessionId":session,"message":message,"delivery":"queue","backend":{"kind":"executor","selection":{"executor":"external","settings":{"model":"backend-model","thinkingLevel":"high"}}}})
 }
 async fn work(fixture: &Fixture, session: &str, accepted: &Value) -> Value {
     fixture.query("work",json!({"sessionId":session,"target":{"kind":"invocation","invocationId":accepted["invocationId"]}})).await.unwrap()
@@ -570,9 +570,9 @@ async fn executor_service_selects_the_exact_authorized_import_member() {
         let session = f.create("Selected member").await;
         let mut changes = f.session(&session).await.subscribe_commits().unwrap();
         let mut execution = input_for(&session, "second binding");
-        execution["executor"]["executor"] = json!(executor_name);
+        execution["backend"]["selection"]["executor"] = json!(executor_name);
         let accepted = f
-            .mutation(2, "execute", execution, Uuid::new_v4())
+            .mutation(2, "send", execution, Uuid::new_v4())
             .await
             .unwrap();
         assert_eq!(accepted["kind"], "started", "{accepted}");
@@ -615,11 +615,16 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut fixture = Fixture::new("http://127.0.0.1:9/v1", None).await;
         activate(&mut fixture, true, None, true).await;
-        let session = fixture.create("External").await;
-        let input = input_for(&session, "original 外部 text");
+        let initial = input_for("unused", "")["backend"].clone();
+        let mut create = fixture.create_input("External").await;
+        create["backend"] = initial.clone();
+        let created = fixture.mutation(2, "create", create, Uuid::new_v4()).await.unwrap();
+        assert_eq!(created["session"]["backend"], initial);
+        let session = created["session"]["id"].as_str().unwrap().to_owned();
+        let mut input = input_for(&session, "original 外部 text");
         *fixture.owner.catalog.snapshot.write().await =
             Err("fixture_public_catalog_unavailable".into());
-        let backend = json!({"kind":"executor","selection":input["executor"]});
+        let backend = input["backend"].clone();
         let saved = fixture
             .mutation(
                 2,
@@ -635,9 +640,10 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
             .await
             .unwrap();
         assert_eq!(selected["session"]["backend"], backend);
+        input.as_object_mut().unwrap().remove("backend");
         let operation = Uuid::new_v4();
         let accepted = fixture
-            .mutation(2, "execute", input.clone(), operation)
+            .mutation(2, "send", input.clone(), operation)
             .await
             .unwrap();
         assert_eq!(accepted["kind"], "started");
@@ -717,7 +723,7 @@ async fn executor_service_javascript_uses_original_engine_and_read_only_restart(
         assert_eq!(work(&fixture, &session, &accepted).await, observed);
         assert_eq!(
             fixture
-                .mutation(2, "execute", input, operation)
+                .mutation(2, "send", input, operation)
                 .await
                 .unwrap(),
             accepted
@@ -747,7 +753,7 @@ async fn executor_service_cancelled_unsettled_callback_keeps_actual_owner() {
         activate(&mut fixture, true, Some(probe.clone()), true).await;
         let session = fixture.create("Unsettled").await;
         let accepted = fixture
-            .mutation(2, "execute", input_for(&session, "blocked"), Uuid::new_v4())
+            .mutation(2, "send", input_for(&session, "blocked"), Uuid::new_v4())
             .await
             .unwrap();
         probe.entered.acquire().await.unwrap().forget();
@@ -819,7 +825,7 @@ async fn executor_service_progress_is_canonical_before_original_backend_finishes
         let accepted = fixture
             .mutation(
                 2,
-                "execute",
+                "send",
                 input_for(&session, "final canonical answer"),
                 Uuid::new_v4(),
             )
@@ -979,7 +985,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
             let mut input = input_for(target, "");
             input["attachments"] = ids;
             assert!(
-                f.mutation(2, "execute", input, Uuid::new_v4())
+                f.mutation(2, "send", input, Uuid::new_v4())
                     .await
                     .is_err()
             );
@@ -988,7 +994,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
         input["attachments"] = json!(ids);
         let operation = Uuid::new_v4();
         let accepted = f
-            .mutation(2, "execute", input.clone(), operation)
+            .mutation(2, "send", input.clone(), operation)
             .await
             .unwrap();
         assert_eq!(accepted["kind"], "started");
@@ -1026,7 +1032,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
             assert_eq!(received["preview"], &bytes[..bytes.len().min(80)]);
         }
         assert_eq!(
-            f.mutation(2, "execute", input, operation).await.unwrap(),
+            f.mutation(2, "send", input, operation).await.unwrap(),
             accepted
         );
         assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
@@ -1037,3 +1043,13 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
     .await
     .unwrap();
 }
+
+mod oar;
+
+mod oar_attachments;
+
+mod oar_history;
+
+mod oar_support;
+
+mod oar_persistence;

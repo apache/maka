@@ -819,15 +819,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -1670,15 +1677,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -2606,6 +2620,17 @@ export const contracts = {
             title: 'AgentCreate',
             type: 'object',
             properties: {
+              backend: {
+                description: 'Initial next-turn preference; admission resolves it again.',
+                anyOf: [
+                  {
+                    $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  {
+                    type: 'null',
+                  },
+                ],
+              },
               automaticTitle: {
                 description:
                   'Treat title as a placeholder for one title derived from the first user message.',
@@ -2641,6 +2666,101 @@ export const contracts = {
             additionalProperties: false,
             required: ['title', 'labels', 'workspace'],
             $defs: {
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
               AgentWorkspaceSelection: {
                 oneOf: [
                   {
@@ -3045,15 +3165,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -3919,321 +4046,6 @@ export const contracts = {
           },
           resources: {},
         },
-        execute: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentExecute',
-            type: 'object',
-            properties: {
-              attachments: {
-                description:
-                  'IDs of immutable user uploads in this Session, resolved by the Agent owner.',
-                type: 'array',
-                items: {
-                  type: 'string',
-                },
-                default: [],
-              },
-              sessionId: {
-                type: 'string',
-                minLength: 1,
-              },
-              message: {
-                type: 'string',
-              },
-              executor: {
-                $ref: '#/$defs/AgentExecutorSelection',
-              },
-            },
-            additionalProperties: false,
-            required: ['sessionId', 'message', 'executor'],
-            $defs: {
-              AgentExecutorSelection: {
-                type: 'object',
-                properties: {
-                  executor: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  settings: {
-                    $ref: '#/$defs/ExecutorSettings',
-                  },
-                },
-                additionalProperties: false,
-                required: ['executor', 'settings'],
-              },
-              ExecutorSettings: {
-                description:
-                  'Executor-owned model selection, independent of Host model connections.',
-                type: 'object',
-                properties: {
-                  model: {
-                    type: ['string', 'null'],
-                  },
-                  thinkingLevel: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/ThinkingLevel',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-              },
-              ThinkingLevel: {
-                type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentSendResult',
-            oneOf: [
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'rejected',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                  reason: {
-                    $ref: '#/$defs/AgentSendRejection',
-                  },
-                  skills: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/SkillInvocationResult',
-                      },
-                      {
-                        type: 'null',
-                      },
-                    ],
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'sessionId', 'reason'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'started',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                  invocationId: {
-                    type: 'string',
-                  },
-                  messageId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'sessionId', 'invocationId', 'messageId'],
-              },
-              {
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'queued',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                  messageId: {
-                    type: 'string',
-                  },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 0,
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'sessionId', 'messageId', 'revision'],
-              },
-              {
-                description:
-                  'The caller may not send to this conversation: the Bot sends only to the\nworkers it created. Nothing was admitted.',
-                type: 'object',
-                properties: {
-                  kind: {
-                    type: 'string',
-                    const: 'not_your_worker',
-                  },
-                  sessionId: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['kind', 'sessionId'],
-              },
-            ],
-            $defs: {
-              AgentSendRejection: {
-                type: 'string',
-                enum: ['model_unavailable', 'skills_unavailable', 'turn_stopped'],
-              },
-              SkillInvocationResult: {
-                type: 'object',
-                properties: {
-                  loaded: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/LoadedSkill',
-                    },
-                  },
-                  failed: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/SkillInvocationFailure',
-                    },
-                  },
-                  receipts: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/SkillInvocationReceipt',
-                    },
-                  },
-                },
-                additionalProperties: false,
-                required: ['loaded', 'failed', 'receipts'],
-              },
-              LoadedSkill: {
-                type: 'object',
-                properties: {
-                  id: {
-                    type: 'string',
-                  },
-                  name: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['id', 'name'],
-              },
-              SkillInvocationFailure: {
-                anyOf: [
-                  {
-                    $ref: '#/$defs/SkillRequestFailure',
-                  },
-                ],
-              },
-              SkillRequestFailure: {
-                type: 'object',
-                properties: {
-                  request: {
-                    type: 'string',
-                  },
-                  reason: {
-                    $ref: '#/$defs/SkillFailureReason',
-                  },
-                },
-                additionalProperties: false,
-                required: ['request', 'reason'],
-              },
-              SkillFailureReason: {
-                type: 'string',
-                enum: [
-                  'invalid_name',
-                  'not_found',
-                  'disabled',
-                  'host_incompatible',
-                  'resolution_failed',
-                ],
-              },
-              SkillInvocationReceipt: {
-                description:
-                  'Boolean wire discriminants are validated here, not retained as mutable\nbusiness fields beside a contradictory enum variant.',
-                anyOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      invocation: {
-                        $ref: '#/$defs/SkillInvocationMode',
-                      },
-                      request: {
-                        type: 'string',
-                      },
-                      success: {
-                        const: true,
-                      },
-                      ref: {
-                        type: 'string',
-                      },
-                      id: {
-                        type: 'string',
-                      },
-                      name: {
-                        type: 'string',
-                      },
-                      scope: {
-                        $ref: '#/$defs/SkillScope',
-                      },
-                      source: {
-                        $ref: '#/$defs/SkillSource',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: [
-                      'invocation',
-                      'request',
-                      'success',
-                      'ref',
-                      'id',
-                      'name',
-                      'scope',
-                      'source',
-                    ],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      invocation: {
-                        $ref: '#/$defs/SkillInvocationMode',
-                      },
-                      request: {
-                        type: 'string',
-                      },
-                      success: {
-                        const: false,
-                      },
-                      reason: {
-                        $ref: '#/$defs/SkillFailureReason',
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['invocation', 'request', 'success', 'reason'],
-                  },
-                ],
-              },
-              SkillInvocationMode: {
-                type: 'string',
-                enum: ['explicit', 'model_tool'],
-              },
-              SkillScope: {
-                type: 'string',
-                enum: ['project', 'workspace', 'user', 'custom'],
-              },
-              SkillSource: {
-                type: 'string',
-                enum: ['maka', 'agents', 'custom'],
-              },
-            },
-          },
-          resources: {},
-        },
         execution: {
           mode: 'query',
           input: {
@@ -5055,15 +4867,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -5628,15 +5447,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -8827,15 +8653,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -9884,15 +9717,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -11800,15 +11640,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -12585,15 +12432,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -13317,15 +13171,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -13480,6 +13341,606 @@ export const contracts = {
                 ],
               },
             },
+          },
+          resources: {},
+        },
+        model: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentModelRead',
+            type: 'object',
+            properties: {
+              backend: {
+                $ref: '#/$defs/AgentBackendPreference',
+              },
+            },
+            additionalProperties: false,
+            required: ['backend'],
+            $defs: {
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentModelResult',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  choice: {
+                    $ref: '#/$defs/AgentModelChoice',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'choice'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'unavailable',
+                  },
+                  message: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'message'],
+              },
+            ],
+            $defs: {
+              AgentModelChoice: {
+                type: 'object',
+                properties: {
+                  selection: {
+                    $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  sourceName: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  thinkingLevels: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  defaultThinkingLevel: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+            },
+          },
+          resources: {},
+        },
+        models: {
+          mode: 'query',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentModelsRead',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'start',
+                  },
+                  query: {
+                    type: 'string',
+                    default: '',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'continue',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  cursor: {
+                    $ref: '#/$defs/AgentModelsCursor',
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'revision', 'cursor'],
+              },
+            ],
+            $defs: {
+              AgentModelsCursor: {
+                type: 'object',
+                properties: {
+                  query: {
+                    type: 'string',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['query', 'offset'],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentModelsPage',
+            oneOf: [
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'ready',
+                  },
+                  revision: {
+                    type: 'string',
+                  },
+                  choices: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentModelChoice',
+                    },
+                  },
+                  complete: {
+                    type: 'boolean',
+                  },
+                  next: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentModelsCursor',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'revision', 'choices', 'complete'],
+              },
+              {
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'changed',
+                  },
+                },
+                required: ['kind'],
+                additionalProperties: false,
+              },
+            ],
+            $defs: {
+              AgentModelChoice: {
+                type: 'object',
+                properties: {
+                  selection: {
+                    $ref: '#/$defs/AgentBackendPreference',
+                  },
+                  sourceName: {
+                    type: 'string',
+                  },
+                  label: {
+                    type: 'string',
+                  },
+                  thinkingLevels: {
+                    type: 'array',
+                    items: {
+                      type: 'string',
+                    },
+                  },
+                  defaultThinkingLevel: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+                required: ['selection', 'sourceName', 'label', 'thinkingLevels'],
+              },
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
+                  },
+                ],
+              },
+              ThinkingLevel: {
+                type: 'string',
+                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
+              },
+              AgentModelsCursor: {
+                type: 'object',
+                properties: {
+                  query: {
+                    type: 'string',
+                  },
+                  offset: {
+                    type: 'integer',
+                    format: 'uint64',
+                    minimum: 0,
+                    maximum: 9007199254740991,
+                  },
+                },
+                additionalProperties: false,
+                required: ['query', 'offset'],
+              },
+            },
+          },
+          resources: {},
+        },
+        oarSetup: {
+          mode: 'mutation',
+          input: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentOarSetup',
+            description:
+              "Only OAR's declared installation operations; not an agent registry or login shim.",
+            type: 'object',
+            properties: {
+              runtime: {
+                type: 'string',
+                minLength: 1,
+              },
+              action: {
+                $ref: '#/$defs/AgentOarSetupAction',
+              },
+            },
+            additionalProperties: false,
+            required: ['runtime', 'action'],
+            $defs: {
+              AgentOarSetupAction: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'probe',
+                      },
+                    },
+                    required: ['kind'],
+                    additionalProperties: false,
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'plan',
+                      },
+                      line: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'install',
+                      },
+                      line: {
+                        type: ['string', 'null'],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind'],
+                  },
+                ],
+              },
+            },
+          },
+          output: {
+            $schema: 'https://json-schema.org/draft/2020-12/schema',
+            title: 'AgentOarSetupResult',
+            type: 'object',
+            properties: {
+              runtime: {
+                type: 'string',
+              },
+              result: {
+                description:
+                  "The pinned OAR version's native result, including unsupported capabilities.",
+              },
+            },
+            additionalProperties: false,
+            required: ['runtime', 'result'],
           },
           resources: {},
         },
@@ -13849,15 +14310,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -14053,6 +14521,9 @@ export const contracts = {
               AgentRun: {
                 type: 'object',
                 properties: {
+                  backend: {
+                    $ref: '#/$defs/AgentRunBackend',
+                  },
                   invocationId: {
                     type: 'string',
                   },
@@ -14064,7 +14535,13 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['invocationId', 'turnId', 'state'],
+                required: ['backend', 'invocationId', 'turnId', 'state'],
+              },
+              AgentRunBackend: {
+                description:
+                  'Execution kind frozen at admission, independent of the next-turn preference.',
+                type: 'string',
+                enum: ['model', 'executor'],
               },
               AgentRunState: {
                 type: 'string',
@@ -16407,15 +16884,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -20505,15 +20989,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
             },
           },
@@ -20840,15 +21331,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -21141,21 +21639,11 @@ export const contracts = {
                 },
                 default: [],
               },
-              model: {
+              backend: {
+                description: 'Omission uses the session’s saved next-turn preference.',
                 anyOf: [
                   {
-                    $ref: '#/$defs/ModelSelection',
-                  },
-                  {
-                    type: 'null',
-                  },
-                ],
-              },
-              thinkingLevel: {
-                description: 'Omission/null uses the configured model default; `off` is explicit.',
-                anyOf: [
-                  {
-                    $ref: '#/$defs/ThinkingLevel',
+                    $ref: '#/$defs/AgentBackendPreference',
                   },
                   {
                     type: 'null',
@@ -21174,28 +21662,113 @@ export const contracts = {
             required: ['sessionId', 'message'],
             $defs: {
               AgentSendDelivery: {
-                type: 'string',
-                enum: ['steer', 'queue'],
+                oneOf: [
+                  {
+                    type: 'string',
+                    enum: ['queue'],
+                  },
+                  {
+                    description:
+                      'Steer an active native model turn; external executors queue the next turn.',
+                    type: 'string',
+                    const: 'steer',
+                  },
+                ],
               },
-              ModelSelection: {
+              AgentBackendPreference: {
                 description:
-                  'Stable model identity, resolved from current connection settings at admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'model',
+                      },
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      thinkingLevel: {
+                        anyOf: [
+                          {
+                            $ref: '#/$defs/ThinkingLevel',
+                          },
+                          {
+                            type: 'null',
+                          },
+                        ],
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'connectionId', 'modelId'],
                   },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'executor',
+                      },
+                      selection: {
+                        $ref: '#/$defs/AgentExecutorSelection',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'selection'],
                   },
-                },
-                required: ['connectionId', 'modelId'],
+                ],
               },
               ThinkingLevel: {
                 type: 'string',
                 enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
+              },
+              AgentExecutorSelection: {
+                type: 'object',
+                properties: {
+                  executor: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                  settings: {
+                    $ref: '#/$defs/ExecutorSettings',
+                  },
+                },
+                additionalProperties: false,
+                required: ['executor', 'settings'],
+              },
+              ExecutorSettings: {
+                description:
+                  'Executor-owned model selection, independent of Host model connections.',
+                type: 'object',
+                properties: {
+                  model: {
+                    type: ['string', 'null'],
+                  },
+                  thinkingLevel: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/ExecutorEffort',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
+                },
+                additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
             },
           },
@@ -21790,15 +22363,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
               AgentDataSource: {
                 description:
@@ -21969,7 +22549,7 @@ export const contracts = {
                 type: 'string',
               },
               backend: {
-                $ref: '#/$defs/AgentSkillCandidatesBackend',
+                $ref: '#/$defs/AgentBackendPreference',
               },
               query: {
                 type: 'string',
@@ -21978,7 +22558,9 @@ export const contracts = {
             additionalProperties: false,
             required: ['sessionId', 'backend', 'query'],
             $defs: {
-              AgentSkillCandidatesBackend: {
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
                 oneOf: [
                   {
                     type: 'object',
@@ -21987,8 +22569,13 @@ export const contracts = {
                         type: 'string',
                         const: 'model',
                       },
-                      model: {
-                        $ref: '#/$defs/ModelSelection',
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -22002,7 +22589,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'model'],
+                    required: ['kind', 'connectionId', 'modelId'],
                   },
                   {
                     type: 'object',
@@ -22019,22 +22606,6 @@ export const contracts = {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ModelSelection: {
-                description:
-                  'Stable model identity, resolved from current connection settings at admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -22065,15 +22636,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
+              },
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
+                type: 'string',
               },
             },
           },
@@ -26057,19 +26635,22 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 additionalProperties: false,
               },
-              ThinkingLevel: {
+              ExecutorEffort: {
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
                 type: 'string',
-                enum: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
               },
             },
           },
@@ -27206,16 +27787,23 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 description:
                   'Executor-owned model selection, independent of Host model connections.',
+              },
+              ExecutorEffort: {
+                type: 'string',
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
               },
               AgentDataSource: {
                 type: 'object',
@@ -28741,16 +29329,23 @@ export const contracts = {
                   thinkingLevel: {
                     anyOf: [
                       {
-                        $ref: '#/$defs/ThinkingLevel',
+                        $ref: '#/$defs/ExecutorEffort',
                       },
                       {
                         type: 'null',
                       },
                     ],
                   },
+                  runtime: {
+                    type: ['string', 'null'],
+                  },
                 },
                 description:
                   'Executor-owned model selection, independent of Host model connections.',
+              },
+              ExecutorEffort: {
+                type: 'string',
+                description: "Runtime-native effort, not a Host model's closed reasoning enum.",
               },
               AgentDataSource: {
                 type: 'object',

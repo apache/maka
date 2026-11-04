@@ -67,56 +67,7 @@ fn selectable(
 ) -> bool {
     row.enabled && maka_providers::definition(&row.provider, snapshot).is_ok()
 }
-fn model_request(
-    row: &ConnectionCatalogEntry,
-    model: &str,
-    overrides: Option<ModelOverride>,
-) -> maka_agent_ports::provider::Resolve {
-    maka_agent_ports::provider::Resolve {
-        connection: maka_agent_ports::provider::Connection {
-            id: row.connection_id.clone(),
-            revision: row.revision,
-            configuration: row.configuration.clone(),
-        },
-        model: row
-            .models
-            .iter()
-            .find(|info| info.id == model)
-            .cloned()
-            .unwrap_or_else(|| ModelInfo::new(model)),
-        overrides,
-        thinking_level: None,
-    }
-}
-async fn model_metadata(
-    row: &ConnectionCatalogEntry,
-    model: &str,
-    overrides: Option<ModelOverride>,
-    snapshot: Arc<maka_providers::catalog::Snapshot>,
-) -> Result<maka_providers::api::ModelMetadata, String> {
-    let request = model_request(row, model, overrides);
-    if row.provider.package_id == maka_providers::codex::ID {
-        let overrides = &request.overrides;
-        let default_thinking_level = overrides.as_ref().and_then(|o| o.default_thinking_level);
-        let resolved = maka_providers::definition(&row.provider, snapshot.clone())?
-            .prepare(request)
-            .await
-            .map_err(|error| error.to_string())?;
-        Ok(maka_providers::api::ModelMetadata {
-            info: resolved.info,
-            thinking_levels: resolved.thinking_levels,
-            default_thinking_level,
-        })
-    } else {
-        maka_providers::api::ApiProviders::model_metadata(
-            &row.provider.name,
-            snapshot,
-            request.connection,
-            request.model,
-            request.overrides,
-        )
-    }
-}
+use maka_providers::{model_metadata, model_request};
 fn model_choice_from_metadata(
     row: &ConnectionCatalogEntry,
     model: &str,

@@ -97,7 +97,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
             .unwrap();
         let created = mutate(&client, "create", json!({"title":"Crash","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})).await;
         let session = created["session"]["id"].as_str().unwrap().to_owned();
-        mutate(&client, "send", json!({"sessionId":session,"message":"BEFORE_THE_CRASH","model":selection})).await;
+        mutate(&client, "send", json!({"sessionId":session,"message":"BEFORE_THE_CRASH","backend":{"kind":"model","connectionId":selection["connectionId"],"modelId":selection["modelId"]}})).await;
         let held = requests.recv().await.unwrap();
         assert_ne!(activity(&client, &session).await, "idle");
 
@@ -118,7 +118,7 @@ async fn killed_host_leaves_an_ended_turn_and_a_session_that_takes_messages() {
         )
         .unwrap();
         assert_eq!(activity(&client, &session).await, "idle");
-        mutate(&client, "send", json!({"sessionId":session,"message":"AFTER_THE_CRASH","model":selection})).await;
+        mutate(&client, "send", json!({"sessionId":session,"message":"AFTER_THE_CRASH","backend":{"kind":"model","connectionId":selection["connectionId"],"modelId":selection["modelId"]}})).await;
         let mut answered = false;
         while activity(&client, &session).await != "idle" || !answered {
             let Ok(request) =

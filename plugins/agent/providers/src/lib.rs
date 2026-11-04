@@ -22,6 +22,8 @@ pub mod api;
 pub mod catalog;
 pub mod codex;
 mod facts;
+mod metadata;
+pub use metadata::{model_metadata, model_request};
 
 /// Compiled native provider policy. Persisted identities cannot name arbitrary
 /// code or change the provider scope accepted by a native application.

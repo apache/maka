@@ -62,7 +62,7 @@ async fn queued_message_with_own_session_tools_resumes_after_host_restart() {
                 "send",
                 json!({
                     "sessionId":session, "message":"Continue this queued request after restart",
-                    "model":fixture.selection().await,
+                    "backend":model_backend(&fixture.selection().await),
                 }),
                 Uuid::new_v4(),
             )
@@ -327,7 +327,7 @@ async fn session_send_returns_to_caller_while_the_existing_target_keeps_working(
         })).await.unwrap();
         assert_eq!(children["sessions"].as_array().unwrap().iter().map(|session| session["id"].as_str().unwrap()).collect::<Vec<_>>(), vec![child]);
         service_tools::named_tool_response(&mut socket, "SessionSend", json!({
-            "sessionId":target, "message":"Continue the existing task", "model":fixture.selection().await,
+            "sessionId":target, "message":"Continue the existing task", "backend":model_backend(&fixture.selection().await),
         })).await;
         let mut target_socket = None;
         let mut caller_socket = None;

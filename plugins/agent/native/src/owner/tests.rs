@@ -418,6 +418,14 @@ struct Fixture {
     issuer: Issuer,
     owner: Arc<Owner>,
 }
+fn model_backend(model: &ModelSelection) -> BackendPreference {
+    BackendPreference::Model {
+        connection_id: model.connection_id.clone(),
+        model_id: model.model_id.clone(),
+        thinking_level: None,
+    }
+}
+
 impl Fixture {
     async fn session(&self, id: &str) -> maka_event_log::root_store::SessionStore {
         self.store
@@ -652,6 +660,7 @@ impl Fixture {
                 path: workspace.clone(),
             }],
             executors: vec![],
+            oar: None,
             skill_library: tooling
                 .as_ref()
                 .and_then(service_tools::Setup::skill_import),
@@ -869,7 +878,7 @@ impl Fixture {
         self.mutation(
             2,
             "send",
-            json!({"sessionId":session,"message":"Hello","delivery":"queue","model":self.selection().await}),
+            json!({"sessionId":session,"message":"Hello","delivery":"queue","backend":model_backend(&self.selection().await)}),
             Uuid::new_v4(),
         )
         .await
@@ -1236,7 +1245,7 @@ async fn cleanup_case(panic: bool) {
             .prepare_mutation(
                 fixture.binding(2).await,
                 "send".into(),
-                json!({"sessionId":session,"message":"after failed cleanup","model":selection}),
+                json!({"sessionId":session,"message":"after failed cleanup","backend":model_backend(&selection)}),
                 scope(&fixture.issuer, true),
                 Uuid::new_v4(),
                 Attachments::new().into(),
@@ -1262,8 +1271,7 @@ async fn cleanup_case(panic: bool) {
                     expected_invocation_id: None,
                     session_id: session.clone(),
                     message: "after failed cleanup".into(),
-                    model: Some(selection),
-                    thinking_level: None,
+                    backend: Some(model_backend(&selection)),
                     attachments: vec![],
                 },
                 &reference,
