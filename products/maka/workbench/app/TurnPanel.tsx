@@ -208,7 +208,20 @@ function ActivityLog(props: {
   let ownList: ListRef | undefined;
   let activityScrollIntent = false;
   let nearEnd = false;
+  let atEnd = false;
+  let lastOffset = 0;
   let alive = true;
+  const resumeFollowing = () => {
+    const resuming = !state.following();
+    state.following.set(true);
+    props.reading(false);
+    // Returning from a reading pause must replace the native reading pin that
+    // was captured while end-following was disabled.
+    if (resuming) {
+      if (atEnd) ownList?.scrollToEnd({ animated: false });
+      else ownList?.scrollToOffset({ offset: lastOffset, animated: false });
+    }
+  };
   cleanup(() => {
     alive = false;
     pendingReveal.set(null);
@@ -282,17 +295,16 @@ function ActivityLog(props: {
             if (!alive || lease !== state.lease) return;
             activityScrollIntent = true;
             props.userScroll();
-            if (nearEnd) {
-              state.following.set(true);
-              props.reading(false);
-            }
+            if (nearEnd) resumeFollowing();
           }}
           onScroll={(event) => {
             if (!alive || lease !== state.lease) return;
+            lastOffset = event.offset.y;
             const distance =
               Math.max(0, event.contentSize.height - event.size.height) - event.offset.y;
             nearEnd = distance <= activityFollowThreshold;
-            props.settled?.(distance <= 1);
+            atEnd = distance <= 1;
+            props.settled?.(atEnd);
             // Layout scroll reports must not release a tool-reading pause;
             // user input on the activity list does, even with the tool still open.
             if (
@@ -308,8 +320,11 @@ function ActivityLog(props: {
               })
             )
               return;
-            state.following.set(nearEnd);
-            props.reading(!nearEnd);
+            if (nearEnd) resumeFollowing();
+            else {
+              state.following.set(false);
+              props.reading(true);
+            }
           }}
           contentStyle={{ paddingLeft: platform.isTerminal ? 0 : 8, paddingRight: 8 }}
           ref={(node) => {

@@ -104,7 +104,12 @@ async fn activity_resumes_following_after_reading_an_expanded_tool() {
         support::tick(&mut view);
         tokio::task::yield_now().await;
     }
-    wait_view(&mut view, |screen| screen.contains("Live activity-11")).await;
+    wait_view(&mut view, |screen| {
+        screen.contains("Live activity-11")
+            && screen.contains("Following latest")
+            && screen.contains("At activity end")
+    })
+    .await;
     support::click_button(&mut view, "Append activity").await;
     wait_view(&mut view, |screen| screen.contains("Live activity-12")).await;
 

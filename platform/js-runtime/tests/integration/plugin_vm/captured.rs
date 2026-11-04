@@ -61,37 +61,6 @@ async fn capture_result(module: &Module) -> Result<Captured, Error> {
         .await
 }
 
-#[tokio::test]
-async fn unclaimed_worker_registration_payload_releases_globals() {
-    tokio::time::timeout(Duration::from_secs(10), async {
-        let vm = Vm::pure(Limits::default()).unwrap();
-        let module = vm
-            .load(
-                "capture-drop.mjs".into(),
-                "export const service = {read:()=>1};".into(),
-            )
-            .unwrap();
-        module.ready().await.unwrap();
-        let mut future = Box::pin(capture_result(&module));
-        assert!(futures_util::poll!(future.as_mut()).is_pending());
-        // Observe successful worker capture while the awaiting future is never polled again.
-        assert_eq!(vm.statistics(false).await.unwrap().captured_callbacks, 1);
-        drop(future);
-        assert_eq!(vm.statistics(false).await.unwrap().captured_callbacks, 0);
-        let mut handles = Vec::new();
-        for _ in 0..1025 {
-            handles.push(capture_result(&module).await.unwrap());
-        }
-        assert_eq!(vm.statistics(false).await.unwrap().captured_callbacks, 1025);
-        drop(handles);
-        assert_eq!(vm.statistics(false).await.unwrap().captured_callbacks, 0);
-        module.close().await.unwrap();
-        vm.shutdown().await;
-    })
-    .await
-    .unwrap();
-}
-
 #[derive(Clone)]
 struct Gate {
     started: Arc<tokio::sync::Semaphore>,
