@@ -221,8 +221,13 @@ async fn a_replaced_bot_keeps_its_replies_readable_without_its_authority() {
             .unwrap();
         assert_eq!(read["isBot"], false, "{read}");
         assert_eq!(read["messages"], json!([]));
-        // Being readable gives the old Bot nothing back.
+        // Being readable gives the old Bot nothing back: it cannot be sent to, and it is
+        // not the Bot, so it would not hold SendUser either.
         assert!(!f.owner.bot.is(&old));
+        assert!(
+            f.send(&old).await.is_err(),
+            "an archived former Bot accepts no message"
+        );
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
