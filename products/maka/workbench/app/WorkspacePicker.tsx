@@ -138,7 +138,11 @@ export function WorkspacePicker(props: {
   };
   const load = async (read = location()) => {
     const previous = read.page();
-    if (!owns(read) || read.reading || (previous && (previous.kind === 'roots' || !previous.after)))
+    if (
+      !owns(read) ||
+      read.reading ||
+      (previous && (previous.kind !== 'children' || !previous.after))
+    )
       return;
     read.reading = true;
     loading.set(true);
@@ -175,7 +179,7 @@ export function WorkspacePicker(props: {
         props.changed();
       }
       const rows = new Map(read.entries().map((entry) => [selectionKey(entry.selection), entry]));
-      for (const entry of page.kind === 'roots' ? page.roots : page.children)
+      for (const entry of page.kind === 'children' ? page.children : page.roots)
         rows.set(selectionKey(entry.selection), entry);
       batch(() => {
         read.page.set(page);

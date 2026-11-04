@@ -1037,6 +1037,13 @@ fn the_instructions_name_only_the_tools_the_bot_holds() {
             reads.contains("SessionList / SessionRead"),
             "{language:?}: {reads}"
         );
+        // The workspace lookup is named on its own, not as a session read.
+        assert!(!bare.contains("WorkspaceLookup"), "{language:?}: {bare}");
+        let lookup = bot_prompt(language, &held(&["WorkspaceLookup"]));
+        assert!(
+            lookup.contains("WorkspaceLookup") && lookup.contains("SessionCreate"),
+            "{language:?}: {lookup}"
+        );
         assert!(
             !reads.contains("SessionSend") && !reads.contains("SessionHistory"),
             "{language:?}: {reads}"

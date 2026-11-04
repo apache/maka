@@ -184,9 +184,14 @@ export function installation(
       'Read a conversation transcript to inspect actual delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
     ],
     [
+      'directories',
+      'WorkspaceLookup',
+      'Find the workspace selection for a directory before SessionCreate: kind=path with an absolute path (~ allowed) returns the directory with its selection, or null when the path is outside the configured workspace locations, which are listed as roots. kind=roots lists the locations; kind=children browses one. Selections come only from here or from an existing conversation; rootId and directoryIdentity cannot be derived or guessed.',
+    ],
+    [
       'create',
       'SessionCreate',
-      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
+      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace: a directory selection from WorkspaceLookup, or kind=session to reuse a conversation\'s workspace; never invent rootId or directoryIdentity. Then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
     ],
     [
       'fork',

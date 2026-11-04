@@ -184,8 +184,29 @@ pub async fn query_excluding(
     excluded: Option<std::path::PathBuf>,
 ) -> Result<DirectoryPage, String> {
     tokio::task::spawn_blocking(move || {
-        let Directories::Children { selection, after } = input else {
-            return root_page(&roots);
+        let (selection, after) = match input {
+            Directories::Roots => return root_page(&roots),
+            Directories::Path { path } => {
+                let DirectoryPage::Roots { roots: locations } = root_page(&roots)? else {
+                    unreachable!()
+                };
+                let home = std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .filter(|home| !home.is_empty())
+                    .map(std::path::PathBuf::from);
+                let directory = located(&path, home.as_deref())
+                    .and_then(|path| find(&roots, &path))
+                    .filter(|directory| {
+                        excluded
+                            .as_ref()
+                            .is_none_or(|path| !Path::new(&directory.path).starts_with(path))
+                    });
+                return Ok(DirectoryPage::Path {
+                    directory,
+                    roots: locations,
+                });
+            }
+            Directories::Children { selection, after } => (selection, after),
         };
         let root = root(&roots, &selection.root_id)?;
         let name = selection
@@ -456,30 +477,53 @@ pub async fn selection_at(
         if path.starts_with(&managed) {
             return None;
         }
-        for (index, root) in roots.iter().enumerate() {
-            let Ok(relative) = path.strip_prefix(root.directory.path()) else {
-                continue;
-            };
-            let segments = relative
-                .components()
-                .map(|part| part.as_os_str().to_str().map(str::to_owned))
-                .collect::<Option<Vec<_>>>()?;
-            let Ok(selected) = choice(
-                root,
-                format!("root-{}", index + 1),
-                segments,
-                root.name.clone(),
-            ) else {
-                continue;
-            };
-            if Path::new(&selected.path) == path {
-                return Some(selected.selection);
-            }
-        }
-        None
+        find(&roots, path).map(|directory| directory.selection)
     })
     .await
     .map_err(|_| "agent_directory_unavailable".into())
+}
+
+/// The directory at `path` within the first location that holds it. `path`
+/// is compared as captured, so a path that reaches the directory through
+/// symbolic links is not found.
+fn find(roots: &[Root], path: &Path) -> Option<Directory> {
+    for (index, root) in roots.iter().enumerate() {
+        let Ok(relative) = path.strip_prefix(root.directory.path()) else {
+            continue;
+        };
+        let segments = relative
+            .components()
+            .map(|part| part.as_os_str().to_str().map(str::to_owned))
+            .collect::<Option<Vec<_>>>()?;
+        let name = segments
+            .last()
+            .cloned()
+            .unwrap_or_else(|| root.name.clone());
+        let Ok(selected) = choice(root, format!("root-{}", index + 1), segments, name) else {
+            continue;
+        };
+        if Path::new(&selected.path) == path {
+            return Some(selected);
+        }
+    }
+    None
+}
+
+/// A caller's path as the directory it names: a leading `~` replaced by
+/// `home`, relative paths refused, symbolic links followed. None when nothing
+/// is there.
+fn located(path: &str, home: Option<&Path>) -> Option<std::path::PathBuf> {
+    let path = match path.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(['/', '\\']) => {
+            home?.join(rest.trim_start_matches(['/', '\\']))
+        }
+        _ => std::path::PathBuf::from(path),
+    };
+    if !path.is_absolute() {
+        return None;
+    }
+    let path = path.canonicalize().ok()?;
+    path.is_dir().then_some(path)
 }
 
 #[cfg(all(test, unix))]
@@ -599,6 +643,111 @@ mod tests {
             .err()
             .unwrap(),
             "agent_directory_unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_path_resolves_to_the_same_selection_browsing_reaches() {
+        let temporary = tempfile::tempdir().unwrap();
+        let published = temporary.path().join("published");
+        std::fs::create_dir_all(published.join("code").join("app")).unwrap();
+        std::fs::create_dir_all(temporary.path().join("elsewhere")).unwrap();
+        let roots = open(
+            vec![DirectoryRootSpec {
+                label: "Workspace".into(),
+                path: published.clone(),
+            }],
+            &temporary.path().join("managed"),
+        )
+        .unwrap();
+        async fn browse(roots: &[Root], segments: &[&str]) -> Directory {
+            let DirectoryPage::Roots { roots: entries } =
+                query(roots.to_vec(), Directories::Roots).await.unwrap()
+            else {
+                unreachable!()
+            };
+            let mut directory = entries.into_iter().next().unwrap();
+            for name in segments {
+                let DirectoryPage::Children { children, .. } = query(
+                    roots.to_vec(),
+                    Directories::Children {
+                        selection: directory.selection.clone(),
+                        after: None,
+                    },
+                )
+                .await
+                .unwrap() else {
+                    unreachable!()
+                };
+                directory = children.into_iter().find(|c| c.name == *name).unwrap();
+            }
+            directory
+        }
+        async fn lookup(roots: &[Root], path: String) -> Option<Directory> {
+            let DirectoryPage::Path { directory, roots } =
+                query(roots.to_vec(), Directories::Path { path })
+                    .await
+                    .unwrap()
+            else {
+                unreachable!()
+            };
+            assert_eq!(roots.len(), 1);
+            assert_eq!(roots[0].name, "Workspace");
+            directory
+        }
+        let app = published.join("code").join("app");
+        let found = lookup(&roots, app.to_str().unwrap().into()).await.unwrap();
+        let browsed = browse(&roots, &["code", "app"]).await;
+        assert_eq!(found.selection, browsed.selection);
+        assert_eq!(found.name, "app");
+        assert_eq!(found.path, browsed.path);
+        // The location itself, and a path written with `..` and a trailing slash.
+        let root = lookup(&roots, published.to_str().unwrap().into())
+            .await
+            .unwrap();
+        assert_eq!(root.selection, browse(&roots, &[]).await.selection);
+        let dotted = format!("{}/code/../code/app/", published.display());
+        assert_eq!(
+            lookup(&roots, dotted).await.unwrap().selection,
+            browsed.selection
+        );
+        // Outside the locations, missing, a file, and relative: no directory.
+        for absent in [
+            temporary.path().join("elsewhere").display().to_string(),
+            app.join("missing").display().to_string(),
+            "code/app".to_owned(),
+        ] {
+            assert!(lookup(&roots, absent.clone()).await.is_none(), "{absent}");
+        }
+        std::fs::write(app.join("file.txt"), "x").unwrap();
+        assert!(
+            lookup(&roots, app.join("file.txt").display().to_string())
+                .await
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn a_tilde_stands_for_the_home_directory_only_at_the_start() {
+        let temporary = tempfile::tempdir().unwrap();
+        let home = temporary.path().join("home");
+        std::fs::create_dir_all(home.join("code")).unwrap();
+        let canonical = home.canonicalize().unwrap();
+        assert_eq!(located("~", Some(&home)), Some(canonical.clone()));
+        assert_eq!(located("~/code", Some(&home)), Some(canonical.join("code")));
+        assert_eq!(
+            located("~/code/", Some(&home)),
+            Some(canonical.join("code"))
+        );
+        assert_eq!(located("~/missing", Some(&home)), None);
+        assert_eq!(located("~/code", None), None);
+        // `~user` and a `~` later in the path are not expansions.
+        assert_eq!(located("~someone/code", Some(&home)), None);
+        let literal = home.join("~");
+        std::fs::create_dir(&literal).unwrap();
+        assert_eq!(
+            located(literal.to_str().unwrap(), Some(&home)),
+            Some(canonical.join("~"))
         );
     }
 }

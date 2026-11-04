@@ -64,6 +64,7 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "SessionExecution",
     // Delegation: the Bot may create workers and send to or stop only the
     // conversations it created itself (checked against `parentSessionId`).
+    "WorkspaceLookup",
     "SessionCreate",
     "SessionSend",
     "SessionStop",
@@ -1036,6 +1037,12 @@ const ABILITIES: &[Ability] = &[
         "{}（查找可派发的模型及推理档位）",
         "{}（尋找可派發的模型及推理檔位）",
         "{} (find selectable models and thinking levels for delegation)",
+    ),
+    (
+        &["WorkspaceLookup"],
+        "{}（把目录路径解析成 SessionCreate 可用的工作区选择）",
+        "{}（把目錄路徑解析成 SessionCreate 可用的工作區選擇）",
+        "{} (turn a directory path into the workspace selection SessionCreate takes)",
     ),
     (
         &["SessionCreate", "SessionSend", "SessionStop"],

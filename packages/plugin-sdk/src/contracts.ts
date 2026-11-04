@@ -3764,6 +3764,23 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['kind', 'selection', 'after'],
               },
+              {
+                description:
+                  'The directory at an absolute path (`~` stands for the home directory),\nfound within the configured workspace locations.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'path',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'path'],
+              },
             ],
             $defs: {
               AgentDirectorySelection: {
@@ -3809,6 +3826,35 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'roots'],
+              },
+              {
+                description:
+                  '`directory` is null when the path is not a directory within any\nconfigured location; `roots` lists those locations either way.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'path',
+                  },
+                  directory: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDirectory',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  roots: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentDirectory',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'directory', 'roots'],
               },
               {
                 type: 'object',
@@ -9267,6 +9313,23 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['kind', 'selection', 'after'],
               },
+              {
+                description:
+                  'The directory at an absolute path (`~` stands for the home directory),\nfound within the configured workspace locations.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'path',
+                  },
+                  path: {
+                    type: 'string',
+                    minLength: 1,
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'path'],
+              },
             ],
             $defs: {
               AgentDirectorySelection: {
@@ -9312,6 +9375,35 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['kind', 'roots'],
+              },
+              {
+                description:
+                  '`directory` is null when the path is not a directory within any\nconfigured location; `roots` lists those locations either way.',
+                type: 'object',
+                properties: {
+                  kind: {
+                    type: 'string',
+                    const: 'path',
+                  },
+                  directory: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/AgentDirectory',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  roots: {
+                    type: 'array',
+                    items: {
+                      $ref: '#/$defs/AgentDirectory',
+                    },
+                  },
+                },
+                additionalProperties: false,
+                required: ['kind', 'directory', 'roots'],
               },
               {
                 type: 'object',

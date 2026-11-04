@@ -370,6 +370,12 @@ pub enum Directories {
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
         after: Option<String>,
     },
+    /// The directory at an absolute path (`~` stands for the home directory),
+    /// found within the configured workspace locations.
+    Path {
+        #[schemars(length(min = 1))]
+        path: String,
+    },
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -384,6 +390,13 @@ pub struct Directory {
 #[schemars(rename = "AgentDirectoryPage")]
 pub enum DirectoryPage {
     Roots {
+        roots: Vec<Directory>,
+    },
+    /// `directory` is null when the path is not a directory within any
+    /// configured location; `roots` lists those locations either way.
+    Path {
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Directory>")]
+        directory: Option<Directory>,
         roots: Vec<Directory>,
     },
     Children {

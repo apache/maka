@@ -3314,10 +3314,19 @@ export type AgentDirectories =
       kind: 'children';
       selection: AgentDirectorySelection;
       after: string | null;
+    }
+  | {
+      kind: 'path';
+      path: string;
     };
 export type AgentDirectoryPage =
   | {
       kind: 'roots';
+      roots: AgentDirectory[];
+    }
+  | {
+      kind: 'path';
+      directory: AgentDirectory | null;
       roots: AgentDirectory[];
     }
   | {
