@@ -44,11 +44,17 @@ pub use maka_agent_facts::executor::Selection;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentOarConfiguration")]
 pub struct OarConfiguration {
+    #[serde(default = "oar_enabled")]
+    pub enabled: bool,
     /// Absent selects the worker shipped beside the Maka executable.
     #[serde(default)]
     pub executable: Option<String>,
     #[serde(default)]
     pub args: Vec<String>,
+}
+
+fn oar_enabled() -> bool {
+    true
 }
 
 /// Observations and text; immutable attachments travel in the actual request resources.
@@ -112,6 +118,25 @@ pub struct AttachmentMetadata {
 mod tests {
     use super::*;
     use maka_agent_facts::language::Language;
+
+    #[test]
+    fn oar_enabled_defaults_preserve_old_configuration_and_disabled_launch_settings() {
+        let mut settings: OarConfiguration = serde_json::from_value(serde_json::json!({
+            "executable":"/custom/worker", "args":["--custom"]
+        }))
+        .unwrap();
+        assert!(settings.enabled);
+        settings.enabled = false;
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap(),
+            serde_json::json!({
+                "enabled":false, "executable":"/custom/worker", "args":["--custom"]
+            })
+        );
+        let restored: OarConfiguration =
+            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
+        assert!(!restored.enabled);
+    }
 
     #[test]
     fn persisted_execute_uses_canonical_english_omission_and_exact_chinese_tags() {

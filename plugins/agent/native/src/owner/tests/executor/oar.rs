@@ -312,7 +312,7 @@ async fn native_oar_live_codex_executes_high_and_resumes_the_native_conversation
     tokio::time::timeout(Duration::from_secs(180), async {
         let worker = std::env::var("MAKA_OAR_TEST_WORKER").expect("Set MAKA_OAR_TEST_WORKER to the actual worker under test");
         let f = Fixture::configured("http://127.0.0.1:9/v1",None,None,None,|settings| {
-            settings.oar = Some(maka_agent_api::executor::OarConfiguration {executable:Some(worker),args:vec![]});
+            settings.oar = Some(maka_agent_api::executor::OarConfiguration { enabled: true,executable:Some(worker),args:vec![]});
         }).await;
         let mut create = f.create_input("Live OAR execution").await;
         create["backend"] = json!({"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"gpt-6-astra","thinkingLevel":"high"}}});
@@ -461,6 +461,173 @@ async fn cancelled_single_runtime_query_drains_terminal_and_allows_clean_retirem
         assert_eq!(result["kind"], "ready");
         assert_eq!(result["choice"]["selection"]["selection"]["settings"]["model"], "external-0");
         assert!(listener.accept().now_or_never().is_none());
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn external_agents_disabled_and_inspect_never_start_workers_or_admit_disabled_send() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        for configured_oar in [false, true] {
+            let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+                if configured_oar {
+                    settings.oar.as_mut().unwrap().enabled = false;
+                } else {
+                    settings.oar = None;
+                }
+            })
+            .await;
+            for inspect in [false, true] {
+                let result = f
+                    .query("externalAgents", json!({"inspect":inspect}))
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    result,
+                    json!({
+                        "target":{"source":f.owner.data_source, "path":["oar"]},
+                        "configured":configured_oar,"state":{"kind":"disabled"}
+                    })
+                );
+            }
+            let session = f.create("Disabled external agent").await;
+            let error = f
+                .mutation(2, "send", input(&session, "must not run"), Uuid::new_v4())
+                .await
+                .unwrap_err();
+            assert!(error.contains("agent_executor_unavailable"), "{error}");
+            assert!(listener.accept().now_or_never().is_none());
+            f.app.shutdown().await.unwrap();
+            f.config.shutdown().await.unwrap();
+        }
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let inspected = f
+            .query("externalAgents", json!({"inspect":true}))
+            .await
+            .unwrap();
+        assert_eq!(inspected["state"], json!({"kind":"enabled"}));
+        assert_eq!(inspected["configured"], true);
+        assert!(listener.accept().now_or_never().is_none());
+        let status = f.query("externalAgents", json!({})).await.unwrap();
+        assert_eq!(status["state"]["kind"], "ready");
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut trace, "status").await;
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn external_agents_preserves_all_runtimes_and_refreshes_without_catalog_cache() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        for _ in 0..2 {
+            let result = f.query("externalAgents", json!({})).await.unwrap();
+            assert_eq!(result["state"]["kind"], "ready");
+            let runtimes = result["state"]["runtimes"].as_array().unwrap();
+            assert_eq!(runtimes.len(), 4);
+            assert_eq!(
+                runtimes[0]["authentication"],
+                json!({"kind":"authenticated", "source":"codex login status"})
+            );
+            assert_eq!(runtimes[1]["authentication"]["kind"], "unauthenticated");
+            assert_eq!(runtimes[2]["installation"]["kind"], "not_found");
+            assert_eq!(
+                runtimes[2]["installLines"],
+                json!([{"line":"stable","description":"Stable"}])
+            );
+            assert_eq!(
+                runtimes[3]["installation"],
+                json!({"kind":"error","detail":"Probe failed"})
+            );
+            let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+            packet(&mut trace, "status").await;
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn external_agents_reports_workspace_unavailable_and_workhub_configuration_target() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.workspace_roots.clear()
+        })
+        .await;
+        assert_eq!(
+            f.query("externalAgents", json!({})).await.unwrap()["state"],
+            json!({"kind":"workspace_required"})
+        );
+        assert_eq!(
+            f.query("externalAgents", json!({"inspect":true}))
+                .await
+                .unwrap()["state"],
+            json!({"kind":"enabled"})
+        );
+        assert!(listener.accept().now_or_never().is_none());
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+        let (f, _) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.oar.as_mut().unwrap().executable = Some("/nonexistent/maka-oar-worker".into());
+        })
+        .await;
+        let result = f.query("externalAgents", json!({})).await.unwrap();
+        assert_eq!(result["state"]["kind"], "unavailable");
+        assert!(!result["state"]["message"].as_str().unwrap().is_empty());
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+        let f = Fixture::workhub("http://127.0.0.1:9/v1", workhub::Setup::Coordinator).await;
+        let result = f
+            .query("externalAgents", json!({"inspect":true}))
+            .await
+            .unwrap();
+        assert_eq!(
+            result["target"],
+            json!({"source":f.owner.data_source,"path":["agent","oar"]})
+        );
+        assert_eq!(result["state"], json!({"kind":"disabled"}));
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn external_agents_cancelled_status_settles_without_poisoning_next_query() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.oar.as_mut().unwrap().args.push("--hold-status".into());
+        }).await;
+        let observed = scope(&f.issuer, true);
+        let query = f.owner.external_agents(false, &observed);
+        tokio::pin!(query);
+        let socket = tokio::select! {
+            result = &mut query => panic!("status unexpectedly completed: {}", result.is_ok()),
+            socket = listener.accept() => socket.unwrap().0,
+        };
+        let mut trace = BufReader::new(socket);
+        packet(&mut trace, "status").await;
+        observed.cancellation.cancel();
+        packet(&mut trace, "status_cancelled").await;
+        assert_eq!(serde_json::to_value(query.await.unwrap()).unwrap()["state"]["kind"], "ready");
+        observed.resources.finish().await.unwrap();
+        let query = f.query("externalAgents", json!({}));
+        tokio::pin!(query);
+        let socket = tokio::select! {
+            result = &mut query => panic!("fresh status unexpectedly completed: {}", result.is_ok()),
+            socket = listener.accept() => socket.unwrap().0,
+        };
+        let mut trace = BufReader::new(socket);
+        packet(&mut trace, "status").await;
+        release(&mut trace).await;
+        assert_eq!(query.await.unwrap()["state"]["kind"], "ready");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

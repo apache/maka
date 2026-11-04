@@ -25,20 +25,23 @@ const input = createInterface({ input: process.stdin });
 const commands = input[Symbol.asyncIterator]();
 const read = async () => JSON.parse((await commands.next()).value);
 const request = await read();
-if (request.kind === 'setup' || request.kind === 'catalog') {
+if (request.kind === 'setup' || request.kind === 'catalog' || request.kind === 'status') {
   const trace = connect(Number(process.argv[2]), '127.0.0.1');
   await new Promise((resolve, reject) => {
     trace.once('connect', resolve);
     trace.once('error', reject);
   });
   trace.write(`${JSON.stringify({ phase: request.kind, request, pid: process.pid })}\n`);
-  if (request.kind === 'catalog' && process.argv.includes('--hold-catalog')) {
+  if (
+    (request.kind === 'catalog' && process.argv.includes('--hold-catalog')) ||
+    (request.kind === 'status' && process.argv.includes('--hold-status'))
+  ) {
     const gates = createInterface({ input: trace });
     const gate = gates[Symbol.asyncIterator]();
     const released = await Promise.race([gate.next().then(() => 'released'), read()]);
     if (released !== 'released') {
       if (released.kind !== 'cancel') throw new Error('Expected query cancellation');
-      trace.write(`${JSON.stringify({ phase: 'catalog_cancelled', request })}\n`);
+      trace.write(`${JSON.stringify({ phase: `${request.kind}_cancelled`, request })}\n`);
     }
     gates.close();
   }
@@ -62,17 +65,57 @@ if (request.kind === 'setup' || request.kind === 'catalog') {
       models: { kind: 'unauthenticated', detail: 'Login required' },
     },
   ];
+  const statuses = [
+    {
+      id: 'codex',
+      name: 'Codex',
+      installation: { kind: 'available', version: '1.0' },
+      authentication: { kind: 'authenticated', source: 'codex login status' },
+      models: { kind: 'ready', count: 20 },
+      canInstall: true,
+      installLines: [],
+    },
+    {
+      id: 'antigravity',
+      name: 'Antigravity',
+      installation: { kind: 'available' },
+      authentication: { kind: 'unauthenticated', source: 'native status' },
+      models: { kind: 'unauthenticated', detail: 'Login required' },
+      canInstall: false,
+      installLines: [],
+    },
+    {
+      id: 'missing',
+      name: 'Missing',
+      installation: { kind: 'not_found' },
+      authentication: { kind: 'unknown', detail: 'Not installed' },
+      models: { kind: 'unavailable' },
+      canInstall: true,
+      installLines: [{ line: 'stable', description: 'Stable' }],
+    },
+    {
+      id: 'broken',
+      name: 'Broken',
+      installation: { kind: 'error', detail: 'Probe failed' },
+      authentication: { kind: 'unknown' },
+      models: { kind: 'unavailable' },
+      canInstall: false,
+      installLines: [],
+    },
+  ];
   const value =
-    request.kind === 'setup'
-      ? request.action === 'install'
-        ? { kind: 'installed' }
-        : { kind: 'unsupported', detail: 'Runtime has no installer' }
-      : request.runtime === undefined
-        ? catalogs
-        : (catalogs.find((entry) => entry.runtime === request.runtime) ?? {
-            kind: 'unsupported',
-            detail: 'Unknown runtime',
-          });
+    request.kind === 'status'
+      ? statuses
+      : request.kind === 'setup'
+        ? request.action === 'install'
+          ? { kind: 'installed' }
+          : { kind: 'unsupported', detail: 'Runtime has no installer' }
+        : request.runtime === undefined
+          ? catalogs
+          : (catalogs.find((entry) => entry.runtime === request.runtime) ?? {
+              kind: 'unsupported',
+              detail: 'Unknown runtime',
+            });
   process.stdout.write(`${JSON.stringify({ sequence: 1, kind: request.kind, value })}\n`);
   await new Promise((resolve) => trace.end(resolve));
   trace.destroy();
@@ -102,7 +145,10 @@ if (request.kind === 'setup' || request.kind === 'catalog') {
     observe('before_opened');
     await gate.next();
   }
-  publish({ kind: 'opened', sessionId: request.resume ?? 'native-fixture-session' });
+  publish({
+    kind: 'opened',
+    sessionId: request.resume ?? 'native-fixture-session',
+  });
   if (identityFailure) {
     const cancellation = await read();
     if (cancellation.kind !== 'cancel')
@@ -155,7 +201,10 @@ if (request.kind === 'setup' || request.kind === 'catalog') {
         process.exit(3);
       }
       if (request.message === 'crash') process.exit(3);
-      publish({ kind: 'result', result: { kind: 'completed', text: 'committed output' } });
+      publish({
+        kind: 'result',
+        result: { kind: 'completed', text: 'committed output' },
+      });
     }
     observe('terminal');
     await gate.next();

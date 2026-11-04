@@ -50,3 +50,123 @@ pub struct SetupResult {
     /// The pinned OAR version's native result, including unsupported capabilities.
     pub result: serde_json::Value,
 }
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentExternalAgentsRead")]
+pub struct ExternalAgentsRead {
+    #[serde(default)]
+    pub inspect: bool,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalAgents")]
+pub struct ExternalAgents {
+    pub target: ConfigurationTarget,
+    pub configured: bool,
+    pub state: ExternalAgentsState,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalAgentsTarget")]
+pub struct ConfigurationTarget {
+    pub source: crate::contract::DataSource,
+    pub path: Vec<String>,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalAgentsState")]
+pub enum ExternalAgentsState {
+    Disabled,
+    Enabled,
+    WorkspaceRequired,
+    Unavailable { message: String },
+    Ready { runtimes: Vec<RuntimeRecord> },
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalRuntime")]
+pub struct RuntimeRecord {
+    pub id: String,
+    pub name: String,
+    pub installation: Installation,
+    pub authentication: Authentication,
+    pub models: Models,
+    pub can_install: bool,
+    pub install_lines: Vec<InstallLine>,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalInstallation")]
+pub enum Installation {
+    Available {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+    },
+    NotFound,
+    Unsupported {
+        detail: String,
+    },
+    Error {
+        detail: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalAuthentication")]
+pub enum Authentication {
+    Authenticated {
+        source: String,
+    },
+    Unauthenticated {
+        source: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Unsupported,
+    Unknown {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        source: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        configured: Option<Vec<String>>,
+    },
+    Error {
+        detail: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalModels")]
+pub enum Models {
+    Ready {
+        count: usize,
+    },
+    Unauthenticated {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        detail: Option<String>,
+    },
+    Unsupported {
+        detail: String,
+    },
+    Unavailable,
+    Error {
+        detail: String,
+    },
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalInstallLine")]
+pub struct InstallLine {
+    pub line: String,
+    pub description: String,
+}

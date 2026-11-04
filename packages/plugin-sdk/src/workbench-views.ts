@@ -31,7 +31,7 @@ export interface ConversationShell {
   blocked(): boolean;
   connectionLost(): boolean;
   openSession(sessionId: string | null): Promise<boolean>;
-  openSettings(model?: ModelSelection): void;
+  openSettings(model?: ModelSelection, page?: string): void;
   sidebarShown(): boolean;
   sidebarDocked(): boolean;
   previewDocked(): boolean;
@@ -91,6 +91,7 @@ export interface SettingsRoute {
 }
 
 export interface SettingsViewInput {
+  readonly page?: string;
   opened(): boolean;
   close(): void;
   changed(): void;

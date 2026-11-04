@@ -114,11 +114,12 @@ fn settings_route(endpoint: &str, method: &str) -> bool {
         || (endpoint == "agent"
             && matches!(
                 method,
-                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
+                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer" | "oarSetup"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")
-        || (endpoint == "management" && matches!(method, "setEnabled" | "configure"))
+        || (endpoint == "management"
+            && matches!(method, "setEnabled" | "configure" | "configureBatch"))
         || (endpoint == "authentication" && method == "loginCredential")
 }
 fn settings_owner(operation: &Operation, owner: &ServiceOwner) -> bool {

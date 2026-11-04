@@ -38,6 +38,10 @@ export default {
         authentication: one(sdk.contracts.settingsAuthentication),
         setup: one(sdk.contracts.settingsSetup),
         agent: one(sdk.contracts.agent),
+        agents: {
+          contract: sdk.contracts.agent,
+          cardinality: { kind: 'many', min: 1, max: 2 },
+        } satisfies sdk.Import,
         skills: { contract: sdk.contracts.skillLibrary, cardinality: { kind: 'optional' } },
         management: one(sdk.contracts.deploymentManager),
         receipts: one(sdk.contracts.receiptReader),
@@ -64,6 +68,13 @@ export default {
           title: {
             fallback: 'MCP servers',
             translations: { 'zh-CN': 'MCP 服务器', 'zh-TW': 'MCP 伺服器' },
+          },
+        },
+        'external-agents': {
+          kind: 'settings',
+          title: {
+            fallback: 'External agents',
+            translations: { 'zh-CN': '外部 Agent', 'zh-TW': '外部 Agent' },
           },
         },
         network: {

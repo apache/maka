@@ -1905,6 +1905,7 @@ pub fn contract() -> Contract {
                 ),
                 ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
                 ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
+                ("externalAgents".into(),method::<crate::oar::ExternalAgentsRead, crate::oar::ExternalAgents>(MethodMode::Query)),
                 ("oarSetup".into(),method::<crate::oar::Setup, crate::oar::SetupResult>(MethodMode::Mutation)),
                 (
                     "executorSetup".into(),

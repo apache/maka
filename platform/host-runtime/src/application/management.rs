@@ -532,6 +532,7 @@ impl Handler for Manager {
                 "readDocument" => manager.read_document(input).await,
                 "readSettings" => manager.read_settings(input).await,
                 "configure" => manager.configure(input).await,
+                "configureBatch" => manager.configure_batch(input).await,
                 "bindingCandidates" => manager.binding_candidates(input).await,
                 "packageSettings" => manager.package_settings(input).await,
                 "editComposition" => manager.edit_composition(input).await,

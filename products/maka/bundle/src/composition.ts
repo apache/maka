@@ -158,6 +158,7 @@ const defaultUiAliases = Object.fromEntries(
 ) as UiAliases;
 const settingsUiImports = [
   'agent',
+  'agents',
   'settings',
   'authentication',
   'setup',
@@ -284,6 +285,7 @@ function settingsComposition(configuration: CompositionConfiguration) {
         'setEnabled',
         'readSettings',
         'configure',
+        'configureBatch',
         'bindingCandidates',
         'packageSettings',
         'editComposition',
@@ -328,7 +330,10 @@ export function composition(configuration: CompositionConfiguration): Applicatio
     receipts: [{ kind: 'instance' as const, path: ['receipts'], export: 'Receipts' }],
   };
   source.host.instances['conversations-ui']!.bindings = bindings;
-  source.host.instances['settings-ui']!.bindings = selectUiBindings(bindings, settingsUiImports);
+  source.host.instances['settings-ui']!.bindings = selectUiBindings(
+    { ...bindings, agents: [...(bindings.agent ?? []), ...(bindings.coordinator ?? [])] },
+    settingsUiImports,
+  );
   source.host.instances['workspace-files-ui']!.bindings = selectUiBindings(
     bindings,
     workspaceUiImports,

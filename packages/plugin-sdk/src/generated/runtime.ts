@@ -48,6 +48,7 @@ export type RuntimeProtocol =
   | InstanceSettingsRead
   | InstanceSettingsPage
   | InstanceConfigure
+  | InstanceConfigureBatch
   | BindingCandidatesRead
   | BindingCandidatesPage
   | PackageSettingsRead
@@ -89,6 +90,8 @@ export type RuntimeProtocol =
   | AgentGlobalInstructionsUpdated
   | AgentExecutorsRead
   | AgentExecutors
+  | AgentExternalAgentsRead
+  | AgentExternalAgents
   | AgentOarSetup
   | AgentOarSetupAction
   | AgentOarSetupResult
@@ -911,6 +914,83 @@ export type AgentGlobalInstructionsUpdated =
     }
   | {
       kind: 'unavailable';
+    };
+export type AgentExternalAgentsState =
+  | {
+      kind: 'disabled';
+    }
+  | {
+      kind: 'enabled';
+    }
+  | {
+      kind: 'workspace_required';
+    }
+  | {
+      kind: 'unavailable';
+      message: string;
+    }
+  | {
+      kind: 'ready';
+      runtimes: AgentExternalRuntime[];
+    };
+export type AgentExternalInstallation =
+  | {
+      kind: 'available';
+      version?: string | null;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'unsupported';
+      detail: string;
+    }
+  | {
+      kind: 'error';
+      detail: string;
+    };
+export type AgentExternalAuthentication =
+  | {
+      kind: 'authenticated';
+      source: string;
+    }
+  | {
+      kind: 'unauthenticated';
+      source: string;
+      detail?: string | null;
+    }
+  | {
+      kind: 'unsupported';
+    }
+  | {
+      kind: 'unknown';
+      detail?: string | null;
+      source?: string | null;
+      configured?: string[] | null;
+    }
+  | {
+      kind: 'error';
+      detail: string;
+    };
+export type AgentExternalModels =
+  | {
+      kind: 'ready';
+      count: number;
+    }
+  | {
+      kind: 'unauthenticated';
+      detail?: string | null;
+    }
+  | {
+      kind: 'unsupported';
+      detail: string;
+    }
+  | {
+      kind: 'unavailable';
+    }
+  | {
+      kind: 'error';
+      detail: string;
     };
 export type AgentOarSetupAction =
   | {
@@ -5116,6 +5196,20 @@ export interface SettingChange {
    */
   value?: SettingValue | null;
 }
+export interface InstanceConfigureBatch {
+  expectedRevision: number;
+  /**
+   * @minItems 1
+   */
+  edits: [InstanceConfigureEdit, ...InstanceConfigureEdit[]];
+}
+export interface InstanceConfigureEdit {
+  instance: InstanceId;
+  /**
+   * @minItems 1
+   */
+  changes: [SettingChange, ...SettingChange[]];
+}
 export interface BindingCandidatesRead {
   source?: DeploymentRef | null;
   consumer: BindingConsumer;
@@ -5354,6 +5448,7 @@ export interface ExecutorSetupBinding {
  * Explicit opt-in to OAR's own default permissions and native agent tools.
  */
 export interface AgentOarConfiguration {
+  enabled?: boolean;
   /**
    * Absent selects the worker shipped beside the Maka executable.
    */
@@ -5574,6 +5669,39 @@ export interface AgentExecutorsRead {}
 export interface AgentExecutors {
   executors: string[];
   setup: string[];
+}
+export interface AgentExternalAgentsRead {
+  inspect?: boolean;
+}
+export interface AgentExternalAgents {
+  target: AgentExternalAgentsTarget;
+  configured: boolean;
+  state: AgentExternalAgentsState;
+}
+export interface AgentExternalAgentsTarget {
+  source: AgentDataSource;
+  path: string[];
+}
+/**
+ * Stable business-data origin, independent of package or activation revisions.
+ */
+export interface AgentDataSource {
+  stateDomain: string;
+  deployment: string;
+  namespace: InstanceId;
+}
+export interface AgentExternalRuntime {
+  id: string;
+  name: string;
+  installation: AgentExternalInstallation;
+  authentication: AgentExternalAuthentication;
+  models: AgentExternalModels;
+  canInstall: boolean;
+  installLines: AgentExternalInstallLine[];
+}
+export interface AgentExternalInstallLine {
+  line: string;
+  description: string;
 }
 /**
  * Only OAR's declared installation operations; not an agent registry or login shim.
@@ -6102,14 +6230,6 @@ export interface AgentSession {
 export interface AgentSessionBranch {
   sessionId: string;
   position: AgentForkPosition;
-}
-/**
- * Stable business-data origin, independent of package or activation revisions.
- */
-export interface AgentDataSource {
-  stateDomain: string;
-  deployment: string;
-  namespace: InstanceId;
 }
 export interface BindingStamp {
   id: string;

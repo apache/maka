@@ -147,7 +147,7 @@ type OverlayTarget = {
   // `within`: the search starts in the open conversation only.
   | { kind: 'search'; within?: boolean }
   | { kind: 'models'; focusOnClose?: 'composer' }
-  | { kind: 'settings'; model?: ModelSelection }
+  | { kind: 'settings'; model?: ModelSelection; page?: string }
   | {
       kind: 'goal';
       objective?: string;
@@ -580,7 +580,7 @@ export function createConversationUi(
         : request;
     if (target.kind === 'settings') {
       overlay.set(null);
-      shell()?.openSettings(target.model);
+      shell()?.openSettings(target.model, target.page);
       return;
     }
     status.set('');
@@ -604,10 +604,12 @@ export function createConversationUi(
     sessionId,
     instance,
     model,
+    page,
   }: {
     sessionId: string;
     instance: number;
     model?: ModelSelection;
+    page?: string;
   }) => {
     if (
       alive &&
@@ -615,7 +617,7 @@ export function createConversationUi(
       handle()?.sessionId === sessionId &&
       closeOverlay(instance)
     )
-      open({ kind: 'settings', sessionId, model });
+      open({ kind: 'settings', sessionId, model, page });
   };
   const chooseModel = async (
     owner: ConversationHandle,
@@ -2214,10 +2216,10 @@ export function createConversationUi(
                         pendingModelInstance.set(null);
                         return true;
                       }}
-                      manage={({ instance, model }) => {
+                      manage={({ instance, model, page }) => {
                         if (pendingModelInstance() !== instance) return;
                         pendingModelInstance.set(null);
-                        shell()?.openSettings(model);
+                        shell()?.openSettings(model, page);
                       }}
                       select={async (_instance, backend) => {
                         if (pendingSending()) return;

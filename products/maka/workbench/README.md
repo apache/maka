@@ -108,3 +108,11 @@ For a new icon, add both fields and prefer a recognizable text symbol without
 private-use font codepoints. Check it in terminal context for clipping, alignment
 and meaning before changing an existing glyph; Lucide has no automatic Unicode
 equivalent.
+
+## External agents
+
+Open **Settings → External agents**, or choose **External agents** in the model picker. Enable only after reviewing and confirming that external agents use their own permissions, tools and existing accounts outside the Maka session sandbox. This does not widen ordinary plugin, Code Mode or Computer Use permissions.
+
+The page shows installation, native sign-in and model-discovery status, including unavailable, unsupported and unknown results. Sign in through the vendor’s own login flow, then refresh; Maka does not copy or manage these credentials. For supported installers, review the vendor installation plan and confirm installation separately. Nothing installs or updates automatically.
+
+Enabling updates the actual conversation Agent and WorkHub coordinator together in one source revision. Disabling preserves launch settings and does not uninstall or sign out; admitted work retains Maka-owned settlement. No deployment-file editing is required.
