@@ -150,7 +150,7 @@ pub async fn seed_due_model_retry(
                 .await?,
         );
         let source = model_attempt::RequestSource::from(view.as_ref());
-        let surface = Surface::capture(&request_tools, &inner.shared.model, &input, &view)?;
+        let surface = Surface::capture(&request_tools, &inner.shared.model, &input)?;
         retained_prompt = Some(
             model_attempt::prompt(
                 &inner,
@@ -184,6 +184,7 @@ pub async fn seed_due_model_retry(
             definitions,
             surface.max_output_tokens,
             ModelPurpose::Main,
+            Some(&source),
         )?;
         let input_digest = prepared.input_digest.clone();
         let step_id = "fixture-original".to_owned();

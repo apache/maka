@@ -279,7 +279,6 @@ async fn read_response(
             }
             .provider(
                 super::super::error::http_body_error(status, message),
-                false,
                 retry_at,
             )
         };
@@ -320,11 +319,7 @@ async fn read_response(
                     quota_scope,
                     ..Default::default()
                 }
-                .provider(
-                    super::super::error::http_error(status, &bytes),
-                    false,
-                    retry_at,
-                ));
+                .provider(super::super::error::http_error(status, &bytes), retry_at));
             }
             let message = value["error"]["message"]
                 .as_str()
@@ -339,11 +334,7 @@ async fn read_response(
             quota_scope,
             ..Default::default()
         }
-        .provider(
-            super::super::error::http_error(status, &bytes),
-            false,
-            retry_at,
-        ));
+        .provider(super::super::error::http_error(status, &bytes), retry_at));
     }
     let mut sse = maka_provider_protocol::responses::sse::Sse::default();
     let mut received_event = false;
@@ -457,7 +448,7 @@ fn failure(error: super::Error, quota_scope: QuotaScope) -> ModelError {
                 unsafe_replay: !replay_safe,
                 ..Default::default()
             };
-            match evidence.provider(*error, false, None) {
+            match evidence.provider(*error, None) {
                 ModelError::Provider(failure) => {
                     ModelError::Provider(failure.with_retained_output(retained_output_safe))
                 }
@@ -668,6 +659,7 @@ mod upload_settlement_tests {
                 prompt: Prompt::from_messages(vec![Message::user("hello")])
                     .with_instruction_source(PromptInstructions::empty().with_owner(owner)),
                 tools: vec![],
+                tool_choice: Default::default(),
                 provider_options: serde_json::json!({}),
                 max_output_tokens: None,
             };

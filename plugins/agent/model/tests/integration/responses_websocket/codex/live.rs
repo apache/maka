@@ -91,6 +91,7 @@ async fn live_luna_subscription_streams_and_confirms_canonical_ws_continuation()
                 provider: provider.clone(),
                 prompt: prompt.clone().into(),
                 tools: vec![],
+                tool_choice: Default::default(),
                 provider_options: json!({"openai":{"reasoningEffort":"low"}}),
                 max_output_tokens: Some(128_000),
             };
@@ -172,6 +173,7 @@ async fn live_luna_subscription_http_decodes_the_stream_without_a_content_type_h
                     provider: provider(),
                     prompt: prompt.into(),
                     tools: vec![],
+                    tool_choice: Default::default(),
                     provider_options: json!({"openai":{"reasoningEffort":"low"}}),
                     max_output_tokens: Some(128_000),
                 },

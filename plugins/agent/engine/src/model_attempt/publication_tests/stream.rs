@@ -145,6 +145,7 @@ async fn ready_with_cleanup(
         },
         prompt: Prompt::from_messages(vec![Message::user("fixture")]),
         tools: Vec::new(),
+        tool_choice: Default::default(),
         provider_options: serde_json::json!({}),
         max_output_tokens: None,
     };

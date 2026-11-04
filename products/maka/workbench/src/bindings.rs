@@ -104,6 +104,8 @@ impl ApplicationClient {
             Self::Root => owner.client.refresh().await,
             Self::Ui(services) => {
                 owner.refresh_ui(serde_json::json!({})).await?;
+                #[cfg(debug_assertions)]
+                eprintln!("UI refresh: capture services");
                 services.client().await.map(drop)
             }
         }
@@ -207,13 +209,19 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 
 impl Owner {
     async fn refresh_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
+        #[cfg(debug_assertions)]
+        eprintln!("UI refresh: root catalogue");
         self.client.refresh().await?;
+        #[cfg(debug_assertions)]
+        eprintln!("UI refresh: readUi");
         require_contract(
             "management",
             "readUi",
             &self.client.describe("management").await?.contract,
         )?;
         let value = self.client.query("management", "readUi", input).await?;
+        #[cfg(debug_assertions)]
+        eprintln!("UI refresh: observe catalogue");
         self.plugins
             .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
         Ok(value)

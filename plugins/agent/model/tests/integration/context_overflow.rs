@@ -110,8 +110,11 @@ async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() 
             assert!(matches!(failure(kind,200,"text/event-stream",sse(&[frame])).await,
                 ModelError::ContextOverflow { observed_output: false }));
         }
-        for body in [json!({"error":{"message":"context length rejected"}}).to_string(), String::new()] {
-            assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,413,"application/json",body).await,ModelError::Http { status: 413, .. }));
+        assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,413,"application/json",
+            json!({"error":{"message":"context length rejected"}}).to_string()).await,ModelError::Http { status: 413, .. }));
+        for status in [400, 413] {
+            assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,status,"application/json",String::new()).await,
+                ModelError::ContextOverflow { observed_output: false }));
         }
         for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiResponses,
             ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::Anthropic] {
@@ -189,6 +192,18 @@ async fn http_diagnostics_preserve_only_structured_messages_across_native_famili
             let ModelError::Http { message, .. } = error else { panic!("HTTP rejection must remain terminal") };
             assert_eq!(message.as_deref(), expected_message);
         }
+        let empty_auth = failure(kind.clone(), 401, "application/json", String::new()).await;
+        assert_eq!(
+            empty_auth.to_string(),
+            "model HTTP request failed (status 401)"
+        );
+        assert!(matches!(
+            empty_auth,
+            ModelError::Http {
+                status: 401,
+                message: None
+            }
+        ));
     }
 }
 
@@ -229,6 +244,140 @@ async fn retry_advice_survives_all_http_adapter_families() {
                 (before + delay..=maka_model::ProviderFailure::now_unix_ms() + delay).contains(&at)
             );
             assert_eq!(failure.message(), "quota reset is later");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compatible_provider_evidence_recovers_overflow_without_mistaking_throttling_or_parameters()
+{
+    for body in [
+        json!({"error":{"message":"Input token count 200001 exceeds the maximum 200000"}})
+            .to_string(),
+        json!({"error":{"type":"api_error","message":"prompt is too long: 205000 tokens > 200000 maximum"}})
+            .to_string(),
+        json!({"error":{"message":"upstream rejected", "metadata":{"raw":"Prompt 超长"}}})
+            .to_string(),
+        json!({"response":{"error":{"type":"model_context_window_exceeded"}}}).to_string(),
+        json!({"error":{"innererror":{"code":"context_length_exceeded"}}}).to_string(),
+        json!({"error":{"message":"prompt is too long"},"metadata":"x".repeat(70_000)}).to_string(),
+    ] {
+        let error = failure(
+            ProviderKind::OpenaiCompatible {
+                name: "fixture".into(),
+            },
+            400,
+            "application/json",
+            body,
+        )
+        .await;
+        assert!(
+            matches!(
+                error,
+                ModelError::ContextOverflow {
+                    observed_output: false
+                }
+            ),
+            "{error}"
+        );
+    }
+    for kind in [
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        ProviderKind::OpenaiResponses,
+    ] {
+        let envelope =
+            json!({"error":{"message":"Input token count 200001 exceeds the maximum 200000"}})
+                .to_string();
+        assert!(matches!(
+            failure(kind.clone(), 200, "application/json", envelope).await,
+            ModelError::ContextOverflow {
+                observed_output: false
+            }
+        ));
+        let non_error = json!({"id":"reply","error":null,"choices":[{"message":{"role":"assistant","content":"prompt is too long"}}]}).to_string();
+        assert!(matches!(
+            failure(kind, 200, "application/json", non_error).await,
+            ModelError::Adapter(_)
+        ));
+    }
+    let sse_rate_limit = failure(
+        ProviderKind::Anthropic,
+        200,
+        "text/event-stream",
+        sse(&[json!({"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your token limit (too many tokens)."}})]),
+    )
+    .await;
+    assert!(
+        matches!(sse_rate_limit, ModelError::Provider(ref failure) if failure.reason() == maka_model::ProviderFailureReason::RateLimit),
+        "{sse_rate_limit}"
+    );
+    let image = failure(
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        400,
+        "application/json",
+        json!({"error":{"innererror":{"code":"image_size_exceeded"},"message":"Image exceeds the limit of 5242880 bytes"}}).to_string(),
+    )
+    .await;
+    assert!(
+        matches!(image, ModelError::ImageInputRejected { code: Some(ref code), .. } if code == "image_size_exceeded"),
+        "{image}"
+    );
+    let quota = failure(
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        400,
+        "application/json",
+        json!({"error":{"code":"insufficient_quota","message":"Billing quota: token limit exceeded"}}).to_string(),
+    )
+    .await;
+    assert!(
+        matches!(quota, ModelError::Provider(ref failure) if failure.reason() == maka_model::ProviderFailureReason::QuotaExhausted),
+        "{quota}"
+    );
+    for (status, body, throttled) in [
+        (
+            429,
+            json!({"error":{"message":"too many tokens per day, please wait"}}),
+            true,
+        ),
+        (
+            400,
+            json!({"__type":"aws#ThrottlingException", "message":"too many tokens"}),
+            true,
+        ),
+        (
+            400,
+            json!({"error":{"message":"max_tokens must be less than 8192"}}),
+            false,
+        ),
+        (
+            400,
+            json!({"error":{"message":"invalid request parameter"}}),
+            false,
+        ),
+    ] {
+        let error = failure(
+            ProviderKind::OpenaiChatCompletions,
+            status,
+            "application/json",
+            body.to_string(),
+        )
+        .await;
+        if throttled {
+            assert!(
+                matches!(error, ModelError::Provider(ref failure) if failure.reason() == maka_model::ProviderFailureReason::RateLimit),
+                "{error}"
+            );
+        } else {
+            assert!(
+                matches!(error, ModelError::Http { status: 400, .. }),
+                "{error}"
+            );
         }
     }
 }

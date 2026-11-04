@@ -33,13 +33,20 @@ use unicode_normalization::UnicodeNormalization;
 
 pub(crate) mod maintenance;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExcludedTurnTail {
+    pub session_id: String,
+    pub turn_id: String,
+    pub covered_through: u64,
+}
+
 #[derive(Clone)]
 pub struct SearchQuery {
     pub terms: Vec<String>,
     pub session_id: Option<String>,
     pub since: Option<u64>,
     pub until: Option<u64>,
-    pub exclude: Option<(String, String)>,
+    pub exclude: Option<ExcludedTurnTail>,
     pub limit: Option<usize>,
 }
 
@@ -200,7 +207,7 @@ fn literal_density(
         0.0
     } else {
         check(cancellation)?;
-        coverage / folded.chars().count() as f64
+        coverage / (folded.chars().count() as f64).sqrt()
     };
     check(cancellation)?;
     Ok((matched, score))
@@ -208,6 +215,7 @@ fn literal_density(
 
 #[derive(Clone)]
 struct Rank {
+    matched_terms: usize,
     score: f64,
     timestamp: u64,
     message_id: String,
@@ -217,6 +225,7 @@ struct Rank {
 impl Rank {
     fn of(hit: &SearchHit) -> Self {
         Self {
+            matched_terms: hit.matched_terms.len(),
             score: hit.score,
             timestamp: hit.timestamp,
             message_id: hit.message_id.clone(),
@@ -242,8 +251,9 @@ impl PartialOrd for Rank {
 impl Ord for Rank {
     fn cmp(&self, other: &Self) -> Ordering {
         other
-            .score
-            .total_cmp(&self.score)
+            .matched_terms
+            .cmp(&self.matched_terms)
+            .then_with(|| other.score.total_cmp(&self.score))
             .then_with(|| other.timestamp.cmp(&self.timestamp))
             .then_with(|| self.message_id.cmp(&other.message_id))
             .then_with(|| self.session_id.cmp(&other.session_id))
@@ -306,7 +316,12 @@ const VISIBLE:&str="CROSS JOIN root_control.session_routes r ON r.session_id=s.i
     WHERE r.partition=?1 AND r.ready=1 AND r.visible=1 AND instr(s.id,?2)=1
     AND NOT EXISTS(SELECT 1 FROM session_retirements retired WHERE retired.session_id=s.id AND retired.remove_session=1)";
 
-fn hit(row: &rusqlite::Row<'_>, through: u64) -> Result<SearchHit, StoreError> {
+fn hit(
+    row: &rusqlite::Row<'_>,
+    body: String,
+    attachments: Vec<AttachmentRef>,
+    through: u64,
+) -> Result<SearchHit, StoreError> {
     let role: String = row.get(6)?;
     let role = match role.as_str() {
         "user" => Role::User,
@@ -317,7 +332,6 @@ fn hit(row: &rusqlite::Row<'_>, through: u64) -> Result<SearchHit, StoreError> {
         "turn_state" | "model_interruption" => Role::Failure,
         _ => return Err(invalid("unsupported history search role")),
     };
-    let attachments: String = row.get(8)?;
     Ok(SearchHit {
         session_id: row.get(0)?,
         message_id: row.get(1)?,
@@ -328,33 +342,12 @@ fn hit(row: &rusqlite::Row<'_>, through: u64) -> Result<SearchHit, StoreError> {
         turn_id: row.get(4)?,
         timestamp: crate::sequence_number(row.get(5)?)?,
         role,
-        body: row.get(7)?,
-        attachments: serde_json::from_str(&attachments)?,
+        body,
+        attachments,
         matched_terms: Vec::new(),
         score: 0.0,
         through,
     })
-}
-
-fn render_hit(
-    db: &RawConnection,
-    session: &str,
-    source: i64,
-    item: i64,
-    message: &maka_presentation::Message,
-    through: u64,
-) -> Result<SearchHit, StoreError> {
-    let query = format!(
-        "WITH source(payload) AS (VALUES(?4)) SELECT {COLUMNS},{},
-             CASE WHEN d.role='user' THEN COALESCE(json_extract(payload,'$.attachments'),'[]') ELSE '[]' END
-         FROM transcript_directory d,source
-         WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3",
-        crate::transcript::directory::RECALL_BODY,
-    );
-    let payload = serde_json::to_vec(message)?;
-    let mut statement = db.prepare_cached(&query)?;
-    let mut rows = statement.query(params![session, source, item, payload])?;
-    hit(rows.next()?.ok_or(StoreError::TranscriptConflict)?, through)
 }
 
 fn fence(db: &RawConnection) -> Result<u64, StoreError> {
@@ -433,12 +426,13 @@ fn search_on_handle(
          FROM recall_terms CROSS JOIN transcript_directory d ON d.rowid=recall_terms.rowid CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
          AND recall_terms MATCH ?3 AND (?4 IS NULL OR d.session_id=?4)
          AND (?5 IS NULL OR d.timestamp>=?5) AND (?6 IS NULL OR d.timestamp<=?6)
-         AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,''))
-         AND d.source_sequence<=?9
-         AND NOT EXISTS(SELECT 1 FROM transcript_failures f WHERE f.session_id=d.session_id AND f.source_sequence<=?9)
+         AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,'') AND d.source_sequence>COALESCE(?9,0))
+         AND d.source_sequence<=?10
+         AND NOT EXISTS(SELECT 1 FROM transcript_failures f WHERE f.session_id=d.session_id AND f.source_sequence<=?10)
          ORDER BY d.session_id,d.source_sequence,d.item_index"
     );
     let exclude = input.exclude.as_ref();
+    let exclude_through = exclude.map(|x| number(x.covered_through)).transpose()?;
     let mut statement = db.prepare_cached(&query)?;
     let mut rows = statement.query(params![
         partition as i64,
@@ -447,8 +441,9 @@ fn search_on_handle(
         input.session_id,
         input.since.map(number).transpose()?,
         input.until.map(number).transpose()?,
-        exclude.map(|x| x.0.as_str()),
-        exclude.map(|x| x.1.as_str()),
+        exclude.map(|x| x.session_id.as_str()),
+        exclude.map(|x| x.turn_id.as_str()),
+        exclude_through,
         through_sql,
     ])?;
     let mut ranked = Ranked::new(input.limit);
@@ -474,18 +469,24 @@ fn search_on_handle(
                 })
             })
             .ok_or(StoreError::TranscriptConflict)?;
-        let mut found = render_hit(db, &key.0, source, item, &rendered.message, through)?;
-        let folded = fold(&found.body);
+        let body = maintenance::body(db, &rendered.message.content)?;
+        let folded = fold(&body);
         let (matched_terms, score) = literal_density(&folded, &terms, cancellation)?;
         if matched_terms.is_empty() {
             continue;
         }
+        let mut found = hit(
+            row,
+            body.into_owned(),
+            maintenance::attachments(&rendered.message.content),
+            through,
+        )?;
         found.matched_terms = matched_terms;
         found.score = score
-            * if found.role == Role::ToolResult {
-                0.5
-            } else {
-                1.0
+            * match found.role {
+                Role::ToolCall => 0.75,
+                Role::ToolResult => 0.5,
+                _ => 1.0,
             };
         ranked.push(found);
     }
@@ -506,7 +507,7 @@ fn context_on_handle(
     before: usize,
     after: usize,
     through: Option<u64>,
-    exclude: Option<(String, String)>,
+    exclude: Option<ExcludedTurnTail>,
     cancellation: &CancellationToken,
 ) -> Result<SearchContext, StoreError> {
     check(cancellation)?;
@@ -528,11 +529,12 @@ fn context_on_handle(
         return Err(invalid("history context source is incomplete"));
     }
     let exclusion = exclude.as_ref();
+    let exclusion_through = exclusion.map(|x| number(x.covered_through)).transpose()?;
     let query = format!(
         "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d
          CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
          AND d.session_id=?3 AND d.message_id=?4 AND d.source_sequence<=?5
-         AND NOT(d.session_id=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,''))"
+         AND NOT(d.session_id=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,'') AND d.source_sequence>COALESCE(?8,0))"
     );
     let anchor: (i64, i64, String) = db
         .prepare_cached(&query)?
@@ -543,8 +545,9 @@ fn context_on_handle(
                 session,
                 message,
                 through_sql,
-                exclusion.map(|x| x.0.as_str()),
-                exclusion.map(|x| x.1.as_str())
+                exclusion.map(|x| x.session_id.as_str()),
+                exclusion.map(|x| x.turn_id.as_str()),
+                exclusion_through,
             ],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
@@ -561,7 +564,7 @@ fn context_on_handle(
              CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
              AND d.session_id=?3 AND d.source_sequence<=?4
              AND (d.source_sequence,d.item_index){comparison}(?5,?6)
-             AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,''))
+             AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,'') AND d.source_sequence>COALESCE(?9,0))
              AND d.context_eligible=1
              ORDER BY d.source_sequence {order},d.item_index {order}"
         );
@@ -580,8 +583,9 @@ fn context_on_handle(
             through_sql,
             anchor.0,
             anchor.1,
-            exclusion.map(|x| x.0.as_str()),
-            exclusion.map(|x| x.1.as_str())
+            exclusion.map(|x| x.session_id.as_str()),
+            exclusion.map(|x| x.turn_id.as_str()),
+            exclusion_through,
         ])?;
         let mut seen = 0;
         while let Some(row) = rows.next()? {
@@ -598,11 +602,7 @@ fn context_on_handle(
         }
     }
     let document_query = format!(
-        "WITH source(payload) AS (VALUES(?4))
-                 SELECT d.session_id,d.message_id,d.source_sequence,d.item_index,d.turn_id,d.timestamp,d.role,{},
-                    CASE WHEN d.role='user' THEN COALESCE(json_extract(payload,'$.attachments'),'[]') ELSE '[]' END
-                 FROM transcript_directory d,source WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3",
-        crate::transcript::directory::RECALL_BODY,
+        "SELECT {COLUMNS} FROM transcript_directory d WHERE d.session_id=?1 AND d.source_sequence=?2 AND d.item_index=?3"
     );
     let mut rendered = BTreeMap::new();
     let sources: BTreeSet<_> = selected.keys().map(|(source, _)| *source).collect();
@@ -620,11 +620,12 @@ fn context_on_handle(
             if message_id != &row.message.id {
                 return Err(StoreError::TranscriptConflict);
             }
-            let payload = serde_json::to_vec(&row.message)?;
+            let body = maintenance::body(db, &row.message.content)?.into_owned();
+            let attachments = maintenance::attachments(&row.message.content);
             let mut statement = db.prepare_cached(&document_query)?;
-            let mut rows = statement.query(params![session, key.0, key.1, payload])?;
+            let mut rows = statement.query(params![session, key.0, key.1])?;
             let found = rows.next()?.ok_or(StoreError::TranscriptConflict)?;
-            rendered.insert(key, hit(found, through)?);
+            rendered.insert(key, hit(found, body, attachments, through)?);
         }
     }
     if rendered.len() != selected.len() {
@@ -731,7 +732,7 @@ impl EventLog {
         before: usize,
         after: usize,
         through: Option<u64>,
-        exclude: Option<(String, String)>,
+        exclude: Option<ExcludedTurnTail>,
         cancellation: CancellationToken,
     ) -> Result<SearchContext, StoreError> {
         self.validate_root()?;

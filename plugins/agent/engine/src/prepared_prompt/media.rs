@@ -744,6 +744,7 @@ pub(super) async fn fit_request(
             provider: provider.clone(),
             prompt: prompt.model(),
             tools: tools.to_vec(),
+            tool_choice: Default::default(),
             provider_options: options.clone(),
             max_output_tokens,
         };

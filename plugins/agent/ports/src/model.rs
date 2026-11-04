@@ -26,6 +26,7 @@ pub use maka_agent_facts::model::request::Credentials;
 pub use maka_agent_facts::model::request::Provider;
 pub use maka_agent_facts::model::request::ProviderKind;
 pub use maka_agent_facts::model::request::Request;
+pub use maka_agent_facts::model::request::ToolChoiceMode;
 pub use maka_agent_facts::model::retry_transport::RetryTransportPhase;
 use maka_capabilities::http;
 use serde::{Deserialize, Serialize};

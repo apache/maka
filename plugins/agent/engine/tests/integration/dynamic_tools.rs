@@ -108,7 +108,7 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
                     } else {
                         vec![call("search", "exec", json!({"code":"const tool = ALL_TOOLS.find(t => t.name === 'echo'); text(tool.description); text(await tools[tool.name]({n:1}));"}))]
                     };
-                    respond_tools(&mut socket, calls, 10).await;
+                    respond_tools(&mut socket, calls, 1_000).await;
                     let (mut socket, _) = listener.accept().await.unwrap();
                     let second = fixture::read_request(&mut socket).await;
                     let definitions = visible(&second, mode);
@@ -121,7 +121,7 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
                     let call = if mode == ToolMode::Direct {
                         call("use", "echo", json!({"n":2}))
                     } else { call("use", "exec", json!({"code":"text(await tools.echo({n:2}));"})) };
-                    respond_tools(&mut socket, vec![call], 200).await;
+                    respond_tools(&mut socket, vec![call], 100_000).await;
                     let mut summaries = 0;
                     let mut main = None;
                     while summaries < 1 || main.is_none() {
@@ -161,7 +161,7 @@ async fn discovery_defers_direct_admission_but_only_defers_descriptions_in_code_
                 input.configuration.tool_mode = mode;
                 // Exercise measured-usage compaction, without making the
                 // discovery prompt itself exceed the provider input capacity.
-                input.context = Some(ModelRequestContext { operation: maka_agent_facts::context::ModelOperation::Inference, codex: None, provider_id:"openai".into(), context_window:Some(64_000), declared_window:Some(210), model_context_window:None });
+                input.context = Some(ModelRequestContext { operation: maka_agent_facts::context::ModelOperation::Inference, codex: None, provider_id:"openai".into(), context_window:Some(170_000), declared_window:Some(110_000), model_context_window:Some(200_000) });
                 input.work = RunWork::Message { source_messages:Vec::new(), message:"Use echo".into(), tools:catalog };
                 let engine = fixture::engine();
                 engine.run(log.store(), input, CancellationToken::new()).await.unwrap();

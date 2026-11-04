@@ -60,6 +60,37 @@ impl Query {
 }
 #[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(rename = "RecallToolQuery")]
+pub struct ToolQuery {
+    #[schemars(length(min = 1), inner(length(min = 1)))]
+    pub terms: Vec<String>,
+    /// An explicit caller-selected result budget; omission retains all matching results.
+    #[schemars(range(min = 1))]
+    pub limit: Option<usize>,
+    #[schemars(length(min = 1))]
+    pub session_id: Option<String>,
+    pub since: Option<u64>,
+    pub until: Option<u64>,
+    /// Neighboring messages before each anchor (default 4; pass 0 with after: 0 for anchor-only scan).
+    pub before: Option<usize>,
+    /// Neighboring messages after each anchor (default 4; pass 0 with before: 0 for anchor-only scan).
+    pub after: Option<usize>,
+}
+impl ToolQuery {
+    pub fn into_parts(self) -> Result<(Query, usize, usize), String> {
+        let mut query = Query {
+            terms: self.terms,
+            limit: self.limit,
+            session_id: self.session_id,
+            since: self.since,
+            until: self.until,
+        };
+        query.validate()?;
+        Ok((query, self.before.unwrap_or(4), self.after.unwrap_or(4)))
+    }
+}
+#[derive(Clone, Deserialize, schemars::JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct More {
     #[schemars(length(min = 1))]
     pub session_id: String,
@@ -117,6 +148,37 @@ impl ResultSet {
         let mut text = format!("Search complete: {}\n", self.searched_every_session);
         for gap in &self.gaps {
             text.push_str(&format!("{gap}\n"));
+        }
+        if self.passages.len() > 1 {
+            text.push_str(&format!("\nRanked anchors ({}):\n", self.passages.len()));
+            for (index, passage) in self.passages.iter().enumerate() {
+                let anchor_role = passage
+                    .messages
+                    .iter()
+                    .find(|message| message.is_anchor)
+                    .map(|message| format!("{:?}", message.role))
+                    .unwrap_or_else(|| "Message".into());
+                if passage.matched_terms.is_empty() {
+                    text.push_str(&format!(
+                        "{}. session_id={} anchor_message_id={} role={} ({})\n",
+                        index + 1,
+                        passage.session_id,
+                        passage.anchor_message_id,
+                        anchor_role,
+                        passage.session_title,
+                    ));
+                } else {
+                    text.push_str(&format!(
+                        "{}. session_id={} anchor_message_id={} role={} matched={:?} ({})\n",
+                        index + 1,
+                        passage.session_id,
+                        passage.anchor_message_id,
+                        anchor_role,
+                        passage.matched_terms,
+                        passage.session_title,
+                    ));
+                }
+            }
         }
         for passage in &self.passages {
             text.push_str(&format!(

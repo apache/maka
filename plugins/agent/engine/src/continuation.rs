@@ -195,7 +195,14 @@ pub(super) async fn inspect(
         } else {
             Vec::new()
         };
-        let replay = replay(input, prompt, definitions, cancellation).await?;
+        let replay = replay(
+            input,
+            prompt,
+            definitions,
+            &model_attempt::RequestSource::from(context.as_ref()),
+            cancellation,
+        )
+        .await?;
         if let crate::RunWork::Handoff { pause, .. } = &input.work
             && replay != pause.execution.replay
         {
@@ -217,6 +224,7 @@ pub(super) async fn replay<W>(
     input: &RunInput<W>,
     mut prompt: crate::prepared_prompt::PreparedPrompt,
     definitions: Vec<Arc<maka_model::ToolDefinition>>,
+    source: &model_attempt::RequestSource,
     cancellation: &CancellationToken,
 ) -> Result<ReplayEvidence, RunError> {
     let arena = prompt.arena().cloned();
@@ -271,6 +279,7 @@ pub(super) async fn replay<W>(
             definitions,
             input.main_output_limit,
             maka_agent_facts::context::ModelPurpose::Main,
+            Some(source),
         )?;
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);

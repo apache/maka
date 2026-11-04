@@ -236,6 +236,7 @@ fn wire(model: &maka_agent_ports::provider::Model) -> serde_json::Value {
         model: &model.info.id,
         input: &[],
         tools: &[],
+        tool_choice: Default::default(),
         options: &model.provider_options,
         max_output_tokens: None,
         reasoning: maka_provider_protocol::responses::ReasoningMode::Encrypted,

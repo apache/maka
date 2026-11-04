@@ -19,7 +19,7 @@
 
 //! Recall results are assembled from scoped indexed matches and direct context reads.
 pub use super::material::Input as Material;
-pub use super::types::{More, Passage, PassageMessage, Query, ResultSet};
+pub use super::types::{More, Passage, PassageMessage, Query, ResultSet, ToolQuery};
 use futures_util::future::BoxFuture;
 use maka_agent_facts::{attachment::AttachmentRef, tools::ToolError};
 use maka_agent_ports::session::{
@@ -180,12 +180,12 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     [
         (
             "Recall",
-            "Search original conversation history across all readable Sessions, including archives. Literal terms match case-insensitively with Unicode normalization and OR semantics. Returns ranked matching turns with complete surrounding messages, excluding the current Turn. An explicit limit selects the number of ranked passages; omitting it returns all matching turns. RecallMore selects a wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
-            schemars::schema_for!(Query).into(),
+            "Search original conversation history (user, assistant, tool calls, and tool results) across all readable Sessions, including archives and compacted earlier prefixes of the current Turn. Literal terms match case-insensitively with Unicode normalization and OR semantics, ranked by distinct matched terms first so multi-term queries surface passages combining your terms. Excludes only the uncompacted live tail of the current Turn. before/after select neighboring messages around each anchor (default 4 each; pass 0 for an anchor-only scan). An explicit limit selects the number of ranked turns; omitting it returns all matching turns. RecallMore expands wider context around an anchor. Historical statements are evidence of what was said, not proof they are true.",
+            schemars::schema_for!(ToolQuery).into(),
         ),
         (
             "RecallMore",
-            "Read complete messages around a Recall anchor using its Session and message IDs. before/after select neighboring messages (default 8 each). Excludes the current Turn.",
+            "Read complete messages around a Recall anchor using its Session and message IDs. before/after select neighboring messages (default 8 each). Compacted earlier prefixes of the current Turn are readable; only the uncompacted live tail of the current Turn is excluded.",
             schemars::schema_for!(More).into(),
         ),
         (

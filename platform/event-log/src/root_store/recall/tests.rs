@@ -18,7 +18,7 @@
  */
 
 use crate::{
-    recall::{SearchHit, SearchQuery},
+    recall::{ExcludedTurnTail, SearchHit, SearchQuery},
     root::{RootNamespaces, RootOwner},
     root_store::{RootStore, partition_for},
     sessions::{PluginSession, RemovalAuthority, RemoveFamilyResult, SessionRetirement},
@@ -302,7 +302,11 @@ async fn recall_merges_partitions_before_limits_and_applies_scope_time_and_exclu
     assert_eq!(timed.len(), 3);
     assert!(timed.iter().all(|hit| hit.timestamp == 10));
     let mut excluded = query("tiebreakword");
-    excluded.exclude = Some((all[0].session_id.clone(), all[0].turn_id.clone()));
+    excluded.exclude = Some(ExcludedTurnTail {
+        session_id: all[0].session_id.clone(),
+        turn_id: all[0].turn_id.clone(),
+        covered_through: 0,
+    });
     let excluded = f.search(excluded).await;
     assert_eq!(excluded.len(), 3);
     assert!(
@@ -1055,5 +1059,268 @@ async fn recall_reused_directory_rowid_has_only_new_terms_and_failed_build_is_at
             .hits
             .is_empty()
     );
+    root.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn recall_indexes_tool_calls_ranks_multi_term_matches_and_exposes_compacted_turn_prefix() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = RootStore::open(demand_owner(directory.path()))
+        .await
+        .unwrap();
+    let session = "demand-midturn";
+    root.import_session(
+        &PluginSession {
+            session_id: session.into(),
+            creator: maka_capabilities::storage::Namespace::new(
+                "recall-index-test",
+                maka_plugin_core::scope::Scope::Profile,
+            )
+            .unwrap(),
+            fingerprint: "import-midturn".into(),
+            managed: false,
+            authority_session_id: None,
+        },
+        &Source {
+            adapter: "fixture".into(),
+            session_id: "source-midturn".into(),
+        },
+        &json!({}),
+        vec![
+            Record {
+                source_message_id: "stub-one-term".into(),
+                source_turn_id: "turn-old-stub".into(),
+                timestamp: Some(100),
+                content: Content::User {
+                    text: "checkpointmark stub?".into(),
+                },
+            },
+            Record {
+                source_message_id: "detailed-multi-term".into(),
+                source_turn_id: "turn-old-detailed".into(),
+                timestamp: Some(50),
+                content: Content::Assistant {
+                    text: format!(
+                        "Architectural rationale for checkpointmark and tailfence with replayguard: {}",
+                        "detailed verification steps and invariants ".repeat(20)
+                    ),
+                    model: None,
+                    thinking: None,
+                },
+            },
+            Record {
+                source_message_id: "single-hit-short".into(),
+                source_turn_id: "turn-single-short".into(),
+                timestamp: Some(90),
+                content: Content::Assistant {
+                    text: "check sublinearneedle maybe later...".into(),
+                    model: None,
+                    thinking: None,
+                },
+            },
+            Record {
+                source_message_id: "repeated-hit-detailed".into(),
+                source_turn_id: "turn-repeated-detailed".into(),
+                timestamp: Some(40),
+                content: Content::Assistant {
+                    text: format!(
+                        "sublinearneedle invariants: sublinearneedle handles boundary A, sublinearneedle handles boundary B, sublinearneedle handles boundary C, sublinearneedle handles boundary D, sublinearneedle handles boundary E. {}",
+                        "context ".repeat(40)
+                    ),
+                    model: None,
+                    thinking: None,
+                },
+            },
+            Record {
+                source_message_id: "midturn-user".into(),
+                source_turn_id: "active-turn".into(),
+                timestamp: Some(200),
+                content: Content::User {
+                    text: "Early compacted user constraint midturnalpha".into(),
+                },
+            },
+            Record {
+                source_message_id: "midturn-tool-call".into(),
+                source_turn_id: "active-turn".into(),
+                timestamp: Some(201),
+                content: Content::ToolCall {
+                    call_id: "call-edit-1".into(),
+                    name: "Edit".into(),
+                    input: Some(json!({
+                        "file_path": "plugins/agent/engine/src/compact.rs",
+                        "old_string": "let threshold = \"legacy_limit\";",
+                        "new_string": "let threshold = usable_budget;",
+                    })),
+                },
+            },
+            Record {
+                source_message_id: "live-tail-msg".into(),
+                source_turn_id: "active-turn".into(),
+                timestamp: Some(202),
+                content: Content::Assistant {
+                    text: "Uncompacted live tail mentions midturnalpha and livetailonly".into(),
+                    model: None,
+                    thinking: None,
+                },
+            },
+        ],
+        1,
+    )
+    .await
+    .unwrap();
+
+    // 1. Multi-term coordination: 3 matched terms in a long message outranks 1 matched term in a tiny stub.
+    let mut multi = query("checkpointmark");
+    multi
+        .terms
+        .extend(["tailfence".into(), "replayguard".into()]);
+    let multi_hits = root
+        .search_history("demand-", multi, CancellationToken::new())
+        .await
+        .unwrap()
+        .hits;
+    assert_eq!(multi_hits.len(), 2);
+    assert!(multi_hits[0].body.starts_with("Architectural rationale"));
+    assert_eq!(multi_hits[0].matched_terms.len(), 3);
+    assert_eq!(multi_hits[1].body, "checkpointmark stub?");
+    assert_eq!(multi_hits[1].matched_terms.len(), 1);
+
+    // 2. Sublinear sqrt length normalization: repeated occurrences in a detailed explanation beat a casual 1-hit stub.
+    let sublinear_hits = root
+        .search_history(
+            "demand-",
+            query("sublinearneedle"),
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap()
+        .hits;
+    assert_eq!(sublinear_hits.len(), 2);
+    assert!(
+        sublinear_hits[0]
+            .body
+            .starts_with("sublinearneedle invariants:")
+    );
+    assert_eq!(
+        sublinear_hits[1].body,
+        "check sublinearneedle maybe later..."
+    );
+
+    // 3. ToolCall name and unescaped arguments (file paths, quoted code) are indexed and rendered cleanly.
+    let mut tool_search = query("plugins/agent/engine/src/compact.rs");
+    tool_search
+        .terms
+        .push("let threshold = \"legacy_limit\"".into());
+    let tool_hits = root
+        .search_history("demand-", tool_search, CancellationToken::new())
+        .await
+        .unwrap()
+        .hits;
+    assert_eq!(tool_hits.len(), 1);
+    assert_eq!(
+        tool_hits[0].role,
+        maka_agent_ports::session::history::Role::ToolCall
+    );
+    assert!(
+        tool_hits[0].body.starts_with("Edit\n"),
+        "{}",
+        tool_hits[0].body
+    );
+    assert!(
+        tool_hits[0]
+            .body
+            .contains("file_path: plugins/agent/engine/src/compact.rs"),
+        "{}",
+        tool_hits[0].body
+    );
+    assert!(
+        tool_hits[0]
+            .body
+            .contains("old_string: let threshold = \"legacy_limit\";"),
+        "{}",
+        tool_hits[0].body
+    );
+    let compacted_cutoff = tool_hits[0].position.source_sequence;
+    let active_turn_id = tool_hits[0].turn_id.clone();
+
+    // 4. ExcludedTurnTail with covered_through = 0 excludes the entire active turn,
+    //    whereas covered_through = compacted_cutoff exposes the compacted prefix and still excludes the live tail.
+    let mut uncompacted_query = query("midturnalpha");
+    uncompacted_query.exclude = Some(ExcludedTurnTail {
+        session_id: session.into(),
+        turn_id: active_turn_id.clone(),
+        covered_through: 0,
+    });
+    assert!(
+        root.search_history("demand-", uncompacted_query, CancellationToken::new())
+            .await
+            .unwrap()
+            .hits
+            .is_empty()
+    );
+
+    let mut midturn_query = query("midturnalpha");
+    let exclusion = ExcludedTurnTail {
+        session_id: session.into(),
+        turn_id: active_turn_id,
+        covered_through: compacted_cutoff,
+    };
+    midturn_query.exclude = Some(exclusion.clone());
+    let midturn_hits = root
+        .search_history("demand-", midturn_query, CancellationToken::new())
+        .await
+        .unwrap()
+        .hits;
+    assert_eq!(midturn_hits.len(), 1);
+    assert_eq!(
+        midturn_hits[0].body,
+        "Early compacted user constraint midturnalpha"
+    );
+
+    let mut tail_only = query("livetailonly");
+    tail_only.exclude = Some(exclusion.clone());
+    assert!(
+        root.search_history("demand-", tail_only, CancellationToken::new())
+            .await
+            .unwrap()
+            .hits
+            .is_empty(),
+        "uncompacted live tail after covered_through must remain excluded"
+    );
+
+    // 5. history_context allows compacted prefix anchors & ToolCall neighbors, stopping at covered_through.
+    let context = root
+        .history_context(
+            "demand-",
+            session,
+            &midturn_hits[0].message_id,
+            0,
+            5,
+            None,
+            Some(exclusion.clone()),
+            None,
+            CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        context.anchor.body,
+        "Early compacted user constraint midturnalpha"
+    );
+    assert_eq!(context.messages.len(), 1);
+    assert_eq!(
+        context.messages[0].role,
+        maka_agent_ports::session::history::Role::ToolCall
+    );
+    assert!(
+        context.messages[0]
+            .body
+            .contains("plugins/agent/engine/src/compact.rs")
+    );
+    assert!(
+        !context.has_more_after,
+        "live tail must not leak into after lookahead"
+    );
+
     root.close().await.unwrap();
 }

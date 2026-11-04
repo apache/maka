@@ -33,6 +33,7 @@ use tokio::{net::TcpListener, sync::Barrier};
 use tokio_util::sync::CancellationToken;
 
 mod background;
+mod measured;
 
 fn context(window: Option<u64>) -> Option<ModelRequestContext> {
     Some(ModelRequestContext {
@@ -46,11 +47,11 @@ fn context(window: Option<u64>) -> Option<ModelRequestContext> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn resolved_threshold_and_matching_latest_main_route_are_required_for_preturn() {
+async fn measured_usage_calibrates_the_matching_route_and_prepares_before_adoption() {
     for (declared, matching, expected) in [
         (None, true, false),
-        (Some(70), false, false),
-        (Some(70), true, true),
+        (Some(110_000), false, false),
+        (Some(110_000), true, true),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let log = Arc::new(
@@ -64,7 +65,7 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             fixture::read_request(&mut socket).await;
-            fixture::respond(&mut socket, "old-answer", "stop").await;
+            fixture::respond_with_usage(&mut socket, "old-answer", "stop", serde_json::json!({"prompt_tokens":100_000,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":90_000},"completion_tokens_details":{"reasoning_tokens":40}})).await;
             let mut requests = Vec::new();
             let mut main = None;
             let mut summary = None;
@@ -145,9 +146,10 @@ async fn resolved_threshold_and_matching_latest_main_route_are_required_for_pret
         assert_eq!(mains.len(), 1 + usize::from(expected));
         let output = mains[0]["max_tokens"].as_u64().unwrap();
         if matching {
-            // Proactive work runs alongside the main request. Until adoption,
-            // the matching route still uses its retained provider usage.
-            assert_eq!(output, 191_930);
+            assert!(
+                (99_000..100_000).contains(&output),
+                "cached input and reasoning output must not be counted twice: {output}"
+            );
         } else {
             assert!((199_000..200_000).contains(&output));
         }
@@ -256,8 +258,7 @@ async fn midturn_compaction_keeps_image_references_without_replaying_messages() 
     });
     let mut input = code_mode::input(&base, "first", effects.clone());
     input.context = context(Some(7));
-    // This test needs adoption before the next main request. Real prompt
-    // pressure requires that boundary; a usage threshold alone runs in the background.
+    // Force the next tool boundary past the adoption threshold.
     input.context.as_mut().unwrap().context_window = Some(4096);
     input.configuration.system_prompt = Some(maka_agent_facts::execution::SystemPrompt {
         sources: Vec::new(),

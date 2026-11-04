@@ -69,6 +69,7 @@ impl PreparedPrediction {
             provider: self.request.provider.clone(),
             prompt: self.request.prompt.clone(),
             tools: self.request.tools.clone(),
+            tool_choice: self.request.tool_choice,
             provider_options: self.request.provider_options.clone(),
             max_output_tokens: self.request.max_output_tokens,
         }
@@ -160,6 +161,8 @@ impl Engine {
             .clone()
             .ok_or_else(|| changed("prediction source has no provider options"))?;
         let configured_output_limit = frozen.composition.max_output_tokens;
+        let calibration = model_attempt::RequestSource::from(&frozen.view)
+            .calibration(&provider, configuration.model.as_ref())?;
         // Validate against the actual committed Main input digest, not today's composition.
         let original = replay.prepare_frozen(frozen, cancellation).await?;
         let original_model = original.model();
@@ -180,6 +183,7 @@ impl Engine {
             provider: &provider,
             options: &options,
             context_window,
+            tool_choice: Default::default(),
         };
         let original_output_limit = model_attempt::prepare_request_with_settings(
             &settings,
@@ -187,6 +191,7 @@ impl Engine {
             definitions.clone(),
             configured_output_limit,
             ModelPurpose::Main,
+            calibration,
         )
         .map(|prepared| prepared.request.max_output_tokens);
         let closed = original
@@ -250,6 +255,7 @@ impl Engine {
                 provider: provider.clone(),
                 prompt: model,
                 tools: definitions,
+                tool_choice: Default::default(),
                 provider_options: options.clone(),
                 max_output_tokens,
             })
