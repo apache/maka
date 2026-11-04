@@ -424,6 +424,7 @@ function WorkspacePages(props: { busy: boolean }) {
   const browsing: Browsing = {
     scope: () => scope,
     filter: () => 'all',
+    needsYouCount: () => 0,
     sessions,
     loading,
     projects: () =>
