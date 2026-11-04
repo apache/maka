@@ -160,6 +160,8 @@ impl Engine {
             .clone()
             .ok_or_else(|| changed("prediction source has no provider options"))?;
         let configured_output_limit = frozen.composition.max_output_tokens;
+        let calibration = model_attempt::RequestSource::from(&frozen.view)
+            .calibration(&provider, configuration.model.as_ref())?;
         // Validate against the actual committed Main input digest, not today's composition.
         let original = replay.prepare_frozen(frozen, cancellation).await?;
         let original_model = original.model();
@@ -187,6 +189,7 @@ impl Engine {
             definitions.clone(),
             configured_output_limit,
             ModelPurpose::Main,
+            calibration,
         )
         .map(|prepared| prepared.request.max_output_tokens);
         let closed = original

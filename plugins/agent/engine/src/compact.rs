@@ -172,7 +172,8 @@ pub(super) async fn capture(
     .await?;
     let arena = prompt.arena().cloned();
     let result = async {
-        if !native && !has_new_history && !context_input::needs_compaction(&captured, &prompt) {
+        if !native && !has_new_history && !context_input::summary_needs_fitting(&captured, &prompt)
+        {
             return Ok(None);
         }
         let instruction = if native {

@@ -33,7 +33,6 @@ pub(super) struct Prepared {
     pub body: Value,
     pub decoder: Decoder,
     pub compatible: bool,
-    pub anthropic: bool,
     pub anthropic_source: Option<(
         crate::prompt::PreparedWire,
         std::sync::Arc<anthropic::prompt::streaming::Context>,
@@ -301,7 +300,6 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
         body,
         decoder,
         compatible,
-        anthropic: is_anthropic,
         chat,
         anthropic_source,
     })

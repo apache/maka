@@ -269,11 +269,13 @@ pub(super) struct RequestSource {
     pub effective_digest: String,
     pub checkpoint: Option<String>,
     pub capture: maka_agent_facts::event::SourceCapture,
+    pub latest_main: maka_event_log::context::LatestMainContext,
 }
 
 impl From<&ContextView> for RequestSource {
     fn from(source: &ContextView) -> Self {
         Self {
+            latest_main: source.latest_main.clone(),
             capture: maka_agent_facts::event::SourceCapture {
                 publication_watermark: source.selection.captured_through,
                 prior_unknown: source.selection.prior_unknown,
@@ -285,6 +287,21 @@ impl From<&ContextView> for RequestSource {
                 .as_ref()
                 .map(|baseline| baseline.event_id.clone()),
         }
+    }
+}
+
+impl RequestSource {
+    pub fn calibration(
+        &self,
+        provider: &maka_model::ProviderConfig,
+        binding: Option<&maka_agent_facts::execution::ModelBinding>,
+    ) -> Result<Option<crate::auto_context::Calibration>, RunError> {
+        crate::auto_context::calibration(
+            provider,
+            binding,
+            &self.latest_main,
+            self.checkpoint.as_deref(),
+        )
     }
 }
 
@@ -695,6 +712,7 @@ pub(super) async fn execute_once(
         definitions,
         surface.max_output_tokens,
         purpose,
+        Some(source),
     ) {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -965,6 +983,7 @@ pub(super) fn prepare_request<W>(
     definitions: Vec<Arc<ToolDefinition>>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
+    source: Option<&RequestSource>,
 ) -> Result<PreparedRequest, RunError> {
     prepare_request_with_settings(
         &PromptSettings::from_input(input),
@@ -972,6 +991,10 @@ pub(super) fn prepare_request<W>(
         definitions,
         max_output_tokens,
         purpose,
+        source
+            .map(|source| source.calibration(&input.provider, input.configuration.model.as_ref()))
+            .transpose()?
+            .flatten(),
     )
 }
 
@@ -981,6 +1004,7 @@ pub(super) fn prepare_request_with_settings(
     definitions: Vec<Arc<ToolDefinition>>,
     max_output_tokens: Option<u64>,
     purpose: ModelPurpose,
+    calibration: Option<crate::auto_context::Calibration>,
 ) -> Result<PreparedRequest, RunError> {
     let prompt = prompt.model();
     let format = match settings.provider.kind {
@@ -1006,7 +1030,12 @@ pub(super) fn prepare_request_with_settings(
         .map_err(|error| RunError::Internal(error.into()))?;
     let max_output_tokens = Some(crate::context_input::output_limit(
         settings.context_window,
-        context_breakdown.estimated_tokens(),
+        calibration
+            .filter(|_| purpose == ModelPurpose::Main)
+            .map_or_else(
+                || context_breakdown.estimated_tokens(),
+                |baseline| baseline.estimate(context_breakdown.estimated_tokens()),
+            ),
         maka_agent_facts::context::effective_output_limit(max_output_tokens),
         purpose,
     ));

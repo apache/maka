@@ -110,8 +110,11 @@ async fn http_and_sse_failures_preserve_typed_evidence_across_native_families() 
             assert!(matches!(failure(kind,200,"text/event-stream",sse(&[frame])).await,
                 ModelError::ContextOverflow { observed_output: false }));
         }
-        for body in [json!({"error":{"message":"context length rejected"}}).to_string(), String::new()] {
-            assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,413,"application/json",body).await,ModelError::Http { status: 413, .. }));
+        assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,413,"application/json",
+            json!({"error":{"message":"context length rejected"}}).to_string()).await,ModelError::Http { status: 413, .. }));
+        for status in [400, 413] {
+            assert!(matches!(failure(ProviderKind::OpenaiChatCompletions,status,"application/json",String::new()).await,
+                ModelError::ContextOverflow { observed_output: false }));
         }
         for kind in [ProviderKind::OpenaiChatCompletions, ProviderKind::OpenaiResponses,
             ProviderKind::OpenaiCompatible { name: "fixture".into() }, ProviderKind::Anthropic] {
@@ -229,6 +232,80 @@ async fn retry_advice_survives_all_http_adapter_families() {
                 (before + delay..=maka_model::ProviderFailure::now_unix_ms() + delay).contains(&at)
             );
             assert_eq!(failure.message(), "quota reset is later");
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn compatible_provider_evidence_recovers_overflow_without_mistaking_throttling_or_parameters()
+{
+    for body in [
+        json!({"error":{"message":"Input token count 200001 exceeds the maximum 200000"}})
+            .to_string(),
+        json!({"error":{"message":"upstream rejected", "metadata":{"raw":"Prompt 超长"}}})
+            .to_string(),
+        json!({"response":{"error":{"type":"model_context_window_exceeded"}}}).to_string(),
+        json!({"error":{"innererror":{"code":"context_length_exceeded"}}}).to_string(),
+        json!({"error":{"message":"prompt is too long"},"metadata":"x".repeat(70_000)}).to_string(),
+    ] {
+        let error = failure(
+            ProviderKind::OpenaiCompatible {
+                name: "fixture".into(),
+            },
+            400,
+            "application/json",
+            body,
+        )
+        .await;
+        assert!(
+            matches!(
+                error,
+                ModelError::ContextOverflow {
+                    observed_output: false
+                }
+            ),
+            "{error}"
+        );
+    }
+    for (status, body, throttled) in [
+        (
+            429,
+            json!({"error":{"message":"too many tokens per day, please wait"}}),
+            true,
+        ),
+        (
+            400,
+            json!({"__type":"aws#ThrottlingException", "message":"too many tokens"}),
+            true,
+        ),
+        (
+            400,
+            json!({"error":{"message":"max_tokens must be less than 8192"}}),
+            false,
+        ),
+        (
+            400,
+            json!({"error":{"message":"invalid request parameter"}}),
+            false,
+        ),
+    ] {
+        let error = failure(
+            ProviderKind::OpenaiChatCompletions,
+            status,
+            "application/json",
+            body.to_string(),
+        )
+        .await;
+        if throttled {
+            assert!(
+                matches!(error, ModelError::Provider(ref failure) if failure.reason() == maka_model::ProviderFailureReason::RateLimit),
+                "{error}"
+            );
+        } else {
+            assert!(
+                matches!(error, ModelError::Http { status: 400, .. }),
+                "{error}"
+            );
         }
     }
 }

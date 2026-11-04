@@ -103,6 +103,7 @@ pub(super) async fn read_selected_at(
          json_extract(r.event_header, '$.fact.model_id') AS model_id,
          json_extract(r.event_header, '$.fact.route_identity') AS route_identity,
          json_extract(r.event_header, '$.fact.context') AS context,
+         json_extract(r.event_header, '$.fact.context_breakdown') AS context_breakdown,
          json_extract(r.event_header, '$.fact.checkpoint_event_id') AS checkpoint_id,
          json_extract(o.event_header, '$.fact.configuration.model.connection_id') AS connection_id,
          json_extract(c.event_header, '$.fact.step_id') AS cs,
@@ -190,6 +191,12 @@ pub(super) async fn read_selected_at(
                     connection_id: row.try_get("connection_id").ok()?,
                     checkpoint_event_id: row.try_get("checkpoint_id").ok()?,
                     context,
+                    context_breakdown: row
+                        .try_get::<Option<&str>, _>("context_breakdown")
+                        .ok()?
+                        .map(serde_json::from_str)
+                        .transpose()
+                        .ok()?,
                     usage,
                 }),
             ))

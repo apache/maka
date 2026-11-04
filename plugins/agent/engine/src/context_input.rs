@@ -57,7 +57,7 @@ pub(super) fn summary_budget<W>(input: &RunInput<W>) -> u64 {
     window.min(total.saturating_sub(summary_output_reserve(input)))
 }
 
-pub(super) fn needs_compaction<W>(
+pub(super) fn summary_needs_fitting<W>(
     input: &RunInput<W>,
     prompt: &crate::prepared_prompt::PreparedPrompt,
 ) -> bool {

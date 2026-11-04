@@ -347,6 +347,7 @@ mod tests {
     #[test]
     fn additions_are_chunk_independent_and_unknown_content_invalidates_the_baseline() {
         let basis = AcceptedMainContext {
+            context_breakdown: None,
             projection_current: true,
             sequence: 3,
             requested_at: None,

@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod overflow;
+
 use crate::{ModelError, ProviderFailure, ProviderFailureReason};
 use maka_provider_protocol::output::ProviderError;
 use serde_json::Value;
@@ -68,12 +70,7 @@ impl Evidence {
             error => error,
         }
     }
-    pub fn provider(
-        &self,
-        error: ProviderError,
-        anthropic: bool,
-        retry_at_unix_ms: Option<u64>,
-    ) -> ModelError {
+    pub fn provider(&self, error: ProviderError, retry_at_unix_ms: Option<u64>) -> ModelError {
         if error
             .status
             .is_some_and(|status| !(100..600).contains(&status))
@@ -85,26 +82,9 @@ impl Evidence {
         if let Some(inner) = error.data.get("error") {
             records.push(inner);
         }
-        let identifiers = records
-            .iter()
-            .flat_map(|record| [record.get("code"), record.get("type")])
-            .flatten()
-            .filter_map(Value::as_str)
-            .chain(error.kind.as_deref())
-            .chain(error.code.as_ref().and_then(Value::as_str))
-            .map(str::to_ascii_lowercase)
-            .collect::<Vec<_>>();
+        let identifiers = overflow::identifiers(&error);
         let has = |values: &[&str]| identifiers.iter().any(|id| values.contains(&id.as_str()));
-        let too_long = anthropic
-            && matches!(error.status, None | Some(400))
-            && records.iter().any(|record| {
-                record.get("type").and_then(Value::as_str) == Some("invalid_request_error")
-                    && record
-                        .get("message")
-                        .and_then(Value::as_str)
-                        .is_some_and(prompt_too_long)
-            });
-        if has(&["context_length_exceeded", "model_context_window_exceeded"]) || too_long {
+        if overflow::rejected(&error, &identifiers) {
             return ModelError::ContextOverflow {
                 observed_output: self.observed,
             };
@@ -125,7 +105,6 @@ impl Evidence {
         let permanent = matches!(error.status, Some(401 | 403))
             || (error.status == Some(402) && !positive_quota)
             || has(&[
-                "request_too_large",
                 "authentication_error",
                 "permission_error",
                 "invalid_api_key",
@@ -136,7 +115,12 @@ impl Evidence {
             Some(ProviderFailureReason::QuotaExhausted)
         } else if has(&["resource-exhausted"]) {
             Some(ProviderFailureReason::ProviderUnavailable)
-        } else if error.status == Some(429) || has(&["rate_limit_error", "rate_limit_exceeded"]) {
+        } else if error.status == Some(429)
+            || identifiers.iter().any(|code| {
+                code.contains("rate_limit")
+                    || matches!(code.as_str(), "too_many_requests" | "throttlingexception")
+            })
+        {
             Some(ProviderFailureReason::RateLimit)
         } else if matches!(error.status, Some(408 | 500..=599))
             || has(&[
@@ -256,24 +240,6 @@ fn provider_message(status: Option<u16>) -> String {
         |status| format!("model HTTP request failed (status {status})"),
     )
 }
-fn prompt_too_long(message: &str) -> bool {
-    let Some(body) = message.strip_prefix("prompt is too long: ") else {
-        return false;
-    };
-    let Some(body) = body.strip_suffix(" maximum") else {
-        return false;
-    };
-    let Some((input, maximum)) = body.split_once(" tokens > ") else {
-        return false;
-    };
-    let parse = |s: &str| {
-        (!s.is_empty() && s.len() <= 16 && s.bytes().all(|b| b.is_ascii_digit()))
-            .then(|| s.parse::<u64>().ok())
-            .flatten()
-            .filter(|n| *n <= 9_007_199_254_740_991)
-    };
-    matches!((parse(input), parse(maximum)), (Some(input), Some(maximum)) if maximum > 0 && input > maximum)
-}
 pub(super) fn http_body_error(status: u16, error: impl std::fmt::Display) -> ProviderError {
     ProviderError {
         message: Some(format!("response body read failed: {error}")),
@@ -282,17 +248,22 @@ pub(super) fn http_body_error(status: u16, error: impl std::fmt::Display) -> Pro
 }
 
 pub(super) fn http_error(status: u16, bytes: &[u8]) -> ProviderError {
-    let data: Value = if bytes.len() <= 64 * 1024 {
-        serde_json::from_slice(bytes).unwrap_or(Value::Null)
-    } else {
-        Value::Null
-    };
+    let data: Value = serde_json::from_slice(bytes).unwrap_or_else(|_| {
+        std::str::from_utf8(bytes)
+            .ok()
+            .filter(|text| !text.is_empty())
+            .map_or(Value::Null, |text| Value::String(text.to_owned()))
+    });
     let record = data.get("error").unwrap_or(&data);
     ProviderError {
-        message: record
-            .get("message")
-            .and_then(Value::as_str)
-            .map(str::to_owned),
+        message: if bytes.is_empty() {
+            Some(format!("{status} status code (no body)"))
+        } else {
+            record
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+        },
         kind: record
             .get("type")
             .and_then(Value::as_str)
@@ -309,10 +280,9 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn classify(status: u16, value: Value, anthropic: bool) -> ModelError {
+    fn classify(status: u16, value: Value) -> ModelError {
         Evidence::default().provider(
             http_error(status, &serde_json::to_vec(&value).unwrap()),
-            anthropic,
             None,
         )
     }
@@ -338,7 +308,6 @@ mod tests {
                     )
                     .unwrap(),
                 ),
-                false,
                 None,
             );
             let ModelError::Provider(failure) = error else {
@@ -377,11 +346,7 @@ mod tests {
                 quota_scope: QuotaScope::endpoint(endpoint),
                 ..Default::default()
             }
-            .provider(
-                http_error(429, &serde_json::to_vec(&body).unwrap()),
-                false,
-                None,
-            );
+            .provider(http_error(429, &serde_json::to_vec(&body).unwrap()), None);
             let ModelError::Provider(failure) = error else {
                 panic!("expected transient failure: {endpoint} {body}")
             };
@@ -395,7 +360,6 @@ mod tests {
         let ModelError::Provider(failure) = classify(
             429,
             json!({"error":{"type":"exceeded_current_quota_error"}}),
-            false,
         ) else {
             panic!("expected Kimi quota failure")
         };
@@ -420,7 +384,6 @@ mod tests {
             }
             .provider(
                 http_error(status, &serde_json::to_vec(&body).unwrap()),
-                false,
                 None,
             );
             if overflow {
@@ -435,37 +398,6 @@ mod tests {
                     matches!(error, ModelError::Http { status: actual, .. } if actual == status)
                 );
             }
-        }
-    }
-
-    #[test]
-    fn anthropic_overflow_relation_is_exact_and_route_scoped() {
-        let value = |message| json!({"error":{"type":"invalid_request_error","message":message}});
-        let valid = "prompt is too long: 200001 tokens > 200000 maximum";
-        assert!(matches!(
-            classify(400, value(valid), true),
-            ModelError::ContextOverflow { .. }
-        ));
-        assert!(matches!(
-            classify(400, value(valid), false),
-            ModelError::Http { .. }
-        ));
-        assert!(matches!(
-            classify(413, value(valid), true),
-            ModelError::Http { .. }
-        ));
-        for message in [
-            "prompt is too long",
-            "prompt is too long: 1 tokens > 2 maximum",
-            "quota: prompt is too long: 3 tokens > 2 maximum",
-            "prompt is too long: 3 tokens > 2 maximum; output limit",
-            "prompt is too long: 9999999999999999 tokens > 2 maximum",
-            "prompt is too long: 3 tokens > 0 maximum",
-        ] {
-            assert!(
-                matches!(classify(400, value(message), true), ModelError::Http { .. }),
-                "{message}"
-            );
         }
     }
 }
@@ -493,7 +425,6 @@ mod image_tests {
                     retryable: Some(true),
                     data: Value::Null,
                 },
-                false,
                 None,
             );
             let ModelError::Provider(failure) = result else {
@@ -511,26 +442,24 @@ mod image_tests {
     fn positive_image_codes_agree_across_http_sse_and_statusless_events() {
         let original = "Provider rejected image format 图片; original diagnostics";
         for status in [Some(400), Some(200), None] {
-            for anthropic in [false, true] {
-                let error = ProviderError {
-                    status,
-                    message: Some(original.into()),
-                    kind: Some("invalid_request_error".into()),
-                    code: Some(json!("invalid_image_format")),
-                    retryable: Some(true),
-                    data: json!({"error":{"code":"invalid_image_format","param":"messages[3].content[2]"}}),
-                };
-                for replay_safe in [false, true] {
-                    let result = Evidence {
-                        observed: true,
-                        unsafe_replay: !replay_safe,
-                        ..Default::default()
-                    }
-                    .provider(error.clone(), anthropic, Some(1000));
-                    assert!(
-                        matches!(result, ModelError::ImageInputRejected { message, index: None, replay_safe: actual, status: actual_status, code } if message == original && actual == replay_safe && actual_status == status && code.as_deref() == Some("invalid_image_format"))
-                    );
+            let error = ProviderError {
+                status,
+                message: Some(original.into()),
+                kind: Some("invalid_request_error".into()),
+                code: Some(json!("invalid_image_format")),
+                retryable: Some(true),
+                data: json!({"error":{"code":"invalid_image_format","param":"messages[3].content[2]"}}),
+            };
+            for replay_safe in [false, true] {
+                let result = Evidence {
+                    observed: true,
+                    unsafe_replay: !replay_safe,
+                    ..Default::default()
                 }
+                .provider(error.clone(), Some(1000));
+                assert!(
+                    matches!(result, ModelError::ImageInputRejected { message, index: None, replay_safe: actual, status: actual_status, code } if message == original && actual == replay_safe && actual_status == status && code.as_deref() == Some("invalid_image_format"))
+                );
             }
         }
     }
@@ -546,7 +475,7 @@ mod image_tests {
             retryable: None,
             data: Value::Null,
         };
-        let rejection = Evidence::default().provider(error, false, None);
+        let rejection = Evidence::default().provider(error, None);
         assert_eq!(
             rejection.to_string(),
             format!(
@@ -565,7 +494,6 @@ mod image_tests {
                 retryable: None,
                 data: Value::Null,
             },
-            false,
             None,
         );
         assert_eq!(
@@ -593,10 +521,10 @@ mod image_tests {
             )
             .unwrap();
             assert!(
-                matches!(Evidence::default().provider(http_error(400, &body), false, None), ModelError::ImageInputRejected { message: original, index: None, replay_safe: true, status: Some(400), code: None } if original == message)
+                matches!(Evidence::default().provider(http_error(400, &body), None), ModelError::ImageInputRejected { message: original, index: None, replay_safe: true, status: Some(400), code: None } if original == message)
             );
             assert!(matches!(
-                Evidence::default().provider(http_error(500, &body), false, None),
+                Evidence::default().provider(http_error(500, &body), None),
                 ModelError::Provider(_)
             ));
         }
@@ -609,11 +537,8 @@ mod image_tests {
         ] {
             assert!(
                 matches!(
-                    Evidence::default().provider(
-                        http_error(400, &serde_json::to_vec(&value).unwrap()),
-                        false,
-                        None
-                    ),
+                    Evidence::default()
+                        .provider(http_error(400, &serde_json::to_vec(&value).unwrap()), None),
                     ModelError::Http { status: 400, .. }
                 ),
                 "{value}"
@@ -624,7 +549,6 @@ mod image_tests {
         assert!(matches!(
             Evidence::default().provider(
                 http_error(413, &serde_json::to_vec(&payload).unwrap()),
-                false,
                 None
             ),
             ModelError::Http { status: 413, .. }

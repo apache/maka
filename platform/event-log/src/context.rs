@@ -121,6 +121,7 @@ pub struct AcceptedMainContext {
     pub connection_id: Option<String>,
     pub checkpoint_event_id: Option<String>,
     pub context: Option<ModelRequestContext>,
+    pub context_breakdown: Option<maka_agent_facts::context::PreparedContextBreakdown>,
     pub usage: ModelUsage,
 }
 

@@ -199,7 +199,6 @@ async fn run_inner(
         body,
         mut decoder,
         compatible,
-        anthropic,
         mut anthropic_source,
         mut chat,
     } = prepared;
@@ -208,7 +207,7 @@ async fn run_inner(
         _ = context.cancellation.cancelled() => return Err(ModelError::Cancelled),
         header = super::http_header::Header::freeze(body) => header,
     };
-    let mut events = events::Events::new(anthropic);
+    let mut events = events::Events::new();
     events.evidence.quota_scope = quota_scope;
     let mut retried = remembered;
     let encoding = if let Some((_, options, language)) = &chat {
@@ -318,11 +317,9 @@ async fn run_inner(
                             || matches!(&error, ModelError::Provider(failure)
                                 if failure.reason() == ProviderFailureReason::Network)) =>
                 {
-                    return Err(events.evidence.provider(
-                        error::http_body_error(status, error),
-                        anthropic,
-                        retry_after,
-                    ));
+                    return Err(events
+                        .evidence
+                        .provider(error::http_body_error(status, error), retry_after));
                 }
                 Err(error) => return Err(error),
             };
@@ -346,11 +343,9 @@ async fn run_inner(
                     continue;
                 }
             }
-            return Err(events.evidence.provider(
-                error::http_error(status, &bytes),
-                anthropic,
-                retry_after,
-            ));
+            return Err(events
+                .evidence
+                .provider(error::http_error(status, &bytes), retry_after));
         }
         // Request bytes have been dispatched. Retain only the decoder and
         // protocol metadata while receiving; output owns its actual queue budget.

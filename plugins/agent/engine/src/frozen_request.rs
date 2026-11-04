@@ -290,6 +290,8 @@ impl FrozenReplay {
         .map(Arc::new);
         let definitions = frozen.composition.tools;
         let max_output_tokens = frozen.composition.max_output_tokens;
+        let calibration = model_attempt::RequestSource::from(&frozen.view)
+            .calibration(&self.provider, configuration.model.as_ref())?;
         let mut prompt = model_attempt::prompt_with_resources(
             &self.log,
             self.resources.clone(),
@@ -319,6 +321,7 @@ impl FrozenReplay {
                 definitions,
                 max_output_tokens,
                 ModelPurpose::Main,
+                calibration,
             )?;
             if request.input_digest != *input_digest || request.route_identity != *route_identity {
                 return Err(RunError::ReconciliationRequired(

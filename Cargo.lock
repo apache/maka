@@ -8120,6 +8120,7 @@ dependencies = [
  "maka-network",
  "maka-provider-protocol",
  "maka-providers",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

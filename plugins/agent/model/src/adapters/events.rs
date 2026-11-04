@@ -32,17 +32,15 @@ use std::collections::HashMap;
 pub(super) struct Events {
     pub evidence: Evidence,
     pub finished: bool,
-    pub anthropic: bool,
     sequence: u64,
     open: HashMap<String, (String, TextKind)>,
     tools: HashMap<String, Option<Value>>,
 }
 impl Events {
-    pub fn new(anthropic: bool) -> Self {
+    pub fn new() -> Self {
         Self {
             evidence: Evidence::default(),
             finished: false,
-            anthropic,
             sequence: 0,
             open: HashMap::new(),
             tools: HashMap::new(),
@@ -294,7 +292,7 @@ impl Events {
             }
             Event::Error(error) => return Err(failure(error)),
             Event::ProviderError(error) => {
-                return Err(self.evidence.provider(error, self.anthropic, None));
+                return Err(self.evidence.provider(error, None));
             }
             Event::Custom { kind, .. } => {
                 return Err(ModelError::Adapter(format!(

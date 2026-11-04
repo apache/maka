@@ -223,13 +223,9 @@ async fn released_request_rehydration(with_image: bool) {
             .unwrap(),
     );
     let capture = model_attempt::RequestSource::from(view.as_ref());
-    let surface = crate::request_composition::Surface::capture(
-        &original_tools,
-        &inner.shared.model,
-        &input,
-        &view,
-    )
-    .unwrap();
+    let surface =
+        crate::request_composition::Surface::capture(&original_tools, &inner.shared.model, &input)
+            .unwrap();
     let mut prompt = model_attempt::prompt(
         &inner,
         &input,
@@ -260,6 +256,7 @@ async fn released_request_rehydration(with_image: bool) {
         definitions,
         surface.max_output_tokens,
         ModelPurpose::Main,
+        None,
     )
     .unwrap();
     let expected = prepared.input_digest.clone();
@@ -339,6 +336,7 @@ async fn released_request_rehydration(with_image: bool) {
         vec![],
         output_limit,
         ModelPurpose::Main,
+        None,
     )
     .unwrap();
     assert_eq!(replayed_request.input_digest, expected);
@@ -360,6 +358,7 @@ async fn released_request_rehydration(with_image: bool) {
         rebuilt.tools.definitions(),
         rebuilt.surface.max_output_tokens,
         ModelPurpose::Main,
+        None,
     )
     .unwrap();
     assert_eq!(rebuilt_request.input_digest, expected);

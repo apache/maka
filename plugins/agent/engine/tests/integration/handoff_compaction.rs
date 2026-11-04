@@ -62,7 +62,9 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
             read_request(&mut socket).await;
             seen.send(()).unwrap();
             released.await.unwrap();
-            respond(&mut socket, true).await;
+            crate::dynamic_tools::respond_tools(&mut socket, vec![
+                crate::dynamic_tools::call("call-1", "echo", serde_json::json!({"value":42}))
+            ], 100_000).await;
             let mut summary = None;
             let mut main = None;
             for _ in 0..2 {
@@ -106,8 +108,8 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         });
         first.context = Some(ModelRequestContext {
             operation: maka_agent_facts::context::ModelOperation::Inference,
-            codex: None, provider_id: "openai".into(), context_window: Some(64_000), declared_window: Some(7),
-            model_context_window: None,
+            codex: None, provider_id: "openai".into(), context_window: Some(170_000), declared_window: Some(110_000),
+            model_context_window: Some(200_000),
         });
         let configuration = first.configuration.clone();
         let context = first.context.clone();

@@ -303,6 +303,7 @@ async fn run_from(
                                 input,
                                 prompt,
                                 tools.replay_selected(&checkpoint.loaded),
+                                &model_attempt::RequestSource::from(context.as_ref()),
                                 cancellation,
                             )
                             .await
@@ -340,24 +341,11 @@ async fn run_from(
                         return Err(RunError::Cancelled);
                     }
                     input.refresh_model(cancellation).await?;
-                    if tools.is_idle()
-                        && effects.is_idle()
-                        && pending
-                            .as_ref()
-                            .is_some_and(auto_context::Pending::is_finished)
-                        && pending
-                            .take()
-                            .expect("finished candidate")
-                            .adopt(inner, &input.invocation, cancellation)
-                            .await?
-                    {
-                        compaction = CompactionBudget::Reshaped;
-                    }
                     let mut context =
                         model_attempt::read_source(inner, input, cancellation).await?;
                     tools.set_model(input.provider.tool_context());
                     let (mut request_tools, mut surface) =
-                        capture_surface(inner, input, &tools, &context, cancellation).await?;
+                        capture_surface(inner, input, &tools, cancellation).await?;
                     let mut prompt = model_attempt::prompt(
                         inner,
                         input,
@@ -370,13 +358,19 @@ async fn run_from(
                         maka_agent_facts::context::ModelPurpose::Main,
                     )
                     .await?;
-                    let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
+                    let size = auto_context::estimate(
+                        input,
+                        &context,
+                        &prompt,
+                        &request_tools.definitions(),
+                    )?;
+                    let timing = auto_context::timing(input, size);
                     if tools.is_idle()
                         && effects.is_idle()
-                        && ((needs_compaction && pending.is_some())
+                        && ((timing == auto_context::Timing::Adopt && pending.is_some())
                             || (compaction == CompactionBudget::Available
                                 && pending.is_none()
-                                && (needs_compaction || auto_context::due(input, &context))))
+                                && timing != auto_context::Timing::Continue))
                     {
                         prompt
                             .close()
@@ -402,7 +396,7 @@ async fn run_from(
                             }
                         };
                         if let Some(candidate) = candidate {
-                            if !needs_compaction {
+                            if timing == auto_context::Timing::Prepare {
                                 pending = Some(candidate);
                             } else if candidate
                                 .adopt(inner, &input.invocation, cancellation)
@@ -417,7 +411,7 @@ async fn run_from(
                         context = model_attempt::read_source(inner, input, cancellation).await?;
                         tools.set_model(input.provider.tool_context());
                         (request_tools, surface) =
-                            capture_surface(inner, input, &tools, &context, cancellation).await?;
+                            capture_surface(inner, input, &tools, cancellation).await?;
                         prompt = model_attempt::prompt(
                             inner,
                             input,
@@ -906,7 +900,6 @@ async fn capture_surface<'tools>(
     inner: &RunContext,
     input: &RunSettings,
     tools: &'tools RunTools,
-    context: &maka_event_log::context::ContextView,
     cancellation: &CancellationToken,
 ) -> Result<
     (
@@ -922,7 +915,6 @@ async fn capture_surface<'tools>(
         &request_tools,
         &inner.shared.model,
         input,
-        context,
     )?);
     Ok((request_tools, surface))
 }
