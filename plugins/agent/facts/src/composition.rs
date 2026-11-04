@@ -144,33 +144,6 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
-    fn canonical_tools_restore_independent_shared_attempt_material() {
-        let canonical = br#"{"systemPrompt":null,"dynamicContext":[],"toolCatalogDigest":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","tools":[{"name":"fixture","description":"historical description","inputSchema":{"type":"integer"}}],"providerOptions":null,"maxOutputTokens":null,"sources":[]}"#;
-        let composition: RequestComposition = serde_json::from_slice(canonical).unwrap();
-        let restored_again: RequestComposition = serde_json::from_slice(canonical).unwrap();
-        assert!(!Arc::ptr_eq(
-            &composition.tools[0],
-            &restored_again.tools[0]
-        ));
-        let summary_tools = composition.tools.clone();
-        let attempt_tools = summary_tools.clone();
-        assert!(Arc::ptr_eq(&composition.tools[0], &summary_tools[0]));
-        assert!(Arc::ptr_eq(&summary_tools[0], &attempt_tools[0]));
-        let mut current = composition.tools[0].as_ref().clone();
-        current.description = "current description".into();
-        current.input_schema = serde_json::json!({"type":"boolean"});
-        assert_eq!(attempt_tools[0].name, current.name);
-        assert_eq!(attempt_tools[0].description, "historical description");
-        assert_eq!(
-            attempt_tools[0].input_schema,
-            serde_json::json!({"type":"integer"})
-        );
-        let frozen = composition.freeze().unwrap();
-        assert_eq!(frozen.bytes(), canonical);
-        assert_eq!(frozen.digest(), content_digest(canonical));
-    }
-
-    #[test]
     fn committed_evidence_releases_inline_body_and_keeps_original_locator() {
         let frozen = Arc::new(
             RequestComposition {

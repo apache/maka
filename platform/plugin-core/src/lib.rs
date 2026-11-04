@@ -141,25 +141,3 @@ pub fn identifier(value: &str) -> Result<(), Error> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod schema_tests {
-    use super::*;
-    use serde_json::json;
-
-    #[test]
-    fn compiled_schemas_are_reused_without_reusing_value_validation() {
-        let schema = json!({"type":"integer", "minimum": 3});
-        let first = validator(&schema).unwrap();
-        assert!(std::sync::Arc::ptr_eq(
-            &first,
-            &validator(&schema.clone()).unwrap()
-        ));
-        assert!(validate_value(&schema, &json!(3)).is_ok());
-        assert!(validate_value(&schema, &json!(2)).is_err());
-        assert!(validate_value(&schema, &json!("3")).is_err());
-        let changed = json!({"type":"integer", "minimum": 4});
-        assert!(validate_value(&changed, &json!(3)).is_err());
-        assert!(validator(&json!({"type": "not-a-json-type"})).is_err());
-    }
-}

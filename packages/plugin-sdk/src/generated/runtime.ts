@@ -1493,6 +1493,7 @@ export type PricingMutation =
       modelKey: string;
     };
 export type LanguagePreference = 'auto' | 'en' | 'zh-CN' | 'zh-TW';
+export type ShellPreference = 'auto' | 'git_bash';
 export type ProxyProtocol = 'http' | 'https' | 'socks5';
 export type CredentialLocator =
   | {
@@ -1562,8 +1563,8 @@ export type SettingsPreferencesMutation =
       incognitoActive: boolean;
     }
   | {
-      kind: 'shell_titles';
-      enabled: boolean;
+      kind: 'shell';
+      value: ShellPolicy;
     };
 export type SettingsPreferencesUpdated =
   | {
@@ -3833,7 +3834,7 @@ export type AgentSendResult =
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSendRejection = 'skills_unavailable' | 'turn_stopped';
+export type AgentSendRejection = 'model_unavailable' | 'skills_unavailable' | 'turn_stopped';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -6390,12 +6391,12 @@ export interface AgentWorkRead {
   cursor?: AgentAnswerCursor | null;
 }
 /**
- * Exact public selection observed by a caller, checked once at run admission.
+ * Stable model identity, resolved from current connection settings at admission.
  */
 export interface ModelSelection {
   connectionId: string;
-  revision: number;
   modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface SettingsModelCursor {
   query: string;
@@ -6622,7 +6623,7 @@ export interface SettingsAssistantPreferences {
   displayName: string;
   workspaceInstructions: boolean;
   incognitoActive: boolean;
-  shellTitles: boolean;
+  shell: ShellPolicy;
 }
 export interface MessagePredictionSettings {
   enabled: boolean;
@@ -6633,6 +6634,11 @@ export interface MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt?: string | null;
+}
+export interface ShellPolicy {
+  preference: ShellPreference;
+  executable: string;
+  titles: boolean;
 }
 export interface SettingsNetworkSnapshot {
   revision: number;
@@ -6777,9 +6783,14 @@ export interface SettingsModelDefaults {
   defaultThinkingLevel: ThinkingLevel | null;
 }
 export interface SettingsUpdateModelSettings {
-  selection: ModelSelection;
+  expected: ConnectionVersionBasis;
+  modelId: string;
   tools: SettingsModelToolPreferences;
   limits: SettingsModelLimits;
+}
+export interface ConnectionVersionBasis {
+  connectionId: string;
+  revision: number;
 }
 export interface SettingsConnectionSummary {
   /**
@@ -6792,10 +6803,6 @@ export interface SettingsConnectionSummary {
   provider: Identity;
   enabled: boolean;
   enabledModelCount: number;
-}
-export interface ConnectionVersionBasis {
-  connectionId: string;
-  revision: number;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can

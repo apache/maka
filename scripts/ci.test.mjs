@@ -71,6 +71,8 @@ function fixture() {
         'third-party/nsh/crates/nsh-platform-windows',
         ['third-party/nsh/crates/nsh-core'],
       ],
+      ['maka-process', 'platform/process'],
+      ['maka-settings-native', 'plugins/settings/native'],
       ['maka-ui-build', 'tools/ui-build'],
     ]),
     nsh: workspace([
@@ -209,15 +211,7 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
 
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {
   const plan = fixture()(['packages/plugin-sdk/src/runtime/client.ts']);
-  for (const id of [
-    'root',
-    'bridge',
-    'desktop',
-    'windows-desktop',
-    'clippy',
-    'contracts',
-    'product',
-  ])
+  for (const id of ['root', 'bridge', 'desktop', 'windows-desktop', 'contracts', 'product'])
     assert.ok(plan.suites[id], id);
   assert.equal(plan.suites.root.filter, 'all()');
   assert.equal(plan.suites.native, undefined);
@@ -338,7 +332,23 @@ test('Host identity inputs execute real macOS tests, including changes outside C
   }
 });
 
-test('native macOS and Windows behavior verification select nextest during runner setup', () => {
+test('Windows shell changes run native Git Bash behavior tests on Windows', () => {
+  for (const path of [
+    'platform/process/src/shell.rs',
+    'plugins/settings/native/src/preferences.rs',
+  ]) {
+    const plan = fixture()([path]);
+    assert.ok(plan.suites['windows-shell'], path);
+    const runners = plan.workers.filter((worker) => worker.suites.includes('windows-shell'));
+    assert.deepEqual(
+      runners.map((worker) => worker.runner),
+      ['windows-latest'],
+      path,
+    );
+  }
+});
+
+test('native behavior verification selects nextest on macOS and Windows', () => {
   const temporary = mkdtempSync(join(tmpdir(), 'maka-native-tools-'));
   try {
     for (const role of ['native-macos', 'native-ubuntu', 'native-windows']) {
@@ -352,7 +362,7 @@ test('native macOS and Windows behavior verification select nextest during runne
       );
       assert.equal(
         readFileSync(output, 'utf8'),
-        role === 'native-macos' || role === 'native-windows' ? 'tools=cargo-nextest\n' : 'tools=\n',
+        role !== 'native-ubuntu' ? 'tools=cargo-nextest\n' : 'tools=\n',
       );
     }
   } finally {

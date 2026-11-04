@@ -20,7 +20,7 @@
 use super::*;
 
 impl Owner {
-    pub(super) async fn saved_model(
+    pub(super) fn saved_model(
         &self,
         configuration: &maka_agent_api::session::ResolvedConfiguration,
     ) -> Result<(ModelSelection, Option<ThinkingLevel>), String> {
@@ -32,21 +32,10 @@ impl Owner {
         else {
             return Err("agent_model_selection_missing".into());
         };
-        let catalog = self
-            .configuration
-            .model_catalog(Some(connection_id))
-            .await
-            .map_err(|error| error.to_string())?;
-        let connection = catalog
-            .connections
-            .iter()
-            .find(|row| &row.connection_id == connection_id)
-            .ok_or("agent_model_unavailable")?;
         Ok((
             ModelSelection {
                 connection_id: connection_id.clone(),
                 model_id: model_id.clone(),
-                revision: connection.revision,
             },
             *thinking_level,
         ))

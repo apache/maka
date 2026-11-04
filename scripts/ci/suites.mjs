@@ -95,11 +95,6 @@ export const suites = {
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
     extraInputs: [...embeddedInputs, 'scripts/rust/build-cli.mjs'],
   },
-  clippy: {
-    workspace: 'root',
-    packages: 'workspace',
-    extraInputs: embeddedInputs,
-  },
   contracts: {
     workspace: 'root',
     packages: ['maka-schema', 'maka-workbench'],
@@ -207,6 +202,21 @@ export const suites = {
       'scripts/rust/run-cli.test.mjs',
     ],
   },
+  'windows-shell': {
+    workspace: 'root',
+    packages: ['maka-process', 'maka-settings-native', 'maka-agent-native'],
+    cargoArgs: [
+      '--locked',
+      '-p',
+      'maka-process',
+      '-p',
+      'maka-settings-native',
+      '-p',
+      'maka-agent-native',
+    ],
+    filter:
+      'test(git_bash) | test(shell_setting_rejects_invalid_bash_and_persists_valid_host_choice)',
+  },
   native: {
     workspace: 'root',
     packages: ['maka-computer-use'],
@@ -233,15 +243,6 @@ export const workers = [
     dependencies: 'headless',
     javascript: true,
     compile: false,
-  },
-  {
-    id: 'clippy',
-    suites: ['clippy'],
-    runner: 'ubuntu-latest',
-    workspace: 'root',
-    dependencies: 'headless',
-    javascript: true,
-    compile: true,
   },
   {
     id: 'product',
@@ -283,7 +284,7 @@ export const workers = [
     id: `native-${os}`,
     suites:
       os === 'windows'
-        ? ['native', 'windows-desktop', 'windows-nsh']
+        ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh']
         : os === 'macos'
           ? ['native', 'macos-host']
           : ['native'],

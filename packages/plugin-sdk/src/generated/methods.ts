@@ -207,6 +207,7 @@ export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'zh-CN'
   | 'zh-TW';
 export type SettingsAssistantPreferencesOutput_Language = 'en' | 'zh-CN' | 'zh-TW';
+export type SettingsAssistantPreferencesOutput_ShellPreference = 'auto' | 'git_bash';
 export type SettingsCatalogModelsInput_CatalogModelReference = Runtime.CatalogModelReference;
 export type SettingsResolveModelInput_ModelOverride = Runtime.ModelOverride;
 export type SettingsUpdateInput_Nullable_MapOf_ModelOverride = {
@@ -1051,7 +1052,7 @@ export interface ServiceMethods {
         displayName: string;
         workspaceInstructions: boolean;
         incognitoActive: boolean;
-        shellTitles: boolean;
+        shell: SettingsAssistantPreferencesOutput_ShellPolicy;
       };
     };
     catalogModels: {
@@ -1239,7 +1240,7 @@ export interface ServiceMethods {
       mode: 'query';
       input: {
         connectionId: string;
-        revision: number;
+        revision?: number | null;
         /**
          * Opt in to the complete editing projection; credential reads stay narrow.
          */
@@ -1889,12 +1890,12 @@ export interface AgentReadHistoryCheckpointOutput_AgentHistoryCheckpointSession 
   revision: number;
 }
 /**
- * Exact public selection observed by a caller, checked once at run admission.
+ * Stable model identity, resolved from current connection settings at admission.
  */
 export interface AgentSkillCandidatesInput_ModelSelection {
   connectionId: string;
-  revision: number;
   modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface AgentSkillCandidatesInput_AgentExecutorSelection {
   executor: string;
@@ -1950,6 +1951,11 @@ export interface SettingsAssistantPreferencesOutput_MessagePredictionSettings {
    * None or blank selects the localized built-in instructions.
    */
   prompt: string | null;
+}
+export interface SettingsAssistantPreferencesOutput_ShellPolicy {
+  preference: SettingsAssistantPreferencesOutput_ShellPreference;
+  executable: string;
+  titles: boolean;
 }
 export interface SettingsCatalogModelsOutput_SettingsCatalogModel {
   reference: SettingsCatalogModelsOutput_CatalogModelReference;

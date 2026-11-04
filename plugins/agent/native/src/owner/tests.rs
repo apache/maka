@@ -50,6 +50,8 @@ mod file_browsing;
 
 mod health;
 mod processes;
+#[cfg(windows)]
+mod windows_shell;
 
 mod protocol_processes;
 
@@ -858,7 +860,6 @@ impl Fixture {
         let row = self.config.catalog().await.unwrap().connections.remove(0);
         ModelSelection {
             connection_id: row.connection_id,
-            revision: row.revision,
             model_id: "fixture-model".into(),
         }
     }

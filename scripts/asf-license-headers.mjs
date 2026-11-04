@@ -233,6 +233,9 @@ export const exclusionRules = [
       'Work of third parties kept under its own license, including files Maka adapted from an upstream project and therefore does not wholly own. ASF policy treats the non-Maka portion of a mixed-origin file as third-party work, so Maka may not assert a whole-file ASF header over one; whether a heavily modified file should instead carry a combined header is a PPMC decision, not a mechanical sweep. Their attribution belongs to LICENSE and the NOTICE audit, not to this gate.',
     matches: (path) =>
       isOneOf(
+        'products/maka/workbench/app/Icon.tsx',
+        'products/maka/workbench/app/lucide.ts',
+        'products/maka/workbench/scripts/lucide.py',
         // Codex Apache-2.0 adaptations; exact origins and modifications in SOURCE.md / LICENSE.
         'plugins/workspace/workspace-files/patch/src/lib.rs',
         'plugins/workspace/workspace-files/patch/src/parser.rs',

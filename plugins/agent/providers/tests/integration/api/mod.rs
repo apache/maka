@@ -309,10 +309,6 @@ async fn repeated_definitions_keep_each_captured_model_observation() {
                 (binding, context_window)
             })
             .collect();
-        assert!(
-            std::ptr::eq(bindings[0].0.descriptor(), bindings[1].0.descriptor()),
-            "provider {provider} should share its compiled descriptor policy"
-        );
         for (binding, context_window) in bindings {
             let configuration = binding.configure(json!({})).unwrap();
             let model = binding

@@ -151,6 +151,7 @@ impl RequestBinding for Binding {
                         BoundTool::Unavailable
                     } else {
                         BoundTool::Prepared(Arc::new(Service {
+                            shell: None,
                             web_basis: Some(capture.basis.clone()),
                             ..service
                         }))

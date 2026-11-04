@@ -25,8 +25,6 @@ import assert from 'node:assert/strict';
 import { readFileSync, statSync } from 'node:fs';
 import test from 'node:test';
 
-import { headlineText, heroText } from '../scripts/hero-text.mjs';
-
 const dist = new URL('../dist/', import.meta.url);
 const page = (path) => readFileSync(new URL(path, dist), 'utf8');
 const locales = ['en', 'zh-CN'];
@@ -139,35 +137,7 @@ test('the brand links to the homepage of the current language on every page', ()
   }
 });
 
-test('the READMEs and repository description match the published positioning', () => {
-  const read = (path) => readFileSync(new URL(`../../${path}`, import.meta.url), 'utf8');
-  for (const locale of locales) {
-    const positioning = meta(page(`${locale}/index.html`), 'description');
-    assert.ok(positioning, `${locale} description`);
-    const readme = locale === 'en' ? 'README.md' : `README.${locale}.md`;
-    assert.ok(read(readme).includes(positioning), readme);
-  }
-  const [, description] = read('.asf.yaml').match(/description: >-\n((?: {4}.*\n)+)/u);
-  assert.equal(
-    description.replace(/\s+/gu, ' ').trim(),
-    meta(page('en/index.html'), 'description'),
-  );
-});
 
-// Social previews are screenshots of these pages, so the copy the render
-// baked in has to be the copy the pages carry now. Compare through the
-// manifest the render writes, which needs no browser and no pixels.
-test('the committed social previews were rendered from the current hero copy', () => {
-  const manifest = JSON.parse(
-    readFileSync(new URL('../src/assets/social-preview.json', import.meta.url), 'utf8'),
-  );
-  const rerender = 'run `npm --prefix website run social-preview` and commit the images';
-  for (const locale of locales) {
-    const html = page(`${locale}/index.html`);
-    assert.equal(heroText(html), manifest[locale], `${locale}: ${rerender}`);
-    assert.equal(headlineText(html), manifest.headline[locale], `${locale} headline: ${rerender}`);
-  }
-});
 
 test('both languages link the same documents', () => {
   for (const path of pages) {

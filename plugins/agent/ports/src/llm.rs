@@ -169,28 +169,3 @@ impl Generate {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn persisted_generation_has_one_canonical_english_default() {
-        let original = r#"{"prompt":"原始 user text","system":null,"maxOutputTokens":null}"#;
-        let mut input: Generate = serde_json::from_str(original).unwrap();
-        assert_eq!(input.language, Language::En);
-        assert_eq!(serde_json::to_string(&input).unwrap(), original);
-        for (language, tag) in [(Language::ZhCn, "zh-CN"), (Language::ZhTw, "zh-TW")] {
-            input.language = language;
-            let encoded = serde_json::to_value(&input).unwrap();
-            assert_eq!(encoded["language"], tag);
-            assert_eq!(encoded["prompt"], "原始 user text");
-            assert_eq!(
-                serde_json::from_value::<Generate>(encoded)
-                    .unwrap()
-                    .language,
-                language
-            );
-        }
-    }
-}

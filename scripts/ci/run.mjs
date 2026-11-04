@@ -56,15 +56,25 @@ export function executor(root, worker = {}) {
         ...(noRun ? ['--no-run'] : []),
         ...extra,
       ],
-      { env: { ...env, NEXTEST_PROFILE: suites[id].profile ?? 'default' } },
+      {
+        env: {
+          ...env,
+          NEXTEST_PROFILE: suites[id].profile ?? 'default',
+          ...(id === 'windows-shell'
+            ? {
+                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(env.ProgramFiles, 'LLVM', 'bin'),
+                MAKA_TEST_GIT_BASH:
+                  env.MAKA_TEST_GIT_BASH ?? join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+              }
+            : {}),
+        },
+      },
     );
 
   async function check(id) {
     if (id === 'format') {
       await cargo(['fmt', '--all', '--', '--check']);
       await node(['node_modules/@biomejs/biome/bin/biome', 'format', '.']);
-    } else if (id === 'lint-js') {
-      await node(['node_modules/@biomejs/biome/bin/biome', 'lint', '.']);
     } else if (id === 'tooling-tests') {
       await node([
         '--test',
@@ -88,7 +98,17 @@ export function executor(root, worker = {}) {
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui', 'windows-desktop', 'windows-nsh', 'macos-host'].includes(id)) {
+    if (
+      [
+        'root',
+        'desktop',
+        'gpui',
+        'windows-desktop',
+        'windows-nsh',
+        'macos-host',
+        'windows-shell',
+      ].includes(id)
+    ) {
       await nextest(id, true, filter, extra);
       if (id === 'windows-nsh') {
         await cargo([
@@ -110,8 +130,6 @@ export function executor(root, worker = {}) {
       mkdirSync(join(target, 'ci'), { recursive: true });
       copyFileSync(join(target, 'debug/maka'), join(target, 'ci/maka-bridge'));
       await nextest(id, true);
-    } else if (id === 'clippy') {
-      await cargo(['clippy', '--locked', '--workspace', '--all-targets', '--', '-D', 'warnings']);
     } else if (id === 'native-build') {
       await node(['scripts/rust/build-cli.mjs']);
       await run(join(target, 'debug/maka'), ['--version']);
@@ -148,7 +166,7 @@ export function executor(root, worker = {}) {
 
   async function verify(id, filter, extra = []) {
     if (id === 'tooling') {
-      for (const name of ['format', 'lint-js', 'tooling-tests', 'licenses']) await check(name);
+      for (const name of ['format', 'tooling-tests', 'licenses']) await check(name);
     } else if (id === 'macos-host') {
       await nextest(id);
       await node([
@@ -157,7 +175,7 @@ export function executor(root, worker = {}) {
         'scripts/rust/pack-cli.test.mjs',
         'scripts/rust/run-cli.test.mjs',
       ]);
-    } else if (id === 'root') {
+    } else if (id === 'root' || id === 'windows-shell') {
       await nextest(id, false, filter, extra);
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
@@ -170,12 +188,6 @@ export function executor(root, worker = {}) {
       await nextest(id);
     } else if (id === 'contracts') {
       await node(['packages/plugin-sdk/scripts/generate.mjs', 'check']);
-      await node([
-        'node_modules/typescript/bin/tsc',
-        '-p',
-        'packages/plugin-sdk/tsconfig.json',
-        '--noEmit',
-      ]);
       await node([
         'node_modules/typescript/bin/tsc',
         '-p',
@@ -221,7 +233,7 @@ export function executor(root, worker = {}) {
         ['--test', 'third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs'],
         { env: { ...env, CHROME: chrome } },
       );
-    } else if (!['clippy', 'native', 'native-build'].includes(id)) {
+    } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }
   }

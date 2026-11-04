@@ -17,6 +17,7 @@
  * under the License.
  */
 //! A public Host opens the same persisted product source across process restarts.
+mod decisions;
 mod publication;
 pub(super) mod update;
 use super::{HostError, Input, launch, packages};
@@ -493,7 +494,8 @@ fn launch_update(
     configuration: &Value,
 ) -> Result<(Selection, Vec<String>), HostError> {
     let mut selection = serde_json::from_value(configuration.clone())?;
-    let mut changes = publication::rebase(&mut selection, previous, target)?;
+    let mut changes = decisions::publication(&mut selection, previous.plan(), target.plan())?;
+    changes.extend(publication::rebase(&mut selection, previous, target)?);
     changes.extend(publication::refresh_from_plan(
         &mut selection,
         target.plan(),

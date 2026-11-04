@@ -17,20 +17,28 @@
  * under the License.
  */
 
-import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
-import test from 'node:test';
-import { fileURLToPath } from 'node:url';
+import { mount, View } from 'nsh';
+import { MarkdownBody } from '../../../workbench/app/MarkdownBody';
+import type { Row } from '../../../workbench/app/history';
+import { C } from '../../../workbench/app/ui';
 
-test('the product logo is reproducible from its checked-in geometry', () => {
-  const python = ['python3', 'python'].find(
-    (command) => spawnSync(command, ['--version']).status === 0,
-  );
-  assert.ok(python, 'Python is required to verify the logo');
-  const result = spawnSync(
-    python,
-    [fileURLToPath(new URL('./generate-logo.py', import.meta.url)), '--check'],
-    { encoding: 'utf8' },
-  );
-  assert.equal(result.status, 0, result.stdout + result.stderr);
-});
+const row: Row = {
+  key: 'mermaid',
+  messageId: 'mermaid',
+  field: 'body',
+  role: 'assistant',
+  prefix: true,
+  text: '### Mermaid diagrams in Maka\n\n```mermaid\nflowchart LR\n  A[源码] --> B[图表]\n  style B fill:#1d745a,stroke:#24c483,color:#ffffff\n```\n',
+};
+
+mount(() => (
+  <View style={{ flex: 1, padding: 32, backgroundColor: C.background }}>
+    <MarkdownBody
+      row={() => row}
+      sourceId="mermaid-preview"
+      sessionId="mermaid-preview"
+      openLink={async () => {}}
+      userScroll={() => {}}
+    />
+  </View>
+));

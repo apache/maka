@@ -94,7 +94,7 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
         assert_eq!(duplicate, resumed, "operation journal returns original reply");
         let second = fixture.mutation(2, "resume", input.clone(), Uuid::new_v4()).await.unwrap();
         assert_eq!(second, json!({"kind":"parked","reason":"already_continued"}));
-        let selected = fixture.selection().await;
+        let selected = fixture.config.catalog().await.unwrap().connections.remove(0);
         assert!(matches!(fixture.config.remove_connection(RemoveCatalogConnectionInput {
             expected: ConnectionVersionBasis { connection_id: selected.connection_id, revision: selected.revision },
         }).await.unwrap(), CatalogMutationResult::Committed { .. }));

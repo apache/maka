@@ -35,7 +35,7 @@ just run --help
 just check
 ```
 
-`just check` 执行格式、lint、类型、测试和许可证检查。针对 Rust 局部修改，可运行 `cargo nextest run -p CRATE`；通过 `--lib` 或 `--test NAME` 限制构建的测试目标。先运行与改动行为相关的检查，再做完整仓库检查。
+`just check` 执行格式、类型、测试和许可证检查。针对 Rust 局部修改，可运行 `cargo nextest run -p CRATE`；通过 `--lib` 或 `--test NAME` 限制构建的测试目标。先运行与改动行为相关的检查，再做完整仓库检查。
 
 [产品指南](products/maka/README.zh-CN.md)说明 TypeScript 开发方式，[插件指南](plugins/README.zh-CN.md)介绍声明与组合。原生打包和 V8 要求见 [scripts/rust](scripts/rust/README.zh-CN.md)。[官网](website/README.md)使用独立的 manifest 和锁文件。
 

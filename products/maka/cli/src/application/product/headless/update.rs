@@ -544,6 +544,7 @@ fn updated_source(
     available: &[Package],
     replacements: &BTreeMap<String, PackageRef>,
 ) -> Result<Input, HostError> {
+    super::decisions::source(&mut input, replacements)?;
     let mut declarations = maka_plugin_core::package::Packages::default();
     for package in available {
         declarations.insert_checked(

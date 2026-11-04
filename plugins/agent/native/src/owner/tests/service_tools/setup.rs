@@ -550,7 +550,7 @@ impl Service {
                 "sources":if skills.standard{json!([])}else{json!([{"id":"fixture","label":"Fixture","path":skills.path}])},"manage":false,"preferences":false})
             }
             Self::Processes { isolated, .. } => {
-                json!({"filesystem":{"default":"write","rules":[],"denyGlobs":[]},"network":"allowed","helper":null,"sessionOwner":id(1),"isolatedWorkspaces":isolated})
+                json!({"filesystem":{"default":"write","rules":[],"denyGlobs":[]},"network":"allowed","helper":if cfg!(windows) { Some(std::env::current_exe().unwrap()) } else { None },"sessionOwner":id(1),"isolatedWorkspaces":isolated})
             }
             #[cfg(target_os = "macos")]
             Self::Protocol => {
