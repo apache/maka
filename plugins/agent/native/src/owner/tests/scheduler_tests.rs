@@ -333,3 +333,64 @@ async fn scheduler_reopens_frozen_fire_and_reconciles_original_admission_after_l
         storage.finish().await.unwrap();
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn scheduler_drives_an_original_pending_admission_after_authority_normalization() {
+    use maka_capabilities::storage::{Data, Mutation, Namespace, Store};
+    use maka_event_log::message_admissions::{PendingExecution, PendingMessageAdmission};
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let source = f.create("Background authority").await;
+        let boundary = f.owner.session(&source).await.unwrap().configuration;
+        let created = f.mutation(2,"schedule",json!({"kind":"create","input":task(json!({"kind":"session","target":{"sessionId":source,"workspace":boundary.workspace,"permissions":boundary.permissions,"boundaryRevision":boundary.boundary_revision,"binding":boundary.binding},"model":f.selection().await,"thinkingLevel":null}))}),Uuid::new_v4()).await.unwrap();
+        let id = created["taskId"].as_str().unwrap();
+        let storage = maka_host_runtime::storage::Storage::new(f.store.clone(),f.owner.prefix.clone(),Namespace::new("maka.agent.scheduler",maka_plugin_core::scope::Scope::Profile).unwrap());
+        let key = format!("task:{id}");
+        let saved = storage.read(key.clone()).await.unwrap().unwrap();
+        let mut pending: maka_scheduler::plan::TaskPlan<ScheduledEffect,Value> = serde_json::from_value(saved.data.value().unwrap().clone()).unwrap();
+        pending.task.next_fire_at = Some(now() as i64);
+        pending.claim(now() as i64).unwrap();
+        let fire = pending.pending.as_mut().unwrap();
+        let model = &mut fire.authorization.as_mut().unwrap()["basis"]["model"];
+        model["model_override"] = json!({"adapter":model["route"]["adapter"]});
+        let mut basis = fire.authorization.as_ref().unwrap()["basis"].clone();
+        let original_fingerprint = "a".repeat(64);
+        basis["fingerprint"] = json!(original_fingerprint);
+        let identity = hex::encode(Sha256::digest(fire.id.as_bytes()));
+        let invocation = Invocation { session_id: source.clone(), turn_id: format!("t_{identity}"), run_id: format!("r_{identity}"), invocation_id: format!("i_{identity}") };
+        let message: maka_agent_facts::input::MessageInput = fire.intent.body().to_string().into();
+        let original = PendingMessageAdmission {
+            execution: PendingExecution { owner: f.owner.prefix.clone(), basis },
+            invocation: invocation.clone(), steering_invocation: None,
+            source: maka_agent_facts::message::RootSourceMessage {
+                message: maka_agent_facts::input::DeliveredMessage { origin: None, message_id: format!("m_{identity}"), submitted_content_digest: message.content_digest().unwrap(), content: message.clone() },
+                unprepared_content: message, submitted_placement: maka_agent_facts::message::Placement::CurrentTurn,
+                disposition: maka_agent_facts::message::MessageDisposition::TurnStarted, submitted_intent: None,
+            },
+            required_tools: Default::default(), admitted_at: fire.scheduled_at as u64,
+        };
+        let ordered = f.owner.runs.ordered(&source).await;
+        f.store.session(&source).await.unwrap().admit_message(original).await.unwrap();
+        f.owner.schedule_pending().await.unwrap();
+        storage.batch(vec![Mutation { key, expected_revision: Some(saved.revision), data: Data::Present(serde_json::to_value(&pending).unwrap()) }]).await.unwrap();
+        drop(ordered);
+        // Wake the ordinary scheduler after the durable cut; no user message drives the queued work.
+        f.mutation(2,"schedule",json!({"kind":"create","input":task(json!({"kind":"reminder"}))}),Uuid::new_v4()).await.unwrap();
+        let (mut socket,_) = tokio::time::timeout(Duration::from_secs(20), listener.accept()).await.unwrap().unwrap();
+        assert!(request(&mut socket).await.to_string().contains("Remember the original request"));
+        response(&mut socket).await;
+        let recovered = settled(&f,id).await;
+        assert_eq!(recovered["task"]["fireCount"], 1);
+        assert_eq!(recovered["task"]["runs"][0]["runId"], invocation.run_id);
+        assert_eq!(recovered["task"]["runs"][0]["outcome"], "ok");
+        let facts = service_tools::facts(&f,&source).await;
+        let openings: Vec<_> = facts.iter().filter_map(|fact| match fact {
+            maka_agent_facts::event::Fact::InvocationOpened { input, .. } => Some(input), _ => None,
+        }).collect();
+        assert_eq!(openings.len(), 1);
+        assert_eq!(openings[0].request_fingerprint(), Some(original_fingerprint.as_str()));
+        f.app.shutdown().await.unwrap();
+        storage.finish().await.unwrap();
+    }).await.unwrap();
+}

@@ -62,9 +62,10 @@ export function executor(root, worker = {}) {
           NEXTEST_PROFILE: suites[id].profile ?? 'default',
           ...(id === 'windows-shell'
             ? {
-                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(env.ProgramFiles, 'LLVM', 'bin'),
+                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(process.env.ProgramFiles, 'LLVM', 'bin'),
                 MAKA_TEST_GIT_BASH:
-                  env.MAKA_TEST_GIT_BASH ?? join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+                  env.MAKA_TEST_GIT_BASH ??
+                  join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
               }
             : {}),
         },
