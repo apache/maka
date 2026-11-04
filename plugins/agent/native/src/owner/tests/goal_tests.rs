@@ -88,6 +88,26 @@ async fn goal_real_model_direct_and_code_mode_continue_only_after_settlement_and
             assert_eq!(create(&f, &session, true, None).await["kind"], "committed");
             let (mut first, _) = listener.accept().await.unwrap();
             let sent = request(&mut first).await;
+            // A retired record need not decode execution authority; one unreadable active record cannot block another Goal.
+            {
+                use maka_capabilities::storage::{Data, Mutation, Namespace, Store};
+                let storage = maka_host_runtime::storage::Storage::new(
+                    f.owner.store.clone(), f.owner.prefix.clone(),
+                    Namespace::new("maka.agent.goal", maka_plugin_core::scope::Scope::Profile).unwrap(),
+                );
+                let saved = f.owner.goals.repository.read(&session).await.unwrap().unwrap();
+                for (name, status) in [("retired", "achieved"), ("unreadable", "active")] {
+                    let neighbor = f.create(name).await;
+                    let mut record = serde_json::to_value(&saved.goal).unwrap();
+                    record["sessionId"] = json!(neighbor);
+                    record["status"] = json!(status);
+                    record["pending"] = Value::Null;
+                    record["arm"]["grant"] = json!({"unsupported_execution_snapshot":true});
+                    let key = format!("session/{}", hex::encode(Sha256::digest(neighbor.as_bytes())));
+                    storage.batch(vec![Mutation { key, expected_revision: None, data: Data::Present(record) }]).await.unwrap();
+                }
+                storage.finish().await.unwrap();
+            }
             let names: Vec<_> = sent["tools"].as_array().unwrap().iter().filter_map(|tool| tool["function"]["name"].as_str()).collect();
             assert!(names.contains(&if code { "exec" } else { "GoalStatus" }), "{names:?}");
             assert!(!f.app.shutdown_if_idle().await.unwrap(), "an active Goal keeps the original Host alive");

@@ -100,21 +100,33 @@ impl Owner {
     }
     async fn tick_goals(self: &Arc<Self>) -> Result<bool, String> {
         let _gate = self.goals.gate.lock().await;
+        let mut errors = vec![];
         for saved in self.goals.repository.sessions().await.map_err(reason)? {
             if self.stop.is_cancelled() {
                 break;
             }
-            if let Err(error) = self.tick_goal(saved).await {
-                eprintln!("Goal: {error}");
+            let result = match saved {
+                Ok(saved) => self.tick_goal(saved).await,
+                Err(error) => Err(reason(error)),
+            };
+            if let Err(error) = result {
+                errors.push(error);
             }
         }
         let monitored = self.goals.repository.sessions().await.map_err(reason)?;
         // Publish while the same gate still excludes Goal mutations. Otherwise
         // an idle tick could overwrite a just-created Goal's retirement hint.
         self.goals.awake.store(
-            monitored.iter().any(|saved| saved.goal.keeps_host_awake()),
+            monitored.iter().any(|saved| {
+                saved
+                    .as_ref()
+                    .map_or(true, |saved| saved.goal.keeps_host_awake())
+            }),
             Ordering::Release,
         );
+        if !errors.is_empty() {
+            return Err(errors.join("\n"));
+        }
         Ok(!monitored.is_empty())
     }
     async fn tick_goal(self: &Arc<Self>, mut saved: Saved<MessageBasis>) -> Result<(), String> {

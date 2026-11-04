@@ -76,7 +76,7 @@ Automatic-title preparation, model and invalid-output failures are durable sessi
 
 Model preparation and OAuth refresh failures emit Host warnings before their original cause is reduced to a public error. Warnings include a safe error category and existing connection/session identifiers when available; they exclude credentials, configuration, request content and arbitrary provider error text. Re-reading a failed refresh does not log the original failure again. Fatal queue and auxiliary-request errors record safe Host diagnostics with available owner, invocation or request identity. Diagnostics distinguish session quarantine from owner shutdown; the original recovery and resource-custody rules remain authoritative.
 
-Model context capacity, any independent input ceiling and the compaction threshold are captured with the accepted model selection and retained across queueing and restart. Without an explicit threshold, known input capacity sets the proactive threshold at 85%; output reserve remains a separate engine calculation.
+Each logical request resolves context capacity and any independent input ceiling from the current model observation, with accepted user overrides retained across queueing and restart. Without an explicit compaction threshold, known input capacity sets the proactive threshold at 85%; output reserve remains a separate engine calculation.
 
 The default composition enables `recaps`. The Session recap command reads cached text; generating a new recap requires explicit confirmation of the selected model and possible charges. Each request reads at most 256 bounded history pages, keeps at most 32 KiB of history text, and limits output to 1,024 tokens and 30 seconds. Incognito mode and session access are checked even for cached reads. Refresh and original operation recovery never regenerate; an unknown request remains pending across restart. Auxiliary usage belongs to the original application operation, and shutdown waits for physical model cleanup.
 
@@ -109,6 +109,10 @@ identity, connection availability, credential authorization and the resolved tra
 still checked before execution. Each logical request resolves one current model
 observation into its context, capabilities, options and output budget; physical retries reuse the
 already frozen request. Catalog changes alone therefore do not invalidate queued/restored work.
+
+Goal scheduling skips authority decoding for inactive records without pending work and
+isolates unreadable records, so one stored Goal cannot prevent other Goals from continuing.
+New admission reads the current settings after shared discovery completes.
 
 A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
 background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts

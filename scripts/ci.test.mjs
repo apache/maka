@@ -18,16 +18,14 @@
  */
 
 import assert from 'node:assert/strict';
-import childProcess, { execFileSync } from 'node:child_process';
-import { syncBuiltinESMExports } from 'node:module';
-import { EventEmitter } from 'node:events';
-import { executor } from './ci/run.mjs';
+import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
+import { executor } from './ci/run.mjs';
 
 const root = '/repo';
 
@@ -272,6 +270,28 @@ test('native behavior verification selects nextest on macOS and Windows', () => 
   }
 });
 
+test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PROGRAMFILES', async () => {
+  const calls = [];
+  const exec = executor(
+    root,
+    { id: 'native-windows' },
+    {
+      env: { PROGRAMFILES: 'C:\\Program Files' },
+      run: async (exe, args, options) => {
+        calls.push({ exe, args, options });
+        return '';
+      },
+    },
+  );
+  await exec.prepare('windows-shell');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.LIBCLANG_PATH, join('C:\\Program Files', 'LLVM', 'bin'));
+  assert.equal(
+    calls[0].options.env.MAKA_TEST_GIT_BASH,
+    join('C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+  );
+});
+
 test('OAR source, worker tests and native fixture reach the Host suite and product build', () => {
   for (const path of [
     'plugins/agent/oar-executor/worker/main.mjs',
@@ -298,22 +318,20 @@ test('OAR source, worker tests and native fixture reach the Host suite and produ
   }
 });
 
-test('PR notices executor runs reviewed coverage rather than release verification', async (t) => {
-  const commands = [];
-  t.mock.method(childProcess, 'spawn', (executable, args) => {
-    commands.push({ executable, args });
-    const child = new EventEmitter();
-    queueMicrotask(() => child.emit('close', 0));
-    return child;
-  });
-  syncBuiltinESMExports();
-  try {
-    await executor('/repo').check('notices');
-    assert.deepEqual(commands, [
-      { executable: process.execPath, args: ['scripts/rust/notices.mjs', 'check-reviewed'] },
-    ]);
-  } finally {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
-  }
+test('PR notices executor runs reviewed coverage rather than release verification', async () => {
+  const calls = [];
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (exe, args) => {
+        calls.push({ exe, args });
+        return '';
+      },
+    },
+  );
+  await exec.check('notices');
+  assert.deepEqual(calls, [
+    { exe: process.execPath, args: ['scripts/rust/notices.mjs', 'check-reviewed'] },
+  ]);
 });
