@@ -39,6 +39,7 @@ pub struct Capture {
     pub session_id: String,
     pub expected_checkpoint_revision: Option<Revision>,
     pub confirmed_subtree_digest: String,
+    pub workspace: Option<maka_event_log::checkpoints::WorkspaceCapture>,
 }
 
 impl HistoryCheckpointPublisher {
@@ -57,7 +58,7 @@ impl HistoryCheckpointPublisher {
         }
     }
 
-    async fn repository(&self, session: &str) -> Result<HistoryCheckpoints, StoreError> {
+    pub(crate) async fn repository(&self, session: &str) -> Result<HistoryCheckpoints, StoreError> {
         if !crate::owner::owns_session(&self.prefix, session) {
             return Err(StoreError::SessionNotFound);
         }
@@ -66,7 +67,7 @@ impl HistoryCheckpointPublisher {
             .await
     }
 
-    fn request(
+    pub(crate) fn request(
         &self,
         capture: &Capture,
         operation: &RecoveryRef,
@@ -78,7 +79,12 @@ impl HistoryCheckpointPublisher {
             || operation.source.deployment != self.scope.deployment
             || operation.namespace != self.scope.namespace
             || operation.export != maka_agent_api::EXPORT
-            || operation.method != "publishHistoryCheckpoint"
+            || operation.method
+                != if capture.workspace.is_some() {
+                    "publishSessionCheckpoint"
+                } else {
+                    "publishHistoryCheckpoint"
+                }
         {
             return Err(StoreError::InvalidTransition(
                 "checkpoint operation belongs to another authority".into(),
@@ -90,6 +96,7 @@ impl HistoryCheckpointPublisher {
             fingerprint: hex::encode(sha2::Sha256::digest(serde_json::to_vec(operation)?)),
             expected_revision: capture.expected_checkpoint_revision,
             confirmed_subtree_digest: capture.confirmed_subtree_digest.clone(),
+            workspace: capture.workspace.clone(),
         })
     }
 
@@ -102,6 +109,33 @@ impl HistoryCheckpointPublisher {
             return Err(StoreError::SessionNotFound);
         }
         self.request(capture, operation).map(|_| ())
+    }
+
+    pub(crate) fn load_request(
+        &self,
+        input: &maka_agent_api::contract::HistoryCheckpointRead,
+        operation: &RecoveryRef,
+    ) -> Result<maka_event_log::checkpoints::LoadOperation, StoreError> {
+        operation
+            .validate()
+            .map_err(|e| StoreError::InvalidTransition(e.to_string()))?;
+        if !crate::owner::owns_session(&self.prefix, &input.session_id)
+            || operation.source.state_domain != self.scope.state_domain
+            || operation.source.deployment != self.scope.deployment
+            || operation.namespace != self.scope.namespace
+            || operation.export != maka_agent_api::EXPORT
+            || operation.method != "loadHistoryCheckpoint"
+        {
+            return Err(StoreError::InvalidTransition(
+                "checkpoint load belongs to another authority".into(),
+            ));
+        }
+        use sha2::Digest;
+        Ok(maka_event_log::checkpoints::LoadOperation {
+            operation: operation.operation,
+            fingerprint: hex::encode(sha2::Sha256::digest(serde_json::to_vec(operation)?)),
+            revision: Revision(input.revision),
+        })
     }
 
     pub async fn publish(
@@ -184,6 +218,7 @@ mod tests {
             session_id: id.clone(),
             expected_checkpoint_revision: None,
             confirmed_subtree_digest: store.preview_bundle(&id).await.unwrap().subtree_digest,
+            workspace: None,
         };
         let operation = RecoveryRef {
             source: DeploymentRef {

@@ -148,6 +148,10 @@ async fn turn(f: &Fixture, listener: &TcpListener, session: &str, text: &str) {
 }
 #[path = "checkpoints/benchmark.rs"]
 mod benchmark;
+#[path = "checkpoints/load.rs"]
+mod load;
+#[path = "checkpoints/workspace.rs"]
+mod workspace;
 
 async fn close(f: &Fixture) {
     f.app.shutdown().await.unwrap();

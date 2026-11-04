@@ -1,0 +1,403 @@
+/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
+ */
+
+//! Bounded directory capture. Caller attestations never become filesystem fencing.
+use super::*;
+use crate::checkpoints::{WorkspaceCapture, WorkspaceEntry, WorkspaceSnapshot};
+use cap_fs_ext::{DirExt, FollowSymlinks, OpenOptionsFollowExt};
+use cap_std::fs::{Dir, OpenOptions};
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io::{Read, Write},
+    path::Path,
+};
+
+#[cfg(test)]
+thread_local! { pub(super) static AFTER_SCAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> = const { std::cell::RefCell::new(None) }; }
+
+const MAX_ENTRIES: usize = 20_000;
+const MAX_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_INVENTORY: u64 = 16 * 1024 * 1024;
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Inventory {
+    version: u32,
+    entries: Vec<WorkspaceEntry>,
+}
+
+fn relative(path: &str) -> Result<(), StoreError> {
+    if path.is_empty()
+        || path.len() > 4096
+        || path.contains('\\')
+        || path.contains(':')
+        || path.chars().any(char::is_control)
+        || path
+            .split('/')
+            .any(|p| p.is_empty() || p == "." || p == ".." || p.ends_with(['.', ' ']))
+    {
+        return Err(invalid("nonportable checkpoint workspace path"));
+    }
+    Ok(())
+}
+
+fn excluded(name: &str) -> bool {
+    matches!(
+        name,
+        ".git" | "node_modules" | ".DS_Store" | "__pycache__" | ".cache" | ".maka-workspace.json"
+    )
+}
+
+fn secret(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name == ".env"
+        || name.starts_with(".env.")
+            && !matches!(
+                name.as_str(),
+                ".env.example" | ".env.sample" | ".env.template"
+            )
+        || matches!(
+            name.as_str(),
+            ".ssh" | ".aws" | ".gnupg" | "credentials.json" | "id_rsa" | "id_ed25519"
+        )
+        || name.ends_with(".key")
+        || name.ends_with(".pem")
+        || name.ends_with(".p12")
+}
+
+fn stamp(meta: &cap_std::fs::Metadata) -> Result<String, StoreError> {
+    #[cfg(unix)]
+    {
+        use cap_std::fs::MetadataExt;
+        Ok(format!(
+            "{}:{}:{}:{}:{}:{}:{:?}",
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mode(),
+            meta.ctime(),
+            meta.ctime_nsec(),
+            meta.modified()?
+        ))
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(format!(
+            "{}:{:?}:{:?}",
+            meta.len(),
+            meta.file_type(),
+            meta.modified()?
+        ))
+    }
+}
+
+fn scan(
+    dir: &Dir,
+    prefix: &str,
+    output: &mut BTreeMap<String, String>,
+    depth: usize,
+) -> Result<(), StoreError> {
+    if depth > 64 {
+        return Err(invalid("checkpoint workspace depth limit"));
+    }
+    for entry in dir.entries()? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| invalid("non-UTF8 checkpoint workspace path"))?;
+        if excluded(&name) {
+            continue;
+        }
+        if secret(&name) {
+            return Err(invalid(
+                "checkpoint workspace contains an excluded secret path",
+            ));
+        }
+        let path = if prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{prefix}/{name}")
+        };
+        relative(&path)?;
+        if output.len() >= MAX_ENTRIES {
+            return Err(invalid("checkpoint workspace entry limit"));
+        }
+        let metadata = dir.symlink_metadata(&name)?;
+        if !metadata.is_dir() && !metadata.is_file() {
+            return Err(invalid(
+                "checkpoint workspace links and special files are unsupported",
+            ));
+        }
+        output.insert(path.clone(), stamp(&metadata)?);
+        if metadata.is_dir() {
+            scan(&dir.open_dir_nofollow(&name)?, &path, output, depth + 1)?;
+        }
+    }
+    Ok(())
+}
+
+fn parent(dir: &Dir, path: &str) -> Result<(Dir, String), StoreError> {
+    relative(path)?;
+    let mut parts = path.split('/').collect::<Vec<_>>();
+    let name = parts.pop().unwrap().to_owned();
+    let mut current = dir.try_clone()?;
+    for part in parts {
+        current = current.open_dir_nofollow(part)?;
+    }
+    Ok((current, name))
+}
+
+pub(super) fn capture(
+    objects: &Objects,
+    request: &Request,
+    source: &WorkspaceCapture,
+) -> Result<WorkspaceSnapshot, StoreError> {
+    if !source.root.is_absolute() || source.identity.is_empty() {
+        return Err(invalid("invalid checkpoint workspace binding"));
+    }
+    let source_path = std::fs::canonicalize(&source.root)?;
+    let root_path = objects.owner.canonical_path();
+    if source_path.starts_with(root_path) || root_path.starts_with(&source_path) {
+        return Err(invalid("checkpoint workspace overlaps state root"));
+    }
+    let dir = Dir::open_ambient_dir(&source_path, cap_std::ambient_authority())?;
+    let before_root = stamp(&dir.dir_metadata()?)?;
+    let mut before = BTreeMap::new();
+    scan(&dir, "", &mut before, 0)?;
+    #[cfg(test)]
+    AFTER_SCAN.with(|hook| {
+        if let Some(action) = hook.borrow_mut().take() {
+            action();
+        }
+    });
+    let mut entries = Vec::new();
+    let mut total = 0u64;
+    let start = std::time::Instant::now();
+    for (path, expected) in &before {
+        if start.elapsed() > std::time::Duration::from_secs(120) {
+            return Err(invalid("checkpoint workspace capture deadline"));
+        }
+        objects.owner.validate_current()?;
+        let (parent, name) = parent(&dir, path)?;
+        let metadata = parent.symlink_metadata(&name)?;
+        if stamp(&metadata)? != *expected {
+            return Err(invalid("checkpoint workspace changed during capture"));
+        }
+        if metadata.is_dir() {
+            entries.push(WorkspaceEntry::Directory { path: path.clone() });
+            continue;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        {
+            use cap_std::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NONBLOCK);
+        }
+        let mut file = parent.open_with(&name, &options)?;
+        if !file.metadata()?.is_file() || stamp(&file.metadata()?)? != *expected {
+            return Err(invalid("checkpoint workspace file changed"));
+        }
+        let mut staged = objects.create(request, "workspace-file")?;
+        let mut copied = 0u64;
+        let mut buffer = [0u8; 65536];
+        loop {
+            if start.elapsed() > std::time::Duration::from_secs(120) {
+                return Err(invalid("checkpoint workspace capture deadline"));
+            }
+            let n = file.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            copied += n as u64;
+            total += n as u64;
+            if total > MAX_BYTES || copied > metadata.len() {
+                return Err(invalid("checkpoint workspace size limit or source change"));
+            }
+            staged.write_all(&buffer[..n])?;
+        }
+        if copied != metadata.len()
+            || stamp(&file.metadata()?)? != *expected
+            || stamp(&parent.symlink_metadata(&name)?)? != *expected
+        {
+            return Err(invalid("checkpoint workspace changed during capture"));
+        }
+        staged.sync_all()?;
+        drop(staged);
+        let staging = objects.staging(request, "workspace-file")?;
+        let object = objects.publish(&staging)?;
+        std::fs::remove_file(staging)?;
+        #[cfg(unix)]
+        let executable = {
+            use cap_std::fs::MetadataExt;
+            metadata.mode() & 0o111 != 0
+        };
+        #[cfg(not(unix))]
+        let executable = false;
+        entries.push(WorkspaceEntry::File {
+            path: path.clone(),
+            object,
+            executable,
+        });
+    }
+    let mut after = BTreeMap::new();
+    scan(&dir, "", &mut after, 0)?;
+    let named = Dir::open_ambient_dir(&source.root, cap_std::ambient_authority())?;
+    if before != after
+        || before_root != stamp(&dir.dir_metadata()?)?
+        || before_root != stamp(&named.dir_metadata()?)?
+    {
+        return Err(invalid("checkpoint workspace changed during capture"));
+    }
+    let encoded = serde_json::to_vec(&Inventory {
+        version: 1,
+        entries,
+    })?;
+    if encoded.len() as u64 > MAX_INVENTORY {
+        return Err(invalid("checkpoint workspace inventory limit"));
+    }
+    let mut file = objects.create(request, "workspace")?;
+    file.write_all(&encoded)?;
+    file.sync_all()?;
+    drop(file);
+    Ok(WorkspaceSnapshot {
+        identity: source.identity.clone(),
+        consistency: source.consistency,
+        inventory: objects.publish(&objects.staging(request, "workspace")?)?,
+    })
+}
+
+pub(super) fn inventory(
+    objects: &Objects,
+    snapshot: &WorkspaceSnapshot,
+) -> Result<Vec<WorkspaceEntry>, StoreError> {
+    if snapshot.inventory.bytes > MAX_INVENTORY {
+        return Err(invalid("checkpoint workspace inventory limit"));
+    }
+    let inventory: Inventory = serde_json::from_reader(objects.read(&snapshot.inventory)?)?;
+    if inventory.version != 1 || inventory.entries.len() > MAX_ENTRIES {
+        return Err(invalid("unsupported checkpoint workspace inventory"));
+    }
+    let mut paths = BTreeSet::new();
+    let mut directories = BTreeSet::new();
+    let mut total = 0u64;
+    for entry in &inventory.entries {
+        let path = match entry {
+            WorkspaceEntry::Directory { path } | WorkspaceEntry::File { path, .. } => path,
+        };
+        relative(path)?;
+        // Reject case aliases even when the publishing filesystem happens to allow them.
+        if !paths.insert(path.to_lowercase()) {
+            return Err(invalid("checkpoint workspace path collision"));
+        }
+        if let Some((parent, _)) = path.rsplit_once('/')
+            && !directories.contains(parent)
+        {
+            return Err(invalid("checkpoint workspace parent missing"));
+        }
+        match entry {
+            WorkspaceEntry::Directory { path } => {
+                directories.insert(path.as_str());
+            }
+            WorkspaceEntry::File { object, .. } => {
+                total = total
+                    .checked_add(object.bytes)
+                    .ok_or_else(|| invalid("checkpoint workspace size overflow"))?;
+                if total > MAX_BYTES {
+                    return Err(invalid("checkpoint workspace size limit"));
+                }
+            }
+        }
+    }
+    Ok(inventory.entries)
+}
+
+pub(super) fn verify(objects: &Objects, snapshot: &WorkspaceSnapshot) -> Result<(), StoreError> {
+    for entry in inventory(objects, snapshot)? {
+        if let WorkspaceEntry::File { object, .. } = entry {
+            objects.read(&object)?;
+        }
+    }
+    Ok(())
+}
+
+/// The caller supplies an exclusively owned, empty destination; never a user project.
+pub(super) fn materialize(
+    objects: &Objects,
+    snapshot: &WorkspaceSnapshot,
+    destination: &Path,
+) -> Result<(), StoreError> {
+    let dir = Dir::open_ambient_dir(destination, cap_std::ambient_authority())?;
+    materialize_in(objects, snapshot, &dir)
+}
+pub(super) fn materialize_in(
+    objects: &Objects,
+    snapshot: &WorkspaceSnapshot,
+    dir: &Dir,
+) -> Result<(), StoreError> {
+    let entries = inventory(objects, snapshot)?;
+    if dir.entries()?.next().is_some() {
+        return Err(invalid("checkpoint workspace destination is occupied"));
+    }
+    for entry in entries {
+        match entry {
+            WorkspaceEntry::Directory { path } => {
+                let (parent, name) = parent(dir, &path)?;
+                parent.create_dir(&name)?;
+            }
+            WorkspaceEntry::File {
+                path,
+                object,
+                executable,
+            } => {
+                let (parent, name) = parent(dir, &path)?;
+                let mut source = objects.read(&object)?;
+                let mut options = OpenOptions::new();
+                options
+                    .write(true)
+                    .create_new(true)
+                    .follow(FollowSymlinks::No);
+                #[cfg(unix)]
+                {
+                    use cap_std::fs::OpenOptionsExt;
+                    options.mode(if executable { 0o700 } else { 0o600 });
+                }
+                #[cfg(not(unix))]
+                let _ = executable;
+                let mut target = parent.open_with(name, &options)?;
+                std::io::copy(&mut source, &mut target)?;
+                target.sync_all()?;
+            }
+        }
+    }
+    // Persist directory entries from leaves toward the root before publishing readiness.
+    fn sync(dir: &Dir) -> Result<(), StoreError> {
+        for entry in dir.entries()? {
+            let entry = entry?;
+            if entry.file_type()?.is_dir() {
+                sync(&dir.open_dir_nofollow(entry.file_name())?)?;
+            }
+        }
+        dir.try_clone()?.into_std_file().sync_all()?;
+        Ok(())
+    }
+    sync(dir)
+}

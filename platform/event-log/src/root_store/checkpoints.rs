@@ -27,7 +27,10 @@ use crate::checkpoints::{
 };
 use std::future::Future;
 mod journal;
+mod load;
 mod objects;
+pub(crate) mod restore;
+mod workspace;
 use objects::Objects;
 
 #[derive(Clone)]
@@ -100,6 +103,13 @@ impl RootStore {
 }
 
 impl HistoryCheckpoints {
+    /// Resolve trusted source binding before consulting a possibly changed live Session.
+    pub async fn original_request(
+        &self,
+        publication: PublicationRequest,
+    ) -> Result<Option<PublicationRequest>, StoreError> {
+        journal::original(&self.session.scoped().await?, self.request(publication)?).await
+    }
     fn request(&self, publication: PublicationRequest) -> Result<Request, StoreError> {
         let request = Request {
             scope: self.scope.clone(),
@@ -185,37 +195,53 @@ impl HistoryCheckpoints {
             log,
             self.session.gates.clone(),
             move |log, objects| async move {
-                let head = journal::read_head(&log, scope.clone(), session.clone())
-                    .await?
-                    .filter(|head| head.revision == revision)
-                    .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
-                let manifest = objects.manifest(&head.manifest)?;
-                let Manifest::NativeHistory {
-                    root_id,
-                    scope: origin,
-                    inventory,
-                    ..
-                } = &manifest;
-                if root_id != objects.root_id()
-                    || origin != &scope
-                    || inventory.root_session_id != session
-                {
-                    return Err(invalid("history checkpoint origin differs"));
-                }
-                let bundle = objects.read(manifest.bundle())?;
-                // Confirm the retained revision again after expensive verification.
-                if journal::read_head(&log, scope, session).await?.as_ref() != Some(&head) {
-                    return Err(invalid("history checkpoint revision unavailable"));
-                }
-                Ok(Checkout {
-                    head,
-                    manifest,
-                    bundle,
-                })
+                checkout(&log, &objects, scope, session, revision).await
             },
         )
         .await
     }
+}
+
+async fn checkout(
+    log: &EventLog,
+    objects: &Objects,
+    scope: Scope,
+    session: String,
+    revision: Revision,
+) -> Result<Checkout, StoreError> {
+    let head = journal::read_head(log, scope.clone(), session.clone())
+        .await?
+        .filter(|head| head.revision == revision)
+        .ok_or_else(|| invalid("history checkpoint revision unavailable"))?;
+    let manifest = objects.manifest(&head.manifest)?;
+    let (Manifest::NativeHistory {
+        root_id,
+        scope: origin,
+        inventory,
+        ..
+    }
+    | Manifest::NativeSession {
+        root_id,
+        scope: origin,
+        inventory,
+        ..
+    }) = &manifest;
+    if root_id != objects.root_id() || origin != &scope || inventory.root_session_id != session {
+        return Err(invalid("history checkpoint origin differs"));
+    }
+    let bundle = objects.read(manifest.bundle())?;
+    if let Some(snapshot) = manifest.workspace() {
+        workspace::verify(objects, snapshot)?;
+    }
+    // Confirm the retained revision again after expensive verification.
+    if journal::read_head(log, scope, session).await?.as_ref() != Some(&head) {
+        return Err(invalid("history checkpoint revision unavailable"));
+    }
+    Ok(Checkout {
+        head,
+        manifest,
+        bundle,
+    })
 }
 
 fn bundle_error(error: BundleError) -> StoreError {
@@ -243,24 +269,45 @@ async fn capture(
     drop(file);
     let bundle = objects.publish(&objects.staging(request, "bundle")?)?;
     boundary("payload");
-    let manifest = Manifest::NativeHistory {
-        root_id: objects.root_id().into(),
-        scope: request.scope.clone(),
-        inventory: summary.inventory,
-        bundle,
-        transfer_digest: summary.digest,
+    let manifest = if let Some(source) = &request.publication.workspace {
+        let workspace = workspace::capture(objects, request, source)?;
+        Manifest::NativeSession {
+            root_id: objects.root_id().into(),
+            scope: request.scope.clone(),
+            inventory: summary.inventory,
+            bundle,
+            transfer_digest: summary.digest,
+            workspace,
+        }
+    } else {
+        Manifest::NativeHistory {
+            root_id: objects.root_id().into(),
+            scope: request.scope.clone(),
+            inventory: summary.inventory,
+            bundle,
+            transfer_digest: summary.digest,
+        }
     };
     validate_bundle(objects, &manifest).await?;
     objects.publish_manifest(request, &manifest)
 }
 
 async fn validate_bundle(objects: &Objects, manifest: &Manifest) -> Result<(), StoreError> {
-    let Manifest::NativeHistory {
+    if let Some(workspace) = manifest.workspace() {
+        workspace::verify(objects, workspace)?;
+    }
+    let (Manifest::NativeHistory {
         inventory,
         bundle,
         transfer_digest,
         ..
-    } = manifest;
+    }
+    | Manifest::NativeSession {
+        inventory,
+        bundle,
+        transfer_digest,
+        ..
+    }) = manifest;
     let file = tokio::fs::File::from_std(objects.read(bundle)?);
     let mut staged = StagedBundle::read(file).await.map_err(bundle_error)?;
     let result = async {
@@ -283,12 +330,18 @@ async fn verify(
     reference: &ObjectRef,
 ) -> Result<(), StoreError> {
     let manifest = objects.manifest(reference)?;
-    let Manifest::NativeHistory {
+    let (Manifest::NativeHistory {
         root_id,
         scope,
         inventory,
         ..
-    } = &manifest;
+    }
+    | Manifest::NativeSession {
+        root_id,
+        scope,
+        inventory,
+        ..
+    }) = &manifest;
     if root_id != objects.root_id()
         || scope != &request.scope
         || inventory.root_session_id != request.session_id

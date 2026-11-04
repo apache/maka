@@ -90,4 +90,38 @@ macOS 上，活动订阅还会比较直接子项的元数据。每次扫描后�
 
 读取时先获取 Head，再指定其精确 revision；Head 已移动则失败，不自动选择最新。历史成功回执不授予旧 revision 读取能力。已经受理的读取持有校验后的文件，随后 Head 移动仍可完成。流依次返回 `native_history_v1` 元数据、连续偏移的 Base64 `chunk`（解码后每块最多 32 KiB）及含完整对象 SHA-256、字节数的 `end`。内容是原生 `MAKA-SESSION` v2，不是 tar.gz，也不兼容旧 TypeScript checkpoint 格式。接收方须检查元数据、连续偏移、摘要、End、成功的 null 完成及清理结果；缺少 End 就是不完整传输。背压限制排队数据块，取消等待原读取工作排空，不接受调用方任意文件路径。
 
-这些方法属于管理入口，不是模型工具。Scope 来自已获准的 Agent 装配；模型来源调用和其他 namespace 被拒绝。存档只包含原生 Bundle 的历史闭包及关联 Artifact，不包含项目文件、完整 Memory/Goal 状态、执行授权或恢复激活。发布目前依赖 Root 存储的 Unix 实现，不支持的平台显式失败。不可变对象保守保留，自动触发、UI、retention/GC 和 Workspace 捕获另行推进。
+这些方法属于管理入口，不是模型工具。Scope 来自已获准的 Agent 装配；模型来源调用和其他 namespace 被拒绝。`publishHistoryCheckpoint` 只包含原生 Bundle 的历史闭包及关联 Artifact；Workspace 和受限恢复使用下文的显式方法。两者均不包含完整 Memory/Goal 状态或跨 Host 执行授权。发布目前依赖 Root 存储的 Unix 实现，不支持的平台显式失败。不可变对象保守保留，自动触发、UI 和 retention/GC 另行推进。
+
+### 精确只读加载
+
+从 `historyCheckpointHead` 取得 `{ sessionId, revision }`，通过 Host 的 mutation 准备与确认调用 `loadHistoryCheckpoint`，保存原 `RecoveryRef` 和输入。写入目标之前先校验并登记当前 retained revision；Head 已移动则拒绝新的加载。登记成功后，即使 Head 推进，恢复仍使用已固定的 Manifest 和 Bundle。`ready` 返回 `inspection` 定位信息及导入的 `sessionIds`。
+
+检查副本在独立私有数据库中保留历史 Session ID，不覆盖实时 Session，也不向普通目录注册可运行副本。加载不会启动模型、工具、待处理消息消费者或 Agent 后台任务。源配置只作为历史证据，不成为目标执行授权。对 `native_session_v1` 还会在私有检查区物化 Workspace，但不自动切换实时目录或继续执行，也不向另一 Host 导入。
+
+响应未知时，携带 `{ reference, input }` 查询 `historyCheckpointLoadReceipt`。它分别返回原 Host 操作观测与领域加载结果，不启动另一加载。`preparing` 等待从原材料恢复，`unavailable` 需要排查；领域 `ready` 不代表 Host 已确认结果或清理。Root 在开放检查接口前恢复未完成导入；若目标已提交而加载回执丢失，使用原生导入回执找回原结果。
+
+以下查询携带返回的 `inspection` 和其中一个成员 `sessionId`：
+
+| 方法 | 其他输入 | 结果 |
+| --- | --- | --- |
+| `loadedHistoryCheckpointHistory` | `position`，可选 `includeThinking` | 既有有界 `HistoryPage`，包含工具结果文本 |
+| `loadedHistoryCheckpointArtifacts` | `offset` | 最多 32 条 Artifact 元数据及 `nextOffset` |
+| `loadedHistoryCheckpointArtifact` | `artifactId`、字节 `offset` | 元数据及最多 32 KiB 的 Base64 内容；不存在返回 null |
+
+使用返回的历史游标和 Artifact 偏移分页，无需把整个 checkpoint 放入内存。检查副本独立于后续 Head 变化保留。目前检查数据库和不可变对象没有删除/GC API；不断发起**新**加载会增加磁盘占用，原操作重试复用原目标。这些方法与发布使用相同的管理授权和 namespace；定位信息本身不授予访问权。
+
+### Workspace 发布与本地继续执行
+
+`publishSessionCheckpoint` 是 Host mutation，输入 `{ history: { sessionId, expectedRevision, confirmedSubtreeDigest }, workspaceConsistency }`；`sessionCheckpointReceipt` 使用原始 `{ reference, input }` 查询回执。只支持空闲的普通 native Session 和单个 Workspace。首版在该 native Owner 存在活跃任务时拒绝发布/恢复，复制期间持有准入锁；大项目会延迟新消息，不能承诺无性能影响。路径来自 Host 验证过的 Session 绑定。产物 `native_session_v1` 包括历史 Bundle、不可变 Workspace 清单和按内容寻址的文件对象。历史订阅仍只传输 Bundle，首帧会标明类型及 Workspace 清单引用。
+
+必须显式选择 `caller_confirmed_quiescent`（调用方确认复制全程已停写）或 `unverified`（不能保证）。**两者都不隔离外部写入者，也不要求 Apple entitlement。** 客户端应显示 `external_writers_not_fenced` 提示：捕获期间需暂停编辑器、终端、其他 Agent 和后台程序的写入。用户确认只是前提声明，不是系统快照证明；无法保证时不得把产物宣称为一致、可信的 checkpoint。两种模式检测到变化都中止发布；摘要校验仅证明保存的字节完整，不能证明各文件来自同一时刻。此标记随 Manifest、加载和恢复保留。
+
+v1 文件策略排除 `.git`、`node_modules`、`.DS_Store`、`__pycache__`、`.cache` 和 `.maka-workspace.json`；不携带 Git 元数据、依赖目录或旧本地 Workspace 标记。发现已知凭据文件名（真实 `.env`、私钥、凭据目录等）、符号链接或特殊文件则拒绝；这不是通用的秘密内容扫描器。上限为 20,000 项、文件正文合计 2 GiB、64 层目录、16 MiB 清单。保留普通文件、可执行位和空目录；不可移植路径显式拒绝。
+
+`loadHistoryCheckpoint` 对 `native_session_v1` 还会在 Root 私有检查区物化文件，并返回一致性元数据；不会自动替换实时 Session 的目录或开始执行。
+
+`restoreSessionCheckpoint` 输入为 `{ checkpoint: { sessionId, revision }, parent: DirectorySelection, permissions, backend, acceptExternalWritersRisk: true }`。Host 在获准的父目录中新建 `maka-restored-…` 子目录，不覆盖原项目。首版仅支持**同 Root、实时 revision 尚未超过存档点**的普通 native Session；历史已推进、Head 已移动、WorkHub、子 Session、Goal 状态和 executor backend 都拒绝。显式选择目标模型与权限，撤销旧授权；unverified 不会因恢复变成可信。
+
+恢复在同一事务提交目录绑定与原操作回执，保留 Session ID 和 checkpoint Head，下一次发布仍以原 Head revision 做 CAS。不会回滚新历史，也不重建已丢失的 Root；加载/重新绑定不会自动调用模型或工具，显式发送下一条普通消息后才从新目录执行。跨 Root/Host 权威交接、任意历史回滚、完整辅助状态迁移和轮次中间恢复不在本次范围。
+
+回执未知时，使用原始 `{ reference, input }` 调用 `sessionCheckpointRestoreReceipt`；已提交回执不依赖目标目录仍在原位置。登记恢复请求不代表拥有目标目录；只有复制完成且落盘成功后，才记录实际创建目录的物理身份。重试与提交都要求仍是该目录，即便替换目录内容完全相同也拒绝。提交前若目标已被占用、不完整或被改变，则保持原 Session 不变，保留目录供检查；处理失败准备后使用新的操作/目标目录。恢复还会排除未完成的 Goal 写入，并持续到目录绑定提交。不自动删除用户可见的恢复目录；检查数据库、Workspace 副本和文件对象均占用持久磁盘，尚无自动 GC。

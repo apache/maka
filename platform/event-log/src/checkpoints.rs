@@ -17,12 +17,19 @@
  * under the License.
  */
 
-//! Immutable history-only checkpoints. These are not workspace snapshots or
-//! execution grants, and their revisions are independent of live Session revisions.
+//! Immutable history and Workspace checkpoints. Conditional consistency is not an
+//! execution grant; checkpoint revisions are independent of live Session revisions.
+mod load;
+mod restore;
+mod workspace;
 use crate::{StoreError, bundle::Inventory};
+pub use load::{LoadOperation, LoadState, LoadedCheckpoint};
+pub(crate) use load::{LoadRequest, load_key};
 use maka_plugin_core::composition::InstanceId;
+pub use restore::{PreparedRestore, RestoreOperation, RestoredSession};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+pub use workspace::{WorkspaceCapture, WorkspaceConsistency, WorkspaceEntry, WorkspaceSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -45,6 +52,9 @@ pub struct PublicationRequest {
     pub expected_revision: Option<Revision>,
     /// Confirmation of catalog membership, not a live revision precondition.
     pub confirmed_subtree_digest: String,
+    /// Trusted assembly supplies the source; never a model-authored path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceCapture>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -68,11 +78,26 @@ pub enum Manifest {
         /// The native format's own framed-stream checksum.
         transfer_digest: String,
     },
+    #[serde(rename = "native_session_v1")]
+    NativeSession {
+        root_id: String,
+        scope: Scope,
+        inventory: Inventory,
+        bundle: ObjectRef,
+        transfer_digest: String,
+        workspace: WorkspaceSnapshot,
+    },
 }
 impl Manifest {
     pub fn bundle(&self) -> &ObjectRef {
         match self {
-            Self::NativeHistory { bundle, .. } => bundle,
+            Self::NativeHistory { bundle, .. } | Self::NativeSession { bundle, .. } => bundle,
+        }
+    }
+    pub fn workspace(&self) -> Option<&WorkspaceSnapshot> {
+        match self {
+            Self::NativeHistory { .. } => None,
+            Self::NativeSession { workspace, .. } => Some(workspace),
         }
     }
 }

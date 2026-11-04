@@ -19,6 +19,9 @@
 
 //! Authorized history publication and bounded reads through the Agent service.
 use super::*;
+mod load;
+mod restore;
+mod session;
 use crate::checkpoints::{Capture, HistoryCheckpointPublisher};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use maka_capabilities::call::Scope;
@@ -155,20 +158,39 @@ impl Owner {
                     .checkout_exact(&input.session_id, storage::Revision(input.revision))
                     .await
                     .map_err(failure)?;
-                let storage::Manifest::NativeHistory {
+                let workspace = checkout
+                    .manifest
+                    .workspace()
+                    .cloned()
+                    .map(workspace_snapshot);
+                let (storage::Manifest::NativeHistory {
                     inventory: members,
                     bundle,
                     ..
-                } = checkout.manifest;
+                }
+                | storage::Manifest::NativeSession {
+                    inventory: members,
+                    bundle,
+                    ..
+                }) = checkout.manifest;
                 let expected = bundle.clone();
                 emit(
                     &context,
                     &owner,
                     &scope,
-                    HistoryCheckpointFrame::NativeHistoryV1 {
-                        head: head(checkout.head),
-                        inventory: inventory(members),
-                        bundle: object(bundle),
+                    if let Some(workspace) = workspace {
+                        HistoryCheckpointFrame::NativeSessionV1 {
+                            head: head(checkout.head),
+                            inventory: inventory(members),
+                            bundle: object(bundle),
+                            workspace,
+                        }
+                    } else {
+                        HistoryCheckpointFrame::NativeHistoryV1 {
+                            head: head(checkout.head),
+                            inventory: inventory(members),
+                            bundle: object(bundle),
+                        }
                     },
                 )
                 .await?;
@@ -245,12 +267,26 @@ fn capture(input: HistoryCheckpointPublish) -> Capture {
         session_id: input.session_id,
         expected_checkpoint_revision: input.expected_revision.map(storage::Revision),
         confirmed_subtree_digest: input.confirmed_subtree_digest,
+        workspace: None,
     }
 }
 fn object(value: storage::ObjectRef) -> HistoryCheckpointObject {
     HistoryCheckpointObject {
         digest: value.digest,
         bytes: value.bytes,
+    }
+}
+fn workspace_snapshot(w: storage::WorkspaceSnapshot) -> CheckpointWorkspaceSnapshot {
+    CheckpointWorkspaceSnapshot {
+        identity: w.identity,
+        inventory: object(w.inventory),
+        consistency: match w.consistency {
+            storage::WorkspaceConsistency::CallerConfirmedQuiescent => {
+                CheckpointWorkspaceConsistency::CallerConfirmedQuiescent
+            }
+            storage::WorkspaceConsistency::Unverified => CheckpointWorkspaceConsistency::Unverified,
+        },
+        warning: CheckpointWorkspaceWarning::ExternalWritersNotFenced,
     }
 }
 fn head(value: storage::Head) -> HistoryCheckpointHead {

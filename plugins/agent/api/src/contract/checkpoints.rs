@@ -17,11 +17,65 @@
  * under the License.
  */
 
-//! History-only checkpoints; neither workspace snapshots nor execution authority.
+//! Explicit history/Workspace checkpoints, private inspections and bounded local recovery.
 use maka_plugin_core::operation::{OperationObservation, RecoveryRef};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentCheckpointWorkspaceConsistency")]
+pub enum CheckpointWorkspaceConsistency {
+    /// The caller confirms all other writers remain paused for the entire copy.
+    CallerConfirmedQuiescent,
+    /// Files may not represent one instant; successful digest checks do not change this.
+    Unverified,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointPublish")]
+pub struct SessionCheckpointPublish {
+    pub history: HistoryCheckpointPublish,
+    /// Must be explicitly selected. Maka does not fence other applications.
+    pub workspace_consistency: CheckpointWorkspaceConsistency,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointPublication")]
+pub struct SessionCheckpointPublication {
+    pub publication: HistoryCheckpointPublication,
+    pub workspace_consistency: CheckpointWorkspaceConsistency,
+    /// Stable warning, present even with a caller attestation.
+    pub warning: CheckpointWorkspaceWarning,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentCheckpointWorkspaceWarning")]
+pub enum CheckpointWorkspaceWarning {
+    /// Display to users: pause editors, terminals and other writers for the entire
+    /// capture. Hash verification is not a point-in-time consistency guarantee.
+    ExternalWritersNotFenced,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointReceiptRead")]
+pub struct SessionCheckpointReceiptRead {
+    pub reference: RecoveryRef,
+    pub input: SessionCheckpointPublish,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointReceipt")]
+pub struct SessionCheckpointReceipt {
+    pub operation: Option<OperationObservation>,
+    pub checkpoint: Option<SessionCheckpointPublication>,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -123,6 +177,13 @@ pub struct HistoryCheckpointRead {
 )]
 #[schemars(rename = "AgentHistoryCheckpointFrame")]
 pub enum HistoryCheckpointFrame {
+    /// The streamed payload is history; Workspace is a separate manifest component.
+    NativeSessionV1 {
+        head: HistoryCheckpointHead,
+        inventory: HistoryCheckpointInventory,
+        bundle: HistoryCheckpointObject,
+        workspace: CheckpointWorkspaceSnapshot,
+    },
     /// The following bytes use the MAKA-SESSION v2 history format.
     NativeHistoryV1 {
         head: HistoryCheckpointHead,
@@ -140,6 +201,125 @@ pub enum HistoryCheckpointFrame {
         #[schemars(range(max = 9_007_199_254_740_991u64))]
         bytes: u64,
     },
+}
+
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointInspection")]
+pub struct CheckpointInspection {
+    #[schemars(length(min = 1))]
+    pub source_session_id: String,
+    pub operation_id: Uuid,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointLoad")]
+pub struct CheckpointLoad {
+    pub head: HistoryCheckpointHead,
+    pub inspection: CheckpointInspection,
+    pub state: CheckpointLoadState,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentCheckpointLoadState")]
+pub enum CheckpointLoadState {
+    Preparing,
+    Ready {
+        session_ids: Vec<String>,
+        workspace: Option<CheckpointWorkspaceSnapshot>,
+    },
+    Unavailable,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointWorkspaceSnapshot")]
+pub struct CheckpointWorkspaceSnapshot {
+    pub identity: String,
+    pub consistency: CheckpointWorkspaceConsistency,
+    pub warning: CheckpointWorkspaceWarning,
+    pub inventory: HistoryCheckpointObject,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointLoadReceiptRead")]
+pub struct CheckpointLoadReceiptRead {
+    pub reference: RecoveryRef,
+    pub input: HistoryCheckpointRead,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointLoadReceipt")]
+pub struct CheckpointLoadReceipt {
+    pub operation: Option<OperationObservation>,
+    pub load: Option<CheckpointLoad>,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointHistoryRead")]
+pub struct CheckpointHistoryRead {
+    pub inspection: CheckpointInspection,
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    pub position: super::HistoryPosition,
+    #[serde(default)]
+    pub include_thinking: bool,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointArtifactsRead")]
+pub struct CheckpointArtifactsRead {
+    pub inspection: CheckpointInspection,
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointArtifactRead")]
+pub struct CheckpointArtifactRead {
+    pub inspection: CheckpointInspection,
+    #[schemars(length(min = 1))]
+    pub session_id: String,
+    #[schemars(length(min = 1))]
+    pub artifact_id: String,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointArtifact")]
+pub struct CheckpointArtifact {
+    pub id: String,
+    pub name: String,
+    pub mime_type: Option<String>,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub bytes: u64,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointArtifacts")]
+pub struct CheckpointArtifacts {
+    pub artifacts: Vec<CheckpointArtifact>,
+    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<u64>")]
+    pub next_offset: Option<u64>,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentCheckpointArtifactChunk")]
+pub struct CheckpointArtifactChunk {
+    pub artifact: CheckpointArtifact,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
+    /// Base64, at most 32 KiB decoded. Empty only at the end.
+    #[schemars(length(max = 43692))]
+    pub data: String,
 }
 
 #[cfg(test)]
@@ -186,4 +366,79 @@ mod tests {
         assert!(!read.is_valid(&json!({"sessionId":"source","revision":23})));
         assert!(read.is_valid(&json!({"sessionId":"source","revision":Uuid::new_v4()})));
     }
+    #[test]
+    fn checkpoint_load_requires_exact_revision_and_never_accepts_execution_authority() {
+        let Interface::Service { methods } = crate::contract().interface else {
+            unreachable!()
+        };
+        assert_eq!(methods["loadHistoryCheckpoint"].mode, MethodMode::Mutation);
+        for method in [
+            "historyCheckpointLoadReceipt",
+            "loadedHistoryCheckpointHistory",
+            "loadedHistoryCheckpointArtifacts",
+            "loadedHistoryCheckpointArtifact",
+        ] {
+            assert_eq!(methods[method].mode, MethodMode::Query);
+        }
+        let validator = jsonschema::validator_for(&methods["loadHistoryCheckpoint"].input).unwrap();
+        let valid = json!({"sessionId":"source", "revision":Uuid::new_v4()});
+        assert!(validator.is_valid(&valid));
+        assert!(!validator.is_valid(&json!({"sessionId":"source"})));
+        for (key, value) in [
+            ("revision", json!(null)),
+            ("path", json!("/tmp/target")),
+            ("activate", json!(true)),
+            ("configuration", json!({})),
+            ("scope", json!({})),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[key] = value;
+            assert!(!validator.is_valid(&invalid), "{key}");
+        }
+        let validator =
+            jsonschema::validator_for(&methods["loadedHistoryCheckpointArtifact"].input).unwrap();
+        let mut valid = json!({"inspection":{"sourceSessionId":"source","operationId":Uuid::new_v4()},"sessionId":"source","artifactId":"a","offset":0});
+        assert!(validator.is_valid(&valid));
+        valid["offset"] = json!(9_007_199_254_740_992u64);
+        assert!(!validator.is_valid(&valid));
+    }
+}
+
+/// Restore files into a new child of a selected directory and rebind the same,
+/// unchanged local Session. It never starts a model/tool call or rewinds history.
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointRestore")]
+pub struct SessionCheckpointRestore {
+    pub checkpoint: HistoryCheckpointRead,
+    pub parent: super::DirectorySelection,
+    pub permissions: super::WorkspacePermissions,
+    pub backend: super::BackendPreference,
+    pub accept_external_writers_risk: bool,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointRestored")]
+pub struct SessionCheckpointRestored {
+    pub operation: Uuid,
+    pub session_id: String,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub session_revision: u64,
+    pub head: HistoryCheckpointHead,
+    pub workspace: CheckpointWorkspaceSnapshot,
+    pub path: String,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointRestoreReceiptRead")]
+pub struct SessionCheckpointRestoreReceiptRead {
+    pub reference: RecoveryRef,
+    pub input: SessionCheckpointRestore,
+}
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentSessionCheckpointRestoreReceipt")]
+pub struct SessionCheckpointRestoreReceipt {
+    pub operation: Option<OperationObservation>,
+    pub restore: Option<SessionCheckpointRestored>,
 }

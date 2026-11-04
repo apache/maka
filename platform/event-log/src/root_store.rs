@@ -42,7 +42,7 @@ pub use execution::{
 pub(crate) use lifecycle::{StageOwner, StageRegistration};
 mod applications;
 mod attachments;
-mod checkpoints;
+pub(crate) mod checkpoints;
 mod computer_apps;
 mod control;
 pub use checkpoints::{Checkout, HistoryCheckpoints};
@@ -223,6 +223,7 @@ impl RootStore {
             // observer before recovery can retain a failed SQL job or stage.
             store.recover_creations().await?;
             store.recover_checkpoints().await?;
+            store.recover_checkpoint_loads().await?;
             // No admission or retirement can observe work abandoned by the
             // previous owner as live after a process restart.
             store.recover_host_effects().await?;
