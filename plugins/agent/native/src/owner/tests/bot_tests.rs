@@ -1248,7 +1248,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
     .unwrap();
 }
 
-async fn worker_wake(worker_first: bool) {
+async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(
@@ -1266,6 +1266,10 @@ async fn worker_wake(worker_first: bool) {
         )
         .await;
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        if unreadable_watch {
+            // Sorts before any worker id, so a scan meets it first.
+            f.owner.bot.plant_unreadable_watch("0-unreadable").await;
+        }
         f.send(&bot).await.unwrap();
 
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -1346,10 +1350,15 @@ async fn worker_wake(worker_first: bool) {
 
 #[tokio::test]
 async fn the_bot_is_woken_once_when_its_worker_finishes() {
-    worker_wake(false).await;
+    worker_wake(false, false).await;
+}
+
+#[tokio::test]
+async fn a_watch_this_build_cannot_read_does_not_stop_other_workers_waking_the_bot() {
+    worker_wake(false, true).await;
 }
 
 #[tokio::test]
 async fn a_report_for_a_worker_that_finished_while_the_bot_ran_waits_for_the_bot() {
-    worker_wake(true).await;
+    worker_wake(true, false).await;
 }
