@@ -270,14 +270,17 @@ export function createConversationUi(
   const workspaceReady = signal(false);
   const workspaceError = createText();
   const recentOpen = signal(false);
-  const setRecentWorkspace = async (
-    path: string,
-    workspace: RecentWorkspace['workspace'] | null,
-  ) => {
-    const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
-    if (!alive) return;
-    recentKnown.set(true);
-    recentWorkspaces.set(recent);
+  let recentWrite = Promise.resolve();
+  const setRecentWorkspace = (path: string, workspace: RecentWorkspace['workspace'] | null) => {
+    // Keep this window's writes and their full-list receipts in user-action order.
+    const write = recentWrite.then(async () => {
+      const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+      if (!alive) return;
+      recentKnown.set(true);
+      recentWorkspaces.set(recent);
+    });
+    recentWrite = write.catch(() => {});
+    return write;
   };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
