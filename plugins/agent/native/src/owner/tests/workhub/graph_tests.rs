@@ -93,6 +93,13 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::workers()).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
+        let inherited_policy = json!({"access":"read_only","requestPermissions":false});
+        let updated = fixture.mutation(2, "metadata", json!({
+            "sessionId":session,"expectedRevision":ready["session"]["revision"],
+            "title":ready["session"]["title"],"labels":[],
+            "permissions":{"settings":inherited_policy,"revokeGrants":false},
+        }), Uuid::new_v4()).await.unwrap();
+        assert_eq!(updated["kind"], "committed");
         let epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"swarm"}})).await;
         assert_eq!(epoch["kind"], "committed", "{epoch}");
         let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["selection"].clone();
@@ -169,6 +176,10 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         assert_eq!(view["status"], "completed", "{view}");
         assert_eq!(view["finish"]["resultIds"][0], view["work"][0]["resultId"]);
         let task = query_import(&fixture, hub::EXPORT, "task", json!({"taskId":view["work"][0]["taskId"]})).await;
+        let worker = task["status"]["sessionId"].as_str().expect("accepted graph worker");
+        let worker = query_import(&fixture, "worker", "observe", json!({"sessionId":worker})).await;
+        assert_eq!(worker["session"]["parentSessionId"], session);
+        assert_eq!(worker["session"]["permissions"], inherited_policy);
         let acceptance_upper_bound = maka_agent_authority::now();
         let listed = query_import(&fixture,hub::EXPORT,"tasks",json!({})).await;
         let result_id = view["work"][0]["resultId"].clone();

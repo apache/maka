@@ -132,13 +132,15 @@ impl Owner {
         } else {
             self.mcp_projects.base.clone()
         };
-        let tools = parent.tools.map(|names| {
+        let policy = self.creation_policy(scope).await?;
+        let tools = intersect_tools(parent.tools, policy.tools).map(|names| {
             names
                 .into_iter()
                 .filter(|name| catalog.tools.contains(name))
                 .collect()
         });
-        let access = match (parent.permissions.access, self.settings.permissions.access) {
+        let ceiling = policy.permissions;
+        let access = match (parent.permissions.access, ceiling.access) {
             (WorkspaceAccess::ReadOnly, _) | (_, WorkspaceAccess::ReadOnly) => {
                 WorkspaceAccess::ReadOnly
             }
@@ -169,7 +171,7 @@ impl Owner {
             permissions: WorkspacePermissions {
                 access,
                 request_permissions: parent.permissions.request_permissions
-                    && self.settings.permissions.request_permissions,
+                    && ceiling.request_permissions,
             },
             boundary_revision: 0,
         };

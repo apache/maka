@@ -314,6 +314,7 @@ impl History for Recall {
                         .as_deref()
                         .map_or(SessionPosition::Start, SessionPosition::After),
                     CatalogFilter {
+                        roots_only: false,
                         archived_only: false,
                         include_archived: true,
                         pending_only: false,

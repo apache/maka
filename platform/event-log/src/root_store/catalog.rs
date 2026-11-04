@@ -153,6 +153,7 @@ impl RootStore {
             cursor.into(),
             limit,
             CatalogFilter {
+                roots_only: false,
                 archived_only: false,
                 include_archived: true,
                 pending_only: false,
@@ -518,6 +519,7 @@ impl RootStore {
         if current != vector {
             let scope = CatalogScope::IdPrefix(prefix.into());
             let filter = CatalogFilter {
+                roots_only: false,
                 archived_only: false,
                 include_archived: true,
                 pending_only: false,
@@ -668,6 +670,7 @@ impl RootStore {
         if current != vector {
             let scope = CatalogScope::Workspace(cwd.into());
             let filter = CatalogFilter {
+                roots_only: false,
                 archived_only: false,
                 include_archived: true,
                 pending_only: false,
@@ -690,6 +693,7 @@ impl RootStore {
         crate::sessions::validate_id(session)?;
         let scope = CatalogScope::Workspace(cwd.into());
         let filter = CatalogFilter {
+            roots_only: false,
             archived_only: false,
             include_archived: true,
             pending_only: false,

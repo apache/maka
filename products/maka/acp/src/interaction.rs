@@ -44,6 +44,9 @@ pub fn request(
         return Err("Interaction is no longer pending".into());
     }
     match &snapshot.request {
+        InteractionRequest::SessionApproval { .. } => {
+            Err("Review child-session decisions in the Maka workbench".into())
+        }
         InteractionRequest::ServiceApproval { .. }
         | InteractionRequest::Permissions { .. }
         | InteractionRequest::ClientCapability { .. }

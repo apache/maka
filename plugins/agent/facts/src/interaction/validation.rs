@@ -162,6 +162,21 @@ impl GrantTarget {
 impl InteractionRequest {
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::SessionApproval {
+                tool_use_id,
+                basis,
+                session_id,
+                request_id,
+                answer,
+            } => {
+                if tool_use_id.is_empty() {
+                    return Err("Invalid interaction tool use identity");
+                }
+                basis.validate()?;
+                entity_id(session_id)?;
+                entity_id(request_id)?;
+                answer.validate()?;
+            }
             Self::ServiceApproval {
                 tool_use_id,
                 tool_name,
@@ -312,6 +327,7 @@ impl InteractionOutcome {
         match (request, self) {
             (
                 InteractionRequest::Form { .. }
+                | InteractionRequest::SessionApproval { .. }
                 | InteractionRequest::ServiceApproval { .. }
                 | InteractionRequest::Question { .. }
                 | InteractionRequest::Permissions { .. }
@@ -346,6 +362,7 @@ impl InteractionOutcome {
                 Self::QuestionAnswer { answers, .. },
             ) => question::validate_answer_count(answers, questions),
             (_, Self::Closure { .. })
+            | (InteractionRequest::SessionApproval { .. }, Self::SessionApprovalDecision { .. })
             | (InteractionRequest::ServiceApproval { .. }, Self::ServiceApprovalDecision { .. })
             | (InteractionRequest::SystemPermission { .. }, Self::SystemPermissionGranted { .. })
             | (
@@ -410,6 +427,7 @@ impl InteractionAnswer {
                 question::validate_answer_count(answers, questions)
             }
             (Self::ClientCapability { .. }, InteractionRequest::ClientCapability { .. }) => Ok(()),
+            (Self::SessionApproval { .. }, InteractionRequest::SessionApproval { .. }) => Ok(()),
             (Self::ServiceApproval { .. }, InteractionRequest::ServiceApproval { .. }) => Ok(()),
             (Self::Form { result }, InteractionRequest::Form { fields, .. }) => {
                 result.validate_for_fields(fields)
