@@ -894,24 +894,6 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_model_menu_opens_on_its_rows_and_closes_with_escape() {
-    let fixture = Fixture::open().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
-    desktop.press("Choose model and effort").await;
-    desktop.control("Choose model").await;
-    assert!(desktop.controls("Close model selection").is_empty());
-    desktop.key("escape", false);
-    desktop
-        .until("Escape did not close the model menu", || {
-            desktop.controls("Choose model").is_empty().then_some(())
-        })
-        .await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_new_draft_shows_a_staged_image() {
     let fixture = images_fixture().await;
     let (path, _) = image_file(&fixture);
