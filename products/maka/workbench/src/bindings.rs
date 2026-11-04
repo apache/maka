@@ -103,10 +103,10 @@ impl ApplicationClient {
         match self {
             Self::Root => owner.client.refresh().await,
             Self::Ui(services) => {
-                owner.refresh_ui(serde_json::json!({})).await?;
-                #[cfg(debug_assertions)]
-                eprintln!("UI refresh: capture services");
-                services.client().await.map(drop)
+                owner.read_ui(serde_json::json!({})).await?;
+                services.client().await?;
+                // Changed UI bindings must be adopted before recapturing public endpoints.
+                owner.client.refresh().await
             }
         }
     }
@@ -208,20 +208,13 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
 }
 
 impl Owner {
-    async fn refresh_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
-        #[cfg(debug_assertions)]
-        eprintln!("UI refresh: root catalogue");
-        self.client.refresh().await?;
-        #[cfg(debug_assertions)]
-        eprintln!("UI refresh: readUi");
+    async fn read_ui(&self, input: JsonValue) -> Result<JsonValue, String> {
         require_contract(
             "management",
             "readUi",
             &self.client.describe("management").await?.contract,
         )?;
         let value = self.client.query("management", "readUi", input).await?;
-        #[cfg(debug_assertions)]
-        eprintln!("UI refresh: observe catalogue");
         self.plugins
             .observe(serde_json::from_value(value.clone()).map_err(|error| error.to_string())?);
         Ok(value)
@@ -616,7 +609,7 @@ impl ApplicationHost {
     pub async fn read_ui(this: Instance<Self>, input: JsonValue) -> Result<JsonValue, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        execute(owner.clone(), async move { owner.refresh_ui(input).await }).await
+        execute(owner.clone(), async move { owner.read_ui(input).await }).await
     }
 
     /// Return an owned generic subscription, with no second handle table.

@@ -294,6 +294,8 @@ export function createPlugins() {
       let previousWatchSource: Catalog['source'] | null = null;
       let interruption: unknown = null;
       while (isCurrent()) {
+        await nativeHost.refresh();
+        if (!isCurrent()) return;
         const first = (await nativeHost.readUi({})) as Catalog;
         if (!isCurrent()) return;
         if (previousWatchSource) {

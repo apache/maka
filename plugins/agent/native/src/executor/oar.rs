@@ -22,6 +22,7 @@ use futures_util::{FutureExt, future::Shared};
 use maka_agent_ports::executor::{Outcome, Request};
 use maka_capabilities::storage::Store;
 use maka_host_runtime::storage::Storage;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
@@ -40,6 +41,7 @@ struct CatalogSnapshot {
 pub(super) struct Oar {
     executable: PathBuf,
     args: Vec<String>,
+    runtimes: BTreeSet<String>,
     storage: Storage,
     queries: Arc<maka_capabilities::call::Resources>,
     catalog: tokio::sync::Mutex<Option<CatalogSnapshot>>,
@@ -84,11 +86,16 @@ impl Oar {
             )
             .map_err(|e| e.to_string())?,
         );
+        let runtimes = configuration
+            .enabled_runtimes()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
         let basis = hex::encode(Sha256::digest(
             serde_json::to_vec(&(
                 context.activation().epoch(),
                 &executable,
                 &configuration.args,
+                &runtimes,
                 storage.execution_basis(),
             ))
             .map_err(|e| e.to_string())?,
@@ -96,6 +103,7 @@ impl Oar {
         Ok(Arc::new(Self {
             executable,
             args: configuration.args.clone(),
+            runtimes,
             storage,
             queries: Arc::default(),
             catalog: tokio::sync::Mutex::new(None),
@@ -107,9 +115,7 @@ impl Oar {
         }))
     }
     pub fn admit(self: &Arc<Self>, request: Request) -> Result<Admitted, Error> {
-        if request.settings.runtime.is_none() {
-            return Err(Error::Invalid("OAR requires a runtime selection".into()));
-        }
+        self.require_runtime(request.settings.runtime.as_deref())?;
         Ok(Admitted {
             identity: maka_agent_facts::executor::Binding {
                 executor_id: "oar".to_owned().try_into().expect("OAR identity"),
@@ -123,14 +129,35 @@ impl Oar {
             }),
         })
     }
+    fn require_runtime(&self, runtime: Option<&str>) -> Result<(), Error> {
+        let runtime =
+            runtime.ok_or_else(|| Error::Invalid("OAR requires a runtime selection".into()))?;
+        if !self.runtimes.contains(runtime) {
+            return Err(Error::Invalid(format!(
+                "OAR runtime is not enabled: {runtime}"
+            )));
+        }
+        Ok(())
+    }
+
     pub async fn query(
         self: &Arc<Self>,
         cwd: String,
-        request: Value,
+        mut request: Value,
         cancellation: CancellationToken,
     ) -> Result<Value, Error> {
         if cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err(Error::Cancelled);
+        }
+        if let Some(runtime) = request.get("runtime") {
+            self.require_runtime(runtime.as_str())?;
+        } else if matches!(
+            request.get("kind").and_then(Value::as_str),
+            Some("catalog" | "status")
+        ) {
+            request["runtimes"] = serde_json::json!(self.runtimes);
+        } else {
+            return Err(Error::Invalid("OAR requires a runtime selection".into()));
         }
         if request.get("kind").and_then(Value::as_str) == Some("catalog")
             && request.get("runtime").is_none()

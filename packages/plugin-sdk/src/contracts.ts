@@ -4358,12 +4358,18 @@ export const contracts = {
               configured: {
                 type: 'boolean',
               },
+              runtimes: {
+                type: 'array',
+                items: {
+                  $ref: '#/$defs/AgentExternalRuntimeOption',
+                },
+              },
               state: {
                 $ref: '#/$defs/AgentExternalAgentsState',
               },
             },
             additionalProperties: false,
-            required: ['target', 'configured', 'state'],
+            required: ['target', 'configured', 'runtimes', 'state'],
             $defs: {
               AgentExternalAgentsTarget: {
                 type: 'object',
@@ -4408,6 +4414,22 @@ export const contracts = {
                   type: 'string',
                   format: 'uuid',
                 },
+              },
+              AgentExternalRuntimeOption: {
+                type: 'object',
+                properties: {
+                  id: {
+                    type: 'string',
+                  },
+                  name: {
+                    type: 'string',
+                  },
+                  enabled: {
+                    type: 'boolean',
+                  },
+                },
+                additionalProperties: false,
+                required: ['id', 'name', 'enabled'],
               },
               AgentExternalAgentsState: {
                 oneOf: [

@@ -65,7 +65,57 @@ pub struct ExternalAgentsRead {
 pub struct ExternalAgents {
     pub target: ConfigurationTarget,
     pub configured: bool,
+    pub runtimes: Vec<RuntimeOption>,
     pub state: ExternalAgentsState,
+}
+
+#[derive(Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentExternalRuntimeOption")]
+pub struct RuntimeOption {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+}
+
+pub fn runtime_options(
+    configuration: Option<&crate::executor::OarConfiguration>,
+) -> Vec<RuntimeOption> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct RuntimeMetadata {
+        id: String,
+        name: String,
+    }
+    static RUNTIMES: std::sync::OnceLock<Vec<RuntimeMetadata>> = std::sync::OnceLock::new();
+    let metadata = RUNTIMES.get_or_init(|| {
+        serde_json::from_str(include_str!("../../oar-executor/runtimes.json"))
+            .expect("bundled OAR runtime metadata")
+    });
+    let mut options: Vec<_> = metadata
+        .iter()
+        .map(|runtime| RuntimeOption {
+            id: runtime.id.clone(),
+            name: runtime.name.clone(),
+            enabled: configuration.is_some_and(|configuration| {
+                configuration.enabled && configuration.runtimes.get(&runtime.id) == Some(&true)
+            }),
+        })
+        .collect();
+    if let Some(configuration) = configuration {
+        options.extend(
+            configuration
+                .runtimes
+                .iter()
+                .filter(|(id, _)| !metadata.iter().any(|runtime| &runtime.id == *id))
+                .map(|(id, enabled)| RuntimeOption {
+                    id: id.clone(),
+                    name: id.clone(),
+                    enabled: configuration.enabled && *enabled,
+                }),
+        );
+    }
+    options
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -169,4 +219,38 @@ pub enum Models {
 pub struct InstallLine {
     pub line: String,
     pub description: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn runtime_options_preserves_unknown_configured_ids_after_known_options() {
+        let mut configuration: crate::executor::OarConfiguration = serde_json::from_value(json!({
+            "executable":"/unused/custom-worker", "args":["--custom"],
+            "runtimes":{"codex":true,"cluade":true,"custom-runtime":false}
+        }))
+        .unwrap();
+        for enabled in [true, false] {
+            configuration.enabled = enabled;
+            let options = runtime_options(Some(&configuration));
+            assert_eq!(
+                serde_json::to_value(&options[options.len() - 2..]).unwrap(),
+                json!([
+                    {"id":"cluade","name":"cluade","enabled":enabled},
+                    {"id":"custom-runtime","name":"custom-runtime","enabled":false}
+                ])
+            );
+            let codex = options
+                .iter()
+                .filter(|runtime| runtime.id == "codex")
+                .collect::<Vec<_>>();
+            assert_eq!(
+                serde_json::to_value(codex).unwrap(),
+                json!([{"id":"codex","name":"Codex","enabled":enabled}])
+            );
+        }
+    }
 }

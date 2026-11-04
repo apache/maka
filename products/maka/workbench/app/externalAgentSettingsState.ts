@@ -36,7 +36,7 @@ import { sameValue } from '../../../../plugins/shared/value';
 type Target = {
   target: AgentExternalAgents['target'];
   configured: boolean;
-  enabled: boolean;
+  runtimes: AgentExternalAgents['runtimes'];
 };
 type Basis = { source: DeploymentRef; targets: Target[] };
 export type ExternalAgentAction = { view: number };
@@ -93,7 +93,14 @@ export function createExternalAgentSettings(
 ) {
   const basis = signal<Basis | null>(null);
   const catalog = signal<AgentExternalAgents | null>(null);
-  const confirmation = signal<{ basis: Basis; acknowledged: boolean } | null>(null);
+  const confirmation = signal<{
+    basis: Basis;
+    runtime: string;
+    name: string;
+    acknowledged: boolean;
+  } | null>(null);
+  const details = signal<string | null>(null);
+  const failure = signal<string | null>(null);
   const plan = signal<Plan | null>(null);
   const lines = signal<Record<string, string>>({});
   const loading = signal(false);
@@ -131,10 +138,10 @@ export function createExternalAgentSettings(
       )
     )
       throw new UiError('This agent belongs to another deployment and cannot be configured here.');
-    const targets = statuses.map(({ target, configured, state }) => ({
+    const targets = statuses.map(({ target, configured, runtimes }) => ({
       target,
       configured,
-      enabled: state.kind !== 'disabled',
+      runtimes,
     }));
     return { source: after, targets };
   };
@@ -145,17 +152,23 @@ export function createExternalAgentSettings(
     plan.set(null);
     catalog.set(null);
     lines.set({});
+    details.set(null);
   };
   const load = async () => {
     if (!alive || !active() || loading()) return;
     const generation = ++read;
     loading.set(true);
+    failure.set(null);
     invalidate();
     try {
       const next = await observeBasis();
       if (!alive || !active() || generation !== read) return;
       basis.set(next);
-      const status = await host.query('agent', 'externalAgents', {});
+      const status = next.targets.some((target) =>
+        target.runtimes.some((runtime) => runtime.enabled),
+      )
+        ? await host.query('agent', 'externalAgents', {})
+        : null;
       if (!alive || !active() || generation !== read) return;
       const latest = await source();
       if (!alive || !active() || generation !== read) return;
@@ -166,12 +179,10 @@ export function createExternalAgentSettings(
       if (!alive || !active() || generation !== read) return;
       catalog.set(status);
     } catch (error) {
-      if (alive && active() && generation === read)
-        operations.report(
-          error instanceof UiError
-            ? error
-            : new UiError('Error: {detail}', { detail: errorMessage(error) }),
-        );
+      if (alive && active() && generation === read) {
+        failure.set(errorMessage(error));
+        operations.report(new UiError('Could not check external agents. Open details or refresh.'));
+      }
     } finally {
       if (alive && generation === read) loading.set(false);
     }
@@ -185,17 +196,39 @@ export function createExternalAgentSettings(
     }
     return true;
   };
-  const save = (request: ExternalAgentAction, enabled: boolean) => {
+  const run = (operation: () => Promise<void>) =>
+    operations.run(async () => {
+      failure.set(null);
+      try {
+        await operation();
+      } catch (error) {
+        failure.set(errorMessage(error));
+        throw new UiError('Could not update external agents. Open details or refresh.');
+      }
+    });
+  const save = (request: ExternalAgentAction, runtime: string, enabled: boolean) => {
     if (!current(request) || disabled()) return;
     const original = enabled ? confirmation()?.basis : basis();
-    if (!original || (enabled && !confirmation()?.acknowledged)) return;
-    return operations.run(async () => {
+    if (
+      !original ||
+      !runtime ||
+      (enabled && (!confirmation()?.acknowledged || confirmation()?.runtime !== runtime))
+    )
+      return;
+    if (!original.targets.some((target) => target.runtimes.some((item) => item.id === runtime)))
+      return;
+    return run(async () => {
       if (!(await verify(original, request))) return;
       const edits = original.targets.map(({ target, configured }) => {
         const changes: SettingChange[] = [];
         if (!configured) changes.push({ path: target.path as [string, ...string[]] });
+        if (enabled)
+          changes.push({
+            path: target.path.concat('enabled') as [string, ...string[]],
+            value: { kind: 'boolean', value: true },
+          });
         changes.push({
-          path: target.path.concat('enabled') as [string, ...string[]],
+          path: target.path.concat('runtimes', runtime) as [string, ...string[]],
           value: { kind: 'boolean', value: enabled },
         });
         return { instance: target.source.namespace, changes };
@@ -224,10 +257,17 @@ export function createExternalAgentSettings(
       await load();
     });
   };
-  const requestEnable = (request: ExternalAgentAction) => {
+  const requestEnable = (request: ExternalAgentAction & { runtime: string }) => {
     if (!current(request) || disabled() || !basis()) return;
+    const runtime = runtimes().find((item) => item.id === request.runtime);
+    if (!runtime) return;
     view.set(view() + 1);
-    confirmation.set({ basis: basis()!, acknowledged: false });
+    confirmation.set({
+      basis: basis()!,
+      runtime: runtime.id,
+      name: runtime.name,
+      acknowledged: false,
+    });
     plan.set(null);
   };
   const acknowledge = (request: ExternalAgentAction & { value: boolean }) => {
@@ -240,13 +280,26 @@ export function createExternalAgentSettings(
     confirmation.set(null);
     plan.set(null);
   };
-  const runtimes = (): AgentExternalRuntime[] => {
+  const runtimes = (): AgentExternalAgents['runtimes'] => {
+    const rows = new Map<string, AgentExternalAgents['runtimes'][number]>();
+    for (const target of basis()?.targets ?? []) {
+      for (const runtime of target.runtimes) {
+        const previous = rows.get(runtime.id);
+        rows.set(runtime.id, {
+          ...runtime,
+          enabled: !!previous?.enabled || runtime.enabled,
+        });
+      }
+    }
+    return [...rows.values()];
+  };
+  const statuses = (): AgentExternalRuntime[] => {
     const state = catalog()?.state;
     return state?.kind === 'ready' ? state.runtimes : [];
   };
   const chooseLine = (request: ExternalAgentAction & { runtime: string; line: string }) => {
     if (!current(request) || disabled()) return;
-    const runtime = runtimes().find((item) => item.id === request.runtime);
+    const runtime = statuses().find((item) => item.id === request.runtime);
     if (!runtime?.installLines.some((item) => item.line === request.line)) return;
     view.set(view() + 1);
     lines.set({ ...lines(), [request.runtime]: request.line });
@@ -254,7 +307,7 @@ export function createExternalAgentSettings(
   };
   const viewPlan = (request: ExternalAgentAction & { runtime: string; line?: string }) => {
     if (!current(request) || disabled() || !basis()) return;
-    const runtime = runtimes().find((item) => item.id === request.runtime);
+    const runtime = statuses().find((item) => item.id === request.runtime);
     if (!runtime?.canInstall || runtime.installation.kind !== 'not_found') return;
     if (
       runtime.installLines.length &&
@@ -262,7 +315,7 @@ export function createExternalAgentSettings(
     )
       return;
     const original = basis()!;
-    return operations.run(async () => {
+    return run(async () => {
       if (!(await verify(original, request))) return;
       const result = await operations.mutate('agent', 'oarSetup', {
         runtime: runtime.id,
@@ -270,6 +323,7 @@ export function createExternalAgentSettings(
       });
       if (!current(request)) return;
       const resultPlan = planResult(result.result);
+      details.set(null);
       view.set(view() + 1);
       plan.set({
         ...resultPlan,
@@ -284,7 +338,7 @@ export function createExternalAgentSettings(
     if (!current(request) || disabled()) return;
     const original = plan();
     if (original?.kind !== 'plan') return;
-    return operations.run(async () => {
+    return run(async () => {
       if (!(await verify(original.basis, request))) return;
       plan.set(null);
       view.set(view() + 1);
@@ -329,6 +383,13 @@ export function createExternalAgentSettings(
   return {
     basis,
     catalog,
+    details,
+    failure,
+    toggleDetails: (request: ExternalAgentAction & { runtime: string }) => {
+      if (!current(request)) return;
+      details.set(details() === request.runtime ? null : request.runtime);
+    },
+    status: (runtime: string) => statuses().find((item) => item.id === runtime),
     confirmation,
     plan,
     lines,
@@ -343,8 +404,9 @@ export function createExternalAgentSettings(
     chooseLine,
     viewPlan,
     install,
-    enable: (request: ExternalAgentAction) => save(request, true),
-    disable: (request: ExternalAgentAction) => save(request, false),
+    enable: (request: ExternalAgentAction) => save(request, confirmation()?.runtime ?? '', true),
+    disable: (request: ExternalAgentAction & { runtime: string }) =>
+      save(request, request.runtime, false),
     activate: () => {
       if (!basis()) void load();
     },

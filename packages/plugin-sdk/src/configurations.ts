@@ -356,6 +356,15 @@ export const configurations = {
             type: 'boolean',
             default: true,
           },
+          runtimes: {
+            description:
+              'Each runtime requires explicit opt-in, even when the legacy gate is enabled.',
+            type: 'object',
+            additionalProperties: {
+              type: 'boolean',
+            },
+            default: {},
+          },
           executable: {
             description: 'Absent selects the worker shipped beside the Maka executable.',
             type: ['string', 'null'],
@@ -1058,6 +1067,15 @@ export const configurations = {
           enabled: {
             type: 'boolean',
             default: true,
+          },
+          runtimes: {
+            type: 'object',
+            additionalProperties: {
+              type: 'boolean',
+            },
+            description:
+              'Each runtime requires explicit opt-in, even when the legacy gate is enabled.',
+            default: {},
           },
           executable: {
             type: ['string', 'null'],

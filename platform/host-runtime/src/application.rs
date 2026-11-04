@@ -963,16 +963,6 @@ impl Client {
             if !snapshot.starting {
                 return Err("Host instance is unavailable".into());
             }
-            #[cfg(debug_assertions)]
-            eprintln!(
-                "instance readiness wait: id={id:?} desired={:?} effective={:?} loading={:?} startup_error={:?} cleanup_error={:?} instances={:?}",
-                snapshot.desired,
-                snapshot.effective,
-                snapshot.loading,
-                snapshot.startup_error,
-                snapshot.cleanup_error,
-                snapshot.instances
-            );
             updates
                 .changed()
                 .await

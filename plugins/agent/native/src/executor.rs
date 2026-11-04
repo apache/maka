@@ -127,7 +127,9 @@ impl Executors {
                 return Err("agent_executor_name_ambiguous".into());
             }
         }
-        if let Some(configuration) = oar.filter(|configuration| configuration.enabled) {
+        if let Some(configuration) =
+            oar.filter(|configuration| configuration.enabled_runtimes().next().is_some())
+        {
             let owner = oar::Oar::capture(context, configuration)?;
             let backend = Backend {
                 accepted: Accepted {

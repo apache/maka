@@ -105,13 +105,13 @@ if (request.kind === 'setup' || request.kind === 'catalog' || request.kind === '
   ];
   const value =
     request.kind === 'status'
-      ? statuses
+      ? statuses.filter((runtime) => request.runtimes?.includes(runtime.id))
       : request.kind === 'setup'
         ? request.action === 'install'
           ? { kind: 'installed' }
           : { kind: 'unsupported', detail: 'Runtime has no installer' }
         : request.runtime === undefined
-          ? catalogs
+          ? catalogs.filter((runtime) => request.runtimes?.includes(runtime.runtime))
           : (catalogs.find((entry) => entry.runtime === request.runtime) ?? {
               kind: 'unsupported',
               detail: 'Unknown runtime',

@@ -25,6 +25,11 @@ async fn ui_bindings_retire_reads_keep_original_mutations_and_recover_after_reop
         let fixture = Fixture::new().await;
         let parent = fixture.client().await;
         let instance = InstanceId(vec![Uuid::from_u128(4)]);
+        let mut missing = parent.source().clone();
+        missing.revision += 1;
+        assert!(parent.bind_ui(missing, instance.clone()).await.is_err());
+        assert!(parent.bind_ui(parent.source().clone(), InstanceId(vec![Uuid::from_u128(99)])).await.is_err());
+        assert!(parent.bind_ui(parent.source().clone(), InstanceId(vec![Uuid::from_u128(1)])).await.is_err());
         let (child, imports) = parent.bind_ui(parent.source().clone(), instance.clone()).await.unwrap();
         let endpoint = &imports["counter"][0];
         assert_eq!(child.query(endpoint, "read", Value::Null).await.unwrap(), json!({"sent":0}));

@@ -141,6 +141,7 @@ impl Owner {
         Ok(ExternalAgents {
             target,
             configured: self.settings.oar.is_some(),
+            runtimes: maka_agent_api::oar::runtime_options(self.settings.oar.as_ref()),
             state,
         })
     }
