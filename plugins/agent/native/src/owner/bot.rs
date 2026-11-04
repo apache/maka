@@ -130,6 +130,8 @@ pub(super) struct Bot {
     /// admits one Host per Root, so a claim absent here has no live creator.
     creating: std::sync::Mutex<std::collections::HashSet<String>>,
     changed: tokio::sync::watch::Sender<()>,
+    /// Workers whose stored watch could not be read, so each is reported once.
+    unreadable: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 /// Registers a live creation for as long as it is held.
 pub(super) struct Creating<'a> {
@@ -158,6 +160,7 @@ impl Bot {
             current: RwLock::new(None),
             creating: Default::default(),
             changed: tokio::sync::watch::channel(()).0,
+            unreadable: Default::default(),
         }
     }
     /// Read the registered Bot before any queued work is scheduled.
