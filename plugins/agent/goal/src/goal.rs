@@ -467,7 +467,7 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
         self.store.batch(receipts).await?;
         Ok(())
     }
-    pub async fn sessions(&self) -> Result<Vec<Saved<A>>, Error> {
+    pub async fn sessions(&self) -> Result<Vec<Result<Saved<A>, Error>>, Error> {
         let mut result = vec![];
         let mut after = None;
         loop {
@@ -479,12 +479,23 @@ impl<A: Clone + Serialize + serde::de::DeserializeOwned> Repository<A> {
                 })
                 .await?;
             for entry in page.entries {
-                let saved = decode(entry.record)?;
-                if (saved.goal.status == Status::Active && !saved.goal.authority_blocked)
-                    || saved.goal.pending.is_some()
-                {
-                    result.push(saved);
-                }
+                let Some(value) = entry.record.data.value() else {
+                    continue;
+                };
+                let scheduled = Goal::<serde::de::IgnoredAny>::deserialize(value).map_err(invalid);
+                let saved = match scheduled {
+                    Ok(goal)
+                        if (goal.status == Status::Active && !goal.authority_blocked)
+                            || goal.pending.is_some() =>
+                    {
+                        decode(entry.record)
+                    }
+                    Ok(_) => continue,
+                    Err(error) => Err(error),
+                };
+                result.push(
+                    saved.map_err(|error| invalid(format!("Goal record {}: {error}", entry.key))),
+                );
             }
             after = page.next_after;
             if after.is_none() {

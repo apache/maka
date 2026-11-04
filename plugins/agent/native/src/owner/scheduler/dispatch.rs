@@ -331,7 +331,7 @@ impl Owner {
             disposition: MessageDisposition::TurnStarted,
             submitted_intent: None,
         };
-        let admission = PendingMessageAdmission {
+        let mut admission = PendingMessageAdmission {
             execution: PendingExecution {
                 owner: self.prefix.clone(),
                 basis: serde_json::to_value(&basis).map_err(reason)?,
@@ -351,20 +351,24 @@ impl Owner {
         // approval cannot change the known result of an already admitted fire.
         let accepted = match self.store.session(&session_id).await {
             Ok(session) => {
-                session
-                    .root_message(&session_id, &admission.source.message.message_id)
+                if let Some(original) = session
+                    .message_admission(&session_id, &admission.source.message.message_id)
                     .await
                     .map_err(reason)?
-                    .is_some()
-                    || session
-                        .message_admission(&session_id, &admission.source.message.message_id)
+                {
+                    admission = original;
+                    true
+                } else {
+                    session
+                        .root_message(&session_id, &admission.source.message.message_id)
                         .await
                         .map_err(reason)?
                         .is_some()
-                    || session
-                        .message_cancelled(&session_id, &admission.source.message.message_id)
-                        .await
-                        .map_err(reason)?
+                        || session
+                            .message_cancelled(&session_id, &admission.source.message.message_id)
+                            .await
+                            .map_err(reason)?
+                }
             }
             Err(maka_event_log::StoreError::SessionNotFound) => false,
             Err(error) => return Err(reason(error)),

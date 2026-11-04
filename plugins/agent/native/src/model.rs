@@ -128,20 +128,24 @@ impl Source {
                 })?
                 .ok_or_else(unavailable)?;
             drop(public_guard);
-            let row = &material.connection;
-            let reference = row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id))
-                .and_then(|value| value.catalog_model.as_ref());
-            let public_model = snapshot.model_base(&row.provider.name, &selection.model_id, reference)
-                .map(std::borrow::Cow::into_owned);
-            let snapshot = Arc::new(maka_providers::catalog::Snapshot::for_model(
-                &row.provider.name, &selection.model_id, public_model.clone(),
-            ).map_err(|_| unavailable())?);
-            let definition =
-                Arc::new(maka_providers::definition(&row.provider, snapshot).map_err(|_| {
+            let define = |snapshot: &maka_providers::catalog::Snapshot,
+                          row: &maka_agent_facts::configuration::ConnectionCatalogEntry| {
+                let reference = row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id))
+                    .and_then(|value| value.catalog_model.as_ref());
+                let public_model = snapshot.model_base(&row.provider.name, &selection.model_id, reference)
+                    .map(std::borrow::Cow::into_owned);
+                let model_snapshot = Arc::new(maka_providers::catalog::Snapshot::for_model(
+                    &row.provider.name, &selection.model_id, public_model.clone(),
+                ).map_err(|_| unavailable())?);
+                let definition = Arc::new(maka_providers::definition(&row.provider, model_snapshot).map_err(|_| {
                     tracing::warn!(stage = "provider_definition", cause = "provider_definition_unavailable",
                         provider = %row.provider.name, "Model preparation failed");
                     unavailable()
                 })?);
+                Ok::<_, RunError>((public_model, definition))
+            };
+            let (mut public_model, mut definition) = define(&snapshot, &material.connection)?;
+            let row = &material.connection;
             let material = if row.provider.package_id == maka_providers::codex::ID
                 && row.provider.name == "chatgpt"
             {
@@ -154,16 +158,11 @@ impl Source {
                     configuration.clone(), credentials.clone(), definition.clone(),
                     binding.clone(), &material,
                 ).await;
-                let current = configuration.observe_model(binding).await
+                let public_guard = catalog.snapshot.read().await;
+                let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
+                let current = configuration.observe_selected_model(selection.clone()).await
                     .map_err(|_| unavailable())?.ok_or_else(unavailable)?;
-                if current.connection.provider != row.provider
-                    || current.connection.configuration != row.configuration
-                    || current.connection.enabled_model_ids != row.enabled_model_ids
-                    || current.connection.model_overrides != row.model_overrides
-                    || current.connection.request_body_overlay != row.request_body_overlay
-                {
-                    return Err(unavailable());
-                }
+                (public_model, definition) = define(current_snapshot, &current.connection)?;
                 current
             } else {
                 material

@@ -681,3 +681,45 @@ async fn subscription_provenance_follows_provider_identity_with_a_responses_adap
     assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
     f.close().await;
 }
+
+#[tokio::test]
+async fn admission_uses_settings_saved_while_inventory_discovery_is_pending() {
+    use super::super::Source;
+    let f = Arc::new(Fixture::new().await);
+    let discovery = tokio::spawn({
+        let f = f.clone();
+        async move { f.refresh().await }
+    });
+    f.provider.started.acquire().await.unwrap().forget();
+    let catalog = Arc::new(maka_providers::catalog::Catalog::new(
+        maka_providers::catalog::Snapshot::bundled().unwrap(),
+    ));
+    let mut selecting = Box::pin(Source::select(
+        f.store.clone(),
+        catalog.clone(),
+        f.credentials.clone(),
+        ModelSelection {
+            connection_id: f.binding.connection_id.clone(),
+            model_id: "model-a".into(),
+        },
+        None,
+        "session".into(),
+        source_fixture(&f).await.revision,
+    ));
+    assert!(futures_util::poll!(&mut selecting).is_pending());
+    let selected = tokio::spawn(selecting);
+    // Public directory updates can proceed after the initial selection read, while discovery is still held.
+    let directory = catalog.snapshot.write().await;
+    let row = f.store.catalog().await.unwrap().connections.remove(0);
+    f.store.update_connection(serde_json::from_value(json!({
+        "expected":{"connectionId":row.connection_id,"revision":row.revision},
+        "changes":{"modelOverrides":{"model-a":{"maxOutputTokens":42}},"requestBodyOverlay":{"seed":9}}
+    })).unwrap()).await.unwrap();
+    drop(directory);
+    f.provider.release.add_permits(1);
+    let (_, prepared) = selected.await.unwrap().unwrap();
+    discovery.await.unwrap();
+    assert_eq!(prepared.main_output_limit, Some(42));
+    assert_eq!(prepared.provider.body_overlay.unwrap()["seed"], 9);
+    f.close().await;
+}
