@@ -34,8 +34,8 @@ import {
 import { errorText, renderText } from './text';
 
 /**
- * Starts the Bot over. A Session's tools are fixed when it is created, so a Bot made by an
- * older build never gains the tools of a newer one; this archives it and opens a new one.
+ * Starts the Bot over, on purpose: it archives the current Bot and opens an empty new one.
+ * It is not how a Bot gets newer tools; those are derived whenever work is admitted.
  * It asks first because the new Bot starts without the old one's checklist and schedule.
  */
 export function BotRestart(props: { restart(): Promise<void> }) {

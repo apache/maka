@@ -21,9 +21,12 @@
 type Query = (
   endpoint: 'agent',
   method: 'botOutbox',
-  input: { after?: number; limit?: number },
+  input: { after?: number; limit?: number; sessionId?: string },
 ) => Promise<{
+  /** The current Bot, whichever Session was asked about. */
   sessionId?: string | null;
+  /** Whether the asked Session is, or once was, a Bot Session. */
+  isBot: boolean;
   through: number;
   nextAfter?: number | null;
   messages: BotTranscriptMessage[];
@@ -60,11 +63,12 @@ export function createBotTranscriptCore(
   /** The Bot Session the application already knows: a string, `null` for none, `undefined` if unknown. */
   known: () => string | null | undefined = () => undefined,
 ) {
-  const fromKnown = (): BotIdentity => {
-    const bot = known();
-    return bot === undefined ? 'unknown' : bot === sessionId ? 'bot' : 'ordinary';
-  };
+  // Only "this is the current Bot" is settled without asking: any other Session may be a
+  // Bot that was replaced, which only the Host's records can say.
+  const fromKnown = (): BotIdentity => (known() === sessionId ? 'bot' : 'unknown');
   let identity: BotIdentity = fromKnown();
+  /** Whether this Session is the Bot now; a replaced Bot is read once and not watched. */
+  let current = identity === 'bot';
   let byTurn: ReadonlyMap<string, BotTranscriptMessage[]> = new Map();
   let alive = true;
   let stream: { close(): Promise<void> } | null = null;
@@ -72,8 +76,8 @@ export function createBotTranscriptCore(
 
   const catchUp = async (through: number) => {
     while (alive && cursor < through) {
-      const page = await host.query('agent', 'botOutbox', { after: cursor });
-      if (!alive || page.sessionId !== sessionId || page.messages.length === 0) return;
+      const page = await host.query('agent', 'botOutbox', { after: cursor, sessionId });
+      if (!alive || !page.isBot || page.messages.length === 0) return;
       const next = new Map(byTurn);
       for (const message of page.messages) {
         cursor = message.sequence;
@@ -87,8 +91,8 @@ export function createBotTranscriptCore(
   };
   // Only the watch loop reads, one page run at a time, so the cursor never races.
   const sync = async (): Promise<void> => {
-    const head = await host.query('agent', 'botOutbox', { limit: 0 });
-    if (!alive || head.sessionId !== sessionId) return;
+    const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
+    if (!alive || !head.isBot) return;
     await catchUp(head.through);
   };
 
@@ -102,13 +106,16 @@ export function createBotTranscriptCore(
       const prior = fromKnown();
       if (prior !== 'unknown') {
         identity = prior;
+        current = true;
         changed();
         return identity === 'bot';
       }
       try {
-        const head = await host.query('agent', 'botOutbox', { limit: 0 });
+        const head = await host.query('agent', 'botOutbox', { limit: 0, sessionId });
         if (!alive) return false;
-        identity = head.sessionId === sessionId ? 'bot' : 'ordinary';
+        // A replaced Bot still reads as a Bot, so its replies stay what the user saw.
+        identity = head.isBot ? 'bot' : 'ordinary';
+        current = head.sessionId === sessionId;
         changed();
         return identity === 'bot';
       } catch {
@@ -128,6 +135,11 @@ export function createBotTranscriptCore(
     try {
       if (!(await identify())) return;
       identified = true;
+      if (!current) {
+        await sync().catch(() => {});
+        changed();
+        return;
+      }
       const opened = await host.subscribe('agent', 'watchBotOutbox', { limit: 0 });
       if (!alive) {
         await opened.close();

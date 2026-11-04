@@ -1148,13 +1148,8 @@ export function createConversationUi(
     void (async () => {
       try {
         error.set('');
-        // An existing Bot opens directly; only its first open needs a workspace.
-        const existing = botSession() ?? (await refreshBotSession().catch(() => null));
-        if (existing !== null) {
-          await switchSession(existing, { sessionId, instance: null });
-          return;
-        }
-        // The Host picks the workspace of the Bot's first open itself.
+        // The Host decides whether the current Bot is still usable or a new one is needed;
+        // the cached id only serves presentation. It returns an existing Bot unchanged.
         const result = await control('openBot', {});
         if (!alive) return;
         if (result.kind !== 'opened')
@@ -1169,8 +1164,8 @@ export function createConversationUi(
       }
     })();
   };
-  // Archives the current Bot and opens a new one, which is how a Bot gets the tools a newer
-  // build offers. The new Bot starts empty: the old one's checklist and schedule stay behind.
+  // An explicit start over: archives the current Bot and opens a new one. The new Bot starts
+  // empty; the old one's conversation stays readable, but its checklist and schedule stay behind.
   const restartBot = async () => {
     const current = botSession();
     const owner = handle();

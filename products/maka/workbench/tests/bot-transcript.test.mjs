@@ -33,27 +33,41 @@ const message = (sequence, turnId, text = `m${sequence}`) => ({
 const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 
 /** A Host whose outbox pages can be held back or made to fail, and which can announce changes. */
-function host({ messages = [], hold = false, fail = false, pageSize = 100 } = {}) {
-  const state = { messages, hold, fail, releases: [], waiting: [], reads: [] };
+function host({
+  messages = [],
+  hold = false,
+  fail = false,
+  pageSize = 100,
+  current = SESSION,
+  former = [],
+} = {}) {
+  const state = { messages, hold, fail, releases: [], waiting: [], reads: [], subscribed: 0 };
   const query = async (_endpoint, _method, input) => {
-    const through = state.messages.length;
-    if (input.limit === 0) return { sessionId: SESSION, through, messages: [] };
+    // The Host reports the current Bot, and whether the asked Session is or was a Bot.
+    const asked = input.sessionId ?? current;
+    const isBot = asked === current || former.includes(asked);
+    const through = isBot ? state.messages.length : 0;
+    if (input.limit === 0) return { sessionId: current, isBot, through, messages: [] };
     state.reads.push(input.after ?? 0);
     if (state.hold) await new Promise((resolve) => state.releases.push(resolve));
     if (state.fail) throw new Error('outbox read failed');
-    const rest = state.messages.filter((m) => m.sequence > (input.after ?? 0));
+    const rest = isBot ? state.messages.filter((m) => m.sequence > (input.after ?? 0)) : [];
     const page = rest.slice(0, pageSize);
     return {
-      sessionId: SESSION,
+      sessionId: current,
+      isBot,
       through,
       messages: page,
       nextAfter: rest.length > page.length ? page[page.length - 1].sequence : null,
     };
   };
-  const subscribe = async () => ({
-    next: () => new Promise((resolve) => state.waiting.push(resolve)),
-    close: async () => {},
-  });
+  const subscribe = async () => (
+    state.subscribed++,
+    {
+      next: () => new Promise((resolve) => state.waiting.push(resolve)),
+      close: async () => {},
+    }
+  );
   /** The Host announces that the outbox head moved. */
   const announce = () => {
     for (const resolve of state.waiting.splice(0)) resolve({ sessionId: SESSION });
@@ -145,9 +159,15 @@ function slowIdentity({ hold = false, failures = 0, bot = SESSION } = {}) {
         state.failures -= 1;
         throw new Error('identity lookup failed');
       }
-      return { sessionId: bot, through: 0, messages: [] };
+      return { sessionId: bot, isBot: (input.sessionId ?? bot) === bot, through: 0, messages: [] };
     }
-    return { sessionId: bot, through: 0, messages: [], nextAfter: null };
+    return {
+      sessionId: bot,
+      isBot: (input.sessionId ?? bot) === bot,
+      through: 0,
+      messages: [],
+      nextAfter: null,
+    };
   };
   const subscribe = async () => {
     state.subscribed = true;
@@ -196,7 +216,7 @@ test("a Session the Host reports as someone else's Bot is ordinary", async () =>
   core.close();
 });
 
-test('an identity the application already knows is used without waiting for the lookup', async () => {
+test('the current Bot is known without a lookup; any other Session is asked about', async () => {
   const { state, host: h } = slowIdentity({ hold: true });
   const asBot = createBotTranscriptCore(
     h,
@@ -205,7 +225,10 @@ test('an identity the application already knows is used without waiting for the 
     noWait,
     () => SESSION,
   );
-  const asOrdinary = createBotTranscriptCore(
+  assert.equal(asBot.identity(), 'bot');
+  assert.equal(state.lookups, 0, 'no lookup is needed for the current Bot');
+  // Another Session may be a Bot that was replaced, so it stays unknown until answered.
+  const other = createBotTranscriptCore(
     h,
     'ordinary',
     () => {},
@@ -219,11 +242,15 @@ test('an identity the application already knows is used without waiting for the 
     noWait,
     () => null,
   );
-  assert.equal(asBot.identity(), 'bot');
-  assert.equal(asOrdinary.identity(), 'ordinary');
-  assert.equal(none.identity(), 'ordinary');
-  assert.equal(state.lookups, 0, 'no lookup is needed');
-  for (const core of [asBot, asOrdinary, none]) core.close();
+  assert.equal(other.identity(), 'unknown');
+  assert.equal(none.identity(), 'unknown');
+  state.hold = false;
+  for (const release of state.releases) release();
+  await other.started;
+  await none.started;
+  assert.equal(other.identity(), 'ordinary');
+  assert.equal(none.identity(), 'bot');
+  for (const core of [asBot, other, none]) core.close();
 });
 
 test('a late answer from the application starts the watch after every lookup failed', async () => {
@@ -262,4 +289,43 @@ test('a running, failed or stopped Turn is never reported as unanswered', () => 
   assert.equal(botTurnEnding({ finished: true, outcome: 'failed', ...quiet }), 'other');
   assert.equal(botTurnEnding({ finished: true, outcome: 'aborted', ...quiet }), 'other');
   assert.equal(botTurnEnding({ finished: true, outcome: null, ...quiet }), 'other');
+});
+
+test('a replaced Bot still reads as a Bot with its replies, and is not watched', async () => {
+  const { state, host: h } = host({
+    messages: [message(1, 'a'), message(2, 'b')],
+    current: 'newer-bot',
+    former: [SESSION],
+  });
+  const core = createBotTranscriptCore(
+    h,
+    SESSION,
+    () => {},
+    undefined,
+    () => 'newer-bot',
+  );
+  await core.started;
+  await settle();
+  assert.equal(core.identity(), 'bot');
+  assert.deepEqual(replies(core, 'a'), ['m1']);
+  assert.deepEqual(replies(core, 'b'), ['m2']);
+  assert.equal(state.subscribed, 0, 'only the current Bot is watched');
+  core.close();
+});
+
+test('an ordinary Session is asked about once and is not a Bot', async () => {
+  const { state, host: h } = host({ messages: [message(1, 'a')], current: 'the-bot' });
+  const core = createBotTranscriptCore(
+    h,
+    SESSION,
+    () => {},
+    undefined,
+    () => 'the-bot',
+  );
+  await core.started;
+  await settle();
+  assert.equal(core.identity(), 'ordinary');
+  assert.deepEqual(replies(core, 'a'), []);
+  assert.equal(state.subscribed, 0);
+  core.close();
 });

@@ -101,6 +101,11 @@ pub(super) enum Appended {
     Duplicate(u64),
 }
 
+/// Written with the claim of every Bot Session, so a replaced Bot is still known as
+/// one. It confers no authority; only the current registration does.
+fn former_key(session: &str) -> String {
+    format!("former/{session}")
+}
 fn head_key(session: &str) -> String {
     format!("outbox/{session}/head")
 }
@@ -776,15 +781,29 @@ impl Owner {
         })
     }
     async fn storage_claim(&self, revision: Option<u64>, mine: &str) -> Result<(), StoreError> {
+        // A retried claim of the same Session finds its marker already written.
+        let marker = self
+            .bot
+            .storage
+            .read(former_key(mine))
+            .await?
+            .map(|record| record.revision);
         self.bot
             .storage
-            .batch(vec![Bot::mutation(
-                RECORD_KEY.into(),
-                revision,
-                &Record {
-                    session_id: mine.into(),
+            .batch(vec![
+                Bot::mutation(
+                    RECORD_KEY.into(),
+                    revision,
+                    &Record {
+                        session_id: mine.into(),
+                    },
+                )?,
+                Mutation {
+                    key: former_key(mine),
+                    expected_revision: marker,
+                    data: Data::Present(serde_json::json!({})),
                 },
-            )?])
+            ])
             .await?;
         self.bot.set_current(Some(mine.into()));
         Ok(())
@@ -917,7 +936,21 @@ impl Owner {
     }
     pub async fn bot_outbox(&self, input: &BotOutboxRead) -> Result<BotOutbox, String> {
         let session_id = self.bot.session();
-        let (through, messages, more) = match &session_id {
+        let target = input.session_id.clone().or_else(|| session_id.clone());
+        let is_bot = match &target {
+            Some(session) => {
+                session_id.as_deref() == Some(session)
+                    || self
+                        .bot
+                        .storage
+                        .read(former_key(session))
+                        .await
+                        .map_err(|error| error.to_string())?
+                        .is_some()
+            }
+            None => false,
+        };
+        let (through, messages, more) = match target.as_ref().filter(|_| is_bot) {
             Some(session) => self
                 .bot
                 .page(session, input.after, (input.limit as usize).min(PAGE))
@@ -931,6 +964,7 @@ impl Owner {
         Ok(BotOutbox {
             enabled: self.settings.bot,
             session_id,
+            is_bot,
             through,
             messages,
             next_after,

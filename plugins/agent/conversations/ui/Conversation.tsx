@@ -2784,7 +2784,7 @@ export function Conversation(props: ConversationProps) {
         files={props.files}
         filesOpener={props.filesOpener}
         actions={
-          bot.identity() === 'bot' && props.restartBot ? (
+          bot.identity() === 'bot' && props.restartBot && props.botSession?.() === sessionId ? (
             <BotRestart restart={props.restartBot} />
           ) : undefined
         }
