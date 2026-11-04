@@ -256,6 +256,26 @@ fn tool_schemas_reach_the_model_with_local_refs_inlined() {
         narrowed["properties"]["name"],
         json!({"maxLength": 8, "allOf": [{"type": "string", "maxLength": 64}]})
     );
+
+    // Annotations describe rather than constrain, so the field's own wins.
+    let described = inline_refs(json!({
+        "properties": {"scope": {"$ref": "#/$defs/Scope", "description": "Which sessions.", "default": "all"}},
+        "$defs": {"Scope": {"description": "A session filter.", "oneOf": [{"type": "object"}]}},
+    }));
+    assert_eq!(
+        described["properties"]["scope"],
+        json!({"description": "Which sessions.", "oneOf": [{"type": "object"}], "default": "all"})
+    );
+
+    // A sibling that reads its neighbours stays apart from the target's.
+    let closed = inline_refs(json!({
+        "properties": {"item": {"$ref": "#/$defs/Item", "additionalProperties": false}},
+        "$defs": {"Item": {"properties": {"id": {"type": "string"}}}},
+    }));
+    assert_eq!(
+        closed["properties"]["item"],
+        json!({"additionalProperties": false, "allOf": [{"properties": {"id": {"type": "string"}}}]})
+    );
 }
 
 #[test]

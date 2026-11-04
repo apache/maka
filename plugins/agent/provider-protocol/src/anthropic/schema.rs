@@ -145,8 +145,8 @@ const INLINE_LIMIT: usize = 10_000;
 /// Expands document-local `$ref`s in a tool input schema. Some
 /// Anthropic-compatible endpoints do not resolve references: the model sees an
 /// opaque reference and encodes the argument as a JSON string instead of the
-/// object the schema describes. Inlining is equivalent for endpoints that do
-/// resolve them. Recursive, external and anchor references stay as written,
+/// object the schema describes. The expansion accepts the same instances, so
+/// endpoints that do resolve references are unaffected. Recursive, external and anchor references stay as written,
 /// and the root definitions are kept whenever one of them remains.
 pub fn inline_refs(schema: Value) -> Value {
     let Value::Object(source) = &schema else {
@@ -268,22 +268,47 @@ impl<'a> Expander<'a> {
     }
 }
 
-/// Applies a reference's sibling keywords to the schema it resolved to. They
-/// are merged when no keyword collides; otherwise both constrain the instance.
+/// Keywords that describe a schema without constraining instances. A
+/// sibling's value replaces the target's.
+const ANNOTATIONS: &[&str] = &[
+    "title",
+    "description",
+    "default",
+    "examples",
+    "deprecated",
+    "readOnly",
+    "writeOnly",
+    "$comment",
+];
+
+/// Keywords whose meaning depends on neighbouring keywords in the same schema
+/// object, so moving one next to the target's keywords could change what it
+/// accepts.
+const ADJACENT: &[&str] = &[
+    "additionalProperties",
+    "unevaluatedProperties",
+    "unevaluatedItems",
+    "items",
+    "additionalItems",
+];
+
+/// Applies a reference's sibling keywords to the schema it resolved to. In
+/// draft 2020-12 both constrain the instance. Siblings are written into the
+/// target when that keeps its meaning: annotations replace the target's, and
+/// other keywords may neither collide with the target's nor depend on
+/// neighbouring keywords. Otherwise the target is kept intact under `allOf`.
 fn merge(resolved: Value, siblings: Map<String, Value>) -> Map<String, Value> {
     match resolved {
         Value::Object(mut resolved)
-            if siblings
-                .keys()
-                .all(|keyword| !resolved.contains_key(keyword)) =>
+            if siblings.keys().all(|keyword| {
+                ANNOTATIONS.contains(&keyword.as_str())
+                    || (!resolved.contains_key(keyword) && !ADJACENT.contains(&keyword.as_str()))
+            }) =>
         {
             resolved.extend(siblings);
             resolved
         }
-        _ if siblings.is_empty() => match resolved {
-            Value::Object(resolved) => resolved,
-            resolved => Map::from_iter([("allOf".into(), Value::Array(vec![resolved]))]),
-        },
+        Value::Object(resolved) if siblings.is_empty() => resolved,
         resolved => {
             let mut result = siblings;
             result.insert("allOf".into(), Value::Array(vec![resolved]));
