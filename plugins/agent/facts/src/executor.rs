@@ -29,22 +29,58 @@ pub struct Settings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub thinking_level: Option<crate::execution::ThinkingLevel>,
+    pub thinking_level: Option<Effort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<String>,
 }
 impl Settings {
     pub fn is_empty(&self) -> bool {
-        self.model.is_none() && self.thinking_level.is_none()
+        self.model.is_none() && self.thinking_level.is_none() && self.runtime.is_none()
     }
     pub fn validate(&self) -> Result<(), &'static str> {
-        if self
-            .model
-            .as_ref()
-            .is_some_and(|model| model.trim().is_empty() || model.chars().any(char::is_control))
-        {
-            return Err("executor model must be nonempty without control characters");
+        for value in [&self.model, &self.runtime].into_iter().flatten() {
+            selector(value)?;
         }
         Ok(())
     }
+}
+
+/// Runtime-native effort, not a Host model's closed reasoning enum.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(try_from = "String", into = "String")]
+#[schemars(with = "String", rename = "ExecutorEffort")]
+pub struct Effort(String);
+impl Effort {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+impl TryFrom<String> for Effort {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        selector(&value)?;
+        Ok(Self(value))
+    }
+}
+impl From<Effort> for String {
+    fn from(value: Effort) -> Self {
+        value.0
+    }
+}
+fn selector(value: &str) -> Result<(), &'static str> {
+    if value.trim().is_empty() || value.chars().any(char::is_control) {
+        return Err("executor selector must be nonempty without control characters");
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentExecutorSelection")]
+pub struct Selection {
+    #[schemars(length(min = 1))]
+    pub executor: String,
+    pub settings: Settings,
 }
 
 /// The concrete implementation accepted for an external execution.
@@ -99,4 +135,49 @@ impl From<ExecutorId> for String {
     fn from(value: ExecutorId) -> Self {
         value.0
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn runtime_effort_is_preserved_without_host_enum_coercion() {
+        let value = serde_json::json!({"runtime":"codex", "model":"vendor/model", "thinkingLevel":"vendor-deep"});
+        let settings: Settings = serde_json::from_value(value.clone()).unwrap();
+        settings.validate().unwrap();
+        assert_eq!(
+            settings.thinking_level.as_ref().unwrap().as_str(),
+            "vendor-deep"
+        );
+        assert_eq!(serde_json::to_value(settings).unwrap(), value);
+        for effort in ["", "  ", "high\n"] {
+            assert!(serde_json::from_value::<Effort>(effort.into()).is_err());
+        }
+        let previous = serde_json::json!({"model":"model", "thinkingLevel":"high"});
+        let settings: Settings = serde_json::from_value(previous.clone()).unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), previous);
+    }
+}
+
+/// The next turn's choice, independent of an already admitted execution.
+/// Model revisions are resolved afresh; preferences never grant execution authority.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[schemars(rename = "AgentBackendPreference")]
+pub enum BackendPreference {
+    Model {
+        #[schemars(length(min = 1))]
+        connection_id: String,
+        #[schemars(length(min = 1))]
+        model_id: String,
+        thinking_level: Option<crate::execution::ThinkingLevel>,
+    },
+    Executor {
+        selection: crate::executor::Selection,
+    },
 }

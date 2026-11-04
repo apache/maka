@@ -165,7 +165,7 @@ async fn standard_skills_follow_each_actual_session_for_preparation_and_model_re
             assert_eq!(candidates["skills"].as_array().unwrap().len(),1,"{candidates}");
             assert_eq!(candidates["skills"][0]["invocation"],"/skill:review");
             assert!(candidates["skills"][0]["reference"].as_str().unwrap().starts_with("project:"));
-            let sent=f.mutation(2,"send",json!({"sessionId":session,"message":"/skill:review","model":f.selection().await}),Uuid::new_v4()).await.unwrap();
+            let sent=f.mutation(2,"send",json!({"sessionId":session,"message":"/skill:review","backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
             assert_eq!(sent["kind"],"started","{sent}");
             let (mut socket,_)=listener.accept().await.unwrap();
             let request=request(&mut socket).await;

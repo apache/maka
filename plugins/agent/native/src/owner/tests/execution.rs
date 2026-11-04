@@ -64,7 +64,7 @@ async fn exact_receipt_resumes_original_input_and_deduplicates_after_prerequisit
         let maka_agent_facts::input::InvocationInput::Message {source_messages,..} = boundary.root_input() else {panic!("original message")};
         let message = source_messages[0].message.message_id.clone();
 
-        let later = fixture.mutation(2, "send", json!({"sessionId":session, "message":"Later separate request", "model":fixture.selection().await}), Uuid::new_v4()).await.unwrap();
+        let later = fixture.mutation(2, "send", json!({"sessionId":session, "message":"Later separate request", "backend":model_backend(&fixture.selection().await)}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         response(&mut socket).await;
@@ -496,7 +496,7 @@ async fn resume_filters_incompatible_reasoning_but_preserves_portable_history() 
         let listener = current_listener;
         let mut older = fixture.selection().await;
         older.model_id = "older-model".into();
-        fixture.mutation(2, "send", json!({"sessionId":session,"message":"old question","model":older}), Uuid::new_v4()).await.unwrap();
+        fixture.mutation(2, "send", json!({"sessionId":session,"message":"old question","backend":model_backend(&older)}), Uuid::new_v4()).await.unwrap();
         let (mut old_socket, _) = listener.accept().await.unwrap();
         request(&mut old_socket).await;
         response_with_thinking(&mut old_socket, "portable old answer", Some("incompatible old reasoning")).await;

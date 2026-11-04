@@ -741,14 +741,14 @@ async fn stopping_real_agent_run_cancels_tool_but_retains_owner_until_physical_c
     }
 }
 #[tokio::test]
-async fn model_list_calls_real_settings_without_an_independent_native_grant() {
+async fn model_list_calls_real_agent_directory_without_an_independent_native_grant() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
         let fixture = Fixture::configured(&base, None, None, None, |configuration| {
             configuration.tools = vec![contract::ServiceTool {
-                target: maka_host_runtime::application::ServiceTarget::Import {
-                    name: "settings".into(),
+                target: maka_host_runtime::application::ServiceTarget::Export {
+                    name: EXPORT.into(),
                 },
                 method: "models".into(),
                 name: "ModelList".into(),
@@ -1057,7 +1057,7 @@ async fn model_editing_policy_selects_bound_file_methods_independently_of_code_m
             }
             let mut selection = fixture.selection().await;
             selection.model_id = model.into();
-            fixture.mutation(2, "send", json!({"sessionId":session,"message":"Use the selected editor","model":selection}), Uuid::new_v4()).await.unwrap();
+            fixture.mutation(2, "send", json!({"sessionId":session,"message":"Use the selected editor","backend":model_backend(&selection)}), Uuid::new_v4()).await.unwrap();
             let (mut socket, _) = listener.accept().await.unwrap();
             let prompt = request(&mut socket).await;
             assert_eq!(has_tool(&prompt, "exec"), expected_code);
@@ -1159,7 +1159,7 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
         let mut first = Box::pin(f.mutation(
             2,
             "send",
-            json!({"sessionId":a,"message":"first blocked","model":selection}),
+            json!({"sessionId":a,"message":"first blocked","backend":model_backend(&selection)}),
             Uuid::new_v4(),
         ));
         tokio::select! {
@@ -1170,13 +1170,13 @@ async fn independent_session_admits_while_preparation_is_blocked_and_same_sessio
         let mut same = Box::pin(f.mutation(
             2,
             "send",
-            json!({"sessionId":a,"message":"same queued","delivery":"queue","model":selection}),
+            json!({"sessionId":a,"message":"same queued","delivery":"queue","backend":model_backend(&selection)}),
             Uuid::new_v4(),
         ));
         let independent = f.mutation(
             2,
             "send",
-            json!({"sessionId":b,"message":"independent started","model":selection}),
+            json!({"sessionId":b,"message":"independent started","backend":model_backend(&selection)}),
             Uuid::new_v4(),
         );
         let independent = tokio::select! {

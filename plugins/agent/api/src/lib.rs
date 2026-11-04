@@ -21,6 +21,7 @@
 pub mod acp;
 pub mod contract;
 pub mod executor;
+pub mod oar;
 pub mod session;
 pub mod workhub;
 pub use contract::{Configuration, ModelSelection, configuration_schema, contract};

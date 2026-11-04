@@ -298,7 +298,10 @@ impl Hub {
                 } else {
                     "directory"
                 };
-                let input = serde_json::json!({"title":title,"labels":[],"tools":tools,"workspace":{"kind":kind,"selection":workspace}});
+                let mut input = serde_json::json!({"title":title,"labels":[],"tools":tools,"workspace":{"kind":kind,"selection":workspace}});
+                if let Some(backend) = assignment.input.get("backend") {
+                    input["backend"] = backend.clone();
+                }
                 let reply = self
                     .dispatch(
                         request,

@@ -181,7 +181,7 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             let (mut socket, _) = listener.accept().await.unwrap();
             request(&mut socket).await;
             if queued {
-                assert_eq!(f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","delivery":"queue","model":f.selection().await}), Uuid::new_v4()).await.unwrap()["kind"], "queued");
+                assert_eq!(f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","delivery":"queue","backend":model_backend(&f.selection().await)}), Uuid::new_v4()).await.unwrap()["kind"], "queued");
             }
             let db = rusqlite::Connection::open(f.session_database(&session)).unwrap();
             db.execute_batch("CREATE TRIGGER reject_settlement BEFORE INSERT ON event_log WHEN NEW.kind='tool_settled' BEGIN SELECT RAISE(ABORT, 'fixture settlement failure'); END;").unwrap();
@@ -200,7 +200,7 @@ async fn user_messages_after_abandoned_tool_dispatch_preserve_unknown_without_re
             f.store.recover_invocations().await.unwrap();
             assert!(f.session(&session).await.check_history(&session).await.unwrap());
             reopen(&mut f).await;
-            f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
+            f.mutation(2, "send", json!({"sessionId":session,"message":"What happened to the checklist?","backend":model_backend(&f.selection().await)}), Uuid::new_v4()).await.unwrap();
             let (mut socket, _) = tokio::time::timeout(Duration::from_secs(10), listener.accept())
                 .await.expect("recovered user message must reach the model").unwrap();
             check(&request(&mut socket).await);

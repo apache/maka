@@ -120,15 +120,20 @@ impl Owner {
         }
     }
 
-    /// A worker runs on the model the Bot itself is running on. A model selection
-    /// carries the connection's revision, which the Bot cannot know, so whatever
-    /// it supplied is replaced with the current selection of its own model. When
-    /// that cannot be resolved the supplied value is left for normal validation.
+    /// Native workers inherit the Bot's admitted model; an explicitly selected
+    /// executor remains a different backend and goes through ordinary admission.
     pub(crate) async fn use_bot_model(
         &self,
         scope: &maka_capabilities::call::Scope,
-        model: &mut Option<crate::contract::ModelSelection>,
+        backend: &mut Option<crate::contract::BackendPreference>,
     ) {
+        let thinking_level = match backend {
+            Some(crate::contract::BackendPreference::Executor { .. }) => return,
+            Some(crate::contract::BackendPreference::Model { thinking_level, .. }) => {
+                *thinking_level
+            }
+            None => None,
+        };
         let Some(source) = scope.identity.agent() else {
             return;
         };
@@ -139,9 +144,10 @@ impl Owner {
             return;
         };
         let binding = route.binding_model();
-        *model = Some(crate::contract::ModelSelection {
+        *backend = Some(crate::contract::BackendPreference::Model {
             connection_id: binding.connection_id.clone(),
             model_id: binding.model.clone(),
+            thinking_level,
         });
     }
 

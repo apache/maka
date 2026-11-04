@@ -335,7 +335,7 @@ async fn native_web_selected_model_search_crosses_the_actual_responses_request()
         let row = f.config.catalog().await.unwrap().connections.into_iter().find(|row|row.slug == "responses").unwrap();
         save(&f, Value::Null, true).await;
         let session = f.create("Selected model Web").await;
-        f.mutation(2, "send", json!({"sessionId":session,"message":"Research Maka", "model": {"connectionId":row.connection_id,"modelId":"fixture-model"}}), Uuid::new_v4()).await.unwrap();
+        f.mutation(2, "send", json!({"sessionId":session,"message":"Research Maka", "backend": {"kind":"model","connectionId":row.connection_id,"modelId":"fixture-model"}}), Uuid::new_v4()).await.unwrap();
         // The ordinary adapter tries its WebSocket lane before HTTP fallback.
         // This local provider explicitly supports HTTP only; no model request
         // has been dispatched during these upgrade attempts.

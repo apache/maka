@@ -165,15 +165,26 @@ export const conversationMessages = {
     '取消编辑会话压缩提示词',
     '取消編輯對話壓縮提示詞',
   ],
+  'Search models and sources…': [
+    'Search models and sources…',
+    '搜索模型和来源…',
+    '搜尋模型與來源…',
+  ],
+  'Search models and sources': ['Search models and sources', '搜索模型和来源', '搜尋模型與來源'],
+  'This action requires a native model.': [
+    'This action requires a native model.',
+    '此操作需要原生模型。',
+    '此操作需要原生模型。',
+  ],
   Connection: ['Connection', '连接', '連線'],
   'Back to models': ['Back to models', '返回模型', '返回模型'],
   'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],
   'Filter by connection': ['Filter by connection', '按连接筛选', '依連線篩選'],
   'All connections': ['All connections', '所有连接', '所有連線'],
-  'No models match this search and connection.': [
-    'No models match this search and connection.',
-    '此连接中没有符合搜索条件的模型。',
-    '此連線中沒有符合搜尋條件的模型。',
+  'No models match this search.': [
+    'No models match this search.',
+    '没有符合搜索条件的模型。',
+    '沒有符合搜尋條件的模型。',
   ],
   'MCP server configuration': ['MCP server configuration', 'MCP 服务器配置', 'MCP 伺服器設定'],
   'Trust project MCP configuration?': [

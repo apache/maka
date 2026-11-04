@@ -91,7 +91,7 @@ async fn title_first_message_is_bounded_accounted_and_not_reissued_after_retry_o
         selection::thinking(&f, vec![ThinkingLevel::Off, ThinkingLevel::High], ThinkingLevel::High).await;
         let session = automatic(&f).await;
         let text = "中".repeat(5000);
-        let input = json!({"sessionId":session,"message":text,"model":f.selection().await});
+        let input = json!({"sessionId":session,"message":text,"backend":model_backend(&f.selection().await)});
         let operation = Uuid::new_v4();
         let sent = f.mutation(2, "send", input.clone(), operation).await.unwrap();
         let ((main, mut main_socket), (title, mut title_socket)) = pair(&listener).await;
@@ -233,7 +233,7 @@ async fn independently_admitted_title_uses_current_language_after_english_main_c
         let session = automatic(&f).await;
         let original = "Please investigate title capture 🦀 /keep-original-bytes";
         let sent = f.mutation(2, "send", json!({
-            "sessionId":session,"message":original,"model":f.selection().await,
+            "sessionId":session,"message":original,"backend":model_backend(&f.selection().await),
         }), Uuid::new_v4()).await.unwrap();
         let (mut main_socket, _) = listener.accept().await.unwrap();
         let main_request = request(&mut main_socket).await;

@@ -41,9 +41,35 @@
 
 ## 模型发现与子会话
 
-默认安装提供 `ModelList` 工具，与设置界面共用模型目录。以 `{ "kind": "start", "query": "...", "connectionId": "..." }` 开始查询（两个筛选项均可省略）。每项包含可直接用于 `SessionSend` / `SessionResume` 的稳定 `selection`（`connectionId`、`modelId`）、支持与默认推理档位，以及有效限制。使用 `{ "kind": "continue", "revision": page.revision, "cursor": page.next }` 翻页；目录变化时重新查询。仅列出已启用连接中已启用且受运行时支持的模型，不保证远端连通性、凭证或额度可用；结果不包含凭证、URL 或请求覆盖内容。
+默认安装提供 `ModelList`，由 Agent 聚合原生模型和已启用执行器运行时的带来源目录。以 `{ "kind": "start", "query": "..." }` 开始查询（query 可省略）。将每项带 kind 的 `selection` 作为 `SessionCreate` / `SessionSend` 的 `backend`；不同来源的推理档位不能混用。用 `{ "kind": "continue", "revision": page.revision, "cursor": page.next }` 翻页，遇到 `changed` 时重新查询。目录可用性不是执行或权限授权，也不保证远端连通性、凭证或额度。`SessionResume` 仍为原生模型接续契约。
 
 侧栏会话菜单中的**子会话**在独立、适应窗口大小的弹窗中显示后代树。展开箭头按需读取直接子会话，跨工作区且包含归档会话；点击标题打开对应会话。树沿用不可变的 `parentSessionId` 创建关系，而非 fork 的历史来源。深层树可横向滚动，长分支通过现有会话目录分页加载。
+
+### OAR 执行
+
+OAR 由 Agent 安装配置显式启用：在编写的安装配置中设置 `agent.oar: {}`，或通过部署差量设置 Agent 实例的 `oar` 配置；省略或设为 `null` 时关闭。分发的 `maka-oar-worker` 从 Maka 可执行文件同级目录定位；开发时可用 `executable` 和 `args` 指定 worker。
+
+开发构建可使用官方 Deno 模板；发行构建必须使用本仓受控的 denort/V8，不回退官方模板。发行许可门禁按精确 target 将实际 runtime 许可正文与已审正文逐字比较；缺少审核记录或正文变化都会失败。
+
+启用 OAR 表示接受外部 agent 自身的默认权限和原生工具，不改变 Code Mode、Computer Use、普通插件或原生模型的工具权限。外部执行器不能满足会话显式收窄的 Host 工具列表。外部轮次执行期间的后续消息进入 Maka 可编辑队列；Stop 等待 OAR dispose 和 worker 实际退出。清理无法确认时会明确报错，不自动重发 prompt。
+
+例如，可用以下 `backend` 选择外部模型：
+
+```json
+{
+  "kind": "executor",
+  "selection": {
+    "executor": "oar",
+    "settings": { "runtime": "codex", "model": "gpt-6-astra", "thinkingLevel": "high" }
+  }
+}
+```
+
+已安装模型和推理档位字符串来自固定版本的 OAR runtime，不来自 Settings connection。安装不自动发生：可信应用调用者可对 Agent 调用 `oarSetup` mutation，先传 `{ "runtime": "codex", "action": { "kind": "probe" } }`，再显式使用 `plan` 或 `install`（可传 `line`）。只调用 OAR 自带的安装 API，不支持的操作仍返回不支持；不另接 registry 安装器、不迁移凭证，也不自动更新 OAR。
+
+切换执行来源时，Maka 只补充新轮次之前尚未交付的规范可读历史，限定为近期 64 KiB / 128 个片段，缺口和局部片段会明确标注。这些是上下文，不是工具请求重放，也不是提供者私有状态的无损复制；不包含 thinking 或历史附件内容。连续使用同一 OAR runtime 时恢复原生会话，不重复交付已有历史。当前 runtime 模型发现使用 Agent 配置的第一个工作区根目录，而非每个会话的目录。
+
+附件从 Maka 拥有的不可变上传材料读取：支持 UTF-8 文本/JSON 和 PNG/JPEG/GIF/WebP 图片，其他媒体明确拒绝。恢复原生 agent 会话时不会静默重放历史附件。
 
 ## 运行与开发
 

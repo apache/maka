@@ -176,7 +176,7 @@ async fn native_memory_release_after_joined_workers() {
                         json!({
                             "sessionId": session,
                             "message": source,
-                            "model": fixture.selection().await,
+                            "backend":model_backend(&fixture.selection().await),
                         }),
                         Uuid::new_v4(),
                     )

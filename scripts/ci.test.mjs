@@ -18,7 +18,10 @@
  */
 
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import childProcess, { execFileSync } from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
+import { EventEmitter } from 'node:events';
+import { executor } from './ci/run.mjs';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -266,5 +269,51 @@ test('native behavior verification selects nextest on macOS and Windows', () => 
     }
   } finally {
     rmSync(temporary, { recursive: true, force: true });
+  }
+});
+
+test('OAR source, worker tests and native fixture reach the Host suite and product build', () => {
+  for (const path of [
+    'plugins/agent/oar-executor/worker/main.mjs',
+    'plugins/agent/native/tests/support/oar-worker.mjs',
+    'scripts/oar/build.mjs',
+    'scripts/oar/worker.test.mjs',
+    'scripts/rust/cargo.mjs',
+    'scripts/rust/build-v8.mjs',
+    'scripts/rust/v8-source.json',
+    'scripts/rust/v8-prebuilts.json',
+    'scripts/rust/v8-cache.mjs',
+    'scripts/rust/compile-v8.mjs',
+    'scripts/rust/v8-notices.mjs',
+    'scripts/rust/license-files.mjs',
+    'scripts/rust/license-source.mjs',
+    'scripts/rust/notices.mjs',
+    'scripts/rust/notices-sources.json',
+    'scripts/rust/licenses/deno-2.9.6-source-notices.txt',
+  ]) {
+    const plan = fixture()([path]);
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.suites.root.filter, 'all()', path);
+    assert.ok(plan.suites['native-build'], path);
+  }
+});
+
+test('PR notices executor runs reviewed coverage rather than release verification', async (t) => {
+  const commands = [];
+  t.mock.method(childProcess, 'spawn', (executable, args) => {
+    commands.push({ executable, args });
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('close', 0));
+    return child;
+  });
+  syncBuiltinESMExports();
+  try {
+    await executor('/repo').check('notices');
+    assert.deepEqual(commands, [
+      { executable: process.execPath, args: ['scripts/rust/notices.mjs', 'check-reviewed'] },
+    ]);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
   }
 });

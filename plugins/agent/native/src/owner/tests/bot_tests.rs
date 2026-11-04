@@ -142,7 +142,7 @@ async fn bot_identity_alone_grants_send_user() {
             .to_owned();
         assert!(!f.owner.bot.is(&derived));
         assert!(!sees_send_user(&f, &listener, &derived).await);
-        let first = f.mutation(2, "send", json!({"sessionId":bot,"message":"a turn to fork","model":f.selection().await}), Uuid::new_v4()).await.unwrap();
+        let first = f.mutation(2, "send", json!({"sessionId":bot,"message":"a turn to fork","backend":model_backend(&f.selection().await)}), Uuid::new_v4()).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         request(&mut socket).await;
         response(&mut socket).await;
@@ -565,7 +565,7 @@ async fn input_while_the_bot_runs_is_queued_not_rejected() {
             .mutation(
                 2,
                 "send",
-                json!({"sessionId":bot,"message":"one more thing","model":f.selection().await}),
+                json!({"sessionId":bot,"message":"one more thing","backend":model_backend(&f.selection().await)}),
                 Uuid::new_v4(),
             )
             .await
@@ -865,7 +865,7 @@ async fn bot_sleep_allows_prediction_without_waking_or_speaking() {
         f.mutation(
             2,
             "send",
-            json!({"sessionId":bot,"message":"are you there?","model":f.selection().await}),
+            json!({"sessionId":bot,"message":"are you there?","backend":model_backend(&f.selection().await)}),
             Uuid::new_v4(),
         )
         .await
@@ -1168,7 +1168,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":ordinary,"message":"hello","model":f.selection().await}),
+            json!({"sessionId":ordinary,"message":"hello","backend":model_backend(&f.selection().await)}),
         )
         .await;
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -1201,7 +1201,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+            json!({"sessionId":worker,"message":"Do the task","backend":model_backend(&f.selection().await)}),
         )
         .await;
         let mut worker_socket = None;
@@ -1287,7 +1287,7 @@ async fn worker_wake(worker_first: bool) {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
+            json!({"sessionId":worker,"message":"Do the task","backend":model_backend(&f.selection().await)}),
         )
         .await;
         let mut worker_socket = None;

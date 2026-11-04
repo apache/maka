@@ -159,15 +159,15 @@ export function installation(
       description +
         ' The maka-plugin-authoring skill documents the shared NSH UI contract. Mutation outcomes use the original operation receipt; an unknown result must be recovered, not retried as a new edit.',
     );
-  add(
-    'settings',
-    'models',
-    'ModelList',
-    'List selectable models from enabled connections, with stable model identities (connectionId, modelId), supported thinking levels, defaults and limits. Search model IDs, labels and connection names with query, or filter by connectionId. Use selection as SessionSend/SessionResume model. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not a live provider health check.',
-  );
+
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
   add('skills', 'load', 'Skill', 'Read a selected skill and its resources.');
   for (const [method, name, description] of [
+    [
+      'models',
+      'ModelList',
+      'List selectable native models and enabled executor runtimes. Search model IDs, labels and source names with query. Pass a choice selection as SessionCreate/SessionSend backend; its kind preserves the execution source. Thinking levels are source-specific. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not an execution or permissions grant.',
+    ],
     ['list', 'SessionList', 'Find conversations by title, project and status.'],
     [
       'observe',
@@ -190,7 +190,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send instructions to a conversation. Active conversations are steered by default; set delivery to queue to wait for the current turn. Admission does not mean completion.',
+      'Send instructions to a conversation. Active native model turns are steered by default; external executor turns always queue follow-ups. Set delivery to queue to wait for the current turn. Admission does not mean completion.',
     ],
     ['stop', 'SessionStop', 'Request that a conversation stop its current execution.'],
     ['resume', 'SessionResume', 'Resume a conversation execution.'],

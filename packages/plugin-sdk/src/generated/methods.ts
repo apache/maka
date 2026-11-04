@@ -201,6 +201,10 @@ export type AgentSkillCandidatesInput_ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type AgentSkillCandidatesInput_ExecutorEffort = string;
 export type SettingsAssistantPreferencesOutput_LanguagePreference =
   | 'auto'
   | 'en'
@@ -520,11 +524,6 @@ export interface ServiceMethods {
       input: Runtime.AgentQueueMutation;
       output: Runtime.AgentQueueMutationResult;
     };
-    execute: {
-      mode: 'mutation';
-      input: Runtime.AgentExecute;
-      output: Runtime.AgentSendResult;
-    };
     execution: {
       mode: 'query';
       input: Runtime.AgentExecutionRead;
@@ -675,6 +674,21 @@ export interface ServiceMethods {
       mode: 'mutation';
       input: Runtime.AgentMetadata;
       output: Runtime.AgentMetadataResult;
+    };
+    model: {
+      mode: 'query';
+      input: Runtime.AgentModelRead;
+      output: Runtime.AgentModelResult;
+    };
+    models: {
+      mode: 'query';
+      input: Runtime.AgentModelsRead;
+      output: Runtime.AgentModelsPage;
+    };
+    oarSetup: {
+      mode: 'mutation';
+      input: Runtime.AgentOarSetup;
+      output: Runtime.AgentOarSetupResult;
     };
     observe: {
       mode: 'query';
@@ -1906,7 +1920,8 @@ export interface AgentSkillCandidatesInput_AgentExecutorSelection {
  */
 export interface AgentSkillCandidatesInput_ExecutorSettings {
   model?: string | null;
-  thinkingLevel?: AgentSkillCandidatesInput_ThinkingLevel | null;
+  thinkingLevel?: AgentSkillCandidatesInput_ExecutorEffort | null;
+  runtime?: string | null;
 }
 export interface AgentSkillCandidatesOutput_AgentSkillCandidate {
   reference: string;

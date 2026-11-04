@@ -7412,6 +7412,7 @@ dependencies = [
  "maka-packages",
  "maka-plugin-core",
  "maka-presentation",
+ "maka-process",
  "maka-processes-native",
  "maka-providers",
  "maka-sandbox",

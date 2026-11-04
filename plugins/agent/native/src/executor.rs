@@ -37,6 +37,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(crate) mod attachments;
+mod oar;
 pub mod setup;
 
 use maka_agent_api::executor::{Execute, Selection, ServiceExecutor, contract};
@@ -51,18 +52,31 @@ pub(crate) struct Accepted {
 }
 #[derive(Clone)]
 pub(crate) struct Backend {
+    pub accepted: Accepted,
+    implementation: Implementation,
+}
+#[derive(Clone)]
+enum Implementation {
+    Service(ServiceBackend),
+    Oar(Arc<oar::Oar>),
+}
+#[derive(Clone)]
+struct ServiceBackend {
     services: NativeServices,
     store: Arc<RootStore>,
     deployment: Uuid,
     consumer: maka_plugin_core::composition::InstanceId,
     binding: Binding,
-    pub accepted: Accepted,
     setup: Option<maka_agent_api::executor::setup::Binding>,
 }
 #[derive(Default)]
 pub(crate) struct Executors(BTreeMap<String, Backend>);
 impl Executors {
-    pub fn capture(context: &NativeContext, selected: &[ServiceExecutor]) -> Result<Self, String> {
+    pub fn capture(
+        context: &NativeContext,
+        selected: &[ServiceExecutor],
+        oar: Option<&maka_agent_api::executor::OarConfiguration>,
+    ) -> Result<Self, String> {
         let mut result = BTreeMap::new();
         for selection in selected {
             maka_agent_facts::executor::ExecutorId::try_from(selection.name.clone())
@@ -91,8 +105,6 @@ impl Executors {
             }
             let persistence = context.persistence().ok_or("agent_requires_persistence")?;
             let backend = Backend {
-                binding: binding.clone(),
-                setup: selection.setup.clone(),
                 accepted: Accepted {
                     selection: Selection {
                         executor: selection.name.clone(),
@@ -102,16 +114,67 @@ impl Executors {
                     member: selection.member,
                     basis: binding.execution_basis().into(),
                 },
-                services: services.clone(),
-                store: persistence.store().clone(),
-                deployment: persistence.source().deployment,
-                consumer: context.activation().instance().clone(),
+                implementation: Implementation::Service(ServiceBackend {
+                    binding: binding.clone(),
+                    setup: selection.setup.clone(),
+                    services: services.clone(),
+                    store: persistence.store().clone(),
+                    deployment: persistence.source().deployment,
+                    consumer: context.activation().instance().clone(),
+                }),
             };
             if result.insert(selection.name.clone(), backend).is_some() {
                 return Err("agent_executor_name_ambiguous".into());
             }
         }
+        if let Some(configuration) = oar {
+            let owner = oar::Oar::capture(context, configuration)?;
+            let backend = Backend {
+                accepted: Accepted {
+                    selection: Selection {
+                        executor: "oar".into(),
+                        settings: Default::default(),
+                    },
+                    import: "oar".into(),
+                    member: 0,
+                    basis: owner.basis.clone(),
+                },
+                implementation: Implementation::Oar(owner),
+            };
+            if result.insert("oar".into(), backend).is_some() {
+                return Err("agent_executor_name_ambiguous".into());
+            }
+        }
         Ok(Self(result))
+    }
+    pub fn contains(&self, executor: &str) -> bool {
+        self.0.contains_key(executor)
+    }
+    pub fn names(&self) -> Vec<String> {
+        self.0.keys().cloned().collect()
+    }
+    pub async fn finish(&self) -> Result<(), String> {
+        for backend in self.0.values() {
+            if let Implementation::Oar(owner) = &backend.implementation {
+                owner.finish().await?;
+            }
+        }
+        Ok(())
+    }
+    pub async fn oar_query(
+        &self,
+        cwd: String,
+        request: Value,
+        cancellation: CancellationToken,
+    ) -> Result<Option<Value>, Error> {
+        let Some(Backend {
+            implementation: Implementation::Oar(owner),
+            ..
+        }) = self.0.get("oar")
+        else {
+            return Ok(None);
+        };
+        owner.query(cwd, request, cancellation).await.map(Some)
     }
     pub fn select(&self, selection: Selection) -> Result<Backend, String> {
         selection
@@ -123,6 +186,15 @@ impl Executors {
             .get(&selection.executor)
             .cloned()
             .ok_or("agent_executor_unavailable")?;
+        match &backend.implementation {
+            Implementation::Service(_) if selection.settings.runtime.is_some() => {
+                return Err("agent_executor_runtime_unsupported".into());
+            }
+            Implementation::Oar(_) if selection.settings.runtime.is_none() => {
+                return Err("agent_executor_runtime_required".into());
+            }
+            _ => {}
+        }
         backend.accepted.selection = selection;
         Ok(backend)
     }
@@ -156,6 +228,10 @@ impl executor::Backend for Backend {
                 "executor service requires owned message input".into(),
             ));
         }
+        let service = match &self.implementation {
+            Implementation::Oar(owner) => return owner.admit(input),
+            Implementation::Service(service) => service,
+        };
         let identity = maka_agent_facts::executor::Binding {
             executor_id: self
                 .accepted
@@ -164,9 +240,9 @@ impl executor::Backend for Backend {
                 .clone()
                 .try_into()
                 .map_err(|error: &str| Error::Invalid(error.into()))?,
-            package_id: self.binding.package().id.clone(),
+            package_id: service.binding.package().id.clone(),
             entry_id: "host".into(),
-            activation: self.binding.provider().epoch().to_string(),
+            activation: service.binding.provider().epoch().to_string(),
         };
         let operation = Uuid::from_bytes(
             Sha256::digest(
@@ -198,7 +274,8 @@ impl executor::Backend for Backend {
         Ok(Admitted {
             identity,
             execution: Box::new(Call {
-                backend: self.clone(),
+                backend: service.clone(),
+                accepted: self.accepted.clone(),
                 input: value,
                 invocation: input.invocation,
                 operation,
@@ -208,7 +285,8 @@ impl executor::Backend for Backend {
     }
 }
 struct Call {
-    backend: Backend,
+    backend: ServiceBackend,
+    accepted: Accepted,
     input: Value,
     invocation: maka_agent_facts::event::Invocation,
     operation: Uuid,
@@ -278,8 +356,8 @@ impl executor::Execution for Call {
                         .map_err(Error::Provider)?;
                         let mut mutation = request
                             .begin_mutation(
-                                &self.backend.accepted.import,
-                                self.backend.accepted.member,
+                                &self.accepted.import,
+                                self.accepted.member,
                                 "execute".into(),
                                 self.input,
                                 self.operation,

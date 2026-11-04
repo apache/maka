@@ -944,9 +944,8 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "send" => {
-                    let mut input: Send = decode(input)?;
+                    let input: Send = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
-                    owner.use_bot_model(context.scope(), &mut input.model).await;
                     if !owner
                         .may_control(context.scope(), &input.session_id)
                         .await?
@@ -962,6 +961,7 @@ impl Handler for Agent {
                     }
                     encode(sent)
                 }
+                "oarSetup" => encode(owner.oar_setup(decode(input)?, context).await?),
                 "executorSetup" => owner.executor_setup(decode(input)?, context).await,
                 "executors" => {
                     let _: ExecutorsRead = decode(input)?;
@@ -973,22 +973,19 @@ impl Handler for Agent {
                             .filter(|choice| choice.setup.is_some())
                             .map(|choice| choice.name.clone())
                             .collect(),
-                        executors: owner
-                            .settings
-                            .executors
-                            .iter()
-                            .map(|choice| choice.name.clone())
-                            .collect(),
+                        executors: owner.executors.names(),
                     })
                 }
-                "execute" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .execute(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
+                "models" => encode(
+                    owner
+                        .models(decode(input)?, &context.scope().cancellation)
+                        .await?,
+                ),
+                "model" => encode(
+                    owner
+                        .model(decode(input)?, &context.scope().cancellation)
+                        .await?,
+                ),
                 "execution" => encode(owner.execution(decode(input)?).await?),
                 "resumable" => encode(
                     owner
