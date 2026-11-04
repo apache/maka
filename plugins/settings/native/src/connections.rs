@@ -100,25 +100,31 @@ pub(crate) async fn detail(store: &ConfigurationStore, input: Value) -> Result<V
         .into_iter()
         .find(|row| row.connection_id == expected.connection_id);
     match row {
-        Some(row) if row.revision == expected.revision => encode(ConnectionDetail::Ready {
-            target: Box::new(ConnectionCredentialTarget {
-                connection_id: row.connection_id,
-                revision: row.revision,
-                slug: row.slug,
-                provider: row.provider,
-                configuration: row.configuration,
-            }),
-            name: row.name,
-            enabled: row.enabled,
-            enabled_model_count: row.enabled_model_ids.len(),
-            editing: expected
-                .include_editing_facts
-                .then_some(ConnectionEditingFacts {
-                    enabled_model_ids: row.enabled_model_ids,
-                    model_overrides: row.model_overrides,
-                    request_body_overlay: row.request_body_overlay,
+        Some(row)
+            if expected
+                .revision
+                .is_none_or(|revision| row.revision == revision) =>
+        {
+            encode(ConnectionDetail::Ready {
+                target: Box::new(ConnectionCredentialTarget {
+                    connection_id: row.connection_id,
+                    revision: row.revision,
+                    slug: row.slug,
+                    provider: row.provider,
+                    configuration: row.configuration,
                 }),
-        }),
+                name: row.name,
+                enabled: row.enabled,
+                enabled_model_count: row.enabled_model_ids.len(),
+                editing: expected
+                    .include_editing_facts
+                    .then_some(ConnectionEditingFacts {
+                        enabled_model_ids: row.enabled_model_ids,
+                        model_overrides: row.model_overrides,
+                        request_body_overlay: row.request_body_overlay,
+                    }),
+            })
+        }
         actual => encode(ConnectionDetail::Stale {
             actual: actual.map(|row| ConnectionVersionBasis {
                 connection_id: row.connection_id,

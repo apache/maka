@@ -48,18 +48,16 @@ impl ConfigurationStore {
         .await
     }
 
-    /// First admission checks the caller's original public selection in the
-    /// very same snapshot that supplies private execution material.
+    /// Resolve the selected identity and private execution material in one snapshot.
     pub async fn observe_selected_model(
         self: &Arc<Self>,
         target: ModelSelection,
     ) -> Result<Option<ConnectionObservation>> {
         validation::entity_id(&target.connection_id).map_err(ConfigError::Invalid)?;
-        validation::revision(target.revision, true).map_err(ConfigError::Invalid)?;
         validation::text(&target.model_id).map_err(ConfigError::Invalid)?;
         let id = target.connection_id.clone();
         self.observe_model_if(id, move |row| {
-            row.revision == target.revision && row.enabled_model_ids.contains(&target.model_id)
+            row.enabled_model_ids.contains(&target.model_id)
         })
         .await
     }

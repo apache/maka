@@ -3834,7 +3834,7 @@ export type AgentSendResult =
       kind: 'not_your_worker';
       sessionId: string;
     };
-export type AgentSendRejection = 'skills_unavailable' | 'turn_stopped';
+export type AgentSendRejection = 'model_unavailable' | 'skills_unavailable' | 'turn_stopped';
 export type AgentDeliveryFact =
   | {
       kind: 'opened';
@@ -6391,12 +6391,12 @@ export interface AgentWorkRead {
   cursor?: AgentAnswerCursor | null;
 }
 /**
- * Exact public selection observed by a caller, checked once at run admission.
+ * Stable model identity, resolved from current connection settings at admission.
  */
 export interface ModelSelection {
   connectionId: string;
-  revision: number;
   modelId: string;
+  [k: string]: unknown | undefined;
 }
 export interface SettingsModelCursor {
   query: string;
@@ -6783,9 +6783,14 @@ export interface SettingsModelDefaults {
   defaultThinkingLevel: ThinkingLevel | null;
 }
 export interface SettingsUpdateModelSettings {
-  selection: ModelSelection;
+  expected: ConnectionVersionBasis;
+  modelId: string;
   tools: SettingsModelToolPreferences;
   limits: SettingsModelLimits;
+}
+export interface ConnectionVersionBasis {
+  connectionId: string;
+  revision: number;
 }
 export interface SettingsConnectionSummary {
   /**
@@ -6798,10 +6803,6 @@ export interface SettingsConnectionSummary {
   provider: Identity;
   enabled: boolean;
   enabledModelCount: number;
-}
-export interface ConnectionVersionBasis {
-  connectionId: string;
-  revision: number;
 }
 /**
  * Durable recipient, not a registration lease. Re-loading the same package can

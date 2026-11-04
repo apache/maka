@@ -660,7 +660,6 @@ async fn subscription_provenance_follows_provider_identity_with_a_responses_adap
         f.credentials.clone(),
         ModelSelection {
             connection_id: row.connection_id,
-            revision: row.revision,
             model_id: "model-a".into(),
         },
         None,

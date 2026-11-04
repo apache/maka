@@ -146,7 +146,6 @@ fn model_choice_from_metadata(
         }),
         selection: ModelSelection {
             connection_id: row.connection_id.clone(),
-            revision: row.revision,
             model_id: model.into(),
         },
         connection_name: row.name.clone(),
@@ -533,10 +532,7 @@ impl Handler for Settings {
                         .catalog()
                         .await
                         .map_err(|_| "settings_store_unavailable")?;
-                    let expected = ConnectionVersionBasis {
-                        connection_id: input.selection.connection_id,
-                        revision: input.selection.revision,
-                    };
+                    let expected = input.expected;
                     let row = catalog
                         .connections
                         .into_iter()
@@ -550,13 +546,11 @@ impl Handler for Settings {
                             CatalogMutationResult::ConnectionStale { expected, actual },
                         );
                     };
-                    if !row.enabled_model_ids.contains(&input.selection.model_id) {
+                    if !row.enabled_model_ids.contains(&input.model_id) {
                         return rejected(ConfigurationRejection::InvalidInput);
                     }
                     let mut overrides = row.model_overrides.unwrap_or_default();
-                    let model = overrides
-                        .entry(input.selection.model_id.clone())
-                        .or_default();
+                    let model = overrides.entry(input.model_id.clone()).or_default();
                     model.code_mode = input.tools.code_mode;
                     model.code_mode_language = input.tools.code_mode_language;
                     model.apply_patch = input.tools.apply_patch;
@@ -566,7 +560,7 @@ impl Handler for Settings {
                     model.compaction_threshold = input.limits.compaction_threshold;
 
                     if *model == ModelOverride::default() {
-                        overrides.remove(&input.selection.model_id);
+                        overrides.remove(&input.model_id);
                     }
                     catalog_result(
                         store

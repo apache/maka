@@ -286,7 +286,9 @@ function receiptMessage(reply: any): UiText {
     return value?.kind === 'rejected'
       ? value.reason === 'turn_stopped'
         ? uiMessage('Stopped before delivery. Your message is kept.')
-        : uiMessage('Send rejected: {reason}', { reason: value.reason })
+        : value.reason === 'model_unavailable'
+          ? uiMessage('The selected model is unavailable. Try again or choose another model.')
+          : uiMessage('Send rejected: {reason}', { reason: value.reason })
       : uiMessage('Host returned an unexpected send result.');
   }
   return uiMessage('This action could not be completed.');

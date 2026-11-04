@@ -813,6 +813,7 @@ pub enum SendResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendRejection")]
 pub enum SendRejection {
+    ModelUnavailable,
     SkillsUnavailable,
     TurnStopped,
 }
