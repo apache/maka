@@ -394,9 +394,8 @@ mod tests {
             "return_route": {"workspace": workspace, "binding": stamp, "model": {
                 "binding": {"connection_id":"connection", "connection_slug":"connection", "model":"fixture-model"}, "thinking_level": null,
                 "tool_mode": "direct", "editing_tools": null, "public_model": null,
-                "context": {"provider_id":"provider"},
-                "provider": {"packageId":"provider", "entryId":"provider", "scope": maka_plugin_core::scope::Scope::Profile, "name":"provider"}, "provider_configuration":{},
-                "basis": {"adapter":"openai-chat-completions", "protocol":"openai_chat_completions", "base_url":"http://localhost", "capabilities":{}, "options":{}, "main_output_limit":null, "body_overlay":null}
+                "provider": {"packageId":"provider", "entryId":"provider", "scope": maka_plugin_core::scope::Scope::Profile, "name":"provider"}, "model_override":null, "body_overlay":null,
+                "route": {"adapter":"openai-chat-completions", "protocol":"openai_chat_completions", "base_url":"http://localhost"}
             }}, "notification": null
         })).unwrap()
     }

@@ -534,11 +534,9 @@ async fn source_fixture(f: &Fixture) -> super::super::Source {
             editing_tools: None,
             public_model: None,
             provider: material.connection.provider.clone(),
-            controls: super::super::controls::Controls::Captured {
-                route: ExecutionRoute::new(&model),
-                model_override: None,
-                body_overlay: None,
-            },
+            route: ExecutionRoute::new(&model),
+            model_override: None,
+            body_overlay: None,
         },
     }
 }
@@ -681,45 +679,6 @@ async fn subscription_provenance_follows_provider_identity_with_a_responses_adap
     let provenance = prepared.context.unwrap().codex.unwrap();
     assert_eq!(provenance.compatibility.unwrap().comp_hash, "3000");
     assert_eq!(f.provider.calls.load(Ordering::SeqCst), 1);
-    f.close().await;
-}
-
-#[tokio::test]
-async fn older_accepted_requests_keep_their_effective_controls_when_restored() {
-    use maka_agent_engine::ModelSource;
-    let f = Fixture::new().await;
-    f.provider.release.add_permits(1);
-    let mut source = source_fixture(&f).await;
-    let mut old = serde_json::to_value(&source.accepted).unwrap();
-    let fields = old.as_object_mut().unwrap();
-    fields.remove("route");
-    fields.remove("model_override");
-    fields.remove("body_overlay");
-    old["provider_configuration"] = json!({"baseUrl":"https://chatgpt.com/backend-api/codex"});
-    old["context"] = json!({"provider_id":"chatgpt","context_window":64000,
-        "model_context_window":128000,"declared_window":54000});
-    old["basis"] = json!({"adapter":"codex-responses","protocol":"openai_responses",
-        "base_url":"https://chatgpt.com/backend-api/codex","capabilities":{"chat":true,"vision":true},
-        "options":{"openai":{"reasoningEffort":"high","store":false}},
-        "main_output_limit":8192,"body_overlay":{"seed":7}});
-    source.accepted = serde_json::from_value(old.clone()).unwrap();
-    assert_eq!(serde_json::to_value(&source.accepted).unwrap(), old);
-    for _ in 0..2 {
-        let prepared = source.capture().await.unwrap();
-        assert_eq!(prepared.main_output_limit, Some(8192));
-        assert_eq!(
-            prepared.options,
-            json!({"openai":{"reasoningEffort":"high","store":false}})
-        );
-        assert_eq!(prepared.provider.body_overlay.unwrap()["seed"], 7);
-        assert!(prepared.supports_vision);
-        let context = prepared.context.unwrap();
-        assert_eq!(context.context_window, Some(64000));
-        assert_eq!(context.model_context_window, Some(128000));
-        assert_eq!(context.declared_window, Some(54000));
-        source.accepted =
-            serde_json::from_slice(&serde_json::to_vec(&source.accepted).unwrap()).unwrap();
-    }
     f.close().await;
 }
 

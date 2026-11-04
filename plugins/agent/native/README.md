@@ -110,10 +110,9 @@ still checked before execution. Each logical request resolves one current model
 observation into its context, capabilities, options and output budget; physical retries reuse the
 already frozen request. Catalog changes alone therefore do not invalidate queued/restored work.
 
-Snapshots written before account provenance was introduced retain their original resolved
-request controls when restored. Goal scheduling skips authority decoding for inactive records
-without pending work and isolates unreadable records, so one stored Goal cannot prevent other Goals from continuing. New admission reads
-the current settings after shared discovery completes.
+Goal scheduling skips authority decoding for inactive records without pending work and
+isolates unreadable records, so one stored Goal cannot prevent other Goals from continuing.
+New admission reads the current settings after shared discovery completes.
 
 A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including
 background compaction capture. Concurrent waiters share the Host-owned request. Refresh starts

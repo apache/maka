@@ -18,7 +18,6 @@
  */
 
 pub(crate) mod codex_inventory;
-mod controls;
 mod diagnostics;
 pub(crate) mod oauth;
 
@@ -40,6 +39,7 @@ use maka_agent_ports::provider::Resolve;
 use maka_config::{ConfigurationStore, ConnectionObservation};
 use maka_model::{ProviderAuth, ProviderConfig};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -67,6 +67,7 @@ impl ExecutionRoute {
 }
 /// Accepted route facts, without credentials or live activation handles.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct AcceptedModel {
     pub binding: ModelBinding,
     pub thinking_level: Option<ThinkingLevel>,
@@ -85,8 +86,9 @@ pub(crate) struct AcceptedModel {
     #[serde(deserialize_with = "Option::deserialize")]
     public_model: Option<ModelInfo>,
     provider: maka_agent_facts::provider::Identity,
-    #[serde(flatten)]
-    controls: controls::Controls,
+    route: ExecutionRoute,
+    model_override: Option<ModelOverride>,
+    body_overlay: Option<Value>,
 }
 #[derive(Clone)]
 pub(crate) struct Credentials {
@@ -199,12 +201,10 @@ impl Source {
                     },
                     thinking_level,
                     provider: row.provider.clone(),
-                    controls: controls::Controls::Captured {
-                        route: ExecutionRoute::new(&model),
-                        model_override: row.model_overrides.as_ref()
-                            .and_then(|models| models.get(&model.info.id)).cloned(),
-                        body_overlay: row.request_body_overlay.clone(),
-                    },
+                    route: ExecutionRoute::new(&model),
+                    model_override: row.model_overrides.as_ref()
+                        .and_then(|models| models.get(&model.info.id)).cloned(),
+                    body_overlay: row.request_body_overlay.clone(),
                 },
                 definition,
                 session,
@@ -306,7 +306,8 @@ impl Source {
             Some(snapshot) => Some(snapshot.credential().clone()),
             None => None,
         };
-        let mut request_context = self.accepted.controls.context(row, &model.info)?;
+        let mut request_context =
+            request_context(row, &model.info, self.accepted.model_override.as_ref())?;
         if self.accepted.provider.package_id == maka_providers::codex::ID
             && self.accepted.provider.name == "chatgpt"
         {
@@ -359,8 +360,8 @@ impl Source {
                 network,
                 body_overlay: self
                     .accepted
-                    .controls
-                    .body_overlay()
+                    .body_overlay
+                    .as_ref()
                     .map(|value| value.as_object().expect("validated overlay").clone()),
             },
             options: model.provider_options,
@@ -461,16 +462,15 @@ impl Source {
             );
             return Err(unavailable());
         }
-        let overrides = self.accepted.controls.model_override();
-        let mut model = resolve(
+        let model = resolve(
             &self.definition,
             row,
             &self.accepted.binding.model,
             self.accepted.thinking_level,
-            overrides.as_deref(),
+            self.accepted.model_override.as_ref(),
         )
         .await?;
-        if !self.accepted.controls.matches(&model) {
+        if !self.accepted.route.matches(&model) {
             tracing::warn!(
                 stage = "accepted_model_observation",
                 cause = "accepted_route_changed",
@@ -478,7 +478,6 @@ impl Source {
             );
             return Err(unavailable());
         }
-        self.accepted.controls.apply(&mut model);
         Ok((material, model))
     }
     /// The original accepted route, with the least declared reasoning for a short auxiliary task.
@@ -488,7 +487,6 @@ impl Source {
             let least = ThinkingLevel::ALL
                 .into_iter()
                 .find(|level| model.thinking_levels.contains(level));
-            let overrides = self.accepted.controls.model_override();
             let model = match least {
                 Some(level) => {
                     resolve(
@@ -496,7 +494,7 @@ impl Source {
                         &material.connection,
                         &self.accepted.binding.model,
                         Some(level),
-                        overrides.as_deref(),
+                        self.accepted.model_override.as_ref(),
                     )
                     .await?
                 }
