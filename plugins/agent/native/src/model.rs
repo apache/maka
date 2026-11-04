@@ -18,6 +18,7 @@
  */
 
 pub(crate) mod codex_inventory;
+mod controls;
 mod diagnostics;
 pub(crate) mod oauth;
 
@@ -39,7 +40,6 @@ use maka_agent_ports::provider::Resolve;
 use maka_config::{ConfigurationStore, ConnectionObservation};
 use maka_model::{ProviderAuth, ProviderConfig};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::sync::Arc;
 use tracing::Instrument;
 
@@ -67,7 +67,6 @@ impl ExecutionRoute {
 }
 /// Accepted route facts, without credentials or live activation handles.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub(crate) struct AcceptedModel {
     pub binding: ModelBinding,
     pub thinking_level: Option<ThinkingLevel>,
@@ -86,9 +85,8 @@ pub(crate) struct AcceptedModel {
     #[serde(deserialize_with = "Option::deserialize")]
     public_model: Option<ModelInfo>,
     provider: maka_agent_facts::provider::Identity,
-    route: ExecutionRoute,
-    model_override: Option<ModelOverride>,
-    body_overlay: Option<Value>,
+    #[serde(flatten)]
+    controls: controls::Controls,
 }
 #[derive(Clone)]
 pub(crate) struct Credentials {
@@ -128,20 +126,24 @@ impl Source {
                 })?
                 .ok_or_else(unavailable)?;
             drop(public_guard);
-            let row = &material.connection;
-            let reference = row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id))
-                .and_then(|value| value.catalog_model.as_ref());
-            let public_model = snapshot.model_base(&row.provider.name, &selection.model_id, reference)
-                .map(std::borrow::Cow::into_owned);
-            let snapshot = Arc::new(maka_providers::catalog::Snapshot::for_model(
-                &row.provider.name, &selection.model_id, public_model.clone(),
-            ).map_err(|_| unavailable())?);
-            let definition =
-                Arc::new(maka_providers::definition(&row.provider, snapshot).map_err(|_| {
+            let define = |snapshot: &maka_providers::catalog::Snapshot,
+                          row: &maka_agent_facts::configuration::ConnectionCatalogEntry| {
+                let reference = row.model_overrides.as_ref().and_then(|models| models.get(&selection.model_id))
+                    .and_then(|value| value.catalog_model.as_ref());
+                let public_model = snapshot.model_base(&row.provider.name, &selection.model_id, reference)
+                    .map(std::borrow::Cow::into_owned);
+                let model_snapshot = Arc::new(maka_providers::catalog::Snapshot::for_model(
+                    &row.provider.name, &selection.model_id, public_model.clone(),
+                ).map_err(|_| unavailable())?);
+                let definition = Arc::new(maka_providers::definition(&row.provider, model_snapshot).map_err(|_| {
                     tracing::warn!(stage = "provider_definition", cause = "provider_definition_unavailable",
                         provider = %row.provider.name, "Model preparation failed");
                     unavailable()
                 })?);
+                Ok::<_, RunError>((public_model, definition))
+            };
+            let (mut public_model, mut definition) = define(&snapshot, &material.connection)?;
+            let row = &material.connection;
             let material = if row.provider.package_id == maka_providers::codex::ID
                 && row.provider.name == "chatgpt"
             {
@@ -154,16 +156,11 @@ impl Source {
                     configuration.clone(), credentials.clone(), definition.clone(),
                     binding.clone(), &material,
                 ).await;
-                let current = configuration.observe_model(binding).await
+                let public_guard = catalog.snapshot.read().await;
+                let current_snapshot = public_guard.as_ref().map_err(|_| unavailable())?;
+                let current = configuration.observe_selected_model(selection.clone()).await
                     .map_err(|_| unavailable())?.ok_or_else(unavailable)?;
-                if current.connection.provider != row.provider
-                    || current.connection.configuration != row.configuration
-                    || current.connection.enabled_model_ids != row.enabled_model_ids
-                    || current.connection.model_overrides != row.model_overrides
-                    || current.connection.request_body_overlay != row.request_body_overlay
-                {
-                    return Err(unavailable());
-                }
+                (public_model, definition) = define(current_snapshot, &current.connection)?;
                 current
             } else {
                 material
@@ -202,10 +199,12 @@ impl Source {
                     },
                     thinking_level,
                     provider: row.provider.clone(),
-                    route: ExecutionRoute::new(&model),
-                    model_override: row.model_overrides.as_ref()
-                        .and_then(|models| models.get(&model.info.id)).cloned(),
-                    body_overlay: row.request_body_overlay.clone(),
+                    controls: controls::Controls::Captured {
+                        route: ExecutionRoute::new(&model),
+                        model_override: row.model_overrides.as_ref()
+                            .and_then(|models| models.get(&model.info.id)).cloned(),
+                        body_overlay: row.request_body_overlay.clone(),
+                    },
                 },
                 definition,
                 session,
@@ -307,8 +306,7 @@ impl Source {
             Some(snapshot) => Some(snapshot.credential().clone()),
             None => None,
         };
-        let mut request_context =
-            request_context(row, &model.info, self.accepted.model_override.as_ref())?;
+        let mut request_context = self.accepted.controls.context(row, &model.info)?;
         if self.accepted.provider.package_id == maka_providers::codex::ID
             && self.accepted.provider.name == "chatgpt"
         {
@@ -361,8 +359,8 @@ impl Source {
                 network,
                 body_overlay: self
                     .accepted
-                    .body_overlay
-                    .as_ref()
+                    .controls
+                    .body_overlay()
                     .map(|value| value.as_object().expect("validated overlay").clone()),
             },
             options: model.provider_options,
@@ -463,15 +461,16 @@ impl Source {
             );
             return Err(unavailable());
         }
-        let model = resolve(
+        let overrides = self.accepted.controls.model_override();
+        let mut model = resolve(
             &self.definition,
             row,
             &self.accepted.binding.model,
             self.accepted.thinking_level,
-            self.accepted.model_override.as_ref(),
+            overrides.as_deref(),
         )
         .await?;
-        if !self.accepted.route.matches(&model) {
+        if !self.accepted.controls.matches(&model) {
             tracing::warn!(
                 stage = "accepted_model_observation",
                 cause = "accepted_route_changed",
@@ -479,6 +478,7 @@ impl Source {
             );
             return Err(unavailable());
         }
+        self.accepted.controls.apply(&mut model);
         Ok((material, model))
     }
     /// The original accepted route, with the least declared reasoning for a short auxiliary task.
@@ -488,6 +488,7 @@ impl Source {
             let least = ThinkingLevel::ALL
                 .into_iter()
                 .find(|level| model.thinking_levels.contains(level));
+            let overrides = self.accepted.controls.model_override();
             let model = match least {
                 Some(level) => {
                     resolve(
@@ -495,7 +496,7 @@ impl Source {
                         &material.connection,
                         &self.accepted.binding.model,
                         Some(level),
-                        self.accepted.model_override.as_ref(),
+                        overrides.as_deref(),
                     )
                     .await?
                 }
