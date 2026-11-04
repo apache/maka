@@ -455,7 +455,10 @@ export function createModelSettings(
       }
     }
   };
-  const readDetail = async (target: ConnectionVersionBasis, afterCredential = false) => {
+  const readDetail = async (
+    target: { connectionId: string; revision?: number },
+    afterCredential = false,
+  ) => {
     let detail: SettingsConnectionDetail = await host.query('settings', 'connection', {
       ...target,
       includeEditingFacts: true,
@@ -486,7 +489,7 @@ export function createModelSettings(
     if (result.kind !== 'status') throw new UiError('This connection is no longer available.');
     return result.status as CredentialStatus;
   };
-  const openConnection = async (target: ConnectionVersionBasis) => {
+  const openConnection = async (target: { connectionId: string; revision?: number }) => {
     if (!alive || !active() || busy() || page() !== 'connections') return;
     const generation = ++read;
     loading.set(true);
@@ -926,8 +929,7 @@ export function createModelSettings(
       if (
         result.kind !== 'ready' ||
         result.choice.selection.connectionId !== connectionId ||
-        result.choice.selection.modelId !== request.modelId.trim() ||
-        result.choice.selection.revision !== request.revision
+        result.choice.selection.modelId !== request.modelId.trim()
       )
         return;
       model.set({
@@ -1235,17 +1237,13 @@ export function createModelSettings(
     await loadConnections();
     if (!alive || !active() || catalogRead !== read || page() !== 'connections') return;
     const generation = read + 1;
-    await openConnection({
-      connectionId: target.connectionId,
-      revision: target.revision,
-    });
+    await openConnection({ connectionId: target.connectionId });
     if (
       !alive ||
       !active() ||
       generation !== read ||
       page() !== 'connection' ||
-      editor()?.baseline?.target.connectionId !== target.connectionId ||
-      editor()?.baseline?.target.revision !== target.revision
+      editor()?.baseline?.target.connectionId !== target.connectionId
     )
       return;
     editModel({ ...action(), id: target.modelId });

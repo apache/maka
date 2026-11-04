@@ -409,7 +409,7 @@ pub(crate) async fn configure(owner: Arc<RootOwner>, base: &str, vision: bool) -
     ));
     assert!(matches!(config.set_default_target(serde_json::from_value(json!({"expectedCatalogRevision":config.catalog().await.unwrap().revision,"target":{"connectionId":connection.connection_id,"modelId":"fixture-model"}})).unwrap()).await.unwrap(), CatalogMutationResult::Committed {..}));
     let connection = config.catalog().await.unwrap().connections.remove(0);
-    let selection = json!({"connectionId":connection.connection_id,"revision":connection.revision,"modelId":"fixture-model"});
+    let selection = json!({"connectionId":connection.connection_id,"modelId":"fixture-model"});
     assert!(matches!(
         config
             .set_message_predictions(

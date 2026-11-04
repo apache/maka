@@ -115,7 +115,7 @@ impl Owner {
             return Ok(Value::Null);
         };
         Ok(serde_json::json!({
-            "model": crate::ModelSelection { connection_id: connection.connection_id, revision: connection.revision, model_id: model.model },
+            "model": crate::ModelSelection { connection_id: connection.connection_id, model_id: model.model },
             "thinkingLevel": configuration.thinking_level,
         }))
     }

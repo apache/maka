@@ -163,7 +163,7 @@ export function installation(
     'settings',
     'models',
     'ModelList',
-    'List selectable models from enabled connections, with exact model selections (connectionId, revision, modelId), supported thinking levels, defaults and limits. Search model IDs, labels and connection names with query, or filter by connectionId. Use selection as SessionSend/SessionResume model. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not a live provider health check.',
+    'List selectable models from enabled connections, with stable model identities (connectionId, modelId), supported thinking levels, defaults and limits. Search model IDs, labels and connection names with query, or filter by connectionId. Use selection as SessionSend/SessionResume model. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not a live provider health check.',
   );
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
   add('skills', 'load', 'Skill', 'Read a selected skill and its resources.');

@@ -708,6 +708,11 @@ export const conversationMessages = {
     '模型选择被拒绝：{reason}',
     '模型選擇遭拒：{reason}',
   ],
+  'The selected model is unavailable. Try again or choose another model.': [
+    'The selected model is unavailable. Try again or choose another model.',
+    '所选模型暂不可用，请重试或选择其他模型。',
+    '所選模型暫不可用，請重試或選擇其他模型。',
+  ],
   'Model unavailable: {model}.': [
     'Model unavailable: {model}.',
     '模型不可用：{model}。',

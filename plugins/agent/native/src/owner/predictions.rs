@@ -140,24 +140,11 @@ impl Owner {
         }) {
             return Ok(result);
         }
-        let catalog = self
-            .configuration
-            .catalog()
-            .await
-            .map_err(|e| e.to_string())?;
-        let Some(row) = catalog
-            .connections
-            .iter()
-            .find(|row| row.connection_id == model.connection_id && row.enabled)
-        else {
-            return Ok(result);
-        };
         let selection = ModelSelection {
             connection_id: model.connection_id.clone(),
             model_id: model.model.clone(),
-            revision: row.revision,
         };
-        let (source, prepared) = crate::model::Source::select(
+        let (source, prepared) = match crate::model::Source::select(
             self.configuration.clone(),
             self.catalog.clone(),
             self.credentials.clone(),
@@ -167,7 +154,11 @@ impl Owner {
             self.revision.clone(),
         )
         .await
-        .map_err(|e| e.to_string())?;
+        {
+            Ok(prepared) => prepared,
+            Err(maka_agent_engine::RunError::InvalidInput(_)) => return Ok(result),
+            Err(error) => return Err(error.to_string()),
+        };
         let quote = self
             .configuration
             .quote_model(prepared.provider_id, source.accepted.binding.model.clone())

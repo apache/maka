@@ -94,7 +94,6 @@ impl Hub {
         }
         let selection = crate::ModelSelection {
             connection_id: preset.model.connection_id.clone(),
-            revision: connection.revision,
             model_id: preset.model.model_id.clone(),
         };
         Ok((preset, selection))

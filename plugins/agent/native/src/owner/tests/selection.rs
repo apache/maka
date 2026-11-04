@@ -80,7 +80,7 @@ async fn models(fixture: &Fixture, input: Value) -> Result<Value, String> {
 }
 
 #[tokio::test]
-async fn explicit_models_switch_in_one_session_and_stale_selection_has_no_admission() {
+async fn explicit_models_keep_their_identity_across_catalog_updates_and_switch_in_one_session() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}/v1", listener.local_addr().unwrap());
@@ -101,8 +101,16 @@ async fn explicit_models_switch_in_one_session_and_stale_selection_has_no_admiss
         });
         let mut fixture = Fixture::new(&base, None).await;
         let session = fixture.create("Per-message model choice").await;
-        let stale = fixture.selection().await;
+        let selected_model = fixture.selection().await;
+        edit(&fixture, |changes| changes.enabled = Some(false)).await;
+        let rejected = fixture.mutation(2, "send",
+            json!({"sessionId":session,"message":"Keep this message","model":selected_model}),
+            Uuid::new_v4()).await.unwrap();
+        assert_eq!(rejected, json!({"kind":"rejected","sessionId":session,"reason":"model_unavailable","skills":null}));
+        let before_send = fixture.query("history", json!({"sessionId":session,"position":{"kind":"start"}})).await.unwrap();
+        assert_eq!(before_send["chunks"], json!([]));
         edit(&fixture, |changes| {
+            changes.enabled = Some(true);
             changes
                 .enabled_model_ids
                 .as_mut()
@@ -110,32 +118,14 @@ async fn explicit_models_switch_in_one_session_and_stale_selection_has_no_admiss
                 .push("second-model".into())
         })
         .await;
-        assert!(
-            fixture
-                .mutation(
-                    2,
-                    "send",
-                    json!({"sessionId":session,"message":"Stale","model":stale}),
-                    Uuid::new_v4()
-                )
-                .await
-                .is_err()
-        );
-        let observed = fixture
-            .query("observe", json!({"sessionId":session}))
-            .await
-            .unwrap();
-        assert!(observed["run"].is_null());
-        let page = fixture
-            .query(
-                "history",
-                json!({"sessionId":session,"position":{"kind":"start"}}),
-            )
-            .await
-            .unwrap();
-        assert!(page["chunks"].as_array().unwrap().is_empty());
+        let maka_config::model_fetch::ModelFetchPreparation::Ready(fetch) = fixture.config
+            .prepare_model_fetch(&selected_model.connection_id).await.unwrap() else { panic!("model discovery"); };
+        fetch.complete(vec![
+            maka_agent_facts::configuration::ModelInfo::new("fixture-model"),
+            maka_agent_facts::configuration::ModelInfo::new("second-model"),
+        ], 42).await.unwrap();
         for model in ["fixture-model", "second-model"] {
-            let mut selected = fixture.selection().await;
+            let mut selected = selected_model.clone();
             selected.model_id = model.into();
             let started = fixture
                 .mutation(
@@ -234,7 +224,8 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
             let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","delivery":"queue","model":selection,"thinkingLevel":level}), Uuid::new_v4()).await.unwrap();
             assert_eq!(result["kind"], "queued");
         }
-        assert!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.is_err());
+        assert_eq!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.unwrap(),
+            json!({"kind":"rejected","sessionId":session,"reason":"model_unavailable","skills":null}));
         let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
         assert_eq!(pending.len(), 2);
         for (entry, level) in pending.iter().zip([Off, Low]) {

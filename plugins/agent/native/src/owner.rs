@@ -1239,11 +1239,13 @@ impl Owner {
         }
         let backend = match selection {
             Selection::Model(selection, thinking_level) => {
-                let (selection, thinking_level) = match selection {
-                    Some(selection) => (selection, thinking_level),
-                    None => self.saved_model(&session.configuration).await?,
-                };
-                PreparedBackend::Model(Box::new(
+                let prepared = async {
+                    let (selection, thinking_level) = match selection {
+                        Some(selection) => (selection, thinking_level),
+                        None => self
+                            .saved_model(&session.configuration)
+                            .map_err(RunError::InvalidInput)?,
+                    };
                     crate::model::Source::select(
                         self.configuration.clone(),
                         self.catalog.clone(),
@@ -1254,8 +1256,19 @@ impl Owner {
                         self.revision.clone(),
                     )
                     .await
-                    .map_err(public_error)?,
-                ))
+                }
+                .await;
+                match prepared {
+                    Ok(prepared) => PreparedBackend::Model(Box::new(prepared)),
+                    Err(error) => {
+                        tracing::warn!(%error, session_id = %id, "Message model preparation failed before admission");
+                        return Ok(SendResult::Rejected {
+                            session_id: id,
+                            reason: SendRejection::ModelUnavailable,
+                            skills: None,
+                        });
+                    }
+                }
             }
             Selection::Executor(selection) => {
                 if self
