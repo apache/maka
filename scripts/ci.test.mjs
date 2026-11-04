@@ -25,6 +25,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { checkResults, createPlan } from './ci/plan.mjs';
+import { executor } from './ci/run.mjs';
 
 const root = '/repo';
 
@@ -267,4 +268,26 @@ test('native behavior verification selects nextest on macOS and Windows', () => 
   } finally {
     rmSync(temporary, { recursive: true, force: true });
   }
+});
+
+test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PROGRAMFILES', async () => {
+  const calls = [];
+  const exec = executor(
+    root,
+    { id: 'native-windows' },
+    {
+      env: { PROGRAMFILES: 'C:\\Program Files' },
+      run: async (exe, args, options) => {
+        calls.push({ exe, args, options });
+        return '';
+      },
+    },
+  );
+  await exec.prepare('windows-shell');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.env.LIBCLANG_PATH, join('C:\\Program Files', 'LLVM', 'bin'));
+  assert.equal(
+    calls[0].options.env.MAKA_TEST_GIT_BASH,
+    join('C:\\Program Files', 'Git', 'bin', 'bash.exe'),
+  );
 });
