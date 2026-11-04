@@ -1149,6 +1149,11 @@ export const conversationMessages = {
     'Bot 这一轮没有回复',
     'Bot 這一輪沒有回覆',
   ],
+  'The Bot wrote a reply but did not send it; it is in the process above': [
+    'The Bot wrote a reply but did not send it; it is in the process above',
+    'Bot 写了回复但没有发送，内容在上方的执行过程里',
+    'Bot 寫了回覆但沒有傳送，內容在上方的執行過程裡',
+  ],
   'The Host did not accept this queue change.': [
     'The Host did not accept this queue change.',
     'Host 未接受此次队列更改。',

@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { botTurnEnding, createBotTranscriptCore } from '../app/botTranscriptCore.ts';
+import {
+  botTurnEnding,
+  createBotTranscriptCore,
+  wroteBeforeSleep,
+} from '../app/botTranscriptCore.ts';
 
 const SESSION = 'bot-session';
 const message = (sequence, turnId, text = `m${sequence}`) => ({
@@ -254,6 +258,11 @@ test('a finished Turn is told apart by what the user could see', () => {
   assert.equal(botTurnEnding({ ...done, sent: false, slept: true }), 'quiet');
   // Neither sent nor slept: the user cannot tell this from silence.
   assert.equal(botTurnEnding({ ...done, sent: false, slept: false }), 'unanswered');
+  // Slept after writing an answer it never sent: it looks like silence but is not.
+  assert.equal(botTurnEnding({ ...done, sent: false, slept: true, wrote: true }), 'unsent');
+  assert.equal(botTurnEnding({ ...done, sent: false, slept: false, wrote: true }), 'unanswered');
+  // Text alongside a sent message is not unsent.
+  assert.equal(botTurnEnding({ ...done, sent: true, slept: true, wrote: true }), 'replied');
 });
 
 test('a running, failed or stopped Turn is never reported as unanswered', () => {
@@ -262,4 +271,20 @@ test('a running, failed or stopped Turn is never reported as unanswered', () => 
   assert.equal(botTurnEnding({ finished: true, outcome: 'failed', ...quiet }), 'other');
   assert.equal(botTurnEnding({ finished: true, outcome: 'aborted', ...quiet }), 'other');
   assert.equal(botTurnEnding({ finished: true, outcome: null, ...quiet }), 'other');
+});
+
+test('only answer text right before the sleep counts as written and unsent', () => {
+  const user = { role: 'user', field: 'body', text: 'look at my apps' };
+  const thinking = { role: 'thinking', field: 'thinking', text: 'cannot, say so' };
+  const text = (value) => ({ role: 'assistant', field: 'body', text: value });
+  const call = (name) => ({ role: 'assistant', field: 'tool', text: '', tool: { call: { name } } });
+  // The reply written in the step that went to sleep.
+  assert.ok(
+    wroteBeforeSleep([user, call('SessionHistory'), thinking, text('I could not'), call('sleep')]),
+  );
+  // Narration on the way to another call, then a silent sleep.
+  assert.ok(!wroteBeforeSleep([user, text('Let me check'), call('SessionHistory'), call('sleep')]));
+  // Blank text and thinking alone are not a reply.
+  assert.ok(!wroteBeforeSleep([user, thinking, text('  '), call('sleep')]));
+  assert.ok(!wroteBeforeSleep([user, call('sleep')]));
 });

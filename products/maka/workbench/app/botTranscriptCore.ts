@@ -182,8 +182,10 @@ export function createBotTranscriptCore(
  * outcome and needs no marker: `quiet` is a Turn that chose to sleep without sending.
  * `unanswered` is a Turn that ended with neither a `SendUser` message nor a `sleep`,
  * so the user cannot tell it from a deliberate silence unless Chat says so.
+ * `unsent` is a Turn that slept without sending but wrote answer text, which only the
+ * process shows: it reads as silence although the Bot meant to say something.
  */
-export type BotTurnEnding = 'running' | 'replied' | 'quiet' | 'unanswered' | 'other';
+export type BotTurnEnding = 'running' | 'replied' | 'quiet' | 'unanswered' | 'unsent' | 'other';
 export function botTurnEnding(turn: {
   /** The Turn has finished and is not the one running now. */
   finished: boolean;
@@ -191,10 +193,37 @@ export function botTurnEnding(turn: {
   outcome: string | null;
   sent: boolean;
   slept: boolean;
+  /** Its last step wrote answer text, which a Bot's user does not see (`wroteBeforeSleep`). */
+  wrote?: boolean;
 }): BotTurnEnding {
   if (!turn.finished) return 'running';
   if (turn.sent) return 'replied';
   // A failure or a stop has its own row; only a completed Turn can be mistaken for silence.
   if (turn.outcome !== 'completed') return 'other';
-  return turn.slept ? 'quiet' : 'unanswered';
+  if (!turn.slept) return 'unanswered';
+  return turn.wrote ? 'unsent' : 'quiet';
+}
+
+/**
+ * Whether a Turn's rows, in process order, end with answer text and then only its
+ * `sleep`: what the Bot wrote last, meant for its user, was never sent. Text followed by
+ * another tool call was narration on the way to that call.
+ */
+export function wroteBeforeSleep(
+  rows: readonly {
+    role: string;
+    field: string;
+    text: string;
+    tool?: { call?: { name?: string } };
+  }[],
+): boolean {
+  for (let index = rows.length - 1; index >= 0; index--) {
+    const row = rows[index];
+    if (row.tool) {
+      if (row.tool.call?.name === 'sleep') continue;
+      return false;
+    }
+    if (row.role === 'assistant' && row.field === 'body' && row.text.trim() !== '') return true;
+  }
+  return false;
 }

@@ -106,6 +106,7 @@ import { CompactionDivider } from '../../../../products/maka/workbench/app/Compa
 import {
   botTurnEnding,
   createBotTranscript,
+  wroteBeforeSleep,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
 import {
@@ -550,7 +551,7 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
     | { kind: 'bot'; key: string; turnId: string }
-    | { kind: 'botNote'; key: string; turnId: string }
+    | { kind: 'botNote'; key: string; turnId: string; unsent: boolean }
     | { kind: 'botWorking'; key: string };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
@@ -590,27 +591,31 @@ export function Conversation(props: ConversationProps) {
             key: `bot/${openTurn}`,
             turnId: openTurn,
           });
-        // Silence is valid and gets no marker; a Turn that neither sent nor slept would
-        // look the same, so say so.
+        // Silence is valid and gets no marker; a Turn that neither sent nor slept, or
+        // slept after writing an answer it never sent, would look the same, so say so.
         const turn = projection().turns.get(openTurn);
         const finished = turn !== undefined && !turn.active && openTurn !== runTurn();
         const turnId = openTurn;
-        const slept = [...projection().rowsById.values()].some(
-          (row) => row.turnId === turnId && row.tool?.call?.name === 'sleep',
+        const turnRows = orderProcessRows(
+          [...projection().rowsById.values()].filter((row) => row.turnId === turnId),
         );
-        if (
-          turn &&
-          botTurnEnding({
-            finished,
-            outcome: turnOutcome(turn),
-            sent,
-            slept,
-          }) === 'unanswered'
-        )
+        const slept = turnRows.some((row) => row.tool?.call?.name === 'sleep');
+        const wrote = slept && wroteBeforeSleep(turnRows);
+        const ending = turn
+          ? botTurnEnding({
+              finished,
+              outcome: turnOutcome(turn),
+              sent,
+              slept,
+              wrote,
+            })
+          : 'other';
+        if (ending === 'unanswered' || ending === 'unsent')
           result.push({
             kind: 'botNote',
             key: `bot/${openTurn}/note`,
             turnId: openTurn,
+            unsent: ending === 'unsent',
           });
       }
       openTurn = undefined;
@@ -3052,7 +3057,17 @@ export function Conversation(props: ConversationProps) {
                           />
                         );
                       if (initial.kind === 'botNote')
-                        return <BotNote text={() => tr('The Bot did not reply this time')} />;
+                        return (
+                          <BotNote
+                            text={() =>
+                              tr(
+                                initial.unsent
+                                  ? 'The Bot wrote a reply but did not send it; it is in the process above'
+                                  : 'The Bot did not reply this time',
+                              )
+                            }
+                          />
+                        );
                       if (initial.kind === 'bot')
                         return (
                           <BotReply
