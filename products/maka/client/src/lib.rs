@@ -827,10 +827,11 @@ impl Client {
             .await
     }
 
-    pub async fn remember_workspace(&self, workspace: RecentWorkspace) -> Result<()> {
+    /// Move a directory to the front, or remove its recent entry when `workspace` is None.
+    pub async fn set_recent_workspace(&self, path: String, workspace: Option<Value>) -> Result<()> {
         self.0
             .journal
-            .remember_workspace(self.workspace_owner().await?, workspace)
+            .set_recent_workspace(self.workspace_owner().await?, path, workspace)
             .await
     }
 

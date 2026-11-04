@@ -38,6 +38,11 @@ import {
 
 export const workspaceMessages = {
   'Recent folders': ['Recent folders', '最近使用', '最近使用'],
+  'Remove this folder from recents': [
+    'Remove this folder from recents',
+    '从最近记录中移除此文件夹',
+    '從最近記錄中移除此資料夾',
+  ],
   'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],

@@ -24,7 +24,10 @@ import { Icon } from './Icon';
 import { tr } from './locale';
 import { C, controlStyle, controlHoverStyle, controlFocusStyle, textTooltip } from './ui';
 
-export type RecentWorkspace = { workspace: BrowserWorkspace; path: string };
+export type RecentWorkspace = {
+  workspace: Extract<BrowserWorkspace, { kind: 'directory' }>;
+  path: string;
+};
 const name = (path: string) => path.split(/[\\/]/).filter(Boolean).at(-1) ?? path;
 
 export function RecentWorkspaces(props: {
@@ -33,6 +36,7 @@ export function RecentWorkspaces(props: {
   open(): boolean;
   changed(open: boolean): void;
   choose(workspace: RecentWorkspace): void;
+  forget(path: string): void;
   browse(): void;
   disabled(): boolean;
 }) {
@@ -51,11 +55,15 @@ export function RecentWorkspaces(props: {
         {
           value: 'browse',
           title: tr('Choose another folder…'),
-          ...(props.recent().length ? { group: 'browse' } : {}),
+          ...(props.recent().length ? { group: 'actions' } : {}),
         },
+        ...(props.recent().some((item) => item.path === props.path())
+          ? [{ value: 'forget', title: tr('Remove this folder from recents'), group: 'actions' }]
+          : []),
       ]}
       onChange={({ value }) => {
         if (value === 'browse') props.browse();
+        else if (value === 'forget') props.forget(props.path());
         else {
           const selected = props.recent().find((item) => item.path === value);
           if (selected) props.choose(selected);
@@ -117,7 +125,7 @@ export function RecentWorkspaces(props: {
       }
       renderItem={(item) => (
         <View
-          tooltip={item.value === 'browse' ? undefined : textTooltip(() => item.value)}
+          tooltip={item.group === 'recent' ? textTooltip(() => item.value) : undefined}
           style={{
             ...controlStyle,
             flexDirection: 'row',
@@ -126,16 +134,16 @@ export function RecentWorkspaces(props: {
             gap: 10,
             paddingHorizontal: 10,
             paddingVertical: 8,
-            minHeight: item.value === 'browse' ? 36 : 54,
+            minHeight: item.group === 'recent' ? 54 : 36,
             backgroundColor: item.highlighted ? C.raised : 'transparent',
           }}
         >
-          <Icon name="folder" color={C.secondary} />
+          <Icon name={item.value === 'forget' ? 'close' : 'folder'} color={C.secondary} />
           <View style={{ flex: 1, minWidth: 0, gap: 3 }}>
             <Text style={[{ fontSize: 13, color: C.text }, { numberOfLines: 1 }]}>
-              {item.value === 'browse' ? tr('Choose another folder…') : name(item.value)}
+              {item.group === 'recent' ? name(item.value) : item.title}
             </Text>
-            <If when={item.value !== 'browse'}>
+            <If when={item.group === 'recent'}>
               <Text
                 style={[
                   {

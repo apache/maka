@@ -20,17 +20,17 @@
 use super::*;
 
 #[tokio::test]
-async fn recent_workspaces_survive_reopen_merge_selections_and_bound_history() {
+async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
     let fixture = Fixture::new().await;
     let first = fixture.client().await;
     let second = fixture.client().await;
     for number in 0..10 {
         let client = if number % 2 == 0 { &first } else { &second };
         client
-            .remember_workspace(RecentWorkspace {
-                path: format!("/project/{number}"),
-                workspace: json!({"directory":number}),
-            })
+            .set_recent_workspace(
+                format!("/project/{number}"),
+                Some(json!({"directory":number})),
+            )
             .await
             .unwrap();
     }
@@ -43,20 +43,20 @@ async fn recent_workspaces_survive_reopen_merge_selections_and_bound_history() {
             .iter()
             .map(|item| item.path.as_str())
             .collect::<Vec<_>>(),
-        (2..10)
+        (0..10)
             .rev()
             .map(|number| format!("/project/{number}"))
             .collect::<Vec<_>>()
     );
     client
-        .remember_workspace(RecentWorkspace {
-            path: "/project/3".into(),
-            workspace: json!({"directory":"new identity"}),
-        })
+        .set_recent_workspace(
+            "/project/3".into(),
+            Some(json!({"directory":"new identity"})),
+        )
         .await
         .unwrap();
     let recent = client.recent_workspaces().await.unwrap();
-    assert_eq!(recent.len(), 8);
+    assert_eq!(recent.len(), 10);
     assert_eq!(recent[0].path, "/project/3");
     assert_eq!(recent[0].workspace, json!({"directory":"new identity"}));
     assert_eq!(
@@ -67,6 +67,18 @@ async fn recent_workspaces_survive_reopen_merge_selections_and_bound_history() {
         1
     );
     client.close().await.unwrap();
+    let client = fixture.client().await;
+    client
+        .set_recent_workspace("/project/3".into(), None)
+        .await
+        .unwrap();
+    client.close().await.unwrap();
+    let client = fixture.client().await;
+    let recent = client.recent_workspaces().await.unwrap();
+    assert_eq!(recent.len(), 9);
+    assert_eq!(recent[0].path, "/project/9");
+    assert!(!recent.iter().any(|item| item.path == "/project/3"));
+    client.close().await.unwrap();
     fixture.finish().await;
 }
 
@@ -76,10 +88,7 @@ async fn recent_workspaces_are_scoped_to_the_admitted_host() {
     let second = Fixture::new().await;
     let client = first.client().await;
     client
-        .remember_workspace(RecentWorkspace {
-            path: "/first".into(),
-            workspace: json!({"directory":1}),
-        })
+        .set_recent_workspace("/first".into(), Some(json!({"directory":1})))
         .await
         .unwrap();
     let host = HostClient::connect(&second.address, Some(second.host.epoch()))
@@ -91,10 +100,7 @@ async fn recent_workspaces_are_scoped_to_the_admitted_host() {
     let other = Client::new(host, journal, "receipts".into()).unwrap();
     assert!(other.recent_workspaces().await.unwrap().is_empty());
     other
-        .remember_workspace(RecentWorkspace {
-            path: "/second".into(),
-            workspace: json!({"directory":2}),
-        })
+        .set_recent_workspace("/second".into(), Some(json!({"directory":2})))
         .await
         .unwrap();
     assert_eq!(client.recent_workspaces().await.unwrap()[0].path, "/first");

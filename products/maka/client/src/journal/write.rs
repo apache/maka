@@ -61,9 +61,10 @@ impl Reservation {
 }
 
 pub(super) enum Command {
-    RememberWorkspace {
+    SetRecentWorkspace {
         owner: String,
-        workspace: super::RecentWorkspace,
+        path: String,
+        workspace: Option<Value>,
     },
     SaveDraft {
         key: DraftKey,
@@ -116,11 +117,13 @@ pub(super) struct Pending {
 impl Command {
     async fn execute(self, connection: &mut SqliteConnection) -> Result<Output> {
         match self {
-            Self::RememberWorkspace { owner, workspace } => {
-                super::workspaces::remember(connection, owner, workspace)
-                    .await
-                    .map(|()| Output::Unit)
-            }
+            Self::SetRecentWorkspace {
+                owner,
+                path,
+                workspace,
+            } => super::workspaces::set(connection, owner, path, workspace)
+                .await
+                .map(|()| Output::Unit),
             Self::SaveDraft {
                 key,
                 expected,

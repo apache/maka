@@ -317,10 +317,10 @@ impl ApplicationHost {
         .await
     }
 
-    pub async fn remember_workspace(
+    pub async fn set_recent_workspace(
         this: Instance<Self>,
         path: String,
-        workspace: JsonValue,
+        workspace: Option<JsonValue>,
     ) -> Result<(), String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
@@ -329,7 +329,7 @@ impl ApplicationHost {
             source
                 .local(&original)
                 .await?
-                .remember_workspace(maka_app_client::RecentWorkspace { path, workspace })
+                .set_recent_workspace(path, workspace)
                 .await
         })
         .await

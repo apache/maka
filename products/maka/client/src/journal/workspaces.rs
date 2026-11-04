@@ -44,21 +44,27 @@ impl Journal {
             .map(Option::unwrap_or_default)
     }
 
-    pub(crate) async fn remember_workspace(
+    pub(crate) async fn set_recent_workspace(
         &self,
         owner: String,
-        workspace: RecentWorkspace,
+        path: String,
+        workspace: Option<Value>,
     ) -> Result<()> {
-        self.write(write::Command::RememberWorkspace { owner, workspace })
-            .await?;
+        self.write(write::Command::SetRecentWorkspace {
+            owner,
+            path,
+            workspace,
+        })
+        .await?;
         Ok(())
     }
 }
 
-pub(super) async fn remember(
+pub(super) async fn set(
     connection: &mut SqliteConnection,
     owner: String,
-    workspace: RecentWorkspace,
+    path: String,
+    workspace: Option<Value>,
 ) -> Result<()> {
     let value: Option<String> =
         sqlx::query_scalar("SELECT value FROM recent_workspaces WHERE owner=?")
@@ -71,9 +77,10 @@ pub(super) async fn remember(
         .transpose()
         .map_err(error)?
         .unwrap_or_default();
-    recent.retain(|item| item.path != workspace.path);
-    recent.insert(0, workspace);
-    recent.truncate(8);
+    recent.retain(|item| item.path != path);
+    if let Some(workspace) = workspace {
+        recent.insert(0, RecentWorkspace { path, workspace });
+    }
     sqlx::query("INSERT INTO recent_workspaces(owner,value) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET value=excluded.value")
         .bind(owner).bind(serde_json::to_string(&recent).map_err(error)?)
         .execute(connection).await.map_err(error)?;

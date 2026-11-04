@@ -675,7 +675,9 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
 async fn desktop_recovers_an_unavailable_remembered_folder() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("New conversation in workspace").await;
+    desktop.target_after(previous).await;
     let workspace = fixture.directory.path().join("workspace");
     desktop
         .wait("folder selection was not saved", async {
@@ -708,6 +710,36 @@ async fn desktop_recovers_an_unavailable_remembered_folder() {
         .await;
     desktop.press("Focus message composer").await;
     desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
+    desktop.press("Choose composer workspace").await;
+    desktop.artifact("recent-folders-remove");
+    desktop.press("Remove this folder from recents").await;
+    desktop
+        .wait("removed folder was still remembered", async {
+            while !desktop.client.recent_workspaces().await.unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
+    assert!(workspace.is_dir());
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0]["workspace"]["path"],
+        workspace.to_str().unwrap()
+    );
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.press("Choose composer workspace").await;
+    desktop.control("Choose another folder…").await;
+    assert!(
+        desktop
+            .controls(&format!("Use folder {}", workspace.display()))
+            .is_empty()
+    );
+    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
     desktop.close().await;
     fixture.finish().await;
 }
