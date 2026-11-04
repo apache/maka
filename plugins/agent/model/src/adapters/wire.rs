@@ -77,10 +77,13 @@ pub(super) fn chat_options(
     Ok(prompt_options)
 }
 pub(super) fn chat_codec(language: Language, options: &chat::PromptOptions) -> String {
-    serde_json::json!({"codec":"maka.chat-items.v1","language":language,
+    let mut codec = serde_json::json!({"codec":"maka.chat-items.v1","language":language,
         "namespace":options.provider_namespace,"metadataNamespace":options.metadata_namespace,
-        "multipartToolContent":options.multipart_tool_content,"reasoningField":options.reasoning_field})
-    .to_string()
+        "multipartToolContent":options.multipart_tool_content});
+    if options.reasoning_field != maka_provider_protocol::output::ReasoningField::Content {
+        codec["reasoningField"] = serde_json::json!(options.reasoning_field);
+    }
+    codec.to_string()
 }
 
 /// Immutable message encoding policy. Tool schemas belong to the request header;
