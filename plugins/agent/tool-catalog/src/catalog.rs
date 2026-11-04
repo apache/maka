@@ -79,7 +79,7 @@ impl ToolCatalog {
                     "a finishing tool must be direct-only".into(),
                 ));
             }
-            let definition = &registration.definition;
+            let definition = &mut registration.definition;
             if definition.name.is_empty()
                 || definition.name.len() > 128
                 || matches!(
@@ -93,6 +93,8 @@ impl ToolCatalog {
                     "duplicate, reserved, absent or invalid tool name".into(),
                 ));
             }
+            definition.input_schema =
+                crate::input::inline_refs(std::mem::take(&mut definition.input_schema));
             // Matches Maka's JSON-schema tool path: no format assertions,
             // defaults/coercion or fetching file/network references.
             let validator = jsonschema::options()
@@ -100,8 +102,9 @@ impl ToolCatalog {
                 .should_validate_formats(false)
                 .build(&definition.input_schema)
                 .map_err(|e| CatalogError::Schema(e.to_string()))?;
+            let name = definition.name.clone();
             entries.insert(
-                definition.name.clone(),
+                name,
                 Arc::new(RegisteredTool {
                     always_visible: false,
                     definition: Arc::new(registration.definition),

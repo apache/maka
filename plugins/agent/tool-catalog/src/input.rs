@@ -25,6 +25,9 @@ use schemars::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 
+mod inline;
+pub use inline::inline_refs;
+
 /// Preserve a typed request inside an object-rooted model tool input.
 #[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
