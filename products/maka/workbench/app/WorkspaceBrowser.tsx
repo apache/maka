@@ -609,16 +609,14 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
                         accessibilityLabel={tr('New conversation in {name}', {
                           name: project()?.name ?? '',
                         })}
-                        disabled={
-                          props.switching() || !project()?.available || !project()?.selection
-                        }
+                        disabled={props.switching() || !project()?.available || !project()?.path}
                         onPress={
-                          project()?.selection
+                          project()?.path
                             ? inputAction(createWorkspace, {
                                 workspace: {
                                   kind: 'project',
                                   project: project()!.reference,
-                                  selection: project()!.selection!,
+                                  path: project()!.path!,
                                 },
                                 origin: props.selected(),
                                 label: project()!.path ?? project()!.name,

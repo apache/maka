@@ -159,7 +159,7 @@ async fn standard_skills_follow_each_actual_session_for_preparation_and_model_re
         for (index,instructions) in [(0,"project A instructions"),(1,"project B instructions")] {
             let path=std::path::Path::new(roots["roots"][index]["path"].as_str().unwrap());
             write(&path.join(".agents/skills"),"review",instructions);
-            let created=f.mutation(2,"create",json!({"title":"Project skill","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][index]["selection"]}}),Uuid::new_v4()).await.unwrap();
+            let created=f.mutation(2,"create",json!({"title":"Project skill","labels":[],"workspace":{"kind":"directory","path":roots["roots"][index]["path"]}}),Uuid::new_v4()).await.unwrap();
             let session=created["session"]["id"].as_str().unwrap();
             let candidates=f.query("skillCandidates",json!({"sessionId":session,"backend":model_backend(&f.selection().await),"query":""})).await.unwrap();
             assert_eq!(candidates["skills"].as_array().unwrap().len(),1,"{candidates}");

@@ -83,7 +83,13 @@ impl Owner {
                     .map_err(|_| "agent_import_unavailable")?
                     .canonical_path()
                     .to_owned();
-                workspace::query_excluding(owner.import_roots.clone(), input, Some(private)).await
+                workspace::query_excluding(
+                    owner.import_roots.clone(),
+                    input,
+                    owner.home.as_deref(),
+                    Some(private),
+                )
+                .await
             })
         })
         .await
@@ -306,7 +312,7 @@ impl Owner {
         match input {
             ImportChange::Copy {
                 selection,
-                directory,
+                path,
                 title,
             } => {
                 if metadata_rejection(&title, &[]).is_some() {
@@ -327,7 +333,7 @@ impl Owner {
                 }
                 reader.validate(self).await?;
                 let workspace = self
-                    .create_project_workspace(directory)
+                    .create_project_workspace(&path)
                     .await
                     .map_err(|_| Failure::Unknown)?
                     .ok_or(Failure::Unavailable)?;
@@ -414,7 +420,8 @@ impl Owner {
                             .to_owned();
                         let selected = workspace::observed(
                             self.import_roots.clone(),
-                            location.directory().clone(),
+                            location.path(),
+                            self.home.as_deref(),
                             private,
                         )
                         .await

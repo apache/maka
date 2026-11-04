@@ -367,7 +367,7 @@ async fn exercise_file_consent() {
         .query("directories", json!({"kind":"roots"}))
         .await
         .unwrap();
-    let b = f.mutation(2,"create",json!({"title":"project B","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+    let b = f.mutation(2,"create",json!({"title":"project B","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
     let workspace_b = f.owner.session(&b).await.unwrap().configuration.workspace;
     let record_a = home.path().join("a-record");
     let record_b = home.path().join("b-record");
@@ -538,7 +538,7 @@ async fn mcp_slow_startup_does_not_block_other_session_stop_or_owner_shutdown() 
         let f = Arc::new(Fixture::new(&format!("http://{}/v1",listener.local_addr().unwrap()),None).await);
         let a = f.create("slow MCP").await;
         let roots = f.query("directories",json!({"kind":"roots"})).await.unwrap();
-        let b = f.mutation(2,"create",json!({"title":"other session","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][1]["selection"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
+        let b = f.mutation(2,"create",json!({"title":"other session","labels":[],"workspace":{"kind":"directory","path":roots["roots"][1]["path"]}}),Uuid::new_v4()).await.unwrap()["session"]["id"].as_str().unwrap().to_owned();
         let running = f.send(&b).await.unwrap();
         let (mut socket,_) = listener.accept().await.unwrap();
         request(&mut socket).await;
@@ -617,7 +617,7 @@ async fn mcp_management_preserves_file_fields_and_targets_physical_instances_wit
         .mutation(
             2,
             "selectWorkspace",
-            roots["roots"][0]["selection"].clone(),
+            json!({"path":roots["roots"][0]["path"]}),
             Uuid::new_v4(),
         )
         .await

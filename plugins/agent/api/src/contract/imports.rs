@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{DirectorySelection, Session};
+use super::Session;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -27,23 +27,25 @@ use uuid::Uuid;
 #[schemars(rename = "AgentImportLocation")]
 pub enum ImportLocation {
     Codex {
-        directory: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
     ClaudeCode {
-        directory: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
     OpenCode {
-        directory: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
         #[schemars(length(min = 1))]
         database: String,
     },
 }
 impl ImportLocation {
-    pub fn directory(&self) -> &DirectorySelection {
+    /// The directory the source is read from, as the caller named it.
+    pub fn path(&self) -> &str {
         match self {
-            Self::Codex { directory }
-            | Self::ClaudeCode { directory }
-            | Self::OpenCode { directory, .. } => directory,
+            Self::Codex { path } | Self::ClaudeCode { path } | Self::OpenCode { path, .. } => path,
         }
     }
 }
@@ -227,7 +229,8 @@ pub enum ImportChange {
     },
     Copy {
         selection: ImportSelection,
-        directory: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
         #[schemars(length(min = 1))]
         title: String,
     },

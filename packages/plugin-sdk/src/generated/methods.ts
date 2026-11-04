@@ -885,7 +885,13 @@ export interface ServiceMethods {
     };
     selectWorkspace: {
       mode: 'mutation';
-      input: Runtime.AgentDirectorySelection;
+      /**
+       * A directory on the Host: an absolute path, `~` standing for the home
+       * directory, within the configured workspace locations.
+       */
+      input: {
+        path: string;
+      };
       output: Runtime.AgentWorkspace | null;
     };
     send: {

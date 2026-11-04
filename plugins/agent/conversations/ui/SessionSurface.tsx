@@ -97,10 +97,7 @@ import type {
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
-import {
-  WorkspacePicker,
-  locateWorkspaceDirectory,
-} from '../../../../products/maka/workbench/app/WorkspacePicker';
+import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
 import {
   RecentWorkspaces,
   type RecentWorkspace,
@@ -400,7 +397,7 @@ export function createConversationUi(
       } else {
         await host.query('agent', 'directories', {
           kind: 'children',
-          selection: workspace.selection,
+          path: workspace.path,
           after: null,
         });
       }
@@ -723,26 +720,13 @@ export function createConversationUi(
         workspaceLabel ??
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
-          : (workspace.selection.segments.at(-1) ?? ''));
+          : (workspace.path.split(/[\\/]/).filter(Boolean).at(-1) ?? ''));
       if (workspace.kind === 'session') {
         const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
         if (!alive || selected() !== expectedSessionId) return;
         label = observed.session.workspace.path;
-        if (!observed.session.workspace.worktree) {
-          const roots = await host.query('agent', 'directories', { kind: 'roots' });
-          if (!alive || selected() !== expectedSessionId) return;
-          const found =
-            roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
-          if (found)
-            recentWorkspace = {
-              kind: 'directory',
-              selection: {
-                rootId: found.root.selection.rootId,
-                segments: [...found.root.selection.segments, ...found.names!],
-                directoryIdentity: observed.session.workspace.directoryIdentity,
-              },
-            };
-        }
+        if (!observed.session.workspace.worktree)
+          recentWorkspace = { kind: 'directory', path: label };
       }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {

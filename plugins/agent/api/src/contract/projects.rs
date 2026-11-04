@@ -17,7 +17,6 @@
  * under the License.
  */
 
-use super::DirectorySelection;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -39,8 +38,7 @@ pub struct Project {
     pub name: String,
     pub archived: bool,
     pub available: bool,
-    #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<DirectorySelection>")]
-    pub selection: Option<DirectorySelection>,
+    /// The location the Project was last used at, when it is available.
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
     pub path: Option<String>,
 }
@@ -63,7 +61,8 @@ pub enum ProjectsRead {
         cursor: Option<ProjectCursor>,
     },
     Directory {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
 }
 
@@ -71,7 +70,6 @@ pub enum ProjectsRead {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentProjectLocation")]
 pub struct ProjectLocation {
-    pub selection: DirectorySelection,
     #[schemars(length(min = 1))]
     pub path: String,
     #[schemars(length(min = 1))]
@@ -104,7 +102,8 @@ pub enum ProjectsPage {
 #[schemars(rename = "AgentProjectChange")]
 pub enum ProjectChange {
     Register {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<ProjectRef>")]
         expected: Option<ProjectRef>,
     },
@@ -121,7 +120,8 @@ pub enum ProjectChange {
     },
     Relocate {
         project: ProjectRef,
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
         #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<ProjectRef>")]
         destination: Option<ProjectRef>,
     },

@@ -1209,7 +1209,7 @@ export type WorkHubCoordinator =
     }
   | {
       kind: 'pending';
-      workspace: AgentDirectorySelection;
+      workspace: string;
     }
   | {
       kind: 'ready';
@@ -2431,16 +2431,16 @@ export type AgentSessionListScope =
 export type AgentWorkspaceSelection =
   | {
       kind: 'isolated_git';
-      selection: AgentDirectorySelection;
+      path: string;
     }
   | {
       kind: 'project';
       project: AgentProjectRef;
-      selection: AgentDirectorySelection;
+      path: string;
     }
   | {
       kind: 'directory';
-      selection: AgentDirectorySelection;
+      path: string;
     }
   | {
       kind: 'session';
@@ -3020,15 +3020,15 @@ export type AgentImportsPage =
 export type AgentImportLocation =
   | {
       kind: 'codex';
-      directory: AgentDirectorySelection;
+      path: string;
     }
   | {
       kind: 'claude_code';
-      directory: AgentDirectorySelection;
+      path: string;
     }
   | {
       kind: 'open_code';
-      directory: AgentDirectorySelection;
+      path: string;
       database: string;
     };
 export type AgentImportRecordKind = 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'note';
@@ -3048,7 +3048,7 @@ export type AgentImportChange =
   | {
       kind: 'copy';
       selection: AgentImportSelection;
-      directory: AgentDirectorySelection;
+      path: string;
       title: string;
     };
 export type AgentImportResult =
@@ -3077,7 +3077,7 @@ export type AgentProjectsRead =
     }
   | {
       kind: 'directory';
-      selection: AgentDirectorySelection;
+      path: string;
     };
 export type AgentProjectsPage =
   | {
@@ -3244,7 +3244,7 @@ export type AgentProjectsPage =
 export type AgentProjectChange =
   | {
       kind: 'register';
-      selection: AgentDirectorySelection;
+      path: string;
       expected: AgentProjectRef | null;
     }
   | {
@@ -3263,7 +3263,7 @@ export type AgentProjectChange =
   | {
       kind: 'relocate';
       project: AgentProjectRef;
-      selection: AgentDirectorySelection;
+      path: string;
       destination: AgentProjectRef | null;
     };
 export type AgentProjectResult =
@@ -3312,21 +3312,12 @@ export type AgentDirectories =
     }
   | {
       kind: 'children';
-      selection: AgentDirectorySelection;
-      after: string | null;
-    }
-  | {
-      kind: 'path';
       path: string;
+      after: string | null;
     };
 export type AgentDirectoryPage =
   | {
       kind: 'roots';
-      roots: AgentDirectory[];
-    }
-  | {
-      kind: 'path';
-      directory: AgentDirectory | null;
       roots: AgentDirectory[];
     }
   | {
@@ -6203,14 +6194,10 @@ export interface WorkHubGraphReceiptRead {
 }
 export interface WorkHubResolve {
   /**
-   * Used only when freezing the first coordinator creation intent.
+   * The coordinator's directory, used only when freezing the first
+   * creation intent.
    */
-  workspace: AgentDirectorySelection;
-}
-export interface AgentDirectorySelection {
-  rootId: string;
-  segments: string[];
-  directoryIdentity: string;
+  workspace: string;
 }
 export interface AgentSession {
   /**
@@ -8110,11 +8097,12 @@ export interface AgentProject {
   name: string;
   archived: boolean;
   available: boolean;
-  selection: AgentDirectorySelection | null;
+  /**
+   * The location the Project was last used at, when it is available.
+   */
   path: string | null;
 }
 export interface AgentProjectLocation {
-  selection: AgentDirectorySelection;
   path: string;
   name: string;
   project: AgentProject | null;
@@ -8142,7 +8130,6 @@ export interface AgentForkReceiptResult {
 export interface AgentDirectory {
   name: string;
   path: string;
-  selection: AgentDirectorySelection;
 }
 export interface AgentMetadata {
   /**

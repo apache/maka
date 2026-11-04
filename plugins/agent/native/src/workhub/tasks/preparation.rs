@@ -42,7 +42,8 @@ pub(super) enum Target {
         #[schemars(extend("uniqueItems" = true))]
         tools: Option<Vec<String>>,
         title: String,
-        workspace: crate::contract::DirectorySelection,
+        /// The directory as the caller named it; the worker resolves it.
+        workspace: String,
     },
 }
 impl Target {
@@ -298,7 +299,7 @@ impl Hub {
                 } else {
                     "directory"
                 };
-                let mut input = serde_json::json!({"title":title,"labels":[],"tools":tools,"workspace":{"kind":kind,"selection":workspace}});
+                let mut input = serde_json::json!({"title":title,"labels":[],"tools":tools,"workspace":{"kind":kind,"path":workspace}});
                 if let Some(backend) = assignment.input.get("backend") {
                     input["backend"] = backend.clone();
                 }
@@ -333,14 +334,18 @@ impl Hub {
                 let selected: crate::contract::Workspace =
                     serde_json::from_value(value["session"]["workspace"].clone())
                         .map_err(|_| "workhub_creation_invalid")?;
+                // The worker resolved the same path; compare what it created
+                // with the directory the route named.
+                let requested =
+                    maka_workspace_support::resolve_path(workspace, self.agent.0.home.as_deref())
+                        .ok_or("workhub_creation_invalid")?;
                 let matches = if *isolated_workspace {
                     selected.worktree.as_ref().is_some_and(|binding| {
-                        binding.source_identity() == &workspace.directory_identity
+                        binding.source() == requested
                             && binding.directory() == std::path::Path::new(&selected.path)
                     })
                 } else {
-                    selected.worktree.is_none()
-                        && selected.directory_identity == workspace.directory_identity
+                    selected.worktree.is_none() && std::path::Path::new(&selected.path) == requested
                 };
                 if !matches {
                     return Err("workhub_creation_invalid".into());
@@ -472,7 +477,7 @@ fn directory(directory: &Value) -> Result<Value, String> {
     Ok(serde_json::json!({
         "nameExcerpt":excerpt(directory["name"].as_str().ok_or("workhub_directory_invalid")?,32),
         "pathExcerpt":excerpt(directory["path"].as_str().ok_or("workhub_directory_invalid")?,48),
-        "selection":directory["selection"],
+        "path":directory["path"],
     }))
 }
 pub(super) fn directory_page(page: Value) -> Result<Value, String> {

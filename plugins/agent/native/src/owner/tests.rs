@@ -865,7 +865,7 @@ impl Fixture {
             .query("directories", json!({"kind":"roots"}))
             .await
             .unwrap();
-        json!({"title":title, "labels":[], "workspace":{"kind":"directory","selection":roots["roots"][0]["selection"]}})
+        json!({"title":title, "labels":[], "workspace":{"kind":"directory","path":roots["roots"][0]["path"]}})
     }
     async fn selection(&self) -> ModelSelection {
         let row = self.config.catalog().await.unwrap().connections.remove(0);

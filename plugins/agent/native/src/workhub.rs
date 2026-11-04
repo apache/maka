@@ -55,7 +55,8 @@ pub(crate) fn prompt(language: maka_agent_facts::language::Language) -> &'static
 #[serde(deny_unknown_fields)]
 struct Intent {
     operation: RecoveryRef,
-    workspace: crate::contract::DirectorySelection,
+    /// The coordinator's directory as the caller named it.
+    workspace: String,
 }
 pub(crate) struct Hub {
     agent: Agent,
@@ -227,16 +228,15 @@ impl Hub {
             None => {
                 // Validate the selected directory before committing the immutable
                 // intent. A later replacement cannot retarget this coordinator.
-                let roots = self.agent.0.workspace_roots.clone();
-                let page = maka_workspace_support::query(
-                    roots,
-                    crate::contract::Directories::Children {
-                        selection: input.workspace.clone(),
-                        after: None,
-                    },
+                let owner = &self.agent.0;
+                let located = maka_workspace_support::selected(
+                    owner.workspace_roots.clone(),
+                    &input.workspace,
+                    owner.home.as_deref(),
+                    owner.managed_worktrees.clone(),
                 )
                 .await;
-                if !matches!(page, Ok(crate::contract::DirectoryPage::Children { .. })) {
+                if !matches!(located, Ok(Some(_))) {
                     return Ok(Coordinator::Rejected {
                         reason: crate::contract::Rejection::WorkspaceUnavailable,
                     });
@@ -291,7 +291,7 @@ impl Hub {
                     title: "WorkHub".into(),
                     labels: vec![],
                     workspace: crate::contract::WorkspaceSelection::Directory {
-                        selection: intent.workspace,
+                        path: intent.workspace,
                     },
                 },
                 &intent.operation,

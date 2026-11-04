@@ -335,46 +335,49 @@ pub struct Create {
 )]
 #[schemars(rename = "AgentWorkspaceSelection")]
 pub enum WorkspaceSelection {
+    /// A Git worktree of the directory at `path`, managed by the Host.
     IsolatedGit {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
+    /// A registered Project at one of its locations.
     Project {
         project: ProjectRef,
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
+    /// The directory at `path`: absolute, `~` standing for the home directory,
+    /// within the configured workspace locations.
     Directory {
-        selection: DirectorySelection,
+        #[schemars(length(min = 1))]
+        path: String,
     },
     Session {
         #[schemars(length(min = 1))]
         session_id: String,
     },
 }
+/// A directory on the Host: an absolute path, `~` standing for the home
+/// directory, within the configured workspace locations.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentDirectorySelection")]
-pub struct DirectorySelection {
+#[schemars(rename = "AgentDirectoryPath")]
+pub struct DirectoryPath {
     #[schemars(length(min = 1))]
-    pub root_id: String,
-    pub segments: Vec<String>,
-    #[schemars(with = "String", regex(pattern = "^sha256:[a-f0-9]{64}$"))]
-    pub directory_identity: DirectoryIdentity,
+    pub path: String,
 }
 #[derive(Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentDirectories")]
 pub enum Directories {
     Roots,
+    /// The directories inside `path`, a page at a time; `after` is the last
+    /// name of the previous page.
     Children {
-        selection: DirectorySelection,
-        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
-        after: Option<String>,
-    },
-    /// The directory at an absolute path (`~` stands for the home directory),
-    /// found within the configured workspace locations.
-    Path {
         #[schemars(length(min = 1))]
         path: String,
+        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
+        after: Option<String>,
     },
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
@@ -383,20 +386,12 @@ pub enum Directories {
 pub struct Directory {
     pub name: String,
     pub path: String,
-    pub selection: DirectorySelection,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 #[schemars(rename = "AgentDirectoryPage")]
 pub enum DirectoryPage {
     Roots {
-        roots: Vec<Directory>,
-    },
-    /// `directory` is null when the path is not a directory within any
-    /// configured location; `roots` lists those locations either way.
-    Path {
-        #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<Directory>")]
-        directory: Option<Directory>,
         roots: Vec<Directory>,
     },
     Children {
@@ -1795,7 +1790,7 @@ pub fn contract() -> Contract {
                 ),
                 (
                     "selectWorkspace".into(),
-                    method::<DirectorySelection, Option<Workspace>>(MethodMode::Mutation),
+                    method::<DirectoryPath, Option<Workspace>>(MethodMode::Mutation),
                 ),
                 (
                     "observe".into(),

@@ -213,8 +213,10 @@ pub enum ControlOutcome {
 #[serde(deny_unknown_fields)]
 #[schemars(rename = "WorkHubResolve")]
 pub struct Resolve {
-    /// Used only when freezing the first coordinator creation intent.
-    pub workspace: crate::contract::DirectorySelection,
+    /// The coordinator's directory, used only when freezing the first
+    /// creation intent.
+    #[schemars(length(min = 1))]
+    pub workspace: String,
 }
 #[derive(Serialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -222,7 +224,7 @@ pub struct Resolve {
 pub enum Coordinator {
     Missing,
     Pending {
-        workspace: crate::contract::DirectorySelection,
+        workspace: String,
     },
     Ready {
         session: Box<crate::contract::Session>,

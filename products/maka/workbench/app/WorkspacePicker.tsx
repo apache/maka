@@ -31,7 +31,6 @@ import { useHost } from './host';
 import type {
   AgentDirectory,
   AgentDirectoryPage,
-  AgentDirectorySelection,
   AgentWorkspaceSelection,
   DirectoryRootSpec,
 } from '../../../../packages/plugin-sdk/src/index.js';
@@ -57,9 +56,7 @@ type Location = {
   entries: Signal<AgentDirectory[]>;
   reading: boolean;
 };
-type FolderAction = { location: number; selection: AgentDirectorySelection };
-const selectionKey = (selection: AgentDirectorySelection) =>
-  JSON.stringify([selection.rootId, selection.segments, selection.directoryIdentity]);
+type FolderAction = { location: number; path: string };
 const pathNames = (path: string) =>
   path.split(platform.os === 'windows' ? /[\\/]/ : /\//).filter(Boolean);
 /** The names from `root` down to `path`, or null when `path` is not in it. */
@@ -70,7 +67,7 @@ const below = (root: string, path: string) => {
     : null;
 };
 /** The innermost Host location containing a path, and the names below it. */
-export const locateWorkspaceDirectory = (rows: AgentDirectory[], path: string) =>
+const locateWorkspaceDirectory = (rows: AgentDirectory[], path: string) =>
   rows
     .map((root) => ({ root, names: root.path ? below(root.path, path) : null }))
     .filter((found) => found.names !== null)
@@ -130,7 +127,7 @@ export function WorkspacePicker(props: {
   const index = () => Math.min(selected(), Math.max(0, matches().length - 1));
   const isSelected = (directory: AgentDirectory) => {
     const row = matches()[index()];
-    return !!row && selectionKey(row.selection) === selectionKey(directory.selection);
+    return !!row && row.path === directory.path;
   };
   const currentDirectory = (read = location()) => {
     const page = read.page();
@@ -154,7 +151,7 @@ export function WorkspacePicker(props: {
       const page: AgentDirectoryPage = await host.query(
         'agent',
         'directories',
-        directory ? { kind: 'children', selection: directory.selection, after } : { kind: 'roots' },
+        directory ? { kind: 'children', path: directory.path, after } : { kind: 'roots' },
       );
       if (!owns(read)) return;
       if ((directory && page.kind !== 'children') || (!directory && page.kind !== 'roots'))
@@ -178,9 +175,9 @@ export function WorkspacePicker(props: {
         refreshSession = false;
         props.changed();
       }
-      const rows = new Map(read.entries().map((entry) => [selectionKey(entry.selection), entry]));
+      const rows = new Map(read.entries().map((entry) => [entry.path, entry]));
       for (const entry of page.kind === 'children' ? page.children : page.roots)
-        rows.set(selectionKey(entry.selection), entry);
+        rows.set(entry.path, entry);
       batch(() => {
         read.page.set(page);
         read.entries.set([...rows.values()]);
@@ -216,9 +213,7 @@ export function WorkspacePicker(props: {
   const browse = (action: FolderAction) => {
     const read = location();
     if (!owns(read) || action.location !== read.id || error()) return;
-    const directory = read
-      .entries()
-      .find((entry) => selectionKey(entry.selection) === selectionKey(action.selection));
+    const directory = read.entries().find((entry) => entry.path === action.path);
     if (directory) navigate([...read.trail, directory]);
   };
   const back = ({ location: original, roots = false }: { location: number; roots?: boolean }) => {
@@ -238,11 +233,11 @@ export function WorkspacePicker(props: {
       action.location !== read.id ||
       error() ||
       !directory ||
-      selectionKey(directory.selection) !== selectionKey(action.selection)
+      directory.path !== action.path
     )
       return;
     if (props.close(props.instance))
-      void props.create({ kind: 'directory', selection: action.selection }, directory.path);
+      void props.create({ kind: 'directory', path: directory.path }, directory.path);
   };
   const roots = async () => {
     await host.refresh();
@@ -279,32 +274,10 @@ export function WorkspacePicker(props: {
     }
     throw new UiError('Locations saved. Waiting for the Host to apply them…');
   };
-  /** The selection of the folder at `path`, adding a location for it when none holds it. */
+  /** Makes sure a workspace location holds `path`, adding one when none does. */
   const resolve = async (path: string) => {
-    const { root, names } =
-      locateWorkspaceDirectory(await roots(), path) ?? (await addLocation(path));
-    let directory = root;
-    for (const name of names!) {
-      let after: string | null = null;
-      let found: AgentDirectory | undefined;
-      do {
-        const page: AgentDirectoryPage = await host.query('agent', 'directories', {
-          kind: 'children' as const,
-          selection: directory.selection,
-          after,
-        });
-        if (page.kind !== 'children')
-          throw new UiError('The Host returned a different directory view. Reopen the folder.');
-        found = page.children.find((child) => child.name === name);
-        after = page.after;
-      } while (!found && after !== null);
-      if (!found)
-        throw new UiError(
-          'This folder is unavailable or cannot be opened. Choose another location or retry.',
-        );
-      directory = found;
-    }
-    return directory.selection;
+    if (!locateWorkspaceDirectory(await roots(), path)) await addLocation(path);
+    return path;
   };
   /** Chooses the workspace with the system's folder dialog (the desktop window's). */
   const chooseFolder = () => {
@@ -316,9 +289,9 @@ export function WorkspacePicker(props: {
         // The dialog stays open as long as the user needs it.
         const path: string | null = await shell.call('workspace.chooseFolder', {}, { timeout: 0 });
         if (!path || !alive || !props.current()) return;
-        const selection = await resolve(path);
+        const resolved = await resolve(path);
         if (alive && props.close(props.instance))
-          void props.create({ kind: 'directory', selection }, path);
+          void props.create({ kind: 'directory', path: resolved }, path);
       } catch (reason) {
         if (alive) error.set(errorText(reason));
       } finally {
@@ -328,7 +301,7 @@ export function WorkspacePicker(props: {
   };
   const chooseCurrent = (read: Location) => {
     const directory = currentDirectory(read);
-    if (directory) choose({ location: read.id, selection: directory.selection });
+    if (directory) choose({ location: read.id, path: directory.path });
   };
   const move = (read: Location, delta: number) => {
     if (!owns(read)) return;
@@ -340,7 +313,7 @@ export function WorkspacePicker(props: {
   const activate = (read: Location) => {
     if (!owns(read)) return;
     const directory = matches()[index()];
-    if (directory) browse({ location: read.id, selection: directory.selection });
+    if (directory) browse({ location: read.id, path: directory.path });
   };
   effect(() => {
     if (!awaitingRoots() && !loading() && !error() && matches().length < count()) void load();
@@ -607,7 +580,7 @@ export function WorkspacePicker(props: {
               </View>
               <List
                 each={matches()}
-                keyExtractor={(entry) => selectionKey(entry.selection)}
+                keyExtractor={(entry) => entry.path}
                 ref={(node) => {
                   list = node;
                 }}
@@ -654,7 +627,7 @@ export function WorkspacePicker(props: {
                     selected={isSelected(entry())}
                     onPress={inputAction(browse, {
                       location: read.id,
-                      selection: entry().selection,
+                      path: entry().path,
                     })}
                     style={{
                       height: 32,
@@ -694,7 +667,7 @@ export function WorkspacePicker(props: {
                     currentDirectory(read)
                       ? inputAction(choose, {
                           location: read.id,
-                          selection: currentDirectory(read)!.selection,
+                          path: currentDirectory(read)!.path,
                         })
                       : undefined
                   }

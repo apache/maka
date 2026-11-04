@@ -348,8 +348,12 @@ impl Handler for Agent {
                     )
                 }
                 "directories" => encode(
-                    maka_workspace_support::query(owner.workspace_roots.clone(), decode(input)?)
-                        .await?,
+                    maka_workspace_support::query(
+                        owner.workspace_roots.clone(),
+                        decode(input)?,
+                        owner.home.as_deref(),
+                    )
+                    .await?,
                 ),
                 "create" => {
                     let input: Create = decode(input)?;

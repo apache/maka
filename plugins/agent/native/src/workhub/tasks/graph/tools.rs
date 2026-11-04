@@ -36,7 +36,7 @@ enum Routing {
     Worker {
         worker: String,
         title: String,
-        workspace: crate::contract::DirectorySelection,
+        workspace: String,
         #[serde(default)]
         isolated_workspace: bool,
         tools: Option<Vec<String>>,
@@ -45,7 +45,7 @@ enum Routing {
     Preset {
         preset: String,
         title: String,
-        workspace: crate::contract::DirectorySelection,
+        workspace: String,
     },
     Operator {
         work_id: WorkId,
@@ -168,7 +168,7 @@ struct Empty {}
 pub(in crate::workhub::tasks) fn registrations(link: Link) -> Vec<ToolRegistration> {
     let handler = Arc::new(GraphTool(link));
     [
-        ("agent_list", "List explicitly bound workers, presets, worker tools, executors and published directory selections. Workers includes the supervisor's source-tagged backend selection; workers validate copied selections. Graph targets use these exact published choices.", schemars::schema_for!(ToolRequest<CatalogInput>).into(), ToolSemantics::Parallel),
+        ("agent_list", "List explicitly bound workers, presets, worker tools, executors and published directories. Workers includes the supervisor's source-tagged backend selection; workers validate copied selections and directory paths. Graph targets use these exact published choices.", schemars::schema_for!(ToolRequest<CatalogInput>).into(), ToolSemantics::Parallel),
         ("view_agent_graph", "Read this conversation's current graph or immutable earlier epochs. Status returns at most 16 work items; continue with after. Work returns the complete instruction and input references. Result reads the original immutable terminal result; continue with nextOffset. History returns earlier epochs. Admission is not completion.", schemars::schema_for!(ToolRequest<ReadInput>).into(), ToolSemantics::Parallel),
         ("update_agent_graph", "Add, replace or stop graph work, or finish with actual terminal result IDs. Worker targets must use explicit published workspace and tagged backend choices. Presets freeze their original settings. Operator targets continue an earlier work's original session only after it settles. inputIds await current graph results; selectedResultInputs must reference selected final results of earlier finished epochs. Finish selects terminal results, including failures, and ends this epoch. After a missing reply, inspect the original graph work; a replacement is a separate explicit decision.", schemars::schema_for!(ToolRequest<UpdateInput>).into(), ToolSemantics::ExclusiveStep),
         ("yield_agent_graph", "End this supervisor turn and await durable worker outcomes. Graph resumes on durable outcomes. Swarm resumes on attention or when the whole active batch settles, not each successful sibling.", schemars::schema_for!(Empty).into(), ToolSemantics::FinishTurn),
