@@ -643,6 +643,7 @@ mod quota_scope_tests {
                     },
                     prompt: vec![crate::prompt::Message::user("hello")].into(),
                     tools: vec![],
+                    tool_choice: Default::default(),
                     provider_options: serde_json::Value::Null,
                     max_output_tokens: None,
                 },

@@ -268,6 +268,32 @@ impl Recall {
             })
             .collect()
     }
+    async fn exclusion(
+        &self,
+        call: &Scope,
+        selected: Option<&maka_event_log::SessionStore>,
+    ) -> Result<Option<maka_event_log::recall::ExcludedTurnTail>, ToolError> {
+        let Some(invocation) = call.identity.agent() else {
+            return Ok(None);
+        };
+        let owned;
+        let store = match selected {
+            Some(store) => store,
+            None => {
+                owned = self.scoped_store(call, &invocation.session_id).await?;
+                &owned
+            }
+        };
+        let covered_through = store
+            .active_checkpoint_coverage(&invocation.session_id, Some(&invocation.invocation_id))
+            .await
+            .map_err(failed)?;
+        Ok(Some(maka_event_log::recall::ExcludedTurnTail {
+            session_id: invocation.session_id.clone(),
+            turn_id: invocation.turn_id.clone(),
+            covered_through,
+        }))
+    }
 }
 impl maka_tools::request::RequestBinding for Recall {
     fn bind(
@@ -356,7 +382,7 @@ impl History for Recall {
                     session_id: query.session_id,
                     since: query.since,
                     until: query.until,
-                    exclude: exclusion(&call),
+                    exclude: self.exclusion(&call, None).await?,
                     limit: query.limit,
                 };
                 let batch = self
@@ -426,6 +452,7 @@ impl History for Recall {
                 } else {
                     None
                 };
+                let exclude = self.exclusion(&call, selected.as_ref()).await?;
                 let context = self
                     .store
                     .history_context(
@@ -435,7 +462,7 @@ impl History for Recall {
                         input.before.unwrap_or(8),
                         input.after.unwrap_or(8),
                         through,
-                        exclusion(&call),
+                        exclude,
                         selected.as_ref(),
                         cancellation,
                     )
@@ -476,7 +503,11 @@ impl History for Recall {
     }
 }
 enum Input {
-    Search(search::Query),
+    Search {
+        query: search::Query,
+        before: usize,
+        after: usize,
+    },
     More(search::More),
     Material(search::Material),
 }
@@ -501,10 +532,14 @@ impl ToolPreparer for Recall {
             }
             let input = match name.as_str() {
                 "Recall" => {
-                    let mut value: search::Query =
+                    let value: search::ToolQuery =
                         serde_json::from_value(input).map_err(invalid)?;
-                    value.validate().map_err(invalid)?;
-                    Input::Search(value)
+                    let (query, before, after) = value.into_parts().map_err(invalid)?;
+                    Input::Search {
+                        query,
+                        before,
+                        after,
+                    }
                 }
                 "RecallMore" => {
                     let value: search::More = serde_json::from_value(input).map_err(invalid)?;
@@ -542,15 +577,16 @@ impl ToolPreparer for Recall {
                             return recall.material(call.clone(), material).await;
                         }
                         let found = match input {
-                            Input::Search(query) => {
+                            Input::Search {
+                                query,
+                                before,
+                                after,
+                            } => {
                                 search::search(
                                     recall.clone(),
                                     call,
                                     &query,
-                                    search::Content::Context {
-                                        before: 4,
-                                        after: 4,
-                                    },
+                                    search::Content::Context { before, after },
                                 )
                                 .await?
                             }
@@ -584,11 +620,6 @@ fn invalid(error: impl std::fmt::Display) -> ToolRejection {
     }
 }
 
-fn exclusion(call: &Scope) -> Option<(String, String)> {
-    call.identity
-        .agent()
-        .map(|invocation| (invocation.session_id.clone(), invocation.turn_id.clone()))
-}
 fn indexed_message(hit: maka_event_log::recall::SearchHit) -> search::Message {
     search::Message {
         message_id: hit.message_id,

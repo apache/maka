@@ -300,6 +300,7 @@ impl Owner {
                         provider: prepared.provider,
                         prompt: prompt.into(),
                         tools: Vec::new(),
+                        tool_choice: Default::default(),
                         provider_options: prepared.options,
                         max_output_tokens: Some(
                             prepared

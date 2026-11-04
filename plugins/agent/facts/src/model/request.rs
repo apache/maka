@@ -95,6 +95,20 @@ pub struct Provider {
     pub body_overlay: Option<serde_json::Map<String, Value>>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ToolChoiceMode {
+    #[default]
+    Auto,
+    None,
+}
+
+impl ToolChoiceMode {
+    pub fn is_auto(&self) -> bool {
+        matches!(self, Self::Auto)
+    }
+}
+
 /// Typed adapter input. Wire encoding and optional provider extensions belong
 /// to the selected implementation, not to the canonical log.
 #[derive(Clone)]
@@ -104,6 +118,7 @@ pub struct Request {
     pub provider: Provider,
     pub prompt: Prompt,
     pub tools: Vec<Arc<ToolDefinition>>,
+    pub tool_choice: ToolChoiceMode,
     pub provider_options: Value,
     pub max_output_tokens: Option<u64>,
 }

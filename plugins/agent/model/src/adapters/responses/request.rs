@@ -23,6 +23,7 @@ use maka_agent_facts::{
     model::{
         PlaintextReasoningReplay, PlaintextResponses, ToolInput,
         prompt::{AssistantPart, ContentPart, FileData, Message, ToolOutput},
+        request::ToolChoiceMode,
     },
     tools::ToolDefinition,
 };
@@ -39,6 +40,7 @@ pub struct Request<'a> {
     pub model: &'a str,
     pub prompt: &'a [Message],
     pub tools: &'a [Arc<ToolDefinition>],
+    pub tool_choice: ToolChoiceMode,
     pub options: &'a Value,
     pub max_output_tokens: Option<u64>,
     pub plaintext: Option<PlaintextResponses>,
@@ -346,6 +348,10 @@ impl Request<'_> {
             model: self.model,
             input: &input,
             tools: &tools,
+            tool_choice: match self.tool_choice {
+                ToolChoiceMode::Auto => wire::request::ToolChoice::Auto,
+                ToolChoiceMode::None => wire::request::ToolChoice::None,
+            },
             options: self.options,
             max_output_tokens: self.max_output_tokens,
             reasoning: reasoning_mode(self.plaintext),

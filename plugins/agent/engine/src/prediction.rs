@@ -69,6 +69,7 @@ impl PreparedPrediction {
             provider: self.request.provider.clone(),
             prompt: self.request.prompt.clone(),
             tools: self.request.tools.clone(),
+            tool_choice: self.request.tool_choice,
             provider_options: self.request.provider_options.clone(),
             max_output_tokens: self.request.max_output_tokens,
         }
@@ -182,6 +183,7 @@ impl Engine {
             provider: &provider,
             options: &options,
             context_window,
+            tool_choice: Default::default(),
         };
         let original_output_limit = model_attempt::prepare_request_with_settings(
             &settings,
@@ -253,6 +255,7 @@ impl Engine {
                 provider: provider.clone(),
                 prompt: model,
                 tools: definitions,
+                tool_choice: Default::default(),
                 provider_options: options.clone(),
                 max_output_tokens,
             })

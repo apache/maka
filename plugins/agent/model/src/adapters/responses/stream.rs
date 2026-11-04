@@ -659,6 +659,7 @@ mod upload_settlement_tests {
                 prompt: Prompt::from_messages(vec![Message::user("hello")])
                     .with_instruction_source(PromptInstructions::empty().with_owner(owner)),
                 tools: vec![],
+                tool_choice: Default::default(),
                 provider_options: serde_json::json!({}),
                 max_output_tokens: None,
             };

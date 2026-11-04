@@ -476,6 +476,7 @@ async fn request_size(prompt: &PreparedPrompt, provider: &ProviderConfig) -> u64
         provider: provider.clone(),
         prompt: prompt.model(),
         tools: Vec::new(),
+        tool_choice: Default::default(),
         provider_options: Value::Null,
         max_output_tokens: Some(1024),
     }
@@ -1008,6 +1009,7 @@ async fn complete_request_limit_shrinks_the_whole_image_and_preserves_replay() {
             provider: provider.clone(),
             prompt: prompt.model(),
             tools: Vec::new(),
+            tool_choice: Default::default(),
             provider_options: Value::Null,
             max_output_tokens: Some(1024),
         };

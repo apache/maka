@@ -389,6 +389,7 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
                         maka_agent_facts::language::Language::En,
                     ).lines().next().unwrap(),
                 ) {
+                    assert_eq!(request["tool_choice"], "auto");
                     summary = Some(socket);
                 } else {
                     main = Some(socket);
@@ -404,15 +405,21 @@ async fn rejected_local_summary_preserves_main_tool_context_and_next_turn() {
                 "usage":{"prompt_tokens":13,"completion_tokens":7,"total_tokens":20}});
             let response = format!("data: {delta}\n\ndata: {end}\n\ndata: [DONE]\n\n");
             summary.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
+            let (mut summary_retry, _) = listener.accept().await.unwrap();
+            let retry_request = fixture::read_request(&mut summary_retry).await;
+            assert_eq!(retry_request["tool_choice"], "none");
+            summary_retry.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).as_bytes()).await.unwrap();
             loop {
                 let prefix = observed.prefix(200, 512 * 1024).await.unwrap();
-                let summary_step = prefix.events.iter().find_map(|event| match &event.event.fact {
+                let summary_steps: Vec<_> = prefix.events.iter().filter_map(|event| match &event.event.fact {
                     Fact::ModelRequested { purpose: ModelPurpose::Summary, step_id, .. } => Some(step_id),
                     _ => None,
-                });
-                if prefix.events.iter().any(|event| matches!(&event.event.fact,
-                    Fact::ModelInterrupted { step_id, partial: None, .. }
-                        if Some(step_id) == summary_step)) {
+                }).collect();
+                if summary_steps.len() == 2 && summary_steps.iter().all(|summary_step| {
+                    prefix.events.iter().any(|event| matches!(&event.event.fact,
+                        Fact::ModelInterrupted { step_id, partial: None, .. }
+                            if step_id == *summary_step))
+                }) {
                     break;
                 }
                 commits.changed().await.unwrap();

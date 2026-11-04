@@ -21,7 +21,7 @@ use super::{
     http::{Decoder, failure},
     prompt,
 };
-use crate::{ModelError, ProviderKind};
+use crate::{ModelError, ProviderKind, ToolChoiceMode};
 use maka_agent_ports::model::{Credentials, Request};
 use maka_provider_protocol::{anthropic, chat_completions};
 use serde_json::Value;
@@ -115,7 +115,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 })
             })
             .collect::<Result<Vec<_>, ModelError>>()?;
-        let choice = (!tools.is_empty()).then_some(anthropic::ToolChoice::Auto);
+        let choice = (!tools.is_empty()).then_some(match request.tool_choice {
+            ToolChoiceMode::Auto => anthropic::ToolChoice::Auto,
+            ToolChoiceMode::None => anthropic::ToolChoice::None,
+        });
         let options = anthropic::request::options::ProviderOptions::parse(
             request.provider_options.get("anthropic"),
             None,
@@ -191,8 +194,10 @@ pub(super) async fn prepare(request: Request) -> Result<Prepared, ModelError> {
                 })
             })
             .collect::<Result<Vec<_>, ModelError>>()?;
-        let tool_choice =
-            (!tools.is_empty()).then_some(chat_completions::request::ToolChoice::Auto);
+        let tool_choice = (!tools.is_empty()).then_some(match request.tool_choice {
+            ToolChoiceMode::Auto => chat_completions::request::ToolChoice::Auto,
+            ToolChoiceMode::None => chat_completions::request::ToolChoice::None,
+        });
         let prepared = chat_completions::request::prepare_fields(
             chat_completions::request::Request {
                 model: request.provider.model,

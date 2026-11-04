@@ -276,6 +276,7 @@ impl FrozenReplay {
             context_window: context
                 .as_ref()
                 .and_then(|context| context.model_context_window),
+            tool_choice: Default::default(),
         };
         let base = match opening {
             InvocationInput::Continuation { claim, .. } => Some(claim.base.high_water),

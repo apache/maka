@@ -255,7 +255,10 @@ impl Job {
                 .await?;
             }
             let mut overflowed = false;
+            let mut forbid_tools = false;
+            let mut attempts = 0usize;
             loop {
+                attempts += 1;
                 let mut request = if overflowed {
                     context_input::fit_prepared_summary(
                         &prompt,
@@ -278,6 +281,7 @@ impl Job {
                     definitions.clone(),
                     model_attempt::Attempt::Summary {
                         surface: surface.clone(),
+                        forbid_tools,
                     },
                     cancellation,
                     &mut false,
@@ -290,7 +294,7 @@ impl Job {
                     Ok(output) => output,
                     Err(RunError::Model(maka_model::ModelError::ContextOverflow {
                         observed_output: false,
-                    })) if !native && input_budget > 256 => {
+                    })) if !native && attempts < 3 && input_budget > 256 => {
                         input_budget = input_budget
                             .min(prompt.breakdown().estimated_tokens())
                             .max(1)
@@ -324,6 +328,12 @@ impl Job {
                         return Err(RunError::InvalidInput(
                             "compaction result has the wrong kind".into(),
                         ));
+                    }
+                    Err(maka_agent_facts::context::SummaryDefect::ToolContent)
+                        if !native && attempts < 3 && !definitions.is_empty() && !forbid_tools =>
+                    {
+                        forbid_tools = true;
+                        continue;
                     }
                     Err(defect) => return Ok(failed(&defect.to_string())),
                 };

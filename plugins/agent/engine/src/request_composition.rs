@@ -356,6 +356,7 @@ mod tests {
             vec![],
             Attempt::Summary {
                 surface: surface.clone(),
+                forbid_tools: false,
             },
             &cancellation,
             &mut progressed,
