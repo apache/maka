@@ -360,6 +360,19 @@ export function SessionActions(props: {
           session={session()}
           current={() => active() && page() === 'children'}
           close={props.close}
+          renderActions={(target) => (
+            <SessionActions
+              session={target.session}
+              anchor={target.anchor}
+              current={target.current}
+              close={target.close}
+              notice={props.notice}
+              change={async (action) => {
+                await props.change(action);
+                await target.refresh();
+              }}
+            />
+          )}
           openSession={(id) => {
             props.close();
             props.openSession?.(id);

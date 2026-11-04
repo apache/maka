@@ -17,7 +17,18 @@
  * under the License.
  */
 
-import { cleanup, computed, inputAction, List, Scroll, signal, Text, View } from 'nsh';
+import {
+  cleanup,
+  computed,
+  inputAction,
+  List,
+  Scroll,
+  signal,
+  Text,
+  View,
+  type ViewRef,
+  type JSX,
+} from 'nsh';
 import { Button, Dialog } from 'nsh/base';
 import type { AgentSession, AgentSessionPage } from '../../../../packages/plugin-sdk/src/index.js';
 import { useHost } from './host';
@@ -39,11 +50,17 @@ import {
   textTooltip,
 } from './ui';
 
-type TreeSession = Pick<AgentSession, 'id' | 'title' | 'archived'> &
-  Partial<Pick<AgentSession, 'activity'>> & { workspace?: Pick<AgentSession['workspace'], 'path'> };
+type TreeSession = SessionActionTarget & Partial<Pick<AgentSession, 'activity'>>;
+export type TreeActions = {
+  session: SessionActionTarget;
+  anchor(): ViewRef | null;
+  refresh(): Promise<void>;
+  current(): boolean;
+  close(): void;
+};
 type Branch = { page: AgentSessionPage | null; loading: boolean; error: UiText };
 type Row = { key: string; depth: number } & (
-  | { kind: 'session'; session: TreeSession }
+  | { kind: 'session'; session: TreeSession; parentId: string | null }
   | { kind: 'branch'; parent: TreeSession }
 );
 
@@ -52,8 +69,10 @@ export function SessionTree(props: {
   current(): boolean;
   close(): void;
   openSession(id: string): void;
+  renderActions(target: TreeActions): JSX.Element;
 }) {
   const host = useHost();
+  const actions = signal<TreeActions | null>(null);
   const branches = signal<ReadonlyMap<string, Branch>>(new Map());
   const expanded = signal<ReadonlySet<string>>(new Set([props.session.id]));
   const viewportWidth = signal(0);
@@ -66,8 +85,9 @@ export function SessionTree(props: {
   const load = async (id: string, restart = false) => {
     const previous = branches().get(id);
     if (!active() || previous?.loading) return;
-    const page = restart ? null : (previous?.page ?? null);
-    update(id, { page, loading: true, error: '' });
+    const displayed = previous?.page ?? null;
+    const page = restart ? null : displayed;
+    update(id, { page: displayed, loading: true, error: '' });
     try {
       const next = await host.query('agent', 'list', {
         filter: 'all',
@@ -86,7 +106,7 @@ export function SessionTree(props: {
         error: '',
       });
     } catch (reason) {
-      if (active()) update(id, { page, loading: false, error: errorText(reason) });
+      if (active()) update(id, { page: displayed, loading: false, error: errorText(reason) });
     }
   };
   const toggle = (id: string) => {
@@ -108,7 +128,7 @@ export function SessionTree(props: {
   const rows = computed(() => {
     const rows: Row[] = [];
     const stack: Row[] = [
-      { kind: 'session', key: props.session.id, depth: 0, session: props.session },
+      { kind: 'session', key: props.session.id, depth: 0, session: props.session, parentId: null },
     ];
     while (stack.length) {
       const row = stack.pop()!;
@@ -135,6 +155,7 @@ export function SessionTree(props: {
           key: children[index]!.id,
           depth: row.depth + 1,
           session: children[index]!,
+          parentId: row.session.id,
         });
     }
     return rows;
@@ -267,6 +288,24 @@ export function SessionTree(props: {
                     );
                   }
                   const session = () => (value() as Extract<Row, { kind: 'session' }>).session;
+                  const actionTrigger = signal<ViewRef | null>(null);
+                  cleanup(() => {
+                    actionTrigger.set(null);
+                  });
+                  const showActions = (target: TreeSession) => {
+                    if (!active() || !actionTrigger()) return;
+                    const menu: TreeActions = {
+                      session: target,
+                      anchor: actionTrigger,
+                      refresh: async () => {
+                        if (row.parentId === null) close();
+                        else await load(row.parentId, true);
+                      },
+                      current: () => active() && actions() === menu,
+                      close: () => actions.set(null),
+                    };
+                    actions.set(menu);
+                  };
                   const branch = () => branches().get(session().id);
                   const leaf = () =>
                     branch()?.page?.sessions.length === 0 && !branch()?.page?.after;
@@ -286,6 +325,7 @@ export function SessionTree(props: {
                   return (
                     <View
                       role="treeitem"
+                      onContextMenu={inputAction(showActions, session())}
                       accessibilityLevel={row.depth + 1}
                       accessibilityLabel={session().title}
                       accessibilityState={{
@@ -349,6 +389,25 @@ export function SessionTree(props: {
                           </Text>
                         </If>
                       </Button>
+                      <Button
+                        ref={(node) => {
+                          actionTrigger.set(node);
+                        }}
+                        accessibilityLabel={tr('Actions for {title}', { title: session().title })}
+                        tooltip={textTooltip(() => tr('Conversation actions'))}
+                        disabled={!active()}
+                        onPress={inputAction(showActions, session())}
+                        style={{
+                          ...controlStyle,
+                          width: 32,
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                        hoverStyle={controlHoverStyle()}
+                        focusStyle={controlFocusStyle()}
+                      >
+                        <Icon name="more" color={C.muted} />
+                      </Button>
                     </View>
                   );
                 }}
@@ -357,6 +416,10 @@ export function SessionTree(props: {
           </List>
         </Scroll>
       </View>
+      {/* Create menus inside the tree's modal scope. */}
+      <Each of={actions() ? [actions()!] : []} key={(target) => target}>
+        {(item) => props.renderActions(item())}
+      </Each>
     </Dialog>
   );
 }
