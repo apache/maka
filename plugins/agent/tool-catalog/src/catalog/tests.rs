@@ -108,6 +108,48 @@ fn nested_selection_keeps_only_nestable_capabilities_and_snapshot_visibility_is_
     assert!(source.contains("middle"));
 }
 
+#[test]
+fn admitted_tool_schemas_publish_inlined_local_refs() {
+    let catalog = ToolCatalog::new([ToolRegistration {
+        definition: ToolDefinition {
+            provider: None,
+            name: "alpha".into(),
+            description: "alpha".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"workspace": {"$ref": "#/$defs/Workspace"}},
+                "required": ["workspace"],
+                "$defs": {"Workspace": {"type": "object", "required": ["rootId"]}},
+            }),
+            freeform: None,
+            output_schema: None,
+        },
+        nesting: ToolNesting::Nestable,
+        semantics: ToolSemantics::Parallel,
+        handler: maka_agent_facts::tools::ToolHandler::Prepared(Arc::new(Handler)),
+    }])
+    .unwrap();
+
+    assert_eq!(
+        catalog.definitions().next().unwrap().input_schema,
+        json!({
+            "type": "object",
+            "properties": {"workspace": {"type": "object", "required": ["rootId"]}},
+            "required": ["workspace"],
+        })
+    );
+    assert!(
+        catalog
+            .validate("alpha", &json!({"workspace": {"rootId": "main"}}))
+            .is_ok()
+    );
+    assert!(
+        catalog
+            .validate("alpha", &json!({"workspace": "stringified"}))
+            .is_err()
+    );
+}
+
 fn checked(schema: Value) -> ToolCatalog {
     ToolCatalog::new([ToolRegistration {
         definition: ToolDefinition {

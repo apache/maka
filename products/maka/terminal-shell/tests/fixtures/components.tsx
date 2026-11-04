@@ -148,7 +148,12 @@ function CompletionComposer(props: { prediction?: boolean }) {
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
-  const selection = { connectionId: 'original-route', modelId: 'fixture-model' };
+  const selection = {
+    kind: 'model' as const,
+    connectionId: 'original-route',
+    modelId: 'fixture-model',
+    thinkingLevel: null,
+  };
   const owner: ComposerSession<JSX.Element> = {
     sessionId: 'original-session',
     connected: () => true,
@@ -179,12 +184,12 @@ function CompletionComposer(props: { prediction?: boolean }) {
     resumable: () => null,
     resuming: () => false,
     resume: unexpected,
-    backend: () => ({ ...selection, thinkingLevel: null }),
+    backend: () => selection,
     modelDetails: () => ({
       kind: 'ready',
       choice: {
         selection,
-        connectionName: 'Original route',
+        sourceName: 'Original route',
         label: 'Fixture model',
         thinkingLevels: [],
         defaultThinkingLevel: null,
@@ -284,8 +289,10 @@ function CompletionComposer(props: { prediction?: boolean }) {
           async close() {},
         };
       },
-      async skills({ query, model }) {
-        lookup.set(`skills:${query}:${model.modelId}`);
+      async skills({ query, backend }) {
+        lookup.set(
+          `skills:${query}:${backend.kind === 'model' ? backend.modelId : backend.selection.executor}`,
+        );
         return {
           skills: [
             {

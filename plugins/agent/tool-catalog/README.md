@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-Validates tool contributions and builds immutable request catalogs. `availability` determines which tools can be offered; `request` captures the selection for a request. Tool metadata describes an interface. Actual execution still needs the original call context and admission.
+Validates tool contributions and builds immutable request catalogs. `input` projects non-object tool schemas into `RequestEnvelope` and inlines document-local `$ref`s at admission so every wire protocol receives self-contained schemas without per-step expansion. `availability` determines which tools can be offered; `request` captures the selection for a request. Tool metadata describes an interface. Actual execution still needs the original call context and admission.
 
 Native Agent file editors are always visible by their bound operation, including custom tool names. The model’s editing policy selects structured writing/editing or patching without a separate tool search.
 

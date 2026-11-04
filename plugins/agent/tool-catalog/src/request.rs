@@ -122,6 +122,7 @@ impl ToolCatalog {
                         Some(handler)
                     }
                     BoundTool::Input { handler, schema } => {
+                        let schema = crate::input::inline_refs(schema);
                         if schema != projected.definition.input_schema {
                             projected.validator = Arc::new(
                                 jsonschema::options()
@@ -225,6 +226,15 @@ mod tests {
                         handler,
                         schema: json!({"type":"boolean"}),
                     }
+                } else if request.cwd == "referenced" {
+                    BoundTool::Input {
+                        handler,
+                        schema: json!({
+                            "type": "object",
+                            "properties": {"scope": {"$ref": "#/$defs/Scope"}},
+                            "$defs": {"Scope": {"type": "string", "enum": ["all", "workspace"]}},
+                        }),
+                    }
                 } else if request.cwd.starts_with("description-") {
                     BoundTool::Described {
                         handler,
@@ -314,5 +324,19 @@ mod tests {
         assert_eq!(first_snapshot.description, "description-first");
         assert_eq!(second_snapshot.description, "description-second");
         assert_eq!(original.input_schema, json!({"type":"string"}));
+
+        capture(&mut second, "referenced");
+        let inlined_first = second.shared_definitions().next().unwrap();
+        assert_eq!(
+            inlined_first.input_schema,
+            json!({
+                "type": "object",
+                "properties": {"scope": {"type": "string", "enum": ["all", "workspace"]}},
+            })
+        );
+        capture(&mut second, "referenced");
+        let inlined_second = second.shared_definitions().next().unwrap();
+        assert!(Arc::ptr_eq(&inlined_first, &inlined_second));
+        assert!(second.validate("fixture", &json!({"scope": "all"})).is_ok());
     }
 }
