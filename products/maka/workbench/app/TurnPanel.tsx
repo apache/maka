@@ -27,6 +27,7 @@ import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
 import type { Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
+import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
 import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
@@ -181,6 +182,7 @@ function ActivityLog(props: {
   viewport: () => { width: number; height: number };
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  senders?: MessageSenders;
   userScroll(): void;
   reading(away: boolean): void;
   /** Whether the activity list is scrolled to its end, following or not. */
@@ -397,6 +399,7 @@ function ActivityLog(props: {
                       through={props.through}
                       previewImage={props.previewImage}
                       openLink={props.openLink}
+                      senders={props.senders}
                       userScroll={props.userScroll}
                       onExpand={(key) => {
                         if (!alive || !ownList) return;
@@ -442,6 +445,7 @@ export function TurnPanel(props: {
   reveal(): void;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  senders?: MessageSenders;
   userScroll(): void;
   reading(away: boolean): void;
   settled?(atEnd: boolean): void;

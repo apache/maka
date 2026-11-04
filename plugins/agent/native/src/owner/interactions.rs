@@ -17,6 +17,8 @@
  * under the License.
  */
 
+mod delegation;
+
 use super::{Owner, StoredSessionConfiguration, now};
 use crate::contract::*;
 use maka_agent_facts::interaction::InteractionAnswer;
@@ -52,13 +54,17 @@ impl Owner {
                         | InteractionRequest::Form { tool_use_id, .. }
                         | InteractionRequest::ClientCapability { tool_use_id, .. }
                         | InteractionRequest::ComputerApp { tool_use_id, .. }
-                        | InteractionRequest::SystemPermission { tool_use_id, .. } => {
+                        | InteractionRequest::SystemPermission { tool_use_id, .. }
+                        | InteractionRequest::SessionApproval { tool_use_id, .. } => {
                             Some(tool_use_id.clone())
                         }
                     },
                     kind: match record.request {
                         InteractionRequest::ServiceApproval { .. } => {
                             InteractionKind::ServiceApproval
+                        }
+                        InteractionRequest::SessionApproval { .. } => {
+                            InteractionKind::SessionApproval
                         }
                         InteractionRequest::Question { .. } => InteractionKind::Question,
                         InteractionRequest::Permissions { .. } => InteractionKind::Permissions,
@@ -91,12 +97,23 @@ impl Owner {
             .filter(|record| record.session_id == session_id)
             .ok_or_else(|| "agent_interaction_unavailable".into())
     }
-    pub async fn respond(&self, input: InteractionRespond) -> Result<InteractionResult, String> {
+    async fn commit_response(
+        &self,
+        input: InteractionRespond,
+    ) -> Result<InteractionResult, String> {
         let runs = self.runs.lock().await;
         let reject = |reason| Ok(InteractionResult::Rejected { reason });
         if runs.closing {
             return reject(InteractionRejection::Closed);
         }
+        self.commit_response_unlocked(input).await
+    }
+
+    async fn commit_response_unlocked(
+        &self,
+        input: InteractionRespond,
+    ) -> Result<InteractionResult, String> {
+        let reject = |reason| Ok(InteractionResult::Rejected { reason });
         if !self.owns(&input.session_id) {
             return reject(InteractionRejection::Unavailable);
         }
@@ -146,6 +163,7 @@ impl Owner {
                     | InteractionRequest::Permissions { .. }
                     | InteractionRequest::Form { .. }
                     | InteractionRequest::SystemPermission { .. }
+                    | InteractionRequest::SessionApproval { .. }
             )
         {
             return reject(InteractionRejection::Unsupported);
@@ -160,6 +178,7 @@ impl Owner {
                 | InteractionAnswer::ComputerApp { .. }
                 | InteractionAnswer::ComputerAppCancel {}
                 | InteractionAnswer::SystemPermissionCancel {}
+                | InteractionAnswer::SessionApproval { .. }
         ) || input.answer.validate_for_request(&record.request).is_err()
         {
             return reject(InteractionRejection::InvalidAnswer);

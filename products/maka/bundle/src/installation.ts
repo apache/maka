@@ -168,36 +168,91 @@ export function installation(
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
   add('skills', 'load', 'Skill', 'Read a selected skill and its resources.');
   for (const [method, name, description] of [
-    ['list', 'SessionList', 'Find conversations by title, project and status.'],
+    [
+      'list',
+      'SessionList',
+      'Find conversations by task title, workspace/project or status. Use scope=children with your sessionId to enumerate workers you created. Child conversations remain discoverable here even though the human sidebar hides them.',
+    ],
     [
       'observe',
       'SessionRead',
-      'Read a conversation, its current revision, model and execution state.',
+      'Inspect a conversation before controlling it: current revision, parent, sandbox policy, selected model and active invocation. Use its actual state and invocation IDs rather than assuming an earlier send has completed.',
     ],
-    ['history', 'SessionHistory', 'Read a conversation history by cursor.'],
-    ['create', 'SessionCreate', 'Create a conversation in a selected workspace.'],
-    ['fork', 'SessionFork', 'Fork a conversation at a selected history position.'],
+    [
+      'history',
+      'SessionHistory',
+      'Read a conversation transcript to inspect actual delegated results and failures. Page with returned cursors; tool metadata alone is not the full tool output. Use the indicated result reader when evidence is archived.',
+    ],
+    [
+      'create',
+      'SessionCreate',
+      'Create a child conversation for a distinct delegated task. Choose a concise, specific task title that a person can recognize later (for example, "Fix queued-message cancellation", not "worker 1"). The child inherits your current sandbox policy, not your one-off approvals. Select a workspace, then use SessionSend to provide the objective, relevant context, constraints and expected deliverable.',
+    ],
+    [
+      'fork',
+      'SessionFork',
+      'Create a child conversation seeded with a selected history prefix when the worker needs that context. Choose a specific task title and a complete turn boundary; use SessionCreate instead for an independent task.',
+    ],
     [
       'metadata',
       'SessionUpdate',
-      'Update a conversation title, labels or settings using its current revision.',
+      'Update a conversation title, labels or pin using its current revision. Use a concise task-oriented title that identifies the work. Agent calls cannot change sandbox permissions; permission changes require a human action.',
     ],
     [
       'changeSession',
       'SessionChange',
-      'Archive, restore or delete a conversation through its normal lifecycle.',
+      'Archive, restore or delete a conversation using its current revision. Deletion removes history; do not use it merely to hide workers, which are already kept out of the human sidebar.',
     ],
     [
       'send',
       'SessionSend',
-      'Send instructions to a conversation. Active conversations are steered by default; set delivery to queue to wait for the current turn. Admission does not mean completion.',
+      'Send a task or follow-up to a conversation. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active conversations are steered by default; use delivery=queue to wait for the current turn. For a new conversation, supply a model selection from ModelList; omission requires a saved target model preference. A started/queued receipt means admission, not completion: use SessionWork/SessionHistory to read actual results before reporting success.',
     ],
-    ['stop', 'SessionStop', 'Request that a conversation stop its current execution.'],
-    ['resume', 'SessionResume', 'Resume a conversation execution.'],
-    ['queue', 'SessionQueue', 'Read a conversation pending messages.'],
-    ['editQueue', 'SessionEditQueue', 'Edit or remove a queued conversation message.'],
-    ['work', 'SessionWork', 'Read the execution and progress of a conversation.'],
-    ['execution', 'SessionExecution', 'Read the outcome of an original conversation message.'],
+    [
+      'stop',
+      'SessionStop',
+      'Request Stop for the exact active invocation read from SessionRead. Cancellation may still be settling; inspect SessionWork before reporting that the work has stopped or starting a replacement.',
+    ],
+    [
+      'resume',
+      'SessionResume',
+      'Resume the original suspended execution using its source invocation and exact returned high-water mark. This is not a resend; use SessionExecution/SessionWork to reconcile the original result first.',
+    ],
+    [
+      'pendingInteractions',
+      'SessionPendingInteractions',
+      'List pending approvals and questions for a direct child you created. If the child is waiting for input, read the selected request with SessionInteraction before deciding with SessionRespond. This does not answer or approve anything.',
+    ],
+    [
+      'interaction',
+      'SessionInteraction',
+      'Read one direct child interaction, its exact request and any committed outcome. Inspect the requested action, permission scope and context before responding; never infer approval requirements from a child message alone.',
+    ],
+    [
+      'respond',
+      'SessionRespond',
+      'Answer or approve an interaction belonging to a direct child you created. Use the original requestId and a matching answer. You may approve within your current effective authority; broader permissions or a grant lasting longer than your authority pause this call and ask the human in your conversation. Prefer a once grant when the original request supports it. Do not retry a waiting call. You cannot self-approve, approve siblings, or answer human-only escalations. The returned record contains the winning outcome, which may have been answered concurrently.',
+    ],
+    [
+      'queue',
+      'SessionQueue',
+      'Read queued messages and the queue revision before editing or retracting a follow-up. A queued message has not necessarily reached the worker yet.',
+    ],
+    [
+      'editQueue',
+      'SessionEditQueue',
+      'Update, retract, promote or reorder queued messages using the observed queue revision and original message IDs. Keep the existing admission rather than resending an uncertain message.',
+    ],
+    [
+      'work',
+      'SessionWork',
+      'Observe progress or completion for an original message or invocation. Continue with the returned cursor; running or admitted is not a completed result. Read final output before reporting success.',
+    ],
+    [
+      'execution',
+      'SessionExecution',
+      'Resolve the original message execution by invocationId, including its final outcome. Reconcile this record after uncertainty instead of blindly repeating the delegated task.',
+    ],
   ] as const)
     tools.push({
       target: { kind: 'export', name: 'agent' },

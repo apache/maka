@@ -362,7 +362,10 @@ impl Owner {
                             pinned: false,
                             labels: vec![],
                             workspace,
-                            permissions: self.settings.permissions.clone(),
+                            permissions: self
+                                .creation_permissions(scope)
+                                .await
+                                .map_err(|_| Failure::Unavailable)?,
                             boundary_revision: 0,
                         },
                         transcript.records,

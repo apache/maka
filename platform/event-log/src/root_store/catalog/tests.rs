@@ -43,6 +43,7 @@ async fn fixture() -> (tempfile::TempDir, RootStore) {
 }
 fn filter() -> CatalogFilter {
     CatalogFilter {
+        roots_only: false,
         archived_only: false,
         include_archived: true,
         pending_only: false,

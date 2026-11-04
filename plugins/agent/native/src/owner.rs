@@ -710,6 +710,20 @@ impl Owner {
             .ok_or("agent_session_unavailable")?;
         resolve_session(session)
     }
+    pub(super) async fn creation_permissions(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<WorkspacePermissions, String> {
+        let Some(invocation) = scope.identity.agent() else {
+            return Ok(self.settings.permissions.clone());
+        };
+        let store = self.scoped_store(scope, &invocation.session_id).await?;
+        maka_agent_authority::permissions::live(&store, invocation)
+            .await
+            .map(|configuration| configuration.permissions)
+            .map_err(|error| error.to_string())
+    }
+
     pub async fn create(
         self: &Arc<Self>,
         input: Create,
@@ -738,6 +752,7 @@ impl Owner {
                 reason: Rejection::Closed,
             });
         }
+        let permissions = self.creation_permissions(scope).await?;
         let mut tools = input.tools;
         // SendUser and sleep follow Bot identity, never a requested tool list.
         if tools.as_ref().is_some_and(|names| {
@@ -885,7 +900,7 @@ impl Owner {
                     pinned: false,
                     labels: input.labels,
                     workspace: binding,
-                    permissions: self.settings.permissions.clone(),
+                    permissions,
                     boundary_revision: 0,
                 },
                 now(),
@@ -941,7 +956,21 @@ impl Owner {
             session: Box::new(crate::service::summary(self, resolve_session(record)?)),
         })
     }
-    pub async fn metadata(&self, input: Metadata) -> Result<MetadataResult, String> {
+    pub async fn metadata(
+        &self,
+        input: Metadata,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<MetadataResult, String> {
+        if input.permissions.is_some()
+            && !matches!(
+                scope.identity,
+                maka_capabilities::call::Identity::Remote { .. }
+            )
+        {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::PermissionChangeRequiresUser,
+            });
+        }
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(MetadataResult::Rejected { reason });
         }
@@ -1431,7 +1460,9 @@ impl Owner {
         };
         let delivered = RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
+                origin: parent.identity.agent().cloned().map(|invocation| {
+                    maka_agent_facts::message::MessageOrigin::Session { invocation }
+                }),
                 message_id: format!("m_{identity}"),
                 submitted_content_digest: unprepared
                     .content_digest()

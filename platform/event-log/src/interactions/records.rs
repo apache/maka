@@ -55,6 +55,12 @@ pub(crate) fn authority_key(session: &str, target: &GrantTarget) -> Result<Strin
 pub(crate) fn equivalent(left: &InteractionOutcome, right: &InteractionOutcome) -> bool {
     match (left, right) {
         (
+            InteractionOutcome::SessionApprovalDecision { decision: left, .. },
+            InteractionOutcome::SessionApprovalDecision {
+                decision: right, ..
+            },
+        ) => left == right,
+        (
             InteractionOutcome::ServiceApprovalDecision { decision: left, .. },
             InteractionOutcome::ServiceApprovalDecision {
                 decision: right, ..

@@ -170,6 +170,14 @@ pub enum ClosureReason {
     deny_unknown_fields
 )]
 pub enum InteractionRequest {
+    /// Human consent for the exact decision proposed for a child interaction.
+    SessionApproval {
+        tool_use_id: String,
+        basis: crate::workspace::PermissionBasis,
+        session_id: String,
+        request_id: String,
+        answer: Box<InteractionAnswer>,
+    },
     /// Consent for one already journaled service call; never a service grant.
     ServiceApproval {
         tool_use_id: String,
@@ -238,6 +246,9 @@ pub struct SystemPermissionApplicationLocation {
 #[derive(Debug, Clone, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum InteractionAnswer {
+    SessionApproval {
+        decision: Decision,
+    },
     ServiceApproval {
         decision: Decision,
     },
@@ -269,6 +280,10 @@ pub enum InteractionAnswer {
     deny_unknown_fields
 )]
 pub enum InteractionOutcome {
+    SessionApprovalDecision {
+        decision: Decision,
+        committed_at: u64,
+    },
     ServiceApprovalDecision {
         decision: Decision,
         committed_at: u64,
@@ -306,6 +321,7 @@ impl InteractionOutcome {
     pub fn committed_at(&self) -> u64 {
         match self {
             Self::QuestionAnswer { committed_at, .. }
+            | Self::SessionApprovalDecision { committed_at, .. }
             | Self::ServiceApprovalDecision { committed_at, .. }
             | Self::PermissionsDecision { committed_at, .. }
             | Self::FormAnswer { committed_at, .. }
@@ -320,6 +336,10 @@ impl InteractionOutcome {
 impl InteractionAnswer {
     pub fn into_outcome(self, committed_at: u64) -> InteractionOutcome {
         match self {
+            Self::SessionApproval { decision } => InteractionOutcome::SessionApprovalDecision {
+                decision,
+                committed_at,
+            },
             Self::ServiceApproval { decision } => InteractionOutcome::ServiceApprovalDecision {
                 decision,
                 committed_at,
@@ -355,6 +375,12 @@ impl InteractionAnswer {
 
     pub fn matches_outcome(&self, outcome: &InteractionOutcome) -> bool {
         match (self, outcome) {
+            (
+                Self::SessionApproval { decision: left },
+                InteractionOutcome::SessionApprovalDecision {
+                    decision: right, ..
+                },
+            ) => left == right,
             (
                 Self::ServiceApproval { decision: left },
                 InteractionOutcome::ServiceApprovalDecision {

@@ -1109,6 +1109,7 @@ export type AgentBackendPreference =
     };
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentRejection =
+  | 'permission_change_requires_user'
   | 'title_invalid'
   | 'labels_invalid'
   | 'tools_unavailable'
@@ -3268,6 +3269,7 @@ export type AgentMarkReadResult =
       reason: AgentRejection;
     };
 export type AgentInteractionKind =
+  | 'session_approval'
   | 'service_approval'
   | 'question'
   | 'permissions'
@@ -3276,6 +3278,10 @@ export type AgentInteractionKind =
   | 'computer_app'
   | 'system_permission';
 export type InteractionAnswer =
+  | {
+      kind: 'session_approval';
+      decision: Decision;
+    }
   | {
       kind: 'service_approval';
       decision: Decision;
@@ -3345,6 +3351,14 @@ export type AgentInteractionResult =
       reason: AgentInteractionRejection;
     };
 export type InteractionRequest =
+  | {
+      kind: 'session_approval';
+      toolUseId: string;
+      basis: PermissionBasis;
+      sessionId: string;
+      requestId: string;
+      answer: InteractionAnswer;
+    }
   | {
       kind: 'service_approval';
       toolUseId: string;
@@ -3495,6 +3509,11 @@ export type ComputerAppRisk = 'low' | 'high';
 export type SystemPermissionGrant = 'accessibility' | 'screen_recording';
 export type InteractionOutcome =
   | {
+      kind: 'session_approval_decision';
+      decision: Decision;
+      committedAt: number;
+    }
+  | {
       kind: 'service_approval_decision';
       decision: Decision;
       committedAt: number;
@@ -3557,7 +3576,15 @@ export type ClosureReason =
   | 'timed_out'
   | 'host_restarted'
   | 'provider_disconnected';
-export type AgentInteractionRejection = 'closed' | 'unavailable' | 'invalid_answer' | 'unsupported';
+export type AgentInteractionRejection =
+  | 'not_your_child'
+  | 'human_action_required'
+  | 'authorization_changed'
+  | 'permission_requests_disabled'
+  | 'closed'
+  | 'unavailable'
+  | 'invalid_answer'
+  | 'unsupported';
 export type FormResponse =
   | {
       kind: 'answered';
@@ -4063,6 +4090,10 @@ export type HistoryView = 'text' | 'conversation';
  * Trusted producer attribution, preserved independently of editable content.
  */
 export type MessageOrigin =
+  | {
+      kind: 'session';
+      invocation: Invocation;
+    }
   | {
       kind: 'goal';
       goalId: string;
@@ -7267,6 +7298,10 @@ export interface AgentList {
    * Include archived conversations alongside active ones.
    */
   includeArchived?: boolean;
+  /**
+   * Only conversations without a parent; omitted queries still include children.
+   */
+  rootsOnly?: boolean;
   position: AgentSessionPosition;
   scope?: AgentSessionListScope;
   /**
@@ -7284,6 +7319,9 @@ export interface AgentCreate {
    * an empty list permits no model tools. External executors cannot enforce this.
    */
   tools?: string[] | null;
+  /**
+   * A concise, specific task name people can recognize in navigation; avoid generic worker numbers.
+   */
   title: string;
   labels: string[];
   workspace: AgentWorkspaceSelection;

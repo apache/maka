@@ -67,6 +67,15 @@ pub(crate) struct SelectedTool {
     binding: String,
 }
 
+impl SelectedTool {
+    pub(crate) fn permits_approval(&self, name: &str, method: &str, binding: &str) -> bool {
+        self.selection.name == name
+            && self.selection.method == method
+            && self.binding == binding
+            && self.selection.confirmation == ToolConfirmation::Preapproved
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NativeApprovalData {

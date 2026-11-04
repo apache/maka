@@ -150,6 +150,7 @@ pub struct Fixture {
 #[derive(Default)]
 pub struct Options {
     pub images: bool,
+    pub session_tools: bool,
 }
 
 impl Fixture {
@@ -197,7 +198,18 @@ impl Fixture {
         .unwrap();
         configuration["hostDeployment"] = json!(Uuid::new_v4());
         configuration["locale"] = json!("en");
-        configuration["agent"]["tools"] = json!([]);
+        configuration["agent"]["tools"] = json!(
+            configuration["agent"]["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|tool| options.session_tools
+                    && matches!(
+                        tool["name"].as_str(),
+                        Some("SessionSend" | "SessionRespond")
+                    ))
+                .collect::<Vec<_>>()
+        );
         configuration["agent"]["automaticTitles"] = json!(false);
         configuration["agent"]["recaps"] = json!(false);
         configuration["agent"]["permissions"] =

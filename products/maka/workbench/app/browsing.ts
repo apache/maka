@@ -92,6 +92,7 @@ export function createBrowsing(host: Host): Browsing {
   const list = async (read: CatalogRead, position: AgentSessionPosition): Promise<SessionPage> =>
     host.query('agent', 'list', {
       filter: read.filter,
+      rootsOnly: true,
       scope: read.scope,
       position,
     });
@@ -150,6 +151,7 @@ export function createBrowsing(host: Host): Browsing {
     void (async () => {
       const opened: Subscription = await host.subscribe('agent', 'catalog', {
         filter: read.filter,
+        rootsOnly: true,
         scope: read.scope,
         position: { kind: 'start' },
       });

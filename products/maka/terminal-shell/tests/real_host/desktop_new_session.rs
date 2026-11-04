@@ -500,7 +500,11 @@ impl Desktop {
 }
 
 async fn images_fixture() -> Fixture {
-    Fixture::configured(Options { images: true }).await
+    Fixture::configured(Options {
+        images: true,
+        ..Options::default()
+    })
+    .await
 }
 
 fn image_file(fixture: &Fixture) -> (std::path::PathBuf, Vec<u8>) {
@@ -1742,6 +1746,214 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         })
         .await;
     drop(first);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
+    use super::support::mutate;
+    use maka_agent_api::session::StoredSessionConfiguration;
+    use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest, PermissionRequest};
+
+    let mut fixture = Fixture::configured(Options {
+        session_tools: true,
+        ..Options::default()
+    })
+    .await;
+    let parent = fixture.session.clone();
+    let store = fixture.store.session(&parent).await.unwrap();
+    let mut configuration = store
+        .get_session::<StoredSessionConfiguration>(&parent)
+        .await
+        .unwrap()
+        .unwrap()
+        .configuration;
+    let prefix = parent.rsplit_once('_').unwrap().0;
+    let child = format!("{prefix}_{}", Uuid::new_v4().simple());
+    configuration.parent_session_id = Some(parent.clone());
+    configuration.title = "Verify sandbox delegation".into();
+    configuration.backend = Some(
+        serde_json::from_value(json!({
+            "kind":"model", "connectionId":fixture.selection["connectionId"],
+            "modelId":fixture.selection["modelId"], "thinkingLevel":null,
+        }))
+        .unwrap(),
+    );
+    fixture
+        .store
+        .create_session(&child, &child, &configuration, 1)
+        .await
+        .unwrap();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(900)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    mutate(&desktop.client, "send", json!({
+        "sessionId":parent, "message":"Delegate sandbox verification and review any access request.",
+        "model":fixture.selection,
+    })).await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("tool_search", json!({"query":"Session"}))
+        .await;
+    let discovered = desktop.request(&mut fixture).await;
+    for name in ["SessionSend", "SessionRespond"] {
+        assert!(
+            discovered.body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == name),
+            "missing {name}: {}",
+            discovered.body
+        );
+    }
+    discovered.tool_call("SessionSend", json!({
+        "sessionId":child, "message":"Verify the sandbox boundary. Write the verification report only after approval.",
+        "model":fixture.selection,
+    })).await;
+    let first = desktop.request(&mut fixture).await;
+    let second = desktop.request(&mut fixture).await;
+    let (parent_reply, mut child_reply) =
+        if first.body["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" {
+            (first, second)
+        } else {
+            (second, first)
+        };
+    let store = fixture.store.session(&child).await.unwrap();
+    let projection = store
+        .session_projection::<StoredSessionConfiguration>(&child)
+        .await
+        .unwrap()
+        .unwrap();
+    let binding = projection
+        .session
+        .workspace_binding
+        .as_ref()
+        .unwrap()
+        .stamp();
+    let basis = maka_agent_facts::workspace::PermissionBasis {
+        boundary_revision: projection
+            .session
+            .configuration
+            .workspace
+            .boundary_revision(projection.session.configuration.boundary_revision, binding)
+            .unwrap(),
+        binding,
+    };
+    let invocation = projection.root_turn.unwrap().invocation;
+    let permissions = json!({"filesystem":[{
+        "path":fixture.directory.path().join("workspace/report.md"),"scope":"exact","access":"write"
+    }],"network":"denied"});
+    let record = InteractionRecord {
+        session_id: child.clone(),
+        turn_id: invocation.turn_id.clone(),
+        run_id: invocation.run_id.clone(),
+        request_id: Uuid::new_v4().to_string(),
+        created_at: 1,
+        request: InteractionRequest::Permissions {
+            tool_use_id: Some("write-report".into()),
+            basis,
+            request: PermissionRequest {
+                reason: "Write the sandbox verification report.".into(),
+                command: None,
+                permissions: serde_json::from_value(permissions.clone()).unwrap(),
+            },
+        },
+        outcome: None,
+    };
+    assert!(
+        store
+            .establish_run_interaction(&invocation, &record)
+            .await
+            .unwrap()
+            .matches
+    );
+    parent_reply.tool_call("SessionRespond", json!({
+        "sessionId":child,"requestId":record.request_id,
+        "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}
+    })).await;
+    desktop.control("Approve child decision").await;
+    let child_link = desktop.control("Verify sandbox delegation").await;
+    desktop.artifact("parent-child-approval");
+    desktop
+        .platform
+        .dispatch_input(PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
+            position: child_link.center() + point(px(0.0), px(100.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-500.0))),
+            modifiers: Modifiers::default(),
+            touch_phase: gpui::TouchPhase::Moved,
+        }))
+        .unwrap();
+    desktop.artifact("parent-child-proposed-decision");
+    desktop.press("Approve child decision").await;
+    let mut parent_reply = desktop.request(&mut fixture).await;
+    let settled = desktop
+        .client
+        .query(
+            "agent",
+            "interaction",
+            json!({
+                "sessionId":child,"requestId":record.request_id
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(settled["outcome"]["kind"], "permissions_decision");
+    assert_eq!(settled["outcome"]["decision"]["decision"], "allow");
+    parent_reply
+        .delta("Approved this report write for one call after your confirmation.")
+        .await;
+    parent_reply.finish().await;
+    child_reply
+        .delta("Sandbox verification is complete. The report write was approved for one call only.")
+        .await;
+    child_reply.finish().await;
+    desktop
+        .wait(
+            "parent did not finish",
+            fixture.idle(&desktop.client, &parent),
+        )
+        .await;
+    desktop
+        .wait(
+            "child did not finish",
+            fixture.idle(&desktop.client, &child),
+        )
+        .await;
+    if !desktop.controls("Expand session browser").is_empty() {
+        desktop.press("Expand session browser").await;
+    }
+    assert!(
+        desktop
+            .controls("Actions for Verify sandbox delegation")
+            .is_empty(),
+        "child conversations must not appear as sidebar roots"
+    );
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Child conversations").await;
+    desktop.press("Open Verify sandbox delegation").await;
+    desktop.control("From NSH real Agent").await;
+    desktop.artifact("child-attributed-message");
+    desktop.press("From NSH real Agent").await;
+    desktop.control("Close side pane").await;
+    desktop
+        .until(
+            "source conversation did not load its reply beside the child",
+            || {
+                desktop
+                    .controls("Copy message")
+                    .into_iter()
+                    .find(|bounds| bounds.left() >= px(768.0))
+            },
+        )
+        .await;
+    desktop.artifact("source-conversation-beside");
     desktop.close().await;
     fixture.finish().await;
 }

@@ -115,6 +115,10 @@ import {
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
 import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
+import {
+  createMessageSenders,
+  senderSession,
+} from '../../../../products/maka/workbench/app/messageSenders';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
@@ -259,6 +263,8 @@ type ConversationProps = {
   filesOpener(node: ViewRef): void;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  openSessionBeside?(sessionId: string): void;
+  knownSession?(sessionId: string): AgentSession | undefined;
   attach(handle: ConversationHandle): void;
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
@@ -537,6 +543,16 @@ export function Conversation(props: ConversationProps) {
     previousGroups = next.entries;
     return next;
   });
+  const senders = createMessageSenders(
+    host,
+    () =>
+      Array.from(projection().rowsById.values()).flatMap((row) => {
+        const id = senderSession(row.origin);
+        return id === null ? [] : [id];
+      }),
+    (id) => props.knownSession?.(id),
+    () => props.openSessionBeside,
+  );
   const canFoldTurn = (turn: TurnPresentation) =>
     turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
   const turnExpanded = (turn: TurnPresentation) => {
@@ -649,7 +665,7 @@ export function Conversation(props: ConversationProps) {
         if (botChat && row.role === 'assistant') continue;
         // A message the Host wrote on the user's behalf (a worker finishing, a task
         // result) is not something the user said. It stays in Trajectory.
-        if (botChat && row.role === 'user' && row.origin) continue;
+        if (botChat && row.role === 'user' && row.origin && row.origin.kind !== 'session') continue;
         if (entry.processTurnId && turn && !turnExpanded(turn)) continue;
         // A completed turn recovered from its failures (retries that later
         // succeeded); they fold away with the rest of its work.
@@ -3022,6 +3038,7 @@ export function Conversation(props: ConversationProps) {
                             through={() => latestKnown}
                             previewImage={props.previewImage}
                             openLink={props.openLink}
+                            senders={senders}
                             userScroll={() => cancelNavigation()}
                             reveal={reveal}
                             activity={activity}
@@ -3079,6 +3096,7 @@ export function Conversation(props: ConversationProps) {
                           through={() => latestKnown}
                           previewImage={props.previewImage}
                           openLink={props.openLink}
+                          senders={senders}
                           userScroll={() => cancelNavigation()}
                           onExpand={reveal}
                           onToolReading={(key) => {

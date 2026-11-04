@@ -42,6 +42,7 @@ pub struct InteractionSummary {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentInteractionKind")]
 pub enum InteractionKind {
+    SessionApproval,
     ServiceApproval,
     Question,
     Permissions,
@@ -85,6 +86,10 @@ pub enum InteractionResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentInteractionRejection")]
 pub enum InteractionRejection {
+    NotYourChild,
+    HumanActionRequired,
+    AuthorizationChanged,
+    PermissionRequestsDisabled,
     Closed,
     Unavailable,
     InvalidAnswer,

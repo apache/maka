@@ -138,7 +138,8 @@ impl Owner {
                 .filter(|name| catalog.tools.contains(name))
                 .collect()
         });
-        let access = match (parent.permissions.access, self.settings.permissions.access) {
+        let ceiling = self.creation_permissions(scope).await?;
+        let access = match (parent.permissions.access, ceiling.access) {
             (WorkspaceAccess::ReadOnly, _) | (_, WorkspaceAccess::ReadOnly) => {
                 WorkspaceAccess::ReadOnly
             }
@@ -169,7 +170,7 @@ impl Owner {
             permissions: WorkspacePermissions {
                 access,
                 request_permissions: parent.permissions.request_permissions
-                    && self.settings.permissions.request_permissions,
+                    && ceiling.request_permissions,
             },
             boundary_revision: 0,
         };

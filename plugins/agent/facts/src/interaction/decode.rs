@@ -32,6 +32,26 @@ fn field<T: serde::de::DeserializeOwned>(v: &Value, key: &str) -> Result<T> {
 }
 fn request(v: &Value) -> Result<InteractionRequest> {
     let value = match v["kind"].as_str() {
+        Some("session_approval") => {
+            shape(
+                v,
+                &[
+                    "kind",
+                    "toolUseId",
+                    "basis",
+                    "sessionId",
+                    "requestId",
+                    "answer",
+                ],
+            )?;
+            InteractionRequest::SessionApproval {
+                tool_use_id: field(v, "toolUseId")?,
+                basis: field(v, "basis")?,
+                session_id: field(v, "sessionId")?,
+                request_id: field(v, "requestId")?,
+                answer: field(v, "answer")?,
+            }
+        }
         Some("service_approval") => {
             shape(
                 v,
@@ -161,6 +181,12 @@ fn result(v: &Value, outcome: bool) -> Result<FormResult> {
 }
 fn answer(v: &Value) -> Result<InteractionAnswer> {
     let value = match v["kind"].as_str() {
+        Some("session_approval") => {
+            shape(v, &["kind", "decision"])?;
+            InteractionAnswer::SessionApproval {
+                decision: field(v, "decision")?,
+            }
+        }
         Some("service_approval") => {
             shape(v, &["kind", "decision"])?;
             InteractionAnswer::ServiceApproval {
@@ -210,6 +236,13 @@ fn answer(v: &Value) -> Result<InteractionAnswer> {
 fn outcome(v: &Value) -> Result<InteractionOutcome> {
     let committed_at = field(v, "committedAt")?;
     let value = match v["kind"].as_str() {
+        Some("session_approval_decision") => {
+            shape(v, &["kind", "decision", "committedAt"])?;
+            InteractionOutcome::SessionApprovalDecision {
+                decision: field(v, "decision")?,
+                committed_at,
+            }
+        }
         Some("service_approval_decision") => {
             shape(v, &["kind", "decision", "committedAt"])?;
             InteractionOutcome::ServiceApprovalDecision {
