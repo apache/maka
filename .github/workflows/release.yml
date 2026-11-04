@@ -128,7 +128,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up the pinned release Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.release-identity.outputs.node_version }}
           cache: npm
@@ -310,7 +310,7 @@ jobs:
           "${{ runner.temp }}/release-assets"
 
       - name: Upload the verified release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-desktop-${{ matrix.platform }}-${{ matrix.arch }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-assets
@@ -339,7 +339,7 @@ jobs:
           persist-credentials: false
 
       - name: Set up the pinned release Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.release-identity.outputs.node_version }}
           cache: npm
@@ -409,7 +409,7 @@ jobs:
           "${{ runner.temp }}/release-assets"
 
       - name: Upload the verified CLI release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: release-cli-macos-arm64-${{ github.run_attempt }}
           path: ${{ runner.temp }}/release-assets
@@ -441,14 +441,14 @@ jobs:
           persist-credentials: false
 
       - name: Download the verified release assets
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           pattern: release-*-${{ github.run_attempt }}
           path: release-assets
           merge-multiple: true
 
       - name: Set up the pinned release Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: ${{ needs.release-identity.outputs.node_version }}
           package-manager-cache: false
@@ -482,7 +482,7 @@ jobs:
             "$GITHUB_RUN_ATTEMPT"
 
       - name: Upload the immutable publication evidence
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: product-release-record-${{ github.run_attempt }}
           path: ${{ runner.temp }}/product-release.json
@@ -495,7 +495,7 @@ jobs:
       # is handed these normalized bytes rather than the raw runner groups. The
       # name deliberately avoids the `release-*` glob this job downloads.
       - name: Upload the verified release assets
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: product-release-assets-${{ github.run_attempt }}
           path: release-assets
