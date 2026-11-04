@@ -186,7 +186,9 @@ pub struct DraftReference {
     pub revision: u64,
 }
 
+mod composer;
 mod recovery;
+pub use composer::{ComposerFile, ComposerState};
 mod write;
 
 impl Journal {
@@ -429,6 +431,10 @@ impl Journal {
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS composers (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, value TEXT NOT NULL)")
+                .execute(&mut *transaction).await.map_err(error)?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS composer_files (owner TEXT NOT NULL REFERENCES composers(owner), position INTEGER NOT NULL, name TEXT NOT NULL, contents BLOB NOT NULL, PRIMARY KEY(owner,position))")
+                .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()
                 .await

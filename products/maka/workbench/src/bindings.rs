@@ -20,6 +20,7 @@
 //! The application receives this already connected Host object; it cannot choose a Root.
 
 mod assets;
+mod composer;
 mod diagrams;
 mod files;
 mod links;
@@ -200,6 +201,7 @@ fn registry(make_host: impl Fn() -> Instance<ApplicationHost> + Send + Sync + 's
     registry.class::<uploads::UploadIntake>();
     registry.class::<uploads::StagedFile>();
     registry.class::<uploads::StagedClipboard>();
+    registry.class::<composer::ComposerSnapshot>();
     registry.class::<ui_services::UiScope>();
     registry.value("host", make_host);
     registry
@@ -297,6 +299,15 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    /// Restore local new-conversation state without creating a Host session.
+    pub async fn load_composer(
+        this: Instance<Self>,
+    ) -> Result<Instance<composer::ComposerSnapshot>, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        composer::load(owner, source).await
+    }
+
     /// Snapshot files selected for a conversation that has not yet been sent.
     pub async fn stage_files(
         this: Instance<Self>,

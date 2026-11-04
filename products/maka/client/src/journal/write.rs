@@ -61,6 +61,12 @@ impl Reservation {
 }
 
 pub(super) enum Command {
+    SaveComposer {
+        owner: String,
+        expected: u64,
+        value: Value,
+        files: Option<Vec<super::ComposerFile>>,
+    },
     SaveDraft {
         key: DraftKey,
         expected: Option<u64>,
@@ -101,6 +107,7 @@ pub(super) enum Command {
     },
 }
 pub(super) enum Output {
+    Revision(u64),
     Unit,
     Draft(Draft),
     Operation(Box<Operation>),
@@ -112,6 +119,14 @@ pub(super) struct Pending {
 impl Command {
     async fn execute(self, connection: &mut SqliteConnection) -> Result<Output> {
         match self {
+            Self::SaveComposer {
+                owner,
+                expected,
+                value,
+                files,
+            } => super::composer::save(connection, owner, expected, value, files)
+                .await
+                .map(Output::Revision),
             Self::SaveDraft {
                 key,
                 expected,

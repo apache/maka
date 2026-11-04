@@ -37,6 +37,20 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const workspaceMessages = {
+  'Recent folders': ['Recent folders', '最近使用', '最近使用'],
+  'No recent folders': ['No recent folders', '还没有使用过的目录', '尚未使用過目錄'],
+  'Use folder {path}': ['Use folder {path}', '使用文件夹 {path}', '使用資料夾 {path}'],
+  'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
+  'The new conversation is still loading.': [
+    'The new conversation is still loading.',
+    '正在恢复新会话草稿。',
+    '正在還原新對話草稿。',
+  ],
+  'The saved new conversation could not be restored.': [
+    'The saved new conversation could not be restored.',
+    '无法恢复已保存的新会话草稿。',
+    '無法還原已儲存的新對話草稿。',
+  ],
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],

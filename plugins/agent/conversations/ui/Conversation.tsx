@@ -249,6 +249,7 @@ type ConversationProps = {
     send: boolean;
     files?: StagedFile[];
     first?: boolean;
+    committed?(): Promise<void>;
   } | null;
   commands(): void;
   connectionLost(): boolean;
@@ -773,6 +774,8 @@ export function Conversation(props: ConversationProps) {
   let holding = false;
   let heldDraft: (AttachmentEdit & { text: string }) | null = null;
   const autoSend = signal<{ text: string; first?: boolean } | null>(null);
+  const prefillCommit = signal<(() => Promise<void>) | null>(null);
+  let committingPrefill = false;
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -2662,11 +2665,28 @@ export function Conversation(props: ConversationProps) {
   // unless the draft was changed first.
   effect(() => {
     const pending = autoSend();
-    if (pending === null || sendBlockedReason()) return;
+    if (pending === null || prefillCommit() !== null || sendBlockedReason()) return;
     untracked(() => {
       autoSend.set(null);
       if (pending.first || draft() === pending.text)
         void send(pending.text, undefined, pending.first);
+    });
+  });
+  effect(() => {
+    const commit = prefillCommit();
+    if (!commit || committingPrefill || !draftReady() || attachments.blocked()) return;
+    untracked(() => {
+      committingPrefill = true;
+      void (async () => {
+        await flushDraft();
+        if (!alive || savingFailed()) return;
+        await commit();
+        if (alive) prefillCommit.set(null);
+      })()
+        .catch(report)
+        .finally(() => {
+          committingPrefill = false;
+        });
     });
   });
   cleanup(() => {
@@ -2710,6 +2730,7 @@ export function Conversation(props: ConversationProps) {
               changeDraft(prefill.text);
               for (const file of prefill.files ?? [])
                 attachments.observeIntake(client.beginStagedUpload(file), () => {});
+              prefillCommit.set(prefill.committed ?? null);
               props.focusComposer();
               if (prefill.send) {
                 autoSend.set({ text: prefill.text, first: prefill.first });

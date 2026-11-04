@@ -445,33 +445,42 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                 gap: 8,
               }}
             >
-              <Button
-                accessibilityLabel={tr('Choose composer workspace')}
-                tooltip={textTooltip(() => props.session()?.workspace() || tr('Choose workspace'))}
-                onPress={props.chooseWorkspace}
-                style={{
-                  ...controlStyle,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  maxWidth: '100%',
-                  minWidth: 0,
-                  flexShrink: 1,
-                  gap: 8,
-                }}
-                hoverStyle={{ backgroundColor: C.surface }}
-                focusStyle={{ backgroundColor: C.raised }}
+              <If
+                when={props.workspacePicker}
+                else={
+                  <Button
+                    accessibilityLabel={tr('Choose composer workspace')}
+                    tooltip={textTooltip(
+                      () => props.session()?.workspace() || tr('Choose workspace'),
+                    )}
+                    onPress={props.chooseWorkspace}
+                    style={{
+                      ...controlStyle,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      maxWidth: '100%',
+                      minWidth: 0,
+                      flexShrink: 1,
+                      gap: 8,
+                    }}
+                    hoverStyle={{ backgroundColor: C.surface }}
+                    focusStyle={{ backgroundColor: C.raised }}
+                  >
+                    <Icon name="folder" color={C.secondary} />
+                    <Text
+                      style={[
+                        { color: C.secondary, fontSize: 13, flexShrink: 1 },
+                        { numberOfLines: 1 },
+                      ]}
+                    >
+                      {workspaceLabel()}
+                    </Text>
+                    <Icon name="down" color={C.secondary} />
+                  </Button>
+                }
               >
-                <Icon name="folder" color={C.secondary} />
-                <Text
-                  style={[
-                    { color: C.secondary, fontSize: 13, flexShrink: 1 },
-                    { numberOfLines: 1 },
-                  ]}
-                >
-                  {workspaceLabel()}
-                </Text>
-                <Icon name="down" color={C.secondary} />
-              </Button>
+                {props.workspacePicker}
+              </If>
               <If
                 when={noConnections()}
                 else={

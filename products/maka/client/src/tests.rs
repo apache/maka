@@ -47,6 +47,7 @@ use std::{
 };
 use tokio::sync::Notify;
 
+mod composer;
 mod drafts;
 mod progress;
 mod request_custody;

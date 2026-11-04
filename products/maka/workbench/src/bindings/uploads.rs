@@ -41,7 +41,7 @@ use uuid::Uuid;
 pub struct StagedFile {
     id: Uuid,
     owner: Arc<Owner>,
-    snapshot: Arc<FileSnapshot>,
+    pub(super) snapshot: Arc<FileSnapshot>,
 }
 
 #[class]
@@ -69,6 +69,10 @@ impl StagedClipboard {
 
 #[class]
 impl StagedFile {
+    /// Retain an independent handle while a saved draft hands off its snapshot.
+    pub fn copy(&self) -> Instance<StagedFile> {
+        staged_file(self.owner.clone(), self.snapshot.clone())
+    }
     #[getter]
     pub fn id(&self) -> String {
         self.id.to_string()

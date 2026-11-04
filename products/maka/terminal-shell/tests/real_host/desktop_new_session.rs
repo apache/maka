@@ -491,6 +491,44 @@ impl Desktop {
         .await
     }
 
+    async fn restart(
+        mut self,
+        fixture: &Fixture,
+        appearance: nsh_core::platform::Appearance,
+    ) -> Self {
+        // NSH has one process-wide platform queue. Keep that executor, but
+        // destroy the JS runtime, native bindings and journal connection.
+        self.app.update(|cx| {
+            self.window.update(cx, |view, _, _| view.stop()).unwrap();
+        });
+        self.bindings.close().await.unwrap();
+        self.client = fixture.client().await;
+        self.bindings = Bindings::new(self.client.clone(), tokio::runtime::Handle::current());
+        let mut config = maka_workbench::configuration(
+            self.bindings.registry(None),
+            tokio::runtime::Handle::current(),
+        );
+        config.assets = Some(self.bindings.assets());
+        config.chunk_loader = Some(self.bindings.chunk_loader());
+        let (foreground, receiver) = watch::channel(true);
+        self._foreground = foreground;
+        config.context = config
+            .context
+            .with(self.bindings.reload())
+            .with(maka_workbench::Foreground(receiver));
+        self.app.update(|cx| {
+            self.window
+                .update(cx, |view, window, cx| {
+                    view.set_appearance(appearance, cx);
+                    view.load_with_config(config);
+                    window.focus(&view.focus_handle(cx), cx);
+                })
+                .unwrap();
+        });
+        self.target_after(None).await;
+        self
+    }
+
     async fn close(self) {
         self.app.update(|cx| {
             self.window.update(cx, |view, _, _| view.stop()).unwrap();
@@ -501,6 +539,119 @@ impl Desktop {
 
 async fn images_fixture() -> Fixture {
     Fixture::configured(Options { images: true }).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_session() {
+    let mut fixture = images_fixture().await;
+    let (path, bytes) = image_file(&fixture);
+    let workspace = fixture.directory.path().join("workspace");
+    std::fs::create_dir(workspace.join("other-project")).unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    desktop.type_text("RESTORED_NEW_CONVERSATION").await;
+    desktop
+        .wait("new conversation did not reach durable storage", async {
+            loop {
+                let saved = desktop.client.load_composer().await.unwrap();
+                if saved.value["draft"]["text"] == "RESTORED_NEW_CONVERSATION"
+                    && saved.files.len() == 1
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    std::fs::write(&path, b"changed after selection").unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Light)
+        .await;
+    desktop.expect_text("RESTORED_NEW_CONVERSATION").await;
+    desktop
+        .control(&format!(
+            "Remove attachment {}",
+            path.file_name().unwrap().to_str().unwrap()
+        ))
+        .await;
+    desktop.control("Send message").await;
+    desktop.press("Choose composer workspace").await;
+    desktop.press("Choose another folder…").await;
+    desktop.press("Browse folder Workspace").await;
+    desktop.press("Browse folder other-project").await;
+    desktop.press("Use this workspace folder").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("RESTORED_NEW_CONVERSATION").await;
+    desktop.press("Choose composer workspace").await;
+    desktop
+        .control(&format!("Use folder {}", workspace.display()))
+        .await;
+    desktop.artifact("workspace-recents-light");
+    desktop
+        .press(&format!("Use folder {}", workspace.display()))
+        .await;
+    desktop.expect_text("RESTORED_NEW_CONVERSATION").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.press("Send message").await;
+    let request = desktop.request(&mut fixture).await;
+    assert_image(&request, "RESTORED_NEW_CONVERSATION", &bytes);
+    desktop
+        .wait("restored message did not finish", request.finish())
+        .await;
+    desktop
+        .wait("new composer was not handed off", async {
+            loop {
+                let saved = desktop.client.load_composer().await.unwrap();
+                if saved.value["draft"].is_null() && saved.files.is_empty() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.press("Choose composer workspace").await;
+    desktop
+        .control(&format!("Use folder {}", workspace.display()))
+        .await;
+    desktop.key("escape", false);
+    assert_eq!(desktop.sessions().await.len(), 2);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_restores_an_unavailable_workspace_without_discarding_the_draft() {
+    let fixture = images_fixture().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("KEEP_UNAVAILABLE_WORKSPACE_DRAFT").await;
+    let workspace = fixture.directory.path().join("workspace");
+    std::fs::rename(&workspace, fixture.directory.path().join("moved-workspace")).unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop
+        .expect_text("KEEP_UNAVAILABLE_WORKSPACE_DRAFT")
+        .await;
+    desktop.control("Retry folder").await;
+    desktop.artifact("workspace-unavailable-dark");
+    desktop.key("enter", false);
+    assert_eq!(desktop.sessions().await.len(), 1);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    std::fs::rename(fixture.directory.path().join("moved-workspace"), &workspace).unwrap();
+    desktop.press("Retry folder").await;
+    desktop.control("Send message").await;
+    desktop.press("Focus message composer").await;
+    desktop
+        .expect_text("KEEP_UNAVAILABLE_WORKSPACE_DRAFT")
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 fn image_file(fixture: &Fixture) -> (std::path::PathBuf, Vec<u8>) {

@@ -186,6 +186,7 @@ export function createHost(application: UiHost) {
     systemPermissionAction: (sessionId: string, requestId: string, action: string) =>
       nativeHost.systemPermissionAction(sessionId, requestId, action),
     stageFiles: (files: string[]) => nativeHost.stageFiles(files),
+    loadComposer: () => nativeHost.loadComposer(),
     stageClipboard: () => nativeHost.stageClipboard(),
     hasService: (endpoint: string) => nativeHost.hasService(endpoint),
     refresh: () => nativeHost.refresh(),

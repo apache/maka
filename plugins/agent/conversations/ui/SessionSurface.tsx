@@ -96,6 +96,10 @@ import type {
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
 import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
+import {
+  RecentWorkspaces,
+  type RecentWorkspace,
+} from '../../../../products/maka/workbench/app/RecentWorkspaces';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
 import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
 import { GoalDialog } from '../../../../products/maka/workbench/app/GoalDialog';
@@ -181,6 +185,11 @@ type PendingDraft = {
   target: { kind: 'creating'; operationId: string } | { kind: 'session'; sessionId: string } | null;
   revision: number;
 };
+type SavedComposer = {
+  version: 1;
+  recent: RecentWorkspace[];
+  draft: Omit<PendingDraft, 'files'> | null;
+};
 export type ConversationWindow = {
   workspace: Signal<WorkspaceViewHandle | null>;
   sessions(): readonly string[];
@@ -255,7 +264,60 @@ export function createConversationUi(
     pending.set(next);
     for (const file of previous?.files ?? []) file.file.dispose();
   };
-  cleanup(() => replacePending(null));
+  cleanup(() => {
+    for (const file of pending()?.files ?? []) file.file.dispose();
+  });
+  const recentWorkspaces = signal<RecentWorkspace[]>([]);
+  const composerKnown = signal(platform.isTerminal || !!side);
+  const composerSaveError = createText();
+  const workspaceReady = signal(false);
+  const workspaceError = createText();
+  const recentOpen = signal(false);
+  let composerStorage: Awaited<ReturnType<Host['loadComposer']>> | null = null;
+  cleanup(() => composerStorage?.dispose());
+  let savedComposer = '';
+  let savedFiles = '';
+  let composerWrite: Promise<void> | null = null;
+  const memoryValue = (): SavedComposer => {
+    const value = pending();
+    const { files: _files, ...draft } = value ?? { files: [] };
+    return {
+      version: 1,
+      recent: recentWorkspaces(),
+      draft: value ? (draft as SavedComposer['draft']) : null,
+    };
+  };
+  const flushComposer = (): Promise<void> => {
+    if (platform.isTerminal || side) return Promise.resolve();
+    if (!composerKnown())
+      return Promise.reject(new UiError('The new conversation is still loading.'));
+    if (!composerStorage)
+      return Promise.reject(new UiError('The new conversation is still loading.'));
+    const value = memoryValue();
+    const encoded = JSON.stringify(value);
+    const files = pendingFiles().map((item) => item.file);
+    const identities = files.map((file) => file.id).join('/');
+    if (encoded === savedComposer && identities === savedFiles)
+      return composerWrite ?? Promise.resolve();
+    composerWrite = composerStorage
+      .save(value, identities === savedFiles ? null : files)
+      .then(() => {
+        composerSaveError.set('');
+      })
+      .catch((reason) => {
+        composerSaveError.set(errorText(reason));
+        throw reason;
+      });
+    savedComposer = encoded;
+    savedFiles = identities;
+    return composerWrite;
+  };
+  const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
+    if (platform.isTerminal || side || !path) return;
+    recentWorkspaces.set(
+      [{ workspace, path }, ...recentWorkspaces().filter((item) => item.path !== path)].slice(0, 8),
+    );
+  };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
   const pendingText = computed(() => pending()?.text ?? '');
@@ -355,6 +417,52 @@ export function createConversationUi(
   const report = (reason: unknown) => {
     if (alive) error.set(errorText(reason));
   };
+  const checkWorkspace = async () => {
+    const workspace = pendingWorkspace();
+    workspaceReady.set(false);
+    workspaceError.set('');
+    if (!workspace) return;
+    try {
+      if (workspace.kind === 'session') {
+        // The Host resolves a session's bound directory; no path is substituted.
+        await host.query('agent', 'listFiles', {
+          sessionId: workspace.sessionId,
+          path: null,
+          after: null,
+        });
+      } else {
+        await host.query('agent', 'directories', {
+          kind: 'children',
+          selection: workspace.selection,
+          after: null,
+        });
+      }
+      if (alive && pendingWorkspace() === workspace) workspaceReady.set(true);
+    } catch (reason) {
+      if (alive && pendingWorkspace() === workspace)
+        workspaceError.set(
+          uiMessage(
+            'This folder is unavailable or cannot be opened. Choose another location or retry.',
+          ),
+        );
+    }
+  };
+  effect(() => {
+    const workspace = pendingWorkspace();
+    if (!platform.isTerminal && !side && workspace)
+      untracked(() => {
+        void checkWorkspace();
+      });
+  });
+  effect(() => {
+    const known = composerKnown();
+    pending();
+    recentWorkspaces();
+    if (known && !platform.isTerminal && !side)
+      untracked(() => {
+        void flushComposer().catch(report);
+      });
+  });
   let observedSession: string | null = null;
   let wasVisible = false;
   const readPendingSession = async () => {
@@ -502,6 +610,7 @@ export function createConversationUi(
         updatePending({
           target: { kind: 'creating', operationId: original.operationId },
         });
+        await flushComposer();
         for (;;) {
           const event = await original.next();
           if (event === null) throw new UiError('Syncing changes…');
@@ -522,6 +631,7 @@ export function createConversationUi(
                   ? { kind: 'session', sessionId: result.session.id }
                   : null,
             });
+            await flushComposer();
             break;
           }
         }
@@ -648,12 +758,18 @@ export function createConversationUi(
   ) => {
     if (!alive || selected() !== expectedSessionId) return;
     if (!platform.isTerminal) {
+      if (!composerKnown()) return;
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
-      const label =
+      let label =
         workspaceLabel ??
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
           : (workspace.selection.segments.at(-1) ?? ''));
+      if (!label && workspace.kind === 'session') {
+        const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
+        if (!alive || selected() !== expectedSessionId) return;
+        label = observed.session.workspace.path;
+      }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
         try {
@@ -671,6 +787,7 @@ export function createConversationUi(
           return;
         }
         updatePending({ workspace, workspaceLabel: label });
+        rememberWorkspace(workspace, label);
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
         pendingModelInstance.set(null);
         overlay.set(null);
@@ -702,6 +819,7 @@ export function createConversationUi(
         target: null,
         revision: 0,
       });
+      rememberWorkspace(workspace, label);
       pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       const generation = ++pendingDefaultEpoch;
       pendingPicker.set(false);
@@ -764,6 +882,7 @@ export function createConversationUi(
   };
   const newConversation = (sessionId: string | null) => {
     if (!alive || selected() !== sessionId) return;
+    if (!composerKnown()) return;
     if (sessionId) void create({ kind: 'session', sessionId }, sessionId);
     else if (pendingWorkspace()) focusComposer();
     else open({ kind: 'workspaces', sessionId });
@@ -865,7 +984,12 @@ export function createConversationUi(
       },
       confirmation,
       sending: pendingSending,
-      ready: () => !pendingCreateUncertain() && !pendingFileBusy(),
+      ready: () =>
+        composerKnown() &&
+        workspaceReady() &&
+        !composerSaveError() &&
+        !pendingCreateUncertain() &&
+        !pendingFileBusy(),
       files: pendingFiles,
       picking: pendingPicker,
       openPicker: (open: boolean) => {
@@ -905,6 +1029,9 @@ export function createConversationUi(
         if (
           !owns() ||
           !workspace ||
+          !workspaceReady() ||
+          !composerKnown() ||
+          !!composerSaveError() ||
           text !== pendingText() ||
           (expected !== undefined && expected !== confirmation()) ||
           (!text.trim() && files.length === 0) ||
@@ -918,6 +1045,7 @@ export function createConversationUi(
         void (async () => {
           try {
             error.set('');
+            await flushComposer();
             const requireUnchangedDraft = () => {
               if (pendingText() !== text)
                 throw new UiError(
@@ -1016,7 +1144,12 @@ export function createConversationUi(
               throw new UiError(
                 'The conversation draft changed. Open the conversation to review it.',
               );
-            prefills.set(id, { text, send: sendFirst, files, first: true });
+            prefills.set(id, {
+              text,
+              send: sendFirst,
+              files: files.map((file) => file.copy()),
+              first: true,
+            });
             pendingHandoff.set(id);
             const switched = await switchSession(id, {
               sessionId: null,
@@ -1233,6 +1366,9 @@ export function createConversationUi(
       const workspace = pendingWorkspace();
       if (
         !workspace ||
+        !workspaceReady() ||
+        !composerKnown() ||
+        !!composerSaveError() ||
         goalCreating() ||
         pendingSending() ||
         pendingFileBusy() ||
@@ -1256,6 +1392,7 @@ export function createConversationUi(
       pendingSending.set(true);
       pendingGoalError.set('');
       try {
+        await flushComposer();
         await pendingDefaultRead;
         requireOwner();
         const backend = pendingBackend();
@@ -1340,7 +1477,12 @@ export function createConversationUi(
         }
         requireOwner();
         const text = /^\s*\/goal(?:\s|$)/u.test(draft) ? '' : draft;
-        prefills.set(id, { text, send: false, files, first: true });
+        prefills.set(id, {
+          text,
+          send: false,
+          files: files.map((file) => file.copy()),
+          first: true,
+        });
         pendingHandoff.set(id);
         const switched = await switchSession(id, {
           sessionId: null,
@@ -1665,6 +1807,8 @@ export function createConversationUi(
       instance: current?.instance ?? null,
     });
     if (!alive || selected() !== id) return;
+    const session = browsing.sessions().find((item) => item.id === id);
+    if (session) rememberWorkspace({ kind: 'session', sessionId: id }, session.workspace.path);
     if (instance !== null) closeOverlay(instance);
     browserFocus.set(false);
     handle()?.focus();
@@ -1737,9 +1881,57 @@ export function createConversationUi(
     previousWidth = width;
   });
   void refreshControls().catch(report);
+  if (!platform.isTerminal && !side)
+    void (async () => {
+      const stored = await host.loadComposer();
+      if (!alive) {
+        stored.dispose();
+        return;
+      }
+      try {
+        const value = stored.value() as SavedComposer | null;
+        if (value !== null && (value.version !== 1 || !Array.isArray(value.recent)))
+          throw new UiError('The saved new conversation could not be restored.');
+        composerStorage = stored;
+        recentWorkspaces.set(value?.recent ?? []);
+        if (value?.draft) {
+          const files = stored.files().map((file) => {
+            const metadata = file.metadata() as { name: string; bytes: number };
+            return {
+              id: file.id,
+              name: metadata.name,
+              bytes: metadata.bytes,
+              imageUri: file.imageUri(),
+              file,
+            };
+          });
+          pending.set({ ...value.draft, files });
+          savedFiles = files.map((item) => item.id).join('/');
+        }
+        savedComposer = JSON.stringify(memoryValue());
+        composerKnown.set(true);
+        if (pendingWorkspace()) {
+          if (pendingBackend()) void pendingModel.refreshModel();
+          else {
+            const page = await host.query('settings', 'connections', { kind: 'start' });
+            if (alive && page.kind === 'ready' && page.defaultTarget && !pendingBackend()) {
+              updatePending({ backend: { ...page.defaultTarget, thinkingLevel: null } });
+              void pendingModel.refreshModel();
+            }
+          }
+        } else if (selected() === null && recentWorkspaces()[0]) {
+          const last = recentWorkspaces()[0];
+          await create(last.workspace, null, last.path);
+        }
+      } catch (reason) {
+        composerStorage = null;
+        stored.dispose();
+        throw reason;
+      }
+    })().catch(report);
   createPendingRecovery({
     pending: () => !controlsKnown() || controls().length > 0,
-    blocked: () => recovering() || busy(),
+    blocked: () => !composerKnown() || recovering() || busy(),
     recover: recoverControls,
   });
   // Whether the Host has no model connection, read each time the composer is
@@ -1846,6 +2038,12 @@ export function createConversationUi(
       const originalOverlay = overlay();
       const visible = shell()?.visible();
       if (owner && !(await owner.flushDraft())) return false;
+      try {
+        await flushComposer();
+      } catch (reason) {
+        report(reason);
+        return false;
+      }
       return (
         alive &&
         handle() === owner &&
@@ -1963,8 +2161,21 @@ export function createConversationUi(
                       return null;
                     }
                     if (pendingHandoff() === id()) {
-                      pending.set(null);
-                      pendingHandoff.set(null);
+                      return (
+                        prefill && {
+                          ...prefill,
+                          committed: async () => {
+                            if (pendingHandoff() !== id()) return;
+                            rememberWorkspace(
+                              { kind: 'session', sessionId: id() },
+                              pendingWorkspaceLabel(),
+                            );
+                            replacePending(null);
+                            await flushComposer();
+                            pendingHandoff.set(null);
+                          },
+                        }
+                      );
                     }
                     return prefill;
                   }}
@@ -2017,6 +2228,41 @@ export function createConversationUi(
               needsConnection={noConnections}
               request={
                 <View style={{ minHeight: 0, flexShrink: 1 }}>
+                  <If when={selected() === null && workspaceError()}>
+                    <View
+                      style={{
+                        padding: 12,
+                        marginBottom: 12,
+                        borderRadius: 8,
+                        backgroundColor: C.surface,
+                        gap: 8,
+                      }}
+                    >
+                      <Text style={{ ...bodyTextStyle, color: C.danger }}>{workspaceError()}</Text>
+                      <View style={{ flexDirection: 'row', gap: 8 }}>
+                        <Button
+                          accessibilityLabel={tr('Choose another folder…')}
+                          onPress={inputAction(() => recentOpen.set(true), null)}
+                          style={controlStyle}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
+                        >
+                          <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
+                        </Button>
+                        <Button
+                          accessibilityLabel={tr('Retry folder')}
+                          onPress={inputAction(() => {
+                            void checkWorkspace();
+                          }, null)}
+                          style={controlStyle}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
+                        >
+                          <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
+                        </Button>
+                      </View>
+                    </View>
+                  </If>
                   <Each<ConversationHandle>
                     of={handle() ? [handle()!] : []}
                     key={(owner: ConversationHandle) => owner.sessionId}
@@ -2241,6 +2487,27 @@ export function createConversationUi(
                 id: 'workspace',
                 sessionId: selected(),
               })}
+              workspacePicker={
+                platform.isTerminal || side ? undefined : (
+                  <RecentWorkspaces
+                    path={() =>
+                      selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
+                    }
+                    recent={recentWorkspaces}
+                    open={recentOpen}
+                    changed={(open) => recentOpen.set(open)}
+                    disabled={() => !composerKnown() || pendingSending() || pendingFileBusy()}
+                    choose={(item) => {
+                      recentOpen.set(false);
+                      void create(item.workspace, selected(), item.path);
+                    }}
+                    browse={() => {
+                      recentOpen.set(false);
+                      invokeOwn('workspace');
+                    }}
+                  />
+                )
+              }
               settings={inputAction(invokeCommand, {
                 id: 'settings',
                 sessionId: selected(),
@@ -2449,6 +2716,7 @@ export function createConversationUi(
       if (pendingSending() || pendingCreateUncertain() || pendingHandoff())
         throw new UiError('Finish or recover the pending action before reloading.');
       await pendingIntake();
+      await flushComposer();
       const owner = handle();
       if (owner && !(await owner.flushDraft()))
         throw new UiError(
