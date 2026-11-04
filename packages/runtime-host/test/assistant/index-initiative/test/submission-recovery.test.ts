@@ -239,7 +239,8 @@ test('missing output remains recoverable without pretending it was committed', a
     f.setRunner(async (prompt) => {
       assert.match(prompt, /上次结果未提交/);
       assert.match(prompt, /ENOENT/);
-      assert.match(readFileSync(view(prompt), 'utf8'), /暂无用户反馈/);
+      const seed = readFileSync(view(prompt), 'utf8');
+      assert.deepEqual(JSON.parse(seed.slice(seed.indexOf('\n') + 1)).pendingFeedback.items, []);
       await output(prompt, validDraft);
     });
     await f.run();

@@ -21,6 +21,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
+export type DiscoveryContextMode = 'legacy' | 'scoped';
 
 /** Scheduler metadata only. Conversation history belongs to the ordinary Session. */
 export class InitiativeStore {
@@ -34,6 +35,7 @@ export class InitiativeStore {
     this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
       CREATE TABLE IF NOT EXISTS state(id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS journal(seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, kind TEXT NOT NULL, payload TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS context_workers(session_id TEXT PRIMARY KEY, role TEXT NOT NULL, mode TEXT NOT NULL, context_key TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS lease(id INTEGER PRIMARY KEY CHECK(id=1), owner TEXT NOT NULL, until_at INTEGER NOT NULL);`);
   }
   get(): any {
@@ -90,13 +92,24 @@ export class InitiativeStore {
       return s;
     });
   }
-  configure(binding: { sessionId: string; cwd: string }, intervalMs: number, enabled = true) {
+  configure(
+    binding: { sessionId: string; cwd: string },
+    intervalMs: number,
+    enabled = true,
+    contextMode?: DiscoveryContextMode,
+  ) {
     return this.transaction(() => {
       this.fence();
       const old = this.get();
       if (old && old.sessionId !== binding.sessionId)
         throw Error('Initiative belongs to another conversation');
       if (old?.active) throw Error('A heartbeat is still running');
+      if (
+        contextMode &&
+        contextMode !== (old?.contextMode ?? 'legacy') &&
+        (old?.pendingDraft || old?.pendingJudgement || old?.contextWake)
+      )
+        throw Error('Finish or recover the pending discovery before changing context mode');
       const s = {
         version: 2,
         ...binding,
@@ -106,10 +119,17 @@ export class InitiativeStore {
         pendingJudgement: old?.pendingJudgement,
         pendingDraft: old?.pendingDraft,
         promptVersions: old?.promptVersions,
+        contextMode: contextMode ?? old?.contextMode ?? 'legacy',
+        contextWake: old?.contextWake,
         intervalMs,
         enabled,
         revision: (old?.revision ?? 0) + 1,
-        nextAt: enabled ? Date.now() + intervalMs : null,
+        nextAt:
+          contextMode !== undefined && old?.intervalMs === intervalMs
+            ? old.nextAt
+            : enabled
+              ? Date.now() + intervalMs
+              : null,
         active: null,
         lastError: null,
         lastCheckedAt: old?.lastCheckedAt ?? null,
@@ -200,12 +220,14 @@ export class InitiativeStore {
         id,
         finishedAt: Date.now(),
         outcome: error ? 'error' : s.active.reported ? 'reported' : 'quiet',
+        contextMode: s.contextWake?.mode ?? s.contextMode ?? 'legacy',
       };
       s.active = null;
       if (!error) {
         delete s.candidateReport;
         delete s.pendingJudgement;
         delete s.pendingDraft;
+        delete s.contextWake;
       }
       s.revision++;
       s.lastError = error ?? null;
@@ -221,6 +243,54 @@ export class InitiativeStore {
       s.checkRequested = false;
       this.log(error ? 'interrupted' : 'finished', { id, error });
     });
+  }
+  worker(
+    sessionId: string,
+  ):
+    | { role: 'discovery' | 'judgement' | 'quick'; mode: DiscoveryContextMode; contextKey: string }
+    | undefined {
+    if (!sessionId) return undefined;
+    const row = this.db
+      .prepare('SELECT role,mode,context_key FROM context_workers WHERE session_id=?')
+      .get(sessionId);
+    if (row)
+      return {
+        role: row.role as any,
+        mode: row.mode as DiscoveryContextMode,
+        contextKey: String(row.context_key),
+      };
+    const state = this.get();
+    const role =
+      state?.discoverySession === sessionId
+        ? 'discovery'
+        : state?.judgementSession === sessionId
+          ? 'judgement'
+          : state?.workerSession === sessionId
+            ? 'quick'
+            : undefined;
+    return role ? { role, mode: 'legacy', contextKey: 'legacy' } : undefined;
+  }
+  bindWorker(
+    sessionId: string,
+    role: 'discovery' | 'judgement' | 'quick',
+    mode: DiscoveryContextMode,
+    contextKey: string,
+  ) {
+    this.transaction(() => {
+      this.fence();
+      const old = this.worker(sessionId);
+      if (old && (old.role !== role || old.mode !== mode || old.contextKey !== contextKey))
+        throw Error('Discovery worker identity conflict');
+      this.db
+        .prepare('INSERT OR IGNORE INTO context_workers VALUES(?,?,?,?)')
+        .run(sessionId, role, mode, contextKey);
+    });
+  }
+  prepareContext(mode: DiscoveryContextMode) {
+    return this.update((state) => {
+      if (state.contextWake) return;
+      state.contextWake = { id: randomUUID(), mode };
+    }).contextWake;
   }
   control(action: string) {
     return this.update((s) => {

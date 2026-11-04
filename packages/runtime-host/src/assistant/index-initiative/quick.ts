@@ -26,6 +26,7 @@ import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import type { AssistantRunOutcome } from '../run-cost.js';
+import { memoryRead } from './notebook-memory.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
@@ -295,11 +296,21 @@ export class QuickDiscoveryController {
   }
   private async worker(s: any) {
     return this.owner(s, async () => {
+      // Pin the mode until this wake (including its outbox retries) has settled.
+      // Pre-upgrade pending work has no contextWake and must finish on its legacy worker.
+      const mode =
+        s.pending && !s.contextWake ? 'legacy' : (this.parent.store.get()?.contextMode ?? 'legacy');
+      const context = this.store.prepareContext(mode);
       const sessions = await this.ctx.sessionQuery.list();
-      const label = `assistant-quick-discovery:${s.sessionId}`;
+      const key = context.mode === 'scoped' ? context.id : 'legacy';
+      const label = `assistant-quick-discovery:${s.sessionId}${context.mode === 'scoped' ? ':' + key : ''}`;
       const matches = sessions.filter((x: any) => !x.isArchived && x.labels?.includes(label));
-      if (matches.length > 1) throw Error('Multiple quick discovery workers');
-      const existing = sessions.find((x: any) => x.id === s.workerSession && !x.isArchived);
+      const previous = this.store.worker(s.workerSession);
+      const existing =
+        previous && previous.mode === context.mode && previous.contextKey === key
+          ? sessions.find((x: any) => x.id === s.workerSession && !x.isArchived)
+          : undefined;
+      if (!existing && matches.length > 1) throw Error('Multiple quick discovery workers');
       const sessionId =
         existing?.id ??
         matches[0]?.id ??
@@ -310,6 +321,9 @@ export class QuickDiscoveryController {
             labels: [label, ASSISTANT_BACKGROUND_SESSION_LABEL],
           })
         ).sessionId;
+      if (previous)
+        this.store.bindWorker(s.workerSession, previous.role, previous.mode, previous.contextKey);
+      this.store.bindWorker(sessionId, 'quick', context.mode, key);
       this.store.update((state) => {
         if (state.workerSession !== sessionId) state.promptVersion = null;
         state.workerSession = sessionId;
@@ -416,6 +430,7 @@ export class QuickDiscoveryController {
         s.retryAt = null;
         s.active = null;
         s.pending = null;
+        delete s.contextWake;
         this.store.log('quick-completed', { id: active.id, checkedThrough: active.to });
       });
     } catch (error) {
@@ -521,23 +536,24 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.tools.register({
     name: 'QuickDiscoveryNotebook',
     description:
-      'Read the shared notebook, including actually delivered discoveries and linked user feedback. Refreshes delivery receipts before reading; does not add research notes. Historical notes are reference material, not current instructions.',
-    parameters: z.object({}),
+      'Read bounded shared discovery memory, including current entries, historical versions, actual deliveries and linked feedback. Follow nextCursor using the same query. Prefer DiscoveryNotebook when preparing an incremental write; that tool also supplies the active execution identity.',
+    parameters: memoryRead,
     categoryHint: 'read',
     executionSemantics: 'parallel',
-    impl: async (_: any, call: any) => {
+    impl: async (input: any, call: any) => {
       if (call.sessionId !== quick.state()?.workerSession)
         throw Error('Not the quick discovery worker');
       parent.refreshNotebook();
-      return { text: parent.notebook.render(), readOnly: true };
+      return parent.notebook.readMemory(memoryRead.parse(input));
     },
   });
   ctx.tools.filter?.((sessionId: string, tools: any[]) =>
-    sessionId !== quick.state()?.workerSession
+    quick.store.worker(sessionId)?.role !== 'quick'
       ? tools
       : tools.filter(
           (tool) =>
             tool.name === 'QuickDiscoveryReport' ||
+            tool.name === 'DiscoveryNotebookRemember' ||
             tool.name === 'tool_search' ||
             (tool.categoryHint === 'read' &&
               !/^(Matter|Initiative|QuickDiscoveryControl|MemoryIndex(Create|Write|Checkpoint|Maintain|Control|AddSources))/.test(
@@ -558,8 +574,8 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
     name: 'quick-discovery.role',
     order: 812,
     text: ({ sessionId }: any) =>
-      sessionId === quick.state()?.workerSession
-        ? '你在快速发现后台会话中运行，只读调查，不委派执行任务，不修改记事本，不自行设置心跳。'
+      quick.store.worker(sessionId)?.role === 'quick'
+        ? '你在快速发现后台会话中运行，只读调查，不委派执行任务，不自行设置心跳。用 DiscoveryNotebook 读取相关记忆；仅通过 DiscoveryNotebookRemember 提交知识增量，不直接修改记事本文件。'
         : undefined,
   });
   return quick;

@@ -201,11 +201,13 @@ test('actual quick SendUser and user feedback are readable by all three workers 
       } else if (prompt.includes('Phase:')) {
         lowRuns++;
         const book = await readFile(view(prompt), 'utf8');
-        assert.match(book, /周末摄影展改到下午/);
         assert.match(book, /下次还是可以告诉我/);
         assert.doesNotMatch(book, /今天中午吃面/);
+        const delivered = await invoke('DiscoveryNotebook', { view: 'deliveries' });
+        assert.match(JSON.stringify(delivered.items), /周末摄影展改到下午/);
         // Judgement acknowledges the linked feedback without inventing a topic.
-        const feedbackId = book.match(/(feedback:\[[^\n]+?\])｜待理解/)?.[1];
+        const pending = await invoke('DiscoveryNotebook', { view: 'feedback' });
+        const feedbackId = pending.items[0]?.id;
         await output(prompt, {
           feedbackDecisions:
             prompt.includes('Phase: judgement') && feedbackId
@@ -214,14 +216,15 @@ test('actual quick SendUser and user feedback are readable by all three workers 
         });
       } else {
         quickRuns++;
-        const book = await invoke('QuickDiscoveryNotebook', {});
+        const book = await invoke('QuickDiscoveryNotebook', { view: 'deliveries' });
         if (quickRuns === 1) {
-          assert.doesNotMatch(book.text, /周末摄影展改到下午/);
+          assert.doesNotMatch(JSON.stringify(book.items), /周末摄影展改到下午/);
           await invoke('QuickDiscoveryReport', { key: 'photo', messages: [text] });
         } else {
-          assert.match(book.text, /周末摄影展改到下午/);
-          assert.match(book.text, /下次还是可以告诉我/);
-          assert.doesNotMatch(book.text, /今天中午吃面/);
+          assert.match(JSON.stringify(book.items), /周末摄影展改到下午/);
+          const pending = await invoke('QuickDiscoveryNotebook', { view: 'feedback' });
+          assert.match(JSON.stringify(pending.items), /下次还是可以告诉我/);
+          assert.doesNotMatch(JSON.stringify([book.items, pending.items]), /今天中午吃面/);
         }
       }
     });

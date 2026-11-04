@@ -60,7 +60,67 @@ Index reads expose shared usage guidance. `MemoryIndexContent` defaults to direc
 
 ## Proactive instructions
 
-Heartbeats use the discovery and judgement instructions from code; configuration only changes cadence. Two persistent background Sessions share an append-only notebook, rather than handing off a fixed candidate list. Each worker reads the notebook from a private Markdown file and writes only its new observations (and, for judgement, feedback interpretations and proposed messages) to a per-wake JSON file. The Host persists those operations atomically; empty results are allowed. Only genuine user feedback may close or defer a topic, and newer feedback invalidates stale drafts. Judgement may reopen a topic the user closed or deferred only when its information changed: it must first append a note on that topic after the user's feedback and then record a reason, and a newer user rule overrides the reopening. Judgement also records a topic it investigated but chose not to tell the user as withheld, which is kept apart from the topic's notes (investigated) and delivery receipts (told). These are provenance and consistency checks, not a model/keyword review of recommendation quality. Judgement chooses directions from the entire notebook, considering occurrence time and current user value. Its messages go through the Bot inbox; acceptance is recorded as “reported”, never as confirmed delivery. Actual assistant conversation is shown separately. A failed judgement resumes from the notebook without repeating discovery. Both worker histories, the notebook and the configured cadence survive restart. New prompt versions reach existing Sessions once; obsolete saved custom instructions do not override them. Source history and indexes are unchanged. Existing pre-upgrade reports remain readable as historical context for the pending judgement.
+Heartbeats use the discovery and judgement instructions from code. By default, two persistent background Sessions share a notebook backed by an append-only event journal and versioned current entries, rather than handing off a fixed candidate list. Each worker starts with a bounded directory and feedback file, reads entries through `DiscoveryNotebook`, and writes incremental observations, corrections and research checkpoints (and, for judgement, feedback interpretations and proposed messages) to a per-wake JSON file. The Host persists those operations atomically; empty results are allowed. Only genuine user feedback may close or defer a topic, and newer feedback invalidates stale drafts. Judgement may reopen a topic the user closed or deferred only when its information changed: it must first append a note on that topic after the user's feedback and then record a reason, and a newer user rule overrides the reopening. Judgement also records a topic it investigated but chose not to tell the user as withheld, which is kept apart from the topic's notes (investigated) and delivery receipts (told). These are provenance and consistency checks, not a model/keyword review of recommendation quality. Judgement chooses directions from the entire notebook, considering occurrence time and current user value. Its messages go through the Bot inbox; acceptance is recorded as “reported”, never as confirmed delivery. Actual assistant conversation is shown separately. A failed judgement resumes from the notebook without repeating discovery. Both worker histories, the notebook and the configured cadence survive restart. New prompt versions reach existing Sessions once; obsolete saved custom instructions do not override them. Source history and indexes are unchanged. Existing pre-upgrade reports remain readable as historical context for the pending judgement.
+
+### Versioned discovery memory
+
+`DiscoveryNotebook` exposes `catalog`, `topic` (current entries), `entry` (one version),
+`history`, `feedback` (pending linked user feedback), `rules`, `deliveries` and `event`.
+Follow `nextCursor` with the same query; `limit` may change. Signed cursors pin the
+committed event range and survive restart. Unrelated writes do not restart paging,
+and corrections after that range do not replace the version being paged. Topic
+reads separately return the current user policy and feedback revision, so a
+knowledge snapshot does not freeze permission to notify. Oversized records carry
+`truncated` and a `read` request; entry/event text is fully recoverable through its
+continuations. Historical `withheld` reasons have the same top-level `text` field
+as observations. Literal topic-content search supports Chinese substrings; short
+queries use a literal fallback to the versioned full-text index.
+
+Old notes retain their event IDs and content and enter the current view as
+`legacy` observations, not verified facts. `updates` names an `entryId` and its
+`expectedRevision`, supplies the replacement knowledge and a correction reason,
+and retains the old version. `checkpoints` records actual investigation without
+creating another knowledge entry or claiming source coverage. Corrections cannot
+change topic policy, user feedback or delivery facts. The existing provenance
+rules for reopening user-closed topics are retained.
+
+Both discovery paths can use `DiscoveryNotebookRemember` for intermediate
+knowledge commits, even when no message is useful. It requires the active worker,
+Host-issued `executionId`, stable submission `key` and `expectedFeedbackRevision`.
+Retry a successful operation with unchanged content. A stale entry version rejects
+the complete batch; current projections and the event journal commit together.
+Source descriptions are provenance supplied by the investigator, not a grant of
+source access or proof that its conclusion is true. Fetching originals still uses
+the existing permission-checked tools. This adds no general filesystem write tool
+to quick discovery. Stored observations remain reference material, not instructions.
+
+SQLite projections and search indexes can be rebuilt from committed events without
+a model. No original history is deleted or automatically archived. An older binary
+can still read the original journal, but does not understand new entry corrections;
+returning to the newer binary imports intervening legacy notes. Source-receipt
+counts, memory commits and user-visible delivery remain distinct.
+
+### Optional scoped working contexts
+
+`InitiativeConfigure({contextMode: "scoped"})` opts into a new exploration/judgement
+pair after each successful cycle; quick discovery inherits the setting on its next
+wake. The default `legacy` mode preserves existing Session reuse. The setting alone
+does not enable discovery, change cadence, reset its deadline, or change task and
+provider retry policies. An unfinished broad cycle must settle before changing modes.
+Failed/interrupted executions and pending Bot handoffs keep their original context.
+Worker roles survive replacement, preserving the discovery tool boundary for old
+exploration, judgement and quick Sessions. Histories remain ordinary background
+Sessions; notebook knowledge is independent of their lifetime.
+
+After building, run the synthetic local persistence benchmark with:
+
+```sh
+node packages/runtime-host/scripts/benchmark-discovery-memory.mjs --entries 100000
+```
+
+It uses a temporary database, puts half the entries in one hot topic, measures
+bounded reads and projection rebuild, and removes the fixture. `--entries 1000000`
+runs the larger workload. It does not call a model or measure discovery usefulness.
 
 ## Turn identities
 
@@ -253,11 +313,11 @@ On a bound assistant, first-run onboarding posts one durable Inbox question for 
 
 The scheduler checks permitted Session revision metadata and optional source `activityToken` observations, batching changes at the activity cadence. This is **not source synchronization**: the Feishu CLI source observes published local-cache versions, so discovery cannot see remote messages before Feishu synchronization publishes them. Adapters without a lightweight observation retain the idle fallback; status exposes unsupported/failed observations. No enumeration, index maintenance or model call is performed just to check activity. Index reads retain their existing refresh semantics.
 
-The worker keeps one Session, receives UTC and a last-successful-check/start-of-this-run time boundary, and chooses how much recent and historical information to investigate. The boundary is a discovery checkpoint, not an index coverage declaration. New arrivals during execution remain for a later wake; failures retain the pending window and never advance it. Restart recovery reuses the worker and durable submission identities.
+In default legacy mode the worker keeps one Session, receives UTC and a last-successful-check/start-of-this-run time boundary, and chooses how much recent and historical information to investigate. The boundary is a discovery checkpoint, not an index coverage declaration. New arrivals during execution remain for a later wake; failures retain the pending window and never advance it. Restart recovery reuses the worker and durable submission identities.
 
-`QuickDiscoveryReport` durably hands user-facing discoveries, concrete offers of help and questions to the Bot with retry-safe inbox identities. Its messages contain the actual conversational text, not instructions to the Bot about wording, filtering or timing. Acceptance means delivery to the Bot inbox, not user notification or task delegation. The worker cannot delegate Matters or change schedules; it can read the existing notebook through `QuickDiscoveryNotebook` but cannot maintain it. There is no separate quick-discovery notebook and no whole-turn time limit.
+`QuickDiscoveryReport` durably hands user-facing discoveries, concrete offers of help and questions to the Bot with retry-safe inbox identities. Its messages contain the actual conversational text, not instructions to the Bot about wording, filtering or timing. Acceptance means delivery to the Bot inbox, not user notification or task delegation. The worker cannot delegate Matters or change schedules; it can read the shared memory through `DiscoveryNotebook` (or the `QuickDiscoveryNotebook` read alias) and submit bounded knowledge increments through `DiscoveryNotebookRemember`. There is no separate quick-discovery notebook and no whole-turn time limit.
 
 
-The shared notebook also retains actual quick-discovery message deliveries and explicitly linked `DiscoveryFeedback` replies. Receipt synchronization runs before each quick or two-stage wake and before `QuickDiscoveryNotebook` reads. It replays the Bot's durable receipts with stable IDs, so a crash or worker Session replacement does not lose delivery memory or duplicate entries. Unsent reports, filtered candidates and ordinary conversation are excluded. Quick receipts without a notebook topic appear separately, without inventing research topics; feedback may establish rules for future related topics. The quick worker remains read-only.
+The shared notebook also retains actual quick-discovery message deliveries and explicitly linked `DiscoveryFeedback` replies. Receipt synchronization runs before each quick or two-stage wake and before `QuickDiscoveryNotebook` reads. It replays the Bot's durable receipts with stable IDs, so a crash or worker Session replacement does not lose delivery memory or duplicate entries. Unsent reports, filtered candidates and ordinary conversation are excluded. Quick receipts without a notebook topic appear separately, without inventing research topics; feedback may establish rules for future related topics. External investigation remains read-only; notebook mutations use the dedicated knowledge interface.
 
-The quick-discovery, exploration and judgement Sessions use native history compaction, not timed Session replacement. Their default proactive threshold is 70% of the model input window, without a fixed token cap (no fallback threshold is inferred if the window is unknown). An explicit model compaction threshold takes precedence. Runtime usage triggers compaction at a safe request boundary, retaining a durable summary and current work; this is not a time or execution limit. Bot, Matter and ordinary Session policies are unchanged. Notebook receipts and user feedback live outside compacted history and are available on later wakes. Controlled tests verify the plumbing, not a guarantee that compaction improves discovery quality.
+The quick-discovery, exploration and judgement Sessions continue to use native history compaction within a running context. Optional scoped mode replaces a context only after successful completion, as described above. Their default proactive threshold is 70% of the model input window, without a fixed token cap (no fallback threshold is inferred if the window is unknown). An explicit model compaction threshold takes precedence. Runtime usage triggers compaction at a safe request boundary, retaining a durable summary and current work; this is not a time or execution limit. Bot, Matter and ordinary Session policies are unchanged. Notebook receipts and user feedback live outside compacted history and are available on later wakes. Controlled tests verify the plumbing, not a guarantee that compaction improves discovery quality.
