@@ -22,6 +22,7 @@ import { createHash } from 'node:crypto';
 import { createRequire } from 'node:module';
 import { readFile, writeFile, mkdtemp, rm, realpath } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { parseArgs } from 'node:util';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { nativeCliTargets } from './pack-cli.mjs';
@@ -33,6 +34,9 @@ import { uiCompiler } from './product.mjs';
 const repository = fileURLToPath(new URL('../../', import.meta.url));
 const documentPath = 'products/maka/cli/THIRD_PARTY_NOTICES.txt';
 const manifestPath = 'products/maka/cli/notices.json';
+const distributionTargets = Object.values(nativeCliTargets).map(({ os, cpu }) =>
+  rustTarget(os, cpu),
+);
 const hash = (value) => createHash('sha256').update(value).digest('hex');
 const localPath = (directory, file) => relative(directory, file).replaceAll('\\', '/');
 
@@ -84,9 +88,101 @@ async function upstreamIdentity(pkg, directory, provenance) {
   return { repository, revision };
 }
 
+/** Resolve one Cargo package using the same installed-file and upstream rules. */
+export async function cargoLicenseRecord(root, pkg, supplements, provenance) {
+  const directory = dirname(pkg.manifest_path);
+  let source = pkg.source;
+  if (!source && !provenance) {
+    const vendored = localPath(root, directory).split('/').slice(0, 2).join('/');
+    provenance = JSON.parse(await readFile(join(root, vendored, 'upstream.json'), 'utf8'));
+    source = `${provenance.repository}#${provenance.revision} (adapted; ${localPath(root, directory)})`;
+  }
+  if (!source) source = `${provenance.repository}#${provenance.revision}`;
+  const files = await localLicenses(directory, pkg.license_file);
+  const local = files.filter(({ content }) => content.trim().length >= 80);
+  const references = files.some(
+    ({ content }) => content.trim().length < 80 && content.includes('../'),
+  );
+  let texts;
+  let upstream;
+  if (pkg.source?.includes('github.com/maka-agent/cua'))
+    texts = [
+      {
+        file: 'platform/computer-use/THIRD_PARTY_NOTICES',
+        source,
+        content: await readFile(join(root, 'platform/computer-use/THIRD_PARTY_NOTICES'), 'utf8'),
+      },
+    ];
+  else if (supplements[pkg.name + '@' + pkg.version])
+    texts = await supplementTexts(root, supplements[pkg.name + '@' + pkg.version]);
+  else {
+    texts = [];
+    if (!local.length || references) upstream = await upstreamIdentity(pkg, directory, provenance);
+  }
+  const archive =
+    pkg.source === 'registry+https://github.com/rust-lang/crates.io-index'
+      ? `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`
+      : source;
+  texts.push(...local.map(({ path, content }) => ({ source: archive + ' :: ' + path, content })));
+  return {
+    id: `cargo:${pkg.name}@${pkg.version} ${source}`,
+    component:
+      `${pkg.name}@${pkg.version} (${pkg.license ?? 'MIT; see upstream notice'})` +
+      (pkg.authors.length ? `; authors declared by package: ${pkg.authors.join(', ')}` : ''),
+    license: pkg.license,
+    files,
+    texts,
+    upstream,
+  };
+}
+
+/** Each reviewed document covers one actual runtime graph, V8 build and toolchain. */
+export async function runtimeNoticeRecord(
+  root,
+  { version, target, supplements, actual, requireActual = true },
+) {
+  const key = `deno-runtime@${version}/${target}`;
+  const reviewed = supplements[key];
+  if (reviewed?.length !== 1 || !reviewed[0].file)
+    throw new Error(
+      `Deno ${version} runtime third-party notices have not been reviewed for ${target}; add one full local document as ${key}`,
+    );
+  const texts = await supplementTexts(root, reviewed);
+  const prefix = `Controlled Deno runtime ${version}\nTarget: ${target}\n`;
+  if (!texts[0].content.startsWith(prefix))
+    throw new Error(`Reviewed runtime notice version/target mismatch: ${key}`);
+  if (requireActual && !actual)
+    throw new Error(`Actual built runtime notices are required for ${target}`);
+  if (actual && (await readFile(actual, 'utf8')) !== texts[0].content)
+    throw new Error(`Built runtime notices differ from reviewed content: ${key}`);
+  return {
+    id: `runtime:deno@${version}/${target}`,
+    component: `Deno ${version} compiled runtime for ${target} (including third-party dependencies)`,
+    license: 'See individual runtime dependency notices',
+    files: [],
+    texts,
+  };
+}
+
 /** Resolve installed components and licensing facts, independently of the reviewed snapshot. */
-async function components(root, { bundleInputs, target, env = process.env }) {
+async function components(
+  root,
+  {
+    bundleInputs,
+    oarBundleInputs,
+    oarRuntimeNotices,
+    target,
+    env = process.env,
+    run: metadataCommand = run,
+  },
+  scope = {
+    cargoTargets: target ? [target] : distributionTargets,
+    runtimeTargets: target ? [target] : distributionTargets,
+    requireRuntimeBuild: Boolean(target),
+  },
+) {
   if (!bundleInputs) throw new Error('The current product bundle input manifest is required');
+  if (!oarBundleInputs) throw new Error('The current OAR bundle input manifest is required');
   const records = new Map();
   function add(record) {
     const digest = hash(
@@ -114,6 +210,24 @@ async function components(root, { bundleInputs, target, env = process.env }) {
   const supplements = JSON.parse(
     await readFile(join(root, 'scripts/rust/notices-sources.json'), 'utf8'),
   );
+  const dependencyRoot = resolve(root, env.MAKA_JS_DEPS ?? '.');
+  const require = createRequire(join(dependencyRoot, 'package.json'));
+  const modules = await realpath(join(dependencyRoot, 'node_modules'));
+  const lock = JSON.parse(await readFile(join(dependencyRoot, 'package-lock.json'), 'utf8'));
+  const deno = JSON.parse(
+    await readFile(join(dependencyRoot, 'node_modules/deno/package.json'), 'utf8'),
+  );
+  for (const triple of scope.runtimeTargets) {
+    add(
+      await runtimeNoticeRecord(root, {
+        version: deno.version,
+        target: triple,
+        supplements,
+        actual: scope.requireRuntimeBuild ? oarRuntimeNotices : undefined,
+        requireActual: scope.requireRuntimeBuild,
+      }),
+    );
+  }
   const directory = join(root, 'third-party/playwright');
   const playwright = JSON.parse(await readFile(join(directory, 'upstream.json'), 'utf8'));
   const playwrightFiles = [];
@@ -136,11 +250,9 @@ async function components(root, { bundleInputs, target, env = process.env }) {
       })),
   });
   const packages = new Map();
-  for (const triple of target
-    ? [target]
-    : Object.values(nativeCliTargets).map(({ os, cpu }) => rustTarget(os, cpu))) {
+  for (const triple of scope.cargoTargets) {
     const metadata = JSON.parse(
-      run(
+      metadataCommand(
         'cargo',
         ['metadata', '--locked', '--format-version', '1', '--filter-platform', triple],
         root,
@@ -169,60 +281,14 @@ async function components(root, { bundleInputs, target, env = process.env }) {
   for (const pkg of [...packages.values()].sort((a, b) =>
     (a.name + a.version).localeCompare(b.name + b.version),
   )) {
-    const directory = dirname(pkg.manifest_path);
-    let provenance;
-    let source = pkg.source;
-    if (!source) {
-      const vendored = localPath(root, directory).split('/').slice(0, 2).join('/');
-      provenance = JSON.parse(await readFile(join(root, vendored, 'upstream.json'), 'utf8'));
-      source = `${provenance.repository}#${provenance.revision} (adapted; ${localPath(root, directory)})`;
-    }
-    const files = await localLicenses(directory, pkg.license_file);
-    const local = files.filter(({ content }) => content.trim().length >= 80);
-    const references = files.some(
-      ({ content }) => content.trim().length < 80 && content.includes('../'),
-    );
-    let texts;
-    let upstream;
-    if (pkg.source?.includes('github.com/maka-agent/cua'))
-      texts = [
-        {
-          file: 'platform/computer-use/THIRD_PARTY_NOTICES',
-          source,
-          content: await readFile(join(root, 'platform/computer-use/THIRD_PARTY_NOTICES'), 'utf8'),
-        },
-      ];
-    else if (supplements[pkg.name + '@' + pkg.version])
-      texts = await supplementTexts(root, supplements[pkg.name + '@' + pkg.version]);
-    else {
-      texts = [];
-      if (!local.length || references)
-        upstream = await upstreamIdentity(pkg, directory, provenance);
-    }
-    const archive =
-      pkg.source === 'registry+https://github.com/rust-lang/crates.io-index'
-        ? `https://crates.io/api/v1/crates/${pkg.name}/${pkg.version}/download`
-        : source;
-    texts.push(...local.map(({ path, content }) => ({ source: archive + ' :: ' + path, content })));
-    add({
-      id: `cargo:${pkg.name}@${pkg.version} ${source}`,
-      component:
-        `${pkg.name}@${pkg.version} (${pkg.license ?? 'MIT; see upstream notice'})` +
-        (pkg.authors.length ? `; authors declared by package: ${pkg.authors.join(', ')}` : ''),
-      license: pkg.license,
-      files,
-      texts,
-      upstream,
-    });
+    add(await cargoLicenseRecord(root, pkg, supplements));
   }
-  const dependencyRoot = resolve(root, env.MAKA_JS_DEPS ?? '.');
-  const require = createRequire(join(dependencyRoot, 'package.json'));
-  const modules = await realpath(join(dependencyRoot, 'node_modules'));
-  const lock = JSON.parse(await readFile(join(dependencyRoot, 'package-lock.json'), 'utf8'));
   const bundled = new Set();
   // Ajv standalone validators embed compiler-generated code without importing it.
   for (const input of [
     require.resolve('ajv/dist/standalone/index.js'),
+    require.resolve('deno/package.json'),
+    ...Object.keys(JSON.parse(await readFile(oarBundleInputs, 'utf8')).inputs),
     ...JSON.parse(await readFile(bundleInputs, 'utf8')),
   ]) {
     if (!input.includes('node_modules')) continue;
@@ -261,19 +327,50 @@ async function components(root, { bundleInputs, target, env = process.env }) {
 }
 
 /** Check coverage of this build's actual components; extra reviewed platform notices are allowed. */
-export async function verifyNotices(root, options) {
-  const manifest = JSON.parse(await readFile(join(root, manifestPath), 'utf8'));
+async function verifyCoverage(root, options, manifest, scope) {
   if (manifest.sha256 !== hash(await readFile(join(root, documentPath))))
     throw new Error('Third-party notice document changed; regenerate and review the notices');
-  const actual = await components(root, options);
+  const actual = await components(root, options, scope);
   for (const [id, record] of actual)
     if (manifest.components[id] !== record.digest)
       throw new Error('Third-party notices do not cover current component or license data: ' + id);
   return join(root, documentPath);
 }
 
-export async function generateNotices(root, options) {
-  const records = await components(root, options);
+/** Release verification always requires the actual built runtime for an explicit target. */
+export async function verifyNotices(root, options) {
+  const manifest = JSON.parse(await readFile(join(root, manifestPath), 'utf8'));
+  return verifyCoverage(root, options, manifest);
+}
+
+/** PR coverage checks reviewed inputs, not an assertion about any newly built runtime. */
+export async function verifyReviewedNotices(root, options) {
+  if (options.target || options.oarRuntimeNotices)
+    throw new Error(
+      'Reviewed coverage does not accept build inputs; use check for release verification',
+    );
+  const manifest = JSON.parse(await readFile(join(root, manifestPath), 'utf8'));
+  const supplements = JSON.parse(
+    await readFile(join(root, 'scripts/rust/notices-sources.json'), 'utf8'),
+  );
+  const runtimeKeys = [
+    ...Object.keys(supplements).filter((key) => key.startsWith('deno-runtime@')),
+    ...Object.keys(manifest.components).filter((key) => key.startsWith('runtime:deno@')),
+  ];
+  const targets = [...new Set(runtimeKeys.map((key) => key.slice(key.indexOf('/') + 1)))].sort();
+  if (!targets.length) throw new Error('No reviewed runtime targets in the notice snapshot');
+  for (const target of targets)
+    if (!distributionTargets.includes(target))
+      throw new Error('Unsupported reviewed runtime target: ' + target);
+  return verifyCoverage(root, options, manifest, {
+    cargoTargets: distributionTargets,
+    runtimeTargets: targets,
+    requireRuntimeBuild: false,
+  });
+}
+
+/** Render license records without asserting that they are a reviewed release snapshot. */
+export async function renderNoticeRecords(root, records) {
   const groups = new Map();
   const download = licenseDownloader(root);
   const upstream = new Map();
@@ -334,6 +431,16 @@ export async function generateNotices(root, options) {
     'Third-party notices for the Maka native distribution\n\n' +
     'Dependency sources and alternative license texts are preserved below. Source URLs identify the exact distributed versions.\n\n' +
     sections.join('\n' + '='.repeat(80) + '\n\n');
+  return { content, texts: groups.size };
+}
+
+export async function generateNotices(root, options) {
+  const records = await components(root, options, {
+    cargoTargets: distributionTargets,
+    runtimeTargets: options.target ? [options.target] : distributionTargets,
+    requireRuntimeBuild: Boolean(options.target),
+  });
+  const { content, texts } = await renderNoticeRecords(root, records);
   await writeFile(join(root, documentPath), content);
   await writeFile(
     join(root, manifestPath),
@@ -346,10 +453,10 @@ export async function generateNotices(root, options) {
       2,
     ) + '\n',
   );
-  return { components: records.size, texts: groups.size, bytes: Buffer.byteLength(content) };
+  return { components: records.size, texts, bytes: Buffer.byteLength(content) };
 }
 
-async function withProduct(root, action) {
+async function withProduct(root, action, options) {
   const stage = await mkdtemp(join(tmpdir(), 'maka-notices-'));
   try {
     const product = join(stage, 'product');
@@ -358,16 +465,42 @@ async function withProduct(root, action) {
       MAKA_UI_BUNDLER: await uiCompiler(root),
       MAKA_UI_BUNDLE_DIR: '',
     });
-    return await action(root, { bundleInputs: join(product, 'bundle-inputs.json') });
+    const oar = join(stage, 'oar');
+    run(process.execPath, ['scripts/oar/build.mjs', '--bundle-only', '--output', oar], root);
+    return await action(root, {
+      ...options,
+      bundleInputs: join(product, 'bundle-inputs.json'),
+      oarBundleInputs: join(oar, 'bundle-inputs.json'),
+    });
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  if (process.argv.length !== 3 || !['check', 'generate'].includes(process.argv[2]))
-    throw new Error('Usage: notices.mjs <check|generate>');
+  const { values, positionals } = parseArgs({
+    allowPositionals: true,
+    options: { target: { type: 'string' }, 'oar-runtime-notices': { type: 'string' } },
+  });
+  if (positionals.length !== 1 || !['check', 'check-reviewed', 'generate'].includes(positionals[0]))
+    throw new Error(
+      'Usage: notices.mjs <check|check-reviewed|generate> [--target TRIPLE --oar-runtime-notices FILE]',
+    );
+  if (Boolean(values.target) !== Boolean(values['oar-runtime-notices']))
+    throw new Error('--target and --oar-runtime-notices must be supplied together');
+  if (positionals[0] === 'check-reviewed' && values.target)
+    throw new Error('check-reviewed does not accept build inputs; use check');
+  const action = {
+    check: verifyNotices,
+    'check-reviewed': verifyReviewedNotices,
+    generate: generateNotices,
+  }[positionals[0]];
   console.log(
-    await withProduct(repository, process.argv[2] === 'check' ? verifyNotices : generateNotices),
+    await withProduct(repository, action, {
+      target: values.target,
+      oarRuntimeNotices: values['oar-runtime-notices']
+        ? resolve(values['oar-runtime-notices'])
+        : undefined,
+    }),
   );
 }

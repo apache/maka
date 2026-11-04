@@ -21,6 +21,40 @@ use super::*;
 use maka_event_log::sessions::SessionMutation;
 
 impl Owner {
+    pub(super) async fn backend_available(
+        &self,
+        backend: &BackendPreference,
+    ) -> Result<bool, String> {
+        Ok(match backend {
+            BackendPreference::Model {
+                connection_id,
+                model_id,
+                ..
+            } => {
+                let public_guard = self.catalog.snapshot.read().await;
+                let snapshot = public_guard
+                    .as_ref()
+                    .map_err(|_| "agent_configuration_unavailable")?
+                    .clone();
+                self.configuration
+                    .catalog()
+                    .await
+                    .map_err(|_| "agent_configuration_unavailable")?
+                    .connections
+                    .iter()
+                    .any(|row| {
+                        row.connection_id == *connection_id
+                            && row.enabled
+                            && row.enabled_model_ids.contains(model_id)
+                            && maka_providers::definition(&row.provider, snapshot.clone()).is_ok()
+                    })
+            }
+            BackendPreference::Executor { selection } => {
+                self.executors.select(selection.clone()).is_ok()
+            }
+        })
+    }
+
     pub async fn select_backend(&self, input: SelectBackend) -> Result<MetadataResult, String> {
         let runs = self.runs.lock().await;
         if runs.closing {
@@ -46,36 +80,7 @@ impl Owner {
                 session: Box::new(crate::service::summary(self, session)),
             });
         }
-        let available = match &input.backend {
-            BackendPreference::Model {
-                connection_id,
-                model_id,
-                ..
-            } => {
-                let public_guard = self.catalog.snapshot.read().await;
-                let snapshot = public_guard
-                    .as_ref()
-                    .map_err(|_| "agent_configuration_unavailable")?
-                    .clone();
-                self.configuration
-                    .catalog()
-                    .await
-                    .map_err(|_| "agent_configuration_unavailable")?
-                    .connections
-                    .iter()
-                    .any(|row| {
-                        row.connection_id == *connection_id
-                            && row.enabled
-                            && row.enabled_model_ids.contains(model_id)
-                            && maka_providers::definition(&row.provider, snapshot.clone()).is_ok()
-                    })
-            }
-            BackendPreference::Executor { selection } => self
-                .settings
-                .executors
-                .iter()
-                .any(|entry| entry.name == selection.executor),
-        };
+        let available = self.backend_available(&input.backend).await?;
         if !available {
             return Ok(MetadataResult::Rejected {
                 reason: Rejection::ToolsUnavailable,

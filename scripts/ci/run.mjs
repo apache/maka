@@ -96,7 +96,7 @@ export function executor(
       for (const script of ['scripts/asf-license-headers.mjs', 'scripts/rust/dependencies.mjs'])
         await node([script, 'check']);
     } else if (id === 'notices') {
-      await node(['scripts/rust/notices.mjs', 'check']);
+      await node(['scripts/rust/notices.mjs', 'check-reviewed']);
     } else {
       throw new Error(`Unknown check: ${id}`);
     }

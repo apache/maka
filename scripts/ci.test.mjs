@@ -392,3 +392,65 @@ test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PR
     join('C:\\Program Files', 'Git', 'bin', 'bash.exe'),
   );
 });
+
+test('OAR source, worker tests and native fixture reach the Host suite and product build', () => {
+  for (const path of [
+    'plugins/agent/oar-executor/worker/main.mjs',
+    'plugins/agent/native/tests/support/oar-worker.mjs',
+    'scripts/oar/build.mjs',
+    'scripts/oar/worker.test.mjs',
+    'scripts/rust/cargo.mjs',
+    'scripts/rust/build-v8.mjs',
+    'scripts/rust/v8-source.json',
+    'scripts/rust/v8-prebuilts.json',
+    'scripts/rust/v8-cache.mjs',
+    'scripts/rust/compile-v8.mjs',
+    'scripts/rust/v8-notices.mjs',
+    'scripts/rust/license-files.mjs',
+    'scripts/rust/license-source.mjs',
+    'scripts/rust/notices.mjs',
+    'scripts/rust/notices-sources.json',
+    'scripts/rust/licenses/deno-2.9.6-source-notices.txt',
+  ]) {
+    const plan = fixture()([path]);
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.suites.root.filter, 'all()', path);
+    assert.ok(plan.suites['native-build'], path);
+    assert.ok(plan.suites.product, path);
+  }
+});
+
+test('product verification reaches the reviewed notice gate and propagates its failure', async () => {
+  const plan = fixture()(['scripts/rust/licenses/deno-runtime-2.9.6-aarch64-apple-darwin.txt']);
+  assert.ok(plan.suites.product);
+  const missingCoverage = new Error('Third-party notices do not cover cargo:windows@1.0.0');
+  let productChecked = false;
+  let noticeChecks = 0;
+  let covered = false;
+  const exec = executor(
+    root,
+    {},
+    {
+      run: async (exe, args, options) => {
+        assert.equal(exe, process.execPath);
+        assert.equal(options.cwd, root);
+        if (args[0] === 'scripts/rust/product.mjs' && args[1] === 'test') {
+          productChecked = true;
+          return '';
+        }
+        if (args[0] === 'scripts/rust/notices.mjs' && args[1] === 'check-reviewed') {
+          assert.equal(productChecked, true);
+          noticeChecks++;
+          if (!covered) throw missingCoverage;
+          return '';
+        }
+        throw new Error('Unexpected product command: ' + args.join(' '));
+      },
+    },
+  );
+  await assert.rejects(exec.verify('product'), (error) => error === missingCoverage);
+  assert.equal(noticeChecks, 1);
+  covered = true;
+  await exec.verify('product');
+  assert.equal(noticeChecks, 2);
+});

@@ -38,7 +38,9 @@ mod graph;
 mod imports;
 mod interactions;
 mod lifecycle;
+mod models;
 mod notifications;
+mod oar_setup;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
@@ -154,18 +156,6 @@ impl BackgroundKind {
         *self == Self::Schedule
     }
 }
-enum Selection {
-    Model(Option<ModelSelection>, Option<ThinkingLevel>),
-    Executor(maka_agent_api::executor::Selection),
-}
-struct Submission {
-    id: String,
-    text: String,
-    attachments: Vec<String>,
-    selection: Selection,
-    delivery: maka_agent_api::contract::SendDelivery,
-    expected_invocation_id: Option<String>,
-}
 enum PreparedBackend {
     Model(Box<(crate::model::Source, maka_agent_engine::PreparedModel)>),
     Executor(Box<crate::executor::Backend>),
@@ -247,7 +237,7 @@ pub(crate) struct Owner {
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
-    executors: crate::executor::Executors,
+    pub(super) executors: crate::executor::Executors,
     runs: Arc<runs::Registry>,
     workers: TaskTracker,
     producers: TaskTracker,
@@ -398,7 +388,11 @@ impl Owner {
         let native_language = maka_config::language::native_language();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
         let instruction_home = assistant::open_home(settings.assistant.as_ref())?;
-        let executors = crate::executor::Executors::capture(&context, &settings.executors)?;
+        let executors = crate::executor::Executors::capture(
+            &context,
+            &settings.executors,
+            settings.oar.as_ref(),
+        )?;
         let configuration = Arc::new(
             ConfigurationStore::for_root(root)
                 .await
@@ -802,6 +796,13 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(Created::Rejected { reason });
         }
+        if let Some(backend) = &input.backend
+            && !self.backend_available(backend).await?
+        {
+            return Ok(Created::Rejected {
+                reason: Rejection::ToolsUnavailable,
+            });
+        }
         let id = self.operation_id(operation);
         let admission = self.runs.session(&id).await;
         if admission.state().await.closing {
@@ -928,7 +929,7 @@ impl Owner {
                         .identity
                         .agent()
                         .map(|source| source.session_id.clone()),
-                    backend: None,
+                    backend: input.backend,
                     compaction_prompt: None,
                     collaboration_mode: CollaborationMode::Agent,
                     tools,
@@ -1156,57 +1157,8 @@ impl Owner {
         let Send {
             session_id: id,
             message: text,
-            model: selection,
-            thinking_level,
+            backend: selection,
             attachments,
-            delivery,
-            expected_invocation_id,
-        } = input;
-        self.submit(
-            Submission {
-                id,
-                text,
-                attachments,
-                selection: Selection::Model(selection, thinking_level),
-                delivery,
-                expected_invocation_id,
-            },
-            operation,
-            parent,
-        )
-        .await
-    }
-    pub async fn execute(
-        self: &Arc<Self>,
-        input: Execute,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-        parent: &maka_capabilities::call::Scope,
-    ) -> Result<SendResult, String> {
-        self.submit(
-            Submission {
-                id: input.session_id,
-                text: input.message,
-                attachments: input.attachments,
-                selection: Selection::Executor(input.executor),
-                delivery: maka_agent_api::contract::SendDelivery::Queue,
-                expected_invocation_id: None,
-            },
-            operation,
-            parent,
-        )
-        .await
-    }
-    async fn submit(
-        self: &Arc<Self>,
-        input: Submission,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-        parent: &maka_capabilities::call::Scope,
-    ) -> Result<SendResult, String> {
-        let Submission {
-            id,
-            text,
-            attachments,
-            selection,
             delivery,
             expected_invocation_id,
         } = input;
@@ -1303,14 +1255,25 @@ impl Owner {
                 return Ok(result);
             }
         }
+        let mut selection = selection.or_else(|| session.configuration.backend.clone());
+        self.use_bot_model(parent, &mut selection).await;
+        let Some(selection) = selection else {
+            return Ok(SendResult::Rejected {
+                session_id: id,
+                reason: SendRejection::ModelUnavailable,
+                skills: None,
+            });
+        };
         let backend = match selection {
-            Selection::Model(selection, thinking_level) => {
+            BackendPreference::Model {
+                connection_id,
+                model_id,
+                thinking_level,
+            } => {
                 let prepared = async {
-                    let (selection, thinking_level) = match selection {
-                        Some(selection) => (selection, thinking_level),
-                        None => self
-                            .saved_model(&session.configuration)
-                            .map_err(RunError::InvalidInput)?,
+                    let selection = ModelSelection {
+                        connection_id,
+                        model_id,
                     };
                     crate::model::Source::select(
                         self.configuration.clone(),
@@ -1336,7 +1299,7 @@ impl Owner {
                     }
                 }
             }
-            Selection::Executor(selection) => {
+            BackendPreference::Executor { selection } => {
                 if self
                     .admitted_tools(&id, &session.configuration.tools)
                     .is_some()
@@ -1662,6 +1625,7 @@ impl Owner {
                 None => Ok(()),
             };
             let recap = owner.recap_storage.finish().await;
+            let executors = owner.executors.finish().await;
             let auxiliary = owner.auxiliary.resources.finish().await;
             let projects = owner.mcp_projects.close().await;
             let mcp = owner.mcp.close().await;
@@ -1683,6 +1647,7 @@ impl Owner {
             goals?;
             graph?;
             recap?;
+            executors?;
             auxiliary.map_err(|error| error.to_string())?;
             configuration.map_err(|_| "agent_configuration_cleanup_unconfirmed".into())
         })

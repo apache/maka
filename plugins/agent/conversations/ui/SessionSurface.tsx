@@ -36,6 +36,7 @@ import {
   type JSX,
 } from 'nsh';
 import { Button, Dialog } from 'nsh/base';
+import { backendName } from '../../../../products/maka/workbench/app/modelSelection';
 import type { UiContext, UiHost } from '../../../../packages/plugin-sdk/src/workbench.js';
 import type { StagedFile } from 'maka/host';
 import type {
@@ -304,10 +305,7 @@ export function createConversationUi(
       }
       pendingModelDetails.set({ kind: 'loading' });
       try {
-        const result = await host.query('settings', 'resolveModel', {
-          connectionId: backend.connectionId,
-          modelId: backend.modelId,
-        });
+        const result = await host.query('agent', 'model', { backend });
         if (!alive || generation !== pendingModelGeneration) return;
         pendingModelDetails.set(
           result.kind === 'ready'
@@ -315,7 +313,7 @@ export function createConversationUi(
             : {
                 kind: 'unavailable',
                 message: uiMessage('Model unavailable: {model}.', {
-                  model: backend.modelId,
+                  model: backendName(backend),
                 }),
               },
         );
@@ -633,7 +631,7 @@ export function createConversationUi(
       throw new UiError('This model selection is no longer open.');
     const result = await control('selectBackend', {
       sessionId: owner.sessionId,
-      backend: { kind: 'model', ...backend },
+      backend,
     });
     if (result.kind !== 'committed')
       throw new UiError('Model selection rejected: {reason}', {
@@ -724,7 +722,7 @@ export function createConversationUi(
           )
             return;
           updatePending({
-            backend: { ...page.defaultTarget, thinkingLevel: null },
+            backend: { kind: 'model', ...page.defaultTarget, thinkingLevel: null },
           });
           return pendingModel.refreshModel();
         })
@@ -937,7 +935,7 @@ export function createConversationUi(
             requireUnchangedDraft();
             if (pendingBackend() !== backend || pendingModelDetails().kind !== 'ready')
               throw new UiError('Model unavailable: {model}. Choose another model.', {
-                model: backend.modelId,
+                model: backendName(backend),
               });
             let id = pendingCreated();
             let sendFirst = true;
@@ -961,6 +959,7 @@ export function createConversationUi(
                 automaticTitle: true,
                 labels: [],
                 workspace,
+                backend,
               });
               if (result.kind !== 'created')
                 throw new UiError('Conversation creation rejected: {reason}', {
@@ -1002,14 +1001,16 @@ export function createConversationUi(
                   });
               }
             }
-            const choice = await control('selectBackend', {
-              sessionId: id,
-              backend: { kind: 'model', ...backend },
-            });
-            if (choice.kind !== 'committed')
-              throw new UiError('Model selection rejected: {reason}', {
-                reason: choice.reason ?? choice.kind,
+            if (reusingSession) {
+              const choice = await control('selectBackend', {
+                sessionId: id,
+                backend,
               });
+              if (choice.kind !== 'committed')
+                throw new UiError('Model selection rejected: {reason}', {
+                  reason: choice.reason ?? choice.kind,
+                });
+            }
             requireUnchangedDraft();
             const stored = await loadDraft(host.session(id));
             if (stored.revision > 0)
@@ -1259,19 +1260,21 @@ export function createConversationUi(
         await pendingDefaultRead;
         requireOwner();
         const backend = pendingBackend();
-        if (!backend) throw new UiError('Choose a model.');
+        if (backend?.kind !== 'model') throw new UiError('This action requires a native model.');
         await pendingModel.refreshModel();
         requireOwner();
         const model = pendingModelDetails();
         if (pendingBackend() !== backend || model.kind !== 'ready')
           throw new UiError('Choose a model.');
         let id = pendingCreated();
+        const reusingSession = id !== null;
         if (!id) {
           const result = await control('create', {
             title: tr('New conversation'),
             automaticTitle: true,
             labels: [],
             workspace,
+            backend,
           });
           if (result.kind !== 'created') {
             console.warn('Goal conversation creation rejected', result);
@@ -1299,13 +1302,15 @@ export function createConversationUi(
             throw new UiError('This action could not be completed.');
         }
         requireOwner();
-        const chosen = await control('selectBackend', {
-          sessionId: id,
-          backend: { kind: 'model', ...backend },
-        });
-        if (chosen.kind !== 'committed') {
-          console.warn('Goal model selection rejected', chosen);
-          throw new UiError('This action could not be completed.');
+        if (reusingSession) {
+          const chosen = await control('selectBackend', {
+            sessionId: id,
+            backend,
+          });
+          if (chosen.kind !== 'committed') {
+            console.warn('Goal model selection rejected', chosen);
+            throw new UiError('This action could not be completed.');
+          }
         }
         const observed = (await host.query('agent', 'observe', { sessionId: id })).session;
         requireOwner();
@@ -1330,7 +1335,7 @@ export function createConversationUi(
                 boundaryRevision: observed.boundaryRevision,
                 binding: observed.binding,
               },
-              model: model.choice.selection,
+              model: { connectionId: backend.connectionId, modelId: backend.modelId },
               thinkingLevel: backend.thinkingLevel ?? null,
             },
           });
@@ -2491,10 +2496,10 @@ function projectComposerSession(
           query,
           ...(directory ? { directory } : {}),
         }),
-      skills: ({ query, model, thinkingLevel }) =>
+      skills: ({ query, backend }) =>
         host.query('agent', 'skillCandidates', {
           sessionId: owner.sessionId,
-          backend: { kind: 'model', model, thinkingLevel },
+          backend,
           query,
         }),
       pathLabel: host.pathLabel,

@@ -38,14 +38,19 @@ pub struct ServiceExecutor {
     #[serde(default)]
     pub setup: Option<setup::Binding>,
 }
+pub use maka_agent_facts::executor::Selection;
+/// Explicit opt-in to OAR's own default permissions and native agent tools.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentExecutorSelection")]
-pub struct Selection {
-    #[schemars(length(min = 1))]
-    pub executor: String,
-    pub settings: maka_agent_facts::executor::Settings,
+#[schemars(rename = "AgentOarConfiguration")]
+pub struct OarConfiguration {
+    /// Absent selects the worker shipped beside the Maka executable.
+    #[serde(default)]
+    pub executable: Option<String>,
+    #[serde(default)]
+    pub args: Vec<String>,
 }
+
 /// Observations and text; immutable attachments travel in the actual request resources.
 /// No path, invocation or conversation key is authority.
 #[derive(Serialize, Deserialize, JsonSchema)]

@@ -1,0 +1,10 @@
+Original source notices from the checksum-verified published crate.
+
+swc_ecma_transforms_base-30.0.1/src/fixer.rs
+
+})('versions', []).push({
+  version: core.version,
+  mode: __webpack_require__(39) ? 'pure' : 'global',
+  copyright: '© 2018 Denis Pushkarev (zloirock.ru)'
+});"
+    );

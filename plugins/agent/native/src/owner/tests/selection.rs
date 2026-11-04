@@ -55,28 +55,8 @@ pub(super) async fn edit(
         CatalogMutationResult::Committed { .. }
     ));
 }
-async fn settings(fixture: &Fixture) -> Binding {
-    let client = fixture.app.client();
-    client
-        .bind(client.activation(&id(2)).unwrap(), "settings".into())
-        .await
-        .unwrap()
-        .remove(0)
-}
 async fn models(fixture: &Fixture, input: Value) -> Result<Value, String> {
-    fixture
-        .app
-        .client()
-        .start(
-            settings(fixture).await,
-            "models".into(),
-            input,
-            scope(&fixture.issuer, true),
-            Attachments::new().into(),
-        )
-        .await?
-        .result()
-        .await
+    fixture.query("models", input).await
 }
 
 #[tokio::test]
@@ -100,11 +80,16 @@ async fn explicit_models_keep_their_identity_across_catalog_updates_and_switch_i
             }
         });
         let mut fixture = Fixture::new(&base, None).await;
-        let session = fixture.create("Per-message model choice").await;
         let selected_model = fixture.selection().await;
+        let initial_backend = model_backend(&selected_model);
+        let mut create = fixture.create_input("Per-message model choice").await;
+        create["backend"] = serde_json::to_value(&initial_backend).unwrap();
+        let created = fixture.mutation(2, "create", create, Uuid::new_v4()).await.unwrap();
+        assert_eq!(created["session"]["backend"], serde_json::to_value(&initial_backend).unwrap());
+        let session = created["session"]["id"].as_str().unwrap().to_owned();
         edit(&fixture, |changes| changes.enabled = Some(false)).await;
         let rejected = fixture.mutation(2, "send",
-            json!({"sessionId":session,"message":"Keep this message","model":selected_model}),
+            json!({"sessionId":session,"message":"Keep this message","backend":model_backend(&selected_model)}),
             Uuid::new_v4()).await.unwrap();
         assert_eq!(rejected, json!({"kind":"rejected","sessionId":session,"reason":"model_unavailable","skills":null}));
         let before_send = fixture.query("history", json!({"sessionId":session,"position":{"kind":"start"}})).await.unwrap();
@@ -127,11 +112,12 @@ async fn explicit_models_keep_their_identity_across_catalog_updates_and_switch_i
         for model in ["fixture-model", "second-model"] {
             let mut selected = selected_model.clone();
             selected.model_id = model.into();
+            let backend = (model == "second-model").then(|| model_backend(&selected));
             let started = fixture
                 .mutation(
                     2,
                     "send",
-                    json!({"sessionId":session,"message":"Chosen model","model":selected}),
+                    json!({"sessionId":session,"message":"Chosen model","backend":backend}),
                     Uuid::new_v4(),
                 )
                 .await
@@ -221,10 +207,10 @@ async fn thinking_choices_reach_requests_and_queued_policy_cannot_steer_another_
         let (mut socket, _) = listener.accept().await.unwrap();
         assert_eq!(request(&mut socket).await["reasoning_effort"], "high");
         for level in [Off, Low] {
-            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","delivery":"queue","model":selection,"thinkingLevel":level}), Uuid::new_v4()).await.unwrap();
+            let result = fixture.mutation(2, "send", json!({"sessionId":session,"message":"chosen thinking","delivery":"queue","backend":{"kind":"model","connectionId":selection.connection_id,"modelId":selection.model_id,"thinkingLevel":level}}), Uuid::new_v4()).await.unwrap();
             assert_eq!(result["kind"], "queued");
         }
-        assert_eq!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","model":selection,"thinkingLevel":"ultra"}), Uuid::new_v4()).await.unwrap(),
+        assert_eq!(fixture.mutation(2, "send", json!({"sessionId":session,"message":"unsupported","delivery":"queue","backend":{"kind":"model","connectionId":selection.connection_id,"modelId":selection.model_id,"thinkingLevel":"ultra"}}), Uuid::new_v4()).await.unwrap(),
             json!({"kind":"rejected","sessionId":session,"reason":"model_unavailable","skills":null}));
         let pending = fixture.session(&session).await.pending_messages(&session).await.unwrap();
         assert_eq!(pending.len(), 2);

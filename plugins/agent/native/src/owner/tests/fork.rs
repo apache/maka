@@ -46,7 +46,7 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
             .mutation(
                 2,
                 "send",
-                json!({"sessionId":source,"message":"Turn A: retain this conversation","attachments":[attachment],"model":f.selection().await}),
+                json!({"sessionId":source,"message":"Turn A: retain this conversation","attachments":[attachment],"backend":model_backend(&f.selection().await)}),
                 Uuid::new_v4(),
             )
             .await
@@ -93,7 +93,7 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
             .mutation(
                 2,
                 "send",
-                json!({"sessionId":source,"message":"Turn B: active tail must stay out","model":f.selection().await}),
+                json!({"sessionId":source,"message":"Turn B: active tail must stay out","backend":model_backend(&f.selection().await)}),
                 Uuid::new_v4(),
             )
             .await
@@ -122,7 +122,7 @@ async fn fork_completed_turn_excludes_active_tail_and_continues_without_replayin
         assert_eq!(f.query("observe", json!({"sessionId":target})).await.unwrap()["run"], Value::Null);
         assert_eq!(std::fs::read_to_string(f.workspace.join("fork-effect.txt")).unwrap(), "later external edit\n");
 
-        assert_eq!(f.mutation(2, "send", json!({"sessionId":target,"message":"New target input","model":f.selection().await}), Uuid::new_v4()).await.unwrap()["kind"], "started");
+        assert_eq!(f.mutation(2, "send", json!({"sessionId":target,"message":"New target input","backend":model_backend(&f.selection().await)}), Uuid::new_v4()).await.unwrap()["kind"], "started");
         let (mut socket, _) = listener.accept().await.unwrap();
         let prompt = request(&mut socket).await;
         let messages = prompt["messages"].to_string();

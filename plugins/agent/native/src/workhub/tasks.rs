@@ -166,15 +166,14 @@ struct Route {
     worker: String,
     target: Target,
     note: String,
-    model: Option<crate::ModelSelection>,
-    thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-    executor: Option<maka_agent_api::executor::Selection>,
+    backend: maka_agent_facts::executor::BackendPreference,
 }
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum DeliveryMethod {
     #[default]
     Send,
+    // Retained only to recover receipts of assignments frozen before unified send.
     Execute,
 }
 impl DeliveryMethod {
@@ -255,7 +254,7 @@ pub(super) fn prepare(
         vec![ToolRegistration {
         definition: ToolDefinition {
             provider: None, name: NAME.into(),
-            description: "Coordinate work through selected Agent services. Workers, sessions, presets, tools, executors and directories expose available targets and published choices. route sends the original request, attachments and note; route_preset freezes the preset's worker, model, thinking level and tool restrictions. New targets use complete directory selections and either model/thinkingLevel or executor/settings. Executor settings use the worker backend, not Host model credentials; executor tasks cannot resume as native invocations. tools: null uses installed tools; [] disables tools. Restricted sessions cannot use external executors.
+            description: "Coordinate work through selected Agent services. Workers, sessions, presets, tools, executors and directories expose available targets and published choices. route sends the original request, attachments and note; route_preset freezes the preset's worker, model, thinking level and tool restrictions. New targets use complete directory selections and a tagged backend: kind:model with connectionId/modelId/thinkingLevel, or kind:executor with selection{executor,settings{runtime,model,thinkingLevel}}. Executor settings use the worker backend, not Host model credentials; executor tasks cannot resume as native invocations. tools: null uses installed tools; [] disables tools. Restricted sessions cannot use external executors.
 
 Dependencies are existing taskIds; successful final answers are frozen into downstream input. Deferred tasks advance automatically and notify this conversation; failed or shared dependencies reject downstream work. Replacement work requires an explicit route. cancel_pending applies only before input resolution; already_resolved is not a confirmed stop. Use control stop for admitted work.
 
@@ -535,9 +534,11 @@ impl Hub {
                     tools: Some(preset.tools),
                 },
                 note,
-                model: Some(model),
-                thinking_level: preset.thinking_level,
-                executor: None,
+                backend: maka_agent_facts::executor::BackendPreference::Model {
+                    connection_id: model.connection_id,
+                    model_id: model.model_id,
+                    thinking_level: preset.thinking_level,
+                },
             })
         } else {
             input
@@ -761,9 +762,7 @@ impl Hub {
             worker,
             target,
             note,
-            model,
-            thinking_level,
-            executor,
+            backend,
         } = route;
         let binding = self
             .tasks
@@ -800,17 +799,7 @@ impl Hub {
         if note.trim().is_empty() || note.contains('\0') {
             return Err("workhub_route_invalid".into());
         }
-        let (delivery, mut input) = match (model, executor) {
-            (Some(model), None) => (
-                DeliveryMethod::Send,
-                serde_json::json!({"model":model,"thinkingLevel":thinking_level}),
-            ),
-            (None, Some(executor)) if thinking_level.is_none() => (
-                DeliveryMethod::Execute,
-                serde_json::json!({"executor":executor}),
-            ),
-            _ => return Err("workhub_execution_selection_invalid".into()),
-        };
+        let mut input = serde_json::json!({"backend":backend,"delivery":"queue"});
         let attachments = self
             .transfers(context, content.attachments.as_deref().unwrap_or_default())
             .await?;
@@ -854,7 +843,7 @@ impl Hub {
                 worker,
                 binding: binding.execution_basis().into(),
                 operation: child_id(id),
-                delivery,
+                delivery: DeliveryMethod::Send,
                 input,
                 target,
                 attachments,

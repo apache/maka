@@ -109,6 +109,17 @@ export const configurations = {
           $ref: '#/$defs/AgentServiceExecutor',
         },
       },
+      oar: {
+        anyOf: [
+          {
+            $ref: '#/$defs/AgentOarConfiguration',
+          },
+          {
+            type: 'null',
+          },
+        ],
+        default: null,
+      },
       skillLibrary: {
         description:
           'Explicit Library import for immutable skill input preparation and metadata.\nThis does not select model tools or confer a service grant.',
@@ -336,6 +347,25 @@ export const configurations = {
         },
         additionalProperties: false,
         required: ['import'],
+      },
+      AgentOarConfiguration: {
+        description: "Explicit opt-in to OAR's own default permissions and native agent tools.",
+        type: 'object',
+        properties: {
+          executable: {
+            description: 'Absent selects the worker shipped beside the Maka executable.',
+            type: ['string', 'null'],
+            default: null,
+          },
+          args: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+            default: [],
+          },
+        },
+        additionalProperties: false,
       },
       AgentWorkspacePermissions: {
         type: 'object',
@@ -779,6 +809,17 @@ export const configurations = {
             },
             description: 'Explicit service backends; discovery does not authorize execution.',
           },
+          oar: {
+            anyOf: [
+              {
+                $ref: '#/$defs/AgentOarConfiguration',
+              },
+              {
+                type: 'null',
+              },
+            ],
+            default: null,
+          },
           skillLibrary: {
             type: ['string', 'null'],
             description:
@@ -1005,6 +1046,25 @@ export const configurations = {
           },
         },
         required: ['import'],
+      },
+      AgentOarConfiguration: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          executable: {
+            type: ['string', 'null'],
+            description: 'Absent selects the worker shipped beside the Maka executable.',
+            default: null,
+          },
+          args: {
+            type: 'array',
+            items: {
+              type: 'string',
+            },
+            default: [],
+          },
+        },
+        description: "Explicit opt-in to OAR's own default permissions and native agent tools.",
       },
       AgentWorkspacePermissions: {
         type: 'object',

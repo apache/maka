@@ -174,7 +174,7 @@ const explicitSend: AgentSend = {
   attachments: uploadedAttachmentIds,
   sessionId: 'conversation',
   message: 'Hello',
-  model: selectedModel,
+  backend: { kind: 'model', ...selectedModel, thinkingLevel: null },
 };
 const resumeOriginal: AgentResume = {
   sessionId: 'conversation',

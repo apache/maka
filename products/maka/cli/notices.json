@@ -1365,8 +1365,21 @@
     "cargo:zvariant_derive@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "d2a1df59cf5f99d30e08bf03aa8a1a041b97fed9fce896bb5b5de40d616e434c",
     "cargo:zvariant_utils@4.2.0 registry+https://github.com/rust-lang/crates.io-index": "58641071a870aa97a0f38637179049eaf2ffaeeafbbb53e016c3d409411b9f88",
     "cargo:zvariant@5.15.1 registry+https://github.com/rust-lang/crates.io-index": "8606849c24d82d7d012980cba51a766abfe0307b48f936ec59e11b9a05b9c288",
+    "npm:@agentclientprotocol/sdk@1.9.0 https://registry.npmjs.org/@agentclientprotocol/sdk/-/sdk-1.9.0.tgz sha512-saCOTPYBK1iqWqJFAYHXbg3+zCoFXyZZFoqQAwdTWkbrZZPpAETr80QOnYr2l+dzPwL0jpNhn3eDY8MoEIDbUA==": "d7e3b691746811ff3977c027762c50a5a5983a94c0bcede4e1da477a94a24f7a",
+    "npm:@botiverse/oar@0.86.0 https://registry.npmjs.org/@botiverse/oar/-/oar-0.86.0.tgz sha512-zso2RA/hKYT/L/OqRn//f5IbVuPEHucD1fJbJ+QR0ymaJhhfHWoBZOZr7igh5k2rQFvio+FnYl7VoSXMg4dXLw==": "683d8c26094ea0dfe23afed0b7d0630a7854374abf50be14647f4aa12de64898",
     "npm:ajv@8.20.0 https://registry.npmjs.org/ajv/-/ajv-8.20.0.tgz sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA==": "e0b7c0627c7c460c99e8d7b8ac586e4c975ea2a2fae3859fdc94e67ec3aa69cc",
-    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b"
+    "npm:cross-spawn@7.0.6 https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==": "ec2a0cf226ff27b44e5ca5562b792fd5fa261013e46b90842bec3beca97c93e5",
+    "npm:deno@2.9.6 https://registry.npmjs.org/deno/-/deno-2.9.6.tgz sha512-cr16GxYiUeH1juNvFTMOxt99V5QRVmANfy5UsZvE5hjC6P/o4Op/MBbRhLeBOL8WJpV6tr9hb+Kjb1MW0nEoVg==": "e6a1f17e290bd1a2d8dbad46935b2ff64f62d46480751af85d407ff8b65e7a2c",
+    "npm:dotenv@17.4.2 https://registry.npmjs.org/dotenv/-/dotenv-17.4.2.tgz sha512-nI4U3TottKAcAD9LLud4Cb7b2QztQMUEfHbvhTH09bqXTxnSie8WnjPALV/WMCrJZ6UV/qHJ6L03OqO3LcdYZw==": "bc279549798dd8064d08695e84b1e0b4458895f4a6dba21b333ae589ba132e82",
+    "npm:isexe@2.0.0 https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==": "d6d2beadbb5ba0a3f56bdd5f8c63ecbb78a5277427af3fb7ec69e7e8a4a65737",
+    "npm:path-key@3.1.1 https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==": "c033e8f66cb0ad13ed8ca8f7be900cef918a035f96960bb9da1bb740163e03dc",
+    "npm:pele@1.13.0 https://registry.npmjs.org/pele/-/pele-1.13.0.tgz sha512-Ie8UKY9x00MsuR3jO6AzUwzK2Z6MIV3Tf4EDdITiuk8Uaz8K7g0R082WqsqNaSU8DdgkrRvZThzhit83mi/uiw==": "4fa75f9a04ed6fb14b9abd85c484443e73dfb84762d829f77406ee9a1b31189b",
+    "npm:shebang-command@2.0.0 https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==": "411852168330a6e6794275db745ea0fa05fe19da0dc4c18e403d47238f07d754",
+    "npm:shebang-regex@3.0.0 https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==": "9ddcf9245db4dc716b831de7dafea76aaeda6be989d003aecbbe866f158cb6ab",
+    "npm:strip-json-comments@5.0.3 https://registry.npmjs.org/strip-json-comments/-/strip-json-comments-5.0.3.tgz sha512-1tB5mhVo7U+ETBKNf92xT4hrQa3pm0MZ0PQvuDnWgAAGHDsfp4lPSpiS6psrSiet87wyGPh9ft6wmhOMQ0hDiw==": "e0d7d300cdb1222350421ae123d24a7f153c864fe72019b1e75b22d4db375647",
+    "npm:which@2.0.2 https://registry.npmjs.org/which/-/which-2.0.2.tgz sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==": "940a4768fbfb77ba8c5084c7cda1f36ff623488a2b4cb1b0ddff508f853be15b",
+    "npm:zod@4.6.7 https://registry.npmjs.org/zod/-/zod-4.6.7.tgz sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg==": "8d405b2be44c8f37150acc9a7b5f1cf6103ddc26b043e56d34625b1c45d3a2ff",
+    "runtime:deno@2.9.6/aarch64-apple-darwin": "4127d7ce4c4742dc7f0f25cf778f59c7af5cbae28529d32a2652cddceff84ea0"
   },
-  "sha256": "5a467780ab5e5e96f333c14912460f5a043003fdabd80cab56dbf6021c877279"
+  "sha256": "9c9431b6ed48f5c43b8839dfc8441f842da60b8166a8299ae91f2afcaac15f31"
 }

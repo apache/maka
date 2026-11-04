@@ -1108,7 +1108,7 @@ impl Owner {
             }
             PreparedBackend::Executor(backend) => {
                 let backend = *backend;
-                configuration.thinking_level = backend.accepted.selection.settings.thinking_level;
+                configuration.thinking_level = None;
                 PreparedRun::Executor(Box::new(maka_agent_engine::ExecutorInput {
                     request: maka_agent_ports::executor::Request {
                         language: basis.language,

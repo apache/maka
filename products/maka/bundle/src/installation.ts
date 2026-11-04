@@ -159,15 +159,15 @@ export function installation(
       description +
         ' The maka-plugin-authoring skill documents the shared NSH UI contract. Mutation outcomes use the original operation receipt; an unknown result must be recovered, not retried as a new edit.',
     );
-  add(
-    'settings',
-    'models',
-    'ModelList',
-    'List selectable models from enabled connections, with stable model identities (connectionId, modelId), supported thinking levels, defaults and limits. Search model IDs, labels and connection names with query, or filter by connectionId. Use selection as SessionSend/SessionResume model. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not a live provider health check.',
-  );
+
   add('skills', 'search', 'SkillSearch', 'Find applicable skills in the selected collections.');
   add('skills', 'load', 'Skill', 'Read a selected skill and its resources.');
   for (const [method, name, description] of [
+    [
+      'models',
+      'ModelList',
+      'List selectable native models and enabled executor runtimes. Search model IDs, labels and source names with query. Pass a choice selection as SessionCreate/SessionSend backend; its kind preserves the execution source. Thinking levels are source-specific. Continue with the returned revision and next cursor; restart on changed. This is a catalog observation, not an execution or permissions grant.',
+    ],
     [
       'list',
       'SessionList',
@@ -176,7 +176,7 @@ export function installation(
     [
       'observe',
       'SessionRead',
-      'Inspect a conversation before controlling it: current revision, parent, sandbox policy, selected model and active invocation. Use its actual state and invocation IDs rather than assuming an earlier send has completed.',
+      'Inspect a conversation before controlling it: current revision, parent, sandbox policy, selected backend and active invocation. Use its actual state and invocation IDs rather than assuming an earlier send has completed.',
     ],
     [
       'history',
@@ -206,7 +206,7 @@ export function installation(
     [
       'send',
       'SessionSend',
-      'Send a task or follow-up to a conversation. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active conversations are steered by default; use delivery=queue to wait for the current turn. For a new conversation, supply a model selection from ModelList; omission requires a saved target model preference. A started/queued receipt means admission, not completion: use SessionWork/SessionHistory to read actual results before reporting success.',
+      'Send a task or follow-up to a conversation. Give the objective, necessary context, constraints and expected result; the child does not automatically share your conversation history. Your source conversation is attributed automatically. Active native model turns are steered by default; external executor turns always queue follow-ups. Set delivery=queue to wait for the current turn. For a new conversation, supply a backend selection from ModelList; omission requires a saved target backend preference. A started/queued receipt means admission, not completion: use SessionWork/SessionHistory to read actual results before reporting success.',
     ],
     [
       'stop',

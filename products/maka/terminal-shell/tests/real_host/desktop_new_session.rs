@@ -1751,9 +1751,14 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         nsh_core::platform::Appearance::Dark,
     )
     .await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
     mutate(&desktop.client, "send", json!({
         "sessionId":parent, "message":"Delegate sandbox verification and review any access request.",
-        "model":fixture.selection,
+        "backend":backend,
     })).await;
     desktop
         .request(&mut fixture)
@@ -1796,7 +1801,7 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     let child = created["session"]["id"].as_str().unwrap().to_owned();
     created_reply.tool_call("SessionSend", json!({
         "sessionId":child, "message":"Verify the sandbox boundary. Write the verification report only after approval.",
-        "model":fixture.selection,
+        "backend":backend,
     })).await;
     let first = desktop.request(&mut fixture).await;
     let second = desktop.request(&mut fixture).await;

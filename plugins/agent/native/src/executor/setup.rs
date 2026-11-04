@@ -34,6 +34,9 @@ impl Executors {
             .0
             .get(&input.executor)
             .ok_or("agent_executor_unavailable")?;
+        let Implementation::Service(backend) = &backend.implementation else {
+            return Err("agent_executor_setup_unavailable".into());
+        };
         let setup = backend
             .setup
             .as_ref()

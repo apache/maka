@@ -181,12 +181,6 @@ impl Driver<'_> {
         live: &mut Live,
         defaults: &[acp::SessionConfigOption],
     ) -> Result<(), Error> {
-        let thinking = self
-            .request
-            .settings
-            .thinking_level
-            .map(serde_json::to_value)
-            .transpose()?;
         for (category, desired) in [
             (
                 acp::SessionConfigOptionCategory::Model,
@@ -194,7 +188,11 @@ impl Driver<'_> {
             ),
             (
                 acp::SessionConfigOptionCategory::ThoughtLevel,
-                thinking.as_ref().and_then(|value| value.as_str()),
+                self.request
+                    .settings
+                    .thinking_level
+                    .as_ref()
+                    .map(|value| value.as_str()),
             ),
         ] {
             let default = defaults

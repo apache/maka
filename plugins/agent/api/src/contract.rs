@@ -121,6 +121,8 @@ pub struct Configuration {
     /// Explicit service backends; discovery does not authorize execution.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub executors: Vec<crate::executor::ServiceExecutor>,
+    #[serde(default)]
+    pub oar: Option<crate::executor::OarConfiguration>,
     /// Explicit Library import for immutable skill input preparation and metadata.
     /// This does not select model tools or confer a service grant.
     #[serde(default)]
@@ -307,6 +309,8 @@ pub enum SessionPosition {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentCreate")]
 pub struct Create {
+    /// Initial next-turn preference; admission resolves it again.
+    pub backend: Option<BackendPreference>,
     /// Treat title as a placeholder for one title derived from the first user message.
     #[serde(default)]
     pub automatic_title: bool,
@@ -507,25 +511,8 @@ pub enum GlobalInstructionsUpdated {
 #[schemars(rename = "AgentSkillCandidatesRead")]
 pub struct SkillCandidatesRead {
     pub session_id: String,
-    pub backend: SkillCandidatesBackend,
+    pub backend: BackendPreference,
     pub query: String,
-}
-#[derive(Deserialize, JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-#[schemars(rename = "AgentSkillCandidatesBackend")]
-pub enum SkillCandidatesBackend {
-    Model {
-        model: ModelSelection,
-        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-    },
-    Executor {
-        selection: crate::executor::Selection,
-    },
 }
 #[derive(Serialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
@@ -542,27 +529,62 @@ pub struct SkillCandidate {
     pub description: String,
     pub invocation: String,
 }
-/// The next turn's choice, independent of an already admitted execution.
-/// Model revisions are resolved afresh; preferences never grant execution authority.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-#[schemars(rename = "AgentBackendPreference")]
-pub enum BackendPreference {
-    Model {
-        #[schemars(length(min = 1))]
-        connection_id: String,
-        #[schemars(length(min = 1))]
-        model_id: String,
-        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+pub use maka_agent_facts::executor::BackendPreference;
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentModelChoice")]
+pub struct ModelChoice {
+    pub selection: BackendPreference,
+    pub source_name: String,
+    pub label: String,
+    pub thinking_levels: Vec<String>,
+    pub default_thinking_level: Option<String>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentModelsCursor")]
+pub struct ModelsCursor {
+    pub query: String,
+    #[schemars(range(max = 9_007_199_254_740_991u64))]
+    pub offset: u64,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentModelsRead")]
+pub enum ModelsRead {
+    Start {
+        #[serde(default)]
+        query: String,
     },
-    Executor {
-        selection: crate::executor::Selection,
+    Continue {
+        revision: String,
+        cursor: ModelsCursor,
     },
+}
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentModelsPage")]
+pub enum ModelsPage {
+    Ready {
+        revision: String,
+        choices: Vec<ModelChoice>,
+        complete: bool,
+        next: Option<ModelsCursor>,
+    },
+    Changed,
+}
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+#[schemars(rename = "AgentModelRead")]
+pub struct ModelRead {
+    pub backend: BackendPreference,
+}
+#[derive(Serialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[schemars(rename = "AgentModelResult")]
+pub enum ModelResult {
+    Ready { choice: ModelChoice },
+    Unavailable { message: String },
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -605,6 +627,7 @@ pub enum MetadataResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentSendDelivery")]
 pub enum SendDelivery {
+    /// Steer an active native model turn; external executors queue the next turn.
     #[default]
     Steer,
     Queue,
@@ -621,9 +644,8 @@ pub struct Send {
     /// IDs of immutable user uploads in this Session; metadata is resolved by the owner.
     #[serde(default)]
     pub attachments: Vec<String>,
-    pub model: Option<ModelSelection>,
-    /// Omission/null uses the configured model default; `off` is explicit.
-    pub thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
+    /// Omission uses the session’s saved next-turn preference.
+    pub backend: Option<BackendPreference>,
     #[schemars(length(min = 1))]
     pub session_id: String,
 
@@ -639,19 +661,6 @@ pub struct ExecutorsRead {}
 pub struct Executors {
     pub executors: Vec<String>,
     pub setup: Vec<String>,
-}
-#[derive(Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentExecute")]
-pub struct Execute {
-    /// IDs of immutable user uploads in this Session, resolved by the Agent owner.
-    #[serde(default)]
-    pub attachments: Vec<String>,
-    #[schemars(length(min = 1))]
-    pub session_id: String,
-
-    pub message: String,
-    pub executor: crate::executor::Selection,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -1031,9 +1040,18 @@ pub struct SessionMetrics {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentRun")]
 pub struct Run {
+    pub backend: RunBackend,
     pub invocation_id: String,
     pub turn_id: String,
     pub state: RunState,
+}
+/// Execution kind frozen at admission, independent of the next-turn preference.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentRunBackend")]
+pub enum RunBackend {
+    Model,
+    Executor,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1885,10 +1903,9 @@ pub fn contract() -> Contract {
                     "send".into(),
                     method::<Send, SendResult>(MethodMode::Mutation),
                 ),
-                (
-                    "execute".into(),
-                    method::<Execute, SendResult>(MethodMode::Mutation),
-                ),
+                ("models".into(), method::<ModelsRead, ModelsPage>(MethodMode::Query)),
+                ("model".into(), method::<ModelRead, ModelResult>(MethodMode::Query)),
+                ("oarSetup".into(),method::<crate::oar::Setup, crate::oar::SetupResult>(MethodMode::Mutation)),
                 (
                     "executorSetup".into(),
                     Method {
@@ -1990,6 +2007,35 @@ pub fn contract() -> Contract {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn create_and_send_preserve_backend_sources_without_legacy_inputs() {
+        let Interface::Service { methods } = contract().interface else {
+            panic!("service contract")
+        };
+        assert!(!methods.contains_key("execute"));
+        let send = jsonschema::validator_for(&methods["send"].input).unwrap();
+        for backend in [
+            json!({"kind":"model","connectionId":"connection","modelId":"model","thinkingLevel":"high"}),
+            json!({"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"native-model","thinkingLevel":"vendor-deep"}}}),
+        ] {
+            let value = json!({"sessionId":"session","message":"hello","backend":backend});
+            assert!(send.is_valid(&value));
+            let parsed: Send = serde_json::from_value(value).unwrap();
+            assert_eq!(serde_json::to_value(parsed.backend).unwrap(), backend);
+            let create: Create = serde_json::from_value(json!({
+                "title":"new","labels":[],"workspace":{"kind":"session","sessionId":"source"},"backend":backend
+            })).unwrap();
+            assert_eq!(serde_json::to_value(create.backend).unwrap(), backend);
+        }
+        for legacy in [
+            json!({"sessionId":"session","message":"hello","model":{"connectionId":"c","modelId":"m"}}),
+            json!({"sessionId":"session","message":"hello","thinkingLevel":"high"}),
+        ] {
+            assert!(!send.is_valid(&legacy));
+            assert!(serde_json::from_value::<Send>(legacy).is_err());
+        }
+    }
 
     #[test]
     fn a_saved_installation_with_the_retired_plans_setting_still_validates() {

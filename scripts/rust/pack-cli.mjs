@@ -74,13 +74,15 @@ export async function packNativeCli({
     const executable = platform.os === 'win32' ? 'maka.exe' : 'maka';
     await copyRegular(resolve(binary), join(directory, 'bin', executable), 512 * 1024 * 1024);
     await chmod(join(directory, 'bin', executable), 0o755);
-    const worker = platform.os === 'win32' ? 'maka-python-worker.exe' : 'maka-python-worker';
-    await copyRegular(
-      join(dirname(resolve(binary)), worker),
-      join(directory, 'bin', worker),
-      512 * 1024 * 1024,
-    );
-    await chmod(join(directory, 'bin', worker), 0o755);
+    for (const name of ['maka-python-worker', 'maka-oar-worker']) {
+      const worker = name + (platform.os === 'win32' ? '.exe' : '');
+      await copyRegular(
+        join(dirname(resolve(binary)), worker),
+        join(directory, 'bin', worker),
+        512 * 1024 * 1024,
+      );
+      await chmod(join(directory, 'bin', worker), 0o755);
+    }
     const desktop = platform.os === 'win32' ? 'maka-desktop-shell.exe' : 'maka-desktop-shell';
     if (platform.os !== 'darwin') {
       await copyRegular(

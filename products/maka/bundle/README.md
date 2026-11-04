@@ -41,9 +41,35 @@ Baseline publication metadata describes defaults; it does not grant access. Exis
 
 ## Model discovery and child conversations
 
-The default installation exposes `ModelList`, backed by the same model directory as Settings. Start with `{ "kind": "start", "query": "...", "connectionId": "..." }` (both filters are optional). Each choice includes a stable `selection` (`connectionId`, `modelId`) accepted by `SessionSend` / `SessionResume`, supported and default thinking levels, and effective limits. Continue with `{ "kind": "continue", "revision": page.revision, "cursor": page.next }`; restart if the directory changed. Only enabled connections and enabled models supported by the runtime are listed. Catalog availability does not guarantee provider reachability, credentials or quota. Credentials, URLs and request overlays are not returned.
+The default installation exposes `ModelList`, backed by the Agent’s source-aware directory of native models and enabled executor runtimes. Start with `{ "kind": "start", "query": "..." }` (query is optional). Pass a choice’s tagged `selection` as `SessionCreate` / `SessionSend` `backend`; its source-specific thinking levels are not interchangeable. Continue with `{ "kind": "continue", "revision": page.revision, "cursor": page.next }`; restart on `changed`. Catalog availability is not an execution or permission grant and does not guarantee reachability, credentials or quota. `SessionResume` remains a native-model continuation contract.
 
 The sidebar conversation menu opens **Child conversations** in a separate, window-sized dialog. Disclosure arrows load direct children across workspaces, including archived conversations; titles open the requested conversation. The outline uses immutable `parentSessionId` creation ancestry, not fork-source history. Deep trees scroll horizontally and long branches page through the existing session directory.
+
+### OAR execution
+
+OAR is an explicit Agent installation choice: set `agent.oar` to `{}` in an authored installation (or set the Agent instance's `oar` configuration through a deployment override). Leaving it absent or `null` disables OAR. The shipped `maka-oar-worker` is resolved beside the Maka executable; `executable` and `args` select a development worker when needed.
+
+Development builds may use the official Deno template. Release builds require Maka's controlled denort/V8 and never fall back to the official template. The release notice gate compares the actual runtime notice document with the reviewed document for that exact target; missing review records or changed content fail the build.
+
+Enabling OAR accepts the selected external agent's own default permissions and native tools. It does not change Code Mode, Computer Use, ordinary plugins or native-model tool ceilings. An external executor cannot satisfy a session's explicitly narrowed Host tool list. Follow-up inputs during an external turn stay in Maka's editable queue; Stop waits for OAR disposal and worker exit. Unconfirmed cleanup is reported as such and never authorizes automatic prompt replay.
+
+For example, a `backend` value can select:
+
+```json
+{
+  "kind": "executor",
+  "selection": {
+    "executor": "oar",
+    "settings": { "runtime": "codex", "model": "gpt-6-astra", "thinkingLevel": "high" }
+  }
+}
+```
+
+Installed models and effort strings come from the pinned OAR runtime, not Settings connections. Installation is never implicit: trusted application callers can use the Agent's `oarSetup` mutation with `{ "runtime": "codex", "action": { "kind": "probe" } }`, then explicit `plan` or `install` actions with an optional `line`. These only delegate OAR's own installation APIs; unsupported operations remain unsupported. There is no separate registry installer, credential migration or automatic OAR update.
+
+When switching execution sources, Maka supplies only the missing canonical readable history before the new turn, bounded to a 64 KiB / 128-fragment recent window. Gaps and partial fragments are explicitly marked. This is context, not a replay of tool requests or a lossless copy of private provider state; thinking and historical attachment payloads are excluded. Consecutive turns on the same OAR runtime resume its original native session without duplicating already-delivered history. Runtime model discovery currently uses the Agent's first configured workspace root, rather than a per-conversation directory.
+
+Uploads are read from Maka-owned immutable material: UTF-8 text/JSON and PNG/JPEG/GIF/WebP images are supported; other media are explicitly refused. Historical attachments are not silently replayed when a native agent session resumes.
 
 ## Run and develop
 

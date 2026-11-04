@@ -186,7 +186,6 @@ impl Setup {
                         "uploadAttachment",
                         "send",
                         "execution",
-                        "execute",
                         "executors",
                         "tools",
                         "snapshotPatch",
@@ -499,8 +498,7 @@ async fn workhub_routes_selected_worker_and_delivers_actual_result() {
             json!({
                 "operation":"route", "worker":"worker",
                 "target":{"kind":"existing","sessionId":worker},
-                "note":"Process this assigned work", "model":fixture.selection().await
-            }),
+                "note":"Process this assigned work", "backend":model_backend(&fixture.selection().await)}),
         )
         .await;
         let mut worker_calls = 0;
@@ -549,7 +547,7 @@ async fn workhub_selected_worker_requires_independent_native_dispatch_grant() {
         let coordinator=ready["session"]["id"].as_str().unwrap().to_owned();
         fixture.send(&coordinator).await.unwrap();
         let (mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
-        task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"existing","sessionId":worker},"note":"Denied assignment","model":fixture.selection().await})).await;
+        task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"existing","sessionId":worker},"note":"Denied assignment","backend":model_backend(&fixture.selection().await)})).await;
         let (mut socket,_)=listener.accept().await.unwrap();
         let next=request(&mut socket).await;assert!(!next["messages"].to_string().contains("Original user request:"));response(&mut socket).await;
         idle(&fixture,EXPORT,&coordinator).await;
@@ -652,7 +650,7 @@ async fn active_task(
     fixture.send(&coordinator).await.unwrap();
     let (mut socket, _) = listener.accept().await.unwrap();
     request(&mut socket).await;
-    task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"existing","sessionId":worker},"note":"Original assigned work","model":fixture.selection().await})).await;
+    task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"existing","sessionId":worker},"note":"Original assigned work","backend":model_backend(&fixture.selection().await)})).await;
     let mut running = None;
     for _ in 0..2 {
         let (mut socket, _) = listener.accept().await.unwrap();
@@ -698,7 +696,7 @@ async fn workhub_control_stops_and_resumes_the_selected_worker_without_retargeti
             let controls=query_import(&fixture,hub::EXPORT,"controls",json!({})).await;
             assert_eq!(controls["entries"].as_array().unwrap().len(),2);
             // New work must not become the target of an old stop's recovery.
-            let later=worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Later unrelated work","model":fixture.selection().await})).await;
+            let later=worker_mutation(&fixture,"send",json!({"sessionId":worker,"message":"Later unrelated work","backend":model_backend(&fixture.selection().await)})).await;
             // The completed resumed task can notify its coordinator before this
             // unrelated worker request reaches the shared model listener.
             let mut later_socket=loop {
@@ -739,9 +737,9 @@ async fn workhub_creates_selected_worker_and_transfers_original_attachment_bytes
             let uploaded=attachments::upload(&fixture,&coordinator,name,bytes,Uuid::new_v4()).await.unwrap();
             sources.push(uploaded["attachment"]["id"].as_str().unwrap().to_owned());
         }
-        fixture.mutation(2,"send",json!({"sessionId":coordinator,"message":"Use my attached file","attachments":sources,"model":fixture.selection().await}),Uuid::new_v4()).await.unwrap();
+        fixture.mutation(2,"send",json!({"sessionId":coordinator,"message":"Use my attached file","attachments":sources,"backend":model_backend(&fixture.selection().await)}),Uuid::new_v4()).await.unwrap();
         let (mut socket,_)=listener.accept().await.unwrap();request(&mut socket).await;
-        task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"new","title":"New assigned worker","workspace":directory},"note":"Check the original file","model":fixture.selection().await})).await;
+        task_response(&mut socket,json!({"operation":"route","worker":"worker","target":{"kind":"new","title":"New assigned worker","workspace":directory},"note":"Check the original file","backend":model_backend(&fixture.selection().await)})).await;
         let mut dispatched=None;
         let mut worker_calls=0;
         for _ in 0..2 {
@@ -820,7 +818,7 @@ async fn workhub_dependencies_wait_cancel_and_dispatch_once_with_complete_origin
         let route = |title: &str, model: ModelSelection| {
             json!({"operation":"route","worker":"worker",
             "target":{"kind":"new","title":title,"workspace":directory,"tools":[]},
-            "dependencies":[parent],"note":"Use the completed dependency", "model":model})
+            "dependencies":[parent],"note":"Use the completed dependency", "backend":model_backend(&model)})
         };
         let cancelled = control_turn(
             &fixture,
