@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::{CacheBudget, CacheDirective, CacheSite, Warning};
+use super::{CacheBudget, CacheDirective, CacheSite, Warning, schema::inline_refs};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -171,6 +171,7 @@ impl PreparedTools {
         for tool in tools {
             match tool {
                 Tool::Function(mut tool) => {
+                    tool.input_schema = inline_refs(std::mem::take(&mut tool.input_schema));
                     tool.cache_control =
                         cache.reserve(tool.cache_control, CacheSite::ToolDefinition);
                     tool.eager_input_streaming = tool

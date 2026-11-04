@@ -207,3 +207,142 @@ fn stream_eof_reuses_only_completed_accounting_and_spliced_messages_latch() {
     assert!(feed(&mut stream, json!({"type":"message_stop"})).is_empty());
     assert!(stream.finish().is_empty());
 }
+
+#[test]
+fn tool_schemas_reach_the_model_with_local_refs_inlined() {
+    use schema::inline_refs;
+    let directory = json!({"type": "object", "properties": {"rootId": {"type": "string"}}});
+    let schema = json!({
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object",
+        "properties": {
+            "workspace": {"$ref": "#/$defs/Workspace"},
+            "backup": {"$ref": "#/$defs/Directory", "description": "Optional copy."},
+            "literal": {"const": {"$ref": "#/$defs/Directory"}},
+            "$ref": {"type": "string"},
+        },
+        "$defs": {
+            "Workspace": {"oneOf": [
+                {"type": "object", "properties": {"kind": {"const": "directory"}, "selection": {"$ref": "#/$defs/Directory"}}},
+            ]},
+            "Directory": directory,
+        },
+    });
+    let inlined = inline_refs(schema);
+    assert_eq!(
+        inlined["properties"]["workspace"]["oneOf"][0]["properties"]["selection"],
+        directory
+    );
+    let mut backup = directory.clone();
+    backup["description"] = json!("Optional copy.");
+    assert_eq!(inlined["properties"]["backup"], backup);
+    assert_eq!(
+        inlined["properties"]["literal"],
+        json!({"const": {"$ref": "#/$defs/Directory"}})
+    );
+    assert_eq!(inlined["properties"]["$ref"], json!({"type": "string"}));
+    assert!(inlined.get("$defs").is_none());
+    assert_eq!(
+        inlined["$schema"],
+        json!("https://json-schema.org/draft/2020-12/schema")
+    );
+
+    // A colliding sibling keeps both constraints.
+    let narrowed = inline_refs(json!({
+        "properties": {"name": {"$ref": "#/$defs/Name", "maxLength": 8}},
+        "$defs": {"Name": {"type": "string", "maxLength": 64}},
+    }));
+    assert_eq!(
+        narrowed["properties"]["name"],
+        json!({"maxLength": 8, "allOf": [{"type": "string", "maxLength": 64}]})
+    );
+}
+
+#[test]
+fn references_that_cannot_be_inlined_keep_their_definitions() {
+    use schema::inline_refs;
+    let recursive = json!({
+        "type": "object",
+        "properties": {"tree": {"$ref": "#/$defs/Node"}},
+        "$defs": {"Node": {
+            "type": "object",
+            "properties": {"children": {"type": "array", "items": {"$ref": "#/$defs/Node"}}},
+        }},
+    });
+    let inlined = inline_refs(recursive.clone());
+    assert_eq!(
+        inlined["properties"]["tree"]["properties"]["children"]["items"],
+        json!({"$ref": "#/$defs/Node"})
+    );
+    assert_eq!(inlined["$defs"], recursive["$defs"]);
+
+    let external = json!({
+        "properties": {"a": {"$ref": "https://example.com/a.json"}, "b": {"$ref": "#/$defs/B"}},
+        "$defs": {"B": {"type": "string"}},
+    });
+    let inlined = inline_refs(external.clone());
+    assert_eq!(inlined["properties"]["a"], external["properties"]["a"]);
+    assert_eq!(inlined["properties"]["b"], json!({"type": "string"}));
+    assert_eq!(inlined["$defs"], external["$defs"]);
+
+    // A keyword this expansion does not walk keeps its reference resolvable.
+    let unwalked = json!({
+        "properties": {"b": {"$ref": "#/$defs/B"}},
+        "dependencies": {"b": {"properties": {"c": {"$ref": "#/$defs/B"}}}},
+        "$defs": {"B": {"type": "string"}},
+    });
+    let inlined = inline_refs(unwalked.clone());
+    assert_eq!(inlined["dependencies"], unwalked["dependencies"]);
+    assert_eq!(inlined["$defs"], unwalked["$defs"]);
+
+    let inlined = inline_refs(external.clone());
+    assert_eq!(inlined["properties"]["a"], external["properties"]["a"]);
+    assert_eq!(inlined["properties"]["b"], json!({"type": "string"}));
+    assert_eq!(inlined["$defs"], external["$defs"]);
+
+    // Definitions that multiply past the bound leave the schema unchanged.
+    let mut defs = serde_json::Map::new();
+    defs.insert("L0".into(), json!({"type": "string"}));
+    for level in 1..20 {
+        let below = format!("#/$defs/L{}", level - 1);
+        defs.insert(
+            format!("L{level}"),
+            json!({"type": "array", "prefixItems": [{"$ref": below}, {"$ref": below}]}),
+        );
+    }
+    let exploding = json!({"properties": {"x": {"$ref": "#/$defs/L19"}}, "$defs": defs});
+    assert_eq!(inline_refs(exploding.clone()), exploding);
+}
+
+#[test]
+fn prepared_function_tools_carry_inlined_schemas() {
+    let tool = Tool::Function(FunctionTool {
+        name: "SessionCreate".into(),
+        description: None,
+        input_schema: json!({
+            "type": "object",
+            "properties": {"workspace": {"$ref": "#/$defs/Workspace"}},
+            "$defs": {"Workspace": {"type": "object"}},
+        }),
+        cache_control: None,
+        strict: None,
+        defer_loading: None,
+        eager_input_streaming: None,
+        allowed_callers: None,
+        input_examples: None,
+    });
+    let prepared = PreparedTools::build(
+        [tool],
+        None,
+        None,
+        ToolPolicy::default(),
+        &mut CacheBudget::default(),
+    );
+    let PreparedTool::Function(tool) = &prepared.tools[0] else {
+        panic!("function tool expected");
+    };
+    assert_eq!(
+        tool.input_schema,
+        json!({"type": "object", "properties": {"workspace": {"type": "object"}}})
+    );
+}
