@@ -393,6 +393,13 @@ test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PR
   );
 });
 
+test('the external-agent UI worker fixture reaches real CLI tests', () => {
+  const plan = fixture()(['products/maka/terminal-shell/tests/support/external-agent-worker.mjs']);
+  assert.equal(plan.full, false);
+  assert.ok(plan.suites.root);
+  assert.equal(plan.suites.root.filter, 'all()');
+});
+
 test('OAR source, worker tests and native fixture reach the Host suite and product build', () => {
   for (const path of [
     'plugins/agent/oar-executor/worker/main.mjs',

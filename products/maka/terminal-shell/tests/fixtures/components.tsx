@@ -35,6 +35,7 @@ import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
 import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
 import { HostProvider, type Host } from '../../../workbench/app/host';
 import type {
+  AgentBackendPreference,
   AgentSession,
   InteractionRecord,
 } from '../../../../../packages/plugin-sdk/src/index.js';
@@ -148,12 +149,12 @@ function CompletionComposer(props: { prediction?: boolean }) {
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
-  const selection = {
-    kind: 'model' as const,
+  const backend = {
+    kind: 'model',
     connectionId: 'original-route',
     modelId: 'fixture-model',
     thinkingLevel: null,
-  };
+  } satisfies AgentBackendPreference;
   const owner: ComposerSession<JSX.Element> = {
     sessionId: 'original-session',
     connected: () => true,
@@ -184,11 +185,11 @@ function CompletionComposer(props: { prediction?: boolean }) {
     resumable: () => null,
     resuming: () => false,
     resume: unexpected,
-    backend: () => selection,
+    backend: () => backend,
     modelDetails: () => ({
       kind: 'ready',
       choice: {
-        selection,
+        selection: backend,
         sourceName: 'Original route',
         label: 'Fixture model',
         thinkingLevels: [],
@@ -290,9 +291,9 @@ function CompletionComposer(props: { prediction?: boolean }) {
         };
       },
       async skills({ query, backend }) {
-        lookup.set(
-          `skills:${query}:${backend.kind === 'model' ? backend.modelId : backend.selection.executor}`,
-        );
+        if (backend.kind !== 'model')
+          throw new Error('Expected a native model for skill completion');
+        lookup.set(`skills:${query}:${backend.connectionId}:${backend.modelId}`);
         return {
           skills: [
             {

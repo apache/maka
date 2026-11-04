@@ -19,8 +19,8 @@
 
 use super::*;
 use maka_plugin_core::deployment::management::{
-    InstanceConfigure, InstanceSettingsPage, InstanceSettingsRead, SettingChange, SettingField,
-    SettingKind, SettingValue,
+    InstanceConfigure, InstanceConfigureBatch, InstanceConfigureEdit, InstanceSettingsPage,
+    InstanceSettingsRead, SettingChange, SettingField, SettingKind, SettingValue,
 };
 use std::collections::BTreeSet;
 
@@ -74,10 +74,44 @@ impl Manager {
     pub(super) async fn configure(&self, input: Value) -> Result<Value> {
         let request: InstanceConfigure =
             serde_json::from_value(input).map_err(|e| e.to_string())?;
+        self.configure_edits(InstanceConfigureBatch {
+            expected_revision: request.expected_revision,
+            edits: vec![InstanceConfigureEdit {
+                instance: request.instance,
+                changes: request.changes,
+            }],
+        })
+        .await
+    }
+
+    pub(super) async fn configure_batch(&self, input: Value) -> Result<Value> {
+        let request: InstanceConfigureBatch =
+            serde_json::from_value(input).map_err(|e| e.to_string())?;
+        self.configure_edits(request).await
+    }
+
+    async fn configure_edits(&self, request: InstanceConfigureBatch) -> Result<Value> {
         let _write = self.writes.lock().await;
         let metadata = self.metadata().await?;
         if request.expected_revision != metadata.source.reference.revision {
             return conflict(metadata.source.reference.revision);
+        }
+        if request.edits.is_empty() {
+            return rejected_diagnostic(
+                ManagementRejection::InvalidSource,
+                "configuration batch must not be empty".into(),
+            );
+        }
+        let mut instances = BTreeSet::new();
+        if request
+            .edits
+            .iter()
+            .any(|edit| !instances.insert(&edit.instance))
+        {
+            return rejected_diagnostic(
+                ManagementRejection::InvalidSource,
+                "duplicate configuration instance".into(),
+            );
         }
         let loaded = self
             .store
@@ -86,20 +120,22 @@ impl Manager {
             .map_err(|e| e.to_string())?
             .ok_or("managed source not found")?;
         let (mut source, packages, plan, _) = loaded.into_parts();
-        let Some(instance) = plan
-            .instances()
-            .get(&request.instance)
-            .filter(|i| i.entry.is_some())
-        else {
-            return rejected(ManagementRejection::InstanceUnavailable);
-        };
-        let mut configuration = instance.configuration.clone();
-        if let Err(error) = apply(&mut configuration, &request.changes) {
-            return rejected_diagnostic(ManagementRejection::InvalidSource, error);
-        }
-        let fields = source_fields(&instance.configuration, &configuration, &request.changes);
-        if let Err(error) = source.input.configure(&instance.path, fields) {
-            return rejected_diagnostic(ManagementRejection::InvalidSource, error.to_string());
+        for edit in request.edits {
+            let Some(instance) = plan
+                .instances()
+                .get(&edit.instance)
+                .filter(|i| i.entry.is_some())
+            else {
+                return rejected(ManagementRejection::InstanceUnavailable);
+            };
+            let mut configuration = instance.configuration.clone();
+            if let Err(error) = apply(&mut configuration, &edit.changes) {
+                return rejected_diagnostic(ManagementRejection::InvalidSource, error);
+            }
+            let fields = source_fields(&instance.configuration, &configuration, &edit.changes);
+            if let Err(error) = source.input.configure(&instance.path, fields) {
+                return rejected_diagnostic(ManagementRejection::InvalidSource, error.to_string());
+            }
         }
         self.commit(
             request.expected_revision,

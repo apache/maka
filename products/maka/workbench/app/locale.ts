@@ -30,6 +30,7 @@ import { workspaceMessages } from './locale-workspace';
 import { recallMessages } from './locale-recall';
 import { pluginMessages } from './locale-plugins';
 import { configurationMessages } from './locale-configuration';
+import { externalAgentMessages } from './locale-external-agents';
 
 const nativeLocale = nativeHost.systemLocale;
 export const currentLocale = signal(resolveLocale('auto', nativeLocale));
@@ -44,6 +45,7 @@ const copy = createCopy({
   ...recallMessages,
   ...pluginMessages,
   ...configurationMessages,
+  ...externalAgentMessages,
 });
 export type MessageKey = keyof ReturnType<typeof copy>;
 

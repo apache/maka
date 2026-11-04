@@ -321,6 +321,12 @@ async fn skill_completion_is_inserted_and_backspace_deletes_the_whole_native_chi
     let mut view = component("composer").await;
     wait_editable_composer(&mut view).await;
     view.handle_event(TerminalEvent::Paste("before /skill:rev".into()));
+    wait_view_state(&mut view, |view, _| {
+        view.accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "skills:rev:original-route:fixture-model")
+    })
+    .await;
     support::click_button(&mut view, "Review changes").await;
     wait_view_state(&mut view, |view, _| {
         view.surface()

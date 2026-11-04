@@ -61,6 +61,7 @@ const oarInputs = [
   'scripts/rust/licenses',
 ];
 const embeddedInputs = [
+  'products/maka/terminal-shell/tests/support/external-agent-worker.mjs',
   ...productInputs,
   'skills/maka-plugin-authoring',
   'platform/computer-use/skills',

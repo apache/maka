@@ -51,7 +51,7 @@ type SavedRoot = {
   sessionId: string | null;
   sideSessionIds?: string[];
   sidebarExpanded: boolean;
-  settings: { model?: ModelSelection } | null;
+  settings: { model?: ModelSelection; page?: string } | null;
   panel: PanelRoute | null;
 };
 
@@ -73,6 +73,7 @@ function App(
   const sidebarExpanded = signal(saved?.sidebarExpanded ?? true);
   const settingsOpened = signal(saved?.settings !== null && saved?.settings !== undefined);
   const settingsModel = signal<ModelSelection | undefined>(saved?.settings?.model);
+  const settingsPage = signal<string | undefined>(saved?.settings?.page);
   const session = signal<ConversationSessionHandle | null>(null);
   const restoredSides = platform.isTerminal ? [] : (saved?.sideSessionIds ?? []);
   const sides = signal<SidePane[]>(restoredSides.map(createSide));
@@ -192,11 +193,12 @@ function App(
     blocked,
     connectionLost: () => runtime.updateError() !== null,
     openSession,
-    openSettings(model) {
+    openSettings(model, page) {
       if (!alive || blocked()) return;
       navigationGeneration++;
       batch(() => {
         settingsModel.set(model);
+        settingsPage.set(page);
         settingsOpened.set(true);
       });
     },
@@ -252,7 +254,7 @@ function App(
       sessionId: selected(),
       sideSessionIds: besides(),
       sidebarExpanded: sidebarExpanded(),
-      settings: settingsOpened() ? { model: settingsModel() } : null,
+      settings: settingsOpened() ? { model: settingsModel(), page: settingsPage() } : null,
       panel: plugins.panelRoute(),
     })),
   );
@@ -358,6 +360,9 @@ function App(
         changed: () => notice.set(null),
         get model() {
           return settingsModel();
+        },
+        get page() {
+          return settingsPage();
         },
       })}
     </View>

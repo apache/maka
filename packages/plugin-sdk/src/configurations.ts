@@ -352,6 +352,10 @@ export const configurations = {
         description: "Explicit opt-in to OAR's own default permissions and native agent tools.",
         type: 'object',
         properties: {
+          enabled: {
+            type: 'boolean',
+            default: true,
+          },
           executable: {
             description: 'Absent selects the worker shipped beside the Maka executable.',
             type: ['string', 'null'],
@@ -1051,6 +1055,10 @@ export const configurations = {
         type: 'object',
         additionalProperties: false,
         properties: {
+          enabled: {
+            type: 'boolean',
+            default: true,
+          },
           executable: {
             type: ['string', 'null'],
             description: 'Absent selects the worker shipped beside the Maka executable.',
