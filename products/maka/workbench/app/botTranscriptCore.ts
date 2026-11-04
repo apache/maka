@@ -198,3 +198,16 @@ export function botTurnEnding(turn: {
   if (turn.outcome !== 'completed') return 'other';
   return turn.slept ? 'quiet' : 'unanswered';
 }
+
+/**
+ * The worker a Bot Turn reports, when the Bot started that Turn because the worker
+ * finished a run: the Host marks the Turn's opening message with the worker as its origin.
+ */
+export function reportedWorker(
+  rows: Iterable<{ turnId?: string; origin?: { kind: string; sessionId?: string } }>,
+  turnId: string,
+): string | undefined {
+  for (const row of rows)
+    if (row.turnId === turnId && row.origin?.kind === 'bot_worker') return row.origin.sessionId;
+  return undefined;
+}

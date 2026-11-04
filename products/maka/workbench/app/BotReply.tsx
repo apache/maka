@@ -18,7 +18,7 @@
  */
 
 import { View } from 'nsh';
-import { TextView } from 'nsh/base';
+import { Button, TextView } from 'nsh/base';
 import { MermaidView, mermaidExtensions } from './MermaidView';
 import type { BotTranscriptMessage } from './botTranscript';
 import { tr } from './locale';
@@ -31,6 +31,8 @@ export function BotReply(props: {
   messages: () => BotTranscriptMessage[];
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   userScroll(): void;
+  /** The worker whose finished run this reply reports, when the Turn was started by one. */
+  worker?: { title: () => string; open(): void };
 }) {
   return (
     <View selectable style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
@@ -55,6 +57,18 @@ export function BotReply(props: {
           />
         )}
       </Each>
+      <If when={props.worker}>
+        <Button
+          accessibilityLabel={tr('Open the worker beside this conversation')}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start' }}
+          onPress={() => props.worker?.open()}
+        >
+          <Icon name="split" color={C.accent} />
+          <Text style={[{ ...captionTextStyle, color: C.accent }, { numberOfLines: 1 }]}>
+            {tr('View the record of {title}', { title: props.worker!.title() })}
+          </Text>
+        </Button>
+      </If>
     </View>
   );
 }

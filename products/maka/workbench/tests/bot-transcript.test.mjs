@@ -19,7 +19,11 @@
 
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { botTurnEnding, createBotTranscriptCore } from '../app/botTranscriptCore.ts';
+import {
+  botTurnEnding,
+  createBotTranscriptCore,
+  reportedWorker,
+} from '../app/botTranscriptCore.ts';
 
 const SESSION = 'bot-session';
 const message = (sequence, turnId, text = `m${sequence}`) => ({
@@ -262,4 +266,18 @@ test('a running, failed or stopped Turn is never reported as unanswered', () => 
   assert.equal(botTurnEnding({ finished: true, outcome: 'failed', ...quiet }), 'other');
   assert.equal(botTurnEnding({ finished: true, outcome: 'aborted', ...quiet }), 'other');
   assert.equal(botTurnEnding({ finished: true, outcome: null, ...quiet }), 'other');
+});
+
+test('a Bot Turn started by a worker finishing reports that worker; other Turns report none', () => {
+  const rows = [
+    { turnId: 't1', origin: { kind: 'bot_worker', sessionId: 'worker-a' } },
+    { turnId: 't2' },
+    { turnId: 't3', origin: { kind: 'plan', executionId: 'x' } },
+    { turnId: 't4', origin: { kind: 'bot_worker', sessionId: 'worker-b' } },
+  ];
+  assert.equal(reportedWorker(rows, 't1'), 'worker-a');
+  assert.equal(reportedWorker(rows, 't2'), undefined, 'a user Turn reports no worker');
+  assert.equal(reportedWorker(rows, 't3'), undefined, 'another origin is not a worker');
+  assert.equal(reportedWorker(rows, 't4'), 'worker-b');
+  assert.equal(reportedWorker(rows, 'missing'), undefined);
 });

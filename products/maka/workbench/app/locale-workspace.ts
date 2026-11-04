@@ -39,6 +39,17 @@ import {
 export const workspaceMessages = {
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
+  'View the record of {title}': [
+    'View the record of {title}',
+    '查看「{title}」的执行记录',
+    '檢視「{title}」的執行記錄',
+  ],
+  'Open the worker beside this conversation': [
+    'Open the worker beside this conversation',
+    '在右侧打开这个工作会话',
+    '在右側開啟這個工作會話',
+  ],
+  'the worker': ['the worker', '工作会话', '工作會話'],
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],

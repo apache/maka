@@ -110,6 +110,7 @@ import type {
 import { CompactionDivider } from '../../../../products/maka/workbench/app/CompactionDivider';
 import {
   botTurnEnding,
+  reportedWorker,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
@@ -584,7 +585,7 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'summary'; key: string; turnId: string }
     | { kind: 'process'; key: string; group: ProcessGroup }
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
-    | { kind: 'bot'; key: string; turnId: string }
+    | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string };
   const display = computed<DisplayEntry[]>(() => {
@@ -619,11 +620,15 @@ export function Conversation(props: ConversationProps) {
       if (openTurn !== undefined) {
         working(openTurn);
         const sent = bot.forTurn(openTurn).length > 0;
+        // A Turn the Bot started because a worker finished carries that worker as the
+        // origin of its opening message; the reply can then link to the worker's record.
+        const worker = sent ? reportedWorker(projection().rowsById.values(), openTurn) : undefined;
         if (sent)
           result.push({
             kind: 'bot',
             key: `bot/${openTurn}`,
             turnId: openTurn,
+            ...(worker !== undefined ? { worker } : {}),
           });
         // Silence is valid and gets no marker; a Turn that neither sent nor slept would
         // look the same, so say so.
@@ -3074,6 +3079,16 @@ export function Conversation(props: ConversationProps) {
                       if (initial.kind === 'bot')
                         return (
                           <BotReply
+                            worker={
+                              initial.worker !== undefined && props.openSessionBeside
+                                ? {
+                                    title: () =>
+                                      props.knownSession?.(initial.worker!)?.title ??
+                                      tr('the worker'),
+                                    open: () => props.openSessionBeside?.(initial.worker!),
+                                  }
+                                : undefined
+                            }
                             messages={() => bot.forTurn(initial.turnId)}
                             openLink={props.openLink}
                             userScroll={() => cancelNavigation()}
