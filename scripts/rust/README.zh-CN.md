@@ -35,7 +35,7 @@ Rust 构建需要 libclang 来生成 SQLite preupdate-hook 绑定，即使已有
 
 正常 CLI 构建会从同一源码目录执行 `scripts/oar/build.mjs`，使用根 lockfile 固定的 OAR 与 Deno 版本：先打包 ESM，再编译独立 Deno 可执行文件，将 `maka-oar-worker[.exe]` 放在 `maka[.exe]` 同级。原生包及缓存校验都要求该 worker。运行时不需要 Node/npm 或模块下载；构建不会更新 OAR，也不会安装 agent。
 
-开发模式使用官方 Deno 模板。`buildCli({ release: true })` 及 `node scripts/oar/build.mjs --release --target TRIPLE --output DIRECTORY` 则使用 `scripts/oar/runtime-source.json` 固定源码和受控 V8 归档、bindings（`v8_use_libm_trig_functions=false`）构建 denort。复用既有 `buildV8` 政策：有固定 prebuilt 就使用，否则由既有 `compileV8` 构建受控源码及 notices，不缩减原有五个发行目标。独立 Cargo target 目录中的 CLI snapshot 也由该 V8 构建。固定 Deno CLI 通过 `DENORT_BIN` 使用模板；缺少受控 denort 模板、构建失败、版本/目标不匹配或模板字节改变均硬失败，不回退官方模板。模板选择依据输出 target，而非 host。`worker-receipt.json` 记录源码 revision、V8 输入、denort、bundle、worker 的哈希链；worker 每次调用都会重编。
+开发模式使用官方 Deno 模板。`buildCli({ release: true })` 及 `node scripts/oar/build.mjs --release --target TRIPLE --output DIRECTORY` 则使用 `scripts/oar/runtime-source.json` 固定源码和受控 V8 归档、bindings（`v8_use_libm_trig_functions=false`）构建 denort。复用既有 `buildV8` 政策：有固定 prebuilt 就使用，否则由既有 `compileV8` 构建受控源码及 notices，不缩减原有五个发行目标。独立 Cargo target 目录中的 CLI snapshot 也由该 V8 构建。固定 Deno CLI 通过 `DENORT_BIN` 使用模板；缺少受控 denort 模板、构建失败、版本/目标不匹配或模板字节改变均硬失败，不回退官方模板。模板选择依据输出 target，而非 host。`worker-receipt.json` 记录源码 revision、V8 输入、denort、bundle、worker 的哈希链；每次调用重新打包当前源码；只有输入摘要（bundle 字节、Deno 版本、编译 target/选项、受控 runtime receipt）及可执行输出哈希都匹配时才复用 worker。输出缺失、改变或失去执行权限会重编。release 在复用前仍验证受控模板；同路径模板字节改变必须更新 runtime receipt 并生成新 worker。
 
 实际官方 Deno 2.9.6 Linux x64 worker 中发现了已定义的 `glibc_sin`、`glibc_cos`、`__branred`，来自 V8 的 LGPL 数学实现，不能只补 Deno npm 包的 MIT 文本就认定可以发行。此前官方 Linux x64/arm64 样本最高需要 GLIBC_2.27；这既不是受控运行时的验证，也不是 glibc 2.28 系统上的运行证明。受控 GNU Linux denort 同样使用 `cargo zigbuild --target TRIPLE.2.28`。Linux 发行组装仍使用 `readelf --version-info` 检查**实际** worker，拒绝高于 glibc 2.28 的依赖；构建参数本身不是 ABI 验证。本轮仅构建 aarch64 macOS，其余四个目标未构建。
 
@@ -45,7 +45,7 @@ Rust 构建需要 libclang 来生成 SQLite preupdate-hook 绑定，即使已有
 
 不再仅依赖不可达 SWC revision：已核对 checksum 锁定的发布 crate、逐版本声明，并保留 Rust/core-js、Deno/Node、libdivsufsort 等原版权。依据 package declaration 补入的标准条款明确标注来源，不冒充恢复的 upstream NOTICE。发布包可能缺少其引用的文件；保留已有原始头和声明，不编造缺失文件。aarch64 macOS 的完整正文已保存到 [deno-runtime-2.9.6-aarch64-apple-darwin.txt](licenses/deno-runtime-2.9.6-aarch64-apple-darwin.txt)，仅登记 `deno-runtime@2.9.6/aarch64-apple-darwin`。其它四个目标本轮既未构建，也未完成审阅，仍然阻断。开发构建不承担受控 denort 编译及该发行许可门禁。
 
-单目标审核完成后，同时提供该 target 和实际 runtime 正文，更新及验证仅覆盖该目标的发行快照。省略这些参数时仍要求五个目标记录齐全：
+单目标 runtime 审核完成后，同时提供该 target 和实际 runtime 正文。生成始终重新解析主 Maka 的五平台 Cargo 依赖；`--target` 仅选择本次纳入及比对的 OAR runtime 正文。发行 `check --target` 核对该目标实际依赖及 runtime。省略参数时仍要求五个 runtime 记录齐全：
 
 ```sh
 node scripts/rust/notices.mjs generate --target aarch64-apple-darwin \
@@ -54,7 +54,7 @@ node scripts/rust/notices.mjs check --target aarch64-apple-darwin \
   --oar-runtime-notices "$HOME/.cache/maka/oar-runtime/aarch64-apple-darwin/THIRD_PARTY_NOTICES.txt"
 ```
 
-PR CI 使用 `node scripts/rust/notices.mjs check-reviewed`，从 supplement 条目和现有快照共同推导目标集合，核对这些目标当前产品依赖及许可摘要。删除审核条目不能静默缩小覆盖，新增目标也必须进入快照。这只检查已审源码输入，不代表批准任何新构建的 runtime。发行 `check --target ...` 仍必须逐字比较实际构建正文；默认生成仍要求五个发行目标齐全。
+PR CI 使用 `node scripts/rust/notices.mjs check-reviewed`，始终核对主 Maka 的五平台 Cargo 依赖；另外从 supplement 条目和现有快照共同推导 OAR runtime 审核集合，核对这些已登记正文，不构建或获取其它 OAR runtime。删除审核条目不能静默缩小覆盖，新增目标也必须进入快照。这只检查已审源码输入，不代表批准任何新构建的 runtime。发行 `check --target ...` 仍必须逐字比较实际构建正文；默认生成仍要求五个发行目标齐全。
 
 依赖变更后执行：
 

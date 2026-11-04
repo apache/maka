@@ -18,7 +18,8 @@
  */
 
 import { execFile } from 'node:child_process';
-import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs, promisify } from 'node:util';
@@ -112,45 +113,80 @@ export async function compileTemplate({
 }) {
   if (release) await verifyRuntime(runtime, target, version);
   const bundleHash = await digest(entry);
+  const flags = [
+    'compile',
+    '-A',
+    '--no-config',
+    '--no-lock',
+    '--no-npm',
+    '--no-remote',
+    ...(target ? ['--target', target] : []),
+  ];
+  const inputs = createHash('sha256')
+    .update(
+      JSON.stringify({
+        bundle: bundleHash,
+        deno: version,
+        flags,
+        runtime: release ? runtime.receipt : null,
+      }),
+    )
+    .digest('hex');
+  const receiptPath = join(directory, 'worker-receipt.json');
+  async function outputDigest() {
+    const output = await stat(binary);
+    if (
+      !output.isFile() ||
+      output.size === 0 ||
+      (process.platform !== 'win32' && (output.mode & 0o111) === 0)
+    )
+      return;
+    return digest(binary);
+  }
+  try {
+    const receipt = JSON.parse(await readFile(receiptPath, 'utf8'));
+    if (
+      receipt.inputs === inputs &&
+      typeof receipt.worker === 'string' &&
+      receipt.worker === (await outputDigest())
+    ) {
+      if (release) await verifyBinaryTarget(binary, target);
+      return;
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+  }
+  await rm(receiptPath, { force: true });
   const env = { ...process.env };
   delete env.DENORT_BIN;
   if (release) env.DENORT_BIN = runtime.binary;
   const { stdout, stderr } = await promisify(execFile)(
     process.execPath,
-    [
-      deno,
-      'compile',
-      '-A',
-      '--no-config',
-      '--no-lock',
-      '--no-npm',
-      '--no-remote',
-      ...(target ? ['--target', target] : []),
-      '--output',
-      binary,
-      entry,
-    ],
+    [deno, ...flags, '--output', binary, entry],
     { cwd: directory, maxBuffer: 4 * 1024 * 1024, env },
   );
   process.stderr.write(stdout + stderr);
   if (release) {
     await verifyRuntime(runtime, target, version);
     await verifyBinaryTarget(binary, target);
-    if ((await digest(entry)) !== bundleHash)
-      throw new Error('Worker bundle changed during compilation');
-    await writeFile(
-      join(directory, 'worker-receipt.json'),
-      JSON.stringify(
-        {
-          runtime: runtime.receipt,
-          bundle: bundleHash,
-          worker: await digest(binary),
-        },
-        null,
-        2,
-      ) + '\n',
-    );
   }
+  if ((await digest(entry)) !== bundleHash)
+    throw new Error('Worker bundle changed during compilation');
+  const worker = await outputDigest();
+  if (!worker) throw new Error('Worker output is not a complete executable');
+  await writeFile(
+    receiptPath,
+    JSON.stringify(
+      {
+        inputs,
+        runtime: release ? runtime.receipt : null,
+        bundle: bundleHash,
+        worker,
+      },
+      null,
+      2,
+    ) + '\n',
+  );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {

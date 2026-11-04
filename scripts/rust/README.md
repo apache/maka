@@ -52,7 +52,12 @@ V8. The fixed Deno CLI consumes this template through `DENORT_BIN`; a missing
 controlled template, compilation failure, version/target mismatch or changed
 template bytes is fatal, with no official-template fallback. Selection follows the output
 target, not the host. `worker-receipt.json` records the source revision, V8 inputs,
-denort, bundle and worker hashes. Workers are recompiled on every invocation.
+denort, bundle and worker hashes. Each invocation bundles current sources; the
+worker is reused only when its input digest (bundle bytes, Deno version, compile
+target/options and controlled runtime receipt) and executable output hash match.
+Missing, changed or non-executable outputs are recompiled. Release still validates
+the controlled template before reuse; replacing template bytes at the same path
+requires an updated runtime receipt and a new worker.
 
 Official Deno 2.9.6 Linux x64 worker inspection found defined `glibc_sin`,
 `glibc_cos` and `__branred` symbols from V8's LGPL math implementation. Its npm
@@ -98,8 +103,10 @@ blocked. Development builds do not incur the controlled denort build or this
 release notice gate.
 
 For a single reviewed target, supply both its target and the actual runtime
-document. This updates the distribution snapshot for that target only; the
-commands without these arguments still require all five target records:
+document. Generation always resolves the main Maka Cargo closure for all five
+distribution platforms; `--target` selects only the OAR runtime document to include
+and compare. Release `check --target` verifies that target's actual dependencies
+and runtime. Commands without these arguments still require all five runtime records:
 
 ```sh
 node scripts/rust/notices.mjs generate --target aarch64-apple-darwin \
@@ -108,9 +115,10 @@ node scripts/rust/notices.mjs check --target aarch64-apple-darwin \
   --oar-runtime-notices "$HOME/.cache/maka/oar-runtime/aarch64-apple-darwin/THIRD_PARTY_NOTICES.txt"
 ```
 
-PR CI uses `node scripts/rust/notices.mjs check-reviewed`. It derives the target
-set from both the supplement entries and the existing snapshot, then checks the
-current product dependencies and notice digests for those targets. Removing a
+PR CI uses `node scripts/rust/notices.mjs check-reviewed`. It always checks main
+Maka Cargo dependencies on all five distribution platforms. Separately, it derives
+the OAR runtime review set from both supplement entries and the existing snapshot
+and checks those reviewed texts, without building or fetching other OAR runtimes. Removing a
 review entry cannot silently remove coverage, and a newly registered target must
 also be present in the snapshot. This checks reviewed source inputs only; it does
 not approve a newly built runtime. Release `check --target ...` still requires

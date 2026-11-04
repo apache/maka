@@ -18,7 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -70,7 +70,7 @@ test('release rejects missing, wrong-version, wrong-target and changed templates
   await assert.rejects(verifyRuntime(runtime, target, version), { code: 'ENOENT' });
 });
 
-test('compilation consumes the controlled bytes each time and records the worker chain', async (t) => {
+test('worker reuse verifies inputs and output while release always requires controlled bytes', async (t) => {
   const { directory, runtime } = await fixture(t);
   const deno = join(directory, 'compiler.cjs');
   const entry = join(directory, 'bundle.mjs');
@@ -80,7 +80,9 @@ test('compilation consumes the controlled bytes each time and records the worker
     deno,
     `const fs = require('node:fs');
 const output = process.argv[process.argv.indexOf('--output') + 1];
-fs.writeFileSync(output, process.env.DENORT_BIN ? Buffer.concat([fs.readFileSync(process.env.DENORT_BIN), fs.readFileSync(process.argv.at(-1))]) : 'official');`,
+fs.appendFileSync(output + '.calls', 'compile;');
+fs.writeFileSync(output, process.env.DENORT_BIN ? Buffer.concat([fs.readFileSync(process.env.DENORT_BIN), fs.readFileSync(process.argv.at(-1))]) : 'official:' + fs.readFileSync(process.argv.at(-1), 'utf8'));
+fs.chmodSync(output, 0o755);`,
   );
   const options = { directory, deno, entry, binary, target, version, release: true, runtime };
   await assert.rejects(
@@ -93,17 +95,55 @@ fs.writeFileSync(output, process.env.DENORT_BIN ? Buffer.concat([fs.readFileSync
   assert.equal(first.worker, await digest(binary));
   assert.equal(first.bundle, await digest(entry));
   assert.deepEqual(first.runtime, runtime.receipt);
+  const calls = () => readFile(binary + '.calls', 'utf8');
+  const once = 'compile;';
+  assert.equal(await calls(), once);
+  await compileTemplate(options);
+  assert.equal(await calls(), once, 'unchanged controlled output is reused');
+  await writeFile(runtime.binary, machO('unreceipted replacement'));
+  await assert.rejects(compileTemplate(options), /SHA-256 mismatch/);
+  assert.equal(await calls(), once, 'invalid controlled runtime cannot use a cached worker');
   await writeFile(runtime.binary, machO('replacement at same path'));
   runtime.receipt.sha256 = await digest(runtime.binary);
   await compileTemplate(options);
   const second = JSON.parse(await readFile(join(directory, 'worker-receipt.json')));
   assert.notEqual(second.worker, first.worker);
   assert.notEqual(second.runtime.sha256, first.runtime.sha256);
+  assert.equal(await calls(), once.repeat(2));
   const ambient = process.env.DENORT_BIN;
   process.env.DENORT_BIN = join(directory, 'missing');
   try {
     await compileTemplate({ ...options, release: false });
-    assert.equal(await readFile(binary, 'utf8'), 'official');
+    assert.equal(await readFile(binary, 'utf8'), 'official:worker JS');
+    const dev = { ...options, release: false };
+    const compiled = await calls();
+    await compileTemplate(dev);
+    assert.equal(await calls(), compiled, 'unchanged dev bundle skips compile');
+    await writeFile(entry, 'changed worker JS at the same path');
+    await compileTemplate(dev);
+    assert.equal(await calls(), compiled + once);
+    assert.equal(await readFile(binary, 'utf8'), 'official:changed worker JS at the same path');
+    await compileTemplate({ ...dev, version: '2.9.7' });
+    assert.equal(await calls(), compiled + once.repeat(2));
+    const otherTarget = { ...dev, version: '2.9.7', target: 'x86_64-apple-darwin' };
+    await compileTemplate(otherTarget);
+    assert.equal(await calls(), compiled + once.repeat(3));
+    await writeFile(binary, 'truncated');
+    await compileTemplate(otherTarget);
+    assert.equal(await readFile(binary, 'utf8'), 'official:changed worker JS at the same path');
+    assert.equal(await calls(), compiled + once.repeat(4));
+    await rm(binary);
+    await compileTemplate(otherTarget);
+    assert.equal(await calls(), compiled + once.repeat(5));
+    if (process.platform !== 'win32') {
+      await chmod(binary, 0o644);
+      await compileTemplate(otherTarget);
+      assert.equal(await calls(), compiled + once.repeat(6));
+    }
+    await assert.rejects(
+      compileTemplate({ ...options, runtime: undefined }),
+      /requires a controlled/,
+    );
   } finally {
     if (ambient === undefined) delete process.env.DENORT_BIN;
     else process.env.DENORT_BIN = ambient;

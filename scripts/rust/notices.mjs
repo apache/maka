@@ -167,9 +167,17 @@ export async function runtimeNoticeRecord(
 /** Resolve installed components and licensing facts, independently of the reviewed snapshot. */
 async function components(
   root,
-  { bundleInputs, oarBundleInputs, oarRuntimeNotices, target, env = process.env },
+  {
+    bundleInputs,
+    oarBundleInputs,
+    oarRuntimeNotices,
+    target,
+    env = process.env,
+    run: metadataCommand = run,
+  },
   scope = {
-    targets: target ? [target] : distributionTargets,
+    cargoTargets: target ? [target] : distributionTargets,
+    runtimeTargets: target ? [target] : distributionTargets,
     requireRuntimeBuild: Boolean(target),
   },
 ) {
@@ -209,7 +217,7 @@ async function components(
   const deno = JSON.parse(
     await readFile(join(dependencyRoot, 'node_modules/deno/package.json'), 'utf8'),
   );
-  for (const triple of scope.targets) {
+  for (const triple of scope.runtimeTargets) {
     add(
       await runtimeNoticeRecord(root, {
         version: deno.version,
@@ -242,9 +250,9 @@ async function components(
       })),
   });
   const packages = new Map();
-  for (const triple of scope.targets) {
+  for (const triple of scope.cargoTargets) {
     const metadata = JSON.parse(
-      run(
+      metadataCommand(
         'cargo',
         ['metadata', '--locked', '--format-version', '1', '--filter-platform', triple],
         root,
@@ -354,7 +362,11 @@ export async function verifyReviewedNotices(root, options) {
   for (const target of targets)
     if (!distributionTargets.includes(target))
       throw new Error('Unsupported reviewed runtime target: ' + target);
-  return verifyCoverage(root, options, manifest, { targets, requireRuntimeBuild: false });
+  return verifyCoverage(root, options, manifest, {
+    cargoTargets: distributionTargets,
+    runtimeTargets: targets,
+    requireRuntimeBuild: false,
+  });
 }
 
 /** Render license records without asserting that they are a reviewed release snapshot. */
@@ -423,7 +435,11 @@ export async function renderNoticeRecords(root, records) {
 }
 
 export async function generateNotices(root, options) {
-  const records = await components(root, options);
+  const records = await components(root, options, {
+    cargoTargets: distributionTargets,
+    runtimeTargets: options.target ? [options.target] : distributionTargets,
+    requireRuntimeBuild: Boolean(options.target),
+  });
   const { content, texts } = await renderNoticeRecords(root, records);
   await writeFile(join(root, documentPath), content);
   await writeFile(

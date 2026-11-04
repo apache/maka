@@ -123,7 +123,7 @@ export const suites = {
   product: {
     workspace: 'root',
     packages: ['maka-ui-build', 'maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: productInputs,
+    extraInputs: [...productInputs, ...oarInputs],
   },
   termina: {
     workspace: 'termina',

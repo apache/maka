@@ -20,7 +20,6 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { syncBuiltinESMExports } from 'node:module';
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -90,7 +89,7 @@ async function fixture(t) {
     name,
     manifest_path: join(root, 'products', name, 'Cargo.toml'),
   }));
-  const libraries = ['a', 'b'].map((name) => ({
+  const libraries = ['a', 'b', 'linux', 'windows', 'intel-mac'].map((name) => ({
     id: name,
     name,
     version: '1.0.0',
@@ -101,12 +100,18 @@ async function fixture(t) {
   }));
   for (const pkg of libraries) await put(`registry/${pkg.name}/LICENSE`, text);
   const cargoReads = [];
-  const originalExec = childProcess.execFileSync;
-  t.mock.method(childProcess, 'execFileSync', (command, args, options) => {
-    if (command !== 'cargo') return originalExec(command, args, options);
+  const run = (command, args) => {
+    assert.equal(command, 'cargo');
     cargoReads.push(args);
     const triple = args[args.indexOf('--filter-platform') + 1];
-    const selected = triple.startsWith('aarch64') ? libraries : libraries.slice(0, 1);
+    const selected = libraries.filter(
+      ({ name }) =>
+        name === 'a' ||
+        (name === 'b' && triple.startsWith('aarch64')) ||
+        (name === 'linux' && triple.includes('linux')) ||
+        (name === 'windows' && triple.includes('windows')) ||
+        (name === 'intel-mac' && triple === 'x86_64-apple-darwin'),
+    );
     return JSON.stringify({
       packages: [...roots, ...selected],
       resolve: {
@@ -118,19 +123,14 @@ async function fixture(t) {
         })),
       },
     });
-  });
-  syncBuiltinESMExports();
-  t.after(() => {
-    t.mock.restoreAll();
-    syncBuiltinESMExports();
-  });
+  };
   const bundleInputs = join(root, 'bundle-inputs.json');
   await json('bundle-inputs.json', [join(root, 'products/workbench/Settings.tsx')]);
   const oarBundleInputs = join(root, 'oar-inputs.json');
   await json('oar-inputs.json', {
     inputs: { 'node_modules/@botiverse/oar/dist/standalone/index.js': {} },
   });
-  const options = { bundleInputs, oarBundleInputs, env: {} };
+  const options = { bundleInputs, oarBundleInputs, env: {}, run };
   await generateNotices(root, options);
   return { root, options, libraries, lock, put, json, cargoReads };
 }
@@ -208,12 +208,6 @@ test('one target accepts reviewed platform union and conflicting installed dupli
   const { root, options, lock, json } = await fixture(t);
   await verifyNotices(root, { ...options, ...runtimeInput(root, 'x86_64-unknown-linux-gnu') });
   await verifyNotices(root, { ...options, ...runtimeInput(root, 'aarch64-unknown-linux-gnu') });
-  await generateNotices(root, { ...options, ...runtimeInput(root, 'x86_64-unknown-linux-gnu') });
-  await assert.rejects(
-    verifyNotices(root, { ...options, ...runtimeInput(root, 'aarch64-unknown-linux-gnu') }),
-    /cargo:b@1.0.0/,
-  );
-  await generateNotices(root, options);
   const duplicate = 'node_modules/parent/node_modules/ajv';
   await cp(join(root, 'node_modules/ajv'), join(root, duplicate), { recursive: true });
   lock.packages[duplicate] = { ...lock.packages['node_modules/ajv'] };
@@ -238,8 +232,6 @@ test('real Cargo build output supplies the bundle that the notice gate rejects',
     await writeFile(join(output, 'maka-oar-worker' + (target.includes('windows') ? '.exe' : '')), 'worker');
   `,
   );
-  t.mock.restoreAll();
-  syncBuiltinESMExports();
   const names = ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'];
   await put(
     'Cargo.toml',
@@ -282,7 +274,13 @@ test('real Cargo build output supplies the bundle that the notice gate rejects',
   assert.ok(bundleInputs.startsWith(target));
   assert.deepEqual(JSON.parse(await readFile(bundleInputs, 'utf8')), JSON.parse(inputs));
   await assert.rejects(
-    verifyNotices(root, { ...options, bundleInputs, ...runtimeInput(root, rustTarget()), env }),
+    verifyNotices(root, {
+      ...options,
+      run: undefined,
+      bundleInputs,
+      ...runtimeInput(root, rustTarget()),
+      env,
+    }),
     /npm:semver@1.0.0/,
   );
 });
@@ -369,7 +367,7 @@ test('single-target notice commands require both the target and actual runtime d
   }
 });
 
-test('PR coverage checks only registered targets without granting release or full-generation approval', async (t) => {
+test('single-runtime generation and PR coverage retain all five main Cargo platforms without approving other runtimes', async (t) => {
   const { root, options, json, cargoReads, libraries } = await fixture(t);
   const target = 'aarch64-apple-darwin';
   await json('scripts/rust/notices-sources.json', {
@@ -380,14 +378,22 @@ test('PR coverage checks only registered targets without granting release or ful
   await verifyReviewedNotices(root, options);
   assert.deepEqual(
     cargoReads.map((args) => args.at(-1)),
-    [target],
+    targets,
   );
   const previousReads = cargoReads.length;
   await assert.rejects(verifyNotices(root, { ...options, target }), /Actual built runtime notices/);
   await assert.rejects(generateNotices(root, options), /have not been reviewed/);
   assert.equal(cargoReads.length, previousReads);
-  libraries[0].license = 'Apache-2.0';
-  await assert.rejects(verifyReviewedNotices(root, options), /component or license data/);
+  for (const name of ['linux', 'windows', 'intel-mac']) {
+    const pkg = libraries.find((pkg) => pkg.name === name);
+    pkg.license = 'Apache-2.0';
+    await assert.rejects(verifyReviewedNotices(root, options), new RegExp(`cargo:${name}@1.0.0`));
+    pkg.license = 'MIT';
+  }
+  const manifest = JSON.parse(await readFile(join(root, 'products/maka/cli/notices.json')));
+  delete manifest.components[`cargo:windows@1.0.0 ${registry}`];
+  await json('products/maka/cli/notices.json', manifest);
+  await assert.rejects(verifyReviewedNotices(root, options), /cargo:windows@1.0.0/);
 });
 
 test('PR coverage rejects removed, changed, newly registered and empty runtime review sets', async (t) => {
