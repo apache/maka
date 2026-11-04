@@ -18,48 +18,11 @@
  */
 
 use super::super::attachments::upload;
+use super::oar_support::{input, packet, release, setup};
 use super::*;
 use futures_util::FutureExt;
 use std::path::PathBuf;
-use tokio::io::{AsyncBufReadExt, BufReader};
-
-async fn setup() -> (Fixture, TcpListener) {
-    let control = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let node = tokio::process::Command::new("node")
-        .args(["-p", "process.execPath"])
-        .output()
-        .await
-        .unwrap();
-    assert!(node.status.success());
-    let fixture = Fixture::configured("http://127.0.0.1:9/v1", None, None, None, |settings| {
-        settings.oar = Some(maka_agent_api::executor::OarConfiguration {
-            executable: Some(String::from_utf8(node.stdout).unwrap().trim().into()),
-            args: vec![
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/support/oar-worker.mjs")
-                    .to_str()
-                    .unwrap()
-                    .into(),
-                control.local_addr().unwrap().port().to_string(),
-            ],
-        });
-    })
-    .await;
-    (fixture, control)
-}
-fn input(session: &str, message: &str) -> Value {
-    json!({"sessionId":session,"message":message,"backend":{"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"fixture-model","thinkingLevel":"vendor-deep"}}}})
-}
-async fn packet(control: &mut BufReader<TcpStream>, phase: &str) -> Value {
-    let mut line = String::new();
-    control.read_line(&mut line).await.unwrap();
-    let value: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(value["phase"], phase);
-    value
-}
-async fn release(control: &mut BufReader<TcpStream>) {
-    control.get_mut().write_all(b"continue\n").await.unwrap();
-}
+use tokio::io::BufReader;
 
 fn png() -> Vec<u8> {
     let mut bytes = std::io::Cursor::new(Vec::new());
@@ -81,7 +44,7 @@ fn image_path(packet: &Value, bytes: &[u8]) -> PathBuf {
 #[tokio::test]
 async fn native_oar_attachments_deliver_immutable_utf8_and_image_bytes_on_send_and_resume() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR uploads").await;
         let text = "Original UTF-8 attachment: 中文\n".repeat(3000);
         let note = upload(&f, &session, "notes.md", text.as_bytes(), Uuid::new_v4()).await.unwrap();
@@ -137,7 +100,7 @@ async fn native_oar_attachments_deliver_immutable_utf8_and_image_bytes_on_send_a
 #[tokio::test]
 async fn native_oar_attachments_stop_retains_images_until_disposal_and_root_exit() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR stop with image").await;
         let bytes = png();
         let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
@@ -180,7 +143,7 @@ async fn native_oar_attachments_stop_retains_images_until_disposal_and_root_exit
 #[tokio::test]
 async fn native_oar_attachments_unconfirmed_cleanup_keeps_materials_and_original_receipt() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR uncertain image custody").await;
         let bytes = png();
         let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
@@ -233,7 +196,7 @@ async fn native_oar_attachments_unconfirmed_cleanup_keeps_materials_and_original
 #[tokio::test]
 async fn native_oar_attachments_reject_unsupported_media_and_non_upload_sources() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR attachment refusals").await;
         for (name, bytes, mime) in [
             ("binary.bin", &b"\xff\x00binary"[..], "application/octet-stream"),

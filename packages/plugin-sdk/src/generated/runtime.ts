@@ -3973,6 +3973,10 @@ export type AgentDeliveryFact =
  */
 export type ToolSettlement = 'returned' | 'failed' | 'unknown' | 'rejected';
 export type AgentContentKind = 'text' | 'thinking';
+/**
+ * Execution kind frozen at admission, independent of the next-turn preference.
+ */
+export type AgentRunBackend = 'model' | 'executor';
 export type AgentRunState = 'admitted' | 'running' | 'waiting_for_user';
 export type AgentDiagnosticPosition =
   | {
@@ -8476,6 +8480,7 @@ export interface AgentSessionMetrics {
   outputTokensPerSecond?: number | null;
 }
 export interface AgentRun {
+  backend: AgentRunBackend;
   invocationId: string;
   turnId: string;
   state: AgentRunState;

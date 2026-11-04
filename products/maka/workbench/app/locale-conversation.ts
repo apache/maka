@@ -176,11 +176,6 @@ export const conversationMessages = {
     '此操作需要原生模型。',
     '此操作需要原生模型。',
   ],
-  Connection: ['Connection', '连接', '連線'],
-  'Back to models': ['Back to models', '返回模型', '返回模型'],
-  'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],
-  'Filter by connection': ['Filter by connection', '按连接筛选', '依連線篩選'],
-  'All connections': ['All connections', '所有连接', '所有連線'],
   'No models match this search.': [
     'No models match this search.',
     '没有符合搜索条件的模型。',

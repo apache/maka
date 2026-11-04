@@ -24,10 +24,7 @@ use maka_agent_api::contract::{
 use maka_agent_facts::executor::{BackendPreference, Selection, Settings};
 
 impl Owner {
-    async fn model_choices(
-        &self,
-        cancellation: &CancellationToken,
-    ) -> Result<Vec<ModelChoice>, String> {
+    async fn native_choices(&self) -> Result<Vec<ModelChoice>, String> {
         let snapshot = self
             .catalog
             .snapshot
@@ -76,83 +73,101 @@ impl Owner {
                 });
             }
         }
+        Ok(choices)
+    }
+    async fn oar_choices(
+        &self,
+        runtime: Option<&str>,
+        cancellation: &CancellationToken,
+    ) -> Result<Vec<ModelChoice>, String> {
         if !self.executors.contains("oar") {
-            return Ok(choices);
+            return Ok(Vec::new());
         }
-        let cwd = self.oar_cwd().await?;
-        if let Some(catalog) = self
+        let Some(cwd) = self.oar_cwd().await? else {
+            return Ok(Vec::new());
+        };
+        let mut request = serde_json::json!({"kind":"catalog", "cwd":cwd});
+        if let Some(runtime) = runtime {
+            request["runtime"] = serde_json::json!(runtime);
+        }
+        let Some(catalog) = self
             .executors
-            .oar_query(
-                cwd.clone(),
-                serde_json::json!({"kind":"catalog", "cwd":cwd}),
-                cancellation.clone(),
-            )
+            .oar_query(cwd, request, cancellation.clone())
             .await
             .map_err(|error| error.to_string())?
-        {
-            for runtime in catalog.as_array().ok_or("agent_oar_catalog_invalid")? {
-                let runtime_id = runtime
-                    .get("runtime")
+        else {
+            return Ok(Vec::new());
+        };
+        let runtimes = if runtime.is_some() {
+            if catalog.get("kind").and_then(Value::as_str) == Some("unsupported") {
+                return Ok(Vec::new());
+            }
+            std::slice::from_ref(&catalog)
+        } else {
+            catalog
+                .as_array()
+                .ok_or("agent_oar_catalog_invalid")?
+                .as_slice()
+        };
+        let mut choices = Vec::new();
+        for runtime in runtimes {
+            let runtime_id = runtime
+                .get("runtime")
+                .and_then(Value::as_str)
+                .ok_or("agent_oar_catalog_invalid")?;
+            if runtime.pointer("/models/kind").and_then(Value::as_str) != Some("ok") {
+                continue;
+            }
+            let models = runtime
+                .pointer("/models/models")
+                .and_then(Value::as_array)
+                .ok_or("agent_oar_catalog_invalid")?;
+            for model in models {
+                let id = model
+                    .get("id")
                     .and_then(Value::as_str)
                     .ok_or("agent_oar_catalog_invalid")?;
-                if runtime.pointer("/models/kind").and_then(Value::as_str) != Some("ok") {
-                    continue;
-                }
-                let models = runtime
-                    .pointer("/models/models")
-                    .and_then(Value::as_array)
-                    .ok_or("agent_oar_catalog_invalid")?;
-                for model in models {
-                    let id = model
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .ok_or("agent_oar_catalog_invalid")?;
-                    let levels: Vec<String> = model
-                        .get("effortLevels")
-                        .cloned()
-                        .map(serde_json::from_value)
-                        .transpose()
-                        .map_err(|_| "agent_oar_catalog_invalid")?
-                        .unwrap_or_default();
-                    choices.push(ModelChoice {
-                        selection: BackendPreference::Executor {
-                            selection: Selection {
-                                executor: "oar".into(),
-                                settings: Settings {
-                                    runtime: Some(runtime_id.into()),
-                                    model: Some(id.into()),
-                                    thinking_level: None,
-                                },
+                let levels: Vec<String> = model
+                    .get("effortLevels")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| "agent_oar_catalog_invalid")?
+                    .unwrap_or_default();
+                choices.push(ModelChoice {
+                    selection: BackendPreference::Executor {
+                        selection: Selection {
+                            executor: "oar".into(),
+                            settings: Settings {
+                                runtime: Some(runtime_id.into()),
+                                model: Some(id.into()),
+                                thinking_level: None,
                             },
                         },
-                        source_name: format!("OAR · {runtime_id}"),
-                        label: model
-                            .get("displayName")
-                            .and_then(Value::as_str)
-                            .unwrap_or(id)
-                            .into(),
-                        thinking_levels: levels,
-                        default_thinking_level: model
-                            .get("defaultEffort")
-                            .and_then(Value::as_str)
-                            .map(str::to_owned),
-                    });
-                }
+                    },
+                    source_name: format!("OAR · {runtime_id}"),
+                    label: model
+                        .get("displayName")
+                        .and_then(Value::as_str)
+                        .unwrap_or(id)
+                        .into(),
+                    thinking_levels: levels,
+                    default_thinking_level: model
+                        .get("defaultEffort")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned),
+                });
             }
         }
         Ok(choices)
     }
-    pub(super) async fn oar_cwd(&self) -> Result<String, String> {
+    pub(super) async fn oar_cwd(&self) -> Result<Option<String>, String> {
         let DirectoryPage::Roots { roots } =
             workspace::query(self.workspace_roots.clone(), Directories::Roots).await?
         else {
             unreachable!("roots query")
         };
-        Ok(roots
-            .into_iter()
-            .next()
-            .ok_or("agent_workspace_unavailable")?
-            .path)
+        Ok(roots.into_iter().next().map(|root| root.path))
     }
     pub async fn models(
         &self,
@@ -168,7 +183,8 @@ impl Owner {
         if query.chars().any(char::is_control) {
             return Err("agent_model_query_invalid".into());
         }
-        let mut choices = self.model_choices(cancellation).await?;
+        let mut choices = self.native_choices().await?;
+        choices.extend(self.oar_choices(None, cancellation).await?);
         let revision = hex::encode(Sha256::digest(
             serde_json::to_vec(&choices).map_err(|e| e.to_string())?,
         ));
@@ -210,7 +226,16 @@ impl Owner {
         input: ModelRead,
         cancellation: &CancellationToken,
     ) -> Result<ModelResult, String> {
-        let choices = self.model_choices(cancellation).await?;
+        let choices = match &input.backend {
+            BackendPreference::Model { .. } => self.native_choices().await?,
+            BackendPreference::Executor { selection } if selection.executor == "oar" => {
+                match selection.settings.runtime.as_deref() {
+                    Some(runtime) => self.oar_choices(Some(runtime), cancellation).await?,
+                    None => Vec::new(),
+                }
+            }
+            BackendPreference::Executor { .. } => Vec::new(),
+        };
         match choices
             .into_iter()
             .find(|choice| same_model(&choice.selection, &input.backend))

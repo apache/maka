@@ -17,63 +17,11 @@
  * under the License.
  */
 
+use super::oar_support::{configured, input, packet, record, release, setup};
 use super::*;
 use futures_util::FutureExt;
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::BufReader;
 
-async fn setup() -> (Fixture, TcpListener) {
-    let control = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let node = tokio::process::Command::new("node")
-        .args(["-p", "process.execPath"])
-        .output()
-        .await
-        .unwrap();
-    assert!(node.status.success());
-    let fixture = Fixture::configured("http://127.0.0.1:9/v1", None, None, None, |settings| {
-        settings.oar = Some(maka_agent_api::executor::OarConfiguration {
-            executable: Some(String::from_utf8(node.stdout).unwrap().trim().into()),
-            args: vec![
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/support/oar-worker.mjs")
-                    .to_str()
-                    .unwrap()
-                    .into(),
-                control.local_addr().unwrap().port().to_string(),
-            ],
-        });
-    })
-    .await;
-    (fixture, control)
-}
-fn input(session: &str, message: &str) -> Value {
-    json!({"sessionId":session,"message":message,"backend":{"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"fixture-model","thinkingLevel":"vendor-deep"}}}})
-}
-async fn packet(control: &mut BufReader<TcpStream>, phase: &str) -> Value {
-    let mut line = String::new();
-    control.read_line(&mut line).await.unwrap();
-    let value: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(value["phase"], phase);
-    value
-}
-async fn release(control: &mut BufReader<TcpStream>) {
-    control.get_mut().write_all(b"continue\n").await.unwrap();
-}
-async fn record(f: &Fixture) -> Value {
-    use maka_capabilities::storage::{Namespace, Scan};
-    let page = f
-        .store
-        .plugin_data_scan(
-            &Namespace::new("maka.agent.oar", maka_plugin_core::scope::Scope::Profile).unwrap(),
-            Scan {
-                prefix: String::new(),
-                after: None,
-            },
-        )
-        .await
-        .unwrap();
-    assert_eq!(page.entries.len(), 1);
-    page.entries[0].record.data.value().unwrap().clone()
-}
 async fn check_output(f: &Fixture, session: &str) {
     let prefix = f.prefix(session, 128, 1024 * 1024).await;
     assert!(prefix.events.iter().any(|row| matches!(&row.event.fact,
@@ -83,7 +31,7 @@ async fn check_output(f: &Fixture, session: &str) {
 #[tokio::test]
 async fn native_oar_commits_identity_and_output_before_ack_and_resumes_without_replay() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR durable ACK").await;
         for index in 0..2 {
             let operation = Uuid::new_v4();
@@ -95,7 +43,7 @@ async fn native_oar_commits_identity_and_output_before_ack_and_resumes_without_r
             assert_eq!(accepted["kind"], "started", "{accepted}");
             let mut control = BufReader::new(listener.accept().await.unwrap().0);
             let opened = packet(&mut control, "opened").await;
-            let journal = record(&f).await;
+            let journal = record(&f, &session).await;
             assert_eq!(journal["nativeSession"], "native-fixture-session");
             assert_eq!(journal["running"], accepted["invocationId"]);
             assert_eq!(opened["request"]["effort"], "vendor-deep");
@@ -117,7 +65,10 @@ async fn native_oar_commits_identity_and_output_before_ack_and_resumes_without_r
             );
             release(&mut control).await;
             packet(&mut control, "terminal").await;
-            assert_eq!(record(&f).await["running"], accepted["invocationId"]);
+            assert_eq!(
+                record(&f, &session).await["running"],
+                accepted["invocationId"]
+            );
             release(&mut control).await;
             f.drained().await;
             let final_work = work(&f, &session, &accepted).await;
@@ -126,7 +77,7 @@ async fn native_oar_commits_identity_and_output_before_ack_and_resumes_without_r
                 "{final_work}"
             );
             assert_eq!(final_work["answer"]["text"], "committed output");
-            assert!(record(&f).await["running"].is_null());
+            assert!(record(&f, &session).await["running"].is_null());
             assert_eq!(
                 f.mutation(2, "send", input, operation).await.unwrap(),
                 accepted
@@ -143,7 +94,7 @@ async fn native_oar_commits_identity_and_output_before_ack_and_resumes_without_r
 #[tokio::test]
 async fn native_oar_stop_waits_for_disposal_and_worker_exit() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR stop").await;
         let accepted = f
             .mutation(2, "send", input(&session, "wait"), Uuid::new_v4())
@@ -152,6 +103,13 @@ async fn native_oar_stop_waits_for_disposal_and_worker_exit() {
         assert_eq!(accepted["kind"], "started", "{accepted}");
         let mut control = BufReader::new(listener.accept().await.unwrap().0);
         packet(&mut control, "opened").await;
+        let observed = f.query("observe", json!({"sessionId":session})).await.unwrap();
+        assert_eq!(observed["run"]["backend"], "executor");
+        let saved = f.mutation(2,"selectBackend",json!({"sessionId":session,"backend":model_backend(&f.selection().await)}),Uuid::new_v4()).await.unwrap();
+        assert_eq!(saved["kind"],"committed","{saved}");
+        let observed = f.query("observe", json!({"sessionId":session})).await.unwrap();
+        assert_eq!(observed["session"]["backend"]["kind"], "model");
+        assert_eq!(observed["run"]["backend"], "executor", "an active Run keeps its admitted backend after a picker preference changes");
         release(&mut control).await;
         packet(&mut control, "output").await;
         let queued = f.mutation(2,"send", input(&session,"follow-up"),Uuid::new_v4()).await.unwrap();
@@ -170,10 +128,10 @@ async fn native_oar_stop_waits_for_disposal_and_worker_exit() {
             .unwrap();
         assert_eq!(stopped["requested"], true);
         packet(&mut control, "terminal").await;
-        assert_eq!(record(&f).await["running"], accepted["invocationId"]);
+        assert_eq!(record(&f, &session).await["running"], accepted["invocationId"]);
         release(&mut control).await;
         f.drained().await;
-        assert!(record(&f).await["running"].is_null());
+        assert!(record(&f, &session).await["running"].is_null());
         let observed = work(&f, &session, &accepted).await;
         assert_eq!(observed["execution"]["state"], "cancelled", "{observed}");
         f.app.shutdown().await.unwrap();
@@ -186,7 +144,7 @@ async fn native_oar_stop_waits_for_disposal_and_worker_exit() {
 #[tokio::test]
 async fn native_oar_model_list_keeps_source_identity_vendor_effort_and_snapshot_revision() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, _) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let mut create = f.create_input("Invalid OAR preference").await;
         create["backend"] = json!({"kind":"executor","selection":{"executor":"oar","settings":{}}});
         let rejected = f
@@ -200,6 +158,9 @@ async fn native_oar_model_list_keeps_source_identity_vendor_effort_and_snapshot_
             .await
             .unwrap();
         assert_eq!(page["kind"], "ready", "{page}");
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        let catalog = packet(&mut trace, "catalog").await;
+        assert!(catalog["request"].get("runtime").is_none());
         assert_eq!(page["choices"].as_array().unwrap().len(), 16);
         assert_eq!(page["choices"][0]["selection"]["kind"], "executor");
         assert_eq!(
@@ -225,10 +186,19 @@ async fn native_oar_model_list_keeps_source_identity_vendor_effort_and_snapshot_
             .await
             .unwrap();
         assert_eq!(stale["kind"], "changed");
+        assert!(
+            listener.accept().now_or_never().is_none(),
+            "pagination must reuse discovery"
+        );
         let mut selected = page["choices"][0]["selection"].clone();
         selected["selection"]["settings"]["thinkingLevel"] = json!("vendor-deep");
         let detail = f.query("model", json!({"backend":selected})).await.unwrap();
         assert_eq!(detail["kind"], "ready", "{detail}");
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        assert_eq!(
+            packet(&mut trace, "catalog").await["request"]["runtime"],
+            "codex"
+        );
         let native = f
             .query("models", json!({"kind":"start","query":"fixture-model"}))
             .await
@@ -240,6 +210,39 @@ async fn native_oar_model_list_keeps_source_identity_vendor_effort_and_snapshot_
                 .iter()
                 .any(|choice| choice["selection"]["kind"] == "model")
         );
+        assert!(
+            listener.accept().now_or_never().is_none(),
+            "search changes must reuse discovery"
+        );
+        let installed = f
+            .mutation(
+                2,
+                "oarSetup",
+                json!({
+                    "runtime":"codex", "action":{"kind":"install"}
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(installed["result"]["kind"], "installed");
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        assert_eq!(
+            packet(&mut trace, "setup").await["request"]["action"],
+            "install"
+        );
+        let refreshed = f
+            .query("models", json!({"kind":"start","query":"OAR codex"}))
+            .await
+            .unwrap();
+        assert_eq!(refreshed["choices"], page["choices"]);
+        let mut trace = BufReader::new(listener.accept().await.unwrap().0);
+        assert!(
+            packet(&mut trace, "catalog").await["request"]
+                .get("runtime")
+                .is_none()
+        );
+        assert!(listener.accept().now_or_never().is_none());
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
@@ -251,7 +254,7 @@ async fn native_oar_model_list_keeps_source_identity_vendor_effort_and_snapshot_
 async fn native_oar_worker_exit_without_disposal_retains_identity_and_never_replays_original_prompt()
  {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("OAR unknown disposal").await;
         let operation = Uuid::new_v4();
         let input = input(&session,"crash");
@@ -263,7 +266,7 @@ async fn native_oar_worker_exit_without_disposal_retains_identity_and_never_repl
         packet(&mut control,"output").await;
         release(&mut control).await;
         f.drained().await;
-        assert_eq!(record(&f).await["running"],accepted["invocationId"]);
+        assert_eq!(record(&f, &session).await["running"],accepted["invocationId"]);
         let observed = work(&f,&session,&accepted).await;
         assert_eq!(observed["execution"]["state"],"failed","{observed}");
         let prefix = f.prefix(&session,128,1024*1024).await;
@@ -278,7 +281,7 @@ async fn native_oar_worker_exit_without_disposal_retains_identity_and_never_repl
 #[tokio::test]
 async fn native_oar_setup_preserves_native_unsupported_and_original_installation_receipt() {
     tokio::time::timeout(Duration::from_secs(40), async {
-        let (f, listener) = setup().await;
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let operation = Uuid::new_v4();
         let input = json!({"runtime":"antigravity","action":{"kind":"plan","line":"stable"}});
         let result = f
@@ -326,12 +329,138 @@ async fn native_oar_live_codex_executes_high_and_resumes_the_native_conversation
             let observed = work(&f,&session,&accepted).await;
             assert_eq!(observed["execution"]["state"],"completed","{observed}");
             assert_eq!(observed["answer"]["text"].as_str().unwrap().trim(),marker,"{observed}");
-            let journal = record(&f).await;
+            let journal = record(&f, &session).await;
             let current = journal["nativeSession"].as_str().unwrap();
             match &native_session { Some(previous)=>assert_eq!(previous,current),None=>native_session=Some(current.to_owned()) }
             assert!(journal["running"].is_null());
             assert_eq!(f.mutation(2,"send",input,operation).await.unwrap(),accepted);
         }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_model_detail_never_starts_oar_and_empty_roots_keep_native_discovery() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        for empty in [false, true] {
+            let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+                if empty { settings.workspace_roots.clear(); }
+            }).await;
+            let detail = f.query("model", json!({"backend":model_backend(&f.selection().await)})).await.unwrap();
+            assert_eq!(detail["kind"], "ready", "{detail}");
+            assert_eq!(detail["choice"]["selection"]["kind"], "model");
+            if empty {
+                let page = f.query("models", json!({"kind":"start","query":""})).await.unwrap();
+                assert_eq!(page["kind"], "ready");
+                assert_eq!(page["choices"].as_array().unwrap().len(), 1);
+                assert_eq!(page["choices"][0]["selection"]["kind"], "model");
+                let external = f.query("model", json!({"backend":{
+                    "kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"external-0"}}
+                }})).await.unwrap();
+                assert_eq!(external["kind"], "unavailable");
+                let error = f.mutation(2, "oarSetup", json!({
+                    "runtime":"codex","action":{"kind":"probe"}
+                }), Uuid::new_v4()).await.unwrap_err();
+                assert!(error.contains("agent_workspace_unavailable"), "{error}");
+            }
+            assert!(listener.accept().now_or_never().is_none(), "native discovery or missing roots must not start an OAR worker");
+            f.app.shutdown().await.unwrap();
+            f.config.shutdown().await.unwrap();
+        }
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelling_one_model_search_keeps_shared_discovery_and_reuses_its_result() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings
+                .oar
+                .as_mut()
+                .unwrap()
+                .args
+                .push("--hold-catalog".into());
+        })
+        .await;
+        let cancelled = CancellationToken::new();
+        let first = f.owner.models(
+            ModelsRead::Start {
+                query: "OAR".into(),
+            },
+            &cancelled,
+        );
+        tokio::pin!(first);
+        let socket = tokio::select! {
+            result = &mut first => panic!("catalog unexpectedly completed: {}", result.is_ok()),
+            socket = listener.accept() => socket.unwrap().0,
+        };
+        let mut trace = BufReader::new(socket);
+        assert!(
+            packet(&mut trace, "catalog").await["request"]
+                .get("runtime")
+                .is_none()
+        );
+        let continuing = CancellationToken::new();
+        let second = f.owner.models(
+            ModelsRead::Start {
+                query: "OAR codex".into(),
+            },
+            &continuing,
+        );
+        tokio::pin!(second);
+        assert!(second.as_mut().now_or_never().is_none());
+        cancelled.cancel();
+        assert!(
+            first.await.is_err(),
+            "the cancelled caller must stop waiting"
+        );
+        assert!(second.as_mut().now_or_never().is_none());
+        release(&mut trace).await;
+        let result = serde_json::to_value(second.await.unwrap()).unwrap();
+        assert_eq!(result["kind"], "ready");
+        assert_eq!(result["choices"].as_array().unwrap().len(), 16);
+        let again = f
+            .query("models", json!({"kind":"start","query":"OAR codex"}))
+            .await
+            .unwrap();
+        assert_eq!(again, result);
+        assert!(
+            listener.accept().now_or_never().is_none(),
+            "both search callers and the later read share one worker"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_single_runtime_query_drains_terminal_and_allows_clean_retirement() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.oar.as_mut().unwrap().args.push("--hold-catalog".into());
+        }).await;
+        let cancellation = CancellationToken::new();
+        let selected = serde_json::from_value(json!({"backend":{
+            "kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"external-0"}}
+        }})).unwrap();
+        let query = f.owner.model(selected, &cancellation);
+        tokio::pin!(query);
+        let socket = tokio::select! {
+            result = &mut query => panic!("uncached query unexpectedly completed: {}", result.is_ok()),
+            socket = listener.accept() => socket.unwrap().0,
+        };
+        let mut trace = BufReader::new(socket);
+        assert_eq!(packet(&mut trace, "catalog").await["request"]["runtime"], "codex");
+        cancellation.cancel();
+        packet(&mut trace, "catalog_cancelled").await;
+        // A terminal result already produced during cancellation remains authoritative.
+        let result = serde_json::to_value(query.await.unwrap()).unwrap();
+        assert_eq!(result["kind"], "ready");
+        assert_eq!(result["choice"]["selection"]["selection"]["settings"]["model"], "external-0");
+        assert!(listener.accept().now_or_never().is_none());
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();

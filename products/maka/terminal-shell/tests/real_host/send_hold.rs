@@ -100,3 +100,64 @@ async fn a_rejected_send_preserves_its_snapshot_and_the_next_draft() {
     .await
     .expect("rejected send workflow timed out");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn native_send_requires_workspace_mcp_trust_before_model_dispatch() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let mut fixture = Fixture::open().await;
+        let client = fixture.client().await;
+        let directory = fixture.directory.path().join("workspace/.agents");
+        std::fs::create_dir_all(&directory).unwrap();
+        let config = directory.join("mcp.json");
+        std::fs::write(
+            &config,
+            serde_json::to_vec(&json!({
+                "mcpServers":{"untrusted":{"url":"https://example.invalid/mcp"}}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        support::mutate(&client, "selectBackend", json!({
+            "sessionId":fixture.session,"backend":{"kind":"model",
+            "connectionId":fixture.selection["connectionId"],"modelId":fixture.selection["modelId"]}
+        })).await;
+        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+        view.resize(150, 50);
+        wait_editable_composer(&mut view).await;
+        tab_to_label(&mut view, "Message composer").await;
+        view.handle_event(Event::Paste("TRUST_GATED_MESSAGE".into()));
+        support::click_button(&mut view, "Send message").await;
+        support::wait_enabled_button(&mut view, "Trust configuration").await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+        let observed = client
+            .query("agent", "observe", json!({"sessionId":fixture.session}))
+            .await
+            .unwrap();
+        assert!(
+            observed["run"].is_null(),
+            "untrusted send must not start an execution"
+        );
+        support::click_button(&mut view, "Cancel").await;
+        // Removing the untrusted configuration permits retry of the exact held message.
+        std::fs::remove_file(config).unwrap();
+        support::click_button(&mut view, "Messages").await;
+        wait_view(&mut view, |screen| screen.contains("TRUST_GATED_MESSAGE")).await;
+        support::click_button(&mut view, "Retry message").await;
+        let mut request = fixture.next_request().await;
+        assert!(
+            request.body["messages"]
+                .to_string()
+                .contains("TRUST_GATED_MESSAGE")
+        );
+        request.delta("TRUST_GATE_RETRY_ACCEPTED").await;
+        request.finish().await;
+        fixture.idle(&client, &fixture.session).await;
+        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
+        drop(view);
+        bindings.close().await.unwrap();
+        client.close().await.unwrap();
+        fixture.finish().await;
+    })
+    .await
+    .expect("workspace MCP trust gate workflow timed out");
+}

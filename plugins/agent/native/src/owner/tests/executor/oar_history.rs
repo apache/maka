@@ -17,48 +17,11 @@
  * under the License.
  */
 
+use super::oar_support::{input_runtime, packet, release, setup};
 use super::*;
 use futures_util::FutureExt;
 use maka_capabilities::storage::{Data, Entry, Mutation as StorageMutation, Namespace, Scan};
-use tokio::io::{AsyncBufReadExt, BufReader};
-
-async fn setup(base: &str) -> (Fixture, TcpListener) {
-    let control = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let node = tokio::process::Command::new("node")
-        .args(["-p", "process.execPath"])
-        .output()
-        .await
-        .unwrap();
-    assert!(node.status.success());
-    let fixture = Fixture::configured(base, None, None, None, |settings| {
-        settings.oar = Some(maka_agent_api::executor::OarConfiguration {
-            executable: Some(String::from_utf8(node.stdout).unwrap().trim().into()),
-            args: vec![
-                std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/support/oar-worker.mjs")
-                    .to_str()
-                    .unwrap()
-                    .into(),
-                control.local_addr().unwrap().port().to_string(),
-            ],
-        });
-    })
-    .await;
-    (fixture, control)
-}
-fn input(session: &str, runtime: &str, message: &str) -> Value {
-    json!({"sessionId":session,"message":message,"backend":{"kind":"executor","selection":{"executor":"oar","settings":{"runtime":runtime,"model":"fixture-model","thinkingLevel":"vendor-deep"}}}})
-}
-async fn packet(control: &mut BufReader<TcpStream>, phase: &str) -> Value {
-    let mut line = String::new();
-    control.read_line(&mut line).await.unwrap();
-    let value: Value = serde_json::from_str(&line).unwrap();
-    assert_eq!(value["phase"], phase);
-    value
-}
-async fn release(control: &mut BufReader<TcpStream>) {
-    control.get_mut().write_all(b"continue\n").await.unwrap();
-}
+use tokio::io::BufReader;
 
 async fn native_turn(
     f: &Fixture,
@@ -83,6 +46,11 @@ async fn native_turn(
     assert_eq!(accepted["kind"], "started", "{accepted}");
     let (mut socket, _) = listener.accept().await.unwrap();
     request(&mut socket).await;
+    let observed = f
+        .query("observe", json!({"sessionId":session}))
+        .await
+        .unwrap();
+    assert_eq!(observed["run"]["backend"], "model");
     response_with_thinking(&mut socket, answer, Some("PRIVATE_NATIVE_REASONING")).await;
     f.drained().await;
     assert_eq!(
@@ -98,7 +66,12 @@ async fn oar_turn(
     message: &str,
 ) -> Value {
     let accepted = f
-        .mutation(2, "send", input(session, runtime, message), Uuid::new_v4())
+        .mutation(
+            2,
+            "send",
+            input_runtime(session, runtime, message),
+            Uuid::new_v4(),
+        )
         .await
         .unwrap();
     assert_eq!(accepted["kind"], "started", "{accepted}");
@@ -275,7 +248,12 @@ async fn native_oar_history_handoff_does_not_advance_delivery_after_cancelled_pr
         let delivered = journal(&f).await.record.data.value().unwrap()["lastDeliveredRun"].clone();
         assert!(delivered.is_string());
         let accepted = f
-            .mutation(2, "send", input(&session, "codex", "wait"), Uuid::new_v4())
+            .mutation(
+                2,
+                "send",
+                input_runtime(&session, "codex", "wait"),
+                Uuid::new_v4(),
+            )
             .await
             .unwrap();
         let mut control = BufReader::new(listener.accept().await.unwrap().0);
@@ -338,7 +316,7 @@ async fn native_oar_history_handoff_missing_boundary_fails_before_starting_worke
         let revision = f.store.plugin_data_batch(&namespace(), vec![StorageMutation {
             key: entry.key.clone(), expected_revision: Some(entry.record.revision), data: Data::Present(invalid.clone()),
         }]).await.unwrap()[0].revision;
-        let accepted = f.mutation(2, "send", input(&session, "codex", "must-not-cold-start"), Uuid::new_v4()).await.unwrap();
+        let accepted = f.mutation(2, "send", input_runtime(&session, "codex", "must-not-cold-start"), Uuid::new_v4()).await.unwrap();
         f.drained().await;
         assert_eq!(work(&f, &session, &accepted).await["execution"]["state"], "failed");
         let prefix = f.prefix(&session, 128, 1024 * 1024).await;

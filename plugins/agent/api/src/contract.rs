@@ -507,25 +507,8 @@ pub enum GlobalInstructionsUpdated {
 #[schemars(rename = "AgentSkillCandidatesRead")]
 pub struct SkillCandidatesRead {
     pub session_id: String,
-    pub backend: SkillCandidatesBackend,
+    pub backend: BackendPreference,
     pub query: String,
-}
-#[derive(Deserialize, JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-#[schemars(rename = "AgentSkillCandidatesBackend")]
-pub enum SkillCandidatesBackend {
-    Model {
-        model: ModelSelection,
-        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-    },
-    Executor {
-        selection: crate::executor::Selection,
-    },
 }
 #[derive(Serialize, JsonSchema, Default)]
 #[serde(rename_all = "camelCase")]
@@ -1052,9 +1035,18 @@ pub struct SessionMetrics {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentRun")]
 pub struct Run {
+    pub backend: RunBackend,
     pub invocation_id: String,
     pub turn_id: String,
     pub state: RunState,
+}
+/// Execution kind frozen at admission, independent of the next-turn preference.
+#[derive(Clone, Copy, Debug, Serialize, JsonSchema, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentRunBackend")]
+pub enum RunBackend {
+    Model,
+    Executor,
 }
 #[derive(Serialize, JsonSchema, Deserialize)]
 #[serde(rename_all = "snake_case")]

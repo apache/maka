@@ -40,7 +40,7 @@ impl Owner {
         if !self.executors.contains("oar") {
             return Err("agent_oar_disabled".into());
         }
-        let cwd = self.oar_cwd().await?;
+        let cwd = self.oar_cwd().await?.ok_or("agent_workspace_unavailable")?;
         let (action, line) = match input.action {
             Action::Probe => ("probe", None),
             Action::Plan { line } => ("plan", line),

@@ -77,6 +77,11 @@ export async function execute(runtime, request, host) {
       run.kind === 'rejected'
         ? { kind: 'rejected', code: run.code, message: run.reason }
         : { ...run.outcome, text: run.text };
+  } catch (error) {
+    result =
+      host.signal.aborted && outputFailure === undefined
+        ? { kind: 'aborted', text: '' }
+        : { kind: 'failed', reason: error instanceof Error ? error.message : String(error) };
   } finally {
     try {
       await session.dispose();

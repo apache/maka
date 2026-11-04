@@ -155,7 +155,10 @@ test('an observer write failure stops the turn and is not swallowed by OAR', asy
       throw new Error('persistence pipe failed');
     publish(message);
   };
-  await assert.rejects(execute(f.runtime, request, f.host), /persistence pipe failed/);
+  assert.deepEqual(await execute(f.runtime, request, f.host), {
+    kind: 'failed',
+    reason: 'persistence pipe failed',
+  });
   assert.equal(f.observed.disposed, 1);
   assert.equal(f.controller.signal.aborted, true);
 });

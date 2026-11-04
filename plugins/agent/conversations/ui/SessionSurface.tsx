@@ -2487,14 +2487,7 @@ function projectComposerSession(
       skills: ({ query, backend }) =>
         host.query('agent', 'skillCandidates', {
           sessionId: owner.sessionId,
-          backend:
-            backend.kind === 'model'
-              ? {
-                  kind: 'model',
-                  model: { connectionId: backend.connectionId, modelId: backend.modelId },
-                  thinkingLevel: backend.thinkingLevel,
-                }
-              : backend,
+          backend,
           query,
         }),
       pathLabel: host.pathLabel,

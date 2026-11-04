@@ -84,26 +84,21 @@ pub(super) async fn execute(
     cancellation: CancellationToken,
 ) -> Result<Outcome, Error> {
     let running = &mut *journal;
-    let result = supervise(
-        executable,
-        args,
-        cwd,
-        |input, stdout, finished, settle| async move {
-            communicate(
-                input,
-                stdout,
-                request,
-                storage,
-                running,
-                output,
-                &cancellation,
-                &finished,
-                &settle,
-            )
-            .await
-        },
-    )
+    let result = supervise(executable, args, cwd, |input, stdout, settle| async move {
+        communicate(
+            input,
+            stdout,
+            request,
+            storage,
+            running,
+            output,
+            &cancellation,
+            &settle,
+        )
+        .await
+    })
     .await;
+    let result = result.and_then(|protocol| protocol.map_err(|_| Error::CleanupUnconfirmed));
     if !matches!(&result, Err(Error::CleanupUnconfirmed)) {
         journal.ready(storage).await?;
     }
@@ -116,14 +111,9 @@ async fn supervise<T, F, Fut>(
     args: &[String],
     cwd: &str,
     protocol: F,
-) -> Result<T, Error>
+) -> Result<Result<T, Error>, Error>
 where
-    F: FnOnce(
-        maka_process::pipe::Input,
-        maka_process::pipe::Output,
-        CancellationToken,
-        CancellationToken,
-    ) -> Fut,
+    F: FnOnce(maka_process::pipe::Input, maka_process::pipe::Output, CancellationToken) -> Fut,
     Fut: std::future::Future<Output = Result<T, Error>>,
 {
     let mut command = maka_process::Command::new(executable, cwd);
@@ -139,29 +129,37 @@ where
     let finished = CancellationToken::new();
     let settle = CancellationToken::new();
     let lifecycle = async {
-        let status = tokio::select! {
-            result = process.child.wait() => result,
-            () = settle.cancelled() => {
-                match tokio::time::timeout(Duration::from_secs(45), process.child.wait()).await {
-                    Ok(result) => result,
-                    Err(_) => {
-                        process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
-                        tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?
+        let result = async {
+            let status = tokio::select! {
+                result = process.child.wait() => result,
+                () = settle.cancelled() => {
+                    match tokio::time::timeout(Duration::from_secs(45), process.child.wait()).await {
+                        Ok(result) => result,
+                        Err(_) => {
+                            process.child.terminate().map_err(|_| Error::CleanupUnconfirmed)?;
+                            tokio::time::timeout(Duration::from_secs(4), process.child.wait()).await.map_err(|_| Error::CleanupUnconfirmed)?
+                        }
                     }
                 }
-            }
-        };
+            };
+            status.map_err(|_| Error::CleanupUnconfirmed)
+        }.await;
         finished.cancel();
-        status.map_err(|_| Error::CleanupUnconfirmed)
+        result
     };
     let protocol = async {
-        let result = protocol(
-            process.stdin,
-            process.stdout,
-            finished.clone(),
-            settle.clone(),
-        )
-        .await;
+        let work = protocol(process.stdin, process.stdout, settle.clone());
+        tokio::pin!(work);
+        let result = tokio::select! {
+            biased;
+            result = &mut work => result,
+            () = finished.cancelled() => {
+                // Escaped descendants may keep pipes open after root exit. Drain buffered
+                // receipts, but never infer native disposal from process-group disappearance.
+                tokio::time::timeout(Duration::from_secs(1), &mut work).await
+                    .unwrap_or(Err(Error::CleanupUnconfirmed))
+            }
+        };
         settle.cancel();
         result
     };
@@ -171,8 +169,8 @@ where
         loop {
             let read = tokio::select! {
                 biased;
-                read = process.stderr.read(&mut buffer) => read,
                 () = finished.cancelled() => break,
+                read = process.stderr.read(&mut buffer) => read,
             };
             match read {
                 Ok(0) | Err(_) => break,
@@ -188,13 +186,10 @@ where
     };
     let (status, result, diagnostics) = tokio::join!(lifecycle, protocol, diagnostics);
     status?;
-    match result {
-        Ok(value) => Ok(value),
-        Err(error) => {
-            tracing::warn!(cause = %error, diagnostic = %diagnostics, "OAR worker did not confirm disposal");
-            Err(Error::CleanupUnconfirmed)
-        }
+    if let Err(error) = &result {
+        tracing::warn!(cause = %error, diagnostic = %diagnostics, "OAR protocol ended without a valid terminal receipt");
     }
+    Ok(result)
 }
 
 pub(super) async fn query(
@@ -204,11 +199,16 @@ pub(super) async fn query(
     request: Value,
     cancellation: CancellationToken,
 ) -> Result<Value, Error> {
+    let expected = request
+        .get("kind")
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::Invalid("Missing OAR query kind".into()))?
+        .to_owned();
     supervise(
         executable,
         args,
         cwd,
-        |mut input, stdout, finished, settle| async move {
+        |mut input, stdout, settle| async move {
             write(&mut input, request).await?;
             let mut lines = BufReader::new(stdout).lines();
             let mut cancelled = false;
@@ -217,28 +217,20 @@ pub(super) async fn query(
                     biased;
                     () = cancellation.cancelled(), if !cancelled => {
                         cancelled = true;
-                        write(&mut input, serde_json::json!({"kind":"cancel"})).await?;
-                        settle.cancel();
+                        cancel(&mut input, &settle).await;
                         continue;
                     }
                     line = lines.next_line() => line.map_err(|e| Error::Provider(e.to_string()))?,
-                    () = finished.cancelled() => return Err(Error::Unknown),
                 }
                 .ok_or(Error::Unknown)?;
                 let frame: Value =
                     serde_json::from_str(&line).map_err(|e| Error::Invalid(e.to_string()))?;
                 if frame.get("sequence").and_then(Value::as_u64) != Some(1)
-                    || !matches!(
-                        frame.get("kind").and_then(Value::as_str),
-                        Some("catalog" | "setup")
-                    )
+                    || frame.get("kind").and_then(Value::as_str) != Some(expected.as_str())
                 {
                     return Err(Error::Invalid("Invalid OAR query result".into()));
                 }
-                input
-                    .shutdown()
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?;
+                let _ = input.shutdown().await;
                 return frame
                     .get("value")
                     .cloned()
@@ -246,7 +238,8 @@ pub(super) async fn query(
             }
         },
     )
-    .await
+    .await?
+    .map_err(|_| Error::CleanupUnconfirmed)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -258,7 +251,6 @@ async fn communicate(
     journal: &mut journal::Journal,
     output: Arc<dyn OutputSink>,
     cancellation: &CancellationToken,
-    finished: &CancellationToken,
     settle: &CancellationToken,
 ) -> Result<(Outcome, Option<Error>), Error> {
     write(&mut input, request).await?;
@@ -272,12 +264,10 @@ async fn communicate(
             biased;
             () = cancellation.cancelled(), if !cancelled => {
                 cancelled = true;
-                write(&mut input, serde_json::json!({"kind":"cancel"})).await?;
-                settle.cancel();
+                cancel(&mut input, settle).await;
                 continue;
             }
             line = lines.next_line() => line.map_err(|e| Error::Provider(e.to_string()))?,
-            () = finished.cancelled() => return Err(Error::Unknown),
         }
         .ok_or(Error::Unknown)?;
         let frame: Frame =
@@ -291,8 +281,13 @@ async fn communicate(
                 if opened {
                     return Err(Error::Invalid("OAR opened twice".into()));
                 }
-                journal.opened(storage, session_id).await?;
                 opened = true;
+                if let Err(error) = journal.opened(storage, session_id).await {
+                    failure = Some(error);
+                    cancelled = true;
+                    cancel(&mut input, settle).await;
+                    continue;
+                }
             }
             Body::Event { event } => {
                 if !opened {
@@ -306,8 +301,7 @@ async fn communicate(
                 if let Err(error) = projection::emit(event, output.as_ref()).await {
                     failure = Some(error);
                     cancelled = true;
-                    write(&mut input, serde_json::json!({"kind":"cancel"})).await?;
-                    settle.cancel();
+                    cancel(&mut input, settle).await;
                     continue;
                 }
             }
@@ -317,18 +311,20 @@ async fn communicate(
                         "OAR result preceded native session identity".into(),
                     ));
                 }
-                input
-                    .shutdown()
-                    .await
-                    .map_err(|e| Error::Provider(e.to_string()))?;
+                let _ = input.shutdown().await;
                 return Ok((result.outcome(), failure));
             }
         }
-        write(
+        if let Err(error) = write(
             &mut input,
             serde_json::json!({"kind":"ack", "sequence":sequence}),
         )
-        .await?;
+        .await
+        {
+            failure.get_or_insert(error);
+            cancelled = true;
+            cancel(&mut input, settle).await;
+        }
     }
 }
 async fn write(input: &mut maka_process::pipe::Input, value: Value) -> Result<(), Error> {
@@ -338,4 +334,11 @@ async fn write(input: &mut maka_process::pipe::Input, value: Value) -> Result<()
         .write_all(&bytes)
         .await
         .map_err(|e| Error::Provider(e.to_string()))
+}
+
+async fn cancel(input: &mut maka_process::pipe::Input, settle: &CancellationToken) {
+    settle.cancel();
+    if let Err(error) = write(input, serde_json::json!({"kind":"cancel"})).await {
+        tracing::debug!(%error, "OAR cancel pipe closed; draining the original response");
+    }
 }

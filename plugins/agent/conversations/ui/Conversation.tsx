@@ -170,6 +170,7 @@ import type {
   AgentHistoryPage,
   AgentMarkReadResult,
   AgentSession,
+  AgentRunBackend,
   HistoryPosition,
   OperationReply,
   AgentPendingInteractions,
@@ -342,6 +343,7 @@ export function Conversation(props: ConversationProps) {
   const archived = signal(false);
   const run = signal<ConversationStatus>('loading');
   const invocation = signal<string | null>(null);
+  const runBackend = signal<AgentRunBackend | null>(null);
   const toolProgressById = computed(
     () =>
       new Map(
@@ -410,7 +412,7 @@ export function Conversation(props: ConversationProps) {
     text: string;
     files: DraftAttachment[];
     edit: AttachmentEdit & { text: string };
-    selection: Record<string, unknown>;
+    selection: ReturnType<typeof sendSelection>;
     revision?: number;
     error: UiText | null;
   };
@@ -1029,6 +1031,7 @@ export function Conversation(props: ConversationProps) {
       run.set(observed.run?.state ?? 'idle');
       compacting.set(observed.compacting);
       invocation.set(observed.run?.invocationId ?? null);
+      runBackend.set(observed.run?.backend ?? null);
       runTurn.set(observed.run?.turnId ?? null);
       messagePrediction.source(
         observed.session.parentSessionId === null ? completedTurn : null,
@@ -1165,6 +1168,7 @@ export function Conversation(props: ConversationProps) {
             messagePrediction.source(null, 'live');
             run.set('running');
             invocation.set(event.invocationId);
+            runBackend.set(null);
             runTurn.set(event.turnId);
             requestMetadata(rows().find((row) => row.turnId === event.turnId));
             void observe().catch(report);
@@ -1190,6 +1194,7 @@ export function Conversation(props: ConversationProps) {
             predictionTriggerTurn = fact.failed ? null : event.turnId;
             run.set(fact.failed ? 'failed' : 'idle');
             invocation.set(null);
+            runBackend.set(null);
             compacting.set(null);
             runTurn.set(null);
             stoppingRun.set(null);
@@ -1824,10 +1829,13 @@ export function Conversation(props: ConversationProps) {
     }
   };
 
+  const nativeSteer = (delivery: 'steer' | 'queue') =>
+    delivery === 'steer' && invocation() !== null && runBackend() === 'model';
   const sendSelection = (delivery: 'steer' | 'queue', expectedBackend?: BackendIdentity) => {
     const expectedInvocationId = invocation() ?? undefined;
-    if (delivery === 'steer' && expectedInvocationId !== undefined)
-      return { delivery, expectedInvocationId };
+    if (expectedInvocationId !== undefined && runBackend() === null)
+      throw new UiError('Loading session history… Your draft is kept.');
+    if (nativeSteer(delivery)) return { delivery, expectedInvocationId };
     const selected = backend();
     if (expectedBackend !== undefined && !sameBackend(selected, expectedBackend))
       throw new UiError('The model changed before confirmation. Send again to confirm it.');
@@ -1853,7 +1861,8 @@ export function Conversation(props: ConversationProps) {
         : tr('History unavailable. Retrying automatically; your draft is kept.');
     if (ready() && transcriptStatus() !== 'live')
       return tr('Reconnecting updates… Your draft is kept.');
-    if (!ready()) return tr('Loading session history… Your draft is kept.');
+    if (!ready() || (invocation() !== null && runBackend() === null))
+      return tr('Loading session history… Your draft is kept.');
     if (archived())
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
@@ -1885,7 +1894,7 @@ export function Conversation(props: ConversationProps) {
   const confirmFrozen = async (id: string, frozen: FrozenSend) => {
     activeSends.set(new Map(activeSends()).set(id, frozen));
     try {
-      if (frozen.selection.model !== undefined && !(await projectMcp.check())) {
+      if (frozen.selection.backend?.kind === 'model' && !(await projectMcp.check())) {
         await abandonSend(client, id);
         sendError(id, new UiError('Approve workspace connections, then retry this message.'));
         return;
@@ -2243,7 +2252,7 @@ export function Conversation(props: ConversationProps) {
       owner !== sessionId ||
       draft() !== text ||
       !attachments.same(files) ||
-      ((delivery !== 'steer' || invocation() === null) && !sameBackend(backend(), expectedBackend))
+      (!nativeSteer(delivery) && !sameBackend(backend(), expectedBackend))
     )
       return;
     void send(text, expectedBackend, false, delivery);

@@ -29,7 +29,7 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         support::click_button(&mut view, "Choose model and effort").await;
         wait_view(&mut view, |screen| {
-            screen.contains("Search models…") && !screen.contains("Loading…")
+            screen.contains("Search models and sources…") && !screen.contains("Loading…")
         })
         .await;
         support::click_button(&mut view, "Use fixture-model · NSH fixture").await;
@@ -270,35 +270,16 @@ async fn editor_copy_and_undo_precede_interrupt_and_ctrl_c_requires_confirming_t
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn connection_filter_preserves_model_search_focus_and_keyboard_selection() {
+async fn model_and_source_search_preserves_focus_and_keyboard_selection() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let fixture = Fixture::open().await;
         let client = fixture.client().await;
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         support::click_button(&mut view, "Choose model and effort").await;
-        wait_focused_input(&mut view, "Search models").await;
+        wait_focused_input(&mut view, "Search models and sources").await;
         view.handle_event(Event::Paste("no-such-model".into()));
         wait_view(&mut view, |screen| {
-            screen.contains("No models match this search and connection.")
-        })
-        .await;
-        support::click_button(&mut view, "Filter by connection").await;
-        wait_view(&mut view, |screen| {
-            screen.contains("All connections") && screen.contains("NSH fixture")
-        })
-        .await;
-        tab_to_label(&mut view, "NSH fixture").await;
-        view.handle_event(Event::Key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        )));
-        wait_focused_input(&mut view, "Search models").await;
-        assert_eq!(
-            view.surface().input_context().unwrap().text.as_deref(),
-            Some("no-such-model")
-        );
-        wait_view(&mut view, |screen| {
-            screen.contains("No models match this search and connection.")
+            screen.contains("No models match this search.")
         })
         .await;
         view.handle_event(Event::Key(KeyEvent::new(
@@ -311,10 +292,19 @@ async fn connection_filter_preserves_model_search_focus_and_keyboard_selection()
             Some("no-such-model")
         );
         shortcut(&mut view, 'a');
+        view.handle_event(Event::Paste("NSH fixture".into()));
+        support::wait_enabled_button(&mut view, "Use fixture-model · NSH fixture").await;
+        support::wait_enabled_button(&mut view, "Use fixture-model-alt · NSH fixture").await;
+        wait_focused_input(&mut view, "Search models and sources").await;
+        assert_eq!(
+            view.surface().input_context().unwrap().text.as_deref(),
+            Some("NSH fixture")
+        );
+        shortcut(&mut view, 'a');
         view.handle_event(Event::Paste("fixture-model-alt".into()));
         // The editor shows pasted text before asynchronous model results arrive.
         support::wait_enabled_button(&mut view, "Use fixture-model-alt · NSH fixture").await;
-        wait_focused_input(&mut view, "Search models").await;
+        wait_focused_input(&mut view, "Search models and sources").await;
         assert_eq!(
             view.surface().input_context().unwrap().text.as_deref(),
             Some("fixture-model-alt")
@@ -343,5 +333,5 @@ async fn connection_filter_preserves_model_search_focus_and_keyboard_selection()
         fixture.finish().await;
     })
     .await
-    .expect("connection-filter keyboard flow timed out");
+    .expect("model-and-source search keyboard flow timed out");
 }

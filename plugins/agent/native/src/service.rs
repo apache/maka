@@ -451,19 +451,31 @@ impl Handler for Agent {
                         )
                         .then(|| turn.root_invocation().turn_id.clone())
                     });
-                    let run = observed.root_turn.and_then(|turn| {
-                        let state = match turn.state {
-                            InvocationState::Admitted => RunState::Admitted,
-                            InvocationState::Running => RunState::Running,
-                            InvocationState::WaitingForUser => RunState::WaitingForUser,
-                            InvocationState::Ended { .. } => return None,
-                        };
-                        Some(Run {
-                            invocation_id: turn.invocation.invocation_id,
-                            turn_id: turn.invocation.turn_id,
-                            state,
+                    let run = observed
+                        .root_turn
+                        .map(|turn| -> Result<Option<Run>, String> {
+                            let state = match turn.state {
+                                InvocationState::Admitted => RunState::Admitted,
+                                InvocationState::Running => RunState::Running,
+                                InvocationState::WaitingForUser => RunState::WaitingForUser,
+                                InvocationState::Ended { .. } => return Ok(None),
+                            };
+                            let configuration = turn
+                                .configuration
+                                .ok_or("agent_run_configuration_unavailable")?;
+                            Ok(Some(Run {
+                                backend: if configuration.model.is_some() {
+                                    RunBackend::Model
+                                } else {
+                                    RunBackend::Executor
+                                },
+                                invocation_id: turn.invocation.invocation_id,
+                                turn_id: turn.invocation.turn_id,
+                                state,
+                            }))
                         })
-                    });
+                        .transpose()?
+                        .flatten();
                     let session = summary(&owner, resolve_session(observed.session)?);
                     let remembered_backend = if session.backend.is_none() {
                         owner.remembered_backend(&input.session_id).await?

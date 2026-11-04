@@ -161,7 +161,7 @@ async fn standard_skills_follow_each_actual_session_for_preparation_and_model_re
             write(&path.join(".agents/skills"),"review",instructions);
             let created=f.mutation(2,"create",json!({"title":"Project skill","labels":[],"workspace":{"kind":"directory","selection":roots["roots"][index]["selection"]}}),Uuid::new_v4()).await.unwrap();
             let session=created["session"]["id"].as_str().unwrap();
-            let candidates=f.query("skillCandidates",json!({"sessionId":session,"backend":{"kind":"model","model":f.selection().await},"query":""})).await.unwrap();
+            let candidates=f.query("skillCandidates",json!({"sessionId":session,"backend":model_backend(&f.selection().await),"query":""})).await.unwrap();
             assert_eq!(candidates["skills"].as_array().unwrap().len(),1,"{candidates}");
             assert_eq!(candidates["skills"][0]["invocation"],"/skill:review");
             assert!(candidates["skills"][0]["reference"].as_str().unwrap().starts_with("project:"));
@@ -215,11 +215,23 @@ async fn skill_candidates_work_with_preparation_only_library() {
     let setup = service_tools::Setup::skill_preparation(home.path().to_owned(), false);
     let f = Fixture::with_services("http://127.0.0.1:9/v1", None, None, Some(setup)).await;
     let session = f.create("Candidates").await;
-    let page = f.query("skillCandidates",json!({"sessionId":session,"backend":{"kind":"model","model":f.selection().await},"query":""})).await.unwrap();
+    let page = f
+        .query(
+            "skillCandidates",
+            json!({"sessionId":session,"backend":model_backend(&f.selection().await),"query":""}),
+        )
+        .await
+        .unwrap();
     assert_eq!(page["skills"].as_array().unwrap().len(), 13, "{page}");
     assert_eq!(page["skills"][0]["name"], "Review changes");
     assert_eq!(page["skills"][0]["invocation"], "/skill:review");
     assert_eq!(page["skills"][12]["invocation"], "/skill:z-extra-11");
+    let external = f.query("skillCandidates", json!({
+        "sessionId":session,
+        "backend":{"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex"}}},
+        "query":""
+    })).await.unwrap();
+    assert_eq!(external, json!({"revision":null,"skills":[]}));
     f.app.shutdown().await.unwrap();
     f.config.shutdown().await.unwrap();
 }

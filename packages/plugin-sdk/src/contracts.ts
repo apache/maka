@@ -14288,6 +14288,9 @@ export const contracts = {
               AgentRun: {
                 type: 'object',
                 properties: {
+                  backend: {
+                    $ref: '#/$defs/AgentRunBackend',
+                  },
                   invocationId: {
                     type: 'string',
                   },
@@ -14299,7 +14302,13 @@ export const contracts = {
                   },
                 },
                 additionalProperties: false,
-                required: ['invocationId', 'turnId', 'state'],
+                required: ['backend', 'invocationId', 'turnId', 'state'],
+              },
+              AgentRunBackend: {
+                description:
+                  'Execution kind frozen at admission, independent of the next-turn preference.',
+                type: 'string',
+                enum: ['model', 'executor'],
               },
               AgentRunState: {
                 type: 'string',
@@ -22111,7 +22120,7 @@ export const contracts = {
                 type: 'string',
               },
               backend: {
-                $ref: '#/$defs/AgentSkillCandidatesBackend',
+                $ref: '#/$defs/AgentBackendPreference',
               },
               query: {
                 type: 'string',
@@ -22120,7 +22129,9 @@ export const contracts = {
             additionalProperties: false,
             required: ['sessionId', 'backend', 'query'],
             $defs: {
-              AgentSkillCandidatesBackend: {
+              AgentBackendPreference: {
+                description:
+                  "The next turn's choice, independent of an already admitted execution.\nModel revisions are resolved afresh; preferences never grant execution authority.",
                 oneOf: [
                   {
                     type: 'object',
@@ -22129,8 +22140,13 @@ export const contracts = {
                         type: 'string',
                         const: 'model',
                       },
-                      model: {
-                        $ref: '#/$defs/ModelSelection',
+                      connectionId: {
+                        type: 'string',
+                        minLength: 1,
+                      },
+                      modelId: {
+                        type: 'string',
+                        minLength: 1,
                       },
                       thinkingLevel: {
                         anyOf: [
@@ -22144,7 +22160,7 @@ export const contracts = {
                       },
                     },
                     additionalProperties: false,
-                    required: ['kind', 'model'],
+                    required: ['kind', 'connectionId', 'modelId'],
                   },
                   {
                     type: 'object',
@@ -22161,22 +22177,6 @@ export const contracts = {
                     required: ['kind', 'selection'],
                   },
                 ],
-              },
-              ModelSelection: {
-                description:
-                  'Stable model identity, resolved from current connection settings at admission.',
-                type: 'object',
-                properties: {
-                  connectionId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
-                  },
-                },
-                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',

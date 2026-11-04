@@ -101,7 +101,12 @@ export function ProjectMcp(props: { owner: Owner }) {
                   {owner.pending() ? tr('Saving trust…') : tr('Trust configuration')}
                 </Text>
               </Button>
-              <Button disabled={owner.pending()} onPress={owner.dismiss} style={controlStyle}>
+              <Button
+                disabled={owner.pending()}
+                accessibilityLabel={tr('Cancel')}
+                onPress={owner.dismiss}
+                style={controlStyle}
+              >
                 <Text style={{ color: C.muted }}>{tr('Cancel')}</Text>
               </Button>
             </View>

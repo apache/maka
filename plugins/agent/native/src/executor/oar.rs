@@ -18,10 +18,12 @@
  */
 
 use super::*;
+use futures_util::{FutureExt, future::Shared};
 use maka_agent_ports::executor::{Outcome, Request};
 use maka_capabilities::storage::Store;
 use maka_host_runtime::storage::Storage;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
 mod attachments;
 mod history;
@@ -29,11 +31,18 @@ mod journal;
 mod projection;
 mod worker;
 
+struct CatalogSnapshot {
+    cwd: String,
+    started: Instant,
+    result: Shared<BoxFuture<'static, Result<Value, Error>>>,
+}
+
 pub(super) struct Oar {
     executable: PathBuf,
     args: Vec<String>,
     storage: Storage,
     queries: Arc<maka_capabilities::call::Resources>,
+    catalog: tokio::sync::Mutex<Option<CatalogSnapshot>>,
     stop: CancellationToken,
     root: Arc<RootStore>,
     package: String,
@@ -89,6 +98,7 @@ impl Oar {
             args: configuration.args.clone(),
             storage,
             queries: Arc::default(),
+            catalog: tokio::sync::Mutex::new(None),
             stop: CancellationToken::new(),
             root: persistence.store().clone(),
             package: context.package().id.clone(),
@@ -114,6 +124,66 @@ impl Oar {
         })
     }
     pub async fn query(
+        self: &Arc<Self>,
+        cwd: String,
+        request: Value,
+        cancellation: CancellationToken,
+    ) -> Result<Value, Error> {
+        if cancellation.is_cancelled() || self.stop.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        if request.get("kind").and_then(Value::as_str) == Some("catalog")
+            && request.get("runtime").is_none()
+        {
+            // One bounded discovery result is shared across filtering and pagination.
+            let discovery = {
+                let mut cached = self.catalog.lock().await;
+                if let Some(entry) = cached.as_ref().filter(|entry| {
+                    entry.cwd == cwd
+                        && (entry.result.peek().is_none()
+                            || (entry.started.elapsed() < Duration::from_secs(30)
+                                && matches!(entry.result.peek(), Some(Ok(_)))))
+                }) {
+                    entry.result.clone()
+                } else {
+                    let owner = self.clone();
+                    let work_cwd = cwd.clone();
+                    let discovery = async move {
+                        owner
+                            .query_worker(work_cwd, request, owner.stop.child_token())
+                            .await
+                    }
+                    .boxed()
+                    .shared();
+                    let retained = discovery.clone();
+                    tokio::spawn(async move {
+                        let _ = retained.await;
+                    });
+                    *cached = Some(CatalogSnapshot {
+                        cwd,
+                        started: Instant::now(),
+                        result: discovery.clone(),
+                    });
+                    discovery
+                }
+            };
+            return tokio::select! {
+                biased;
+                () = cancellation.cancelled() => Err(Error::Cancelled),
+                () = self.stop.cancelled() => Err(Error::Retired),
+                result = discovery => result,
+            };
+        }
+        let installs = request.get("kind").and_then(Value::as_str) == Some("setup")
+            && request.get("action").and_then(Value::as_str) == Some("install");
+        let result = self.query_worker(cwd, request, cancellation).await;
+        if installs {
+            self.catalog.lock().await.take();
+        }
+        result
+    }
+
+    async fn query_worker(
         self: &Arc<Self>,
         cwd: String,
         request: Value,
