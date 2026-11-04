@@ -303,6 +303,7 @@ async fn run_from(
                                 input,
                                 prompt,
                                 tools.replay_selected(&checkpoint.loaded),
+                                &model_attempt::RequestSource::from(context.as_ref()),
                                 cancellation,
                             )
                             .await
@@ -339,25 +340,13 @@ async fn run_from(
                     if cancellation.is_cancelled() {
                         return Err(RunError::Cancelled);
                     }
+                    auto_context::settle(&mut pending).await?;
                     input.refresh_model(cancellation).await?;
-                    if tools.is_idle()
-                        && effects.is_idle()
-                        && pending
-                            .as_ref()
-                            .is_some_and(auto_context::Pending::is_finished)
-                        && pending
-                            .take()
-                            .expect("finished candidate")
-                            .adopt(inner, &input.invocation, cancellation)
-                            .await?
-                    {
-                        compaction = CompactionBudget::Reshaped;
-                    }
                     let mut context =
                         model_attempt::read_source(inner, input, cancellation).await?;
                     tools.set_model(input.provider.tool_context());
                     let (mut request_tools, mut surface) =
-                        capture_surface(inner, input, &tools, &context, cancellation).await?;
+                        capture_surface(inner, input, &tools, cancellation).await?;
                     let mut prompt = model_attempt::prompt(
                         inner,
                         input,
@@ -370,13 +359,20 @@ async fn run_from(
                         maka_agent_facts::context::ModelPurpose::Main,
                     )
                     .await?;
-                    let needs_compaction = crate::context_input::needs_compaction(input, &prompt);
+                    let size = auto_context::estimate(
+                        input,
+                        &context,
+                        &prompt,
+                        &request_tools.definitions(),
+                    )?;
+                    let timing = auto_context::timing(input, size);
                     if tools.is_idle()
                         && effects.is_idle()
-                        && ((needs_compaction && pending.is_some())
-                            || (compaction == CompactionBudget::Available
+                        && ((timing == auto_context::Timing::Adopt
+                            && (pending.is_some() || compaction == CompactionBudget::Available))
+                            || (timing == auto_context::Timing::Prepare
                                 && pending.is_none()
-                                && (needs_compaction || auto_context::due(input, &context))))
+                                && compaction == CompactionBudget::Available))
                     {
                         prompt
                             .close()
@@ -386,30 +382,30 @@ async fn run_from(
                         drop(context);
                         drop(request_tools);
                         drop(surface);
-                        compaction = CompactionBudget::Failed;
-                        let candidate = match pending.take() {
-                            Some(candidate) => Some(candidate),
-                            None => {
-                                auto_context::start(
-                                    inner,
-                                    input,
-                                    opening_id,
-                                    main_progress,
-                                    cancellation,
-                                    continuation_base,
-                                )
-                                .await?
-                            }
-                        };
-                        if let Some(candidate) = candidate {
-                            if !needs_compaction {
-                                pending = Some(candidate);
-                            } else if candidate
-                                .adopt(inner, &input.invocation, cancellation)
-                                .await?
-                            {
-                                compaction = CompactionBudget::Reshaped;
-                            }
+                        if timing == auto_context::Timing::Prepare {
+                            compaction = CompactionBudget::Failed;
+                            pending = auto_context::start(
+                                inner,
+                                input,
+                                opening_id,
+                                main_progress,
+                                cancellation,
+                                continuation_base,
+                            )
+                            .await?;
+                        } else if auto_context::compact_now(
+                            inner,
+                            input,
+                            opening_id,
+                            main_progress,
+                            cancellation,
+                            continuation_base,
+                            &mut pending,
+                            &mut compaction,
+                        )
+                        .await?
+                        {
+                            compaction = CompactionBudget::Reshaped;
                         }
                         // Compaction makes its own logical requests. The next Main
                         // must observe any provider change made meanwhile.
@@ -417,7 +413,7 @@ async fn run_from(
                         context = model_attempt::read_source(inner, input, cancellation).await?;
                         tools.set_model(input.provider.tool_context());
                         (request_tools, surface) =
-                            capture_surface(inner, input, &tools, &context, cancellation).await?;
+                            capture_surface(inner, input, &tools, cancellation).await?;
                         prompt = model_attempt::prompt(
                             inner,
                             input,
@@ -512,24 +508,17 @@ async fn run_from(
                     && effects.is_idle()
                     && !cancellation.is_cancelled() =>
                 {
-                    let candidate = match pending.take() {
-                        Some(candidate) => Some(candidate),
-                        None => {
-                            auto_context::start(
-                                inner,
-                                input,
-                                opening_id,
-                                main_progress,
-                                cancellation,
-                                continuation_base,
-                            )
-                            .await?
-                        }
-                    };
-                    if let Some(candidate) = candidate
-                        && candidate
-                            .adopt(inner, &input.invocation, cancellation)
-                            .await?
+                    if auto_context::compact_now(
+                        inner,
+                        input,
+                        opening_id,
+                        main_progress,
+                        cancellation,
+                        continuation_base,
+                        &mut pending,
+                        &mut compaction,
+                    )
+                    .await?
                     {
                         compaction = CompactionBudget::Reshaped;
                         continue;
@@ -591,8 +580,11 @@ async fn run_from(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.is_idle() && effects.is_idle() && pending.is_none() {
-                prune::run(inner, input, cancellation, &mut inspected_through).await?;
+            if tools.is_idle() && effects.is_idle() {
+                auto_context::settle(&mut pending).await?;
+                if pending.is_none() {
+                    prune::run(inner, input, cancellation, &mut inspected_through).await?;
+                }
             }
             if request_tools.finished() {
                 return Ok(StepExit::Terminal(
@@ -906,7 +898,6 @@ async fn capture_surface<'tools>(
     inner: &RunContext,
     input: &RunSettings,
     tools: &'tools RunTools,
-    context: &maka_event_log::context::ContextView,
     cancellation: &CancellationToken,
 ) -> Result<
     (
@@ -922,7 +913,6 @@ async fn capture_surface<'tools>(
         &request_tools,
         &inner.shared.model,
         input,
-        context,
     )?);
     Ok((request_tools, surface))
 }

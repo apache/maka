@@ -349,3 +349,288 @@ async fn recall_native_privacy_revokes_offered_tools_and_pending_queries() {
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn recall_model_tool_ranks_multi_term_tool_calls_and_unlocks_mid_turn_compacted_prefix() {
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = Fixture::configured(
+            &format!("http://{}/v1", listener.local_addr().unwrap()),
+            None,
+            None,
+            None,
+            |settings| settings.recall = true,
+        )
+        .await;
+        let seed = f.create("Seed configuration").await;
+        let configuration = f
+            .session(&seed)
+            .await
+            .get_session::<StoredSessionConfiguration>(&seed)
+            .await
+            .unwrap()
+            .unwrap()
+            .configuration;
+        let source = format!("{}{}", f.owner.prefix, Uuid::new_v4().simple());
+        f.store
+            .import_session(
+                &PluginSession {
+                    session_id: source.clone(),
+                    creator: Namespace::new("recall.fixture", StorageScope::Profile).unwrap(),
+                    fingerprint: source.clone(),
+                    managed: false,
+                    authority_session_id: None,
+                },
+                &Source {
+                    adapter: "fixture".into(),
+                    session_id: "multi-term-source".into(),
+                },
+                &configuration,
+                vec![
+                    Record {
+                        source_message_id: "u1".into(),
+                        source_turn_id: "one".into(),
+                        timestamp: Some(1000),
+                        content: Content::User {
+                            text: "Run the gateway test suite".into(),
+                        },
+                    },
+                    Record {
+                        source_message_id: "tc1".into(),
+                        source_turn_id: "one".into(),
+                        timestamp: Some(1500),
+                        content: Content::ToolCall {
+                            call_id: "call-bash-1".into(),
+                            name: "Bash".into(),
+                            input: Some(json!({"command": "cargo test -p alpha-gateway"})),
+                        },
+                    },
+                    Record {
+                        source_message_id: "u2".into(),
+                        source_turn_id: "two".into(),
+                        timestamp: Some(2000),
+                        content: Content::User {
+                            text: "Fix alpha-gateway retry-budget timeout".into(),
+                        },
+                    },
+                    Record {
+                        source_message_id: "a2".into(),
+                        source_turn_id: "two".into(),
+                        timestamp: Some(2100),
+                        content: Content::Assistant {
+                            text: "Neighbor reply in turn two".into(),
+                            thinking: None,
+                            model: None,
+                        },
+                    },
+                ],
+                1,
+            )
+            .await
+            .unwrap();
+
+        let target = f.create("Active mid-turn session").await;
+        let started = f
+            .mutation(
+                2,
+                "send",
+                json!({
+                    "sessionId": target,
+                    "message": "alpha-gateway retry-budget midturn-early-needle",
+                    "backend": model_backend(&f.selection().await),
+                }),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(started["kind"], "started");
+
+        // Step 1: Recall with before=0, after=0 while the turn is uncompacted.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let recall_tool = sent["tools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["function"]["name"] == "Recall")
+            .unwrap();
+        assert!(recall_tool["function"]["parameters"]["properties"]["before"].is_object());
+        assert!(recall_tool["function"]["parameters"]["properties"]["after"].is_object());
+        tool(
+            &mut socket,
+            "Recall",
+            json!({"terms": ["alpha-gateway", "retry-budget"], "before": 0, "after": 0}),
+        )
+        .await;
+
+        // Step 2: Inspect first Recall result, then trigger reactive MidTurn compaction via context overflow.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let first_result = sent["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(
+            !first_result.contains("midturn-early-needle"),
+            "uncompacted active turn must be excluded: {first_result}"
+        );
+        assert!(
+            first_result.contains("Ranked anchors (2):"),
+            "multi-hit Recall output must prepend ranked anchor directory: {first_result}"
+        );
+        let multi_term_pos = first_result
+            .find("Fix alpha-gateway retry-budget timeout")
+            .unwrap();
+        let single_term_tool_pos = first_result
+            .find("Bash\ncommand: cargo test -p alpha-gateway")
+            .unwrap();
+        assert!(
+            multi_term_pos < single_term_tool_pos,
+            "2-term match must outrank 1-term ToolCall match: {first_result}"
+        );
+        assert!(
+            !first_result.contains("Neighbor reply in turn two"),
+            "before=0, after=0 must omit neighbor message bodies: {first_result}"
+        );
+        assert!(
+            first_result.contains("More before: true; more after: true"),
+            "before=0, after=0 must still report accurate neighbor availability: {first_result}"
+        );
+        let overflow = json!({
+            "error": {
+                "message": "request exceeds context",
+                "type": "invalid_request_error",
+                "code": "context_length_exceeded"
+            }
+        })
+        .to_string();
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{overflow}",
+                    overflow.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .unwrap();
+
+        // Step 3: Serve automatic MidTurn summary generation.
+        let (mut summary_socket, _) = listener.accept().await.unwrap();
+        let summary_req = request(&mut summary_socket).await;
+        assert_eq!(summary_req["tool_choice"], "auto");
+        response_with_text(
+            &mut summary_socket,
+            "Compacted mid-turn handoff without original token.",
+        )
+        .await;
+
+        // Step 4: Resumed active turn after MidTurn checkpoint can now Recall its compacted prefix,
+        // while excluding post-checkpoint live messages in the same turn.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let resumed = request(&mut socket).await;
+        let resumed_messages = resumed["messages"].to_string();
+        assert!(!resumed_messages.contains("midturn-early-needle"));
+        assert!(resumed_messages.contains("Compacted mid-turn handoff without original token."));
+        tool(
+            &mut socket,
+            "Recall",
+            json!({
+                "terms": ["midturn-early-needle", "post-checkpoint-live-arg"],
+                "session_id": target,
+                "before": 0,
+                "after": 0
+            }),
+        )
+        .await;
+
+        // Step 5: Verify compacted prefix was found and live post-checkpoint ToolCall was excluded,
+        // then expand via RecallMore and verify expansion stops at covered_through.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let second_result = sent["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(
+            second_result.contains("midturn-early-needle"),
+            "compacted MidTurn prefix must be searchable in Recall: {second_result}"
+        );
+        assert!(
+            !second_result.contains("post-checkpoint-live-arg"),
+            "uncompacted live tail after MidTurn checkpoint must remain excluded: {second_result}"
+        );
+        let anchor_id = second_result
+            .lines()
+            .find_map(|line| line.strip_prefix("Anchor: "))
+            .unwrap()
+            .trim()
+            .to_owned();
+        tool(
+            &mut socket,
+            "RecallMore",
+            json!({
+                "session_id": target,
+                "anchor_message_id": anchor_id,
+                "before": 0,
+                "after": 10
+            }),
+        )
+        .await;
+
+        // Step 6: Verify RecallMore expands compacted MidTurn neighbors up to covered_through only.
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let sent = request(&mut socket).await;
+        let expanded = sent["messages"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|message| message["role"] == "tool")
+            .unwrap()["content"]
+            .as_str()
+            .unwrap();
+        assert!(expanded.contains("midturn-early-needle"), "{expanded}");
+        assert!(
+            expanded.contains("Recall\nterms: alpha-gateway\nterms: retry-budget\nbefore: 0\nafter: 0"),
+            "{expanded}"
+        );
+        assert!(
+            expanded.contains("Fix alpha-gateway retry-budget timeout"),
+            "{expanded}"
+        );
+        assert!(
+            !expanded.contains("post-checkpoint-live-arg"),
+            "RecallMore must not cross covered_through into the live turn tail: {expanded}"
+        );
+        assert!(
+            expanded.contains("More before: false; more after: false"),
+            "{expanded}"
+        );
+        response(&mut socket).await;
+        f.drained().await;
+
+        let facts = service_tools::facts(&f, &target).await;
+        assert!(facts.iter().any(|fact| matches!(
+            fact,
+            Fact::ContextCheckpointRecorded { checkpoint }
+                if matches!(
+                    checkpoint.mode,
+                    maka_agent_facts::context::CheckpointMode::MidTurn { .. }
+                )
+        )));
+        f.app.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

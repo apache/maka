@@ -28,7 +28,6 @@ use std::collections::HashMap;
 use tokio_util::sync::CancellationToken;
 
 pub(crate) use super::emit::source_on_handle;
-pub(crate) const RECALL_BODY: &str = super::history::BODY;
 const INSERT: &str = "INSERT INTO transcript_directory
  (session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,user_origin,state_status,tool_use_id,tool_name,tool_origin,parent_tool_call_id,parent_operation_id,has_args,result_valid,settlement,is_error,content_kind,image_count,tool_title,presentation,duration_ms,context_eligible)
  VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)";

@@ -183,6 +183,7 @@ mod tests {
             },
             prompt: Prompt::from_messages(vec![Message::user("frozen input")]),
             tools: vec![],
+            tool_choice: Default::default(),
             provider_options: serde_json::json!({"openai":{"store":false}}),
             max_output_tokens: None,
         }

@@ -50,6 +50,34 @@ impl EventLog {
     ) -> Result<ContextView, StoreError> {
         self.context_view(session, current, None).await
     }
+    pub async fn active_checkpoint_coverage(
+        &self,
+        session: &str,
+        current: Option<&str>,
+    ) -> Result<u64, StoreError> {
+        self.validate_root()?;
+        crate::sessions::validate_id(session)?;
+        let (session, current) = (session.to_owned(), current.map(str::to_owned));
+        self.connection
+            .read_interruptible(move |connection| {
+                Box::pin(async move {
+                    let mut tx = connection.begin().await?;
+                    let opening =
+                        safety::current_opening(&mut tx, &session, current.as_deref()).await?;
+                    let selection = match &opening {
+                        Some((_, event)) => Selection::for_opening(&mut tx, event).await?,
+                        None => Selection::session(&session),
+                    };
+                    let high_water = selection.high_water(&mut tx, i64::MAX as u64).await?;
+                    let coverage = latest_selected(&mut tx, &selection, high_water)
+                        .await?
+                        .map_or(0, |baseline| baseline.checkpoint.covered_through);
+                    tx.commit().await?;
+                    Ok(coverage)
+                })
+            })
+            .await
+    }
     pub async fn prepare_compaction_view(
         &self,
         session: &str,

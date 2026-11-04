@@ -18,6 +18,7 @@
  */
 
 use crate::StoreError;
+use maka_agent_facts::attachment::AttachmentRef;
 use maka_presentation::{Content, Row, ToolContent, TurnState};
 use rusqlite::{Connection, params};
 use std::borrow::Cow;
@@ -49,7 +50,7 @@ pub(crate) fn record_rows(
     Ok(())
 }
 
-fn body<'a>(db: &Connection, content: &'a Content) -> Result<Cow<'a, str>, StoreError> {
+pub(super) fn body<'a>(db: &Connection, content: &'a Content) -> Result<Cow<'a, str>, StoreError> {
     Ok(match content {
         Content::User {
             text,
@@ -107,15 +108,9 @@ fn body<'a>(db: &Connection, content: &'a Content) -> Result<Cow<'a, str>, Store
                 .or_else(|| (!error_class.is_empty()).then_some(error_class.as_str()))
                 .unwrap_or("failed"),
         ),
-        Content::ToolCall { args, .. } => match args.get("intent") {
-            None | Some(serde_json::Value::Null) => Cow::Borrowed(""),
-            Some(serde_json::Value::String(text)) => Cow::Borrowed(text),
-            Some(value) => Cow::Owned(db.query_row(
-                "SELECT COALESCE(json_extract(?1,'$'),'')",
-                [serde_json::to_string(value)?],
-                |row| row.get::<_, String>(0),
-            )?),
-        },
+        Content::ToolCall {
+            tool_name, args, ..
+        } => tool_call_text(tool_name, args),
         Content::ToolResult { content, .. } => match content {
             ToolContent::Text { text } => Cow::Borrowed(text),
             ToolContent::Json { value } => Cow::Owned(json_text(value)),
@@ -130,6 +125,74 @@ fn body<'a>(db: &Connection, content: &'a Content) -> Result<Cow<'a, str>, Store
         },
         _ => Cow::Borrowed(""),
     })
+}
+
+pub(super) fn attachments(content: &Content) -> Vec<AttachmentRef> {
+    match content {
+        Content::User {
+            attachments: Some(attachments),
+            ..
+        } => attachments.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn tool_call_text<'a>(tool_name: &'a str, args: &'a serde_json::Value) -> Cow<'a, str> {
+    let mut out = String::new();
+    append_tool_args(&mut out, None, args);
+    if out.is_empty() {
+        return Cow::Borrowed(tool_name);
+    }
+    if tool_name.is_empty() {
+        return Cow::Owned(out);
+    }
+    let mut full = String::with_capacity(tool_name.len() + 1 + out.len());
+    full.push_str(tool_name);
+    full.push('\n');
+    full.push_str(&out);
+    Cow::Owned(full)
+}
+
+fn append_tool_args(out: &mut String, prefix: Option<&str>, value: &serde_json::Value) {
+    match value {
+        serde_json::Value::Null => {}
+        serde_json::Value::Bool(flag) => {
+            push_arg_line(out, prefix, if *flag { "true" } else { "false" })
+        }
+        serde_json::Value::Number(number) => push_arg_line(out, prefix, &number.to_string()),
+        serde_json::Value::String(text) => {
+            if !text.is_empty() {
+                push_arg_line(out, prefix, text);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for item in values {
+                append_tool_args(out, prefix, item);
+            }
+        }
+        serde_json::Value::Object(entries) => {
+            for (key, entry) in entries {
+                match prefix {
+                    Some(parent) if !parent.is_empty() => {
+                        let nested = format!("{parent}.{key}");
+                        append_tool_args(out, Some(&nested), entry);
+                    }
+                    _ => append_tool_args(out, Some(key), entry),
+                }
+            }
+        }
+    }
+}
+
+fn push_arg_line(out: &mut String, prefix: Option<&str>, text: &str) {
+    if !out.is_empty() {
+        out.push('\n');
+    }
+    if let Some(key) = prefix {
+        out.push_str(key);
+        out.push_str(": ");
+    }
+    out.push_str(text);
 }
 
 fn json_text(value: &serde_json::Value) -> String {

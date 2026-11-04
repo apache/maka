@@ -84,6 +84,7 @@ impl RequestBody {
             model: &request.provider.model,
             prompt: &[],
             tools: &request.tools,
+            tool_choice: request.tool_choice,
             options: &request.provider_options,
             max_output_tokens: request.max_output_tokens,
             plaintext,

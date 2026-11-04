@@ -17,6 +17,8 @@
  * under the License.
  */
 
+// Measured usage and separate preparation/adoption follow OpenCode V2
+// 55276f2108c8853f94cf16dc530e7754a6ce8318; see docs/code-origin-audit.md and LICENSE.
 use crate::{RunContext, RunError, RunSettings, compact};
 use maka_agent_facts::context::CheckpointMode;
 use maka_agent_facts::context::ModelRequestContext;
@@ -25,110 +27,100 @@ use maka_event_log::context::{ContextView, LatestMainContext};
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
-/// A cap on this request, never a mutation of the configured model limit.
-pub(super) fn output_limit(
+#[derive(Clone, Copy)]
+pub(super) struct Calibration {
+    input: u64,
+    estimated: u64,
+}
+impl Calibration {
+    pub fn estimate(self, current: u64) -> u64 {
+        if current >= self.estimated {
+            self.input.saturating_add(current - self.estimated)
+        } else {
+            self.input.saturating_sub(self.estimated - current)
+        }
+    }
+}
+
+pub(super) fn calibration(
+    provider: &maka_model::ProviderConfig,
+    binding: Option<&maka_agent_facts::execution::ModelBinding>,
+    latest: &LatestMainContext,
+    checkpoint: Option<&str>,
+) -> Result<Option<Calibration>, RunError> {
+    let (Some(binding), LatestMainContext::Selected(latest)) = (binding, latest) else {
+        return Ok(None);
+    };
+    if !latest.projection_current
+        || latest.model_id != provider.model
+        || latest.route_identity != crate::runner::digest(provider)?
+        || latest.connection_id.as_deref() != Some(binding.connection_id.as_str())
+        || latest.checkpoint_event_id.as_deref() != checkpoint
+    {
+        return Ok(None);
+    }
+    let (Some(input), Some(breakdown)) = (
+        latest.usage.input_tokens.filter(|n| *n > 0),
+        latest.context_breakdown.as_ref(),
+    ) else {
+        return Ok(None);
+    };
+    // The previous input is measured, including cache reads. Only the change in
+    // rendered input is estimated; prior output and newly settled tools occur once in that change.
+    Ok(Some(Calibration {
+        input,
+        estimated: breakdown.estimated_tokens(),
+    }))
+}
+
+pub(super) fn estimate(
     input: &RunSettings,
     source: &ContextView,
-) -> Result<Option<u64>, RunError> {
-    let limit = maka_agent_facts::context::effective_output_limit(input.main_output_limit);
-    let Some(window) = input
-        .context
-        .as_ref()
-        .and_then(|context| context.model_context_window)
-    else {
-        return Ok(Some(limit));
-    };
-    let LatestMainContext::Selected(latest) = &source.latest_main else {
-        return Ok(Some(limit));
-    };
-    let connection = input
-        .configuration
-        .model
-        .as_ref()
-        .map(|model| model.connection_id.as_str());
-    if connection.is_none()
-        || latest.connection_id.as_deref() != connection
-        || latest.model_id != input.provider.model
-        || latest.route_identity != crate::model_attempt::route_identity(input)?
-        || !latest.projection_current
-        || latest.checkpoint_event_id.as_deref()
-            != source
-                .baseline
-                .as_ref()
-                .map(|baseline| baseline.event_id.as_str())
-    {
-        return Ok(Some(limit));
-    }
-    let Some(tokens) = latest.usage.input_tokens.filter(|tokens| *tokens > 0) else {
-        return Ok(Some(limit));
-    };
-    let Some(output) = latest.usage.output_tokens else {
-        return Ok(Some(limit));
-    };
-    let retained = tokens.saturating_add(output);
-    let thinking = input
-        .provider_options
-        .pointer("/anthropic/thinking")
-        .filter(|thinking| thinking["type"] == "enabled")
-        .and_then(|thinking| thinking["budgetTokens"].as_u64())
-        .unwrap_or(0);
-    Ok(Some(cap_output(limit, window, retained, thinking)))
+    prompt: &crate::prepared_prompt::PreparedPrompt,
+    tools: &[Arc<maka_agent_facts::tools::ToolDefinition>],
+) -> Result<u64, RunError> {
+    let current = prompt.breakdown().estimated_tokens().saturating_add(
+        maka_agent_facts::context::measure::breakdown(&[], tools).estimated_tokens(),
+    );
+    let baseline = calibration(
+        &input.provider,
+        input.configuration.model.as_ref(),
+        &source.latest_main,
+        source
+            .baseline
+            .as_ref()
+            .map(|baseline| baseline.event_id.as_str()),
+    )?;
+    Ok(baseline.map_or(current, |baseline| baseline.estimate(current)))
 }
 
-fn cap_output(limit: u64, window: u64, retained: u64, thinking: u64) -> u64 {
-    // Leave room for newly appended input. This is not a tokenizer or a proof
-    // the next request fits: a useful floor preserves reactive recovery.
-    let available = window
-        .saturating_sub(retained)
-        .saturating_sub(8000)
-        .saturating_sub(thinking);
-    available.min(limit).max(limit.min(8000))
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum Timing {
+    Continue,
+    Prepare,
+    Adopt,
 }
 
-pub(super) fn due(input: &RunSettings, source: &ContextView) -> bool {
+// Starting at 85% of the adoption threshold gives the summarizer time to run
+// while Main continues. This does not reduce the admitted context window.
+const PREPARE_PERCENT: u128 = 85;
+
+pub(super) fn timing(input: &RunSettings, tokens: u64) -> Timing {
     let Some(ModelRequestContext {
         operation: maka_agent_facts::context::ModelOperation::Inference,
         declared_window: Some(window),
         ..
     }) = &input.context
     else {
-        return false;
+        return Timing::Continue;
     };
-    let LatestMainContext::Selected(latest) = &source.latest_main else {
-        return false;
-    };
-    let Some(connection) = input
-        .configuration
-        .model
-        .as_ref()
-        .map(|binding| binding.connection_id.as_str())
-    else {
-        return false;
-    };
-    if !latest.projection_current
-        || latest.model_id != input.provider.model
-        || crate::model_attempt::route_identity(input).as_ref().ok() != Some(&latest.route_identity)
-        || latest.connection_id.as_deref() != Some(connection)
-        || latest.checkpoint_event_id.as_deref()
-            != source
-                .baseline
-                .as_ref()
-                .map(|baseline| baseline.event_id.as_str())
-    {
-        return false;
+    if tokens >= *window {
+        Timing::Adopt
+    } else if u128::from(tokens) * 100 >= u128::from(*window) * PREPARE_PERCENT {
+        Timing::Prepare
+    } else {
+        Timing::Continue
     }
-    threshold(
-        latest.usage.input_tokens,
-        latest.usage.output_tokens,
-        *window,
-    )
-}
-
-fn threshold(input: Option<u64>, output: Option<u64>, window: u64) -> bool {
-    let Some(input) = input.filter(|tokens| *tokens > 0) else {
-        return false;
-    };
-    input >= window || output.is_some_and(|output| input.saturating_add(output) >= window)
 }
 
 pub(super) async fn start(
@@ -160,63 +152,76 @@ pub(super) async fn start(
     let worker =
         tokio::spawn(async move { cleanup.scope(job.execute(&inner, &worker_cancel)).await });
     Ok(Some(Pending {
-        cancellation,
-        worker: Some(worker),
+        cancellation: CancelGuard(cancellation),
+        state: CandidateState::Running(worker),
     }))
 }
 
+struct CancelGuard(CancellationToken);
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+enum CandidateState {
+    Running(tokio::task::JoinHandle<Result<compact::Candidate, RunError>>),
+    Ready(Box<maka_agent_facts::event::RuntimeEvent>),
+}
+
 pub(super) struct Pending {
-    cancellation: CancellationToken,
-    worker: Option<tokio::task::JoinHandle<Result<compact::Candidate, RunError>>>,
+    cancellation: CancelGuard,
+    state: CandidateState,
+}
+
+async fn join_worker(
+    worker: tokio::task::JoinHandle<Result<compact::Candidate, RunError>>,
+) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
+    match worker.await.map_err(|_| crate::cleanup::unconfirmed())? {
+        Ok((_, checkpoint)) => Ok(checkpoint),
+        Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 impl Pending {
-    pub fn is_finished(&self) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(|worker| worker.is_finished())
-    }
-
-    async fn join(mut self) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
-        match self
-            .worker
-            .take()
-            .expect("candidate has one owner")
-            .await
-            .map_err(|_| crate::cleanup::unconfirmed())?
-        {
-            Ok((_, checkpoint)) => Ok(checkpoint),
-            Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
     pub async fn adopt(
         self,
         inner: &RunContext,
         invocation: &maka_agent_facts::event::Invocation,
         cancellation: &CancellationToken,
     ) -> Result<bool, RunError> {
-        let waiting: Result<(), RunError> = async {
-            if !self.is_finished() && !cancellation.is_cancelled() {
-                inner
-                    .log
-                    .append(&EventWrite::plain(
-                        maka_agent_facts::event::RuntimeEvent::new(
-                            invocation.clone(),
-                            maka_agent_facts::event::Fact::ContextCompactionWaiting,
-                        ),
-                    )?)
-                    .await?;
+        let Self {
+            cancellation: guard,
+            state,
+        } = self;
+        let checkpoint = match state {
+            CandidateState::Ready(checkpoint) => Some(*checkpoint),
+            CandidateState::Running(worker) => {
+                let waiting: Result<(), RunError> = async {
+                    if !worker.is_finished() && !cancellation.is_cancelled() {
+                        inner
+                            .log
+                            .append(&EventWrite::plain(
+                                maka_agent_facts::event::RuntimeEvent::new(
+                                    invocation.clone(),
+                                    maka_agent_facts::event::Fact::ContextCompactionWaiting,
+                                ),
+                            )?)
+                            .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+                if waiting.is_err() {
+                    guard.0.cancel();
+                }
+                let checkpoint = join_worker(worker).await?;
+                waiting?;
+                checkpoint
             }
-            Ok(())
-        }
-        .await;
-        if waiting.is_err() {
-            self.cancellation.cancel();
-        }
-        let checkpoint = self.join().await?;
-        waiting?;
+        };
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }
@@ -230,16 +235,81 @@ impl Pending {
     }
 }
 
-impl Drop for Pending {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
+pub(super) async fn settle(pending: &mut Option<Pending>) -> Result<(), RunError> {
+    if !matches!(
+        pending,
+        Some(Pending {
+            state: CandidateState::Running(worker),
+            ..
+        }) if worker.is_finished()
+    ) {
+        return Ok(());
     }
+    let Some(Pending {
+        cancellation,
+        state: CandidateState::Running(worker),
+    }) = pending.take()
+    else {
+        unreachable!();
+    };
+    if let Some(checkpoint) = join_worker(worker).await? {
+        *pending = Some(Pending {
+            cancellation,
+            state: CandidateState::Ready(Box::new(checkpoint)),
+        });
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn compact_now(
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
+    opening_id: &str,
+    mid_turn: bool,
+    cancellation: &CancellationToken,
+    continuation_base: Option<u64>,
+    pending: &mut Option<Pending>,
+    compaction: &mut maka_agent_facts::handoff::CompactionBudget,
+) -> Result<bool, RunError> {
+    if let Some(candidate) = pending.take()
+        && candidate
+            .adopt(inner, &input.invocation, cancellation)
+            .await?
+    {
+        return Ok(true);
+    }
+    if *compaction != maka_agent_facts::handoff::CompactionBudget::Available {
+        return Ok(false);
+    }
+    *compaction = maka_agent_facts::handoff::CompactionBudget::Failed;
+    let Some(candidate) = start(
+        inner,
+        input,
+        opening_id,
+        mid_turn,
+        cancellation,
+        continuation_base,
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    candidate
+        .adopt(inner, &input.invocation, cancellation)
+        .await
 }
 
 pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError> {
-    if let Some(pending) = pending.take() {
-        pending.cancellation.cancel();
-        pending.join().await?;
+    if let Some(Pending {
+        cancellation,
+        state,
+    }) = pending.take()
+    {
+        cancellation.0.cancel();
+        if let CandidateState::Running(worker) = state {
+            join_worker(worker).await?;
+        }
     }
     Ok(())
 }

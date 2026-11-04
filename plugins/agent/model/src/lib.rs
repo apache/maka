@@ -28,6 +28,7 @@ pub use maka_agent_facts::model::error::ProviderFailure;
 pub use maka_agent_facts::model::error::ProviderFailureReason;
 pub use maka_agent_facts::model::prompt;
 pub use maka_agent_facts::model::request::ProviderKind;
+pub use maka_agent_facts::model::request::ToolChoiceMode;
 pub mod adapters;
 mod conversation;
 mod network;
@@ -79,6 +80,7 @@ pub struct ModelRequest {
     pub provider: ProviderConfig,
     pub prompt: prompt::Prompt,
     pub tools: Vec<Arc<ToolDefinition>>,
+    pub tool_choice: ToolChoiceMode,
     pub provider_options: Value,
     pub max_output_tokens: Option<u64>,
 }
@@ -152,6 +154,7 @@ impl ModelRequest {
             },
             prompt: self.prompt,
             tools: self.tools,
+            tool_choice: self.tool_choice,
             provider_options: self.provider_options,
             max_output_tokens: self.max_output_tokens,
         })

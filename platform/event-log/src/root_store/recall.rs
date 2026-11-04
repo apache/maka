@@ -20,7 +20,7 @@
 use super::{RootStore, SessionStore};
 use crate::{
     StoreError,
-    recall::{Ranked, SearchBatch, SearchContext, SearchQuery, normalize_query},
+    recall::{ExcludedTurnTail, Ranked, SearchBatch, SearchContext, SearchQuery, normalize_query},
 };
 use futures_util::future::try_join_all;
 use tokio_util::sync::CancellationToken;
@@ -85,7 +85,7 @@ impl RootStore {
         before: usize,
         after: usize,
         through: Option<u64>,
-        exclude: Option<(String, String)>,
+        exclude: Option<ExcludedTurnTail>,
         execution: Option<&SessionStore>,
         cancellation: CancellationToken,
     ) -> Result<SearchContext, StoreError> {

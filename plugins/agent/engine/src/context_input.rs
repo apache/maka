@@ -57,7 +57,7 @@ pub(super) fn summary_budget<W>(input: &RunInput<W>) -> u64 {
     window.min(total.saturating_sub(summary_output_reserve(input)))
 }
 
-pub(super) fn needs_compaction<W>(
+pub(super) fn summary_needs_fitting<W>(
     input: &RunInput<W>,
     prompt: &crate::prepared_prompt::PreparedPrompt,
 ) -> bool {
@@ -167,7 +167,11 @@ async fn fit_generated_summary(
             excerpts.recent.clear();
         }
         let mut selected = Vec::new();
-        let label = format!("request-source message position {position}");
+        let label = match language {
+            Language::En => format!("request-source message position {position}"),
+            Language::ZhCn => format!("源请求消息位置 {position}"),
+            Language::ZhTw => format!("來源請求訊息位置 {position}"),
+        };
         match &mut message {
             Message::User { content, .. } => {
                 extract_media(content, &label, &mut selected, language)
