@@ -38,6 +38,12 @@ export async function fixture(config: any = {}) {
     finishReason: 'stop',
   });
   llm.bindRuntime({
+    budget: async () => ({
+      modelId: 'fixture-model',
+      maxInputTokens: 4000000,
+      maxOutputTokens: 32768,
+      estimate: 'utf8-conservative' as const,
+    }),
     generate: async (input: any) => {
       llmCalls.push(input);
       return extractRunner(input);

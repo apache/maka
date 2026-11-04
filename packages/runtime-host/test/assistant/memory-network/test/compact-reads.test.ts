@@ -330,3 +330,82 @@ for (const tool of ['MemorySourceQuery', 'MemoryOriginal']) {
     });
   }
 }
+
+test('literal hits find the end of a long original, retain exact offsets and continue without missing hits', async (t) => {
+  const { f } = await setup(t);
+  const metadata = await f.invoke('MemorySourceQuery', { source: 'one', query: { cursor: '20' } });
+  const ref = metadata.items.at(-1).ref;
+  const raw = (await f.invoke('MemoryOriginal', { ref })).content;
+  let offset = 0;
+  const positions: number[] = [];
+  do {
+    const result = await f.invoke('MemoryOriginal', {
+      ref,
+      find: ['长正文'],
+      offsetChars: offset,
+      maxChars: 1500,
+    });
+    assert.ok(JSON.stringify(result).length <= 1500);
+    const item = result.items[0];
+    assert.equal(item.revision, '1');
+    assert.equal(item.content, undefined);
+    assert.ok(item.matches.length);
+    for (const m of item.matches) {
+      assert.equal(m.text, raw.slice(m.offsetChars, m.endOffsetChars));
+      assert.equal(raw.slice(m.hitOffsetChars, m.hitEndOffsetChars), '长正文');
+      positions.push(m.hitOffsetChars);
+    }
+    // Test continuation near the tail as well as from the start, without 2000 tool invocations.
+    if (offset === 0) offset = raw.length - 9;
+    else offset = item.nextMatchOffsetChars;
+  } while (offset !== null);
+  assert.equal(positions.at(-1), raw.length - 3);
+  assert.equal(new Set(positions).size, positions.length);
+  const expanded = await f.invoke('MemoryOriginal', {
+    ref,
+    view: 'content',
+    offsetChars: raw.length - 9,
+  });
+  assert.equal(expanded.items[0].content, raw.slice(-9));
+});
+
+test('text content queries return hits instead of repeated heads and preserve search through pages/restart', async (t) => {
+  const { f, state } = await setup(t);
+  const first = await f.invoke('MemorySourceQuery', {
+    source: 'one',
+    query: { text: '完整消息' },
+    view: 'content',
+    maxChars: 1500,
+  });
+  assert.ok(first.items[0].matches[0].text.includes('完整消息'));
+  assert.ok(first.nextPage);
+  await f.restart();
+  const next = await f.invoke('MemorySourceQuery', { page: first.nextPage, maxChars: 1500 });
+  assert.deepEqual(next.items[0].find, ['完整消息']);
+  assert.notEqual(first.items[0].ref, next.items[0].ref);
+  const empty = await f.invoke('MemoryOriginal', {
+    ref: first.items[0].ref,
+    find: ['not-present'],
+  });
+  assert.equal(empty.items[0].matchCount, 0);
+  assert.deepEqual(empty.items[0].matches, []);
+  assert.match(empty.notice, /零正文命中/);
+  state.allowed = false;
+  const denied = await f.invoke('MemoryOriginal', { ref: first.items[0].ref, find: ['完整消息'] });
+  assert.equal(denied.items[0].status, 'error');
+  assert.equal(denied.items[0].matches, undefined);
+});
+
+test('literal search escapes patterns and uses original UTF-16 offsets for Chinese and emoji', async () => {
+  const { originalMatches } = await import('../../../../src/assistant/memory-network/matches.js');
+  const raw = 'noise'.repeat(100000) + '\n😀[a.*] 已停用\n😀新版本已启用';
+  const { hits, snippet } = originalMatches(raw, ['[a.*]', '已停用']);
+  assert.equal(hits.length, 2);
+  for (const hit of hits) {
+    const m = snippet(hit);
+    assert.equal(m.text, raw.slice(m.offsetChars, m.endOffsetChars));
+    assert.ok(m.text.includes('已停用'));
+  }
+  assert.equal(originalMatches(raw, ['a.+']).hits.length, 0);
+  assert.equal(originalMatches(raw, ['[a.*]'], hits[0].end).hits.length, 0);
+});
