@@ -672,6 +672,92 @@ async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_conversation_preserves_an_owned_worktree() {
+    let mut fixture = Fixture::open_with_configuration(Options::default(), |config, directory| {
+        config["agent"]["permissions"]["access"] = json!("workspace_write");
+        config["agent"]["workspaceRoots"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "label":"Parent", "path":directory
+            }));
+        // Project skill discovery currently excludes the Host's private worktree directory.
+        config["agent"]["skillLibrary"] = Value::Null;
+        let workspace = directory.join("workspace");
+        std::fs::write(workspace.join("tracked.txt"), "base").unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["add", "tracked.txt"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "base",
+            ],
+        ] {
+            let result = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&workspace)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    })
+    .await;
+    let client = fixture.client().await;
+    let roots = client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let created = mutate(
+        &client,
+        "create",
+        json!({
+            "title":"Isolated", "labels":[],
+            "workspace":{"kind":"isolated_git", "selection":roots["roots"][0]["selection"]}
+        }),
+    )
+    .await;
+    assert_eq!(created["kind"], "created", "{created}");
+    fixture.session = created["session"]["id"].as_str().unwrap().to_owned();
+    let workspace = created["session"]["workspace"].clone();
+    assert!(!workspace["worktree"].is_null());
+    client.close().await.unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("SAME_OWNED_WORKTREE").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert!(request.body.to_string().contains("SAME_OWNED_WORKTREE"));
+    desktop
+        .wait("message did not finish", request.finish())
+        .await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 3);
+    let sent = sessions
+        .iter()
+        .find(|session| {
+            session["id"] != fixture.session && session["workspace"]["path"] == workspace["path"]
+        })
+        .unwrap();
+    assert_eq!(sent["workspace"]["worktree"], workspace["worktree"]);
+    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_recovers_an_unavailable_remembered_folder() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;

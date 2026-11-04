@@ -828,7 +828,11 @@ impl Client {
     }
 
     /// Move a directory to the front, or remove its recent entry when `workspace` is None.
-    pub async fn set_recent_workspace(&self, path: String, workspace: Option<Value>) -> Result<()> {
+    pub async fn set_recent_workspace(
+        &self,
+        path: String,
+        workspace: Option<Value>,
+    ) -> Result<Vec<RecentWorkspace>> {
         self.0
             .journal
             .set_recent_workspace(self.workspace_owner().await?, path, workspace)

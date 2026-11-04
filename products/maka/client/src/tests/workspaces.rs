@@ -48,14 +48,13 @@ async fn recent_workspaces_survive_reopen_without_evicting_older_selections() {
             .map(|number| format!("/project/{number}"))
             .collect::<Vec<_>>()
     );
-    client
+    let recent = client
         .set_recent_workspace(
             "/project/3".into(),
             Some(json!({"directory":"new identity"})),
         )
         .await
         .unwrap();
-    let recent = client.recent_workspaces().await.unwrap();
     assert_eq!(recent.len(), 10);
     assert_eq!(recent[0].path, "/project/3");
     assert_eq!(recent[0].workspace, json!({"directory":"new identity"}));

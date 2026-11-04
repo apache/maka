@@ -49,14 +49,18 @@ impl Journal {
         owner: String,
         path: String,
         workspace: Option<Value>,
-    ) -> Result<()> {
-        self.write(write::Command::SetRecentWorkspace {
-            owner,
-            path,
-            workspace,
-        })
-        .await?;
-        Ok(())
+    ) -> Result<Vec<RecentWorkspace>> {
+        let write::Output::RecentWorkspaces(recent) = self
+            .write(write::Command::SetRecentWorkspace {
+                owner,
+                path,
+                workspace,
+            })
+            .await?
+        else {
+            unreachable!("recent workspace write returned a different result")
+        };
+        Ok(recent)
     }
 }
 
@@ -65,7 +69,7 @@ pub(super) async fn set(
     owner: String,
     path: String,
     workspace: Option<Value>,
-) -> Result<()> {
+) -> Result<Vec<RecentWorkspace>> {
     let value: Option<String> =
         sqlx::query_scalar("SELECT value FROM recent_workspaces WHERE owner=?")
             .bind(&owner)
@@ -84,5 +88,5 @@ pub(super) async fn set(
     sqlx::query("INSERT INTO recent_workspaces(owner,value) VALUES (?,?) ON CONFLICT(owner) DO UPDATE SET value=excluded.value")
         .bind(owner).bind(serde_json::to_string(&recent).map_err(error)?)
         .execute(connection).await.map_err(error)?;
-    Ok(())
+    Ok(recent)
 }

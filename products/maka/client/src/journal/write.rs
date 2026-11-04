@@ -107,6 +107,7 @@ pub(super) enum Command {
 }
 pub(super) enum Output {
     Unit,
+    RecentWorkspaces(Vec<super::RecentWorkspace>),
     Draft(Draft),
     Operation(Box<Operation>),
 }
@@ -123,7 +124,7 @@ impl Command {
                 workspace,
             } => super::workspaces::set(connection, owner, path, workspace)
                 .await
-                .map(|()| Output::Unit),
+                .map(Output::RecentWorkspaces),
             Self::SaveDraft {
                 key,
                 expected,

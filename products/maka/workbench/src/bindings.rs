@@ -321,16 +321,17 @@ impl ApplicationHost {
         this: Instance<Self>,
         path: String,
         workspace: Option<JsonValue>,
-    ) -> Result<(), String> {
+    ) -> Result<JsonValue, String> {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let original = owner.clone();
         execute(owner, async move {
-            source
+            let recent = source
                 .local(&original)
                 .await?
                 .set_recent_workspace(path, workspace)
-                .await
+                .await?;
+            serde_json::to_value(recent).map_err(|error| error.to_string())
         })
         .await
     }

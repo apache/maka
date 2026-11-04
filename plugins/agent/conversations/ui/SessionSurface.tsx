@@ -270,23 +270,20 @@ export function createConversationUi(
   const workspaceReady = signal(false);
   const workspaceError = createText();
   const recentOpen = signal(false);
+  const setRecentWorkspace = async (
+    path: string,
+    workspace: RecentWorkspace['workspace'] | null,
+  ) => {
+    const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+    if (!alive) return;
+    recentKnown.set(true);
+    recentWorkspaces.set(recent);
+  };
   const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
     if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
-    const directory = { kind: 'directory' as const, selection: workspace.selection };
-    recentKnown.set(true);
-    recentWorkspaces.set([
-      { workspace: directory, path },
-      ...recentWorkspaces().filter((item) => item.path !== path),
-    ]);
-    void host.setRecentWorkspace(path, directory).catch(report);
-  };
-  const forgetWorkspace = async (path: string) => {
-    try {
-      await host.setRecentWorkspace(path, null);
-      if (alive) recentWorkspaces.set(recentWorkspaces().filter((item) => item.path !== path));
-    } catch (reason) {
-      report(reason);
-    }
+    void setRecentWorkspace(path, { kind: 'directory', selection: workspace.selection }).catch(
+      report,
+    );
   };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
@@ -718,6 +715,7 @@ export function createConversationUi(
     if (!alive || selected() !== expectedSessionId) return;
     if (!platform.isTerminal) {
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
+      let recentWorkspace = workspace;
       let label =
         workspaceLabel ??
         (workspace.kind === 'session'
@@ -725,19 +723,23 @@ export function createConversationUi(
           : (workspace.selection.segments.at(-1) ?? ''));
       if (workspace.kind === 'session') {
         const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
-        const roots = await host.query('agent', 'directories', { kind: 'roots' });
         if (!alive || selected() !== expectedSessionId) return;
         label = observed.session.workspace.path;
-        const found = roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
-        if (found)
-          workspace = {
-            kind: 'directory',
-            selection: {
-              rootId: found.root.selection.rootId,
-              segments: [...found.root.selection.segments, ...found.names!],
-              directoryIdentity: observed.session.workspace.directoryIdentity,
-            },
-          };
+        if (!observed.session.workspace.worktree) {
+          const roots = await host.query('agent', 'directories', { kind: 'roots' });
+          if (!alive || selected() !== expectedSessionId) return;
+          const found =
+            roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
+          if (found)
+            recentWorkspace = {
+              kind: 'directory',
+              selection: {
+                rootId: found.root.selection.rootId,
+                segments: [...found.root.selection.segments, ...found.names!],
+                directoryIdentity: observed.session.workspace.directoryIdentity,
+              },
+            };
+        }
       }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
@@ -756,7 +758,7 @@ export function createConversationUi(
           return;
         }
         updatePending({ workspace, workspaceLabel: label });
-        if (remember) rememberWorkspace(workspace, label);
+        if (remember) rememberWorkspace(recentWorkspace, label);
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
         pendingModelInstance.set(null);
         overlay.set(null);
@@ -788,7 +790,7 @@ export function createConversationUi(
         target: null,
         revision: 0,
       });
-      if (remember) rememberWorkspace(workspace, label);
+      if (remember) rememberWorkspace(recentWorkspace, label);
       pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       const generation = ++pendingDefaultEpoch;
       pendingPicker.set(false);
@@ -2414,7 +2416,7 @@ export function createConversationUi(
                     disabled={() => pendingSending() || pendingFileBusy()}
                     forget={(path) => {
                       recentOpen.set(false);
-                      void forgetWorkspace(path);
+                      void setRecentWorkspace(path, null).catch(report);
                     }}
                     choose={(item) => {
                       recentOpen.set(false);
