@@ -108,4 +108,4 @@ TUI 图标继续使用文本，按动作或状态选择字符，不从 Lucide �
 
 启用后的 Agent 仅显示简短状态，展开**详情**可查看诊断信息。登录请使用厂商原生流程，再点击刷新。支持自动安装的 Agent 必须先查看安装计划，再单独点击**安装**，不会自动安装或更新。
 
-Antigravity 暂不支持通过 Maka/OAR 自动安装。[官方安装说明](https://antigravity.google/docs/ide/extensions/zed)介绍编辑器安装方式，但已安装的 Agent 服务程序仍须能通过 `PATH` 或 `OAR_ANTIGRAVITY_BIN` 被 OAR 找到；OAR 不会扫描编辑器安装目录。打开说明不是安装计划，也不会执行安装。
+Antigravity 通过 `agy acp` 使用官方 `agy` CLI。在支持的系统上，安装计划使用官方脚本 `https://antigravity.google/cli/install.sh`；请先查看计划，再单独确认**安装**。OAR 从 `PATH` 或 `~/.local/bin/agy` 查找 `agy`。运行 `agy` 完成原生登录后，在 Maka 中刷新；`agy acp` 复用 CLI 自身的凭据，Maka 不添加独立登录流程，也不管理这些凭据。

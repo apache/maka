@@ -308,7 +308,6 @@ export function createExternalAgentSettings(
   const viewPlan = (request: ExternalAgentAction & { runtime: string; line?: string }) => {
     if (!current(request) || disabled() || !basis()) return;
     const runtime = statuses().find((item) => item.id === request.runtime);
-    if (request.runtime === 'antigravity') return;
     if (!runtime?.canInstall || runtime.installation.kind !== 'not_found') return;
     if (
       runtime.installLines.length &&
@@ -389,13 +388,6 @@ export function createExternalAgentSettings(
     toggleDetails: (request: ExternalAgentAction & { runtime: string }) => {
       if (!current(request)) return;
       details.set(details() === request.runtime ? null : request.runtime);
-    },
-    openGuide: (request: ExternalAgentAction) => {
-      if (!current(request)) return;
-      void host.openLink('https://antigravity.google/docs/ide/extensions/zed').catch((error) => {
-        failure.set(errorMessage(error));
-        operations.report(new UiError('Could not open the installation guide.'));
-      });
     },
     status: (runtime: string) => statuses().find((item) => item.id === runtime),
     confirmation,

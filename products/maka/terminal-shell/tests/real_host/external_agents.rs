@@ -481,14 +481,47 @@ async fn external_agents_ui_installation_requires_a_plan_and_explicit_confirmati
         assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen"]);
         update_worker_state(fixture.directory.path(), |state| state["antigravityMissing"] = json!(true));
         toggle_runtime(&mut view, &client, "antigravity", "Antigravity", true).await;
-        see(&mut view, "Automatic installation is not supported in Maka.").await;
-        button(&mut view, "Open Antigravity installation guide").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "View installation plan for Antigravity" || node.label == "Install Antigravity"));
-        click(&mut view, "Show Antigravity details").await;
-        see(&mut view, "PATH or OAR_ANTIGRAVITY_BIN").await;
-        click(&mut view, "Hide Antigravity details").await;
-        assert!(!requests(fixture.directory.path()).iter().any(|request| request["kind"] == "setup" && request["runtime"] == "antigravity"));
+        click(&mut view, "View installation plan for Antigravity").await;
+        for text in [
+            "Installation plan for Antigravity",
+            "curl -fsSL https://antigravity.google/cli/install.sh | bash",
+            "Installation source: https://antigravity.google/docs/getting-started/?tab=cli",
+            "Network access: yes. Elevated privileges: no. Installation changes files on this machine.",
+        ] {
+            see(&mut view, text).await;
+        }
+        assert_eq!(worker_state(fixture.directory.path())["antigravityMissing"], true);
         assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
+        click(&mut view, "Cancel external agent installation").await;
+        button(&mut view, "View installation plan for Antigravity").await;
+        assert_eq!(worker_state(fixture.directory.path())["antigravityMissing"], true);
+        assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
+        assert!(!requests(fixture.directory.path()).iter().any(|request| request["runtime"] == "antigravity" && request["action"] == "install"));
+
+        click(&mut view, "View installation plan for Antigravity").await;
+        click(&mut view, "Install Antigravity").await;
+        button(&mut view, "Disable Antigravity").await;
+        click(&mut view, "Show Antigravity details").await;
+        see(&mut view, "Installed (fixture-agy-installed)").await;
+        click(&mut view, "Hide Antigravity details").await;
+        let installed = worker_state(fixture.directory.path());
+        assert_eq!(installed["antigravityMissing"], false);
+        assert_eq!(installed["installed"], true, "Antigravity installation must preserve Qwen state");
+        assert_eq!(installed["installCount"], 2, "one Qwen install and one Antigravity install");
+        click(&mut view, "Refresh external agents").await;
+        button(&mut view, "Disable Antigravity").await;
+        click(&mut view, "Show Antigravity details").await;
+        see(&mut view, "Installed (fixture-agy-installed)").await;
+        click(&mut view, "Hide Antigravity details").await;
+        let antigravity_setup: Vec<_> = requests(fixture.directory.path())
+            .into_iter()
+            .filter(|request| request["kind"] == "setup" && request["runtime"] == "antigravity")
+            .collect();
+        assert_eq!(
+            antigravity_setup.iter().map(|request| request["action"].as_str().unwrap()).collect::<Vec<_>>(),
+            ["plan", "plan", "install"],
+        );
+        assert_eq!(worker_state(fixture.directory.path())["installCount"], 2);
 
         assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen", "antigravity"]);
         toggle_runtime(&mut view, &client, "qoder", "Qoder", true).await;
@@ -523,14 +556,16 @@ async fn external_agents_ui_installation_requires_a_plan_and_explicit_confirmati
         click(&mut view, "Close settings").await;
         open_settings(&mut view).await;
         see_installed(&mut view).await;
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 2);
+        assert_eq!(worker_state(fixture.directory.path())["installCount"], 3);
         assert_eq!(
             requests(fixture.directory.path())
                 .iter()
                 .filter(|request| request["action"] == "install")
                 .count(),
-            2
+            3
         );
+        assert_eq!(requests(fixture.directory.path()).iter().filter(|request| request["runtime"] == "antigravity" && request["action"] == "install").count(), 1);
+        assert_eq!(worker_state(fixture.directory.path())["antigravityMissing"], false);
         assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen", "antigravity", "qoder"]);
         assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
         drop(view);

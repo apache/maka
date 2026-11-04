@@ -238,27 +238,6 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
                 <If when={runtime().enabled}>
                   <View style={{ paddingHorizontal: controlStyle.paddingHorizontal, gap: 6 }}>
                     <Text style={mutedStyle}>{statusLabel(runtime().id)}</Text>
-                    <If
-                      when={
-                        runtime().id === 'antigravity' &&
-                        owner.status(runtime().id)?.installation.kind !== 'available'
-                      }
-                    >
-                      <Text style={mutedStyle}>
-                        {tr('Automatic installation is not supported in Maka.')}
-                      </Text>
-                      <Button
-                        accessibilityLabel={tr('Open Antigravity installation guide')}
-                        onPress={inputAction(owner.openGuide, owner.action())}
-                        style={buttonStyle}
-                        hoverStyle={controlHoverStyle()}
-                        focusStyle={controlFocusStyle()}
-                      >
-                        <Text style={{ ...captionTextStyle, color: C.accent }}>
-                          {tr('Official installation guide')}
-                        </Text>
-                      </Button>
-                    </If>
                     <Button
                       accessibilityLabel={tr(
                         owner.details() === runtime().id
@@ -279,13 +258,6 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
                       </Text>
                     </Button>
                     <If when={owner.details() === runtime().id}>
-                      <If when={runtime().id === 'antigravity'}>
-                        <Text style={mutedStyle}>
-                          {tr(
-                            'OAR links to an editor installation guide. The installed agent server must still be discoverable through PATH or OAR_ANTIGRAVITY_BIN.',
-                          )}
-                        </Text>
-                      </If>
                       <If when={owner.status(runtime().id)}>
                         <Text style={mutedStyle}>
                           {installationText(owner.status(runtime().id)!.installation)}
@@ -307,7 +279,6 @@ export function ExternalAgentSettings(props: { owner: ExternalAgentSettingsOwner
                     </If>
                     <If
                       when={
-                        runtime().id !== 'antigravity' &&
                         owner.status(runtime().id)?.installation.kind === 'not_found' &&
                         owner.status(runtime().id)?.canInstall
                       }

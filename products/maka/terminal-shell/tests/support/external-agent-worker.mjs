@@ -52,7 +52,9 @@ const statuses = [
   {
     id: 'antigravity',
     name: 'Antigravity',
-    installation: state.antigravityMissing ? { kind: 'not_found' } : { kind: 'available' },
+    installation: state.antigravityMissing
+      ? { kind: 'not_found' }
+      : { kind: 'available', version: 'fixture-agy-installed' },
     authentication: {
       kind: state.signedIn ? 'authenticated' : 'unauthenticated',
       source: 'native login status',
@@ -60,7 +62,7 @@ const statuses = [
     models: state.signedIn
       ? { kind: 'ready', count: 1 }
       : { kind: 'unauthenticated', detail: 'Native login required' },
-    canInstall: false,
+    canInstall: true,
     installLines: [],
   },
   {
@@ -146,7 +148,27 @@ else if (request.kind === 'catalog') {
       kind: 'unsupported',
       detail: 'Fixture platform has no Qoder installer',
     };
-  else if (request.runtime !== 'qwen')
+  else if (request.runtime === 'antigravity') {
+    if (request.action === 'plan')
+      value = {
+        kind: 'plan',
+        runtime: 'antigravity',
+        source: 'https://antigravity.google/docs/getting-started/?tab=cli',
+        network: true,
+        privileges: false,
+        steps: [
+          {
+            display: 'curl -fsSL https://antigravity.google/cli/install.sh | bash',
+          },
+        ],
+      };
+    else if (request.action === 'install') {
+      state.antigravityMissing = false;
+      state.installCount += 1;
+      writeFileSync(stateFile, JSON.stringify(state));
+      value = { kind: 'installed' };
+    } else throw new Error(`Unexpected Antigravity setup action ${request.action}`);
+  } else if (request.runtime !== 'qwen')
     throw new Error(`Unexpected setup runtime ${request.runtime}`);
   else if (request.action === 'plan')
     value = {

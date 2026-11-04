@@ -192,18 +192,6 @@ export const externalAgentMessages = {
     '暂不支持在 Maka 中自动安装。',
     '暫不支援在 Maka 中自動安裝。',
   ],
-  'Open Antigravity installation guide': [
-    'Open Antigravity installation guide',
-    '打开 Antigravity 安装说明',
-    '開啟 Antigravity 安裝說明',
-  ],
-  'Official installation guide': ['Official installation guide', '官方安装说明', '官方安裝說明'],
-  'OAR links to an editor installation guide. The installed agent server must still be discoverable through PATH or OAR_ANTIGRAVITY_BIN.':
-    [
-      'OAR links to an editor installation guide. The installed agent server must still be discoverable through PATH or OAR_ANTIGRAVITY_BIN.',
-      'OAR 提供编辑器安装说明；已安装的 Agent 服务程序仍须能被 OAR 找到（PATH 或 OAR_ANTIGRAVITY_BIN）。',
-      'OAR 提供編輯器安裝說明；已安裝的 Agent 服務程式仍須能被 OAR 找到（PATH 或 OAR_ANTIGRAVITY_BIN）。',
-    ],
   'Installation options for {name}': [
     'Installation options for {name}',
     '{name} 的安装方式',
@@ -218,10 +206,5 @@ export const externalAgentMessages = {
     'Could not update external agents. Open details or refresh.',
     '未能更新外部 Agent。请查看详情或刷新。',
     '未能更新外部 Agent。請檢視詳細資訊或重新整理。',
-  ],
-  'Could not open the installation guide.': [
-    'Could not open the installation guide.',
-    '未能打开安装说明。',
-    '未能開啟安裝說明。',
   ],
 } satisfies Catalog;
