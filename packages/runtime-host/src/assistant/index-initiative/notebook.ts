@@ -85,6 +85,9 @@ export class Notebook {
     const r = this.db.prepare('SELECT * FROM events WHERE id=?').get(id);
     return r && { ...r, payload: JSON.parse(String(r.payload)) };
   }
+  sequence() {
+    return Number(this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get()!.n);
+  }
   put(id: string, kind: string, payload: any, at = this.clock()) {
     requireThat(nonempty(id) && iso(at), 'Event ID and recorded time required');
     return this.transaction(() => {
@@ -305,11 +308,12 @@ export class Notebook {
       feedbackRevision: this.revision(),
     };
   }
-  seed() {
+  seed(previousInvestigation?: unknown) {
     return (
       '# 共享记忆：目录与用户反馈\n' +
       JSON.stringify(
         {
+          ...(previousInvestigation ? { previousInvestigation } : {}),
           catalog: this.readMemory({ view: 'catalog', limit: 8 }),
           pendingFeedback: this.readMemory({ view: 'feedback', limit: 4 }),
           feedbackRules: this.readMemory({ view: 'rules', limit: 4 }),

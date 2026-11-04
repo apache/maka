@@ -233,7 +233,12 @@ export async function initializeInitiative(
     'InitiativeStatus',
     'Read this assistant’s general discovery schedule, current run and last error. Does not start exploration or report progress on a specific task.',
     z.object({}),
-    (_: any, call: any) => visible(call) ?? { configured: false },
+    (_: any, call: any) => {
+      const state = visible(call);
+      return state
+        ? { ...state, coordination: controller.coordinator.status() }
+        : { configured: false };
+    },
   );
   register(
     'InitiativeControl',

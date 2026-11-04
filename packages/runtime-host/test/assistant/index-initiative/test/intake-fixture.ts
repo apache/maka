@@ -21,6 +21,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
+import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
+import { DiscoveryCoordinator } from '../../../../src/assistant/index-initiative/coordination.js';
 
 export async function intakeFixture() {
   const root = await mkdtemp(join(tmpdir(), 'maka-intake-'));
@@ -49,11 +51,15 @@ export async function intakeFixture() {
     whenIdle: async () => {},
     cancel: async () => {},
   };
+  const parentStore = new InitiativeStore(root, 'parent');
+  parentStore.lease();
+  parentStore.bind({ sessionId: 'owner', cwd: root });
   const parent = {
+    coordinator: new DiscoveryCoordinator(parentStore, () => 0),
     abort: new AbortController(),
     bindingReady: Promise.resolve(),
     refreshNotebook: () => {},
-    store: { get: () => ({ sessionId: 'owner', cwd: root }) },
+    store: parentStore,
     asOwner: (_: any, fn: any) => fn(),
   };
   const ctx: any = {
@@ -154,6 +160,8 @@ export async function intakeFixture() {
     close: async () => {
       await q.close();
       q.store.close();
+      parentStore.release();
+      parentStore.close();
       await rm(root, { recursive: true, force: true });
     },
   };

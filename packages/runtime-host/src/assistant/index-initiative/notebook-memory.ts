@@ -74,6 +74,8 @@ export const memoryRead = z
     entryId: id.optional(),
     revision: z.number().int().positive().optional(),
     eventId: id.optional(),
+    afterSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
+    throughSequence: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER).optional(),
     query: z.string().trim().min(1).max(200).optional(),
     limit: z.number().int().min(1).max(100).default(20),
     cursor: z.string().max(8000).optional(),
@@ -270,14 +272,19 @@ export class NotebookMemory {
           input.revision ?? null,
           input.eventId ?? null,
           input.query ?? null,
+          input.afterSequence ?? null,
+          input.throughSequence ?? null,
         ]),
       )
       .digest('hex');
     if (!input.cursor)
       return {
         selection,
-        through: Number(this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get()!.n),
-        after: 0,
+        through: Math.min(
+          input.throughSequence ?? Number.MAX_SAFE_INTEGER,
+          Number(this.db.prepare('SELECT COALESCE(MAX(seq),0) AS n FROM events').get()!.n),
+        ),
+        after: input.afterSequence ?? 0,
       };
     try {
       const [body, signature, extra] = input.cursor.split('.');
@@ -384,6 +391,11 @@ export class NotebookMemory {
     const input = memoryRead.parse(raw);
     if (input.query && !['catalog', 'topic'].includes(input.view))
       throw new NotebookValidationError('query is supported only for catalog and topic reads');
+    if (
+      (input.afterSequence !== undefined || input.throughSequence !== undefined) &&
+      input.view !== 'history'
+    )
+      throw new NotebookValidationError('Sequence bounds are supported only for history reads');
     this.catchUp();
     const p = this.position(input);
     if (input.view === 'entry' || input.view === 'event') return this.body(input, p);

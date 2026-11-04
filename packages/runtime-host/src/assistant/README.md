@@ -100,6 +100,37 @@ can still read the original journal, but does not understand new entry correctio
 returning to the newer binary imports intervening legacy notes. Source-receipt
 counts, memory commits and user-visible delivery remain distinct.
 
+### Coordinated investigation and memory handoff
+
+Broad discovery (exploration plus judgement) and quick discovery now share one
+non-preemptive investigation slot. Ready lanes enter a durable FIFO with at most
+one waiting request per lane. Repeated ticks retain queue position. A queued lane
+gets its turn before another activation of the lane that just completed. Disabled
+or no-longer-eligible requests withdraw without consuming their source changes.
+A long investigation can delay the other lane; it is not interrupted or given a
+new execution time limit. This is a deliberately serial starting point for review.
+
+Event receipt and model screening remain independent of that slot. They keep
+accepting changes while an investigation runs. Pending hints coalesce when quick
+discovery is admitted; hints arriving after its captured boundary stay pending.
+The existing retry deadlines and failed execution identity remain authoritative.
+Failing one investigation releases the slot so the other lane can proceed.
+Restart fences old owners and recovers queued requests through the Host lease.
+
+Completion records a bounded reference to the committed notebook event interval,
+including partial writes from interrupted investigations. The next worker receives
+this reference in its actual wake context. Read it with `DiscoveryNotebook` using
+`view: "history"`, `afterSequence`, and `throughSequence`; normal snapshot paging
+still applies. Read current topic entries and user feedback before acting on those
+historical changes. The interval records available memory, not complete coverage,
+truth, or user-visible delivery. `InitiativeStatus` and `QuickDiscoveryStatus`
+expose the running lane, waiting lanes and previous handoff.
+
+Host-level coalescing uses durable receipt/operation identities and exact hints.
+It does not silently discard events because their topics look semantically
+similar. Models still decide whether prior investigation answers a new question;
+quality, repeat-investigation rate and latency require observation with real work.
+
 ### Optional scoped working contexts
 
 `InitiativeConfigure({contextMode: "scoped"})` opts into a new exploration/judgement

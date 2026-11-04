@@ -144,7 +144,7 @@ export class QuickDiscoveryController {
     const binding = this.parent.store.get();
     if (!binding) throw Error('Open the personal assistant first');
     if (!this.state()) this.store.bind({ sessionId: binding.sessionId, cwd: binding.cwd });
-    return this.store.update((s) => {
+    const state = this.store.update((s) => {
       if (s.sessionId !== binding.sessionId) throw Error('Quick discovery owner mismatch');
       s.intervalMs ??= 15 * 60000;
       // InitiativeStore's legacy default must not silently become the quick cadence.
@@ -173,6 +173,8 @@ export class QuickDiscoveryController {
       }
       if (input.action === 'check') s.checkRequested = true;
     });
+    if (input.action === 'pause') this.parent.coordinator.withdraw('quick');
+    return state;
   }
   private owner<T>(s: any, fn: () => T): T {
     return this.parent.asOwner(s, fn, this.abort.signal);
@@ -257,19 +259,25 @@ export class QuickDiscoveryController {
       (!s.enabled && !s.checkRequested) ||
       s.active ||
       (s.retryAt > now && !s.checkRequested)
-    )
+    ) {
+      this.parent.coordinator.withdraw('quick');
       return;
+    }
+    const waiting = this.parent.coordinator.waiting('quick');
     const eventWake = s.intakeEnabled ? await this.intake.next() : undefined;
     const last = s.lastPeriodicFinishedAt ?? s.startedAt;
     const quiet = inQuietHours(now, s.quietHours);
     if (
       !eventWake &&
+      !waiting &&
       !s.checkRequested &&
       !s.pending &&
       (now < last + s.intervalMs ||
         (now < (s.observation?.at ?? 0) + s.intervalMs && (quiet || now < last + s.idleMs)))
-    )
+    ) {
+      this.parent.coordinator.withdraw('quick');
       return;
+    }
     // Cheap observations only: no source enumeration, body reads, index writes or model calls.
     const observation = eventWake
       ? { tokens: s.checkedTokens ?? {}, unavailable: {} }
@@ -285,38 +293,63 @@ export class QuickDiscoveryController {
     // Only idle discovery is suppressed. Explicit checks, observed new activity and pending
     // retries still run, subject to the retry deadline and admission guards above/below.
     // Never advance the successful-check watermark merely because a wake was skipped.
-    if (!s.checkRequested && !s.pending && !eventWake && !changed && quiet) return;
-    if (!s.checkRequested && !s.pending && !eventWake && !changed && now < last + s.idleMs) return;
-    const agent = await this.worker(s);
-    const snapshot = await agent.snapshot();
-    if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
-    this.ready();
-    const current = this.store.update((state) => {
-      if ((!state.enabled && !state.checkRequested) || state.active) return;
-      state.active = state.pending ?? {
-        id: randomUUID(),
-        from: state.checkedThrough ?? state.startedAt,
-        to: now,
-        tokens: observation.tokens,
-        messageId: randomUUID(),
-        reports: [],
-        periodic: !eventWake || (now >= last + s.idleMs && !quiet),
-        ...(eventWake ? { eventWake } : {}),
-      };
-      state.checkRequested = false;
-      state.lastError = null;
-      this.store.log('quick-started', {
-        id: state.active.id,
-        from: state.active.from,
-        to: state.active.to,
+    if (
+      !s.checkRequested &&
+      !s.pending &&
+      !eventWake &&
+      !changed &&
+      (quiet || now < last + s.idleMs)
+    ) {
+      this.parent.coordinator.withdraw('quick');
+      return;
+    }
+    const permit = this.parent.coordinator.acquire('quick');
+    if (!permit) return;
+    let admitted = false;
+    try {
+      const agent = await this.worker(s);
+      const snapshot = await agent.snapshot();
+      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
+      this.ready();
+      this.parent.coordinator.assertActive(permit);
+      const current = this.store.update((state) => {
+        if ((!state.enabled && !state.checkRequested) || state.active) return;
+        state.active = state.pending ?? {
+          id: randomUUID(),
+          from: state.checkedThrough ?? state.startedAt,
+          to: now,
+          tokens: observation.tokens,
+          messageId: randomUUID(),
+          reports: [],
+          periodic: !eventWake || (now >= last + s.idleMs && !quiet),
+          ...(eventWake ? { eventWake } : {}),
+        };
+        state.checkRequested = false;
+        state.lastError = null;
+        this.store.log('quick-started', {
+          id: state.active.id,
+          from: state.active.from,
+          to: state.active.to,
+        });
       });
-    });
-    if (!current.active) return;
-    this.agent = agent;
-    this.running = this.run(agent, current).finally(() => {
-      this.running = undefined;
-    });
+      if (!current.active) return;
+      admitted = true;
+      this.agent = agent;
+      this.running = this.run(agent, current).finally(() => {
+        this.running = undefined;
+        const finished = this.state();
+        this.parent.coordinator.release(
+          permit,
+          finished?.active || finished?.pending || finished?.lastError
+            ? 'interrupted'
+            : 'completed',
+        );
+      });
+    } finally {
+      if (!admitted) this.parent.coordinator.release(permit);
+    }
   }
+
   private async worker(s: any) {
     return this.owner(s, async () => {
       // Pin the mode until this wake (including its outbox retries) has settled.
@@ -432,9 +465,12 @@ export class QuickDiscoveryController {
         const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v2']);
         const first = this.state().promptVersion !== version;
         const directions = active.eventWake ? await this.intake.directions(active.eventWake) : [];
-        const input = active.eventWake
+        let input = active.eventWake
           ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。${directions.length ? `模型概述：${JSON.stringify(directions.join('；'))}。` : ''}概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
           : quickWakeInput(active.from, active.to, first);
+        const previous = this.parent.coordinator.previous();
+        if (previous)
+          input += `\n上一轮调查的记忆增量入口：${JSON.stringify(previous)}。用 DiscoveryNotebook 读取 memory 指定的历史范围；调查记录不是完整覆盖或已告知证明，结合当前认识、反馈与来源判断是否需要继续。`;
         const result = (await this.owner(state, () =>
           agent.followup(input, { messageId: active.messageId }),
         )) as any;
@@ -561,6 +597,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
   ctx.api.register('assistant.quick-discovery-status', () => ({
     ...(quick.state() ?? { configured: false }),
     intake: quick.intake.status(),
+    coordination: parent.coordinator.status(),
   }));
   for (const [name, description, parameters, impl] of [
     [
@@ -576,6 +613,7 @@ export function initializeQuickDiscovery(ctx: any, parent: any, directory: strin
       () => ({
         ...(quick.state() ?? { configured: false }),
         intake: quick.intake.status(),
+        coordination: parent.coordinator.status(),
       }),
     ],
   ] as const)

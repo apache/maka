@@ -28,9 +28,11 @@ import type { AssistantRunOutcome, RunSegment } from '../run-cost.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
+import { DiscoveryCoordinator } from './coordination.js';
 
 export class InitiativeController {
   readonly notebook: Notebook;
+  readonly coordinator: DiscoveryCoordinator;
   abort = new AbortController();
   timer: any;
   heartbeat: any;
@@ -55,6 +57,7 @@ export class InitiativeController {
   ) {
     const path = join(store.directory, 'notebook.sqlite');
     this.notebook = new Notebook(path);
+    this.coordinator = new DiscoveryCoordinator(store, () => this.notebook.sequence());
     chmodSync(path, 0o600);
   }
   refreshNotebook(state = this.store.get()) {
@@ -125,7 +128,10 @@ export class InitiativeController {
   start() {
     const acquire = () => {
       const owned = this.store.lease();
-      if (owned && !this.owned) this.store.recover();
+      if (owned && !this.owned) {
+        this.store.recover();
+      }
+      if (owned) this.coordinator.recover();
       if (!owned && this.owned) this.abort.abort(Error('Initiative ownership lost'));
       this.owned = owned;
     };
@@ -189,20 +195,39 @@ export class InitiativeController {
   }
   async dispatch() {
     const s = this.store.get();
-    if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
-    const agent = await this.worker(
-      s,
-      s.pendingDraft?.phase ??
-        (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
-    );
-    const snapshot = await agent.snapshot();
-    if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
-    this.ready();
-    const current = this.store.claim();
-    if (!current?.active) return;
-    this.running = this.run(agent, current).finally(() => {
-      this.running = undefined;
-    });
+    if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) {
+      this.coordinator.withdraw('broad');
+      return;
+    }
+    const permit = this.coordinator.acquire('broad');
+    if (!permit) return;
+    let admitted = false;
+    try {
+      const agent = await this.worker(
+        s,
+        s.pendingDraft?.phase ??
+          (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
+      );
+      const snapshot = await agent.snapshot();
+      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
+      this.ready();
+      this.coordinator.assertActive(permit);
+      const current = this.store.claim();
+      if (!current?.active) return;
+      admitted = true;
+      this.running = this.run(agent, current).finally(() => {
+        this.running = undefined;
+        const finished = this.store.get()?.lastRun;
+        this.coordinator.release(
+          permit,
+          finished?.id === current.active.id && finished.outcome !== 'error'
+            ? 'completed'
+            : 'interrupted',
+        );
+      });
+    } finally {
+      if (!admitted) this.coordinator.release(permit);
+    }
   }
   private async worker(s: any, phase: 'discovery' | 'judgement') {
     return this.asOwner(s, async () => {
@@ -272,7 +297,7 @@ export class InitiativeController {
       this.ready();
       await this.refreshNotebook(state);
       mkdirSync(directory, { recursive: true, mode: 0o700 });
-      writeFileSync(viewPath, this.notebook.seed(), { mode: 0o600 });
+      writeFileSync(viewPath, this.notebook.seed(this.coordinator.previous()), { mode: 0o600 });
       const revision = this.notebook.revision();
       let input = wakeInput({
         role,
@@ -436,6 +461,7 @@ export class InitiativeController {
     if (!old || old.sessionId !== call.sessionId)
       throw Error('Only the assistant conversation controls heartbeats');
     const s = this.store.control(action);
+    if (action === 'pause') this.coordinator.withdraw('broad');
     if (action !== 'pause') void this.tick();
     return s;
   }

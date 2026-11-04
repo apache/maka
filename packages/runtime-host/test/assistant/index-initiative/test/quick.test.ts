@@ -23,6 +23,8 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { QuickDiscoveryController } from '../../../../src/assistant/index-initiative/quick.js';
+import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
+import { DiscoveryCoordinator } from '../../../../src/assistant/index-initiative/coordination.js';
 import { InitiativeController } from '../../../../src/assistant/index-initiative/controller.js';
 import { RunCostLedger } from '../../../../src/assistant/run-cost.js';
 import { fixture, until } from './fixture.js';
@@ -53,13 +55,17 @@ async function setup() {
     },
     cancel: async () => {},
   };
+  const parentStore = new InitiativeStore(root, 'parent');
+  parentStore.lease();
+  parentStore.bind({ sessionId: 'owner', cwd: root });
   const parent = {
+    coordinator: new DiscoveryCoordinator(parentStore, () => 0),
     abort: new AbortController(),
     bindingReady: Promise.resolve(),
     refreshNotebook: () => {
       notebookRefreshes++;
     },
-    store: { get: () => ({ sessionId: 'owner', cwd: root }) },
+    store: parentStore,
     asOwner: (_: any, fn: any) => fn(),
   };
   const ctx = {
@@ -118,6 +124,8 @@ async function setup() {
     close: async () => {
       await q.close();
       q.store.close();
+      parentStore.release();
+      parentStore.close();
       await rm(root, { recursive: true, force: true });
     },
   };
@@ -739,6 +747,27 @@ test('a failed quick run is recorded as failed and its retry as a separate run',
         ['no_report', 'failed'],
       );
     });
+  } finally {
+    await f.close();
+  }
+});
+
+test('activity already waiting for broad discovery does not wait for another polling interval', async () => {
+  const f = await setup();
+  try {
+    const coordinator = f.q.parent.coordinator;
+    const broad = coordinator.acquire('broad')!;
+    f.advance(15 * 60000);
+    await f.run();
+    assert.equal(coordinator.waiting('quick'), true);
+    f.advance(5000);
+    await f.run();
+    assert.equal(coordinator.waiting('quick'), true);
+    assert.equal(f.calls(), 0);
+    coordinator.release(broad, 'completed');
+    await f.run();
+    assert.equal(f.calls(), 1);
+    assert.equal(coordinator.status().running, null);
   } finally {
     await f.close();
   }
