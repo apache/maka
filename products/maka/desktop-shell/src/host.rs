@@ -20,8 +20,7 @@
 //! The Host the window's client reaches: the one `maka desktop` admitted,
 //! then, after that one stops, whichever Host serves the Root next.
 
-use maka_event_log::root;
-use maka_host_runtime::application::host::{Client as HostClient, discovery, startup};
+use maka_host_runtime::application::host::Client as HostClient;
 use maka_workbench::bindings::Bindings;
 use nsh_engine::EngineConfig;
 use std::{
@@ -31,10 +30,6 @@ use std::{
 use tokio::runtime::Handle;
 use uuid::Uuid;
 
-/// How often the window checks that its Host still runs.
-const CHECK_EVERY: Duration = Duration::from_secs(2);
-/// How soon a failed check is repeated before the Host counts as stopped.
-const RECHECK_AFTER: Duration = Duration::from_millis(500);
 /// How long a check waits for the Host to answer.
 const STATUS_LIMIT: Duration = Duration::from_secs(2);
 /// How long quitting waits for the Host connection to close.
@@ -45,7 +40,6 @@ pub const DETACH_LIMIT: Duration = Duration::from_secs(5);
 pub struct Connection {
     pub bindings: Bindings,
     pub config: EngineConfig,
-    pub directory: PathBuf,
     pub endpoint: PathBuf,
     pub epoch: Uuid,
 }
@@ -64,67 +58,15 @@ impl Connection {
         let bindings = Bindings::new(client, runtime.clone());
         let mut config = maka_workbench::configuration(bindings.registry(None), runtime);
         config.context = config.context.with(bindings.reload());
-        config.data_dir = Some(directory.clone());
+        config.data_dir = Some(directory);
         config.assets = Some(bindings.assets());
         config.chunk_loader = Some(bindings.chunk_loader());
         Ok(Self {
             bindings,
             config,
-            directory,
             endpoint,
             epoch,
         })
-    }
-}
-
-/// The Root the desktop serves, and the launcher that starts its Host.
-#[derive(Clone)]
-pub struct Root {
-    path: PathBuf,
-    /// The identity of the Root found at `path` when the desktop opened.
-    id: String,
-    launcher: PathBuf,
-}
-
-impl Root {
-    /// The Root at `path`, which must exist.
-    pub fn find(path: PathBuf, launcher: PathBuf) -> Result<Self, String> {
-        let id = root::resolve(&path)
-            .map_err(|error| format!("{}: {error}", path.display()))?
-            .root_id()
-            .to_owned();
-        Ok(Self { path, id, launcher })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-
-    /// Connects to the Host serving the Root. When none runs, the launcher
-    /// starts one, as `maka desktop` does.
-    pub async fn connect(&self, runtime: Handle) -> Result<Connection, String> {
-        // The launcher would initialize a new Root where this one was moved
-        // or deleted.
-        match root::resolve(&self.path) {
-            Ok(found) if found.root_id() == self.id => {}
-            Ok(_) => return Err(format!("{} holds another Root now", self.path.display())),
-            Err(error) => return Err(format!("{}: {error}", self.path.display())),
-        }
-        let mut host = startup::connect_root(&self.launcher, &self.path).await?;
-        let endpoint = match discovery::read(&self.path) {
-            Ok(registered) if registered.host_epoch == host.epoch() => registered.endpoint,
-            other => {
-                let error = match other {
-                    Ok(_) => "the Host changed while the desktop connected".to_owned(),
-                    Err(error) => error.to_string(),
-                };
-                return Err(match host.close().await {
-                    Ok(()) => error,
-                    Err(cleanup) => format!("{error}; desktop Host cleanup: {cleanup}"),
-                });
-            }
-        };
-        Connection::admit(host, endpoint, &self.path, runtime).await
     }
 }
 
@@ -151,21 +93,7 @@ pub async fn detach(bindings: Bindings, endpoint: &Path, epoch: Uuid) {
     }
 }
 
-/// Ends once the Host at `endpoint` has stopped or is stopping: two checks
-/// in a row could not reach it, found another Host or found it closing.
-pub async fn stopped(endpoint: PathBuf, epoch: Uuid) {
-    let mut failed = 0;
-    while failed < 2 {
-        tokio::time::sleep(if failed == 0 {
-            CHECK_EVERY
-        } else {
-            RECHECK_AFTER
-        })
-        .await;
-        failed = if runs(&endpoint, epoch).await {
-            0
-        } else {
-            failed + 1
-        };
-    }
-}
+#[cfg(not(windows))]
+mod reconnect;
+#[cfg(not(windows))]
+pub use reconnect::{Root, stopped};

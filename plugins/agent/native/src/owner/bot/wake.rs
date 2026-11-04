@@ -73,9 +73,23 @@ impl Bot {
             for entry in page.entries {
                 if let Some(value) = entry.record.data.value() {
                     let worker = entry.key[WATCH_PREFIX.len()..].to_owned();
-                    let watch = serde_json::from_value(value.clone())
-                        .map_err(|error| StoreError::Unavailable(error.to_string()))?;
-                    found.push((worker, Some(entry.record.revision), watch));
+                    // One record this build cannot read must not stop the wakes of every
+                    // other worker. It is left in place and reported once.
+                    match serde_json::from_value(value.clone()) {
+                        Ok(watch) => found.push((worker, Some(entry.record.revision), watch)),
+                        Err(error) => {
+                            if self
+                                .unreadable
+                                .lock()
+                                .expect("unreadable watches")
+                                .insert(worker.clone())
+                            {
+                                eprintln!(
+                                    "Bot worker wake: skipping an unreadable watch for {worker}: {error}"
+                                );
+                            }
+                        }
+                    }
                 }
             }
             match page.next_after {
@@ -83,6 +97,19 @@ impl Bot {
                 None => return Ok(found),
             }
         }
+    }
+    /// A watch this build cannot read, as an older build might have written.
+    #[cfg(test)]
+    pub(in crate::owner) async fn plant_unreadable_watch(&self, worker: &str) {
+        let stale = serde_json::json!({"route": {"model": {"context": {}}}, "notified": null});
+        self.storage
+            .batch(vec![Mutation {
+                key: watch_key(worker),
+                expected_revision: None,
+                data: Data::Present(stale),
+            }])
+            .await
+            .expect("plant watch");
     }
     async fn forget(&self, worker: &str, revision: Option<u64>) -> Result<(), StoreError> {
         self.storage
@@ -120,15 +147,20 @@ impl Owner {
         }
     }
 
-    /// A worker runs on the model the Bot itself is running on. A model selection
-    /// carries the connection's revision, which the Bot cannot know, so whatever
-    /// it supplied is replaced with the current selection of its own model. When
-    /// that cannot be resolved the supplied value is left for normal validation.
+    /// Native workers inherit the Bot's admitted model; an explicitly selected
+    /// executor remains a different backend and goes through ordinary admission.
     pub(crate) async fn use_bot_model(
         &self,
         scope: &maka_capabilities::call::Scope,
-        model: &mut Option<crate::contract::ModelSelection>,
+        backend: &mut Option<crate::contract::BackendPreference>,
     ) {
+        let thinking_level = match backend {
+            Some(crate::contract::BackendPreference::Executor { .. }) => return,
+            Some(crate::contract::BackendPreference::Model { thinking_level, .. }) => {
+                *thinking_level
+            }
+            None => None,
+        };
         let Some(source) = scope.identity.agent() else {
             return;
         };
@@ -139,9 +171,10 @@ impl Owner {
             return;
         };
         let binding = route.binding_model();
-        *model = Some(crate::contract::ModelSelection {
+        *backend = Some(crate::contract::BackendPreference::Model {
             connection_id: binding.connection_id.clone(),
             model_id: binding.model.clone(),
+            thinking_level,
         });
     }
 

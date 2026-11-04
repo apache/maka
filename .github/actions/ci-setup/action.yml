@@ -80,6 +80,10 @@ runs:
       env:
         MAKA_CI_DEPENDENCIES: ${{ inputs.dependencies }}
       run: node scripts/ci/setup.mjs native
+    - name: Select libclang on Windows
+      if: runner.os == 'Windows' && inputs.compile == 'true'
+      shell: bash
+      run: echo 'LIBCLANG_PATH=C:\Program Files\LLVM\bin' >> "$GITHUB_ENV"
     - name: Identify Cargo caches
       id: keys
       if: inputs.role != 'replay'

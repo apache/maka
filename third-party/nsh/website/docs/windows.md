@@ -134,7 +134,7 @@ The view is a child window: your message loop runs it, and you place it with `Mo
 parent resizes. `AppView::load` replaces whatever ran; `stop` (or destroying the window) ends the app. `asset_base`
 tells it where `asset:/` URIs resolve (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`bundle.nshc`)
 load with `unsafe { Bundle::bytecode(bytes) }` (or `Bundle::read_trusted(path)`, unsafe too): QuickJS bytecode is trusted input, so
-only load it from your own app's files. A standalone window is `nsh_platform_windows::run_app(source, options)`, with
+only load it from your own app's files. A standalone window is `nsh_platform_windows::run_app(source, options, on_active)`, with
 `AppSource::Rust(root)` or `AppSource::Bundle(bundle)`. `Root::tokens` gives a root its [theme](./rust.md#theme) and
 `Root::app_id` the id its data is kept under.
 

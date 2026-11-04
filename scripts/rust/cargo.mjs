@@ -21,8 +21,8 @@ import { spawn } from 'node:child_process';
 import { resolve } from 'node:path';
 import { createInterface } from 'node:readline';
 
-export async function cargoBuild(args, { cwd, env }) {
-  const child = spawn('cargo', [...args, '--message-format=json'], {
+export async function cargoBuild(args, { cwd, env, command = 'cargo' }) {
+  const child = spawn(command, [...args, '--message-format=json'], {
     cwd,
     env,
     stdio: ['inherit', 'pipe', 'inherit'],

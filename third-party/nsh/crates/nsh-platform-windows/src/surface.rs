@@ -97,6 +97,9 @@ pub(crate) type ShortcutHandler = Box<dyn Fn(&crate::input::KeyEvent) -> bool>;
 /// Called when the app reports a fatal error (development hosts show it).
 pub(crate) type ErrorHandler = Box<dyn Fn(&str)>;
 
+/// Receives top-level window activation on the UI thread.
+pub(crate) type ActivationHandler = Box<dyn Fn(bool) + Send>;
+
 /// One engine and its views.
 pub(crate) struct Surface {
     key: u64,
@@ -170,6 +173,10 @@ pub(crate) struct Surface {
     shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
+    pub(crate) min_size: Cell<Option<(i32, i32)>>,
+    pub(crate) on_activation: RefCell<Option<ActivationHandler>>,
+    active: Cell<bool>,
+    pub(crate) image_assets: RefCell<Option<nsh_core::image::loader::ReadAsset>>,
     /// The disk cache of downloaded images ([`crate::image::set_disk_cache`]).
     pub(crate) image_cache: RefCell<Option<nsh_core::image::DiskCache>>,
     /// Videos, web views and registered native components.
@@ -235,6 +242,10 @@ impl Surface {
             on_hot_update_failed: RefCell::new(None),
             shader_renderer: std::cell::OnceCell::new(),
             asset_base: RefCell::new(None),
+            image_assets: RefCell::new(None),
+            min_size: Cell::new(None),
+            on_activation: RefCell::new(None),
+            active: Cell::new(false),
             image_cache: RefCell::new(None),
             native: Default::default(),
             keymap: Default::default(),
@@ -269,6 +280,17 @@ impl Surface {
     /// The surface with `key`, if it is alive.
     pub(crate) fn by_key(key: u64) -> Option<Rc<Surface>> {
         SURFACES.with(|s| s.borrow().get(&key).and_then(Weak::upgrade))
+    }
+
+    pub(crate) fn activation_changed(&self, active: bool) {
+        if !active {
+            crate::input::cancel_keyboard_press(self);
+        }
+        if self.active.replace(active) != active
+            && let Some(handler) = &*self.on_activation.borrow()
+        {
+            handler(active);
+        }
     }
 
     /// Its key ([`Surface::by_key`]).
@@ -334,6 +356,7 @@ impl Surface {
     /// Starts `config`'s app, replacing what ran.
     pub(crate) fn start(self: &Rc<Self>, mut config: EngineConfig) {
         self.stop();
+        crate::image::set_assets(self, config.assets.clone());
         let env = self.environment.get();
         config.viewport = env.window;
         config.environment = env;
@@ -380,12 +403,14 @@ impl Surface {
 
     /// Stops the app and removes its views.
     pub(crate) fn stop(&self) {
+        crate::input::cancel_keyboard_press(self);
         // Dropping the engine joins its thread.
         self.control.borrow_mut().take();
         self.engine.borrow_mut().take();
         self.rx.borrow_mut().take();
         self.mounter.borrow_mut().clear();
         self.native.clear();
+        crate::image::set_assets(self, None);
         crate::system::clear(self);
         *self.anim.borrow_mut() = UiAnimation::default();
         self.nav.borrow_mut().reset();
@@ -406,10 +431,18 @@ impl Surface {
     /// The native keyboard owner followed by its mounted ancestors.
     pub(crate) fn focus_path(&self) -> Vec<NodeId> {
         let mut current = crate::native::focused(self)
-            .or_else(|| crate::text_input::focused(self))
+            .or_else(|| crate::text_input::focused_view(self))
             .filter(NshView::attached);
         let mut path = Vec::new();
         while let Some(view) = current {
+            let state = view.state();
+            if state.style.hidden
+                || state.concealed
+                || state.props.pointer_events == nsh_core::PointerEvents::None
+            {
+                return Vec::new();
+            }
+            drop(state);
             path.push(view.id());
             current = view.parent_view();
         }
@@ -806,5 +839,23 @@ impl Drop for Surface {
     fn drop(&mut self) {
         let key = self.key;
         let _ = SURFACES.try_with(|s| s.borrow_mut().remove(&key));
+    }
+}
+
+#[cfg(test)]
+mod activation_tests {
+    use super::*;
+
+    #[test]
+    fn foreground_observer_follows_activation_and_deactivation() {
+        let surface = Surface::new(Default::default());
+        let (send, receive) = std::sync::mpsc::channel();
+        *surface.on_activation.borrow_mut() =
+            Some(Box::new(move |active| send.send(active).unwrap()));
+        surface.activation_changed(false);
+        surface.activation_changed(true);
+        surface.activation_changed(true);
+        surface.activation_changed(false);
+        assert_eq!(receive.try_iter().collect::<Vec<_>>(), vec![true, false]);
     }
 }

@@ -52,7 +52,11 @@ export function computerCapability(request: Request): boolean {
       (target.capability === 'browser_history' && target.scope.kind === 'browser_profile'))
   );
 }
-export function CapabilityRequest(props: { request: Request; sessionId: string }) {
+export function CapabilityRequest(props: {
+  request: Request;
+  sessionId: string;
+  showSessionId?: boolean;
+}) {
   return (
     <View style={{ gap: 16 }}>
       <View
@@ -154,7 +158,7 @@ export function CapabilityRequest(props: { request: Request; sessionId: string }
         <Text style={{ ...captionTextStyle, color: C.muted }}>{tr('Request details')}</Text>
         <Each
           of={[
-            [tr('Session'), props.sessionId],
+            ...(props.showSessionId === false ? [] : [[tr('Session'), props.sessionId]]),
             [tr('Provider'), props.request.target.providerId],
             [tr('Contract'), props.request.target.contractId],
             [tr('Server'), props.request.target.serverId],

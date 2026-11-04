@@ -421,7 +421,7 @@ impl Handler for Agent {
                 }
                 "metadata" => {
                     context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.metadata(decode(input)?).await?)
+                    encode(owner.metadata(decode(input)?, context.scope()).await?)
                 }
                 "setCompactionPrompt" => {
                     context.operation().ok_or("agent_mutation_required")?;
@@ -451,19 +451,31 @@ impl Handler for Agent {
                         )
                         .then(|| turn.root_invocation().turn_id.clone())
                     });
-                    let run = observed.root_turn.and_then(|turn| {
-                        let state = match turn.state {
-                            InvocationState::Admitted => RunState::Admitted,
-                            InvocationState::Running => RunState::Running,
-                            InvocationState::WaitingForUser => RunState::WaitingForUser,
-                            InvocationState::Ended { .. } => return None,
-                        };
-                        Some(Run {
-                            invocation_id: turn.invocation.invocation_id,
-                            turn_id: turn.invocation.turn_id,
-                            state,
+                    let run = observed
+                        .root_turn
+                        .map(|turn| -> Result<Option<Run>, String> {
+                            let state = match turn.state {
+                                InvocationState::Admitted => RunState::Admitted,
+                                InvocationState::Running => RunState::Running,
+                                InvocationState::WaitingForUser => RunState::WaitingForUser,
+                                InvocationState::Ended { .. } => return Ok(None),
+                            };
+                            let configuration = turn
+                                .configuration
+                                .ok_or("agent_run_configuration_unavailable")?;
+                            Ok(Some(Run {
+                                backend: if configuration.model.is_some() {
+                                    RunBackend::Model
+                                } else {
+                                    RunBackend::Executor
+                                },
+                                invocation_id: turn.invocation.invocation_id,
+                                turn_id: turn.invocation.turn_id,
+                                state,
+                            }))
                         })
-                    });
+                        .transpose()?
+                        .flatten();
                     let session = summary(&owner, resolve_session(observed.session)?);
                     let remembered_backend = if session.backend.is_none() {
                         owner.remembered_backend(&input.session_id).await?
@@ -944,9 +956,8 @@ impl Handler for Agent {
                     Ok(result)
                 }
                 "send" => {
-                    let mut input: Send = decode(input)?;
+                    let input: Send = decode(input)?;
                     let operation = context.operation().ok_or("agent_mutation_required")?;
-                    owner.use_bot_model(context.scope(), &mut input.model).await;
                     if !owner
                         .may_control(context.scope(), &input.session_id)
                         .await?
@@ -962,6 +973,7 @@ impl Handler for Agent {
                     }
                     encode(sent)
                 }
+                "oarSetup" => encode(owner.oar_setup(decode(input)?, context).await?),
                 "executorSetup" => owner.executor_setup(decode(input)?, context).await,
                 "executors" => {
                     let _: ExecutorsRead = decode(input)?;
@@ -973,22 +985,19 @@ impl Handler for Agent {
                             .filter(|choice| choice.setup.is_some())
                             .map(|choice| choice.name.clone())
                             .collect(),
-                        executors: owner
-                            .settings
-                            .executors
-                            .iter()
-                            .map(|choice| choice.name.clone())
-                            .collect(),
+                        executors: owner.executors.names(),
                     })
                 }
-                "execute" => {
-                    let operation = context.operation().ok_or("agent_mutation_required")?;
-                    encode(
-                        owner
-                            .execute(decode(input)?, operation, context.scope())
-                            .await?,
-                    )
-                }
+                "models" => encode(
+                    owner
+                        .models(decode(input)?, &context.scope().cancellation)
+                        .await?,
+                ),
+                "model" => encode(
+                    owner
+                        .model(decode(input)?, &context.scope().cancellation)
+                        .await?,
+                ),
                 "execution" => encode(owner.execution(decode(input)?).await?),
                 "resumable" => encode(
                     owner
@@ -1046,10 +1055,16 @@ impl Handler for Agent {
                 }
                 "pendingInteractions" => {
                     let input: SessionRead = decode(input)?;
+                    owner
+                        .require_interaction_access(context.scope(), &input.session_id)
+                        .await?;
                     encode(owner.pending_interactions(&input.session_id).await?)
                 }
                 "interaction" => {
                     let input: InteractionRead = decode(input)?;
+                    owner
+                        .require_interaction_access(context.scope(), &input.session_id)
+                        .await?;
                     encode(
                         owner
                             .interaction(&input.session_id, &input.request_id)
@@ -1057,8 +1072,12 @@ impl Handler for Agent {
                     )
                 }
                 "respond" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.respond(decode(input)?).await?)
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .respond(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
                 }
                 "watch" => {
                     let input: Watch = decode(input)?;
@@ -1220,6 +1239,7 @@ async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, Stri
 
 fn catalog_filter(input: &List) -> maka_event_log::sessions::CatalogFilter {
     maka_event_log::sessions::CatalogFilter {
+        roots_only: input.roots_only,
         archived_only: matches!(input.filter, SessionFilter::Archived),
         include_archived: input.include_archived || matches!(input.filter, SessionFilter::Archived),
         pending_only: matches!(input.filter, SessionFilter::NeedsYou),

@@ -49,7 +49,7 @@ impl Owner {
     }
 
     pub(crate) async fn return_route(&self, source: &Invocation) -> Result<ReturnRoute, String> {
-        let runs = self.runs.lock().await;
+        let runs = self.runs.state().await;
         let control = runs
             .controls
             .get(&source.session_id)

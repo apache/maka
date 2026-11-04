@@ -35,8 +35,8 @@ import type {
   AgentWorkspacePermissions,
   AgentWorkspaceAccess,
   ClientDraftAttachment,
-  ModelSelection,
-  ThinkingLevel,
+  AgentBackendPreference,
+  AgentModelChoice,
   WorkspacePath,
 } from './generated/runtime.js';
 import type { ServiceMethods } from './generated/methods.js';
@@ -56,25 +56,12 @@ export interface ComposerCommand {
   run(argument?: string): void | boolean | Promise<void | boolean>;
 }
 
-export type ComposerBackend = {
-  connectionId: string;
-  modelId: string;
-  thinkingLevel: ThinkingLevel | null;
-} | null;
+export type ComposerBackend = AgentBackendPreference | null;
 
 export type ComposerModelDetails =
   | { kind: 'loading' }
   | { kind: 'unavailable' }
-  | {
-      kind: 'ready';
-      choice: {
-        selection: ModelSelection;
-        connectionName: string;
-        label: string;
-        thinkingLevels: ThinkingLevel[];
-        defaultThinkingLevel: ThinkingLevel | null;
-      };
-    };
+  | { kind: 'ready'; choice: AgentModelChoice };
 
 export interface ComposerSendAction {
   owner: string;
@@ -218,8 +205,7 @@ export interface ComposerCompletionSource {
   ): Promise<UiSubscription<AgentFileCandidates>>;
   skills(input: {
     query: string;
-    model: ModelSelection;
-    thinkingLevel: ThinkingLevel | null;
+    backend: AgentBackendPreference;
   }): Promise<ServiceMethods['agent']['skillCandidates']['output']>;
   pathLabel(path: WorkspacePath): string;
 }

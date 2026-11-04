@@ -20,6 +20,10 @@
 use super::*;
 use futures_util::poll;
 use maka_agent_facts::event::{EventWrite, Fact, Invocation, InvocationInput, RuntimeEvent};
+use maka_agent_facts::{
+    input::{DeliveredMessage, MessageInput},
+    message::{MessageDisposition, MessageOrigin, Placement, RootSourceMessage},
+};
 use maka_capabilities::model_preparation::{ModelPreparationResources, PreparationPolicy};
 use maka_event_log::{
     context::semantic::SemanticSelection,
@@ -45,6 +49,18 @@ fn provider() -> ProviderConfig {
 
 async fn source(
     path: &std::path::Path,
+) -> (
+    RootStore,
+    Arc<SessionStore>,
+    SessionExecutionLease,
+    SemanticSelection,
+) {
+    source_with_messages(path, Vec::new()).await
+}
+
+async fn source_with_messages(
+    path: &std::path::Path,
+    source_messages: Vec<RootSourceMessage>,
 ) -> (
     RootStore,
     Arc<SessionStore>,
@@ -80,9 +96,15 @@ async fn source(
                 },
                 Fact::InvocationOpened {
                     input: InvocationInput::Message {
-                        content: "source-backed admission regression".into(),
+                        content: if source_messages.is_empty() {
+                            "source-backed admission regression".into()
+                        } else {
+                            maka_agent_facts::message::aggregate(
+                                source_messages.iter().map(|source| &source.message.content),
+                            )
+                        },
                         request_fingerprint: None,
-                        source_messages: Vec::new(),
+                        source_messages,
                     },
                     configuration: None,
                 },
@@ -122,6 +144,163 @@ async fn capture(
     .await
     .unwrap();
     PreparedPrompt::from_history(history)
+}
+
+#[tokio::test]
+async fn production_wire_preserves_merged_and_steered_sender_origins_after_reopen() {
+    let directory = tempfile::tempdir().unwrap();
+    let message = |id: &str, sender: &str, text: &str, disposition| {
+        let content = MessageInput::from(text);
+        RootSourceMessage {
+            message: DeliveredMessage {
+                message_id: id.into(),
+                submitted_content_digest: content.content_digest().unwrap(),
+                content: content.clone(),
+                origin: Some(MessageOrigin::Session {
+                    invocation: Invocation {
+                        session_id: sender.into(),
+                        turn_id: format!("turn-{sender}"),
+                        run_id: format!("run-{sender}"),
+                        invocation_id: format!("invocation-{sender}"),
+                    },
+                }),
+            },
+            unprepared_content: content,
+            submitted_placement: Placement::CurrentTurn,
+            disposition,
+            submitted_intent: None,
+        }
+    };
+    let first = message(
+        "first",
+        "sender-a",
+        "sender-b is only body text\n原文",
+        MessageDisposition::TurnStarted,
+    );
+    let second = message(
+        "second",
+        "sender-b",
+        "Second agent 原文\n",
+        MessageDisposition::TurnStarted,
+    );
+    let steering = message(
+        "steering",
+        "sender-a",
+        "Adjust course 原文",
+        MessageDisposition::Steering,
+    );
+    let (root, log, execution, mut selection) =
+        source_with_messages(directory.path(), vec![first.clone(), second.clone()]).await;
+    selection.through = log
+        .append(
+            &EventWrite::plain(RuntimeEvent::new(
+                Invocation {
+                    session_id: "session".into(),
+                    turn_id: "turn".into(),
+                    run_id: "run".into(),
+                    invocation_id: "invocation".into(),
+                },
+                Fact::MessageSteered {
+                    message: Box::new(steering.message.clone()),
+                    source: Box::new(steering.clone()),
+                },
+            ))
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    selection.captured_through = selection.through;
+    drop(log);
+    execution.finish();
+    root.shutdown().await.unwrap();
+    drop(root);
+
+    let root = RootStore::open(Arc::new(
+        RootOwner::open_existing(
+            &directory.path().join("root"),
+            &RootNamespaces {
+                ownership: directory.path().join("owners"),
+                control: directory.path().join("control"),
+            },
+        )
+        .unwrap(),
+    ))
+    .await
+    .unwrap();
+    let session = root.session("session").await.unwrap();
+    let execution = session.execution_scope(None).await.unwrap().accept();
+    let log = Arc::new(execution.store());
+    let opening = log.first_message_opening("session").await.unwrap().unwrap();
+    let Fact::InvocationOpened {
+        input:
+            InvocationInput::Message {
+                content,
+                source_messages,
+                ..
+            },
+        ..
+    } = opening.event.fact
+    else {
+        panic!("expected the persisted opening");
+    };
+    assert_eq!(
+        content.text,
+        "sender-b is only body text\n原文\n\nSecond agent 原文\n"
+    );
+    assert_eq!(source_messages, vec![first, second]);
+    let persisted = log
+        .steering_message("session", "steering")
+        .await
+        .unwrap()
+        .unwrap();
+    let Fact::MessageSteered { message, source } = persisted.event.fact else {
+        panic!("expected persisted steering");
+    };
+    assert_eq!(*message, steering.message);
+    assert_eq!(*source, steering);
+
+    let resources = ModelPreparationResources::new(PreparationPolicy::default()).unwrap();
+    let mut prompt = capture(&log, selection, resources).await;
+    prompt
+        .compile_wire(
+            Language::En,
+            &provider(),
+            &serde_json::Value::Null,
+            &[],
+            &CancellationToken::new(),
+        )
+        .await
+        .unwrap();
+    let mut cursor = prompt.wire.as_ref().unwrap().open(0);
+    let mut bytes = Vec::new();
+    let mut messages = Vec::new();
+    while let Some(chunk) = cursor.next().await.unwrap() {
+        bytes.extend_from_slice(&chunk.bytes);
+        if chunk.item_end {
+            messages.push(serde_json::from_slice::<serde_json::Value>(&bytes).unwrap());
+            bytes.clear();
+        }
+    }
+    assert_eq!(messages.len(), 3);
+    for (message, (sender, body)) in messages.iter().zip([
+        ("sender-a", "sender-b is only body text\n原文"),
+        ("sender-b", "Second agent 原文\n"),
+        ("sender-a", "A message arrived while you were working:\n<user_query>\nAdjust course 原文\n</user_query>"),
+    ]) {
+        assert_eq!(message["role"], "user");
+        let (header, text) = message["content"].as_str().unwrap().split_once('\n').unwrap();
+        let origin: serde_json::Value = serde_json::from_str(header.strip_prefix("[Message source (Host-provided): ").unwrap().strip_suffix(']').unwrap()).unwrap();
+        assert_eq!(origin, serde_json::json!({"kind":"session","invocation":{
+            "session_id":sender,"turn_id":format!("turn-{sender}"),"run_id":format!("run-{sender}"),"invocation_id":format!("invocation-{sender}")
+        }}));
+        assert_eq!(text, body);
+    }
+    drop(cursor);
+    prompt.close().await.unwrap();
+    drop(prompt);
+    drop(log);
+    execution.finish();
+    root.shutdown().await.unwrap();
 }
 
 #[tokio::test]

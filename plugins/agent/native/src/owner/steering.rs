@@ -20,27 +20,6 @@
 use super::*;
 
 impl Owner {
-    pub(super) fn saved_model(
-        &self,
-        configuration: &maka_agent_api::session::ResolvedConfiguration,
-    ) -> Result<(ModelSelection, Option<ThinkingLevel>), String> {
-        let Some(maka_agent_api::contract::BackendPreference::Model {
-            connection_id,
-            model_id,
-            thinking_level,
-        }) = &configuration.backend
-        else {
-            return Err("agent_model_selection_missing".into());
-        };
-        Ok((
-            ModelSelection {
-                connection_id: connection_id.clone(),
-                model_id: model_id.clone(),
-            },
-            *thinking_level,
-        ))
-    }
-
     pub(super) async fn steer_message(
         self: &Arc<Self>,
         text: String,
@@ -85,7 +64,9 @@ impl Owner {
         };
         let source = RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
+                origin: parent.identity.agent().cloned().map(|invocation| {
+                    maka_agent_facts::message::MessageOrigin::Session { invocation }
+                }),
                 message_id: format!("m_{}", self.operation_id(operation)),
                 submitted_content_digest: unprepared
                     .content_digest()

@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { execFileSync } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { constants } from 'node:fs';
 import { release as osRelease } from 'node:os';
 import { parseArgs } from 'node:util';
@@ -105,6 +105,30 @@ export async function compileCli({
     throw new Error('Cargo did not report the Maka executable');
   if (result.code === 0 && !result.signal && !artifact.outDir)
     throw new Error('Cargo did not report the Maka build output directory');
+  let oarBundleInputs;
+  let oarRuntimeNotices;
+  if (result.code === 0 && !result.signal) {
+    const output = join(dirname(binary), 'oar');
+    await new Promise((resolveBuild, reject) => {
+      execFile(
+        process.execPath,
+        [
+          join(repositoryRoot, 'scripts/oar/build.mjs'),
+          '--output',
+          output,
+          '--target',
+          triple,
+          ...(release ? ['--release'] : []),
+        ],
+        { cwd: repositoryRoot, env, maxBuffer: 4 * 1024 * 1024 },
+        (error) => (error ? reject(error) : resolveBuild()),
+      );
+    });
+    const worker = triple.includes('-windows-') ? 'maka-oar-worker.exe' : 'maka-oar-worker';
+    await copyFile(join(output, worker), join(dirname(binary), worker));
+    oarBundleInputs = join(output, 'bundle-inputs.json');
+    if (release) oarRuntimeNotices = join(output, 'runtime-notices.txt');
+  }
   if (result.code === 0 && !result.signal && desktop && triple.includes('-apple-darwin')) {
     const directory = dirname(binary);
     await stageDesktopBundle(
@@ -114,6 +138,8 @@ export async function compileCli({
     );
   }
   return {
+    oarBundleInputs,
+    oarRuntimeNotices,
     code: result.code,
     signal: result.signal,
     binary,
@@ -122,9 +148,10 @@ export async function compileCli({
 }
 
 export async function buildCli(options = {}) {
-  const { code, signal, binary, bundleInputs } = await compileCli(options);
+  const { code, signal, binary, bundleInputs, oarBundleInputs, oarRuntimeNotices } =
+    await compileCli(options);
   if (code !== 0 || signal) throw new Error(`Maka build failed: ${signal ?? code}`);
-  return { binary, bundleInputs };
+  return { binary, bundleInputs, oarBundleInputs, oarRuntimeNotices };
 }
 
 /**

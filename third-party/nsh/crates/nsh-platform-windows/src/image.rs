@@ -64,7 +64,7 @@ use nsh_core::{
     geometry::{DevicePixels, Points, Size, size},
     image::{
         DiskCache, Frames, Images, Key, Lease, Natural, Request, Target, Want,
-        loader::{Context, Priority, Ticket, loader},
+        loader::{Context, Priority, ReadAsset, Ticket, loader},
     },
 };
 use rustc_hash::FxHashMap;
@@ -147,6 +147,13 @@ pub(crate) fn set_asset_base(surface: &Rc<Surface>, base: Option<AssetBase>) {
     *surface.asset_base.borrow_mut() = base;
 }
 
+/// Use the current engine's reader for dynamically served image assets.
+pub(crate) fn set_assets(surface: &Surface, assets: Option<Arc<dyn nsh_engine::Assets>>) {
+    *surface.asset_base.borrow_mut() = assets.as_ref().and_then(|assets| assets.base());
+    *surface.image_assets.borrow_mut() =
+        assets.map(|assets| ReadAsset::new(move |uri: &str| assets.read(uri)));
+}
+
 /// What a load of `uri` for `surface` goes through: its asset base and,
 /// for remote images, its disk cache (`asset:/` URIs, served by the dev
 /// server during development, change as the app does: never kept).
@@ -156,7 +163,7 @@ fn context(surface: &Surface, uri: &str) -> Context {
     let remote = uri.starts_with("http://") || uri.starts_with("https://");
     Context {
         asset_base: surface.asset_base.borrow().clone(),
-        read_asset: None,
+        read_asset: surface.image_assets.borrow().clone(),
         access: Arc::default(),
         disk: remote
             .then(|| surface.image_cache.borrow().clone())
@@ -1763,6 +1770,33 @@ mod tests {
     use nsh_core::image::loader::{Location, resolve};
 
     use super::*;
+
+    #[test]
+    fn host_image_assets_load_without_a_directory_and_are_released_on_stop() {
+        struct Assets;
+        impl nsh_engine::Assets for Assets {
+            fn read(&self, uri: &str) -> Result<Vec<u8>, String> {
+                match uri {
+                    "asset:/ui-image/result.png" => Ok(b"host image bytes".to_vec()),
+                    _ => Err(format!("unexpected asset: {uri}")),
+                }
+            }
+        }
+        let surface = Surface::new(Default::default());
+        set_assets(&surface, Some(Arc::new(Assets)));
+        let context = context(&surface, "asset:/ui-image/result.png");
+        let location = context.resolve("asset:/ui-image/result.png").unwrap();
+        assert_eq!(
+            &*nsh_core::image::loader::read_now(&location, &context).unwrap(),
+            b"host image bytes"
+        );
+        surface.stop();
+        assert!(
+            super::context(&surface, "asset:/ui-image/result.png")
+                .resolve("asset:/ui-image/result.png")
+                .is_none()
+        );
+    }
 
     /// Where `uri` resolves on Windows, as a path (`None`: not a file).
     fn file(uri: &str, base: Option<&AssetBase>) -> Option<PathBuf> {

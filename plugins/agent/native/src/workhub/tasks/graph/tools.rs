@@ -40,9 +40,7 @@ enum Routing {
         #[serde(default)]
         isolated_workspace: bool,
         tools: Option<Vec<String>>,
-        model: Option<crate::ModelSelection>,
-        thinking_level: Option<maka_agent_facts::execution::ThinkingLevel>,
-        executor: Option<maka_agent_api::executor::Selection>,
+        backend: maka_agent_facts::executor::BackendPreference,
     },
     Preset {
         preset: String,
@@ -58,7 +56,10 @@ impl Routing {
         Ok(match self {
             Self::Worker {
                 worker,
-                executor: Some(executor),
+                backend:
+                    maka_agent_facts::executor::BackendPreference::Executor {
+                        selection: executor,
+                    },
                 ..
             } => GraphTarget::Executor {
                 executor_id: format!("{worker}:{}", executor.executor),
@@ -167,9 +168,9 @@ struct Empty {}
 pub(in crate::workhub::tasks) fn registrations(link: Link) -> Vec<ToolRegistration> {
     let handler = Arc::new(GraphTool(link));
     [
-        ("agent_list", "List explicitly bound workers, presets, worker tools, executors and published directory selections. Workers includes the supervisor's current versioned model selection; workers validate copied selections. Graph targets use these exact published choices.", schemars::schema_for!(ToolRequest<CatalogInput>).into(), ToolSemantics::Parallel),
+        ("agent_list", "List explicitly bound workers, presets, worker tools, executors and published directory selections. Workers includes the supervisor's source-tagged backend selection; workers validate copied selections. Graph targets use these exact published choices.", schemars::schema_for!(ToolRequest<CatalogInput>).into(), ToolSemantics::Parallel),
         ("view_agent_graph", "Read this conversation's current graph or immutable earlier epochs. Status returns at most 16 work items; continue with after. Work returns the complete instruction and input references. Result reads the original immutable terminal result; continue with nextOffset. History returns earlier epochs. Admission is not completion.", schemars::schema_for!(ToolRequest<ReadInput>).into(), ToolSemantics::Parallel),
-        ("update_agent_graph", "Add, replace or stop graph work, or finish with actual terminal result IDs. Worker targets must use explicit published workspace and model or executor choices. Presets freeze their original settings. Operator targets continue an earlier work's original session only after it settles. inputIds await current graph results; selectedResultInputs must reference selected final results of earlier finished epochs. Finish selects terminal results, including failures, and ends this epoch. After a missing reply, inspect the original graph work; a replacement is a separate explicit decision.", schemars::schema_for!(ToolRequest<UpdateInput>).into(), ToolSemantics::ExclusiveStep),
+        ("update_agent_graph", "Add, replace or stop graph work, or finish with actual terminal result IDs. Worker targets must use explicit published workspace and tagged backend choices. Presets freeze their original settings. Operator targets continue an earlier work's original session only after it settles. inputIds await current graph results; selectedResultInputs must reference selected final results of earlier finished epochs. Finish selects terminal results, including failures, and ends this epoch. After a missing reply, inspect the original graph work; a replacement is a separate explicit decision.", schemars::schema_for!(ToolRequest<UpdateInput>).into(), ToolSemantics::ExclusiveStep),
         ("yield_agent_graph", "End this supervisor turn and await durable worker outcomes. Graph resumes on durable outcomes. Swarm resumes on attention or when the whole active batch settles, not each successful sibling.", schemars::schema_for!(Empty).into(), ToolSemantics::FinishTurn),
         ("agent_swarm_status", "Read this conversation's swarm status and current work. Use view_agent_graph for additional work/result/history pages.", schemars::schema_for!(Empty).into(), ToolSemantics::Parallel),
     ].into_iter().map(|(name, description, input_schema, semantics)| ToolRegistration {
@@ -241,9 +242,13 @@ impl Hub {
                     .request
                 {
                     CatalogInput::Workers => {
-                        let model = self.agent.0.graph_model_choice(&context.invocation).await?;
+                        let model = self
+                            .agent
+                            .0
+                            .graph_backend_choice(&context.invocation)
+                            .await?;
                         let mut value = self.tasks_input(Input::Workers, context, stop).await?;
-                        value["supervisorModel"] = model;
+                        value["supervisorBackend"] = model;
                         return Ok(value);
                     }
                     CatalogInput::Presets => Input::Presets,
@@ -488,16 +493,14 @@ impl Hub {
         epoch: &Epoch,
         observed: &[Observed],
     ) -> Result<Route, String> {
-        let (worker, target, model, thinking_level, executor) = match routing {
+        let (worker, target, backend) = match routing {
             Routing::Worker {
                 worker,
                 title,
                 workspace,
                 isolated_workspace,
                 tools,
-                model,
-                thinking_level,
-                executor,
+                backend,
             } => (
                 worker,
                 Target::New {
@@ -506,9 +509,7 @@ impl Hub {
                     isolated_workspace,
                     tools,
                 },
-                model,
-                thinking_level,
-                executor,
+                backend,
             ),
             Routing::Preset {
                 preset,
@@ -524,9 +525,11 @@ impl Hub {
                         isolated_workspace: preset.isolated_workspace,
                         tools: Some(preset.tools),
                     },
-                    Some(model),
-                    preset.thinking_level,
-                    None,
+                    maka_agent_facts::executor::BackendPreference::Model {
+                        connection_id: model.connection_id,
+                        model_id: model.model_id,
+                        thinking_level: preset.thinking_level,
+                    },
                 )
             }
             Routing::Operator { work_id } => {
@@ -541,28 +544,12 @@ impl Hub {
                     .delivery(&id, &assignment)
                     .await?
                     .ok_or("graph_operator_unavailable")?;
-                let model = serde_json::from_value(
+                let backend = serde_json::from_value(
                     assignment
                         .input
-                        .get("model")
+                        .get("backend")
                         .cloned()
-                        .unwrap_or(Value::Null),
-                )
-                .map_err(error)?;
-                let thinking_level = serde_json::from_value(
-                    assignment
-                        .input
-                        .get("thinkingLevel")
-                        .cloned()
-                        .unwrap_or(Value::Null),
-                )
-                .map_err(error)?;
-                let executor = serde_json::from_value(
-                    assignment
-                        .input
-                        .get("executor")
-                        .cloned()
-                        .unwrap_or(Value::Null),
+                        .ok_or("graph_operator_backend_unavailable")?,
                 )
                 .map_err(error)?;
                 (
@@ -570,9 +557,7 @@ impl Hub {
                     Target::Existing {
                         session_id: delivery.session_id,
                     },
-                    model,
-                    thinking_level,
-                    executor,
+                    backend,
                 )
             }
         };
@@ -581,9 +566,7 @@ impl Hub {
             worker,
             target,
             note: instruction.into(),
-            model,
-            thinking_level,
-            executor,
+            backend,
         })
     }
 }

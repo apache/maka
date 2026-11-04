@@ -38,7 +38,27 @@ pub(in crate::history) async fn project_row(
 ) -> io::Result<ArenaProjectedRow> {
     let context = context.for_arena();
     if let RowDirectory::User { steering, .. } = metadata {
-        return user(payload.ok_or_else(invalid)?, *steering, &context, store).await;
+        return user(
+            payload.ok_or_else(invalid)?,
+            *steering,
+            None,
+            &context,
+            store,
+        )
+        .await;
+    }
+    if let RowDirectory::AttributedUser {
+        steering, origin, ..
+    } = metadata
+    {
+        return user(
+            payload.ok_or_else(invalid)?,
+            *steering,
+            Some(*origin),
+            &context,
+            store,
+        )
+        .await;
     }
     if let (
         RowDirectory::ToolResult { kind, .. },
@@ -166,6 +186,7 @@ async fn tool_content(
 async fn user(
     input: &PayloadDirectory,
     steering: bool,
+    origin: Option<JsonSpan>,
     context: &ProjectContext<'_>,
     store: &ArenaRecipes,
 ) -> io::Result<ArenaProjectedRow> {
@@ -178,10 +199,15 @@ async fn user(
     else {
         return Err(invalid());
     };
-    let (_, piece_count, content_count) = user_layout(input, steering, context).await?;
+    let (_, piece_count, content_count) = user_layout(input, steering, origin, context).await?;
     let content = store.begin_list(content_count).await?;
     let mut content_index = 1;
     let mut pieces = TextParts::new(store, piece_count, context).await?;
+    if let Some(origin) = origin {
+        for piece in origin_pieces(origin, context)? {
+            pieces.push(piece).await?;
+        }
+    }
     if steering {
         pieces
             .push(literal(steering_prefix(context.language)))

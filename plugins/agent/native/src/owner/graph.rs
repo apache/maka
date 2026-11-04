@@ -83,9 +83,9 @@ impl Owner {
         }
         Ok(epoch)
     }
-    /// Publish only a versioned public choice for the supervisor's model.
+    /// Publish only a source-tagged public choice for the supervisor's model.
     /// New worker admissions validate it; existing assignments keep their inputs.
-    pub(crate) async fn graph_model_choice(
+    pub(crate) async fn graph_backend_choice(
         &self,
         invocation: &Invocation,
     ) -> Result<Value, String> {
@@ -114,10 +114,12 @@ impl Owner {
         }) else {
             return Ok(Value::Null);
         };
-        Ok(serde_json::json!({
-            "model": crate::ModelSelection { connection_id: connection.connection_id, model_id: model.model },
-            "thinkingLevel": configuration.thinking_level,
-        }))
+        serde_json::to_value(BackendPreference::Model {
+            connection_id: connection.connection_id,
+            model_id: model.model,
+            thinking_level: configuration.thinking_level,
+        })
+        .map_err(|error| error.to_string())
     }
     pub(crate) async fn graph_target(
         &self,

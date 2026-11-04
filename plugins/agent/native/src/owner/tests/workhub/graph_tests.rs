@@ -93,6 +93,13 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         let mut fixture = Fixture::workhub(&format!("http://{}/v1", listener.local_addr().unwrap()), Setup::workers()).await;
         let ready = resolve(&fixture, selection(&fixture).await, Uuid::new_v4()).await;
         let session = ready["session"]["id"].as_str().unwrap();
+        let inherited_policy = json!({"access":"read_only","requestPermissions":false});
+        let updated = fixture.mutation(2, "metadata", json!({
+            "sessionId":session,"expectedRevision":ready["session"]["revision"],
+            "title":ready["session"]["title"],"labels":[],
+            "permissions":{"settings":inherited_policy,"revokeGrants":false},
+        }), Uuid::new_v4()).await.unwrap();
+        assert_eq!(updated["kind"], "committed");
         let epoch = change(&fixture, json!({"sessionId":session,"action":{"kind":"start","mode":"swarm"}})).await;
         assert_eq!(epoch["kind"], "committed", "{epoch}");
         let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["selection"].clone();
@@ -101,7 +108,7 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         let saved = workhub_mutation(&fixture, "savePresets", json!({"revision":null,"entries":[preset.clone()]})).await;
         assert_eq!(saved["kind"],"saved","{saved}");
         selection::edit(&fixture, |changes| changes.name = Some("Renamed after graph preset save".into())).await;
-        let frozen_model = serde_json::to_value(fixture.selection().await).unwrap();
+        let frozen_backend = serde_json::to_value(model_backend(&fixture.selection().await)).unwrap();
         fixture.send(session).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap();
         let input = request(&mut socket).await;
@@ -112,10 +119,10 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         let (mut socket, _) = listener.accept().await.unwrap();
         let catalog = tool_value(&request(&mut socket).await);
         assert_eq!(catalog["workers"][0]["name"], "worker");
-        assert_eq!(catalog["supervisorModel"]["model"], serde_json::to_value(fixture.selection().await).unwrap());
+        assert_eq!(catalog["supervisorBackend"], frozen_backend);
         // Visibility of the original inspection tool must not permit a second
         // untracked route outside the graph decision and its atomic outbox.
-        graph_tool(&mut socket, "workhub_tasks", json!({"operation":"route","worker":"worker","target":{"kind":"new","title":"Untracked","workspace":directory,"tools":[]},"note":"Must be refused","model":catalog["supervisorModel"]["model"]})).await;
+        graph_tool(&mut socket, "workhub_tasks", json!({"operation":"route","worker":"worker","target":{"kind":"new","title":"Untracked","workspace":directory,"tools":[]},"note":"Must be refused","backend":catalog["supervisorBackend"]})).await;
         let (mut socket, _) = listener.accept().await.unwrap();
         let denied = request(&mut socket).await;
         assert!(denied["messages"].to_string().contains("graph_decision_required"), "{denied}");
@@ -169,6 +176,10 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         assert_eq!(view["status"], "completed", "{view}");
         assert_eq!(view["finish"]["resultIds"][0], view["work"][0]["resultId"]);
         let task = query_import(&fixture, hub::EXPORT, "task", json!({"taskId":view["work"][0]["taskId"]})).await;
+        let worker = task["status"]["sessionId"].as_str().expect("accepted graph worker");
+        let worker = query_import(&fixture, "worker", "observe", json!({"sessionId":worker})).await;
+        assert_eq!(worker["session"]["parentSessionId"], session);
+        assert_eq!(worker["session"]["permissions"], inherited_policy);
         let acceptance_upper_bound = maka_agent_authority::now();
         let listed = query_import(&fixture,hub::EXPORT,"tasks",json!({})).await;
         let result_id = view["work"][0]["resultId"].clone();
@@ -186,7 +197,7 @@ async fn graph_real_model_dispatches_original_work_wakes_and_selects_actual_resu
         let records = fixture.store.plugin_data_scan(&namespace,maka_capabilities::storage::Scan {prefix:String::new(),after:None}).await.unwrap();
         let notice = records.entries.into_iter().find(|entry| entry.key.ends_with(&format!("tasks/{}",view["work"][0]["taskId"].as_str().unwrap()))).unwrap();
         let maka_capabilities::storage::Data::Present(notice) = notice.record.data else {panic!("task data");};
-        assert_eq!(notice["input"]["model"], frozen_model, "accepted graph selection must not be resolved from the edited preset");
+        assert_eq!(notice["input"]["backend"], frozen_backend, "accepted graph selection must not be resolved from the edited preset");
         assert_eq!(notice["target"]["tools"], json!([]));
         let admission = &notice["notification"]["admission"];
         let notice_id = admission["source"]["message_id"].as_str().unwrap();
@@ -239,7 +250,7 @@ async fn graph_stop_cancels_original_worker_and_other_coordinator_cannot_read_it
         let directory = query_import(&fixture, "worker", "directories", json!({"kind":"roots"})).await["roots"][0]["selection"].clone();
         fixture.send(session).await.unwrap();
         let (mut socket, _) = listener.accept().await.unwrap(); request(&mut socket).await;
-        graph_tool(&mut socket, "update_agent_graph", json!({"operation":"add_work","work":[{"target":{"kind":"worker","worker":"worker","title":"Original child","workspace":directory,"tools":[],"model":fixture.selection().await},"instruction":"Keep running until the original stop arrives."}]})).await;
+        graph_tool(&mut socket, "update_agent_graph", json!({"operation":"add_work","work":[{"target":{"kind":"worker","worker":"worker","title":"Original child","workspace":directory,"tools":[],"backend":model_backend(&fixture.selection().await)},"instruction":"Keep running until the original stop arrives."}]})).await;
         let mut worker_socket = None;
         let mut yielded = false;
         while worker_socket.is_none() || !yielded {

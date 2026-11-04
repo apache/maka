@@ -79,13 +79,19 @@ export type RuntimeProtocol =
   | WebResult
   | WebProbe
   | WebEndpoint
-  | AgentExecute
+  | AgentModelsRead
+  | AgentModelsPage
+  | AgentModelRead
+  | AgentModelResult
   | AgentGlobalInstructionsRead
   | AgentGlobalInstructionsView
   | AgentGlobalInstructionsUpdate
   | AgentGlobalInstructionsUpdated
   | AgentExecutorsRead
   | AgentExecutors
+  | AgentOarSetup
+  | AgentOarSetupAction
+  | AgentOarSetupResult
   | ExecutorExecute
   | AgentExecutorSetup
   | ExecutorSetupAction
@@ -825,6 +831,42 @@ export type WebEndpoint =
       health: WebReadiness;
     };
 export type WebReadiness = 'healthy' | 'unknown' | 'unhealthy';
+export type AgentModelsRead =
+  | {
+      kind: 'start';
+      query?: string;
+    }
+  | {
+      kind: 'continue';
+      revision: string;
+      cursor: AgentModelsCursor;
+    };
+export type AgentModelsPage =
+  | {
+      kind: 'ready';
+      revision: string;
+      choices: AgentModelChoice[];
+      complete: boolean;
+      next?: AgentModelsCursor | null;
+    }
+  | {
+      kind: 'changed';
+    };
+/**
+ * The next turn's choice, independent of an already admitted execution.
+ * Model revisions are resolved afresh; preferences never grant execution authority.
+ */
+export type AgentBackendPreference =
+  | {
+      kind: 'model';
+      connectionId: string;
+      modelId: string;
+      thinkingLevel?: ThinkingLevel | null;
+    }
+  | {
+      kind: 'executor';
+      selection: AgentExecutorSelection;
+    };
 export type ThinkingLevel =
   | 'off'
   | 'minimal'
@@ -834,6 +876,19 @@ export type ThinkingLevel =
   | 'xhigh'
   | 'max'
   | 'ultra';
+/**
+ * Runtime-native effort, not a Host model's closed reasoning enum.
+ */
+export type ExecutorEffort = string;
+export type AgentModelResult =
+  | {
+      kind: 'ready';
+      choice: AgentModelChoice;
+    }
+  | {
+      kind: 'unavailable';
+      message: string;
+    };
 export type AgentGlobalInstructionsView =
   | {
       kind: 'available';
@@ -856,6 +911,18 @@ export type AgentGlobalInstructionsUpdated =
     }
   | {
       kind: 'unavailable';
+    };
+export type AgentOarSetupAction =
+  | {
+      kind: 'probe';
+    }
+  | {
+      kind: 'plan';
+      line?: string | null;
+    }
+  | {
+      kind: 'install';
+      line?: string | null;
     };
 export type Language = 'en' | 'zh-CN' | 'zh-TW';
 export type ExecutorSetupAction =
@@ -1092,23 +1159,9 @@ export type AgentForkPosition =
       kind: 'before_turn';
       turnId: string;
     };
-/**
- * The next turn's choice, independent of an already admitted execution.
- * Model revisions are resolved afresh; preferences never grant execution authority.
- */
-export type AgentBackendPreference =
-  | {
-      kind: 'model';
-      connectionId: string;
-      modelId: string;
-      thinkingLevel?: ThinkingLevel | null;
-    }
-  | {
-      kind: 'executor';
-      selection: AgentExecutorSelection;
-    };
 export type AgentSessionActivity = 'idle' | 'working' | 'waiting';
 export type AgentRejection =
+  | 'permission_change_requires_user'
   | 'title_invalid'
   | 'labels_invalid'
   | 'tools_unavailable'
@@ -1289,6 +1342,7 @@ export type AgentQueueMutationResult =
       reason: AgentQueueRejection;
     };
 export type AgentQueueRejection =
+  | 'not_your_message'
   | 'closed'
   | 'missing'
   | 'in_flight'
@@ -3230,7 +3284,7 @@ export type AgentSessionChanged =
       kind: 'rejected';
       reason: AgentRejection;
     };
-export type AgentSendDelivery = 'steer' | 'queue';
+export type AgentSendDelivery = 'queue' | 'steer';
 export type AgentExecutionResult =
   | {
       kind: 'missing';
@@ -3268,6 +3322,7 @@ export type AgentMarkReadResult =
       reason: AgentRejection;
     };
 export type AgentInteractionKind =
+  | 'session_approval'
   | 'service_approval'
   | 'question'
   | 'permissions'
@@ -3276,6 +3331,10 @@ export type AgentInteractionKind =
   | 'computer_app'
   | 'system_permission';
 export type InteractionAnswer =
+  | {
+      kind: 'session_approval';
+      decision: Decision;
+    }
   | {
       kind: 'service_approval';
       decision: Decision;
@@ -3346,6 +3405,14 @@ export type AgentInteractionResult =
     };
 export type InteractionRequest =
   | {
+      kind: 'session_approval';
+      toolUseId: string;
+      basis: PermissionBasis;
+      sessionId: string;
+      requestId: string;
+      answer: SessionApprovalAnswer;
+    }
+  | {
       kind: 'service_approval';
       toolUseId: string;
       toolName: string;
@@ -3407,6 +3474,33 @@ export type InteractionRequest =
       application: string;
       applicationLocation?: SystemPermissionApplicationLocation | null;
     };
+/**
+ * Only access-expanding child decisions can require a parent's human confirmation.
+ */
+export type SessionApprovalAnswer =
+  | {
+      kind: 'service_approval';
+      decision: ApprovalAllow;
+    }
+  | {
+      kind: 'permissions';
+      decision: PermissionApproval;
+    }
+  | {
+      kind: 'client_capability';
+      decision: ApprovalAllow;
+    }
+  | {
+      kind: 'computer_app';
+      decision: ComputerAppApproval;
+    };
+export type ApprovalAllow = 'allow';
+export type PermissionApproval = {
+  decision: 'allow';
+  permissions: Permissions;
+  scope: Scope2;
+};
+export type ComputerAppApproval = 'once' | 'session' | 'always';
 export type FormField = {
   name: string;
   label: string;
@@ -3495,6 +3589,11 @@ export type ComputerAppRisk = 'low' | 'high';
 export type SystemPermissionGrant = 'accessibility' | 'screen_recording';
 export type InteractionOutcome =
   | {
+      kind: 'session_approval_decision';
+      decision: Decision;
+      committedAt: number;
+    }
+  | {
       kind: 'service_approval_decision';
       decision: Decision;
       committedAt: number;
@@ -3557,7 +3656,15 @@ export type ClosureReason =
   | 'timed_out'
   | 'host_restarted'
   | 'provider_disconnected';
-export type AgentInteractionRejection = 'closed' | 'unavailable' | 'invalid_answer' | 'unsupported';
+export type AgentInteractionRejection =
+  | 'not_your_child'
+  | 'human_action_required'
+  | 'authorization_changed'
+  | 'permission_requests_disabled'
+  | 'closed'
+  | 'unavailable'
+  | 'invalid_answer'
+  | 'unsupported';
 export type FormResponse =
   | {
       kind: 'answered';
@@ -3921,6 +4028,10 @@ export type AgentDeliveryFact =
  */
 export type ToolSettlement = 'returned' | 'failed' | 'unknown' | 'rejected';
 export type AgentContentKind = 'text' | 'thinking';
+/**
+ * Execution kind frozen at admission, independent of the next-turn preference.
+ */
+export type AgentRunBackend = 'model' | 'executor';
 export type AgentRunState = 'admitted' | 'running' | 'waiting_for_user';
 export type AgentDiagnosticPosition =
   | {
@@ -4063,6 +4174,10 @@ export type HistoryView = 'text' | 'conversation';
  * Trusted producer attribution, preserved independently of editable content.
  */
 export type MessageOrigin =
+  | {
+      kind: 'session';
+      invocation: Invocation;
+    }
   | {
       kind: 'goal';
       goalId: string;
@@ -5167,6 +5282,7 @@ export interface AgentConfiguration {
    * Explicit service backends; discovery does not authorize execution.
    */
   executors?: AgentServiceExecutor[];
+  oar?: AgentOarConfiguration | null;
   /**
    * Explicit Library import for immutable skill input preparation and metadata.
    * This does not select model tools or confer a service grant.
@@ -5233,6 +5349,16 @@ export interface AgentServiceExecutor {
 export interface ExecutorSetupBinding {
   import: string;
   member?: number;
+}
+/**
+ * Explicit opt-in to OAR's own default permissions and native agent tools.
+ */
+export interface AgentOarConfiguration {
+  /**
+   * Absent selects the worker shipped beside the Maka executable.
+   */
+  executable?: string | null;
+  args?: string[];
 }
 export interface AgentWorkspacePermissions {
   access: AgentWorkspaceAccess;
@@ -5412,14 +5538,16 @@ export interface WebCheck {
 export interface WebProbe {
   url: string;
 }
-export interface AgentExecute {
-  /**
-   * IDs of immutable user uploads in this Session, resolved by the Agent owner.
-   */
-  attachments?: string[];
-  sessionId: string;
-  message: string;
-  executor: AgentExecutorSelection;
+export interface AgentModelsCursor {
+  query: string;
+  offset: number;
+}
+export interface AgentModelChoice {
+  selection: AgentBackendPreference;
+  sourceName: string;
+  label: string;
+  thinkingLevels: string[];
+  defaultThinkingLevel?: string | null;
 }
 export interface AgentExecutorSelection {
   executor: string;
@@ -5430,7 +5558,11 @@ export interface AgentExecutorSelection {
  */
 export interface ExecutorSettings {
   model?: string | null;
-  thinkingLevel?: ThinkingLevel | null;
+  thinkingLevel?: ExecutorEffort | null;
+  runtime?: string | null;
+}
+export interface AgentModelRead {
+  backend: AgentBackendPreference;
 }
 export interface AgentGlobalInstructionsRead {}
 export interface AgentGlobalInstructionsUpdate {
@@ -5442,6 +5574,22 @@ export interface AgentExecutorsRead {}
 export interface AgentExecutors {
   executors: string[];
   setup: string[];
+}
+/**
+ * Only OAR's declared installation operations; not an agent registry or login shim.
+ */
+export interface AgentOarSetup {
+  runtime: string;
+  action: AgentOarSetupAction;
+}
+export interface AgentOarSetupResult {
+  runtime: string;
+  /**
+   * The pinned OAR version's native result, including unsupported capabilities.
+   */
+  result: {
+    [k: string]: unknown | undefined;
+  };
 }
 /**
  * Observations and text; immutable attachments travel in the actual request resources.
@@ -7267,6 +7415,10 @@ export interface AgentList {
    * Include archived conversations alongside active ones.
    */
   includeArchived?: boolean;
+  /**
+   * Only conversations without a parent; omitted queries still include children.
+   */
+  rootsOnly?: boolean;
   position: AgentSessionPosition;
   scope?: AgentSessionListScope;
   /**
@@ -7276,6 +7428,10 @@ export interface AgentList {
 }
 export interface AgentCreate {
   /**
+   * Initial next-turn preference; admission resolves it again.
+   */
+  backend?: AgentBackendPreference | null;
+  /**
    * Treat title as a placeholder for one title derived from the first user message.
    */
   automaticTitle?: boolean;
@@ -7284,6 +7440,9 @@ export interface AgentCreate {
    * an empty list permits no model tools. External executors cannot enforce this.
    */
   tools?: string[] | null;
+  /**
+   * A concise, specific task name people can recognize in navigation; avoid generic worker numbers.
+   */
   title: string;
   labels: string[];
   workspace: AgentWorkspaceSelection;
@@ -7890,11 +8049,10 @@ export interface AgentSend {
    * IDs of immutable user uploads in this Session; metadata is resolved by the owner.
    */
   attachments?: string[];
-  model?: ModelSelection | null;
   /**
-   * Omission/null uses the configured model default; `off` is explicit.
+   * Omission uses the session’s saved next-turn preference.
    */
-  thinkingLevel?: ThinkingLevel | null;
+  backend?: AgentBackendPreference | null;
   sessionId: string;
   message: string;
 }
@@ -8388,6 +8546,7 @@ export interface AgentSessionMetrics {
   outputTokensPerSecond?: number | null;
 }
 export interface AgentRun {
+  backend: AgentRunBackend;
   invocationId: string;
   turnId: string;
   state: AgentRunState;

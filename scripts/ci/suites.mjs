@@ -41,6 +41,25 @@ export const productInputs = [
   'scripts/plugins',
   'scripts/rust/product.mjs',
 ];
+const oarInputs = [
+  'plugins/agent/oar-executor/worker',
+  'plugins/agent/native/tests/support/oar-worker.mjs',
+  'scripts/oar',
+  'scripts/asf-source-release.mjs',
+  'scripts/rust/build-v8.mjs',
+  'scripts/rust/cargo.mjs',
+  'scripts/rust/v8-source.json',
+  'scripts/rust/v8-prebuilts.json',
+  'scripts/rust/v8-cache.mjs',
+  'scripts/rust/v8-prebuilt.mjs',
+  'scripts/rust/compile-v8.mjs',
+  'scripts/rust/v8-notices.mjs',
+  'scripts/rust/license-files.mjs',
+  'scripts/rust/license-source.mjs',
+  'scripts/rust/notices.mjs',
+  'scripts/rust/notices-sources.json',
+  'scripts/rust/licenses',
+];
 const embeddedInputs = [
   ...productInputs,
   'skills/maka-plugin-authoring',
@@ -56,6 +75,7 @@ export const suites = {
     profile: 'ci',
     extraInputs: [
       ...embeddedInputs,
+      ...oarInputs,
       'third-party/nsh/third-party/gpui-wgpu/test-assets/IBMPlexSans-Regular.ttf',
     ],
     affectedFilter: true,
@@ -93,7 +113,7 @@ export const suites = {
   'native-build': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: [...embeddedInputs, 'scripts/rust/build-cli.mjs'],
+    extraInputs: [...embeddedInputs, ...oarInputs, 'scripts/rust/build-cli.mjs'],
   },
   contracts: {
     workspace: 'root',
@@ -103,7 +123,7 @@ export const suites = {
   product: {
     workspace: 'root',
     packages: ['maka-ui-build', 'maka-cli', 'maka-desktop-shell', 'maka-python-runtime'],
-    extraInputs: productInputs,
+    extraInputs: [...productInputs, ...oarInputs],
   },
   termina: {
     workspace: 'termina',
@@ -167,6 +187,25 @@ export const suites = {
     ],
     filter:
       'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
+  },
+  'windows-desktop': {
+    workspace: 'root',
+    packages: ['maka-desktop-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    extraInputs: embeddedInputs,
+  },
+  'windows-nsh': {
+    workspace: 'nsh',
+    packages: ['nsh-platform-windows', 'nsh-windows-app', 'nsh-windows-host', 'gallery-native'],
+    cargoArgs: [
+      '--locked',
+      '--manifest-path',
+      manifests.nsh,
+      '-p',
+      'nsh-platform-windows',
+      '--lib',
+    ],
+    extraInputs: ['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs'],
   },
   'macos-host': {
     workspace: 'root',
@@ -264,15 +303,15 @@ export const workers = [
   ...['ubuntu', 'macos', 'windows'].map((os) => ({
     id: `native-${os}`,
     suites:
-      os === 'macos'
-        ? ['native', 'macos-host']
-        : os === 'windows'
-          ? ['native', 'windows-shell']
+      os === 'windows'
+        ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh']
+        : os === 'macos'
+          ? ['native', 'macos-host']
           : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
     dependencies: os === 'ubuntu' ? 'computer-use' : '',
-    javascript: os === 'macos' || os === 'windows',
+    javascript: os === 'windows' || os === 'macos',
     compile: true,
   })),
 ];

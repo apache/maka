@@ -43,7 +43,7 @@ impl Foreground {
         if active.cancel.is_cancelled() {
             return Err("Prompt cancelled before admission".into());
         }
-        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"message":content.text,"attachments":content.attachments,"model":model,"thinkingLevel":preferences.thinking}), Attachments::new()).await?;
+        let result: SendResult = client.mutate("agent", "send", json!({"sessionId":session.id,"message":content.text,"attachments":content.attachments,"backend":{"kind":"model","connectionId":model.connection_id,"modelId":model.model_id,"thinkingLevel":preferences.thinking}}), Attachments::new()).await?;
         let (target, message) = match result {
             SendResult::Started { invocation_id, .. } => {
                 (WorkTarget::Invocation { invocation_id }, None)

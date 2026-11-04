@@ -1014,9 +1014,15 @@ impl Nav {
         let Some(view) = m.view.clone() else { return };
         match modal_motion(m.config.animation, reduce_motion(surface)) {
             Some((duration, fade)) => {
+                if !fade {
+                    set_fade(&view, 1.0);
+                }
                 self.start(surface, duration, Motion::ModalIn { view, fade });
             }
-            None => surface.event(id, EventKind::Show, EventPayload::None),
+            None => {
+                set_fade(&view, 1.0);
+                surface.event(id, EventKind::Show, EventPayload::None);
+            }
         }
     }
 
@@ -1303,6 +1309,7 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     if m.view.is_some() {
         if view.parent_view().is_none() {
             view.insert_before(&surface.root, None);
+            crate::transition::resume(surface, view);
             nav.size_modal(surface, id);
         }
         return;
@@ -1320,6 +1327,7 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     // Escape asks the modal to close: the keyboard is the window's.
     crate::native::take_keyboard(surface);
     view.insert_before(&surface.root, None);
+    crate::transition::resume(surface, view);
     nav.order.push(id);
     nav.size_modal(surface, id);
     // Animated in at the end of the batch, with the options it brings
@@ -1364,6 +1372,7 @@ pub(crate) fn dismiss(surface: &Rc<Surface>, view: &NshView) {
 /// Parks a supplied recycling root immediately, with no navigation lifecycle
 /// or focus-return action. Its normal Insert can restore the same live view.
 pub(crate) fn park_retired_root(surface: &Rc<Surface>, view: &NshView) {
+    view.state_mut().parked = true;
     let inside = |candidate: &NshView| is_ancestor(view, candidate);
     let id = view.id();
     let parent = view.parent_view();
@@ -1373,10 +1382,10 @@ pub(crate) fn park_retired_root(surface: &Rc<Surface>, view: &NshView) {
     }
     for motion in nav.transitions.take(|motion| match motion {
         Motion::Push { stack, entering, below, .. } => inside(stack) || inside(entering)
-            || below.as_ref().is_some_and(&inside),
+            || below.as_ref().is_some_and(inside),
         Motion::Pop { leaving_id, stack, leaving, below, .. } => *leaving_id == id || inside(stack)
             || matches!(leaving, Leaving::View(leaving) | Leaving::Image(leaving) if inside(leaving))
-            || below.as_ref().is_some_and(&inside),
+            || below.as_ref().is_some_and(inside),
         Motion::ModalIn { view, .. } => inside(view),
         Motion::ModalOut { id: owner, .. } => *owner == id,
     }) {
@@ -1450,6 +1459,7 @@ pub(crate) fn header_item(surface: &Rc<Surface>, parent: &NshView, child: &NshVi
     let mut nav = surface.nav.borrow_mut();
     if child.parent_view().as_ref() != Some(parent) {
         child.insert_before(parent, None);
+        crate::transition::resume(surface, child);
     }
     let s = nav.screen(parent);
     if !s.items.contains(child) {
@@ -1506,6 +1516,20 @@ pub(crate) fn end_batch(surface: &Rc<Surface>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn modal_without_animation_is_visible_when_config_arrives_after_insertion() {
+        let surface = Surface::new(Default::default());
+        let modal = NshView::new(2, ViewKind::Modal);
+        present(&surface, &modal);
+        let config = ModalConfig {
+            animation: ModalAnimation::None,
+            ..Default::default()
+        };
+        modal_config(&surface, &modal, &config);
+        end_batch(&surface);
+        assert_eq!(modal.state().fade, 1.0);
+    }
 
     #[test]
     fn back_keys() {

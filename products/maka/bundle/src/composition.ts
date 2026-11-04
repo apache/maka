@@ -843,7 +843,6 @@ function workhubComposition(configuration: CompositionConfiguration): Applicatio
         'uploadAttachment',
         'send',
         'execution',
-        'execute',
         'executors',
         'tools',
         'snapshotPatch',

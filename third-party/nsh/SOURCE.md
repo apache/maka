@@ -107,6 +107,13 @@ The AppKit `AppView::load_with_config`, `run_app_with_config`,
 `EngineConfig` on an opt-in path. An accessibility press and scoped and fallback
 key bindings complete that path; AppKit input has no `tokens`.
 
+The Windows `AppSource::Config` and `AppView::load_with_config` run Maka's
+Host-provided engine configuration. `run_app` takes an activation observer;
+`with_running_view` and `quit_app` dispatch window commands to its UI thread.
+Host assets remain attached for the running surface's lifetime. Windows
+keyboard activation uses the core press state machine for Enter and Space,
+including cancellation on focus loss and window deactivation.
+
 Host-provided GPUI paste and terminal bracketed paste follow the focused
 editor's existing `onPaste` and `pasteBehavior` policy. A complete pasted path
 list becomes files only for inputs listening for file drops, and is delivered

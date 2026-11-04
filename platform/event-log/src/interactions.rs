@@ -177,6 +177,7 @@ impl EventLog {
                             ..
                         }
                         | InteractionOutcome::ClientCapabilityDecision { decision: Decision::Allow, .. }
+                        | InteractionOutcome::SessionApprovalDecision { decision: Decision::Allow, .. }
                     ) {
                         permissions::require_revision(&mut tx, &record).await?;
                     }

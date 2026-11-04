@@ -31,17 +31,21 @@ pub(super) fn project(
     resources: &super::resources::Resources<'_>,
     steering: bool,
     language: Language,
+    origin: Option<&maka_agent_facts::message::MessageOrigin>,
 ) -> Result<Message, RunError> {
     let text = references::text(content, resources, language)?;
     let text = if steering {
         let label = match language {
-            Language::En => "The user sent a message while you were working:",
-            Language::ZhCn => "用户在你工作期间发来消息：",
-            Language::ZhTw => "使用者在你工作期間傳來訊息：",
+            Language::En => "A message arrived while you were working:",
+            Language::ZhCn => "你工作期间收到一条消息：",
+            Language::ZhTw => "你工作期間收到一則訊息：",
         };
         format!("{label}\n<user_query>\n{text}\n</user_query>")
     } else {
         text
     };
-    Ok(Message::user(text))
+    Ok(Message::user(match origin {
+        Some(origin) => format!("{}{text}", origin.prompt_header(language)),
+        None => text,
+    }))
 }

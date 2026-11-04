@@ -96,15 +96,39 @@ export function executor(
       for (const script of ['scripts/asf-license-headers.mjs', 'scripts/rust/dependencies.mjs'])
         await node([script, 'check']);
     } else if (id === 'notices') {
-      await node(['scripts/rust/notices.mjs', 'check']);
+      await node(['scripts/rust/notices.mjs', 'check-reviewed']);
     } else {
       throw new Error(`Unknown check: ${id}`);
     }
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui', 'macos-host', 'windows-shell'].includes(id)) {
+    if (
+      [
+        'root',
+        'desktop',
+        'gpui',
+        'windows-desktop',
+        'windows-nsh',
+        'macos-host',
+        'windows-shell',
+      ].includes(id)
+    ) {
       await nextest(id, true, filter, extra);
+      if (id === 'windows-nsh') {
+        await cargo([
+          'check',
+          '--locked',
+          '--manifest-path',
+          manifests.nsh,
+          '-p',
+          'nsh-windows-app',
+          '-p',
+          'nsh-windows-host',
+          '-p',
+          'gallery-native',
+        ]);
+      }
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
       await cargo(['build', '--locked', '-p', 'maka-cli', '--no-default-features']);
@@ -161,7 +185,7 @@ export function executor(
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
-    } else if (id === 'desktop' || id === 'gpui') {
+    } else if (['desktop', 'gpui', 'windows-desktop', 'windows-nsh'].includes(id)) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);

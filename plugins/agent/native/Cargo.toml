@@ -23,6 +23,7 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+tempfile.workspace = true
 fastrand.workspace = true
 unicode-normalization = "0.1.25"
 maka-code-runtime.workspace = true
@@ -53,6 +54,7 @@ maka-event-log.workspace = true
 maka-fs-tools.workspace = true
 maka-js-runtime.workspace = true
 maka-model.workspace = true
+maka-process.workspace = true
 maka-mcp.workspace = true
 maka-network.workspace = true
 maka-plugin-core.workspace = true
@@ -90,7 +92,6 @@ rusqlite = { workspace = true, features = ["functions"] }
 maka-settings-native.workspace = true
 maka-ui-support.workspace = true
 maka-transport.workspace = true
-tempfile.workspace = true
 tokio = { workspace = true, features = ["net", "io-util"] }
 
 maka-skills-native.workspace = true

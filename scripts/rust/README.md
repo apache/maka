@@ -31,6 +31,100 @@ Release packages use pinned V8 builds with optional LGPL glibc math disabled. Co
 
 A cache key identifies the V8 source, target, features and producer code. For a new key, use the exact archives emitted by a completed native workflow. Publish them as versioned dependency prerelease assets, then record their URLs, hashes and validation evidence in the manifest. Preserve existing assets and key meanings. Native link and smoke checks still run for each package.
 
+## OAR worker
+
+The normal CLI build also runs `scripts/oar/build.mjs` from that source checkout,
+using the exact OAR and Deno versions in the root lockfile. It bundles OAR as ESM,
+compiles a standalone Deno executable, and stages `maka-oar-worker[.exe]` beside
+`maka[.exe]`. Native packages require and validate that sibling, including cached
+packages. No Node/npm installation or module download is needed at runtime. This
+build does not update OAR or install agents.
+
+Development uses the official Deno template. `buildCli({ release: true })` and
+`node scripts/oar/build.mjs --release --target TRIPLE --output DIRECTORY` instead
+build the pinned Deno source in `scripts/oar/runtime-source.json` against the
+controlled V8 archive and bindings (`v8_use_libm_trig_functions=false`).
+The existing `buildV8` policy is shared: use a pinned prebuilt when available,
+otherwise build reviewed V8 source and notices through `compileV8`. This does not
+reduce the five supported release targets.
+The independent Cargo target directory also builds Deno's CLI snapshot with that
+V8. The fixed Deno CLI consumes this template through `DENORT_BIN`; a missing
+controlled template, compilation failure, version/target mismatch or changed
+template bytes is fatal, with no official-template fallback. Selection follows the output
+target, not the host. `worker-receipt.json` records the source revision, V8 inputs,
+denort, bundle and worker hashes. Each invocation bundles current sources; the
+worker is reused only when its input digest (bundle bytes, Deno version, compile
+target/options and controlled runtime receipt) and executable output hash match.
+Missing, changed or non-executable outputs are recompiled. Release still validates
+the controlled template before reuse; replacing template bytes at the same path
+requires an updated runtime receipt and a new worker.
+
+Official Deno 2.9.6 Linux x64 worker inspection found defined `glibc_sin`,
+`glibc_cos` and `__branred` symbols from V8's LGPL math implementation. Its npm
+MIT license alone therefore cannot establish that it is distributable here.
+The historical official Linux x64/arm64 samples required at most GLIBC_2.27;
+that is neither controlled-runtime evidence nor execution on glibc 2.28.
+Controlled GNU Linux denort builds also use `cargo zigbuild --target TRIPLE.2.28`.
+Linux release assembly checks the **actual** worker with `readelf --version-info`
+and rejects requirements above glibc 2.28; the build argument alone is not ABI
+validation. This round built only aarch64 macOS, not the other four targets.
+
+The notice checker consumes the worker's actual esbuild `bundle-inputs.json`.
+Release builds also generate `runtime-notices.txt` from that build's non-dev
+Cargo metadata closure, fixed Deno source archive, target-specific V8 notices
+and exact Rust toolchain. `buildCli` passes this file as `oarRuntimeNotices` to
+`verifyNotices`. Each `deno-runtime@2.9.6/TRIPLE` entry in `notices-sources.json`
+must name one reviewed local document. Missing target entries, mismatched
+version/target headers or any difference between built and reviewed text fail
+before Cargo metadata is queried. The normal `notices.json` snapshot still
+covers the reviewed content; default generation requires all five target
+entries. A macOS document cannot satisfy Linux or Windows coverage.
+
+After a controlled build, `node scripts/oar/runtime-notices.mjs --target TRIPLE`
+can regenerate review evidence from its existing receipt, without rebuilding or
+fetching another platform's metadata. Files are under
+`$XDG_CACHE_HOME/maka/oar-runtime/TRIPLE` (`~/.cache/maka/oar-runtime/TRIPLE` by
+default): `license-inputs.json`, `license-records.json` and
+`THIRD_PARTY_NOTICES.txt`. The aarch64 macOS document was generated from
+760 packages (704 external packages); build dependencies make this conservative,
+not a precise linked-object list. It is not a cross-platform closure.
+
+The unavailable SWC revision is no longer treated as the only evidence source:
+checksum-verified published crates supply explicit versioned declarations, and
+original Rust/core-js, Deno/Node and libdivsufsort copyright notices are retained.
+Standard terms added from package declarations are labelled as such, not as
+recovered upstream NOTICE files. Published archives can omit referenced files;
+available original headers and declarations are retained rather than fabricating
+those missing files. The aarch64 macOS full document is retained as
+[deno-runtime-2.9.6-aarch64-apple-darwin.txt](licenses/deno-runtime-2.9.6-aarch64-apple-darwin.txt)
+and registered only for `deno-runtime@2.9.6/aarch64-apple-darwin`.
+The other four targets have neither been built nor reviewed this round and remain
+blocked. Development builds do not incur the controlled denort build or this
+release notice gate.
+
+For a single reviewed target, supply both its target and the actual runtime
+document. Generation always resolves the main Maka Cargo closure for all five
+distribution platforms; `--target` selects only the OAR runtime document to include
+and compare. Release `check --target` verifies that target's actual dependencies
+and runtime. Commands without these arguments still require all five runtime records:
+
+```sh
+node scripts/rust/notices.mjs generate --target aarch64-apple-darwin \
+  --oar-runtime-notices "$HOME/.cache/maka/oar-runtime/aarch64-apple-darwin/THIRD_PARTY_NOTICES.txt"
+node scripts/rust/notices.mjs check --target aarch64-apple-darwin \
+  --oar-runtime-notices "$HOME/.cache/maka/oar-runtime/aarch64-apple-darwin/THIRD_PARTY_NOTICES.txt"
+```
+
+PR CI uses `node scripts/rust/notices.mjs check-reviewed`. It always checks main
+Maka Cargo dependencies on all five distribution platforms. Separately, it derives
+the OAR runtime review set from both supplement entries and the existing snapshot
+and checks those reviewed texts, without building or fetching other OAR runtimes. Removing a
+review entry cannot silently remove coverage, and a newly registered target must
+also be present in the snapshot. This checks reviewed source inputs only; it does
+not approve a newly built runtime. Release `check --target ...` still requires
+and compares the actual build document; default generation still requires all
+five distribution targets.
+
 After dependency changes:
 
 ```sh

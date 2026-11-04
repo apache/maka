@@ -158,7 +158,7 @@ async fn lost_continuation_receipt_recovers_automatically_without_replaying_the_
         let gate = ReplyGate::resume(fixture.directory.path(), fixture.address.clone());
         let client = fixture.client_at(&gate.address).await;
         let sent = support::mutate(&client, "send", json!({
-            "sessionId":fixture.session,"message":"RECOVER_CONTINUATION_INPUT","model":fixture.selection
+            "sessionId":fixture.session,"message":"RECOVER_CONTINUATION_INPUT","backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":fixture.selection["modelId"]}
         })).await;
         let request = fixture.next_request().await;
         support::mutate(&client, "stop", json!({"sessionId":fixture.session,"invocationId":sent["invocationId"]})).await;

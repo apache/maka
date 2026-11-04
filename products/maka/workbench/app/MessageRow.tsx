@@ -22,7 +22,8 @@ import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform } from 'nsh';
-import { TextView, type TextViewDocument } from 'nsh/base';
+import { Button, TextView, type TextViewDocument } from 'nsh/base';
+import { senderSession, type MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
 import { messageKey, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
@@ -35,6 +36,7 @@ import {
   Disclosure,
   disclosureTitleStyle,
   IconButton,
+  textTooltip,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
@@ -47,6 +49,32 @@ export function originLabel(origin: MessageOrigin | null | undefined): string | 
   if (origin?.kind === 'goal')
     return tr('Pursuing Goal: {objective}', { objective: origin.objective });
   return origin?.kind === 'plan' ? tr('Executing plan: {title}', { title: origin.title }) : null;
+}
+
+function SenderBadge(props: { sessionId(): string; senders?: MessageSenders }) {
+  const source = () => props.senders?.session(props.sessionId());
+  const title = () => {
+    const value = source()?.title.trim();
+    return value && value !== props.sessionId() ? value : '';
+  };
+  const label = () => (title() ? tr('From {title}', { title: title() }) : tr('Agent conversation'));
+  const canOpen = () => !!source() && !!props.senders?.openBeside;
+  const open = (sessionId: string) => {
+    if (canOpen() && sessionId === props.sessionId()) props.senders?.openBeside?.(sessionId);
+  };
+  return (
+    <Button
+      disabled={!canOpen()}
+      accessibilityLabel={label()}
+      tooltip={textTooltip(() =>
+        canOpen() ? tr('Open source conversation beside this one') : label(),
+      )}
+      onPress={inputAction(open, props.sessionId())}
+      style={{ alignSelf: 'flex-start' }}
+    >
+      <Text style={[secondaryTextStyle, { color: canOpen() ? C.accent : C.muted }]}>{label()}</Text>
+    </Button>
+  );
 }
 
 export type MessageViewState = {
@@ -67,6 +95,7 @@ export function MessageRow({
   viewState,
   previewImage,
   openLink,
+  senders,
   userScroll,
   onExpand,
   ownerKey,
@@ -85,6 +114,7 @@ export function MessageRow({
   viewState?: MessageViewState;
   previewImage(image: ImagePreview): void;
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
+  senders?: MessageSenders;
   userScroll(): void;
   onExpand?(key: string): void;
   ownerKey?: () => string;
@@ -171,6 +201,7 @@ export function MessageRow({
           row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';
         const compact = () => thinking() || isTool();
         const user = () => row().role === 'user';
+        const sender = () => (user() ? senderSession(row().origin) : null);
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
         const timestamp = () => {
           const value = (row() as Row & { timestamp?: number }).timestamp;
@@ -390,8 +421,12 @@ export function MessageRow({
                   paddingVertical: 16,
                   borderRadius: 20,
                   backgroundColor: C.surface,
+                  gap: 8,
                 }}
               >
+                <If when={sender()}>
+                  <SenderBadge sessionId={() => sender()!} senders={senders} />
+                </If>
                 <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
                   <SourceText row={row} sourceId={sourceId()} />
                 </Text>

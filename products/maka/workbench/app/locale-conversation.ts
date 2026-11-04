@@ -61,6 +61,39 @@ import {
 } from '../../../../plugins/shared/locale-messages.js';
 
 export const conversationMessages = {
+  'Approve child decision': ['Approve child decision', '批准子会话决定', '核准子對話決定'],
+  'Deny child decision': ['Deny child decision', '拒绝子会话决定', '拒絕子對話決定'],
+  'Proposed child decision': [
+    'Proposed child decision',
+    '拟提交的子会话决定',
+    '擬提交的子對話決定',
+  ],
+  'Child decision approved': ['Child decision approved', '已批准子会话决定', '已核准子對話決定'],
+  'Child decision denied': ['Child decision denied', '已拒绝子会话决定', '已拒絕子對話決定'],
+  'Review child decision': ['Review child decision', '审核子会话决定', '審核子對話決定'],
+  'Child conversation': ['Child conversation', '子会话', '子對話'],
+  'Approve only the proposed child decision shown below.': [
+    'Approve only the proposed child decision shown below.',
+    '仅批准下方展示的子会话决定。',
+    '僅核准下方顯示的子對話決定。',
+  ],
+  'The child request is already closed. Refresh the parent request.': [
+    'The child request is already closed. Refresh the parent request.',
+    '子会话请求已关闭，请刷新父会话请求。',
+    '子對話請求已關閉，請重新整理父對話請求。',
+  ],
+  'The Host returned a different child request.': [
+    'The Host returned a different child request.',
+    'Host 返回了不同的子会话请求。',
+    'Host 傳回了不同的子對話請求。',
+  ],
+  'From {title}': ['From {title}', '来自 {title}', '來自 {title}'],
+  'Agent conversation': ['Agent conversation', 'Agent 会话', 'Agent 工作階段'],
+  'Open source conversation beside this one': [
+    'Open source conversation beside this one',
+    '在侧边打开来源会话',
+    '在側邊開啟來源工作階段',
+  ],
   'Stopped before delivery. Your message is kept.': [
     'Stopped before delivery. Your message is kept.',
     '送达前已停止，消息已保留。',
@@ -165,15 +198,21 @@ export const conversationMessages = {
     '取消编辑会话压缩提示词',
     '取消編輯對話壓縮提示詞',
   ],
-  Connection: ['Connection', '连接', '連線'],
-  'Back to models': ['Back to models', '返回模型', '返回模型'],
-  'Load more connections': ['Load more connections', '加载更多连接', '載入更多連線'],
-  'Filter by connection': ['Filter by connection', '按连接筛选', '依連線篩選'],
-  'All connections': ['All connections', '所有连接', '所有連線'],
-  'No models match this search and connection.': [
-    'No models match this search and connection.',
-    '此连接中没有符合搜索条件的模型。',
-    '此連線中沒有符合搜尋條件的模型。',
+  'Search models and sources…': [
+    'Search models and sources…',
+    '搜索模型和来源…',
+    '搜尋模型與來源…',
+  ],
+  'Search models and sources': ['Search models and sources', '搜索模型和来源', '搜尋模型與來源'],
+  'This action requires a native model.': [
+    'This action requires a native model.',
+    '此操作需要原生模型。',
+    '此操作需要原生模型。',
+  ],
+  'No models match this search.': [
+    'No models match this search.',
+    '没有符合搜索条件的模型。',
+    '沒有符合搜尋條件的模型。',
   ],
   'MCP server configuration': ['MCP server configuration', 'MCP 服务器配置', 'MCP 伺服器設定'],
   'Trust project MCP configuration?': [

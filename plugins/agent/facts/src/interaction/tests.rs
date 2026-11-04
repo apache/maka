@@ -318,3 +318,74 @@ fn system_permission_location_preserves_old_records_and_rejects_unusable_bundles
         assert!(serde_json::from_value::<InteractionRequest>(invalid).is_err());
     }
 }
+
+fn session_approval_request(answer: Value) -> Value {
+    json!({
+        "kind": "session_approval",
+        "toolUseId": "tool_123",
+        "basis": computer_app_request()["basis"],
+        "sessionId": "child",
+        "requestId": "child_request",
+        "answer": answer,
+    })
+}
+
+#[test]
+fn session_approval_roundtrips_only_access_expanding_child_decisions() {
+    for answer in [
+        json!({"kind":"service_approval", "decision":"allow"}),
+        json!({"kind":"client_capability", "decision":"allow"}),
+        json!({"kind":"permissions", "decision":{
+            "decision":"allow", "permissions":{"filesystem":[],"network":"allowed"},
+            "scope":"once",
+        }}),
+        json!({"kind":"computer_app", "decision":"once"}),
+        json!({"kind":"computer_app", "decision":"session"}),
+        json!({"kind":"computer_app", "decision":"always"}),
+    ] {
+        let input = session_approval_request(answer.clone());
+        let request: InteractionRequest = serde_json::from_value(input.clone()).unwrap();
+        assert_eq!(serde_json::to_value(&request).unwrap(), input);
+        let InteractionRequest::SessionApproval {
+            answer: proposed, ..
+        } = request
+        else {
+            unreachable!()
+        };
+        let original: InteractionAnswer = serde_json::from_value(answer).unwrap();
+        assert_eq!(InteractionAnswer::from(proposed), original);
+    }
+}
+
+#[test]
+fn session_approval_rejects_denials_non_approval_and_recursive_answers() {
+    for answer in [
+        json!({"kind":"service_approval", "decision":"deny"}),
+        json!({"kind":"client_capability", "decision":"deny"}),
+        json!({"kind":"permissions", "decision":{"decision":"deny"}}),
+        json!({"kind":"computer_app", "decision":"deny"}),
+        json!({"kind":"computer_app_cancel"}),
+        json!({"kind":"system_permission_cancel"}),
+        json!({"kind":"question", "answers":["yes"]}),
+        json!({"kind":"form", "action":"cancel"}),
+        json!({"kind":"session_approval", "decision":"allow"}),
+    ] {
+        let original: InteractionAnswer = serde_json::from_value(answer.clone()).unwrap();
+        assert!(
+            SessionApprovalAnswer::try_from(&original).is_err(),
+            "{answer}"
+        );
+        assert!(
+            serde_json::from_value::<InteractionRequest>(session_approval_request(answer.clone()))
+                .is_err(),
+            "{answer}"
+        );
+    }
+    let invalid_permissions = session_approval_request(json!({
+        "kind":"permissions", "decision":{
+            "decision":"allow", "scope":"session",
+            "permissions":{"filesystem":[{"path":"/tmp","scope":"subtree","access":"deny"}],"network":"denied"},
+        },
+    }));
+    assert!(serde_json::from_value::<InteractionRequest>(invalid_permissions).is_err());
+}

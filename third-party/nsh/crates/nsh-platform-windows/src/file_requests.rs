@@ -61,6 +61,35 @@ pub(crate) fn request(surface: &Rc<Surface>, id: u32, request: &FileRequest) {
     }
 }
 
+/// Opens a host folder chooser on the same STA path as UI file requests.
+pub(crate) fn choose_directory(
+    surface: &Surface,
+    done: impl FnOnce(Result<Option<PathBuf>, String>) + Send + 'static,
+) {
+    let owner = surface.hwnd().0 as isize;
+    // Transfer the callback only after spawning, so a spawn failure is answerable.
+    type Done = Box<dyn FnOnce(Result<Option<PathBuf>, String>) + Send>;
+    let (send, recv) = std::sync::mpsc::sync_channel::<Done>(1);
+    let spawned = std::thread::Builder::new()
+        .name("nsh-folder".into())
+        .spawn(move || {
+            let Ok(done) = recv.recv() else { return };
+            let result = with_com(|| pick_paths(HWND(owner as *mut _), &OpenDialog::folders()))
+                .and_then(|paths| paths)
+                .map(|paths| paths.into_iter().next())
+                .map_err(|error| error.to_string());
+            crate::window::invoke(move || done(result));
+        });
+    match spawned {
+        Ok(_) => {
+            if let Err(error) = send.send(Box::new(done)) {
+                (error.0)(Err("the folder chooser worker stopped".into()));
+            }
+        }
+        Err(error) => done(Err(error.to_string())),
+    }
+}
+
 /// Runs `f` in a single-threaded COM apartment of this thread.
 fn with_com<T>(f: impl FnOnce() -> T) -> windows::core::Result<T> {
     // SAFETY: COM is initialized for this thread and uninitialized after

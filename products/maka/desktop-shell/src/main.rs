@@ -20,23 +20,32 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 //! The Maka desktop: runs the workbench (`maka-workbench`) in a window of
-//! its own through NSH's GPUI backend. `maka desktop` starts it for the Host
-//! it admitted, named by `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
+//! its own through NSH's Direct2D backend on Windows and GPUI elsewhere.
+//! `maka desktop` starts it for the Host it admitted, named by
+//! `MAKA_HOST_ROOT`, `MAKA_HOST_ENDPOINT` and
 //! `MAKA_HOST_EPOCH`. Closing the window detaches this client; the Host keeps
 //! the work it accepted. If that Host stops while the window is open, the
-//! window connects to the Root's next Host, which the launcher named by
+//! GPUI window connects to the Root's next Host, which the launcher named by
 //! `MAKA_LAUNCHER` starts, and loads the workbench again. Opened directly,
 //! from Finder, the Dock or a file manager, it runs `maka desktop` beside it.
 //! On macOS, `MAKA_APPKIT` selects NSH's AppKit backend instead (`appkit`).
 
 #[cfg(target_os = "macos")]
 mod appkit;
+#[cfg(windows)]
+mod direct2d;
+#[cfg(windows)]
+use direct2d as backend;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host;
-#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod placement;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+mod shell;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 mod window;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+use window as backend;
 
 use std::{path::PathBuf, process::ExitCode};
 
@@ -80,6 +89,7 @@ struct Target {
     root: PathBuf,
     endpoint: PathBuf,
     epoch: uuid::Uuid,
+    #[cfg(not(windows))]
     launcher: PathBuf,
 }
 
@@ -109,6 +119,7 @@ impl Target {
             root,
             endpoint,
             epoch,
+            #[cfg(not(windows))]
             launcher: absolute(LAUNCHER)?,
         })
     }
@@ -150,8 +161,6 @@ fn main() -> ExitCode {
 
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 fn run() -> Result<(), String> {
-    use maka_host_runtime::application::host::Client as HostClient;
-
     if [ROOT, ENDPOINT, EPOCH, LAUNCHER]
         .iter()
         .all(|name| std::env::var_os(name).is_none())
@@ -159,18 +168,7 @@ fn run() -> Result<(), String> {
         return launch();
     }
     let target = Target::from(|name| std::env::var_os(name))?;
-    let root = host::Root::find(target.root, target.launcher)?;
-    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
-    let first = runtime.block_on(async {
-        let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
-        let handle = tokio::runtime::Handle::current();
-        host::Connection::admit(host, target.endpoint, root.path(), handle).await
-    })?;
-    #[cfg(target_os = "macos")]
-    if std::env::var_os(appkit::ENABLE).is_some_and(|value| !value.is_empty()) {
-        return appkit::run(first, runtime);
-    }
-    window::run(first, root, runtime)
+    backend::start(target)
 }
 
 /// Runs `maka desktop` from the directory the launcher stages the shell in,

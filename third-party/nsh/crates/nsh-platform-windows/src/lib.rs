@@ -63,12 +63,14 @@ pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
     App, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Limits, Root,
 };
-pub use windows;
 
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;
 pub use crate::{
-    app::{AppOptions, AppSource, AppView, debug_output, fatal_error, run_app, set_ui_sets},
+    app::{
+        AppOptions, AppSource, AppView, debug_output, fatal_error, quit_app, run_app, set_ui_sets,
+        with_running_view,
+    },
     image::AssetBase,
     native::{ComponentContext, ComponentFactory, Components, NativeComponent},
 };

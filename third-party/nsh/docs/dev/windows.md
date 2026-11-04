@@ -99,6 +99,9 @@ server client, log forwarding, the error overlay: `dev.rs`). The host turns on `
 - **Embedding**: `AppView` (`app.rs`) is one surface as a window: a child of the embedding app's window, or top-level;
   the host's message loop runs it. `set_ui_sets` serves the UI sets beside the runtime's modules
   (`nsh/base` by default; an app with Rust components of its own passes `nsh_base::registry()` and its sets).
+  `AppOptions::min_size` constrains the client area in logical points; Win32 adds the current DPI's window chrome.
+  `AppView::choose_directory` uses an owner-bound folder dialog on a dedicated STA thread and delivers its result
+  on the UI thread (`Ok(None)` on cancellation, `Err` on failure).
 
 ## How each area maps to Windows
 

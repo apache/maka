@@ -38,7 +38,9 @@ mod graph;
 mod imports;
 mod interactions;
 mod lifecycle;
+mod models;
 mod notifications;
+mod oar_setup;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
@@ -154,18 +156,6 @@ impl BackgroundKind {
         *self == Self::Schedule
     }
 }
-enum Selection {
-    Model(Option<ModelSelection>, Option<ThinkingLevel>),
-    Executor(maka_agent_api::executor::Selection),
-}
-struct Submission {
-    id: String,
-    text: String,
-    attachments: Vec<String>,
-    selection: Selection,
-    delivery: maka_agent_api::contract::SendDelivery,
-    expected_invocation_id: Option<String>,
-}
 enum PreparedBackend {
     Model(Box<(crate::model::Source, maka_agent_engine::PreparedModel)>),
     Executor(Box<crate::executor::Backend>),
@@ -194,6 +184,26 @@ impl Runs {
         self.controls.contains_key(session) || self.preparing.contains_key(session)
     }
 }
+struct CreationPolicy {
+    permissions: WorkspacePermissions,
+    tools: Option<Vec<String>>,
+}
+
+fn intersect_tools(
+    requested: Option<Vec<String>>,
+    ceiling: Option<Vec<String>>,
+) -> Option<Vec<String>> {
+    match (requested, ceiling) {
+        (Some(names), Some(ceiling)) => Some(
+            names
+                .into_iter()
+                .filter(|name| ceiling.contains(name))
+                .collect(),
+        ),
+        (requested, ceiling) => requested.or(ceiling),
+    }
+}
+
 pub(crate) struct Owner {
     graphs: Option<Arc<crate::workhub::tasks::graph::Graphs>>,
     pub store: Arc<RootStore>,
@@ -227,7 +237,7 @@ pub(crate) struct Owner {
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
-    executors: crate::executor::Executors,
+    pub(super) executors: crate::executor::Executors,
     runs: Arc<runs::Registry>,
     workers: TaskTracker,
     producers: TaskTracker,
@@ -378,7 +388,11 @@ impl Owner {
         let native_language = maka_config::language::native_language();
         let skills = skills::Library::select(&context, &settings, revision.clone())?;
         let instruction_home = assistant::open_home(settings.assistant.as_ref())?;
-        let executors = crate::executor::Executors::capture(&context, &settings.executors)?;
+        let executors = crate::executor::Executors::capture(
+            &context,
+            &settings.executors,
+            settings.oar.as_ref(),
+        )?;
         let configuration = Arc::new(
             ConfigurationStore::for_root(root)
                 .await
@@ -710,6 +724,57 @@ impl Owner {
             .ok_or("agent_session_unavailable")?;
         resolve_session(session)
     }
+    pub(crate) fn caller_store(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<maka_event_log::SessionStore, String> {
+        let invocation = scope.identity.agent().ok_or("agent_invocation_required")?;
+        let custody = scope
+            .execution()
+            .ok_or("agent_execution_custody_required")?;
+        self.store
+            .session_for_execution(custody.as_ref(), invocation)
+            .map_err(|error| error.to_string())
+    }
+
+    async fn creation_policy(
+        &self,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<CreationPolicy, String> {
+        let Some(invocation) = scope.identity.agent() else {
+            return Ok(CreationPolicy {
+                permissions: self.settings.permissions.clone(),
+                tools: None,
+            });
+        };
+        // Accepted coordinator work may resume after its original turn ended.
+        // Custody, when held, selects the real caller store; workspace donors do not.
+        let store = match scope.execution() {
+            Some(_) => self.caller_store(scope)?,
+            None => self
+                .store
+                .session(&invocation.session_id)
+                .await
+                .map_err(|error| error.to_string())?,
+        };
+        let caller = store
+            .get::<StoredSessionConfiguration>()
+            .await
+            .map_err(|error| error.to_string())?
+            .filter(|session| !session.archived)
+            .ok_or("agent_session_unavailable")?;
+        let caller = resolve_session(caller)?.configuration;
+        Ok(CreationPolicy {
+            permissions: caller.permissions,
+            // The Bot delegates workers; its own conversational tool list is not their ceiling.
+            tools: if self.bot.is(&invocation.session_id) {
+                None
+            } else {
+                caller.tools
+            },
+        })
+    }
+
     pub async fn create(
         self: &Arc<Self>,
         input: Create,
@@ -731,6 +796,13 @@ impl Owner {
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(Created::Rejected { reason });
         }
+        if let Some(backend) = &input.backend
+            && !self.backend_available(backend).await?
+        {
+            return Ok(Created::Rejected {
+                reason: Rejection::ToolsUnavailable,
+            });
+        }
         let id = self.operation_id(operation);
         let admission = self.runs.session(&id).await;
         if admission.state().await.closing {
@@ -738,7 +810,9 @@ impl Owner {
                 reason: Rejection::Closed,
             });
         }
-        let mut tools = input.tools;
+        let policy = self.creation_policy(scope).await?;
+        let permissions = policy.permissions;
+        let mut tools = intersect_tools(input.tools, policy.tools);
         // SendUser and sleep follow Bot identity, never a requested tool list.
         if tools.as_ref().is_some_and(|names| {
             names
@@ -757,13 +831,6 @@ impl Owner {
                 });
             }
         }
-        // A Session the Bot creates follows the ordinary creation rules and is only
-        // recorded under the Bot as its parent. The Bot's own tool list says what it
-        // may call itself; it is not the ceiling for the workers it delegates to.
-        let bot_caller = scope
-            .identity
-            .agent()
-            .is_some_and(|source| self.bot.is(&source.session_id));
         let selected = match input.workspace {
             WorkspaceSelection::IsolatedGit { selection } => {
                 let Some(workspace) = self.isolated_workspace(selection, operation, scope).await?
@@ -830,20 +897,6 @@ impl Owner {
                         reason: Rejection::WorkspaceUnavailable,
                     });
                 }
-                // User creation reuses a workspace; Agent derivation also
-                // inherits the parent's tool ceiling.
-                if scope.identity.agent().is_some()
-                    && !bot_caller
-                    && let Some(parent) = session.configuration.tools
-                {
-                    tools = Some(match tools {
-                        None => parent,
-                        Some(names) => names
-                            .into_iter()
-                            .filter(|name| parent.contains(name))
-                            .collect(),
-                    });
-                }
                 session.configuration.workspace
             }
         };
@@ -876,7 +929,7 @@ impl Owner {
                         .identity
                         .agent()
                         .map(|source| source.session_id.clone()),
-                    backend: None,
+                    backend: input.backend,
                     compaction_prompt: None,
                     collaboration_mode: CollaborationMode::Agent,
                     tools,
@@ -885,7 +938,7 @@ impl Owner {
                     pinned: false,
                     labels: input.labels,
                     workspace: binding,
-                    permissions: self.settings.permissions.clone(),
+                    permissions,
                     boundary_revision: 0,
                 },
                 now(),
@@ -941,7 +994,21 @@ impl Owner {
             session: Box::new(crate::service::summary(self, resolve_session(record)?)),
         })
     }
-    pub async fn metadata(&self, input: Metadata) -> Result<MetadataResult, String> {
+    pub async fn metadata(
+        &self,
+        input: Metadata,
+        scope: &maka_capabilities::call::Scope,
+    ) -> Result<MetadataResult, String> {
+        if input.permissions.is_some()
+            && !matches!(
+                scope.identity,
+                maka_capabilities::call::Identity::Remote { .. }
+            )
+        {
+            return Ok(MetadataResult::Rejected {
+                reason: Rejection::PermissionChangeRequiresUser,
+            });
+        }
         if let Some(reason) = metadata_rejection(&input.title, &input.labels) {
             return Ok(MetadataResult::Rejected { reason });
         }
@@ -1090,57 +1157,8 @@ impl Owner {
         let Send {
             session_id: id,
             message: text,
-            model: selection,
-            thinking_level,
+            backend: selection,
             attachments,
-            delivery,
-            expected_invocation_id,
-        } = input;
-        self.submit(
-            Submission {
-                id,
-                text,
-                attachments,
-                selection: Selection::Model(selection, thinking_level),
-                delivery,
-                expected_invocation_id,
-            },
-            operation,
-            parent,
-        )
-        .await
-    }
-    pub async fn execute(
-        self: &Arc<Self>,
-        input: Execute,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-        parent: &maka_capabilities::call::Scope,
-    ) -> Result<SendResult, String> {
-        self.submit(
-            Submission {
-                id: input.session_id,
-                text: input.message,
-                attachments: input.attachments,
-                selection: Selection::Executor(input.executor),
-                delivery: maka_agent_api::contract::SendDelivery::Queue,
-                expected_invocation_id: None,
-            },
-            operation,
-            parent,
-        )
-        .await
-    }
-    async fn submit(
-        self: &Arc<Self>,
-        input: Submission,
-        operation: &maka_plugin_core::operation::RecoveryRef,
-        parent: &maka_capabilities::call::Scope,
-    ) -> Result<SendResult, String> {
-        let Submission {
-            id,
-            text,
-            attachments,
-            selection,
             delivery,
             expected_invocation_id,
         } = input;
@@ -1237,14 +1255,25 @@ impl Owner {
                 return Ok(result);
             }
         }
+        let mut selection = selection.or_else(|| session.configuration.backend.clone());
+        self.use_bot_model(parent, &mut selection).await;
+        let Some(selection) = selection else {
+            return Ok(SendResult::Rejected {
+                session_id: id,
+                reason: SendRejection::ModelUnavailable,
+                skills: None,
+            });
+        };
         let backend = match selection {
-            Selection::Model(selection, thinking_level) => {
+            BackendPreference::Model {
+                connection_id,
+                model_id,
+                thinking_level,
+            } => {
                 let prepared = async {
-                    let (selection, thinking_level) = match selection {
-                        Some(selection) => (selection, thinking_level),
-                        None => self
-                            .saved_model(&session.configuration)
-                            .map_err(RunError::InvalidInput)?,
+                    let selection = ModelSelection {
+                        connection_id,
+                        model_id,
                     };
                     crate::model::Source::select(
                         self.configuration.clone(),
@@ -1270,7 +1299,7 @@ impl Owner {
                     }
                 }
             }
-            Selection::Executor(selection) => {
+            BackendPreference::Executor { selection } => {
                 if self
                     .admitted_tools(&id, &session.configuration.tools)
                     .is_some()
@@ -1431,7 +1460,9 @@ impl Owner {
         };
         let delivered = RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
+                origin: parent.identity.agent().cloned().map(|invocation| {
+                    maka_agent_facts::message::MessageOrigin::Session { invocation }
+                }),
                 message_id: format!("m_{identity}"),
                 submitted_content_digest: unprepared
                     .content_digest()
@@ -1594,6 +1625,7 @@ impl Owner {
                 None => Ok(()),
             };
             let recap = owner.recap_storage.finish().await;
+            let executors = owner.executors.finish().await;
             let auxiliary = owner.auxiliary.resources.finish().await;
             let projects = owner.mcp_projects.close().await;
             let mcp = owner.mcp.close().await;
@@ -1615,6 +1647,7 @@ impl Owner {
             goals?;
             graph?;
             recap?;
+            executors?;
             auxiliary.map_err(|error| error.to_string())?;
             configuration.map_err(|_| "agent_configuration_cleanup_unconfirmed".into())
         })

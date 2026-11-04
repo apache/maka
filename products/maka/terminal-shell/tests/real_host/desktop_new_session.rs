@@ -558,7 +558,11 @@ impl Desktop {
 }
 
 async fn images_fixture() -> Fixture {
-    Fixture::configured(Options { images: true }).await
+    Fixture::configured(Options {
+        images: true,
+        ..Options::default()
+    })
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -571,14 +575,15 @@ async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_s
     desktop.new_draft().await;
     desktop.attach(&path).await;
     desktop.type_text("RESTORED_NEW_CONVERSATION").await;
-    assert_eq!(
-        desktop
-            .saved_composer("RESTORED_NEW_CONVERSATION")
-            .await
-            .files
-            .len(),
-        1
-    );
+    let mut saved = desktop.saved_composer("RESTORED_NEW_CONVERSATION").await;
+    assert_eq!(saved.files.len(), 1);
+    // A draft captured before default-model resolution must restore and send too.
+    saved.value["draft"]["backend"] = Value::Null;
+    desktop
+        .client
+        .save_composer(saved.revision, saved.value, None)
+        .await
+        .unwrap();
     assert_eq!(desktop.sessions().await.len(), 1);
     std::fs::write(&path, b"changed after selection").unwrap();
     let desktop = desktop
@@ -2101,6 +2106,216 @@ async fn desktop_goal_commands_create_pause_resume_and_finish_without_losing_the
         })
         .await;
     drop(first);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside() {
+    use super::support::mutate;
+    use maka_agent_api::session::StoredSessionConfiguration;
+    use maka_agent_facts::interaction::{InteractionRecord, InteractionRequest, PermissionRequest};
+
+    let mut fixture = Fixture::configured(Options {
+        session_tools: true,
+        ..Options::default()
+    })
+    .await;
+    let parent = fixture.session.clone();
+    let desktop = Desktop::open_at(
+        &fixture,
+        &fixture.address,
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(900)),
+        nsh_core::platform::Appearance::Dark,
+    )
+    .await;
+    let backend = json!({
+        "kind": "model",
+        "connectionId": fixture.selection["connectionId"],
+        "modelId": fixture.selection["modelId"],
+    });
+    mutate(&desktop.client, "send", json!({
+        "sessionId":parent, "message":"Delegate sandbox verification and review any access request.",
+        "backend":backend,
+    })).await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("tool_search", json!({"query":"Session"}))
+        .await;
+    let discovered = desktop.request(&mut fixture).await;
+    for name in ["SessionCreate", "SessionSend", "SessionRespond"] {
+        assert!(
+            discovered.body["tools"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tool| tool["function"]["name"] == name),
+            "missing {name}: {}",
+            discovered.body
+        );
+    }
+    discovered
+        .tool_call(
+            "SessionCreate",
+            json!({
+                "title":"Verify sandbox delegation","labels":[],
+                "workspace":{"kind":"session","sessionId":parent},
+            }),
+        )
+        .await;
+    let created_reply = desktop.request(&mut fixture).await;
+    let created: Value = serde_json::from_str(
+        created_reply.body["messages"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap()["content"]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(created["kind"], "created", "{created}");
+    let child = created["session"]["id"].as_str().unwrap().to_owned();
+    created_reply.tool_call("SessionSend", json!({
+        "sessionId":child, "message":"Verify the sandbox boundary. Write the verification report only after approval.",
+        "backend":backend,
+    })).await;
+    let first = desktop.request(&mut fixture).await;
+    let second = desktop.request(&mut fixture).await;
+    let (parent_reply, mut child_reply) =
+        if first.body["messages"].as_array().unwrap().last().unwrap()["role"] == "tool" {
+            (first, second)
+        } else {
+            (second, first)
+        };
+    let store = fixture.store.session(&child).await.unwrap();
+    let projection = store
+        .session_projection::<StoredSessionConfiguration>(&child)
+        .await
+        .unwrap()
+        .unwrap();
+    let binding = projection
+        .session
+        .workspace_binding
+        .as_ref()
+        .unwrap()
+        .stamp();
+    let basis = maka_agent_facts::workspace::PermissionBasis {
+        boundary_revision: projection
+            .session
+            .configuration
+            .workspace
+            .boundary_revision(projection.session.configuration.boundary_revision, binding)
+            .unwrap(),
+        binding,
+    };
+    let invocation = projection.root_turn.unwrap().invocation;
+    let permissions = json!({"filesystem":[{
+        "path":fixture.directory.path().join("workspace/report.md"),"scope":"exact","access":"write"
+    }],"network":"denied"});
+    let record = InteractionRecord {
+        session_id: child.clone(),
+        turn_id: invocation.turn_id.clone(),
+        run_id: invocation.run_id.clone(),
+        request_id: Uuid::new_v4().to_string(),
+        created_at: 1,
+        request: InteractionRequest::Permissions {
+            tool_use_id: Some("write-report".into()),
+            basis,
+            request: PermissionRequest {
+                reason: "Write the sandbox verification report.".into(),
+                command: None,
+                permissions: serde_json::from_value(permissions.clone()).unwrap(),
+            },
+        },
+        outcome: None,
+    };
+    assert!(
+        store
+            .establish_run_interaction(&invocation, &record)
+            .await
+            .unwrap()
+            .matches
+    );
+    desktop.press("Waiting for you").await;
+    desktop
+        .control("Actions for Verify sandbox delegation")
+        .await;
+    desktop.artifact("child-needs-you-inbox");
+    desktop.press("Waiting for you").await;
+    desktop
+        .until("child remained in the normal root sidebar", || {
+            desktop
+                .controls("Actions for Verify sandbox delegation")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    parent_reply.tool_call("SessionRespond", json!({
+        "sessionId":child,"requestId":record.request_id,
+        "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}
+    })).await;
+    desktop.control("Approve child decision").await;
+    desktop.control("Verify sandbox delegation").await;
+    desktop.artifact("parent-child-approval");
+    desktop.press("Approve child decision").await;
+    let mut parent_reply = desktop.request(&mut fixture).await;
+    let settled = desktop
+        .client
+        .query(
+            "agent",
+            "interaction",
+            json!({
+                "sessionId":child,"requestId":record.request_id
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(settled["outcome"]["kind"], "permissions_decision");
+    assert_eq!(settled["outcome"]["decision"]["decision"], "allow");
+    parent_reply
+        .delta("Approved this report write for one call after your confirmation.")
+        .await;
+    parent_reply.finish().await;
+    child_reply
+        .delta("Sandbox verification is complete. The report write was approved for one call only.")
+        .await;
+    child_reply.finish().await;
+    desktop
+        .wait(
+            "parent did not finish",
+            fixture.idle(&desktop.client, &parent),
+        )
+        .await;
+    desktop
+        .wait(
+            "child did not finish",
+            fixture.idle(&desktop.client, &child),
+        )
+        .await;
+    if !desktop.controls("Expand session browser").is_empty() {
+        desktop.press("Expand session browser").await;
+    }
+    assert!(
+        desktop
+            .controls("Actions for Verify sandbox delegation")
+            .is_empty(),
+        "child conversations must not appear as sidebar roots"
+    );
+    desktop.press("Actions for NSH real Agent").await;
+    desktop.press("Child conversations").await;
+    desktop.press("Open Verify sandbox delegation").await;
+    desktop.control("From NSH real Agent").await;
+    desktop.press("From NSH real Agent").await;
+    desktop.control("Close side pane").await;
+    desktop
+        .until(
+            "source conversation did not load its reply beside the child",
+            || (desktop.controls("Copy message").len() == 2).then_some(()),
+        )
+        .await;
+    desktop.artifact("source-conversation-beside");
     desktop.close().await;
     fixture.finish().await;
 }

@@ -25,7 +25,7 @@ import { copyFile, mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { previewVersion, releaseNativeCli } from './release-cli.mjs';
+import { previewVersion, releaseNativeCli, verifyWorkerGlibc } from './release-cli.mjs';
 import {
   previewTargets,
   publishPreviewRelease,
@@ -345,4 +345,26 @@ test('source identity failures cannot reach dependency installation or compilati
   } finally {
     await rm(stage, { recursive: true, force: true });
   }
+});
+
+test('Linux worker release gate rejects a higher glibc dependency or missing evidence', async (t) => {
+  let output;
+  t.mock.method(childProcess, 'execFile', (command, args, options, callback) => {
+    assert.equal(command, 'readelf');
+    assert.deepEqual(args, ['--version-info', '/release/maka-oar-worker']);
+    callback(null, output, '');
+  });
+  syncBuiltinESMExports();
+  t.after(() => {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  });
+  output = '  Name: GLIBC_2.17\n  Name: GLIBC_2.27';
+  await verifyWorkerGlibc('/release/maka-oar-worker');
+  output = '  Name: GLIBC_2.28';
+  await verifyWorkerGlibc('/release/maka-oar-worker');
+  output = '  Name: GLIBC_2.34';
+  await assert.rejects(verifyWorkerGlibc('/release/maka-oar-worker'), /above the 2.28 floor/);
+  output = 'no version information';
+  await assert.rejects(verifyWorkerGlibc('/release/maka-oar-worker'), /no inspectable glibc/);
 });

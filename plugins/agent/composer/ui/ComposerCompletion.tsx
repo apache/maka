@@ -358,8 +358,7 @@ export function createComposerCompletion(options: Options) {
     if (!backend || details.kind !== 'ready' || !sameRoute(backend, details.choice.selection))
       return;
     const result = await read.owner.completion.skills({
-      model: details.choice.selection,
-      thinkingLevel: backend.thinkingLevel,
+      backend,
       query: read.query,
     });
     appendRows(

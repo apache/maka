@@ -148,7 +148,11 @@ function CompletionComposer(props: { prediction?: boolean }) {
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
-  const selection = { connectionId: 'original-route', modelId: 'fixture-model' };
+  const selection = {
+    kind: 'model' as const,
+    connectionId: 'original-route',
+    modelId: 'fixture-model',
+  };
   const owner: ComposerSession<JSX.Element> = {
     sessionId: 'original-session',
     connected: () => true,
@@ -424,6 +428,7 @@ function WorkspacePages(props: { busy: boolean }) {
   const browsing: Browsing = {
     scope: () => scope,
     filter: () => 'all',
+    needsYouCount: () => 0,
     sessions,
     loading,
     projects: () =>

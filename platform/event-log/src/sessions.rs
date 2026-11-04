@@ -134,6 +134,7 @@ pub enum CatalogSelection {
 
 #[derive(Clone, Copy, Debug, Serialize)]
 pub struct CatalogFilter {
+    pub roots_only: bool,
     pub archived_only: bool,
     pub include_archived: bool,
     pub pending_only: bool,
@@ -308,6 +309,7 @@ impl EventLog {
             cursor.into(),
             limit,
             CatalogFilter {
+                roots_only: false,
                 archived_only: false,
                 include_archived: true,
                 pending_only: false,
