@@ -142,6 +142,12 @@ async fn preturn_keeps_anchor_and_latest_main_never_falls_back_a_broken_newer_tr
     assert!(
         matches!(log.latest_main_context("session").await.unwrap(), LatestMainContext::Selected(value) if value.context.is_none() && value.finished_at == Some(finished_at))
     );
+    let invalid_breakdown = r#"{"system":{"contentBytes":0,"estimatedTokens":0},"user":{"contentBytes":9007199254740992,"estimatedTokens":1},"assistant":{"contentBytes":0,"estimatedTokens":0},"tool":{"contentBytes":0,"estimatedTokens":0},"toolSchemas":{"contentBytes":0,"estimatedTokens":0},"counts":{"messages":1,"media":0,"toolCalls":0,"toolResults":0,"tools":0}}"#;
+    inspect.execute("UPDATE event_log SET event_header=json_set(event_header, '$.fact.context_breakdown', json(?1)),canonical_bytes=length(CAST(json_set(event_header, '$.fact.context_breakdown', json(?1)) AS BLOB)) WHERE operation_id='new-main' AND kind='model_requested'", [invalid_breakdown]).unwrap();
+    assert!(matches!(
+        log.latest_main_context("session").await.unwrap(),
+        LatestMainContext::TraceUnavailable
+    ));
     inspect.execute("UPDATE event_log SET operation_id='missing-request' WHERE operation_id='new-main' AND kind='model_requested'", []).unwrap();
     assert!(matches!(
         log.latest_main_context("session").await.unwrap(),

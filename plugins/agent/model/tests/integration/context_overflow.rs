@@ -192,6 +192,18 @@ async fn http_diagnostics_preserve_only_structured_messages_across_native_famili
             let ModelError::Http { message, .. } = error else { panic!("HTTP rejection must remain terminal") };
             assert_eq!(message.as_deref(), expected_message);
         }
+        let empty_auth = failure(kind.clone(), 401, "application/json", String::new()).await;
+        assert_eq!(
+            empty_auth.to_string(),
+            "model HTTP request failed (status 401)"
+        );
+        assert!(matches!(
+            empty_auth,
+            ModelError::Http {
+                status: 401,
+                message: None
+            }
+        ));
     }
 }
 
@@ -242,6 +254,8 @@ async fn compatible_provider_evidence_recovers_overflow_without_mistaking_thrott
     for body in [
         json!({"error":{"message":"Input token count 200001 exceeds the maximum 200000"}})
             .to_string(),
+        json!({"error":{"type":"api_error","message":"prompt is too long: 205000 tokens > 200000 maximum"}})
+            .to_string(),
         json!({"error":{"message":"upstream rejected", "metadata":{"raw":"Prompt 超长"}}})
             .to_string(),
         json!({"response":{"error":{"type":"model_context_window_exceeded"}}}).to_string(),
@@ -267,6 +281,64 @@ async fn compatible_provider_evidence_recovers_overflow_without_mistaking_thrott
             "{error}"
         );
     }
+    for kind in [
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        ProviderKind::OpenaiResponses,
+    ] {
+        let envelope =
+            json!({"error":{"message":"Input token count 200001 exceeds the maximum 200000"}})
+                .to_string();
+        assert!(matches!(
+            failure(kind.clone(), 200, "application/json", envelope).await,
+            ModelError::ContextOverflow {
+                observed_output: false
+            }
+        ));
+        let non_error = json!({"id":"reply","error":null,"choices":[{"message":{"role":"assistant","content":"prompt is too long"}}]}).to_string();
+        assert!(matches!(
+            failure(kind, 200, "application/json", non_error).await,
+            ModelError::Adapter(_)
+        ));
+    }
+    let sse_rate_limit = failure(
+        ProviderKind::Anthropic,
+        200,
+        "text/event-stream",
+        sse(&[json!({"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your token limit (too many tokens)."}})]),
+    )
+    .await;
+    assert!(
+        matches!(sse_rate_limit, ModelError::Provider(ref failure) if failure.reason() == maka_model::ProviderFailureReason::RateLimit),
+        "{sse_rate_limit}"
+    );
+    let image = failure(
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        400,
+        "application/json",
+        json!({"error":{"innererror":{"code":"image_size_exceeded"},"message":"Image exceeds the limit of 5242880 bytes"}}).to_string(),
+    )
+    .await;
+    assert!(
+        matches!(image, ModelError::ImageInputRejected { code: Some(ref code), .. } if code == "image_size_exceeded"),
+        "{image}"
+    );
+    let quota = failure(
+        ProviderKind::OpenaiCompatible {
+            name: "fixture".into(),
+        },
+        400,
+        "application/json",
+        json!({"error":{"code":"insufficient_quota","message":"Billing quota: token limit exceeded"}}).to_string(),
+    )
+    .await;
+    assert!(
+        matches!(quota, ModelError::Provider(ref failure) if failure.reason() == maka_model::ProviderFailureReason::QuotaExhausted),
+        "{quota}"
+    );
     for (status, body, throttled) in [
         (
             429,

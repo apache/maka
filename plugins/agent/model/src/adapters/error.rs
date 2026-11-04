@@ -78,13 +78,10 @@ impl Evidence {
             return ModelError::Adapter("invalid model HTTP failure status".into());
         }
         let retry_at_unix_ms = retry_at_unix_ms.or(self.retry_at_unix_ms);
-        let mut records = vec![&error.data];
-        if let Some(inner) = error.data.get("error") {
-            records.push(inner);
-        }
+        let records = [Some(&error.data), error.data.get("error")];
         let identifiers = overflow::identifiers(&error);
         let has = |values: &[&str]| identifiers.iter().any(|id| values.contains(&id.as_str()));
-        if overflow::rejected(&error, &identifiers) {
+        if overflow::explicit(&error, &identifiers) {
             return ModelError::ContextOverflow {
                 observed_output: self.observed,
             };
@@ -99,6 +96,7 @@ impl Evidence {
             // https://docs.z.ai/api-reference/api-code
             && records
                 .iter()
+                .flatten()
                 .filter_map(|record| record.get("code").and_then(Value::as_str))
                 .chain(error.code.as_ref().and_then(Value::as_str))
                 .any(|code| matches!(code, "1308" | "1310" | "1316" | "1317" | "1318" | "1319" | "1320" | "1321")));
@@ -109,27 +107,37 @@ impl Evidence {
                 "permission_error",
                 "invalid_api_key",
             ]);
+        let rate_limited = error.status == Some(429)
+            || identifiers.iter().any(|code| {
+                code.contains("rate_limit")
+                    || matches!(code.as_str(), "too_many_requests" | "throttlingexception")
+            });
+        let unavailable = matches!(error.status, Some(408 | 500..=599))
+            || has(&[
+                "resource-exhausted",
+                "server_error",
+                "overloaded_error",
+                "service_unavailable",
+            ]);
+        if !permanent && !positive_quota && !rate_limited && !unavailable {
+            if let Some(rejection) = image_rejection(&error, &identifiers, !self.unsafe_replay) {
+                return rejection;
+            }
+            if overflow::rejected(&error, &identifiers) {
+                return ModelError::ContextOverflow {
+                    observed_output: self.observed,
+                };
+            }
+        }
         let reason = if permanent {
             None
         } else if positive_quota {
             Some(ProviderFailureReason::QuotaExhausted)
         } else if has(&["resource-exhausted"]) {
             Some(ProviderFailureReason::ProviderUnavailable)
-        } else if error.status == Some(429)
-            || identifiers.iter().any(|code| {
-                code.contains("rate_limit")
-                    || matches!(code.as_str(), "too_many_requests" | "throttlingexception")
-            })
-        {
+        } else if rate_limited {
             Some(ProviderFailureReason::RateLimit)
-        } else if matches!(error.status, Some(408 | 500..=599))
-            || has(&[
-                "api_error",
-                "server_error",
-                "overloaded_error",
-                "service_unavailable",
-            ])
-        {
+        } else if unavailable || has(&["api_error"]) {
             Some(ProviderFailureReason::ProviderUnavailable)
         } else {
             None
@@ -154,9 +162,6 @@ impl Evidence {
                 ),
             );
         }
-        if !permanent && let Some(rejection) = image_rejection(&error, !self.unsafe_replay) {
-            return rejection;
-        }
         if let Some(status) = error
             .status
             .filter(|s| (100..600).contains(s) && !(200..300).contains(s))
@@ -173,19 +178,15 @@ impl Evidence {
         )
     }
 }
-fn image_rejection(error: &ProviderError, replay_safe: bool) -> Option<ModelError> {
+fn image_rejection(
+    error: &ProviderError,
+    identifiers: &[String],
+    replay_safe: bool,
+) -> Option<ModelError> {
     let records = [Some(&error.data), error.data.get("error")];
-    let identifiers = records
-        .iter()
-        .flatten()
-        .flat_map(|record| [record.get("code"), record.get("type")])
-        .flatten()
-        .filter_map(Value::as_str)
-        .chain(error.kind.as_deref())
-        .chain(error.code.as_ref().and_then(Value::as_str));
-    let explicit = identifiers.into_iter().any(|code| {
+    let explicit = identifiers.iter().any(|code| {
         matches!(
-            code.to_ascii_lowercase().as_str(),
+            code.as_str(),
             "invalid_image"
                 | "invalid_image_format"
                 | "invalid_image_url"
@@ -225,10 +226,14 @@ fn image_rejection(error: &ProviderError, replay_safe: bool) -> Option<ModelErro
             .as_ref()
             .and_then(Value::as_str)
             .or_else(|| {
-                records
-                    .iter()
-                    .flatten()
-                    .find_map(|record| record.get("code").and_then(Value::as_str))
+                [
+                    "/code",
+                    "/error/code",
+                    "/error/innererror/code",
+                    "/response/error/code",
+                ]
+                .into_iter()
+                .find_map(|path| error.data.pointer(path).and_then(Value::as_str))
             })
             .map(str::to_owned),
     })
@@ -256,14 +261,10 @@ pub(super) fn http_error(status: u16, bytes: &[u8]) -> ProviderError {
     });
     let record = data.get("error").unwrap_or(&data);
     ProviderError {
-        message: if bytes.is_empty() {
-            Some(format!("{status} status code (no body)"))
-        } else {
-            record
-                .get("message")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        },
+        message: record
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_owned),
         kind: record
             .get("type")
             .and_then(Value::as_str)

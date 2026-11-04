@@ -84,19 +84,22 @@ fn patterns() -> &'static (RegexSet, RegexSet) {
 
 pub(super) fn identifiers(error: &ProviderError) -> Vec<String> {
     let mut result = Vec::new();
+    let mut add_str = |value: &str| {
+        result.push(value.to_ascii_lowercase());
+        let shape = value
+            .split(':')
+            .next()
+            .unwrap_or(value)
+            .rsplit('#')
+            .next()
+            .unwrap_or(value);
+        if shape != value {
+            result.push(shape.to_ascii_lowercase());
+        }
+    };
     let mut add = |value: &Value| {
         if let Some(value) = value.as_str() {
-            result.push(value.to_ascii_lowercase());
-            let shape = value
-                .split(':')
-                .next()
-                .unwrap_or(value)
-                .rsplit('#')
-                .next()
-                .unwrap_or(value);
-            if shape != value {
-                result.push(shape.to_ascii_lowercase());
-            }
+            add_str(value);
         }
     };
     let decoded = error
@@ -135,16 +138,31 @@ pub(super) fn identifiers(error: &ProviderError) -> Vec<String> {
         add(code);
     }
     if let Some(kind) = &error.kind {
-        result.push(kind.to_ascii_lowercase());
+        add_str(kind);
     }
     result
 }
 
+fn candidate_status(status: Option<u16>) -> bool {
+    match status {
+        None | Some(200..300) => true,
+        Some(400..500) => !matches!(status, Some(401 | 402 | 403 | 408 | 429)),
+        Some(_) => false,
+    }
+}
+
+pub(super) fn explicit(error: &ProviderError, identifiers: &[String]) -> bool {
+    candidate_status(error.status)
+        && identifiers.iter().any(|value| {
+            matches!(
+                value.as_str(),
+                "context_length_exceeded" | "model_context_window_exceeded"
+            )
+        })
+}
+
 pub(super) fn rejected(error: &ProviderError, identifiers: &[String]) -> bool {
-    if error
-        .status
-        .is_some_and(|status| !(400..500).contains(&status))
-    {
+    if !candidate_status(error.status) {
         return false;
     }
     if identifiers.iter().any(|value| {
@@ -155,16 +173,27 @@ pub(super) fn rejected(error: &ProviderError, identifiers: &[String]) -> bool {
     }) {
         return true;
     }
-    if error.status == Some(429)
-        || identifiers
-            .iter()
-            .any(|value| value == "throttlingexception")
-    {
+    if identifiers.iter().any(|value| {
+        value.contains("rate_limit")
+            || matches!(value.as_str(), "too_many_requests" | "throttlingexception")
+    }) {
         return false;
     }
-    let data = match &error.data {
-        Value::String(value) => std::borrow::Cow::Borrowed(value.as_str()),
-        value => std::borrow::Cow::Owned(value.to_string()),
+    if matches!(error.status, Some(400 | 413)) && error.message.is_none() && error.data.is_null() {
+        return true;
+    }
+    let payload = if matches!(error.status, Some(200..300)) {
+        error.data.get("error").filter(|value| !value.is_null())
+    } else {
+        Some(&error.data)
+    };
+    if matches!(error.status, Some(200..300)) && error.message.is_none() && payload.is_none() {
+        return false;
+    }
+    let data = match payload {
+        None | Some(Value::Null) => std::borrow::Cow::Borrowed(""),
+        Some(Value::String(value)) => std::borrow::Cow::Borrowed(value.as_str()),
+        Some(value) => std::borrow::Cow::Owned(value.to_string()),
     };
     let texts = [error.message.as_deref().unwrap_or(""), data.as_ref()];
     let (overflow, exclusions) = patterns();

@@ -340,6 +340,7 @@ async fn run_from(
                     if cancellation.is_cancelled() {
                         return Err(RunError::Cancelled);
                     }
+                    auto_context::settle(&mut pending).await?;
                     input.refresh_model(cancellation).await?;
                     let mut context =
                         model_attempt::read_source(inner, input, cancellation).await?;
@@ -367,10 +368,11 @@ async fn run_from(
                     let timing = auto_context::timing(input, size);
                     if tools.is_idle()
                         && effects.is_idle()
-                        && ((timing == auto_context::Timing::Adopt && pending.is_some())
-                            || (compaction == CompactionBudget::Available
+                        && ((timing == auto_context::Timing::Adopt
+                            && (pending.is_some() || compaction == CompactionBudget::Available))
+                            || (timing == auto_context::Timing::Prepare
                                 && pending.is_none()
-                                && timing != auto_context::Timing::Continue))
+                                && compaction == CompactionBudget::Available))
                     {
                         prompt
                             .close()
@@ -380,30 +382,30 @@ async fn run_from(
                         drop(context);
                         drop(request_tools);
                         drop(surface);
-                        compaction = CompactionBudget::Failed;
-                        let candidate = match pending.take() {
-                            Some(candidate) => Some(candidate),
-                            None => {
-                                auto_context::start(
-                                    inner,
-                                    input,
-                                    opening_id,
-                                    main_progress,
-                                    cancellation,
-                                    continuation_base,
-                                )
-                                .await?
-                            }
-                        };
-                        if let Some(candidate) = candidate {
-                            if timing == auto_context::Timing::Prepare {
-                                pending = Some(candidate);
-                            } else if candidate
-                                .adopt(inner, &input.invocation, cancellation)
-                                .await?
-                            {
-                                compaction = CompactionBudget::Reshaped;
-                            }
+                        if timing == auto_context::Timing::Prepare {
+                            compaction = CompactionBudget::Failed;
+                            pending = auto_context::start(
+                                inner,
+                                input,
+                                opening_id,
+                                main_progress,
+                                cancellation,
+                                continuation_base,
+                            )
+                            .await?;
+                        } else if auto_context::compact_now(
+                            inner,
+                            input,
+                            opening_id,
+                            main_progress,
+                            cancellation,
+                            continuation_base,
+                            &mut pending,
+                            &mut compaction,
+                        )
+                        .await?
+                        {
+                            compaction = CompactionBudget::Reshaped;
                         }
                         // Compaction makes its own logical requests. The next Main
                         // must observe any provider change made meanwhile.
@@ -506,24 +508,17 @@ async fn run_from(
                     && effects.is_idle()
                     && !cancellation.is_cancelled() =>
                 {
-                    let candidate = match pending.take() {
-                        Some(candidate) => Some(candidate),
-                        None => {
-                            auto_context::start(
-                                inner,
-                                input,
-                                opening_id,
-                                main_progress,
-                                cancellation,
-                                continuation_base,
-                            )
-                            .await?
-                        }
-                    };
-                    if let Some(candidate) = candidate
-                        && candidate
-                            .adopt(inner, &input.invocation, cancellation)
-                            .await?
+                    if auto_context::compact_now(
+                        inner,
+                        input,
+                        opening_id,
+                        main_progress,
+                        cancellation,
+                        continuation_base,
+                        &mut pending,
+                        &mut compaction,
+                    )
+                    .await?
                     {
                         compaction = CompactionBudget::Reshaped;
                         continue;
@@ -585,8 +580,11 @@ async fn run_from(
             // Pruning/compaction require a settled boundary. A yielded cell is
             // still live work, not a corrupt boundary or a reason to cancel it.
             // Defer maintenance until it settles; the model can still call wait.
-            if tools.is_idle() && effects.is_idle() && pending.is_none() {
-                prune::run(inner, input, cancellation, &mut inspected_through).await?;
+            if tools.is_idle() && effects.is_idle() {
+                auto_context::settle(&mut pending).await?;
+                if pending.is_none() {
+                    prune::run(inner, input, cancellation, &mut inspected_through).await?;
+                }
             }
             if request_tools.finished() {
                 return Ok(StepExit::Terminal(

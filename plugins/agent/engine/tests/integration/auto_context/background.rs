@@ -41,7 +41,7 @@ async fn respond_tail_call(
     respond_tail_call_with_usage(socket, id, value, 4).await;
 }
 
-async fn respond_tail_call_with_usage(
+pub(super) async fn respond_tail_call_with_usage(
     socket: &mut tokio::net::TcpStream,
     id: &str,
     value: impl serde::Serialize,

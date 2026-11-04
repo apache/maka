@@ -167,6 +167,18 @@ pub(super) async fn read_selected_at(
             if context.as_ref().is_some_and(|c| c.validate().is_err()) {
                 return None;
             }
+            let context_breakdown: Option<maka_agent_facts::context::PreparedContextBreakdown> =
+                row.try_get::<Option<&str>, _>("context_breakdown")
+                    .ok()?
+                    .map(serde_json::from_str)
+                    .transpose()
+                    .ok()?;
+            if context_breakdown
+                .as_ref()
+                .is_some_and(|b| b.validate().is_err())
+            {
+                return None;
+            }
             let usage: ModelUsage =
                 serde_json::from_str(row.try_get::<&str, _>("usage").ok()?).ok()?;
             let finished_at: Option<SystemTime> = row
@@ -191,12 +203,7 @@ pub(super) async fn read_selected_at(
                     connection_id: row.try_get("connection_id").ok()?,
                     checkpoint_event_id: row.try_get("checkpoint_id").ok()?,
                     context,
-                    context_breakdown: row
-                        .try_get::<Option<&str>, _>("context_breakdown")
-                        .ok()?
-                        .map(serde_json::from_str)
-                        .transpose()
-                        .ok()?,
+                    context_breakdown,
                     usage,
                 }),
             ))

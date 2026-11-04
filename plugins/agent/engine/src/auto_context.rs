@@ -152,63 +152,76 @@ pub(super) async fn start(
     let worker =
         tokio::spawn(async move { cleanup.scope(job.execute(&inner, &worker_cancel)).await });
     Ok(Some(Pending {
-        cancellation,
-        worker: Some(worker),
+        cancellation: CancelGuard(cancellation),
+        state: CandidateState::Running(worker),
     }))
 }
 
+struct CancelGuard(CancellationToken);
+
+impl Drop for CancelGuard {
+    fn drop(&mut self) {
+        self.0.cancel();
+    }
+}
+
+enum CandidateState {
+    Running(tokio::task::JoinHandle<Result<compact::Candidate, RunError>>),
+    Ready(Box<maka_agent_facts::event::RuntimeEvent>),
+}
+
 pub(super) struct Pending {
-    cancellation: CancellationToken,
-    worker: Option<tokio::task::JoinHandle<Result<compact::Candidate, RunError>>>,
+    cancellation: CancelGuard,
+    state: CandidateState,
+}
+
+async fn join_worker(
+    worker: tokio::task::JoinHandle<Result<compact::Candidate, RunError>>,
+) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
+    match worker.await.map_err(|_| crate::cleanup::unconfirmed())? {
+        Ok((_, checkpoint)) => Ok(checkpoint),
+        Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
+        Err(error) => Err(error),
+    }
 }
 
 impl Pending {
-    pub fn is_finished(&self) -> bool {
-        self.worker
-            .as_ref()
-            .is_some_and(|worker| worker.is_finished())
-    }
-
-    async fn join(mut self) -> Result<Option<maka_agent_facts::event::RuntimeEvent>, RunError> {
-        match self
-            .worker
-            .take()
-            .expect("candidate has one owner")
-            .await
-            .map_err(|_| crate::cleanup::unconfirmed())?
-        {
-            Ok((_, checkpoint)) => Ok(checkpoint),
-            Err(RunError::Model(_) | RunError::Cancelled) => Ok(None),
-            Err(error) => Err(error),
-        }
-    }
-
     pub async fn adopt(
         self,
         inner: &RunContext,
         invocation: &maka_agent_facts::event::Invocation,
         cancellation: &CancellationToken,
     ) -> Result<bool, RunError> {
-        let waiting: Result<(), RunError> = async {
-            if !self.is_finished() && !cancellation.is_cancelled() {
-                inner
-                    .log
-                    .append(&EventWrite::plain(
-                        maka_agent_facts::event::RuntimeEvent::new(
-                            invocation.clone(),
-                            maka_agent_facts::event::Fact::ContextCompactionWaiting,
-                        ),
-                    )?)
-                    .await?;
+        let Self {
+            cancellation: guard,
+            state,
+        } = self;
+        let checkpoint = match state {
+            CandidateState::Ready(checkpoint) => Some(*checkpoint),
+            CandidateState::Running(worker) => {
+                let waiting: Result<(), RunError> = async {
+                    if !worker.is_finished() && !cancellation.is_cancelled() {
+                        inner
+                            .log
+                            .append(&EventWrite::plain(
+                                maka_agent_facts::event::RuntimeEvent::new(
+                                    invocation.clone(),
+                                    maka_agent_facts::event::Fact::ContextCompactionWaiting,
+                                ),
+                            )?)
+                            .await?;
+                    }
+                    Ok(())
+                }
+                .await;
+                if waiting.is_err() {
+                    guard.0.cancel();
+                }
+                let checkpoint = join_worker(worker).await?;
+                waiting?;
+                checkpoint
             }
-            Ok(())
-        }
-        .await;
-        if waiting.is_err() {
-            self.cancellation.cancel();
-        }
-        let checkpoint = self.join().await?;
-        waiting?;
+        };
         if cancellation.is_cancelled() {
             return Err(RunError::Cancelled);
         }
@@ -222,16 +235,81 @@ impl Pending {
     }
 }
 
-impl Drop for Pending {
-    fn drop(&mut self) {
-        self.cancellation.cancel();
+pub(super) async fn settle(pending: &mut Option<Pending>) -> Result<(), RunError> {
+    if !matches!(
+        pending,
+        Some(Pending {
+            state: CandidateState::Running(worker),
+            ..
+        }) if worker.is_finished()
+    ) {
+        return Ok(());
     }
+    let Some(Pending {
+        cancellation,
+        state: CandidateState::Running(worker),
+    }) = pending.take()
+    else {
+        unreachable!();
+    };
+    if let Some(checkpoint) = join_worker(worker).await? {
+        *pending = Some(Pending {
+            cancellation,
+            state: CandidateState::Ready(Box::new(checkpoint)),
+        });
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn compact_now(
+    inner: &Arc<RunContext>,
+    input: &mut RunSettings,
+    opening_id: &str,
+    mid_turn: bool,
+    cancellation: &CancellationToken,
+    continuation_base: Option<u64>,
+    pending: &mut Option<Pending>,
+    compaction: &mut maka_agent_facts::handoff::CompactionBudget,
+) -> Result<bool, RunError> {
+    if let Some(candidate) = pending.take()
+        && candidate
+            .adopt(inner, &input.invocation, cancellation)
+            .await?
+    {
+        return Ok(true);
+    }
+    if *compaction != maka_agent_facts::handoff::CompactionBudget::Available {
+        return Ok(false);
+    }
+    *compaction = maka_agent_facts::handoff::CompactionBudget::Failed;
+    let Some(candidate) = start(
+        inner,
+        input,
+        opening_id,
+        mid_turn,
+        cancellation,
+        continuation_base,
+    )
+    .await?
+    else {
+        return Ok(false);
+    };
+    candidate
+        .adopt(inner, &input.invocation, cancellation)
+        .await
 }
 
 pub(super) async fn drain(pending: &mut Option<Pending>) -> Result<(), RunError> {
-    if let Some(pending) = pending.take() {
-        pending.cancellation.cancel();
-        pending.join().await?;
+    if let Some(Pending {
+        cancellation,
+        state,
+    }) = pending.take()
+    {
+        cancellation.0.cancel();
+        if let CandidateState::Running(worker) = state {
+            join_worker(worker).await?;
+        }
     }
     Ok(())
 }
