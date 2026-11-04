@@ -185,7 +185,7 @@ impl HistoryCheckpoints {
             let destination = directory.open_dir_nofollow(name)?;
             let identity = directory_identity(&destination)?;
             workspace::materialize_in(&objects, &prepared.workspace, &destination)?;
-            directory.into_std_file().sync_all()?;
+            directory.open(".")?.sync_all()?;
             verify_destination(&objects, &prepared, &request.operation, &identity)?;
             let key = request.key()?;
             let identity = serde_json::to_string(&identity)?;

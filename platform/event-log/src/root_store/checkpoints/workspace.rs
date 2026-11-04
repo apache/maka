@@ -396,7 +396,9 @@ pub(super) fn materialize_in(
                 sync(&dir.open_dir_nofollow(entry.file_name())?)?;
             }
         }
-        dir.try_clone()?.into_std_file().sync_all()?;
+        // cap-std directory handles can be O_PATH on Linux; reopen the same
+        // directory for I/O rather than passing a path-only descriptor to fsync.
+        dir.open(".")?.sync_all()?;
         Ok(())
     }
     sync(dir)
