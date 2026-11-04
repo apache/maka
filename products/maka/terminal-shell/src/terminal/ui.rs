@@ -1142,13 +1142,27 @@ mod tests {
     }
 
     fn click(surface: &Surface, label: &str) -> Vec<Event> {
+        let node = surface
+            .accessibility_snapshot()
+            .into_iter()
+            .find(|node| node.label == label)
+            .unwrap_or_else(|| panic!("missing accessibility node: {label}"));
+        let column = ((node.frame.origin.x.0 + node.frame.size.width.0 / 2.0) / 8.0) as u16;
+        let row = ((node.frame.origin.y.0 + node.frame.size.height.0 / 2.0) / 16.0) as u16;
         [
             MouseEventKind::Moved,
             MouseEventKind::Down(MouseButton::Left),
             MouseEventKind::Up(MouseButton::Left),
         ]
         .into_iter()
-        .map(|kind| mouse(surface, label, kind, 0))
+        .map(|kind| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        })
         .collect()
     }
 

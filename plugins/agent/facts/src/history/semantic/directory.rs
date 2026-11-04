@@ -98,11 +98,18 @@ pub enum RowDirectory {
         custom: bool,
         kind: crate::model::prompt_source::source::ToolResultKind,
     },
+    // Append to preserve the Postcard layout of existing directory variants.
+    AttributedUser {
+        payload: RowPosition,
+        steering: bool,
+        origin: JsonSpan,
+    },
 }
 impl RowDirectory {
     pub fn payload(self) -> Option<PartSource> {
         match self {
             Self::User { payload, .. }
+            | Self::AttributedUser { payload, .. }
             | Self::ImportedUser { payload }
             | Self::ImportedAssistant { payload }
             | Self::ExecutorText { payload }

@@ -235,7 +235,7 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
     const target = actions();
     if (target && props.selected() !== target.origin) closeActions();
   });
-  const chooseFilter = (filter: 'all' | 'archived') => {
+  const chooseFilter = (filter: 'all' | 'archived' | 'needs_you') => {
     browser.setFilter(filter);
     list?.scrollToIndex({ index: 0, animated: false });
   };
@@ -459,6 +459,32 @@ export function WorkspaceBrowser(props: WorkspaceBrowserProps) {
             </Text>
           </If>
         </Button>
+        <If when={browser.filter() !== 'archived'}>
+          <Button
+            accessibilityLabel={tr('Waiting for you')}
+            selected={browser.filter() === 'needs_you'}
+            onPress={inputAction(
+              chooseFilter,
+              browser.filter() === 'needs_you' ? 'all' : 'needs_you',
+            )}
+            style={{
+              ...controlStyle,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 8,
+              paddingHorizontal: 8,
+              height: navigationRowHeight(),
+              borderRadius: 8,
+            }}
+            selectedStyle={{ backgroundColor: C.raised }}
+            hoverStyle={controlHoverStyle()}
+            focusStyle={controlFocusStyle()}
+          >
+            <Icon name="statusUnknown" color={C.secondary} />
+            <Text style={{ color: C.text, flex: 1 }}>{tr('Waiting for you')}</Text>
+            <Text style={{ color: C.secondary }}>{browser.needsYouCount()}</Text>
+          </Button>
+        </If>
       </View>
       <If when={platform.isTerminal}>
         <View

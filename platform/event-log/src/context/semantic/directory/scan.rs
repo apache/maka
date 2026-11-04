@@ -487,6 +487,7 @@ impl<'a> Scan<'a> {
                 (None, None, None, None, None, None);
             let (mut steering, mut custom, mut is_error, mut archived) = (None, None, None, None);
             let mut kind = None;
+            let mut origin = None;
             s.object(|s, k| {
                 if k.is("kind") {
                     let value = s.name()?;
@@ -513,6 +514,8 @@ impl<'a> Scan<'a> {
                     name = Some(s.text()?);
                 } else if k.is("steering") {
                     steering = Some(s.boolean()?);
+                } else if k.is("origin") {
+                    origin = s.optional_json()?;
                 } else if k.is("custom") {
                     custom = Some(s.boolean()?);
                 } else if k.is("is_error") {
@@ -525,9 +528,16 @@ impl<'a> Scan<'a> {
                 Ok(())
             })?;
             result = Some(if variant.is("User") {
-                RowDirectory::User {
-                    payload: required(payload)?,
-                    steering: required(steering)?,
+                match origin {
+                    Some(origin) => RowDirectory::AttributedUser {
+                        payload: required(payload)?,
+                        steering: required(steering)?,
+                        origin,
+                    },
+                    None => RowDirectory::User {
+                        payload: required(payload)?,
+                        steering: required(steering)?,
+                    },
                 }
             } else if variant.is("ImportedUser") {
                 RowDirectory::ImportedUser {

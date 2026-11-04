@@ -170,8 +170,13 @@ impl Selection {
         } else {
             ""
         };
+        let roots = if self.filter.roots_only {
+            "AND json_extract(configuration, '$.parentSessionId') IS NULL"
+        } else {
+            ""
+        };
         let sql = format!(
-            "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility} {parent}
+            "SELECT {PIN_ORDER}, catalog_recency, id FROM session_control WHERE {PREDICATE} {visibility} {parent} {roots}
             AND ({PIN_ORDER}, catalog_recency, id) {comparison} (?12, ?13, ?9)
             ORDER BY {PIN_ORDER} {order}, catalog_recency {order}, id {order} LIMIT ?10"
         );
@@ -226,6 +231,8 @@ impl Selection {
         } else {
             ""
         };
+        // Attention includes children hidden by the normal root-only sidebar;
+        // owner, scope, title and archive predicates still match the inbox.
         let sql =
             format!("SELECT COUNT(*) FROM session_control WHERE {PREDICATE} {visibility} {parent}");
         let query = sqlx::query_scalar::<_, i64>(sqlx::AssertSqlSafe(sql))

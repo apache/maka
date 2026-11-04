@@ -34,6 +34,9 @@ use std::collections::HashSet;
     deny_unknown_fields
 )]
 pub enum MessageOrigin {
+    Session {
+        invocation: crate::event::Invocation,
+    },
     Goal {
         goal_id: String,
         objective: String,
@@ -56,8 +59,31 @@ pub enum MessageOrigin {
     },
 }
 impl MessageOrigin {
+    pub fn prompt_header(&self, language: crate::language::Language) -> String {
+        format!(
+            "{}{}]\n",
+            Self::prompt_header_prefix(language),
+            serde_json::to_string(self).expect("message origin is serializable")
+        )
+    }
+
+    pub fn prompt_header_prefix(language: crate::language::Language) -> &'static str {
+        use crate::language::Language;
+        match language {
+            Language::En => "[Message source (Host-provided): ",
+            Language::ZhCn => "[消息来源（Host 提供）：",
+            Language::ZhTw => "[訊息來源（Host 提供）：",
+        }
+    }
+
     pub fn validate(&self) -> Result<(), &'static str> {
         match self {
+            Self::Session { invocation } => {
+                crate::interaction::entity_id(&invocation.session_id)?;
+                crate::interaction::entity_id(&invocation.turn_id)?;
+                crate::interaction::entity_id(&invocation.run_id)?;
+                crate::interaction::entity_id(&invocation.invocation_id)
+            }
             Self::Goal { goal_id, objective } => {
                 crate::interaction::entity_id(goal_id)?;
                 if objective.trim().is_empty() {

@@ -82,6 +82,9 @@ async fn diagnostic_state(fixture: &Fixture, session: &str) -> String {
                 .take(16)
                 .map(|record| {
                     let kind = match record.request {
+                        maka_agent_facts::interaction::InteractionRequest::SessionApproval {
+                            ..
+                        } => "session_approval",
                         maka_agent_facts::interaction::InteractionRequest::ServiceApproval {
                             ..
                         } => "service_approval",

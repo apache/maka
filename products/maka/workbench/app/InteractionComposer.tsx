@@ -44,7 +44,6 @@ import type {
   InteractionQuestion,
   InteractionRecord,
   InteractionRequest,
-  Permissions,
   Scope2 as InteractionScope,
 } from '../../../../packages/plugin-sdk/src/generated/runtime';
 import {
@@ -64,6 +63,7 @@ import {
 import { ChoiceIndicator } from './ChoiceIndicator';
 import { Icon } from './Icon';
 import { CapabilityRequest, computerCapability } from './CapabilityRequest';
+import { SessionApprovalRequest, interactionPermissions } from './SessionApprovalRequest';
 import { FormRequest } from './FormRequest';
 import { ComputerAppRequest } from './ComputerAppRequest';
 import { SystemPermissionRequest, systemPermissionName } from './SystemPermissionRequest';
@@ -140,21 +140,6 @@ export function InteractionAction(props: {
     </Button>
   );
 }
-function interactionPermissions(value: Permissions): string {
-  const paths = value.filesystem.map(
-    (rule) =>
-      `${tr(rule.access === 'write' ? 'Read/write' : 'Read')} · ${tr(rule.scope === 'exact' ? 'this exact path' : 'path and descendants')}\n  ${rule.path}`,
-  );
-  const network =
-    value.network === 'allowed'
-      ? tr('Network: all destinations')
-      : value.network === 'denied'
-        ? tr('Network: no additional access')
-        : `${tr('Network: listed destinations only')}\n${value.network.restricted.destinations.map((target) => `  ${target.host}:${target.port}`).join('\n')}`;
-  return [...(paths.length ? paths : [tr('Filesystem: no additional access')]), network].join(
-    '\n\n',
-  );
-}
 
 export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
   if (outcome.kind === 'form_answer')
@@ -176,6 +161,10 @@ export function interactionOutcomeSummary(outcome: InteractionOutcome): UiText {
           ),
         })
       : uiMessage('Access denied');
+  if (outcome.kind === 'session_approval_decision')
+    return outcome.decision === 'allow'
+      ? uiMessage('Child decision approved')
+      : uiMessage('Child decision denied');
   if (outcome.kind === 'service_approval_decision')
     return outcome.decision === 'allow'
       ? uiMessage('Tool call allowed')
@@ -241,15 +230,19 @@ export function InteractionComposer({
   control,
   focusComposer,
   confirming,
+  openBeside,
 }: {
   sessionId: string;
   requestId: string;
   control: InteractionControl;
   focusComposer(): void;
   confirming(): boolean;
+  openBeside?: (sessionId: string) => void;
 }) {
   const host = useHost();
   const record = signal<InteractionRecord | null>(null);
+  const child = signal<InteractionRecord | null>(null);
+  const childTitle = signal('');
   const loading = signal(false),
     busy = signal(false),
     uncertain = signal(false);
@@ -270,12 +263,27 @@ export function InteractionComposer({
     alive = false;
   });
   const request = () => record()?.request;
-  const approvalRequest = () => {
+  const sessionApprovalRequest = () => {
     const current = request();
+    return current?.kind === 'session_approval' ? current : null;
+  };
+  const detailRequest = () => (sessionApprovalRequest() ? child()?.request : request());
+  const detailSessionId = () => sessionApprovalRequest()?.sessionId ?? sessionId;
+  const sessionApprovalReady = () => {
+    const current = child();
+    return (
+      !!current &&
+      !current.outcome &&
+      (current.request.kind !== 'service_approval' ||
+        (completeArguments() && !argumentBusy() && !argumentError()))
+    );
+  };
+  const approvalRequest = () => {
+    const current = detailRequest();
     return current?.kind === 'service_approval' ? current : null;
   };
   const permissionsRequest = () => {
-    const current = request();
+    const current = detailRequest();
     return current?.kind === 'permissions' ? current : null;
   };
   const questionRequest = () => {
@@ -311,7 +319,11 @@ export function InteractionComposer({
     return current ? JSON.stringify(current.questions) : null;
   };
   const responseIdentity = () =>
-    formRequest() || capabilityRequest() || computerAppRequest() || systemPermissionRequest()
+    sessionApprovalRequest() ||
+    formRequest() ||
+    capabilityRequest() ||
+    computerAppRequest() ||
+    systemPermissionRequest()
       ? JSON.stringify(request())
       : null;
   const form = () => formSubmission(formRequest()?.fields ?? [], formDrafts());
@@ -347,10 +359,11 @@ export function InteractionComposer({
   const editForm = (index: number, requestJSON: string, value: string) =>
     changeForm({ sessionId, requestId, requestJSON, index, change: { value } });
   const sourceIdentity = (
-    original: ApprovalSource | InteractionRequest | null | undefined = request(),
+    original: ApprovalSource | InteractionRequest | null | undefined = detailRequest(),
   ) =>
     original?.kind === 'service_approval'
       ? JSON.stringify({
+          sessionId: detailSessionId(),
           kind: original.kind,
           through: original.through,
           toolUseId: original.toolUseId,
@@ -433,7 +446,7 @@ export function InteractionComposer({
     const offset = interactionBytes(argumentsText());
     try {
       const page = await host.query('agent', 'source', {
-        sessionId,
+        sessionId: detailSessionId(),
         through: original.through,
         source: { kind: 'tool_use', toolUseId: original.toolUseId },
         field: 'arguments',
@@ -501,6 +514,28 @@ export function InteractionComposer({
           ? await host.systemPermissionActions(sessionId, requestId)
           : [];
       if (!alive) return;
+      child.set(null);
+      childTitle.set('');
+      if (canonical.request.kind === 'session_approval' && !canonical.outcome) {
+        const target = canonical.request;
+        const [original, observed] = await Promise.all([
+          host.query('agent', 'interaction', {
+            sessionId: target.sessionId,
+            requestId: target.requestId,
+          }),
+          host.query('agent', 'observe', { sessionId: target.sessionId }),
+        ]);
+        if (!alive) return;
+        if (
+          !original ||
+          original.sessionId !== target.sessionId ||
+          original.requestId !== target.requestId ||
+          observed.session.id !== target.sessionId
+        )
+          throw new UiError('The Host returned a different child request.');
+        child.set(original);
+        childTitle.set(observed.session.title || tr('Untitled conversation'));
+      }
       systemActions.set(actions);
       record.set(canonical);
       uncertain.set(unresolved);
@@ -523,8 +558,7 @@ export function InteractionComposer({
         formDrafts.set(initialForm(canonical.request.fields));
       }
       if (canonical.request.kind === 'form' && canonical.outcome) formDrafts.set([]);
-      if (canonical.request.kind === 'service_approval' && !canonical.outcome)
-        void readArguments(canonical.request);
+      if (approvalRequest() && !canonical.outcome) void readArguments(approvalRequest());
     } catch (reason) {
       if (alive) {
         uncertain.set(true);
@@ -583,7 +617,9 @@ export function InteractionComposer({
   const submissionAnswer = (): InteractionAnswer | null => {
     const current = request();
     if (!current) return null;
-    if (current.kind === 'service_approval') {
+    if (current.kind === 'session_approval') {
+      return sessionApprovalReady() ? { kind: 'session_approval', decision: 'allow' } : null;
+    } else if (current.kind === 'service_approval') {
       if (completeArguments() && !argumentBusy() && !argumentError())
         return { kind: current.kind, decision: 'allow' };
     } else if (current.kind === 'permissions') {
@@ -619,7 +655,8 @@ export function InteractionComposer({
   };
   const denialAnswer = (): InteractionAnswer | null => {
     const kind = request()?.kind;
-    if (kind === 'service_approval') return { kind, decision: 'deny' };
+    if (kind === 'service_approval' || kind === 'session_approval')
+      return { kind, decision: 'deny' };
     if (kind === 'permissions') return { kind, decision: { decision: 'deny' } };
     if (kind === 'form') return { kind, action: 'decline' };
     if (kind === 'client_capability' && computerCapability(capabilityRequest()!))
@@ -655,6 +692,7 @@ export function InteractionComposer({
     if (answer.kind === 'service_approval' && rendered.sourceJSON !== sourceIdentity()) return;
     if (
       [
+        'session_approval',
         'form',
         'client_capability',
         'computer_app',
@@ -672,7 +710,8 @@ export function InteractionComposer({
     )
       return;
     if (
-      (answer.kind === 'question' ||
+      ((answer.kind === 'session_approval' && answer.decision === 'allow') ||
+        answer.kind === 'question' ||
         (answer.kind === 'permissions' && answer.decision.decision === 'allow') ||
         (answer.kind === 'form' && answer.action === 'accept') ||
         (answer.kind === 'client_capability' && answer.decision === 'allow') ||
@@ -721,6 +760,7 @@ export function InteractionComposer({
     const current = request();
     return current
       ? {
+          session_approval: tr('Review child decision'),
           service_approval: tr('Review tool call'),
           permissions: tr('Review additional access'),
           question: 'A question for you',
@@ -763,7 +803,14 @@ export function InteractionComposer({
             flexShrink: 0,
           }}
         >
-          <If when={approvalRequest() || permissionsRequest() || capabilityRequest()}>
+          <If
+            when={
+              sessionApprovalRequest() ||
+              approvalRequest() ||
+              permissionsRequest() ||
+              capabilityRequest()
+            }
+          >
             <Icon name="shield" color={C.secondary} />
           </If>
           <Text style={{ ...bodyTextStyle, flex: 1, color: C.text, fontWeight: '600' }}>
@@ -784,7 +831,29 @@ export function InteractionComposer({
             when={record()?.outcome}
             else={
               <View style={{ gap: 16 }}>
-                <If when={request()?.kind === 'service_approval'}>
+                <If when={sessionApprovalRequest()}>
+                  <InteractionAction
+                    label={childTitle() || tr('Child conversation')}
+                    disabled={!child() || !openBeside}
+                    onPress={inputAction(
+                      (target: { sessionId: string }) => {
+                        if (alive && target.sessionId === sessionApprovalRequest()?.sessionId)
+                          openBeside?.(target.sessionId);
+                      },
+                      { sessionId: sessionApprovalRequest()!.sessionId },
+                    )}
+                  />
+                  <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                    {tr('Approve only the proposed child decision shown below.')}
+                  </Text>
+                </If>
+                <If when={sessionApprovalRequest() && child()}>
+                  <SessionApprovalRequest
+                    child={child()!}
+                    answer={sessionApprovalRequest()!.answer}
+                  />
+                </If>
+                <If when={detailRequest()?.kind === 'service_approval'}>
                   <View style={{ gap: 4 }}>
                     <Text
                       style={[
@@ -835,7 +904,7 @@ export function InteractionComposer({
                     <Text style={{ ...bodyTextStyle, color: C.danger }}>{argumentError()}</Text>
                   </If>
                 </If>
-                <If when={request()?.kind === 'permissions'}>
+                <If when={detailRequest()?.kind === 'permissions'}>
                   <Text style={[{ ...bodyTextStyle, color: C.text }, { userSelect: 'text' }]}>
                     {permissionsRequest()?.request.reason}
                   </Text>
@@ -870,40 +939,42 @@ export function InteractionComposer({
                         : ''}
                     </Text>
                   </View>
-                  <View style={{ gap: 8 }}>
-                    <Text style={{ ...bodyTextStyle, color: C.secondary }}>
-                      {tr('Allow exactly these paths and network destinations for:')}
-                    </Text>
-                    <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                      <Each
-                        of={
-                          permissionsRequest()?.toolUseId === null
-                            ? ['turn', 'session']
-                            : ['once', 'turn', 'session']
-                        }
-                      >
-                        {(duration) => (
-                          <InteractionAction
-                            label={
-                              duration() === 'once'
-                                ? tr('This call')
-                                : duration() === 'turn'
-                                  ? tr('This turn')
-                                  : tr('This session')
-                            }
-                            kind="radio"
-                            disabled={blocked()}
-                            selected={scope() === duration()}
-                            onPress={inputAction(chooseScope, {
-                              sessionId,
-                              requestId,
-                              value: duration() as InteractionScope,
-                            })}
-                          />
-                        )}
-                      </Each>
+                  <If when={!sessionApprovalRequest()}>
+                    <View style={{ gap: 8 }}>
+                      <Text style={{ ...bodyTextStyle, color: C.secondary }}>
+                        {tr('Allow exactly these paths and network destinations for:')}
+                      </Text>
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                        <Each
+                          of={
+                            permissionsRequest()?.toolUseId === null
+                              ? ['turn', 'session']
+                              : ['once', 'turn', 'session']
+                          }
+                        >
+                          {(duration) => (
+                            <InteractionAction
+                              label={
+                                duration() === 'once'
+                                  ? tr('This call')
+                                  : duration() === 'turn'
+                                    ? tr('This turn')
+                                    : tr('This session')
+                              }
+                              kind="radio"
+                              disabled={blocked()}
+                              selected={scope() === duration()}
+                              onPress={inputAction(chooseScope, {
+                                sessionId,
+                                requestId,
+                                value: duration() as InteractionScope,
+                              })}
+                            />
+                          )}
+                        </Each>
+                      </View>
                     </View>
-                  </View>
+                  </If>
                 </If>
                 <If when={request()?.kind === 'question'}>
                   <Each<InteractionQuestion> of={questionRequest()?.questions ?? []} key="index">
@@ -1175,14 +1246,19 @@ export function InteractionComposer({
             <If
               when={
                 !record()?.outcome &&
-                (approvalRequest() ||
+                (sessionApprovalRequest() ||
+                  approvalRequest() ||
                   permissionsRequest() ||
                   (capabilityRequest() && computerCapability(capabilityRequest()!)))
               }
             >
               <InteractionAction
-                label={tr('Deny')}
-                tooltip={tr('Deny · D')}
+                label={sessionApprovalRequest() ? tr('Deny child decision') : tr('Deny')}
+                tooltip={
+                  sessionApprovalRequest()
+                    ? shortcut(tr('Deny child decision'), 'd')
+                    : tr('Deny · D')
+                }
                 disabled={blocked()}
                 onPress={answerBinding(denialAnswer())}
               />
@@ -1190,7 +1266,8 @@ export function InteractionComposer({
             <If
               when={
                 !record()?.outcome &&
-                (approvalRequest() ||
+                (sessionApprovalRequest() ||
+                  approvalRequest() ||
                   permissionsRequest() ||
                   questionRequest() ||
                   formRequest() ||
@@ -1200,23 +1277,28 @@ export function InteractionComposer({
               <InteractionAction
                 primary
                 tooltip={
-                  request()?.kind === 'form'
-                    ? shortcut(tr('Submit form'), 'mod+enter')
-                    : request()?.kind === 'question'
-                      ? shortcut(tr('Submit answers'), 'mod+enter')
-                      : shortcut(tr('Allow'), 'mod+enter')
+                  sessionApprovalRequest()
+                    ? shortcut(tr('Approve child decision'), 'mod+enter')
+                    : request()?.kind === 'form'
+                      ? shortcut(tr('Submit form'), 'mod+enter')
+                      : request()?.kind === 'question'
+                        ? shortcut(tr('Submit answers'), 'mod+enter')
+                        : shortcut(tr('Allow'), 'mod+enter')
                 }
                 label={
                   busy()
                     ? tr('Recording answer…')
-                    : request()?.kind === 'form'
-                      ? tr('Submit form')
-                      : request()?.kind === 'question'
-                        ? tr('Submit answers')
-                        : tr('Allow')
+                    : sessionApprovalRequest()
+                      ? tr('Approve child decision')
+                      : request()?.kind === 'form'
+                        ? tr('Submit form')
+                        : request()?.kind === 'question'
+                          ? tr('Submit answers')
+                          : tr('Allow')
                 }
                 disabled={
                   blocked() ||
+                  (request()?.kind === 'session_approval' && !sessionApprovalReady()) ||
                   (request()?.kind === 'question' && !questionReady()) ||
                   (request()?.kind === 'form' && !form().answer) ||
                   (request()?.kind === 'service_approval' &&
