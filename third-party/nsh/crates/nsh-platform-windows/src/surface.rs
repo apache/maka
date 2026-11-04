@@ -173,6 +173,7 @@ pub(crate) struct Surface {
     shader_renderer: std::cell::OnceCell<Option<Rc<nsh_engine::shader::Renderer>>>,
     /// Where `asset:/` image URIs resolve ([`crate::image::set_asset_base`]).
     pub(crate) asset_base: RefCell<Option<crate::image::AssetBase>>,
+    pub(crate) min_size: Cell<Option<(i32, i32)>>,
     pub(crate) on_activation: RefCell<Option<ActivationHandler>>,
     active: Cell<bool>,
     pub(crate) image_assets: RefCell<Option<nsh_core::image::loader::ReadAsset>>,
@@ -242,6 +243,7 @@ impl Surface {
             shader_renderer: std::cell::OnceCell::new(),
             asset_base: RefCell::new(None),
             image_assets: RefCell::new(None),
+            min_size: Cell::new(None),
             on_activation: RefCell::new(None),
             active: Cell::new(false),
             image_cache: RefCell::new(None),

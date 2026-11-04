@@ -183,6 +183,11 @@ impl Mounter {
                     // A native child window must stop receiving input before
                     // Core is allowed to release this row's current owner.
                     crate::native::detached(view);
+                    let mut pending = vec![view.clone()];
+                    while let Some(node) = pending.pop() {
+                        pending.extend(node.child_views());
+                        crate::transition::retired(&node);
+                    }
                     crate::navigation::park_retired_root(surface, view);
                 }
                 surface.control(|control| control.retire_list_cell(*id, *request, true));
@@ -490,6 +495,11 @@ impl Mounter {
                 Some(view) if view.kind() == ViewKind::Input => crate::text_input::blur(view),
                 _ => crate::text_input::blur_all(surface),
             },
+            Command::ReplaceRange { .. } => {
+                if let Some(view) = view {
+                    crate::text_input::replace_range(surface, view, command);
+                }
+            }
             Command::SetSelection { start, end } => {
                 if let Some(view) = view {
                     crate::text_input::set_selection(view, *start, *end);

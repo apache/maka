@@ -25,6 +25,9 @@ use tokio::sync::watch;
 
 pub(crate) const APP_ID: &str = "org.apache.maka.desktop";
 pub(crate) const TITLE: &str = "Maka";
+/// The narrowest layout the workbench folds its sidebar for.
+pub(crate) const MIN_SIZE: (f32, f32) = (640., 480.);
+
 pub(crate) const SIZE: (i32, i32) = (1280, 820);
 
 /// What the workbench asks of its window, for the window to carry out.

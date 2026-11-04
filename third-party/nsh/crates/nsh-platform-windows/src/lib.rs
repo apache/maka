@@ -63,7 +63,6 @@ pub use nsh_core::platform::{Appearance, Locale};
 pub use nsh_engine::{
     App, Bundle, ByteSize, CacheLocation, CacheOptions, CachePolicy, Limits, Root,
 };
-pub use windows;
 
 #[cfg(feature = "dev")]
 pub use crate::app::set_root;

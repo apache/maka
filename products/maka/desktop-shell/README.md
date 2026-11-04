@@ -77,5 +77,3 @@ cargo clippy --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows 
 ```
 
 For performance comparisons, build both shells with the same release profile and use the same Host executable, viewport and initial data. Measure shell startup separately from Host admission. Do not compare an error-boundary screen against a fully loaded workbench.
-
-[Local Windows comparison and verification limits](benchmarks/windows-2026-11-02.md).

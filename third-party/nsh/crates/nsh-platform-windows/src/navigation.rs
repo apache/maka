@@ -1309,6 +1309,7 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     if m.view.is_some() {
         if view.parent_view().is_none() {
             view.insert_before(&surface.root, None);
+            crate::transition::resume(surface, view);
             nav.size_modal(surface, id);
         }
         return;
@@ -1326,6 +1327,7 @@ pub(crate) fn present(surface: &Rc<Surface>, view: &NshView) {
     // Escape asks the modal to close: the keyboard is the window's.
     crate::native::take_keyboard(surface);
     view.insert_before(&surface.root, None);
+    crate::transition::resume(surface, view);
     nav.order.push(id);
     nav.size_modal(surface, id);
     // Animated in at the end of the batch, with the options it brings
@@ -1370,6 +1372,7 @@ pub(crate) fn dismiss(surface: &Rc<Surface>, view: &NshView) {
 /// Parks a supplied recycling root immediately, with no navigation lifecycle
 /// or focus-return action. Its normal Insert can restore the same live view.
 pub(crate) fn park_retired_root(surface: &Rc<Surface>, view: &NshView) {
+    view.state_mut().parked = true;
     let inside = |candidate: &NshView| is_ancestor(view, candidate);
     let id = view.id();
     let parent = view.parent_view();
@@ -1456,6 +1459,7 @@ pub(crate) fn header_item(surface: &Rc<Surface>, parent: &NshView, child: &NshVi
     let mut nav = surface.nav.borrow_mut();
     if child.parent_view().as_ref() != Some(parent) {
         child.insert_before(parent, None);
+        crate::transition::resume(surface, child);
     }
     let s = nav.screen(parent);
     if !s.items.contains(child) {

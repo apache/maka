@@ -40,3 +40,6 @@ ttf-parser.workspace = true
 crossbeam-channel.workspace = true
 nsh-dev = { workspace = true, features = ["client"], optional = true }
 nsh-testing = { workspace = true, features = ["agent"], optional = true }
+
+[target.'cfg(windows)'.dev-dependencies]
+nsh-bundler = { workspace = true, default-features = false }

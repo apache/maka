@@ -34,7 +34,7 @@
 use crate::{
     host::{self, Connection, Root},
     placement::Placement,
-    shell::{APP_ID, Requests, SIZE, Shell, TITLE},
+    shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
 use maka_workbench::bindings::Bindings;
 use nsh_engine::{EngineConfig, JsonValue, Limits};
@@ -53,8 +53,6 @@ use tokio::{runtime::Handle, sync::watch};
 
 /// The first pause between attempts to reach the Root's next Host.
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
-/// The narrowest layout the workbench folds its sidebar for.
-pub(crate) const MIN_SIZE: (f32, f32) = (640., 480.);
 
 /// The longest pause between attempts to reach the Root's next Host.
 const RECONNECT_LIMIT: Duration = Duration::from_secs(30);

@@ -23,8 +23,7 @@
 
 use crate::{
     host::{self, Connection},
-    shell::{APP_ID, Requests, SIZE, Shell, TITLE},
-    window::MIN_SIZE,
+    shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;

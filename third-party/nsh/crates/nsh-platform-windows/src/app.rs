@@ -105,6 +105,8 @@ pub struct AppOptions {
     pub title: String,
     /// The initial window size in points.
     pub size: (i32, i32),
+    /// Minimum client area in logical points.
+    pub min_size: Option<(i32, i32)>,
     /// The native components apps can use (`nsh/native`); shared by the
     /// views made with these options. See [`AppView::register_component`].
     pub components: crate::native::Components,
@@ -146,6 +148,7 @@ impl Default for AppOptions {
             app_id: "com.longbridge.nsh.host".to_owned(),
             title: "nsh".to_owned(),
             size: (1200, 800),
+            min_size: None,
             components: Default::default(),
             appearance: Appearance::System,
             limits: Limits::default(),
@@ -166,9 +169,10 @@ impl Default for AppOptions {
 ///
 /// ```no_run
 /// use nsh_platform_windows::{
-///     AppOptions, AppView, AssetBase, Bundle, windows::Win32::Foundation::HWND,
+///     AppOptions, AppView, AssetBase, Bundle,
 /// };
 ///
+/// use windows::Win32::Foundation::HWND;
 /// # fn host(parent: HWND) -> windows::core::Result<()> {
 /// let view = AppView::new(
 ///     Some(parent),
@@ -198,6 +202,7 @@ impl AppView {
     pub fn new(parent: Option<HWND>, options: AppOptions) -> windows::core::Result<Rc<AppView>> {
         let surface = Surface::new(initial_environment());
         surface.appearance.set(options.appearance);
+        surface.min_size.set(options.min_size);
         surface.native.set_components(options.components.clone());
         surface.native.set_app_id(&options.app_id);
         let hwnd = crate::window::create(&surface, &options.title, options.size, parent)?;
@@ -352,6 +357,15 @@ impl AppView {
         *self.surface.host_tokens.borrow_mut() = tokens.clone();
         self.surface.control(|c| c.set_tokens(tokens));
         Ok(())
+    }
+
+    /// Choose a directory in a dialog owned by this window.
+    /// The callback runs on the UI thread; cancellation is Ok(None).
+    pub fn choose_directory(
+        &self,
+        done: impl FnOnce(Result<Option<PathBuf>, String>) + Send + 'static,
+    ) {
+        crate::file_requests::choose_directory(&self.surface, done);
     }
 
     /// Stops the app.

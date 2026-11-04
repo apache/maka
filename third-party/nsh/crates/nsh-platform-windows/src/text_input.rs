@@ -44,6 +44,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    ops::Range,
     rc::Rc,
 };
 
@@ -51,6 +52,7 @@ use nsh_core::{
     Bounds, Color, EventKind, EventPayload, InputConfig, NodeId, PayloadValue, Points,
     SubmitBehavior, TextAlign,
     geometry::{Point, Size},
+    input_tokens::InputTokenStyle,
     tailwind::state,
     text_edit::{self as model, Composition, Model, Unit, key_of, pasted, utf16_to_byte},
 };
@@ -59,7 +61,7 @@ use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
-            Direct2D::D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
+            Direct2D::{D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT, D2D1_ROUNDED_RECT},
             DirectWrite::{
                 DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_ITALIC, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_WEIGHT, DWRITE_HIT_TEST_METRICS, DWRITE_LINE_SPACING_METHOD_UNIFORM,
@@ -543,6 +545,26 @@ impl Hosted for InputState {
         let color = self.text_color();
         let focused = self.focused.get();
 
+        let tokens = if secure {
+            Vec::new()
+        } else {
+            display_tokens(&model)
+        };
+        for (range, style) in &tokens {
+            if let Some(tint) = style.background_color {
+                for r in hit_rects(&layout, range.start, range.end - range.start, ox, oy) {
+                    let rect = D2D1_ROUNDED_RECT {
+                        rect: rect_f(r.left, r.top, r.width, r.height),
+                        radiusX: style.border_radius.0,
+                        radiusY: style.border_radius.0,
+                    };
+                    // SAFETY: drawing within BeginDraw/EndDraw on this thread.
+                    unsafe {
+                        cx.dc.FillRoundedRectangle(&rect, cx.solid(tint));
+                    }
+                }
+            }
+        }
         if focused && model.has_selection() {
             let (s, e) = model.selection();
             let (s, e) = (model.to_display(s, secure), model.to_display(e, secure));
@@ -588,14 +610,37 @@ impl Hosted for InputState {
                 }
             }
         } else {
-            // SAFETY: as above.
+            // Effects live only during this draw, not in the cached layout across device loss.
+            // SAFETY: COM calls on a layout and brushes owned by this UI thread.
             unsafe {
+                for (range, style) in &tokens {
+                    if let Some(tint) = style.color {
+                        let _ = layout.SetDrawingEffect(
+                            cx.solid(tint),
+                            DWRITE_TEXT_RANGE {
+                                startPosition: range.start,
+                                length: range.end - range.start,
+                            },
+                        );
+                    }
+                }
                 cx.dc.DrawTextLayout(
                     Vector2 { X: ox, Y: oy },
                     &layout,
                     cx.solid(color),
                     D2D1_DRAW_TEXT_OPTIONS_ENABLE_COLOR_FONT,
                 );
+                for (range, style) in &tokens {
+                    if style.color.is_some() {
+                        let _ = layout.SetDrawingEffect(
+                            None::<&windows::core::IUnknown>,
+                            DWRITE_TEXT_RANGE {
+                                startPosition: range.start,
+                                length: range.end - range.start,
+                            },
+                        );
+                    }
+                }
             }
         }
 
@@ -696,6 +741,30 @@ fn hit_rects(
         rects.truncate(count as usize);
         rects
     }
+}
+
+fn display_tokens(model: &Model) -> Vec<(Range<u32>, InputTokenStyle)> {
+    let mut shown = Vec::new();
+    let caret = model.caret();
+    let composition = model
+        .composition
+        .as_ref()
+        .filter(|c| !c.text.is_empty())
+        .map_or(0, |c| model::utf16_len(&c.text) as u32);
+    for span in model.tokens().spans() {
+        let start = model.to_display(span.range.start, false);
+        let end = model.to_display(span.range.end, false);
+        if composition > 0 && span.range.start <= caret && caret < span.range.end {
+            let at = model.to_display(caret, false);
+            if start < at {
+                shown.push((start..at, span.style));
+            }
+            shown.push((at + composition..end, span.style));
+        } else {
+            shown.push((start..end, span.style));
+        }
+    }
+    shown
 }
 
 fn metrics(layout: &IDWriteTextLayout) -> DWRITE_TEXT_METRICS {
@@ -1351,7 +1420,13 @@ pub(crate) fn config(surface: &Rc<Surface>, view: &NshView, config: &InputConfig
         let old = input.config.borrow();
         old.editable != config.editable || old.secure != config.secure
     };
+    let tokens_changed = input.model.borrow_mut().set_tokens(&config.tokens);
     *input.config.borrow_mut() = config.clone();
+    if tokens_changed {
+        input.reveal();
+        report_selection(surface, view, &input);
+        view.changed();
+    }
     if editable_changed && input.focused.get() {
         update_ime(surface);
     }
@@ -1555,6 +1630,58 @@ pub(crate) fn tab_to(view: &NshView) {
     {
         input.model.borrow_mut().select_all();
         after_edit(&surface, view, &input, false);
+    }
+}
+
+/// One guarded, undoable application edit of this native input.
+pub(crate) fn replace_range(surface: &Rc<Surface>, view: &NshView, command: &nsh_core::Command) {
+    let nsh_core::Command::ReplaceRange {
+        range,
+        text,
+        expected_text,
+        expected_selection,
+        count,
+    } = command
+    else {
+        return;
+    };
+    let Some(input) = input_of(view) else {
+        return;
+    };
+    if !input.focused.get()
+        || !input.active.get()
+        || !input.config.borrow().editable
+        || !view.attached()
+        || view.state().props.accessibility.state.disabled
+        || input.count.get() != *count
+    {
+        return;
+    }
+    let (changed, selection_changed) = {
+        let mut model = input.model.borrow_mut();
+        let before = model.selection();
+        let observed = model::byte_to_utf16(model.text(), before.0)
+            ..model::byte_to_utf16(model.text(), before.1);
+        if model.composition.is_some()
+            || model.text() != expected_text
+            || observed != *expected_selection
+            || range.start > range.end
+        {
+            return;
+        }
+        let start = model::utf16_to_byte(model.text(), range.start);
+        let end = model::utf16_to_byte(model.text(), range.end);
+        if model::byte_to_utf16(model.text(), start) != range.start
+            || model::byte_to_utf16(model.text(), end) != range.end
+        {
+            return;
+        }
+        let changed = model.replace_range(start..end, text, input.config.borrow().max_length);
+        (changed, model.selection() != before)
+    };
+    if changed || selection_changed {
+        input.goal_x.set(None);
+        after_edit(surface, view, &input, changed);
     }
 }
 
@@ -2046,7 +2173,8 @@ fn line_edge(input: &InputState, end: bool) -> usize {
             at = at.saturating_sub(1);
         }
     }
-    input.model.borrow().text_at(at, secure)
+    let model = input.model.borrow();
+    model.tokens().step(model.text_at(at, secure), end)
 }
 
 /// Where Up / Down (a line) or Page Up / Down (a box) takes the caret,
@@ -2075,7 +2203,7 @@ fn vertical(input: &InputState, down: bool, page: bool) -> usize {
         return model.text().len();
     }
     let at = input.hit_layout(&layout, goal, target);
-    model.text_at(at, secure)
+    model.tokens().step(model.text_at(at, secure), down)
 }
 
 // --- The caret's blinking ----------------------------------------------------
@@ -2156,6 +2284,127 @@ mod blink {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "js")]
+    #[test]
+    fn within_scoped_binding_replaces_native_text_and_undoes_as_one_edit() {
+        let code = nsh_bundler::compile_module("ScopedPaste.tsx", r#"
+            import { mount, keymap, View } from 'nsh';
+            import { Input } from 'nsh/base';
+            function App() {
+                let field;
+                return <View ref={node => keymap.bind('ctrl+v', () => field.replaceRange({
+                    start: 2, end: 4, text: 'X', expectedText: 'ab😀cd',
+                    expectedSelection: {start: 6, end: 6}
+                }), {within: node, when: 'always'})}>
+                    <Input ref={node => field = node} value="ab😀cd" style={{width: 200, height: 40}} />
+                </View>;
+            }
+            mount(App);
+        "#, &[]).unwrap();
+        let surface = Surface::new(nsh_core::platform::Environment {
+            window: nsh_core::Size::new(Points(240.0), Points(80.0)),
+            os: nsh_core::platform::Os::Windows,
+            native_focus_scopes: true,
+            ..Default::default()
+        });
+        let mut config = nsh_engine::EngineConfig::new(nsh_engine::Bundle::source(code));
+        config.ui_sets = vec![nsh_base::registry()];
+        surface.start(config);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let field = loop {
+            surface.drain();
+            let mut pending = surface.root.child_views();
+            let mut found = None;
+            while let Some(view) = pending.pop() {
+                pending.extend(view.child_views());
+                if let Some(input) = input_of(&view)
+                    && input.configured.get()
+                    && input.model.borrow().text() == "ab😀cd"
+                {
+                    found = Some(view);
+                    break;
+                }
+            }
+            if let Some(view) = found {
+                break view;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "scoped input did not mount"
+            );
+            std::thread::yield_now();
+        };
+        focus_view(&surface, &field);
+        set_selection(&field, 6, 6);
+        let input = input_of(&field).unwrap();
+        assert!(crate::input::key(
+            &surface,
+            KeyEvent {
+                vk: 0x56,
+                down: true,
+                repeat: false,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                }
+            }
+        ));
+        while input.model.borrow().text() != "abXcd" {
+            surface.drain();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "within-scoped replaceRange was not applied"
+            );
+            std::thread::yield_now();
+        }
+        assert_eq!(input.count.get(), 1);
+        assert_eq!(input.model.borrow().selection(), (3, 3));
+        crate::input::key(
+            &surface,
+            KeyEvent {
+                vk: 0x5a,
+                down: true,
+                repeat: false,
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            },
+        );
+        assert_eq!(input.model.borrow().text(), "ab😀cd");
+        assert_eq!(input.count.get(), 2);
+        blur_all(&surface);
+        surface.stop();
+    }
+
+    #[test]
+    fn configured_tokens_style_and_delete_whole_skill() {
+        use nsh_core::input_tokens::{InputTokenRule, InputTokenStyle};
+        let surface = Surface::new(Default::default());
+        let view = NshView::new(2, nsh_core::ViewKind::Input);
+        view.insert_before(&surface.root, None);
+        create(&surface, &view);
+        let input = input_of(&view).unwrap();
+        input.model.borrow_mut().set_text("/skill:demo ");
+        let style = InputTokenStyle {
+            color: Some(Color::rgba(255, 0, 0, 255)),
+            background_color: Some(Color::rgba(0, 0, 255, 255)),
+            border_radius: Points(3.0),
+        };
+        config(
+            &surface,
+            &view,
+            &InputConfig {
+                tokens: vec![InputTokenRule::new("(?P<token>/skill:[a-z]+)", style, true).unwrap()],
+                ..Default::default()
+            },
+        );
+        assert_eq!(display_tokens(&input.model.borrow()), vec![(0..11, style)]);
+        input.model.borrow_mut().select(11, 11);
+        assert!(input.model.borrow_mut().delete(Unit::Char, false));
+        assert_eq!(input.model.borrow().text(), " ");
+    }
 
     #[test]
     fn alignment() {

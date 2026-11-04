@@ -540,6 +540,10 @@ fn handle(
         }
         WM_ERASEBKGND => return Some(LRESULT(1)),
         WM_SIZE => {
+            // SAFETY: querying the foreground window does not retain its handle.
+            surface.activation_changed(
+                wparam.0 != SIZE_MINIMIZED as usize && unsafe { GetForegroundWindow() } == hwnd,
+            );
             sync_size(surface, hwnd);
             // Drawn now, so that the window never shows stretched or
             // stale pixels while it is resized.
@@ -565,11 +569,19 @@ fn handle(
         WM_GETMINMAXINFO => {
             // SAFETY: `lparam` is the window's MINMAXINFO.
             let info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
-            let s = dpi(hwnd) as f32 / 96.0;
-            info.ptMinTrackSize = POINT {
-                x: (200.0 * s) as i32,
-                y: (150.0 * s) as i32,
-            };
+            if let Some(size) = surface.min_size.get() {
+                // SAFETY: querying this live window's styles.
+                let (style, ex_style) = unsafe {
+                    (
+                        WINDOW_STYLE(GetWindowLongPtrW(hwnd, GWL_STYLE) as u32),
+                        WINDOW_EX_STYLE(GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32),
+                    )
+                };
+                match minimum_track_size(size, dpi(hwnd), style, ex_style) {
+                    Ok(size) => info.ptMinTrackSize = size,
+                    Err(error) => log::warn!("cannot constrain the window size: {error}"),
+                }
+            }
             return Some(LRESULT(0));
         }
         WM_MOUSEMOVE => {
@@ -773,7 +785,7 @@ fn handle(
         | WM_IME_REQUEST => {
             return crate::text_input::ime(surface, hwnd, msg, wparam, lparam);
         }
-        WM_ACTIVATE => surface.activation_changed((wparam.0 & 0xffff) != WA_INACTIVE as usize),
+        WM_ACTIVATE => surface.activation_changed(activation_active(wparam)),
         WM_SETFOCUS => crate::text_input::window_focus(surface, true),
         WM_KILLFOCUS => crate::text_input::window_focus(surface, false),
         WM_GETOBJECT => return crate::access::get_object(surface, hwnd, wparam, lparam),
@@ -1049,9 +1061,80 @@ pub(crate) fn keep<T: 'static>(value: T) {
     KEPT.with(|k| k.borrow_mut().push(Box::new(value)));
 }
 
+fn activation_active(wparam: WPARAM) -> bool {
+    (wparam.0 & 0xffff) != WA_INACTIVE as usize && ((wparam.0 >> 16) & 0xffff) == 0
+}
+
+fn minimum_track_size(
+    size: (i32, i32),
+    dpi: u32,
+    style: WINDOW_STYLE,
+    ex_style: WINDOW_EX_STYLE,
+) -> windows::core::Result<POINT> {
+    let scale = dpi as f64 / 96.0;
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: (size.0 as f64 * scale).ceil() as i32,
+        bottom: (size.1 as f64 * scale).ceil() as i32,
+    };
+    // SAFETY: a local rectangle and the window's current styles and DPI.
+    unsafe {
+        AdjustWindowRectExForDpi(&mut rect, style, false, ex_style, dpi)?;
+    }
+    Ok(POINT {
+        x: rect.right - rect.left,
+        y: rect.bottom - rect.top,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn minimized_activation_does_not_report_foreground() {
+        assert!(activation_active(WPARAM(WA_ACTIVE as usize)));
+        assert!(!activation_active(WPARAM(WA_INACTIVE as usize)));
+        assert!(!activation_active(WPARAM((1 << 16) | WA_ACTIVE as usize)));
+        assert!(!activation_active(WPARAM(
+            (1 << 16) | WA_CLICKACTIVE as usize
+        )));
+    }
+
+    #[test]
+    fn minimum_client_size_includes_dpi_scaled_window_chrome() {
+        for dpi in [96, 144, 192] {
+            let size = minimum_track_size(
+                (640, 480),
+                dpi,
+                WS_OVERLAPPEDWINDOW,
+                WINDOW_EX_STYLE::default(),
+            )
+            .unwrap();
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: size.x,
+                bottom: size.y,
+            };
+            // SAFETY: a local rectangle using the same styles at this DPI.
+            unsafe {
+                AdjustWindowRectExForDpi(
+                    &mut rect,
+                    WS_OVERLAPPEDWINDOW,
+                    false,
+                    WINDOW_EX_STYLE::default(),
+                    dpi,
+                )
+                .unwrap();
+            }
+            let extra_x = rect.right - rect.left - size.x;
+            let extra_y = rect.bottom - rect.top - size.y;
+            assert_eq!(size.x - extra_x, 640 * dpi as i32 / 96);
+            assert_eq!(size.y - extra_y, 480 * dpi as i32 / 96);
+        }
+    }
 
     #[test]
     fn held_buttons_number_the_buttons_as_presses_do() {

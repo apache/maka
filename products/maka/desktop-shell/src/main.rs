@@ -36,8 +36,6 @@ mod appkit;
 mod direct2d;
 #[cfg(windows)]
 use direct2d as backend;
-#[cfg(windows)]
-mod direct2d_folder;
 #[cfg(any(target_os = "linux", target_os = "macos", windows))]
 mod host;
 #[cfg(any(target_os = "linux", target_os = "macos"))]

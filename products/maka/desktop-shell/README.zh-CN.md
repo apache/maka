@@ -75,5 +75,3 @@ cargo clippy --manifest-path third-party/nsh/Cargo.toml -p nsh-platform-windows 
 ```
 
 性能对比须采用相同 release 配置、Host 可执行文件、窗口尺寸和初始数据。桌面壳启动与 Host 接入分别计时，不应将错误边界页面与完整加载的工作台进行比较。
-
-[本地 Windows 对比结果与验证范围](benchmarks/windows-2026-11-02.md)。

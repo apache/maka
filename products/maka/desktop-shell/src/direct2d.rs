@@ -20,9 +20,8 @@
 //! The Windows workbench in a Direct2D window, with one admitted Host.
 
 use crate::{
-    direct2d_folder,
     host::{self, Connection},
-    shell::{APP_ID, Requests, SIZE, Shell, TITLE},
+    shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
 use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
@@ -71,6 +70,7 @@ fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
             app_id: APP_ID.into(),
             title: TITLE.into(),
             size: SIZE,
+            min_size: Some((MIN_SIZE.0 as i32, MIN_SIZE.1 as i32)),
             ..Default::default()
         },
         move |is_active| {
@@ -105,12 +105,16 @@ fn carry_out(requests: Requests, runtime: &Runtime) {
     });
     runtime.spawn(async move {
         while let Some(call) = folders.recv().await {
-            match tokio::task::spawn_blocking(direct2d_folder::choose).await {
-                Ok(Ok(Some(path))) => call.resolve(JsonValue::from(path)),
-                Ok(Ok(None)) => call.resolve(JsonValue::Null),
-                Ok(Err(error)) => call.reject(error),
-                Err(error) => call.reject(error.to_string()),
-            }
+            with_running_view(move |view| {
+                view.choose_directory(move |path| match path {
+                    Ok(Some(path)) => match path.to_str() {
+                        Some(path) => call.resolve(JsonValue::from(path)),
+                        None => call.reject("the folder's path is not valid UTF-8"),
+                    },
+                    Ok(None) => call.resolve(JsonValue::Null),
+                    Err(error) => call.reject(error),
+                });
+            });
         }
     });
     runtime.spawn(async move {
