@@ -105,7 +105,7 @@ impl Availability {
             available_tools: self.names.clone(),
             cancellation,
         };
-        catalog.bind_native_request(request).await?;
+        catalog.bind_request(request).await?;
         // Only the complete, successfully bound catalog is authoritative here.
         // Base and nested-only views would erase live DirectOnly names.
         self.loaded

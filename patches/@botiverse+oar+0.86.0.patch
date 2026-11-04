@@ -1,3 +1,51 @@
+diff --git a/node_modules/@botiverse/oar/dist/mcp/host-servers.js b/node_modules/@botiverse/oar/dist/mcp/host-servers.js
+new file mode 100644
+index 0000000..628908f
+--- /dev/null
++++ b/node_modules/@botiverse/oar/dist/mcp/host-servers.js
+@@ -0,0 +1,16 @@
++// Only live serveMcpTools endpoints qualify; descriptor copies retain the same short-lived authority.
++const active = new Map();
++export function registerHostServer(server) {
++    const url = server.url;
++    const authorization = server.headers.Authorization;
++    active.set(url, authorization);
++    return () => {
++        if (active.get(url) === authorization) active.delete(url);
++    };
++}
++export function isActiveHostServer(server) {
++    const headers = server.headers;
++    return server.type === "http" && headers !== undefined && Object.keys(headers).length === 1
++        && typeof headers.Authorization === "string"
++        && active.get(server.url) === headers.Authorization;
++}
+diff --git a/node_modules/@botiverse/oar/dist/mcp/serve-tools.js b/node_modules/@botiverse/oar/dist/mcp/serve-tools.js
+index e07fcaf..68f9f96 100644
+--- a/node_modules/@botiverse/oar/dist/mcp/serve-tools.js
++++ b/node_modules/@botiverse/oar/dist/mcp/serve-tools.js
+@@ -1,3 +1,4 @@
++import { registerHostServer } from "./host-servers.js";
+ import { randomBytes } from "node:crypto";
+ import { createServer } from "node:http";
+ import { asRecord, parseJson } from "../shared/json.js";
+@@ -198,12 +199,15 @@ export async function serveMcpTools(options) {
+         void serve(tools, request, response);
+     });
+     const port = await listen(server);
++    const descriptor = { name: options.name, type: "http", url: `http://127.0.0.1:${String(port)}/mcp`, headers: { Authorization: `Bearer ${token}` } };
++    const retire = registerHostServer(descriptor);
+     return {
+-        server: { name: options.name, type: "http", url: `http://127.0.0.1:${String(port)}/mcp`, headers: { Authorization: `Bearer ${token}` } },
++        server: descriptor,
+         setTools(next) {
+             tools.setTools(checkTools(next));
+         },
+         async close() {
++            retire();
+             tools.abortAll();
+             const { promise, resolve } = Promise.withResolvers();
+             server.close(() => { resolve(); });
 diff --git a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts b/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts
 index f346471..7cb2b11 100644
 --- a/node_modules/@botiverse/oar/dist/runtimes/antigravity/install.d.ts
@@ -374,3 +422,41 @@ index 014b4cb..bcb7b94 100644
 \ No newline at end of file
 +{"version":3,"file":"update.js","sources":["../../../src/runtimes/antigravity/update.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,gBAAgB,EAAE,MAAM,aAAa,CAAC;AAG/C,OAAO,EAAE,QAAQ,EAAE,SAAS,EAAE,MAAM,sBAAsB,CAAC;AAC3D,OAAO,EAAE,gBAAgB,EAAE,aAAa,EAAE,gBAAgB,EAAE,iBAAiB,EAAE,cAAc,EAAE,MAAM,wBAAwB,CAAC;AAE9H;;;;;;GAMG;AACH,MAAM,UAAU,sBAAsB,CACpC,QAAQ,GAAG,gGAAgG;IAE3G,OAAO,KAAK,EAAE,YAAmC,EAAE,OAAO,GAAuB,EAAE,EAAwB,EAAE;QAC3G,MAAM,MAAM,GAAG,gBAAgB,CAAC,YAAY,CAAC,CAAC;QAC9C,IAAI,MAAM,CAAC,IAAI,KAAK,aAAa,EAAE,CAAC;YAClC,OAAO,MAAM,CAAC,KAAK,CAAC;QACtB,CAAC;QACD,IAAI,gBAAgB,CAAC,MAAM,CAAC,YAAY,CAAC,OAAO,CAAC,EAAE,CAAC;YAClD,OAAO;gBACL,IAAI,EAAE,aAAa;gBACnB,MAAM,EAAE,wBAAwB;gBAChC,MAAM,EAAE,mIAAmI;aAC5I,CAAC;QACJ,CAAC;QACD,MAAM,IAAI,GAAG,MAAM,iBAAiB,CAAC,QAAQ,EAAE,OAAO,CAAC,SAAS,IAAI,gBAAgB,CAAC,CAAC;QACtF,IAAI,CAAC,IAAI,CAAC,EAAE,EAAE,CAAC;YACb,OAAO,IAAI,CAAC,KAAK,CAAC;QACpB,CAAC;QACD,MAAM,OAAO,GAAG,QAAQ,CAAC,SAAS,CAAC,IAAI,CAAC,IAAI,CAAC,CAAC,EAAE,OAAO,CAAC;QACxD,MAAM,KAAK,GAAG,aAAa,CAAC,MAAM,CAAC,SAAS,EAAE,OAAO,OAAO,KAAK,QAAQ,CAAC,CAAC,CAAC,OAAO,CAAC,CAAC,CAAC,EAAE,EAAE,QAAQ,CAAC,CAAC;QACpG,OAAO,KAAK,CAAC,IAAI,KAAK,IAAI,IAAI,KAAK,CAAC,eAAe;YACjD,CAAC,CAAC,EAAE,GAAG,KAAK,EAAE,eAAe,EAAE,CAAC,cAAc,CAAC,KAAK,CAAC,SAAS,EAAE,KAAK,CAAC,MAAM,CAAC,EAAE;YAC/E,CAAC,CAAC,KAAK,CAAC;IACZ,CAAC,CAAC;AACJ,CAAC;AAED,MAAM,CAAC,MAAM,sBAAsB,GAAG,sBAAsB,EAAE,CAAC"}
 \ No newline at end of file
+diff --git a/node_modules/@botiverse/oar/dist/shared/acp/mcp-servers.js b/node_modules/@botiverse/oar/dist/shared/acp/mcp-servers.js
+index 878a6a2..9d4410a 100644
+--- a/node_modules/@botiverse/oar/dist/shared/acp/mcp-servers.js
++++ b/node_modules/@botiverse/oar/dist/shared/acp/mcp-servers.js
+@@ -1,3 +1,4 @@
++import { isActiveHostServer } from "../../mcp/host-servers.js";
+ import { UnsupportedOptionError } from "../../contracts/errors.js";
+ import { asRecord } from "../json.js";
+ import { checkMcpServerNames, givenMcpServers, isHttpMcpServer, mcpCredentialRedactor, redactError } from "../mcp-servers.js";
+@@ -32,7 +33,12 @@ export function acpMcpServersParam(servers, initialized) {
+     }
+     const http = given.find((server) => isHttpMcpServer(server));
+     const capabilities = asRecord(asRecord(initialized.agentCapabilities)?.mcpCapabilities);
+-    if (http !== undefined && capabilities?.http !== true) {
++    // Official Antigravity 1.5.0 accepts authenticated HTTP MCP but omits the ACP declaration.
++    // Limit that measured exception to live, locally served Host endpoints.
++    const localAntigravity = initialized.agentInfo?.name === "Antigravity ACP Server"
++        && initialized.agentInfo?.version === "1.5.0"
++        && given.filter(isHttpMcpServer).every(isActiveHostServer);
++    if (http !== undefined && capabilities?.http !== true && !localAntigravity) {
+         throw new UnsupportedOptionError("mcpServers", `the agent's initialize declares no mcpCapabilities.http, so it attaches no http MCP server (${JSON.stringify(http.name)})`);
+     }
+     return given.map((server) => acpMcpServer(server));
+diff --git a/node_modules/@botiverse/oar/dist/shared/session-options.js b/node_modules/@botiverse/oar/dist/shared/session-options.js
+index e3c484b..c4b84eb 100644
+--- a/node_modules/@botiverse/oar/dist/shared/session-options.js
++++ b/node_modules/@botiverse/oar/dist/shared/session-options.js
+@@ -1,8 +1,9 @@
++import { isActiveHostServer } from "../mcp/host-servers.js";
+ import { UnsupportedOptionError } from "../contracts/errors.js";
+ import { hasMcpCredentials } from "./mcp-servers.js";
+ /** The names of the `mcpServers` entries carrying a credential: `env` on a stdio entry, `headers` on an http one. */
+ function credentialEntries(options) {
+-    return (options.mcpServers ?? []).filter((server) => hasMcpCredentials(server)).map((server) => server.name);
++    return (options.mcpServers ?? []).filter((server) => hasMcpCredentials(server) && !isActiveHostServer(server)).map((server) => server.name);
+ }
+ /** Whether `options` gives `key`: any defined value (including an empty schema), a non-empty map for `env`, a non-empty list for list options, an entry carrying a credential for `mcpServerCredentials`, `exclude` for `userConfiguration`. */
+ export function sessionOptionGiven(options, key) {

@@ -64,6 +64,10 @@ if (entry === '--version') {
     if (method === 'initialize') {
       result = {
         protocolVersion: 1,
+        agentInfo: {
+          name: 'Antigravity ACP Server',
+          version: process.env.MAKA_AGY_LEGACY ? '1.4.5' : '1.5.0',
+        },
         agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } },
         authMethods: [],
       };
@@ -73,6 +77,7 @@ if (entry === '--version') {
         state = JSON.parse(readFileSync(file, 'utf8'));
         if (params.sessionId !== state.id) throw new Error('Wrong native resume id');
       }
+      state.mcpServers = params.mcpServers ?? [];
       save();
       result = { sessionId: state.id, configOptions: configOptions() };
     } else if (method === 'session/set_config_option') {
@@ -82,7 +87,30 @@ if (entry === '--version') {
       save();
       result = { configOptions: configOptions() };
     } else if (method === 'session/prompt') {
-      const text = params.prompt.find((part) => part.type === 'text').text;
+      let text = params.prompt.find((part) => part.type === 'text').text;
+      const mcp = state.mcpServers?.find((server) => server.name === 'maka');
+      if (mcp) {
+        const call = async (method, extra = {}) => {
+          const response = await fetch(mcp.url, {
+            method: 'POST',
+            headers: {
+              'content-type': 'application/json',
+              ...Object.fromEntries(mcp.headers.map(({ name, value }) => [name, value])),
+            },
+            body: JSON.stringify({ jsonrpc: '2.0', id: method, method, ...extra }),
+          });
+          if (!response.ok) throw new Error(`MCP returned ${response.status}`);
+          return (await response.json()).result;
+        };
+        await call('initialize', { params: { protocolVersion: '2025-06-18' } });
+        const listed = await call('tools/list');
+        if (listed.tools.length !== 1 || listed.tools[0].name !== 'SkillSearch')
+          throw new Error('Unexpected Host tool catalog');
+        const result = await call('tools/call', {
+          params: { name: 'SkillSearch', arguments: { query: 'bridge-verification' } },
+        });
+        text = result.content[0].text;
+      }
       send({
         method: 'session/update',
         params: {

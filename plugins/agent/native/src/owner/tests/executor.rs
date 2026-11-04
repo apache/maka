@@ -1045,6 +1045,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
 }
 
 mod oar;
+mod oar_host_tools;
 
 mod oar_attachments;
 

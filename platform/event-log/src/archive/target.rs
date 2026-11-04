@@ -62,6 +62,7 @@ pub(super) async fn read(
          json_extract(d.event_header, '$.fact.name') AS name,
          json_extract(t.event_header, '$.fact.outcome.kind') AS outcome,
          json_extract(t.event_header, '$.fact.outcome.message') AS message,
+         d.sequence AS dispatched,
          c.sequence AS completed,
          (json_extract(t.event_header,'$.id')=t.event_id
            AND json_extract(t.event_header,'$.invocation.invocation_id')=t.invocation_id
@@ -70,10 +71,15 @@ pub(super) async fn read(
            AND json_extract(d.event_header,'$.id')=d.event_id
            AND json_extract(d.event_header,'$.fact.operation_id')=d.operation_id
            AND json_extract(d.event_header,'$.fact.kind')='tool_dispatched'
-           AND c.invocation_id=t.invocation_id
-           AND json_extract(c.call,'$.name')=json_extract(d.event_header,'$.fact.name')
-           AND json_extract(c.call,'$.provider_executed')=0
-           AND c.sequence<d.sequence AND d.sequence<t.sequence) AS identities
+           AND d.sequence<t.sequence
+           AND ((json_extract(d.event_header,'$.fact.call.origin.kind')='provider'
+               AND c.invocation_id=t.invocation_id
+               AND json_extract(c.call,'$.name')=json_extract(d.event_header,'$.fact.name')
+               AND json_extract(c.call,'$.provider_executed')=0
+               AND c.sequence<d.sequence)
+             OR (json_extract(d.event_header,'$.fact.call.origin.kind')='host_sdk'
+               AND json_type(d.event_header,'$.fact.call.origin.parent_operation_id')='null'
+               AND json_extract(d.event_header,'$.fact.call.origin.parent_relationship') IS NULL))) AS identities
          FROM session_history_events t LEFT JOIN runtime_events d ON d.invocation_id = t.invocation_id
            AND d.operation_id = t.operation_id AND d.kind = 'tool_dispatched'
          LEFT JOIN (
@@ -117,9 +123,16 @@ pub(super) async fn read(
         let dispatch: Invocation = serde_json::from_str(row.try_get::<&str, _>("di").ok()?).ok()?;
         let call: ToolCallIdentity =
             serde_json::from_str(row.try_get::<&str, _>("call").ok()?).ok()?;
-        if invocation != dispatch || !matches!(call.origin, ToolOrigin::Provider { .. }) {
+        if invocation != dispatch {
             return None;
         }
+        let step_sequence = match &call.origin {
+            ToolOrigin::Provider { .. } => sequence_number(row.try_get("completed").ok()?).ok()?,
+            ToolOrigin::HostSdk { parent: None, .. } => {
+                sequence_number(row.try_get("dispatched").ok()?).ok()?
+            }
+            _ => return None,
+        };
         let outcome: &str = row.try_get("outcome").ok()?;
         let projection = match outcome {
             "succeeded" => durable.take()?,
@@ -134,7 +147,7 @@ pub(super) async fn read(
             invocation,
             call,
             name: row.try_get("name").ok()?,
-            step_sequence: sequence_number(row.try_get("completed").ok()?).ok()?,
+            step_sequence,
             projection,
         })
     })()

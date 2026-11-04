@@ -18,6 +18,8 @@
  */
 
 import { promptAndWait } from '@botiverse/oar/observe';
+import { serveMcpTools } from '@botiverse/oar';
+import { hostToolsRefusal } from './host-tools.mjs';
 
 /** One native session per admitted execution; the Host retains its durable identity. */
 export async function execute(runtime, request, host) {
@@ -30,17 +32,29 @@ export async function execute(runtime, request, host) {
     };
   if (runtime.execution !== 'process')
     throw new Error(`${runtime.id} does not declare process ownership`);
-  const session = await runtime.withPlacement('isolated').session(installation, {
-    cwd: request.cwd,
-    ...(request.model === undefined ? {} : { model: request.model }),
-    ...(request.effort === undefined ? {} : { effort: request.effort }),
-    ...(request.resume === undefined ? {} : { resume: request.resume }),
-    ...(request.instructions === undefined ? {} : { appendSystemPrompt: request.instructions }),
-  });
+  const refusal = request.tools?.length ? hostToolsRefusal(runtime) : undefined;
+  let served;
+  let session;
   let unsubscribe = () => {};
   let outputFailure;
   let result;
   try {
+    if (request.tools?.length && !refusal) {
+      served = await serveMcpTools({
+        name: 'maka',
+        instructions:
+          'Maka Host tools provide conversation orchestration, skills, recall and workbench interactions. Use your native tools for local files, shell and web. Read, when offered here, only reads Maka resources. Observe original execution receipts before retrying mutations.',
+        tools: host.tools.definitions(request.tools),
+      });
+    }
+    session = await runtime.withPlacement('isolated').session(installation, {
+      cwd: request.cwd,
+      ...(request.model === undefined ? {} : { model: request.model }),
+      ...(request.effort === undefined ? {} : { effort: request.effort }),
+      ...(request.resume === undefined ? {} : { resume: request.resume }),
+      ...(request.instructions === undefined ? {} : { appendSystemPrompt: request.instructions }),
+      ...(served === undefined ? {} : { mcpServers: [served.server] }),
+    });
     if (session.placement !== 'isolated')
       throw new Error(`${runtime.id} did not open an isolated process`);
     host.publish({
@@ -54,6 +68,10 @@ export async function execute(runtime, request, host) {
     });
     // A native identity must be durable before the first prompt can have effects.
     await host.committed();
+    if (refusal) {
+      host.publish({ kind: 'host_tools_unavailable', reason: refusal });
+      await host.committed();
+    }
     if (host.signal.aborted) return { kind: 'aborted', text: '' };
     unsubscribe = session.events(
       (event) => {
@@ -67,7 +85,10 @@ export async function execute(runtime, request, host) {
       },
       { cursor: { sessionId: session.id, afterSeq: -1 } },
     );
-    const run = await promptAndWait(session, request.message, {
+    const message = refusal
+      ? `[Maka Host tools are unavailable in this runtime: ${refusal}]\n\n${request.message}`
+      : request.message;
+    const run = await promptAndWait(session, message, {
       signal: host.signal,
       ...(request.images === undefined ? {} : { images: request.images }),
     });
@@ -87,7 +108,12 @@ export async function execute(runtime, request, host) {
           };
   } finally {
     try {
-      await session.dispose();
+      try {
+        await session?.dispose();
+      } finally {
+        await served?.close();
+        await host.tools?.close();
+      }
       await host.committed();
     } catch (cause) {
       throw new Error('OAR session cleanup or output settlement is unconfirmed', { cause });

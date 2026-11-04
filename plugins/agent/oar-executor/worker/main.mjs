@@ -19,12 +19,14 @@
 
 import { createInterface } from 'node:readline';
 import { Channel } from './channel.mjs';
+import { HostTools } from './host-tools.mjs';
 import { catalog, execute, setup, status } from './execution.mjs';
 import { runtimes } from './runtimes.mjs';
 
 const input = createInterface({ input: process.stdin, crlfDelay: Infinity });
 const channel = new Channel();
 const abort = new AbortController();
+const tools = new HostTools(channel, abort.signal);
 const first = Promise.withResolvers();
 let started = false;
 const reading = (async () => {
@@ -36,12 +38,14 @@ const reading = (async () => {
         first.resolve(message);
       } else if (message.kind === 'ack') channel.acknowledge(message.sequence);
       else if (message.kind === 'cancel') abort.abort();
+      else if (message.kind === 'tool_result') tools.receive(message);
       else throw new Error(`Unexpected OAR control: ${message.kind}`);
     }
     throw new Error('OAR Host input closed');
   } catch (error) {
     first.reject(error);
     channel.fail(error);
+    tools.fail(error);
     abort.abort(error);
   }
 })();
@@ -92,6 +96,7 @@ try {
     else if (request.kind === 'execute') {
       const result = await execute(runtime, request, {
         signal: abort.signal,
+        tools,
         abort: (error) => abort.abort(error),
         publish: (body) => channel.publish(body),
         committed: () => channel.committed(abort.signal),

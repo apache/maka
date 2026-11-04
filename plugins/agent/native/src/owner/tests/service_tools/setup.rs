@@ -54,6 +54,8 @@ pub(in crate::owner::tests) struct Setup {
     service: Service,
     tool_name: Option<&'static str>,
     granted: bool,
+    host_tools: Vec<contract::ServiceTool>,
+    replacement: Option<(Arc<dyn Handler>, Arc<dyn NativeOwner>)>,
     pub(in crate::owner::tests) nestable: bool,
     pub(in crate::owner::tests) confirmation: contract::ToolConfirmation,
 }
@@ -64,11 +66,13 @@ impl Setup {
             service,
             tool_name: None,
             granted: true,
+            host_tools: vec![],
+            replacement: None,
             nestable: false,
             confirmation: contract::ToolConfirmation::Preapproved,
         }
     }
-    pub(super) fn javascript() -> Self {
+    pub(in crate::owner::tests) fn javascript() -> Self {
         Self::new(Service::Counter {
             handler: None,
             query: false,
@@ -190,8 +194,30 @@ impl Setup {
         self.granted = false;
         self
     }
+    pub(in crate::owner::tests) fn with_host_tools(
+        mut self,
+        tools: Vec<contract::ServiceTool>,
+    ) -> Self {
+        self.host_tools = tools;
+        self
+    }
+    pub(in crate::owner::tests) fn with_handler(
+        mut self,
+        handler: Arc<dyn Handler>,
+        owner: Arc<dyn NativeOwner>,
+    ) -> Self {
+        self.replacement = Some((handler, owner));
+        self
+    }
+    pub(in crate::owner::tests) fn named(mut self, name: &'static str) -> Self {
+        self.tool_name = Some(name);
+        self
+    }
     pub(in crate::owner::tests) fn selections(&self) -> Vec<contract::ServiceTool> {
         self.primary_selections()
+            .into_iter()
+            .chain(self.host_tools.clone())
+            .collect()
     }
     fn primary_selections(&self) -> Vec<contract::ServiceTool> {
         let methods: Vec<_> = match &self.service {
@@ -414,7 +440,42 @@ impl Setup {
         }
     }
     pub(in crate::owner::tests) fn provide(&self, registry: &mut NativeRegistry) {
-        self.service.provide(registry);
+        if let Some((handler, owner)) = &self.replacement {
+            let (handler, owner) = (handler.clone(), owner.clone());
+            let contract = self.service.contract();
+            let export = self.service.export().to_owned();
+            let implementation = self.service.implementation()["implementation"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            registry
+                .insert(
+                    implementation,
+                    Arc::new(move |_, _| {
+                        let (handler, owner, contract, export) = (
+                            handler.clone(),
+                            owner.clone(),
+                            contract.clone(),
+                            export.clone(),
+                        );
+                        Box::pin(async move {
+                            NativeActivation {
+                                exports: Ok(BTreeMap::from([(
+                                    export,
+                                    Published {
+                                        contract,
+                                        value: handler,
+                                    },
+                                )])),
+                                owner,
+                            }
+                        })
+                    }),
+                )
+                .unwrap();
+        } else {
+            self.service.provide(registry);
+        }
     }
     pub(in crate::owner::tests) fn policy(&self) -> Arc<maka_transport::transport::PeerPolicy> {
         Arc::new(
@@ -433,7 +494,7 @@ impl Setup {
             provider: id(21),
             export: self.service.export().into(),
             methods: self
-                .selections()
+                .primary_selections()
                 .into_iter()
                 .map(|tool| tool.method)
                 .chain(
@@ -445,6 +506,20 @@ impl Setup {
                 .collect(),
             recovery: true,
         }];
+        if !self.host_tools.is_empty() {
+            grants.push(NativeGrant {
+                origin: id(1),
+                consumer: id(1),
+                provider: id(1),
+                export: EXPORT.into(),
+                methods: self
+                    .host_tools
+                    .iter()
+                    .map(|tool| tool.method.clone())
+                    .collect(),
+                recovery: true,
+            });
+        }
         if matches!(self.service, Service::Processes { health: true, .. }) {
             grants.push(NativeGrant {
                 origin: id(1),

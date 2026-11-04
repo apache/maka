@@ -235,6 +235,8 @@ pub(crate) struct Owner {
     mcp: crate::mcp::Servers,
     mcp_projects: Arc<crate::mcp::Projects>,
     tool_basis: Arc<Vec<crate::tools::SelectedTool>>,
+    host_tools: Vec<String>,
+    resource_reads: Vec<String>,
     editing_tools: Vec<(String, maka_agent_facts::execution::EditingTools)>,
     skills: Option<skills::Library>,
     pub(super) executors: crate::executor::Executors,
@@ -413,9 +415,16 @@ impl Owner {
             workers: workers.clone(),
             services: context.services(),
         });
-        if settings.recall {
-            additional.extend(recall.tools());
-        }
+        let recall_tools = if settings.recall {
+            recall.tools()
+        } else {
+            vec![]
+        };
+        let internal_host_tools = recall_tools
+            .iter()
+            .map(|tool| tool.definition.name.clone())
+            .collect::<Vec<_>>();
+        additional.extend(recall_tools);
         let scheduler = Arc::new(scheduler::Scheduler::new(
             persistence.store().clone(),
             prefix.clone(),
@@ -532,6 +541,8 @@ impl Owner {
             tools,
             basis: tool_basis,
             editing: editing_tools,
+            host_tools,
+            resource_reads,
             executor: native_approval_executor,
         } = match prepared_tools {
             Ok(tools) => tools,
@@ -619,6 +630,8 @@ impl Owner {
             mcp,
             mcp_projects,
             tool_basis: Arc::new(tool_basis),
+            host_tools: host_tools.into_iter().chain(internal_host_tools).collect(),
+            resource_reads,
             editing_tools,
             skills,
             executors,
@@ -1148,6 +1161,28 @@ impl Owner {
         };
         Ok(selected)
     }
+    fn oar_tools(
+        &self,
+        session: &str,
+        basis: &MessageBasis,
+    ) -> Result<crate::executor::oar::HostTools, String> {
+        let selected = self.selected_tools(session, basis, false, None)?;
+        let excluded = selected
+            .names()
+            .into_iter()
+            .filter(|name| !self.host_tools.contains(name))
+            .collect::<Vec<_>>();
+        let mut catalog =
+            selected.excluding(&excluded.iter().map(String::as_str).collect::<Vec<_>>());
+        for name in &self.resource_reads {
+            catalog = catalog.with_description(name, "Read only Maka Session attachment:<id> and archive:<event-id> resources. Workspace files and task resources are unavailable. Pass the complete page.next object unchanged to continue. Image resources are unsupported by this external runtime.");
+        }
+        Ok(crate::executor::oar::HostTools {
+            catalog,
+            resource_reads: self.resource_reads.clone(),
+        })
+    }
+
     pub async fn send(
         self: &Arc<Self>,
         input: Send,
@@ -1303,6 +1338,7 @@ impl Owner {
                 if self
                     .admitted_tools(&id, &session.configuration.tools)
                     .is_some()
+                    && selection.executor != "oar"
                 {
                     return Err("agent_executor_cannot_enforce_tool_selection".into());
                 }
@@ -1320,6 +1356,9 @@ impl Owner {
         )
         .await?;
         let external = executor.is_some();
+        let host_bridge = executor
+            .as_ref()
+            .is_some_and(|executor| executor.selection.executor == "oar");
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -1384,12 +1423,12 @@ impl Owner {
             tool_discovery: !external && self.settings.tool_discovery,
             allowed_tools: self.admitted_tools(&id, &session.configuration.tools),
             background: None,
-            internal_tools: if external {
+            internal_tools: if external && !host_bridge {
                 Arc::default()
             } else {
                 selected_catalog.definitions.clone()
             },
-            internal_bindings: if external {
+            internal_bindings: if external && !host_bridge {
                 Arc::default()
             } else {
                 selected_catalog.bindings.clone()
@@ -1408,7 +1447,7 @@ impl Owner {
             workspace: session.configuration.workspace.clone(),
             binding: session.configuration.binding,
             fingerprint: operation.fingerprint.clone(),
-            tools: if external {
+            tools: if external && !host_bridge {
                 Arc::default()
             } else {
                 self.tool_basis.clone()
@@ -1432,8 +1471,12 @@ impl Owner {
                 language,
                 Some(session.configuration.workspace.clone()),
                 parent,
-                if basis.executor.is_some() {
-                    vec![]
+                if let Some(executor) = &basis.executor {
+                    if executor.selection.executor == "oar" {
+                        self.oar_tools(&id, &basis)?.catalog.names()
+                    } else {
+                        vec![]
+                    }
                 } else {
                     self.selected_tools(
                         &id,

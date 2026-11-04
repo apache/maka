@@ -163,7 +163,61 @@ if (request.kind === 'setup' || request.kind === 'catalog' || request.kind === '
   } else {
     await ack();
     observe('opened');
-    await gate.next();
+    const firstGate = await gate.next();
+    let hostPlan;
+    try {
+      hostPlan = JSON.parse(firstGate.value);
+    } catch {}
+    if (hostPlan?.calls) {
+      const replies = [];
+      for (const call of hostPlan.calls) publish({ kind: 'tool_call', ...call });
+      if (hostPlan.cancelCalls)
+        for (const call of hostPlan.calls) publish({ kind: 'tool_cancel', callId: call.callId });
+      if (!hostPlan.toolFramesOnly)
+        publish({
+          kind: 'event',
+          event: {
+            kind: 'text_delta',
+            agentPath: [],
+            sessionId: 'native-fixture-session',
+            text: 'host tools in flight',
+          },
+        });
+      let eventAck = false;
+      let cancelledTools = false;
+      while (replies.length < hostPlan.calls.length || !eventAck) {
+        const value = await read();
+        if (value.kind === 'tool_result') {
+          replies.push(value);
+          control.write(`${JSON.stringify({ phase: 'tool_result', reply: value })}\n`);
+        } else if (value.kind === 'ack' && value.sequence === sequence) {
+          eventAck = true;
+          observe('responsive');
+        } else if (value.kind === 'ack') {
+          // Earlier tool frames have independent receipt acknowledgements.
+        } else if (value.kind === 'cancel') {
+          control.write(`${JSON.stringify({ phase: 'cancelled_tools' })}\n`);
+          cancelledTools = true;
+          if (hostPlan.earlyTerminal || hostPlan.expectCancel) break;
+        } else throw new Error(`Unexpected Host control: ${JSON.stringify(value)}`);
+      }
+      if (hostPlan.expectCancel && !cancelledTools) {
+        const cancellation = await read();
+        if (cancellation.kind !== 'cancel')
+          throw new Error('Expected fatal Host tool cancellation');
+        observe('cancelled_tools');
+      }
+      if (hostPlan.earlyTerminal || hostPlan.expectCancel) {
+        publish({ kind: 'result', result: { kind: 'aborted' } });
+        observe('terminal');
+        await gate.next();
+        gates.close();
+        control.destroy();
+        input.close();
+        process.stdin.destroy();
+        process.exit(0);
+      }
+    }
     publish({
       kind: 'event',
       event: {
@@ -184,7 +238,10 @@ if (request.kind === 'setup' || request.kind === 'catalog' || request.kind === '
       if (request.message === 'pipe-holder-crash') {
         const escaped = spawn(
           process.execPath,
-          ['-e', 'setTimeout(() => process.exit(0), 30000); setInterval(() => {}, 1000)'],
+          [
+            '-e',
+            `process.stdout.on('error', () => {}); let sequence = ${sequence}; setTimeout(() => process.exit(0), 30000); setInterval(() => process.stdout.write(JSON.stringify({ sequence: ++sequence, kind: 'event', event: {kind:'text_delta', text:'escaped output', agentPath:[], sessionId:'native-fixture-session'} }) + '\\n'), 10)`,
+          ],
           {
             detached: true,
             stdio: ['ignore', 'inherit', 'ignore'],

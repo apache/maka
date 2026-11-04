@@ -26,6 +26,10 @@ import { runtimes } from '../../plugins/agent/oar-executor/worker/runtimes.mjs';
 import { scriptedRuntime } from '@botiverse/oar/testing';
 import { Channel } from '../../plugins/agent/oar-executor/worker/channel.mjs';
 import {
+  HostTools,
+  hostToolsRefusal,
+} from '../../plugins/agent/oar-executor/worker/host-tools.mjs';
+import {
   catalog,
   execute,
   setup,
@@ -44,7 +48,7 @@ function fixture(turn, configure = () => {}) {
       return {
         async session(installation, options) {
           observed.options = options;
-          const { effort, ...supported } = options;
+          const { effort, mcpServers, ...supported } = options;
           const session = await source.session(installation, supported, {
             requested: 'isolated',
             placement: 'isolated',
@@ -673,4 +677,139 @@ test('status preserves unknown authentication and unsupported native capabilitie
   });
   assert.equal(unsupported.canInstall, false);
   assert.deepEqual(unsupported.installLines, []);
+});
+
+const toolDefinition = {
+  name: 'SkillSearch',
+  description: 'Search Maka skills.',
+  inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
+};
+const toolReply = (text) => ({ content: [{ type: 'text', text }] });
+
+function hostToolsFixture() {
+  const controller = new AbortController();
+  const frames = [];
+  const tools = new HostTools({ publish: (frame) => frames.push(frame) }, controller.signal);
+  return { controller, frames, tools };
+}
+
+test('Host calls correlate concurrent replies independently of output acknowledgements', async () => {
+  const f = hostToolsFixture();
+  const first = f.tools
+    .definitions([toolDefinition])[0]
+    .handler({ query: 'one' }, { signal: new AbortController().signal });
+  const second = f.tools.call('SkillSearch', { query: 'two' }, new AbortController().signal);
+  assert.deepEqual(f.frames, [
+    { kind: 'tool_call', callId: 1, name: 'SkillSearch', input: { query: 'one' } },
+    { kind: 'tool_call', callId: 2, name: 'SkillSearch', input: { query: 'two' } },
+  ]);
+  const failure = { ...toolReply('denied'), isError: true };
+  f.tools.receive({ callId: 2, result: failure });
+  f.tools.receive({ callId: 1, result: toolReply('found') });
+  assert.deepEqual(await second, failure);
+  assert.deepEqual(await first, toolReply('found'));
+  assert.throws(() => f.tools.receive({ callId: 1, result: toolReply('duplicate') }), /Unknown/);
+  await f.tools.close();
+});
+
+test('Host cancellation requests withdrawal and close waits for the original settlement', async () => {
+  const f = hostToolsFixture();
+  const call = new AbortController();
+  const pending = f.tools.call('AskUserQuestion', {}, call.signal);
+  call.abort();
+  f.controller.abort();
+  assert.deepEqual(
+    f.frames.map((frame) => frame.kind),
+    ['tool_call', 'tool_cancel'],
+  );
+  let closed = false;
+  const closing = f.tools.close().then(() => {
+    closed = true;
+  });
+  await Promise.resolve();
+  assert.equal(closed, false);
+  await assert.rejects(
+    f.tools.call('SkillSearch', {}, new AbortController().signal),
+    /before dispatch/,
+  );
+  const outcome = { ...toolReply('withdrawn'), isError: true };
+  f.tools.receive({ callId: 1, result: outcome });
+  assert.deepEqual(await pending, outcome);
+  await closing;
+  assert.equal(f.frames.length, 2);
+});
+
+test('Host input failure releases all reply waiters without inventing a settled result', async () => {
+  const f = hostToolsFixture();
+  const pending = f.tools.call('SkillSearch', {}, new AbortController().signal);
+  const failed = assert.rejects(pending, /Host disconnected/);
+  f.tools.fail(new Error('Host disconnected'));
+  await failed;
+  await assert.rejects(f.tools.close(), /Host disconnected/);
+});
+
+async function mcp(server, body, headers = server.headers) {
+  return await fetch(server.url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+}
+
+test('execution exposes only supplied Host schemas over authenticated MCP and closes the server', async () => {
+  const f = fixture(async (turn) => {
+    const [server] = f.observed.options.mcpServers;
+    assert.equal(
+      (await mcp(server, { jsonrpc: '2.0', id: 1, method: 'tools/list' }, {})).status,
+      401,
+    );
+    const listed = await (
+      await mcp(server, { jsonrpc: '2.0', id: 2, method: 'tools/list' })
+    ).json();
+    assert.deepEqual(listed.result.tools, [toolDefinition]);
+    const result = await (
+      await mcp(server, {
+        jsonrpc: '2.0',
+        id: 3,
+        method: 'tools/call',
+        params: { name: 'SkillSearch', arguments: { query: 'plugins' } },
+      })
+    ).json();
+    assert.deepEqual(result.result, toolReply('skill-match'));
+    turn.say('used Host skill search');
+  });
+  f.host.tools = new HostTools(
+    {
+      publish(frame) {
+        assert.equal(frame.name, 'SkillSearch');
+        assert.deepEqual(frame.input, { query: 'plugins' });
+        queueMicrotask(() =>
+          f.host.tools.receive({ callId: frame.callId, result: toolReply('skill-match') }),
+        );
+      },
+    },
+    f.controller.signal,
+  );
+  const result = await execute(f.runtime, { ...request, tools: [toolDefinition] }, f.host);
+  assert.equal(result.kind, 'completed');
+  assert.equal(result.text, 'used Host skill search');
+  const [server] = f.observed.options.mcpServers;
+  await assert.rejects(fetch(server.url));
+  assert.equal(f.observed.disposed, 1);
+});
+
+test('MCP-refusing runtimes report unavailable Host tools without breaking ordinary execution', async () => {
+  const f = fixture((turn) => turn.say('ordinary runtime output'));
+  f.runtime.refusedSessionOptions = { mcpServers: 'Native sessions do not support MCP' };
+  assert.equal(hostToolsRefusal(f.runtime), 'Native sessions do not support MCP');
+  const result = await execute(f.runtime, { ...request, tools: [toolDefinition] }, f.host);
+  assert.equal(result.kind, 'completed');
+  assert.equal(f.observed.options.mcpServers, undefined);
+  assert.deepEqual(
+    f.messages.find((frame) => frame.kind === 'host_tools_unavailable'),
+    {
+      kind: 'host_tools_unavailable',
+      reason: 'Native sessions do not support MCP',
+    },
+  );
 });

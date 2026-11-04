@@ -55,7 +55,10 @@ impl EventLog {
                    AND EXISTS(SELECT 1 FROM runtime_events d
                        WHERE d.invocation_id=t.invocation_id AND d.operation_id=t.operation_id
                          AND d.kind='tool_dispatched'
-                         AND json_extract(d.event_header,'$.fact.call.origin.kind')='provider')",
+                         AND (json_extract(d.event_header,'$.fact.call.origin.kind')='provider'
+                           OR (json_extract(d.event_header,'$.fact.call.origin.kind')='host_sdk'
+                             AND json_type(d.event_header,'$.fact.call.origin.parent_operation_id')='null'
+                             AND json_extract(d.event_header,'$.fact.call.origin.parent_relationship') IS NULL)))",
                 "t.event_id",
             ),
         };

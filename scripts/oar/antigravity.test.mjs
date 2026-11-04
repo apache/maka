@@ -25,6 +25,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { serveMcpTools } from '@botiverse/oar';
 import { antigravityRuntime } from '@botiverse/oar/runtimes/antigravity';
 import { bundleWorker } from './build.mjs';
 
@@ -51,7 +52,7 @@ async function fixture(t, legacy = false) {
   return { directory, command, env };
 }
 
-async function worker(entry, request, f) {
+async function worker(entry, request, f, hostTool) {
   const child = spawn(process.execPath, [entry], { env: f.env, stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
   const packets = [];
@@ -66,7 +67,18 @@ async function worker(entry, request, f) {
     for await (const line of createInterface({ input: child.stdout })) {
       const packet = JSON.parse(line);
       packets.push(packet);
-      if (packet.kind === 'opened' || packet.kind === 'event')
+      if (packet.kind === 'tool_call') {
+        assert.ok(hostTool, 'Unexpected Host tool call');
+        const result = await hostTool(packet);
+        child.stdin.write(
+          `${JSON.stringify({ kind: 'tool_result', callId: packet.callId, result })}\n`,
+        );
+      }
+      if (
+        ['opened', 'event', 'host_tools_unavailable', 'tool_call', 'tool_cancel'].includes(
+          packet.kind,
+        )
+      )
         child.stdin.write(`${JSON.stringify({ kind: 'ack', sequence: packet.sequence })}\n`);
     }
   })();
@@ -180,4 +192,92 @@ test('Antigravity plans the documented native CLI installer instead of a GUI-onl
     result.steps.map((step) => step.display),
     ['curl -fsSL https://antigravity.google/cli/install.sh | bash'],
   );
+});
+
+test('the bundled worker rotates authenticated Host MCP across Antigravity 1.5.0 resume', {
+  timeout: 30000,
+}, async (t) => {
+  const f = await fixture(t);
+  const entry = await bundleWorker(join(f.directory, 'bundle'));
+  let resume;
+  let previousAuthorization;
+  for (const marker of ['FIRST_HOST_RESULT', 'RESUMED_HOST_RESULT']) {
+    const packets = await worker(
+      entry,
+      {
+        kind: 'execute',
+        model: 'gemini-fixture',
+        effort: 'low',
+        message: 'hello',
+        ...(resume === undefined ? {} : { resume }),
+        tools: [
+          {
+            name: 'SkillSearch',
+            description: 'Search Host skills',
+            inputSchema: {
+              type: 'object',
+              properties: { query: { type: 'string' } },
+              required: ['query'],
+            },
+          },
+        ],
+      },
+      f,
+      (packet) => {
+        assert.equal(packet.name, 'SkillSearch');
+        assert.deepEqual(packet.input, { query: 'bridge-verification' });
+        return { content: [{ type: 'text', text: marker }] };
+      },
+    );
+    assert.equal(packets.at(-1).result.kind, 'completed');
+    assert.match(packets.at(-1).result.text, new RegExp(marker));
+    assert.equal(packets.filter((packet) => packet.kind === 'tool_call').length, 1);
+    assert.equal(
+      packets.some((packet) => packet.kind === 'host_tools_unavailable'),
+      false,
+    );
+    const opened = packets.find((packet) => packet.kind === 'opened').sessionId;
+    if (resume !== undefined) assert.equal(opened, resume);
+    resume = opened;
+    const trace = (await readFile(f.env.MAKA_AGY_TRACE, 'utf8'))
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line));
+    const [server] = trace.findLast((item) =>
+      ['session/new', 'session/resume'].includes(item.method),
+    ).params.mcpServers;
+    const authorization = server.headers.find((header) => header.name === 'Authorization').value;
+    assert.notEqual(authorization, previousAuthorization);
+    previousAuthorization = authorization;
+    await assert.rejects(fetch(server.url));
+  }
+});
+
+test('Antigravity still rejects arbitrary credentials, modified Host tokens and retired Host endpoints', async () => {
+  const installation = {
+    kind: 'available',
+    via: 'executable',
+    command: '/not-started',
+    version: '1.5.0',
+  };
+  const runtime = antigravityRuntime.withPlacement('isolated');
+  const open = (servers) => runtime.session(installation, { cwd: '/tmp', mcpServers: servers });
+  const served = await serveMcpTools({ name: 'probe', tools: [] });
+  try {
+    for (const server of [
+      {
+        name: 'remote',
+        type: 'http',
+        url: 'https://example.invalid/mcp',
+        headers: { Authorization: 'Bearer long-lived-secret' },
+      },
+      { ...served.server, headers: { Authorization: 'Bearer replaced' } },
+      { ...served.server, headers: { ...served.server.headers, 'X-Api-Key': 'long-lived-secret' } },
+    ])
+      await assert.rejects(open([server]), /conversation database/);
+    await served.close();
+    await assert.rejects(open([served.server]), /conversation database/);
+  } finally {
+    await served.close();
+  }
 });

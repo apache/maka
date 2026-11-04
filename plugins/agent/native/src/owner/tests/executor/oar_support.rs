@@ -29,6 +29,14 @@ pub(super) async fn configured(
     base: &str,
     configure: impl FnOnce(&mut Configuration),
 ) -> (Fixture, TcpListener) {
+    with_tools(base, None, configure).await
+}
+
+pub(super) async fn with_tools(
+    base: &str,
+    tooling: Option<service_tools::Setup>,
+    configure: impl FnOnce(&mut Configuration),
+) -> (Fixture, TcpListener) {
     static NODE: tokio::sync::OnceCell<String> = tokio::sync::OnceCell::const_new();
     let node = NODE
         .get_or_init(|| async {
@@ -44,7 +52,7 @@ pub(super) async fn configured(
         })
         .await;
     let control = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let fixture = Fixture::configured(base, None, None, None, |settings| {
+    let fixture = Fixture::configured(base, None, None, tooling, |settings| {
         settings.oar = Some(maka_agent_api::executor::OarConfiguration {
             enabled: true,
             runtimes: ["codex", "antigravity", "claude", "missing", "broken"]
@@ -113,4 +121,8 @@ pub(super) async fn record(f: &Fixture, session: &str) -> Value {
         .value()
         .unwrap()
         .clone()
+}
+
+pub(super) fn host_tool(method: &str, name: &str) -> contract::ServiceTool {
+    serde_json::from_value(json!({"name":name,"description":format!("Host {method}"),"target":{"kind":"export","name":"agent"},"method":method,"result":"json","confirmation":"preapproved"})).unwrap()
 }

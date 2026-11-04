@@ -37,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(crate) mod attachments;
-mod oar;
+pub(crate) mod oar;
 pub mod setup;
 
 use maka_agent_api::executor::{Execute, Selection, ServiceExecutor, contract};
@@ -54,6 +54,7 @@ pub(crate) struct Accepted {
 pub(crate) struct Backend {
     pub accepted: Accepted,
     implementation: Implementation,
+    host_tools: Option<oar::HostTools>,
 }
 #[derive(Clone)]
 enum Implementation {
@@ -114,6 +115,7 @@ impl Executors {
                     member: selection.member,
                     basis: binding.execution_basis().into(),
                 },
+                host_tools: None,
                 implementation: Implementation::Service(ServiceBackend {
                     binding: binding.clone(),
                     setup: selection.setup.clone(),
@@ -141,6 +143,7 @@ impl Executors {
                     member: 0,
                     basis: owner.basis.clone(),
                 },
+                host_tools: None,
                 implementation: Implementation::Oar(owner),
             };
             if result.insert("oar".into(), backend).is_some() {
@@ -208,6 +211,13 @@ impl Executors {
         Ok(backend)
     }
 }
+impl Backend {
+    pub fn bind_host_tools(&mut self, tools: oar::HostTools) {
+        if matches!(self.implementation, Implementation::Oar(_)) {
+            self.host_tools = Some(tools);
+        }
+    }
+}
 impl executor::Backend for Backend {
     fn admit_execution(&self, input: Request) -> Result<Admitted, Error> {
         input
@@ -231,7 +241,7 @@ impl executor::Backend for Backend {
             ));
         }
         let service = match &self.implementation {
-            Implementation::Oar(owner) => return owner.admit(input),
+            Implementation::Oar(owner) => return owner.admit(input, self.host_tools.clone()),
             Implementation::Service(service) => service,
         };
         let identity = maka_agent_facts::executor::Binding {

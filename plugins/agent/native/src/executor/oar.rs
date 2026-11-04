@@ -30,7 +30,9 @@ mod attachments;
 mod history;
 mod journal;
 mod projection;
+mod tools;
 mod worker;
+pub(crate) use tools::HostTools;
 
 struct CatalogSnapshot {
     cwd: String,
@@ -114,7 +116,11 @@ impl Oar {
             basis,
         }))
     }
-    pub fn admit(self: &Arc<Self>, request: Request) -> Result<Admitted, Error> {
+    pub fn admit(
+        self: &Arc<Self>,
+        request: Request,
+        host_tools: Option<HostTools>,
+    ) -> Result<Admitted, Error> {
         self.require_runtime(request.settings.runtime.as_deref())?;
         Ok(Admitted {
             identity: maka_agent_facts::executor::Binding {
@@ -126,6 +132,7 @@ impl Oar {
             execution: Box::new(Call {
                 owner: self.clone(),
                 request,
+                host_tools,
             }),
         })
     }
@@ -261,6 +268,7 @@ impl Oar {
 struct Call {
     owner: Arc<Oar>,
     request: Request,
+    host_tools: Option<HostTools>,
 }
 impl executor::Execution for Call {
     fn execute(
@@ -290,6 +298,15 @@ impl Call {
             .root
             .session_for_execution(execution.as_ref(), &self.request.invocation)
             .map_err(|e| Error::Persistence(e.to_string()))?;
+        let host_tools = tools::Tools::bind(
+            self.host_tools.clone().unwrap_or_default(),
+            Arc::new(store.clone()),
+            &self.request,
+            execution.clone(),
+            &self.owner,
+            cancellation.clone(),
+        )
+        .await?;
         let mut materials = attachments::prepare(&store, &self.request, &cancellation).await?;
         let mut journal = journal::Journal::load(&self.owner.storage, &self.request).await?;
         if let Some(mut context) =
@@ -318,6 +335,7 @@ impl Call {
             "kind":"execute", "runtime":self.request.settings.runtime, "cwd":self.request.cwd,
             "message":materials.message,
             "images":materials.images,
+            "tools":host_tools.definitions(),
         });
         let mut request = request.as_object().expect("worker request").clone();
         for (key, value) in [
@@ -348,6 +366,7 @@ impl Call {
             &self.owner.storage,
             &mut journal,
             output,
+            host_tools,
             cancellation,
         )
         .await;

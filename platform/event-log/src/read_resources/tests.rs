@@ -150,13 +150,21 @@ async fn tool_result_prefix_lookup_does_not_scan_owner_history() {
         .unwrap();
     append_event_noise(&log, 1, 128).await;
     log.connection.run(|db| Box::pin(async move {
-        for (id, kind, json) in [
-            ("dispatch-target", "tool_dispatched", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"provider"}}}}"#),
-            ("result-target-literal", "tool_settled", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"failed"}}}"#),
+        for (id, kind, operation_id, json) in [
+            ("dispatch-target", "tool_dispatched", "target-operation", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"provider"}}}}"#),
+            ("result-target-literal", "tool_settled", "target-operation", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"failed"}}}"#),
+            ("dispatch-host-root", "tool_dispatched", "host-root-op", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"host_sdk","parent_operation_id":null}}}}"#),
+            ("result-host-root-literal", "tool_settled", "host-root-op", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"succeeded"}}}"#),
+            ("dispatch-host-nested", "tool_dispatched", "host-nested-op", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"host_sdk","parent_operation_id":"parent-op","parent_relationship":"nested"}}}}"#),
+            ("result-host-nested-literal", "tool_settled", "host-nested-op", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"succeeded"}}}"#),
+            ("dispatch-code-mode", "tool_dispatched", "code-mode-op", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"code_mode","parent_operation_id":"parent-op","invocation_sequence":0}}}}"#),
+            ("result-code-mode-literal", "tool_settled", "code-mode-op", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"succeeded"}}}"#),
+            ("dispatch-standalone", "tool_dispatched", "standalone-op", r#"{"invocation":{"session_id":"session"},"fact":{"call":{"origin":{"kind":"standalone"}}}}"#),
+            ("result-standalone-literal", "tool_settled", "standalone-op", r#"{"invocation":{"session_id":"session"},"fact":{"outcome":{"kind":"succeeded"}}}"#),
         ] {
             crate::canonical_insert::insert(crate::canonical_insert::Record {
                 sequence: None, event_id: id, invocation_id: Some("target"),
-                kind, operation_id: Some("target-operation"), json,
+                kind, operation_id: Some(operation_id), json,
             }).execute(&mut *db).await?;
         }
         Ok(())
@@ -167,6 +175,29 @@ async fn tool_result_prefix_lookup_does_not_scan_owner_history() {
         small,
         Some(ResourceAddress::ToolResult("result-target-literal".into()))
     );
+    assert_eq!(
+        log.resolve_read_resource(
+            "session",
+            ResourceAddress::ToolResult("result-host-root-".into())
+        )
+        .await
+        .unwrap(),
+        Some(ResourceAddress::ToolResult(
+            "result-host-root-literal".into()
+        ))
+    );
+    for blocked in [
+        "result-host-nested-",
+        "result-code-mode-",
+        "result-standalone-",
+    ] {
+        assert_eq!(
+            log.resolve_read_resource("session", ResourceAddress::ToolResult(blocked.into()))
+                .await
+                .unwrap(),
+            None
+        );
+    }
     append_event_noise(&log, 129, 16_384).await;
     let (large, large_steps) = resource_steps(&log, wanted).await;
     assert_eq!(large, small);

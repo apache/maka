@@ -49,7 +49,7 @@ export async function bundleWorker(directory) {
     format: 'esm',
     metafile: true,
     banner: {
-      js: "import {createRequire} from 'node:module';const require=createRequire(import.meta.url);",
+      js: "import {createRequire as makaOarCreateRequire} from 'node:module';const require=makaOarCreateRequire(import.meta.url);",
     },
   });
   await writeFile(
