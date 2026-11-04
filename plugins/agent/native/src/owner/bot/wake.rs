@@ -31,12 +31,17 @@ fn watch_key(worker: &str) -> String {
     format!("{WATCH_PREFIX}{worker}")
 }
 
-/// One worker the Bot waits on. `route` is the Bot's model and workspace as of its
-/// latest call about this worker, which is what a wake needs to start a Turn.
+/// One worker the Bot waits on. It keeps only what a wake needs to start a Turn: the
+/// Bot's model selection and workspace as of its latest call about this worker. The
+/// model is resolved again when the Bot is woken, so a later change to what an accepted
+/// model contains cannot make a stored watch unreadable.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Watch {
-    route: crate::owner::notifications::ReturnRoute,
+    model: ModelSelection,
+    thinking_level: Option<ThinkingLevel>,
+    workspace: Workspace,
+    binding: maka_agent_facts::workspace::BindingStamp,
     /// The last finished invocation already reported to the Bot.
     notified: Option<String>,
 }
@@ -49,17 +54,35 @@ impl Bot {
         route: crate::owner::notifications::ReturnRoute,
     ) -> Result<(), StoreError> {
         let key = watch_key(worker);
-        let (revision, current) = self.read::<Watch>(&key).await?;
+        // Read the record itself: one an earlier build wrote may no longer decode, and a
+        // refresh has to be able to replace it. What it had reported is then unknown.
+        let record = self.storage.read(key.clone()).await?;
+        let revision = record.as_ref().map(|record| record.revision);
+        let notified = record
+            .and_then(|record| record.data.value().cloned())
+            .and_then(|value| serde_json::from_value::<Watch>(value).ok())
+            .and_then(|watch| watch.notified);
+        let binding = route.binding_model();
         let watch = Watch {
-            route,
-            notified: current.and_then(|watch| watch.notified),
+            model: ModelSelection {
+                connection_id: binding.connection_id.clone(),
+                model_id: binding.model.clone(),
+            },
+            thinking_level: route.thinking_level(),
+            workspace: route.workspace.clone(),
+            binding: route.binding,
+            notified,
         };
         self.storage
             .batch(vec![Self::mutation(key, revision, &watch)?])
             .await
             .map(drop)
     }
-    async fn watches(&self) -> Result<Vec<(String, Option<u64>, Watch)>, StoreError> {
+    /// Every stored watch with its revision. A record that does not decode is returned as
+    /// its error, so the caller can still retire it when its worker is gone.
+    async fn watches(
+        &self,
+    ) -> Result<Vec<(String, Option<u64>, Result<Watch, StoreError>)>, StoreError> {
         let mut found = Vec::new();
         let mut after = None;
         loop {
@@ -73,23 +96,9 @@ impl Bot {
             for entry in page.entries {
                 if let Some(value) = entry.record.data.value() {
                     let worker = entry.key[WATCH_PREFIX.len()..].to_owned();
-                    // One record this build cannot read must not stop the wakes of every
-                    // other worker. It is left in place and reported once.
-                    match serde_json::from_value(value.clone()) {
-                        Ok(watch) => found.push((worker, Some(entry.record.revision), watch)),
-                        Err(error) => {
-                            if self
-                                .unreadable
-                                .lock()
-                                .expect("unreadable watches")
-                                .insert(worker.clone())
-                            {
-                                eprintln!(
-                                    "Bot worker wake: skipping an unreadable watch for {worker}: {error}"
-                                );
-                            }
-                        }
-                    }
+                    let watch = serde_json::from_value(value.clone())
+                        .map_err(|error| StoreError::Unavailable(error.to_string()));
+                    found.push((worker, Some(entry.record.revision), watch));
                 }
             }
             match page.next_after {
@@ -102,14 +111,28 @@ impl Bot {
     #[cfg(test)]
     pub(in crate::owner) async fn plant_unreadable_watch(&self, worker: &str) {
         let stale = serde_json::json!({"route": {"model": {"context": {}}}, "notified": null});
+        let revision = self
+            .storage
+            .read(watch_key(worker))
+            .await
+            .expect("read watch")
+            .map(|record| record.revision);
         self.storage
             .batch(vec![Mutation {
                 key: watch_key(worker),
-                expected_revision: None,
+                expected_revision: revision,
                 data: Data::Present(stale),
             }])
             .await
             .expect("plant watch");
+    }
+    #[cfg(test)]
+    pub(in crate::owner) async fn has_watch(&self, worker: &str) -> bool {
+        self.storage
+            .read(watch_key(worker))
+            .await
+            .expect("read watch")
+            .is_some_and(|record| record.data.value().is_some())
     }
     async fn forget(&self, worker: &str, revision: Option<u64>) -> Result<(), StoreError> {
         self.storage
@@ -225,6 +248,7 @@ impl Owner {
         let Some(bot) = self.bot.session() else {
             return Ok(());
         };
+        let mut unreadable = Vec::new();
         for (worker, revision, watch) in self.bot.watches().await.map_err(|e| e.to_string())? {
             let stored = self
                 .store
@@ -240,6 +264,15 @@ impl Owner {
                     .await
                     .map_err(|e| e.to_string())?;
                 continue;
+            };
+            // A worker that is gone was retired above without decoding anything. For a live
+            // one an unreadable watch is reported, and the worker's next refresh replaces it.
+            let watch = match watch {
+                Ok(watch) => watch,
+                Err(error) => {
+                    unreadable.push(format!("watch for {worker}: {error}"));
+                    continue;
+                }
             };
             if self.runs.lock().await.busy(&worker) {
                 continue;
@@ -281,10 +314,32 @@ impl Owner {
                 invocation_id: format!("i_{identity}"),
             };
             let title = stored.configuration.title.clone();
+            // The Bot's model as it is now, not as it was when the watch was written.
+            let route = match crate::model::Source::select(
+                self.configuration.clone(),
+                self.catalog.clone(),
+                self.credentials.clone(),
+                watch.model.clone(),
+                watch.thinking_level,
+                bot.clone(),
+                self.revision.clone(),
+            )
+            .await
+            {
+                Ok((model, _)) => crate::owner::notifications::ReturnRoute::new(
+                    model.accepted,
+                    watch.workspace.clone(),
+                    watch.binding,
+                ),
+                Err(error) => {
+                    unreadable.push(format!("model for {worker}: {}", public_error(error)));
+                    continue;
+                }
+            };
             let Some(admission) = self
                 .prepare_notification(
                     &source,
-                    &watch.route,
+                    &route,
                     &identity,
                     |language| worker_message(language, &worker, &title, &invocation_id, result),
                     MessageOrigin::BotWorker {
@@ -297,8 +352,8 @@ impl Owner {
             };
             if self.admit_notification(&admission).await? {
                 let next = Watch {
-                    route: watch.route,
                     notified: Some(invocation_id),
+                    ..watch
                 };
                 match self
                     .bot
@@ -317,7 +372,12 @@ impl Owner {
                 }
             }
         }
-        Ok(())
+        // The caller reports a repeated error once.
+        if unreadable.is_empty() {
+            Ok(())
+        } else {
+            Err(unreadable.join("\n"))
+        }
     }
 }
 

@@ -30,8 +30,22 @@ pub(crate) struct ReturnRoute {
     pub(crate) binding: maka_agent_facts::workspace::BindingStamp,
 }
 impl ReturnRoute {
+    pub(crate) fn new(
+        model: crate::model::AcceptedModel,
+        workspace: Workspace,
+        binding: maka_agent_facts::workspace::BindingStamp,
+    ) -> Self {
+        Self {
+            model,
+            workspace,
+            binding,
+        }
+    }
     pub(crate) fn binding_model(&self) -> &maka_agent_facts::execution::ModelBinding {
         &self.model.binding
+    }
+    pub(crate) fn thinking_level(&self) -> Option<ThinkingLevel> {
+        self.model.thinking_level
     }
 }
 impl Owner {
