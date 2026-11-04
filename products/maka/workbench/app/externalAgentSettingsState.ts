@@ -195,7 +195,7 @@ export function createExternalAgentSettings(
         const changes: SettingChange[] = [];
         if (!configured) changes.push({ path: target.path as [string, ...string[]] });
         changes.push({
-          path: [...target.path, 'enabled'] as [string, ...string[]],
+          path: target.path.concat('enabled') as [string, ...string[]],
           value: { kind: 'boolean', value: enabled },
         });
         return { instance: target.source.namespace, changes };

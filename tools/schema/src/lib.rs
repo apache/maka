@@ -109,6 +109,8 @@ pub fn catalog() -> Value {
         root::<maka_agent_api::contract::GlobalInstructionsUpdated>(&mut g),
         root::<maka_agent_api::contract::ExecutorsRead>(&mut g),
         root::<maka_agent_api::contract::Executors>(&mut g),
+        root::<maka_agent_api::oar::ExternalAgentsRead>(&mut g),
+        root::<maka_agent_api::oar::ExternalAgents>(&mut g),
         root::<maka_agent_api::oar::Setup>(&mut g),
         root::<maka_agent_api::oar::Action>(&mut g),
         root::<maka_agent_api::oar::SetupResult>(&mut g),
