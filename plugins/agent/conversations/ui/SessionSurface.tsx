@@ -1172,13 +1172,9 @@ export function createConversationUi(
     if (!alive || !current || owner?.sessionId !== current) return;
     let observed = await host.query('agent', 'observe', { sessionId: current });
     // Date the old Bot first, so the archived one is told apart from the new one.
-    const stamp = new Date().toLocaleString(undefined, {
-      month: '2-digit',
-      day: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-      hour12: false,
-    });
+    const now = new Date();
+    const two = (value: number) => String(value).padStart(2, '0');
+    const stamp = `${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}:${two(now.getMinutes())}`;
     const renamed = await control('metadata', {
       sessionId: current,
       expectedRevision: observed.session.revision,
