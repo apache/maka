@@ -318,3 +318,31 @@ impl Provider for ApiProvider {
         Box::pin(async move { effects::verify(self, request, context).await })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn catalog_usage_opt_out_survives_chat_preparation() {
+        let facts = facts::provider_facts("github-copilot").unwrap();
+        let provider = ApiProvider {
+            id: "github-copilot",
+            facts,
+            snapshot: Arc::new(crate::catalog::Snapshot::bundled().unwrap()),
+        };
+        let model = provider
+            .prepare(Resolve {
+                connection: Connection {
+                    id: "copilot".into(),
+                    revision: 1,
+                    configuration: json!({"baseUrl":facts.base_url}),
+                },
+                model: ModelInfo::new("kimi-k3"),
+                overrides: None,
+                thinking_level: None,
+            })
+            .unwrap();
+        assert_eq!(model.provider_options["maka"]["includeUsage"], false);
+    }
+}

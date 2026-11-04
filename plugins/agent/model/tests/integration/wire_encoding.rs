@@ -263,12 +263,48 @@ async fn notifications_keep_all_output_formats_without_a_second_provider_receipt
     }
 }
 
+#[test]
+fn default_chat_codec_preserves_the_legacy_identity() {
+    let input = request(
+        ProviderKind::OpenaiChatCompletions,
+        "http://localhost/v1".into(),
+    );
+    let encoding = WireEncoding::new(
+        input.language,
+        &input.provider,
+        &input.provider_options,
+        &input.tools,
+    )
+    .unwrap();
+    assert_eq!(
+        encoding.codec(),
+        r#"{"codec":"maka.chat-items.v1","language":"en","namespace":"openai","metadataNamespace":"openai","multipartToolContent":false}"#
+    );
+    let reasoning = WireEncoding::new(
+        input.language,
+        &input.provider,
+        &json!({"maka":{"openAiChatReasoningField":"reasoning"}}),
+        &input.tools,
+    )
+    .unwrap();
+    assert_ne!(encoding.codec(), reasoning.codec());
+}
+
 #[tokio::test]
-async fn captured_chat_reasoning_replay_keeps_the_selected_field() {
+async fn generated_chat_reasoning_uses_the_selected_field() {
     use maka_provider_protocol::{
         chat_completions::request as chat, input as wire, output::ReasoningField,
     };
-    for field in [ReasoningField::Content, ReasoningField::Reasoning] {
+    for (field, expected) in [
+        (
+            ReasoningField::Content,
+            json!({"role":"assistant","content":"reply","reasoning_content":"思考"}),
+        ),
+        (
+            ReasoningField::Reasoning,
+            json!({"role":"assistant","content":"reply","reasoning":"思考"}),
+        ),
+    ] {
         let mut input = request(
             ProviderKind::OpenaiCompatible {
                 name: "ollama-cloud".into(),
@@ -298,8 +334,6 @@ async fn captured_chat_reasoning_replay_keeps_the_selected_field() {
         }];
         drop(input);
         let frozen = encoding.prepare_source(Arc::new(maka_agent_facts::model::prompt_source::source::generated::GeneratedMessages::new(&messages)), resources()).await.unwrap();
-        let mut expected = json!({"role":"assistant","content":"reply"});
-        expected[field.as_str()] = json!("思考");
         assert_eq!(items(&frozen).await, vec![expected.clone()]);
         let direct = chat::messages(
             &[wire::Message::Assistant {

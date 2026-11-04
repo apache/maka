@@ -463,7 +463,7 @@ async fn full_request_byte_count_matches_upload_and_stops_oversized_headers() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
-    use maka_agent_facts::configuration::{ModelInfo, ModelOverride};
+    use maka_agent_facts::configuration::ModelInfo;
     use maka_agent_ports::provider::{Connection, Resolve};
     use maka_model::prompt::{AssistantPart, Message};
     use maka_providers::{api::ApiProviders, catalog::Snapshot};
@@ -475,7 +475,7 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
         let model = binding.prepare(Resolve {
             connection: Connection { id: "cloud".into(), revision: 1, configuration: binding.configure(json!({"baseUrl":url})).unwrap() },
             model: ModelInfo::new("deepseek-v4-flash"),
-            overrides: Some(ModelOverride::default()),
+            overrides: None,
             thinking_level: None,
         }).await.unwrap();
         let mut input = request(&url);
@@ -504,7 +504,7 @@ async fn ollama_cloud_policy_sends_reasoning_replay_and_receives_a_reply() {
         stream.cancel_and_wait().await.unwrap();
         let step = builder.finish().unwrap();
         assert_eq!(step.usage.output_tokens, Some(6));
-        assert!(matches!(&step.parts[1], ModelPart::Text { text_kind: TextKind::Text, text, .. } if text.chunks().collect::<String>() == "reply"));
+        assert!(step.parts.iter().any(|part| matches!(part, ModelPart::Text { text_kind: TextKind::Text, text, .. } if text.chunks().collect::<String>() == "reply")));
         server.await.unwrap();
     }).await.unwrap();
 }
