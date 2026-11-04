@@ -360,6 +360,11 @@ export const conversationMessages = {
   'Keep the current Bot': ['Keep the current Bot', '保留当前 Bot', '保留目前的 Bot'],
   'Start over': ['Start over', '重新开始', '重新開始'],
   'Starting over…': ['Starting over…', '正在重新开始…', '正在重新開始…'],
+  'The current Bot could not be renamed: {reason}': [
+    'The current Bot could not be renamed: {reason}',
+    '无法重命名当前 Bot：{reason}',
+    '無法重新命名目前的 Bot：{reason}',
+  ],
   'The current Bot could not be archived: {reason}': [
     'The current Bot could not be archived: {reason}',
     '无法归档当前 Bot：{reason}',
@@ -1334,6 +1339,12 @@ export const conversationMessages = {
     '此对话已归档，请在对话列表中恢复后发送；草稿已保留。',
     '此對話已封存，請在對話清單中還原後傳送；草稿已保留。',
   ],
+  'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.':
+    [
+      'This is a Bot that was replaced. It is read-only; restore it in Sessions to use it as a conversation.',
+      '这是已被替换的旧 Bot，只能查看历史；如需当普通对话使用，请在对话列表中恢复。',
+      '這是已被取代的舊 Bot，只能檢視歷史；如需當一般對話使用，請在對話清單中還原。',
+    ],
   'This conversation is closed.': [
     'This conversation is closed.',
     '此对话已关闭。',

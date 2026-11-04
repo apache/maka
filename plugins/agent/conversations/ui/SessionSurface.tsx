@@ -1170,7 +1170,26 @@ export function createConversationUi(
     const current = botSession();
     const owner = handle();
     if (!alive || !current || owner?.sessionId !== current) return;
-    const observed = await host.query('agent', 'observe', { sessionId: current });
+    let observed = await host.query('agent', 'observe', { sessionId: current });
+    // Date the old Bot first, so the archived one is told apart from the new one.
+    const stamp = new Date().toLocaleString(undefined, {
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+    const renamed = await control('metadata', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      title: `${observed.session.title} · ${stamp}`,
+      labels: observed.session.labels,
+    });
+    if (renamed.kind !== 'committed')
+      throw new UiError('The current Bot could not be renamed: {reason}', {
+        reason: renamed.reason ?? renamed.kind,
+      });
+    observed = await host.query('agent', 'observe', { sessionId: current });
     const archived = await control('changeSession', {
       sessionId: current,
       expectedRevision: observed.session.revision,
