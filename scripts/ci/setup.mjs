@@ -26,6 +26,8 @@ import { manifests } from './suites.mjs';
 const role = process.env.MAKA_CI_ROLE;
 const workspace = process.env.MAKA_CI_WORKSPACE;
 const version = process.env.MAKA_CI_NEXTEST;
+const selectedManifests =
+  role === 'native-windows' ? [manifests.root, manifests.nsh] : [manifests[workspace]];
 const tools =
   role === 'tooling'
     ? ['cargo-deny']
@@ -37,8 +39,8 @@ const tools =
           'termina',
           'nsh',
           'gpui',
-          'native-macos',
           'native-windows',
+          'native-macos',
         ].includes(role)
       ? [`cargo-nextest${version ? `@${version}` : ''}`]
       : [];
@@ -60,10 +62,16 @@ async function main(action) {
   } else if (action === 'keys') {
     const hash = (input) => createHash('sha256').update(input).digest('hex');
     const compiler = await command('rustc', ['-vV'], { capture: true });
-    const manifest = manifests[workspace];
-    const lock = hash(readFileSync(join(dirname(manifest), 'Cargo.lock')));
+    const lock = hash(
+      Buffer.concat(
+        selectedManifests.map((manifest) => readFileSync(join(dirname(manifest), 'Cargo.lock'))),
+      ),
+    );
     const configuration = hash(
-      Buffer.concat([readFileSync(manifest), readFileSync('.cargo/config.toml')]),
+      Buffer.concat([
+        ...selectedManifests.map((manifest) => readFileSync(manifest)),
+        readFileSync('.cargo/config.toml'),
+      ]),
     );
     const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
     output({
@@ -74,27 +82,29 @@ async function main(action) {
       downloads_writer: role === 'tooling' || workspace !== 'root',
     });
   } else if (action === 'prune') {
-    const packages = JSON.parse(
-      await command(
-        process.platform === 'win32' ? 'python' : 'python3',
-        [
-          '-c',
-          'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
-          join(dirname(manifests[workspace]), 'Cargo.lock'),
-        ],
-        { capture: true },
-      ),
-    );
-    // Local path dependencies rebuild after checkout just like workspace members.
-    // Keep the immutable registry/Git dependencies instead of those large outputs.
-    await command('cargo', [
-      'clean',
-      '--manifest-path',
-      manifests[workspace],
-      '--target-dir',
-      'target',
-      ...packages.flatMap((name) => ['--package', name]),
-    ]);
+    for (const manifest of selectedManifests) {
+      const packages = JSON.parse(
+        await command(
+          process.platform === 'win32' ? 'python' : 'python3',
+          [
+            '-c',
+            'import json, sys, tomllib; print(json.dumps([pkg["name"] for pkg in tomllib.load(open(sys.argv[1], "rb"))["package"] if "source" not in pkg]))',
+            join(dirname(manifest), 'Cargo.lock'),
+          ],
+          { capture: true },
+        ),
+      );
+      // Local path dependencies rebuild after checkout just like workspace members.
+      // Keep the immutable registry/Git dependencies instead of those large outputs.
+      await command('cargo', [
+        'clean',
+        '--manifest-path',
+        manifest,
+        '--target-dir',
+        'target',
+        ...packages.flatMap((name) => ['--package', name]),
+      ]);
+    }
   } else if (action === 'native') {
     const dependencies = process.env.MAKA_CI_DEPENDENCIES;
     const shared = [

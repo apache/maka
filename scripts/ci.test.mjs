@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -62,11 +62,39 @@ function fixture() {
       ],
       ['maka-schema', 'tools/schema'],
       ['maka-workbench', 'products/maka/workbench'],
+      [
+        'maka-desktop-shell',
+        'products/maka/desktop-shell',
+        ['third-party/nsh/crates/nsh-platform-windows'],
+      ],
+      [
+        'nsh-platform-windows',
+        'third-party/nsh/crates/nsh-platform-windows',
+        ['third-party/nsh/crates/nsh-core'],
+      ],
       ['maka-process', 'platform/process'],
       ['maka-settings-native', 'plugins/settings/native'],
       ['maka-ui-build', 'tools/ui-build'],
     ]),
-    nsh: workspace([['nsh-core', 'third-party/nsh/crates/nsh-core']]),
+    nsh: workspace([
+      ['nsh-core', 'third-party/nsh/crates/nsh-core'],
+      ['nsh-cli', 'third-party/nsh/crates/nsh-cli', ['third-party/nsh/crates/nsh-core']],
+      [
+        'nsh-platform-windows',
+        'third-party/nsh/crates/nsh-platform-windows',
+        ['third-party/nsh/crates/nsh-core'],
+      ],
+      [
+        'nsh-windows-app',
+        'third-party/nsh/crates/nsh-windows-app',
+        ['third-party/nsh/crates/nsh-platform-windows'],
+      ],
+      [
+        'nsh-windows-host',
+        'third-party/nsh/crates/nsh-windows-host',
+        ['third-party/nsh/crates/nsh-platform-windows'],
+      ],
+    ]),
     gpui: workspace([
       ['nsh-platform-gpui', 'third-party/nsh/crates/gpui/nsh-platform-gpui', ['external-nsh']],
     ]),
@@ -105,13 +133,86 @@ test('a path dependency affects consumers across owning workspaces', () => {
   const plan = fixture()(['third-party/nsh/crates/nsh-core/src/lib.rs']);
   assert.ok(plan.suites.nsh);
   assert.ok(plan.suites.gpui);
-  assert.equal(plan.suites.root.filter, 'package(=maka-cli)');
+  assert.equal(plan.suites.root.filter, 'package(=maka-cli) | package(=maka-desktop-shell)');
   assert.equal(plan.full, false);
+});
+
+test('Windows backend changes select the native tests and default desktop consumer', () => {
+  const plan = fixture()(['third-party/nsh/crates/nsh-platform-windows/src/input.rs']);
+  assert.equal(plan.full, false);
+  assert.equal(plan.suites.root.filter, 'package(=maka-desktop-shell)');
+  assert.deepEqual(
+    plan.workers
+      .filter((worker) => worker.id.startsWith('native-'))
+      .map(({ id, suites }) => ({ id, suites })),
+    [{ id: 'native-windows', suites: ['windows-desktop', 'windows-nsh'] }],
+  );
+  const consumer = fixture()(['third-party/nsh/crates/nsh-windows-app/src/lib.rs']);
+  assert.ok(consumer.suites['windows-nsh']);
+  assert.equal(consumer.full, false);
+  const template = fixture()(['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs']);
+  assert.ok(template.suites['windows-nsh']);
+  assert.equal(template.full, false);
+});
+
+test('Windows setup installs nextest and keys caches by both Cargo workspaces', () => {
+  const directory = mkdtempSync(join(tmpdir(), 'maka-ci-windows-'));
+  try {
+    mkdirSync(join(directory, 'third-party/nsh'), { recursive: true });
+    mkdirSync(join(directory, '.cargo'));
+    writeFileSync(join(directory, 'Cargo.toml'), '[workspace]');
+    writeFileSync(join(directory, 'third-party/nsh/Cargo.toml'), '[workspace]');
+    writeFileSync(join(directory, '.cargo/config.toml'), '');
+    writeFileSync(join(directory, 'Cargo.lock'), 'root-v1');
+    writeFileSync(join(directory, 'third-party/nsh/Cargo.lock'), 'nsh-v1');
+    const output = join(directory, 'output');
+    const setup = (action) => {
+      writeFileSync(output, '');
+      execFileSync(
+        process.execPath,
+        [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), action],
+        {
+          cwd: directory,
+          env: {
+            ...process.env,
+            MAKA_CI_ROLE: 'native-windows',
+            MAKA_CI_WORKSPACE: 'root',
+            MAKA_CI_NEXTEST: '0.9.100',
+            GITHUB_OUTPUT: output,
+            RUNNER_OS: 'Windows',
+            RUNNER_ARCH: 'X64',
+          },
+        },
+      );
+      return Object.fromEntries(
+        readFileSync(output, 'utf8')
+          .trim()
+          .split('\n')
+          .map((line) => line.split('=')),
+      );
+    };
+    assert.equal(setup('tool-list').tools, 'cargo-nextest@0.9.100');
+    const before = setup('keys');
+    writeFileSync(join(directory, 'third-party/nsh/Cargo.lock'), 'nsh-v2');
+    const nsh = setup('keys');
+    assert.notEqual(before.compiled, nsh.compiled);
+    assert.notEqual(before.downloads, nsh.downloads);
+    writeFileSync(join(directory, 'Cargo.lock'), 'root-v2');
+    const root = setup('keys');
+    assert.notEqual(nsh.compiled, root.compiled);
+    assert.notEqual(nsh.downloads, root.downloads);
+    writeFileSync(join(directory, 'third-party/nsh/Cargo.toml'), '[workspace]\nresolver = "3"');
+    const features = setup('keys');
+    assert.notEqual(root.compiled, features.compiled);
+    assert.equal(root.downloads, features.downloads);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('SDK runtime inputs select product consumers without a Cargo dependency edge', () => {
   const plan = fixture()(['packages/plugin-sdk/src/runtime/client.ts']);
-  for (const id of ['root', 'bridge', 'desktop', 'contracts', 'product'])
+  for (const id of ['root', 'bridge', 'desktop', 'windows-desktop', 'contracts', 'product'])
     assert.ok(plan.suites[id], id);
   assert.equal(plan.suites.root.filter, 'all()');
   assert.equal(plan.suites.native, undefined);

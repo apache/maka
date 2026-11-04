@@ -41,7 +41,8 @@ pub(super) async fn require_revision(
     record: &InteractionRecord,
 ) -> Result<(), StoreError> {
     let expected = match &record.request {
-        InteractionRequest::Permissions { basis, .. }
+        InteractionRequest::SessionApproval { basis, .. }
+        | InteractionRequest::Permissions { basis, .. }
         | InteractionRequest::ClientCapability {
             basis: Some(basis), ..
         } => Some(*basis),
@@ -156,7 +157,8 @@ pub(crate) async fn close_previous_basis(
             .await?
             .ok_or_else(|| invalid("permission request disappeared"))?;
         if matches!(record.request,
-            InteractionRequest::Permissions { basis, .. }
+            InteractionRequest::SessionApproval { basis, .. }
+            | InteractionRequest::Permissions { basis, .. }
             | InteractionRequest::ClientCapability { basis: Some(basis), .. }
             if basis == previous)
         {

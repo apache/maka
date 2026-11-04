@@ -67,6 +67,9 @@ pub(super) const COORDINATION_TOOLS: &[&str] = &[
     "SessionCreate",
     "SessionSend",
     "SessionStop",
+    "SessionPendingInteractions",
+    "SessionInteraction",
+    "SessionRespond",
 ];
 const PAGE: usize = 100;
 const RECORD_KEY: &str = "bot";

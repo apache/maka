@@ -20,8 +20,8 @@
 //! Project semantic payloads without owning their text or arbitrary JSON bodies.
 
 use maka_agent_facts::history::semantic::directory::{
-    ChildDirectory, InputDirectory, ListKind, PartDirectory, PayloadDirectory, RowDirectory,
-    TextSpan, ToolDirectory, ToolPartDirectory,
+    ChildDirectory, InputDirectory, JsonSpan, ListKind, PartDirectory, PayloadDirectory,
+    RowDirectory, TextSpan, ToolDirectory, ToolPartDirectory,
 };
 use maka_agent_facts::model::TextKind;
 use maka_agent_facts::model::prompt_source::source::ChargedBuffer;
@@ -151,8 +151,14 @@ pub(super) async fn project_row(
     let payload = payload.ok_or_else(invalid)?;
     match (row, payload) {
         (RowDirectory::User { steering, .. }, PayloadDirectory::User { .. }) => {
-            user(payload, *steering, context).await
+            user(payload, *steering, None, context).await
         }
+        (
+            RowDirectory::AttributedUser {
+                steering, origin, ..
+            },
+            PayloadDirectory::User { .. },
+        ) => user(payload, *steering, Some(*origin), context).await,
         (RowDirectory::ImportedUser { .. }, PayloadDirectory::Text(text)) => {
             Ok(ProjectedRow::User(list(
                 vec![ContentRecipe::Text {
@@ -555,11 +561,24 @@ impl Children {
         }
     }
 }
+fn origin_json(origin: JsonSpan, context: &ProjectContext<'_>) -> io::Result<JsonSource> {
+    let row = context.row_root.ok_or_else(invalid)?;
+    located::json(origin, &context.for_payload(Some(row)))
+}
+
+fn origin_pieces(origin: JsonSpan, context: &ProjectContext<'_>) -> io::Result<[TextSource; 3]> {
+    Ok([
+        literal(maka_agent_facts::message::MessageOrigin::prompt_header_prefix(context.language)),
+        raw_json(origin_json(origin, context)?),
+        literal("]\n"),
+    ])
+}
+
 fn steering_prefix(language: Language) -> &'static str {
     match language {
-        Language::En => "The user sent a message while you were working:\n<user_query>\n",
-        Language::ZhCn => "用户在你工作期间发来消息：\n<user_query>\n",
-        Language::ZhTw => "使用者在你工作期間傳來訊息：\n<user_query>\n",
+        Language::En => "A message arrived while you were working:\n<user_query>\n",
+        Language::ZhCn => "你工作期间收到一条消息：\n<user_query>\n",
+        Language::ZhTw => "你工作期間收到一則訊息：\n<user_query>\n",
     }
 }
 fn quote_pieces(
@@ -635,6 +654,7 @@ async fn reference_pieces(
 async fn user(
     input: &PayloadDirectory,
     steering: bool,
+    origin: Option<JsonSpan>,
     context: &ProjectContext<'_>,
 ) -> io::Result<ProjectedRow> {
     let PayloadDirectory::User {
@@ -646,13 +666,16 @@ async fn user(
     else {
         return Err(invalid());
     };
-    let (_, piece_count, content_count) = user_layout(input, steering, context).await?;
+    let (_, piece_count, content_count) = user_layout(input, steering, origin, context).await?;
     let mut content = Vec::with_capacity(content_count);
     content.push(ContentRecipe::Text {
         text: literal(""),
         provider_options: None,
     });
     let mut pieces = Vec::with_capacity(piece_count);
+    if let Some(origin) = origin {
+        pieces.extend(origin_pieces(origin, context)?);
+    }
     if steering {
         pieces.push(literal(steering_prefix(context.language)));
     }
@@ -942,12 +965,16 @@ pub(super) async fn footprint_row(
     )?;
     match payload.ok_or_else(invalid)? {
         payload @ PayloadDirectory::User { .. } => {
-            let RowDirectory::User { steering, .. } = row else {
-                return Err(invalid());
+            let (steering, origin) = match row {
+                RowDirectory::User { steering, .. } => (*steering, None),
+                RowDirectory::AttributedUser {
+                    steering, origin, ..
+                } => (*steering, Some(*origin)),
+                _ => return Err(invalid()),
             };
             footprint_add(
                 &mut bytes,
-                user_layout(payload, *steering, context).await?.0,
+                user_layout(payload, steering, origin, context).await?.0,
             )?;
         }
         PayloadDirectory::Text(text) => {
@@ -1314,7 +1341,10 @@ pub(super) async fn backing_bytes_row(
     let mut bytes = 0;
     let (kind, count) = match payload {
         Some(PayloadDirectory::User { attachments, .. })
-            if matches!(row, RowDirectory::User { .. }) =>
+            if matches!(
+                row,
+                RowDirectory::User { .. } | RowDirectory::AttributedUser { .. }
+            ) =>
         {
             (ListKind::Attachments, *attachments)
         }
@@ -1366,6 +1396,7 @@ async fn error_metadata_bytes(
 async fn user_layout(
     input: &PayloadDirectory,
     steering: bool,
+    origin: Option<JsonSpan>,
     context: &ProjectContext<'_>,
 ) -> io::Result<(usize, usize, usize)> {
     let PayloadDirectory::User {
@@ -1380,6 +1411,13 @@ async fn user_layout(
     let mut bytes = raw_footprint(located::text(*text, context)?.bytes())?;
     let mut content_count = 1usize;
     let mut pieces = 1usize + usize::from(steering) * 2;
+    if let Some(origin) = origin {
+        pieces += 3;
+        footprint_add(
+            &mut bytes,
+            raw_footprint(origin_json(origin, context)?.bytes())?,
+        )?;
+    }
     let mut cursor = Children::open(ListKind::Quotes, *quotes, context).await?;
     while let Some(child) = cursor.next().await? {
         let ChildDirectory::Quote {

@@ -40,7 +40,11 @@ async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attachment_only_send_uses_the_selected_bytes_after_the_local_file_changes() {
-    let mut fixture = Fixture::configured(support::Options { images: true }).await;
+    let mut fixture = Fixture::configured(support::Options {
+        images: true,
+        ..support::Options::default()
+    })
+    .await;
     let client = fixture.client().await;
     support::mutate(&client,"selectBackend",json!({"sessionId":fixture.session,"backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model","thinkingLevel":null}})).await;
     let bytes = STANDARD.decode(ORIGINAL_PNG).unwrap();

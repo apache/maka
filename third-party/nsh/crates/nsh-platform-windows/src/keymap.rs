@@ -40,6 +40,14 @@ pub(crate) fn clear(surface: &Surface) {
 /// A key down: whether it fired (or, held, repeats) one of the bindings;
 /// then it is consumed.
 pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    key_in_phase(surface, event, false)
+}
+
+pub(crate) fn fallback_key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
+    key_in_phase(surface, event, true)
+}
+
+fn key_in_phase(surface: &Rc<Surface>, event: &KeyEvent, fallback: bool) -> bool {
     let Some(table) = surface.keymap.table.borrow().clone() else {
         return false;
     };
@@ -51,7 +59,12 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
         return false;
     }
     let editing = crate::text_input::focused(surface).is_some();
-    let found = table.find(keystroke, editing, event.repeat);
+    let path = surface.focus_path();
+    let found = if fallback {
+        table.find_fallback_with(keystroke, editing, event.repeat, |id| path.contains(&id))
+    } else {
+        table.find_with(keystroke, editing, event.repeat, |id| path.contains(&id))
+    };
     if let KeyMatch::Fire(id) = found {
         surface.event(
             ROOT_ID,
@@ -66,7 +79,7 @@ pub(crate) fn key(surface: &Rc<Surface>, event: &KeyEvent) -> bool {
 }
 
 /// Removes the character `TranslateMessage` queued for the consumed key.
-fn drop_char(surface: &Surface) {
+pub(crate) fn drop_char(surface: &Surface) {
     let mut msg = MSG::default();
     for kind in [WM_CHAR, WM_SYSCHAR] {
         // SAFETY: a plain call with a local out value, for our own window.

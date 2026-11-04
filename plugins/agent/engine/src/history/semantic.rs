@@ -49,12 +49,18 @@ fn render_rows(
             assistant_group = None;
         }
         match &row.kind {
-            SemanticKind::User { steering, .. } => {
+            SemanticKind::User {
+                steering, origin, ..
+            } => {
                 let Some(Payload::User(content)) = payload else {
                     return Err(invalid());
                 };
                 messages.push(super::user::project(
-                    content, resources, *steering, language,
+                    content,
+                    resources,
+                    *steering,
+                    language,
+                    origin.as_ref(),
                 )?);
             }
             SemanticKind::ImportedUser { .. } => {

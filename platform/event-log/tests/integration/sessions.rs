@@ -153,6 +153,7 @@ async fn owned_catalog_filters_before_paging_and_binds_literal_query_and_scope_t
     };
     let workspace = workspace_scope("owned_match_00", &identity, query);
     let filter = CatalogFilter {
+        roots_only: false,
         archived_only: false,
         include_archived: false,
         pending_only: false,

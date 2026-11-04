@@ -1989,6 +1989,17 @@ export function createConversationUi(
                   filesOpener={(node) => resources.attachOpener(id(), node)}
                   previewImage={previewImage}
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
+                  knownSession={(sessionId) =>
+                    browsing.sessions().find((session) => session.id === sessionId)
+                  }
+                  openSessionBeside={
+                    shell()?.openBeside ??
+                    (side
+                      ? (sessionId) => {
+                          void shell()?.openSession(sessionId).catch(report);
+                        }
+                      : undefined)
+                  }
                   focusComposer={focusComposer}
                   stopAction={stopAction}
                   attach={(next) => {
@@ -2039,6 +2050,7 @@ export function createConversationUi(
                                 sessionId={owner.sessionId}
                                 requestId={entry().requestId}
                                 control={control}
+                                openBeside={shell()?.openBeside}
                                 focusComposer={focusComposer}
                                 confirming={() =>
                                   connectionLost() ||

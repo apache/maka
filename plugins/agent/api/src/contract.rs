@@ -242,6 +242,9 @@ pub struct List {
     /// Include archived conversations alongside active ones.
     #[serde(default)]
     pub include_archived: bool,
+    /// Only conversations without a parent; omitted queries still include children.
+    #[serde(default)]
+    pub roots_only: bool,
     pub position: SessionPosition,
     #[serde(default)]
     pub scope: SessionListScope,
@@ -316,6 +319,7 @@ pub struct Create {
     #[serde(default)]
     #[schemars(extend("uniqueItems" = true))]
     pub tools: Option<Vec<String>>,
+    /// A concise, specific task name people can recognize in navigation; avoid generic worker numbers.
     #[schemars(length(min = 1))]
     pub title: String,
     pub labels: Vec<String>,
@@ -593,6 +597,7 @@ pub struct SelectBackend {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentRejection")]
 pub enum Rejection {
+    PermissionChangeRequiresUser,
     TitleInvalid,
     LabelsInvalid,
     ToolsUnavailable,
@@ -1273,6 +1278,7 @@ pub enum QueueMutationResult {
 #[serde(rename_all = "snake_case")]
 #[schemars(rename = "AgentQueueRejection")]
 pub enum QueueRejection {
+    NotYourMessage,
     Closed,
     Missing,
     InFlight,

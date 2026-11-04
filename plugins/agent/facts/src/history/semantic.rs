@@ -63,6 +63,8 @@ pub enum SemanticKind {
     User {
         payload: PayloadKey,
         steering: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<crate::message::MessageOrigin>,
     },
     ImportedUser {
         payload: PayloadKey,
@@ -299,17 +301,29 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
                 InvocationInput::Code { .. } => OpeningKind::Code,
                 _ => OpeningKind::Conversation,
             });
-            if let InvocationInput::Message { content, .. } = input {
-                fragment(&mut out, key, Payload::User(content.clone()));
-                out.rows.push(row(
-                    stored,
-                    0,
-                    key,
-                    SemanticKind::User {
-                        payload: key,
-                        steering: false,
-                    },
-                ));
+            if let InvocationInput::Message {
+                content,
+                source_messages,
+                ..
+            } = input
+            {
+                if source_messages
+                    .iter()
+                    .all(|source| source.message.origin.is_none())
+                {
+                    user_row(&mut out, stored, 0, content, None, false);
+                } else {
+                    for (index, source) in source_messages.iter().enumerate() {
+                        user_row(
+                            &mut out,
+                            stored,
+                            index as u64,
+                            &source.message.content,
+                            source.message.origin.clone(),
+                            false,
+                        );
+                    }
+                }
                 frontier.stable(&mut out, position(stored.sequence, END_INDEX));
             }
         }
@@ -332,16 +346,14 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
             }
         }
         Fact::MessageSteered { message, .. } => {
-            fragment(&mut out, key, Payload::User(message.content.clone()));
-            out.rows.push(row(
+            user_row(
+                &mut out,
                 stored,
                 0,
-                key,
-                SemanticKind::User {
-                    payload: key,
-                    steering: true,
-                },
-            ));
+                &message.content,
+                message.origin.clone(),
+                true,
+            );
             frontier.stable(&mut out, position(stored.sequence, END_INDEX));
         }
         Fact::ExecutorCompleted { text } => {
@@ -702,6 +714,28 @@ pub fn reduce(frontier: &mut Frontier, stored: &StoredEvent) -> Result<Transitio
     }
     frontier.flush(stored.sequence, &mut out);
     Ok(out)
+}
+
+fn user_row(
+    out: &mut Transition,
+    stored: &StoredEvent,
+    index: u64,
+    content: &MessageInput,
+    origin: Option<crate::message::MessageOrigin>,
+    steering: bool,
+) {
+    let key = position(stored.sequence, index);
+    fragment(out, key, Payload::User(content.clone()));
+    out.rows.push(row(
+        stored,
+        index,
+        key,
+        SemanticKind::User {
+            payload: key,
+            steering,
+            origin,
+        },
+    ));
 }
 
 fn assistant_row(

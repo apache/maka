@@ -421,7 +421,7 @@ impl Handler for Agent {
                 }
                 "metadata" => {
                     context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.metadata(decode(input)?).await?)
+                    encode(owner.metadata(decode(input)?, context.scope()).await?)
                 }
                 "setCompactionPrompt" => {
                     context.operation().ok_or("agent_mutation_required")?;
@@ -1055,10 +1055,16 @@ impl Handler for Agent {
                 }
                 "pendingInteractions" => {
                     let input: SessionRead = decode(input)?;
+                    owner
+                        .require_interaction_access(context.scope(), &input.session_id)
+                        .await?;
                     encode(owner.pending_interactions(&input.session_id).await?)
                 }
                 "interaction" => {
                     let input: InteractionRead = decode(input)?;
+                    owner
+                        .require_interaction_access(context.scope(), &input.session_id)
+                        .await?;
                     encode(
                         owner
                             .interaction(&input.session_id, &input.request_id)
@@ -1066,8 +1072,12 @@ impl Handler for Agent {
                     )
                 }
                 "respond" => {
-                    context.operation().ok_or("agent_mutation_required")?;
-                    encode(owner.respond(decode(input)?).await?)
+                    let operation = context.operation().ok_or("agent_mutation_required")?;
+                    encode(
+                        owner
+                            .respond(decode(input)?, operation, context.scope())
+                            .await?,
+                    )
                 }
                 "watch" => {
                     let input: Watch = decode(input)?;
@@ -1229,6 +1239,7 @@ async fn catalog_scope(owner: &Owner, input: &List) -> Result<CatalogScope, Stri
 
 fn catalog_filter(input: &List) -> maka_event_log::sessions::CatalogFilter {
     maka_event_log::sessions::CatalogFilter {
+        roots_only: input.roots_only,
         archived_only: matches!(input.filter, SessionFilter::Archived),
         include_archived: input.include_archived || matches!(input.filter, SessionFilter::Archived),
         pending_only: matches!(input.filter, SessionFilter::NeedsYou),

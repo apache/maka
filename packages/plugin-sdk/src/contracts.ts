@@ -350,6 +350,12 @@ export const contracts = {
                 type: 'boolean',
                 default: false,
               },
+              rootsOnly: {
+                description:
+                  'Only conversations without a parent; omitted queries still include children.',
+                type: 'boolean',
+                default: false,
+              },
               position: {
                 $ref: '#/$defs/AgentSessionPosition',
               },
@@ -1817,6 +1823,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -2630,6 +2637,8 @@ export const contracts = {
                 uniqueItems: true,
               },
               title: {
+                description:
+                  'A concise, specific task name people can recognize in navigation; avoid generic worker numbers.',
                 type: 'string',
                 minLength: 1,
               },
@@ -3302,6 +3311,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -4012,6 +4022,7 @@ export const contracts = {
               AgentQueueRejection: {
                 type: 'string',
                 enum: [
+                  'not_your_message',
                   'closed',
                   'missing',
                   'in_flight',
@@ -5002,6 +5013,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -6715,6 +6727,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'invocation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -6790,6 +6816,24 @@ export const contracts = {
                     required: ['kind', 'executionId', 'title'],
                   },
                 ],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
               },
               HistoryCompaction: {
                 description:
@@ -7750,6 +7794,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'invocation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -7825,6 +7883,24 @@ export const contracts = {
                     required: ['kind', 'executionId', 'title'],
                   },
                 ],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
               },
             },
           },
@@ -9858,6 +9934,34 @@ export const contracts = {
                 oneOf: [
                   {
                     description:
+                      'Human consent for the exact decision proposed for a child interaction.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_approval',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      basis: {
+                        $ref: '#/$defs/PermissionBasis',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      requestId: {
+                        type: 'string',
+                      },
+                      answer: {
+                        $ref: '#/$defs/SessionApprovalAnswer',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'basis', 'sessionId', 'requestId', 'answer'],
+                  },
+                  {
+                    description:
                       'Consent for one already journaled service call; never a service grant.',
                     type: 'object',
                     properties: {
@@ -10110,43 +10214,92 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['id', 'permissionEpoch'],
               },
-              PermissionRequest: {
+              SessionApprovalAnswer: {
                 description:
-                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
-                type: 'object',
-                properties: {
-                  reason: {
-                    type: 'string',
-                  },
-                  command: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PermissionCommand',
+                  "Only access-expanding child decisions can require a parent's human confirmation.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service_approval',
                       },
-                      {
-                        type: 'null',
+                      decision: {
+                        $ref: '#/$defs/ApprovalAllow',
                       },
-                    ],
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
                   },
-                  permissions: {
-                    $ref: '#/$defs/Permissions',
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'permissions',
+                      },
+                      decision: {
+                        $ref: '#/$defs/PermissionApproval',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
                   },
-                },
-                additionalProperties: false,
-                required: ['reason', 'permissions'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'client_capability',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ApprovalAllow',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ComputerAppApproval',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
+                  },
+                ],
               },
-              PermissionCommand: {
-                type: 'object',
-                properties: {
-                  command: {
-                    type: 'string',
+              ApprovalAllow: {
+                type: 'string',
+                enum: ['allow'],
+              },
+              PermissionApproval: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
+                      permissions: {
+                        $ref: '#/$defs/Permissions',
+                      },
+                      scope: {
+                        $ref: '#/$defs/Scope2',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['decision', 'permissions', 'scope'],
                   },
-                  cwd: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['command', 'cwd'],
+                ],
               },
               Permissions: {
                 type: 'object',
@@ -10240,6 +10393,52 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['host', 'port'],
+              },
+              Scope2: {
+                type: 'string',
+                enum: ['once', 'turn', 'session'],
+              },
+              ComputerAppApproval: {
+                type: 'string',
+                enum: ['once', 'session', 'always'],
+              },
+              PermissionRequest: {
+                description:
+                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
+                type: 'object',
+                properties: {
+                  reason: {
+                    type: 'string',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                },
+                additionalProperties: false,
+                required: ['reason', 'permissions'],
+              },
+              PermissionCommand: {
+                type: 'object',
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['command', 'cwd'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -10676,6 +10875,25 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session_approval_decision',
+                      },
+                      decision: {
+                        $ref: '#/$defs/Decision',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'service_approval_decision',
                       },
                       decision: {
@@ -10898,10 +11116,6 @@ export const contracts = {
                   },
                 ],
               },
-              Scope2: {
-                type: 'string',
-                enum: ['once', 'turn', 'session'],
-              },
               FormValue: {
                 anyOf: [
                   {
@@ -10954,6 +11168,12 @@ export const contracts = {
               },
               includeArchived: {
                 description: 'Include archived conversations alongside active ones.',
+                type: 'boolean',
+                default: false,
+              },
+              rootsOnly: {
+                description:
+                  'Only conversations without a parent; omitted queries still include children.',
                 type: 'boolean',
                 default: false,
               },
@@ -12358,6 +12578,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -13096,6 +13317,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -14607,6 +14829,7 @@ export const contracts = {
               AgentInteractionKind: {
                 type: 'string',
                 enum: [
+                  'session_approval',
                   'service_approval',
                   'question',
                   'permissions',
@@ -15609,6 +15832,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'invocation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -15684,6 +15921,24 @@ export const contracts = {
                     required: ['kind', 'executionId', 'title'],
                   },
                 ],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
               },
               AgentQueueKind: {
                 type: 'string',
@@ -16996,6 +17251,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session_approval',
+                      },
+                      decision: {
+                        $ref: '#/$defs/Decision',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'service_approval',
                       },
                       decision: {
@@ -17381,6 +17650,34 @@ export const contracts = {
                 oneOf: [
                   {
                     description:
+                      'Human consent for the exact decision proposed for a child interaction.',
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'session_approval',
+                      },
+                      toolUseId: {
+                        type: 'string',
+                      },
+                      basis: {
+                        $ref: '#/$defs/PermissionBasis',
+                      },
+                      sessionId: {
+                        type: 'string',
+                      },
+                      requestId: {
+                        type: 'string',
+                      },
+                      answer: {
+                        $ref: '#/$defs/SessionApprovalAnswer',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'toolUseId', 'basis', 'sessionId', 'requestId', 'answer'],
+                  },
+                  {
+                    description:
                       'Consent for one already journaled service call; never a service grant.',
                     type: 'object',
                     properties: {
@@ -17633,43 +17930,92 @@ export const contracts = {
                 additionalProperties: false,
                 required: ['id', 'permissionEpoch'],
               },
-              PermissionRequest: {
+              SessionApprovalAnswer: {
                 description:
-                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
-                type: 'object',
-                properties: {
-                  reason: {
-                    type: 'string',
-                  },
-                  command: {
-                    anyOf: [
-                      {
-                        $ref: '#/$defs/PermissionCommand',
+                  "Only access-expanding child decisions can require a parent's human confirmation.",
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'service_approval',
                       },
-                      {
-                        type: 'null',
+                      decision: {
+                        $ref: '#/$defs/ApprovalAllow',
                       },
-                    ],
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
                   },
-                  permissions: {
-                    $ref: '#/$defs/Permissions',
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'permissions',
+                      },
+                      decision: {
+                        $ref: '#/$defs/PermissionApproval',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
                   },
-                },
-                additionalProperties: false,
-                required: ['reason', 'permissions'],
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'client_capability',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ApprovalAllow',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
+                        const: 'computer_app',
+                      },
+                      decision: {
+                        $ref: '#/$defs/ComputerAppApproval',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision'],
+                  },
+                ],
               },
-              PermissionCommand: {
-                type: 'object',
-                properties: {
-                  command: {
-                    type: 'string',
+              ApprovalAllow: {
+                type: 'string',
+                enum: ['allow'],
+              },
+              PermissionApproval: {
+                oneOf: [
+                  {
+                    type: 'object',
+                    properties: {
+                      decision: {
+                        type: 'string',
+                        const: 'allow',
+                      },
+                      permissions: {
+                        $ref: '#/$defs/Permissions',
+                      },
+                      scope: {
+                        $ref: '#/$defs/Scope2',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['decision', 'permissions', 'scope'],
                   },
-                  cwd: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['command', 'cwd'],
+                ],
               },
               Permissions: {
                 type: 'object',
@@ -17763,6 +18109,52 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['host', 'port'],
+              },
+              Scope2: {
+                type: 'string',
+                enum: ['once', 'turn', 'session'],
+              },
+              ComputerAppApproval: {
+                type: 'string',
+                enum: ['once', 'session', 'always'],
+              },
+              PermissionRequest: {
+                description:
+                  'The Host supplies the real operation description; it is display information,\nnot authority inferred from a command string or a plugin-supplied Session ID.',
+                type: 'object',
+                properties: {
+                  reason: {
+                    type: 'string',
+                  },
+                  command: {
+                    anyOf: [
+                      {
+                        $ref: '#/$defs/PermissionCommand',
+                      },
+                      {
+                        type: 'null',
+                      },
+                    ],
+                  },
+                  permissions: {
+                    $ref: '#/$defs/Permissions',
+                  },
+                },
+                additionalProperties: false,
+                required: ['reason', 'permissions'],
+              },
+              PermissionCommand: {
+                type: 'object',
+                properties: {
+                  command: {
+                    type: 'string',
+                  },
+                  cwd: {
+                    type: 'string',
+                  },
+                },
+                additionalProperties: false,
+                required: ['command', 'cwd'],
               },
               InteractionQuestion: {
                 type: 'object',
@@ -18199,6 +18591,25 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session_approval_decision',
+                      },
+                      decision: {
+                        $ref: '#/$defs/Decision',
+                      },
+                      committedAt: {
+                        type: 'integer',
+                        format: 'uint64',
+                        minimum: 0,
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'decision', 'committedAt'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'service_approval_decision',
                       },
                       decision: {
@@ -18421,10 +18832,6 @@ export const contracts = {
                   },
                 ],
               },
-              Scope2: {
-                type: 'string',
-                enum: ['once', 'turn', 'session'],
-              },
               FormValue: {
                 anyOf: [
                   {
@@ -18463,7 +18870,16 @@ export const contracts = {
               },
               AgentInteractionRejection: {
                 type: 'string',
-                enum: ['closed', 'unavailable', 'invalid_answer', 'unsupported'],
+                enum: [
+                  'not_your_child',
+                  'human_action_required',
+                  'authorization_changed',
+                  'permission_requests_disabled',
+                  'closed',
+                  'unavailable',
+                  'invalid_answer',
+                  'unsupported',
+                ],
               },
             },
           },
@@ -21061,6 +21477,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -22092,6 +22509,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -22736,6 +23154,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'invocation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -22811,6 +23243,24 @@ export const contracts = {
                     required: ['kind', 'executionId', 'title'],
                   },
                 ],
+              },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
               },
               HistoryRowPosition: {
                 description:
@@ -24127,6 +24577,20 @@ export const contracts = {
                     properties: {
                       kind: {
                         type: 'string',
+                        const: 'session',
+                      },
+                      invocation: {
+                        $ref: '#/$defs/Invocation',
+                      },
+                    },
+                    additionalProperties: false,
+                    required: ['kind', 'invocation'],
+                  },
+                  {
+                    type: 'object',
+                    properties: {
+                      kind: {
+                        type: 'string',
                         const: 'goal',
                       },
                       goalId: {
@@ -24203,6 +24667,24 @@ export const contracts = {
                   },
                 ],
               },
+              Invocation: {
+                type: 'object',
+                properties: {
+                  session_id: {
+                    type: 'string',
+                  },
+                  turn_id: {
+                    type: 'string',
+                  },
+                  run_id: {
+                    type: 'string',
+                  },
+                  invocation_id: {
+                    type: 'string',
+                  },
+                },
+                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
+              },
               AgentQueueKind: {
                 type: 'string',
                 enum: ['in_flight', 'steering', 'followup'],
@@ -24244,6 +24726,7 @@ export const contracts = {
               AgentInteractionKind: {
                 type: 'string',
                 enum: [
+                  'session_approval',
                   'service_approval',
                   'question',
                   'permissions',
@@ -24297,24 +24780,6 @@ export const contracts = {
                 },
                 additionalProperties: false,
                 required: ['invocation', 'operationId', 'target', 'display'],
-              },
-              Invocation: {
-                type: 'object',
-                properties: {
-                  session_id: {
-                    type: 'string',
-                  },
-                  turn_id: {
-                    type: 'string',
-                  },
-                  run_id: {
-                    type: 'string',
-                  },
-                  invocation_id: {
-                    type: 'string',
-                  },
-                },
-                required: ['session_id', 'turn_id', 'run_id', 'invocation_id'],
               },
               GrantTarget: {
                 type: 'object',
@@ -26884,6 +27349,7 @@ export const contracts = {
               AgentQueueRejection: {
                 type: 'string',
                 enum: [
+                  'not_your_message',
                   'closed',
                   'missing',
                   'in_flight',
@@ -27457,6 +27923,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',
@@ -28998,6 +29465,7 @@ export const contracts = {
               AgentRejection: {
                 type: 'string',
                 enum: [
+                  'permission_change_requires_user',
                   'title_invalid',
                   'labels_invalid',
                   'tools_unavailable',

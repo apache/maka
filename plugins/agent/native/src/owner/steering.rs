@@ -64,7 +64,9 @@ impl Owner {
         };
         let source = RootSourceMessage {
             message: DeliveredMessage {
-                origin: None,
+                origin: parent.identity.agent().cloned().map(|invocation| {
+                    maka_agent_facts::message::MessageOrigin::Session { invocation }
+                }),
                 message_id: format!("m_{}", self.operation_id(operation)),
                 submitted_content_digest: unprepared
                     .content_digest()
