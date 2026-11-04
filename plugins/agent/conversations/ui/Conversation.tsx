@@ -259,7 +259,6 @@ type ConversationProps = {
     send: boolean;
     files?: StagedFile[];
     first?: boolean;
-    committed?(): Promise<void>;
   } | null;
   commands(): void;
   connectionLost(): boolean;
@@ -809,8 +808,6 @@ export function Conversation(props: ConversationProps) {
   let holding = false;
   let heldDraft: (AttachmentEdit & { text: string }) | null = null;
   const autoSend = signal<{ text: string; first?: boolean } | null>(null);
-  const prefillCommit = signal<(() => Promise<void>) | null>(null);
-  let committingPrefill = false;
   const attachments = createAttachmentDraft({
     sessionId,
     client,
@@ -1898,7 +1895,7 @@ export function Conversation(props: ConversationProps) {
       return tr(
         'This conversation is archived. Restore it in Sessions to send; your draft is kept.',
       );
-    if (!draftReady() || prefillCommit() !== null) return tr('Loading the saved draft…');
+    if (!draftReady()) return tr('Loading the saved draft…');
     if (savingFailed()) return tr('The draft could not be saved. Sending is unavailable.');
     if (attachments.blocked()) return attachments.blocked();
     if (confirmingContinuation()) return tr('Confirming continuation…');
@@ -2689,23 +2686,6 @@ export function Conversation(props: ConversationProps) {
         void send(pending.text, undefined, pending.first);
     });
   });
-  effect(() => {
-    const commit = prefillCommit();
-    if (!commit || committingPrefill || !draftReady() || attachments.blocked()) return;
-    untracked(() => {
-      committingPrefill = true;
-      void (async () => {
-        await flushDraft();
-        if (!alive || savingFailed()) return;
-        await commit();
-        if (alive) prefillCommit.set(null);
-      })()
-        .catch(report)
-        .finally(() => {
-          committingPrefill = false;
-        });
-    });
-  });
   cleanup(() => {
     messagePrediction.dispose();
     alive = false;
@@ -2747,7 +2727,6 @@ export function Conversation(props: ConversationProps) {
               changeDraft(prefill.text);
               for (const file of prefill.files ?? [])
                 attachments.observeIntake(client.beginStagedUpload(file), () => {});
-              prefillCommit.set(prefill.committed ?? null);
               props.focusComposer();
               if (prefill.send) {
                 autoSend.set({ text: prefill.text, first: prefill.first });

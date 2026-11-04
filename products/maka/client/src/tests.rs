@@ -47,12 +47,12 @@ use std::{
 };
 use tokio::sync::Notify;
 
-mod composer;
 mod drafts;
 mod progress;
 mod request_custody;
 mod settings;
 mod ui;
+mod workspaces;
 
 #[derive(Default)]
 struct Counter {

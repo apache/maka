@@ -53,7 +53,5 @@ snapshot. Failed or stopped-before-delivery messages remain independently
 recoverable without overwriting a newer draft. Queued receipts remain indexed
 until the Agent confirms delivery, cancellation, or the user dismisses them.
 
-Before a session exists, the desktop composer keeps its recent folders, unsent text and immutable file snapshots in the same journal, scoped to the admitted Host domain, deployment and Agent provider/export. Revision checks prevent a second window from overwriting it. Text edits do not rewrite file bytes. This local presentation state does not create a Host session or authorize a directory; the Host validates the saved selection again when it is used.
-
 Tests cover reconnect recovery, cancelled preparation, storage failure,
 subscription cleanup and draft edits racing a returned send.

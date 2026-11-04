@@ -484,19 +484,6 @@ impl Desktop {
         .await
     }
 
-    async fn saved_composer(&self, text: &str) -> maka_app_client::ComposerState {
-        self.wait("new conversation did not reach durable storage", async {
-            loop {
-                let saved = self.client.load_composer().await.unwrap();
-                if saved.value["draft"]["text"] == text {
-                    return saved;
-                }
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-    }
-
     async fn request(&self, fixture: &mut Fixture) -> ModelRequest {
         self.wait(
             "the submitted message did not reach the provider",
@@ -545,7 +532,6 @@ impl Desktop {
                 })
                 .unwrap();
         });
-        self.target_after(None).await;
         self
     }
 
@@ -566,37 +552,15 @@ async fn images_fixture() -> Fixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_session() {
+async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
     let mut fixture = images_fixture().await;
-    let (path, bytes) = image_file(&fixture);
+    let (path, _) = image_file(&fixture);
     let workspace = fixture.directory.path().join("workspace");
     std::fs::create_dir_all(workspace.join("other-project/workspace")).unwrap();
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
     desktop.attach(&path).await;
-    desktop.type_text("RESTORED_NEW_CONVERSATION").await;
-    let mut saved = desktop.saved_composer("RESTORED_NEW_CONVERSATION").await;
-    assert_eq!(saved.files.len(), 1);
-    // A draft captured before default-model resolution must restore and send too.
-    saved.value["draft"]["backend"] = Value::Null;
-    desktop
-        .client
-        .save_composer(saved.revision, saved.value, None)
-        .await
-        .unwrap();
-    assert_eq!(desktop.sessions().await.len(), 1);
-    std::fs::write(&path, b"changed after selection").unwrap();
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Light)
-        .await;
-    desktop.expect_text("RESTORED_NEW_CONVERSATION").await;
-    desktop
-        .control(&format!(
-            "Remove attachment {}",
-            path.file_name().unwrap().to_str().unwrap()
-        ))
-        .await;
-    desktop.control("Send message").await;
+    desktop.type_text("UNSENT_LOCAL_ONLY").await;
     desktop.press("Choose composer workspace").await;
     desktop.press("Choose another folder…").await;
     desktop.press("Browse folder Workspace").await;
@@ -604,49 +568,11 @@ async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_s
     desktop.press("Browse folder workspace").await;
     desktop.press("Use this workspace folder").await;
     desktop.press("Focus message composer").await;
-    desktop.expect_text("RESTORED_NEW_CONVERSATION").await;
+    desktop.expect_text("UNSENT_LOCAL_ONLY").await;
     desktop.press("Choose composer workspace").await;
     desktop
         .control(&format!("Use folder {}", workspace.display()))
         .await;
-    desktop.artifact("workspace-recents-light");
-    desktop.key("escape", false);
-    desktop
-        .until("Escape did not dismiss recent folders", || {
-            desktop
-                .controls("Choose another folder…")
-                .is_empty()
-                .then_some(())
-        })
-        .await;
-    desktop
-        .platform
-        .set_viewport(size(gpui::DevicePixels(640), gpui::DevicePixels(640)), 1.0)
-        .unwrap();
-    desktop.app.update(|cx| {
-        desktop
-            .window
-            .update(cx, |view, _, cx| {
-                view.set_appearance(nsh_core::platform::Appearance::Dark, cx)
-            })
-            .unwrap()
-    });
-    desktop
-        .retry(
-            "recent folders did not open after resizing",
-            || !desktop.controls("Choose another folder…").is_empty(),
-            || {
-                if let Some(bounds) = desktop.controls("Choose composer workspace").first() {
-                    desktop.press_at(bounds.center());
-                }
-            },
-        )
-        .await;
-    desktop
-        .control(&format!("Use folder {}", workspace.display()))
-        .await;
-    desktop.artifact("workspace-recents-narrow-dark");
-    // Select the second recent folder with the native menu's keyboard path.
     desktop.key("home", false);
     desktop.key("down", false);
     desktop.key("enter", false);
@@ -659,24 +585,64 @@ async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_s
         })
         .await;
     desktop.press("Focus message composer").await;
-    desktop.expect_text("RESTORED_NEW_CONVERSATION").await;
-    assert_eq!(desktop.sessions().await.len(), 1);
-    desktop.press("Send message").await;
-    let request = desktop.request(&mut fixture).await;
-    assert_image(&request, "RESTORED_NEW_CONVERSATION", &bytes);
-    desktop
-        .wait("restored message did not finish", request.finish())
-        .await;
-    desktop
-        .wait("new composer was not handed off", async {
+    desktop.expect_text("UNSENT_LOCAL_ONLY").await;
+    let recent = desktop
+        .wait("selected folder was not saved", async {
             loop {
-                let saved = desktop.client.load_composer().await.unwrap();
-                if saved.value["draft"].is_null() && saved.files.is_empty() {
-                    break;
+                let recent = desktop.client.recent_workspaces().await.unwrap();
+                if recent
+                    .first()
+                    .is_some_and(|item| item.path == workspace.to_str().unwrap())
+                {
+                    break recent;
                 }
                 tokio::task::yield_now().await;
             }
         })
+        .await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+
+    // Fail the initial history read, then repair it while the same window is open.
+    let mut disk = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(fixture.directory.path().join("client.db")),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE recent_workspaces SET value='unreadable fixture'")
+        .execute(&mut disk)
+        .await
+        .unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.control("Choose composer workspace").await;
+    sqlx::query("UPDATE recent_workspaces SET value=?")
+        .bind(serde_json::to_string(&recent).unwrap())
+        .execute(&mut disk)
+        .await
+        .unwrap();
+    desktop.target_after(None).await;
+    let _ = desktop.platform.take_clipboard_write();
+    assert_eq!(desktop.copy_input().unwrap_or_default(), "");
+    assert!(
+        desktop
+            .controls(&format!(
+                "Remove attachment {}",
+                path.file_name().unwrap().to_str().unwrap()
+            ))
+            .is_empty()
+    );
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.type_text("FRESH_AFTER_REOPEN").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    let body = request.body.to_string();
+    assert!(body.contains("FRESH_AFTER_REOPEN"));
+    assert!(!body.contains("UNSENT_LOCAL_ONLY"));
+    assert!(!body.contains("data:image"));
+    desktop
+        .wait("message did not finish", request.finish())
         .await;
     let sent = desktop
         .sessions()
@@ -685,26 +651,19 @@ async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_s
         .find(|session| session["id"] != fixture.session)
         .unwrap();
     assert_eq!(sent["workspace"]["path"], workspace.to_str().unwrap());
-    let removed = desktop.wait("finished conversation could not be removed", async {
+    desktop.wait("finished conversation could not be removed", async {
         loop {
             let observed = desktop.client.query("agent", "observe", json!({"sessionId": sent["id"]})).await.unwrap();
-            let result = mutate(&desktop.client, "changeSession", json!({
-                "sessionId": sent["id"], "expectedRevision": observed["session"]["revision"], "action": "remove"
-            })).await;
-            if result["kind"] != "revision_conflict" && result["reason"] != "busy" { break result; }
+            let result = mutate(&desktop.client, "changeSession", json!({"sessionId":sent["id"], "expectedRevision":observed["session"]["revision"], "action":"remove"})).await;
+            if result["kind"] == "removed" { break; }
+            assert!(result["kind"] == "revision_conflict" || result["reason"] == "busy", "{result}");
             tokio::task::yield_now().await;
         }
     }).await;
-    assert_eq!(removed["kind"], "removed");
     let desktop = desktop
         .restart(&fixture, nsh_core::platform::Appearance::Dark)
         .await;
-    desktop.press("Choose composer workspace").await;
-    desktop
-        .control(&format!("Use folder {}", workspace.display()))
-        .await;
-    desktop.key("escape", false);
-    desktop.press("Focus message composer").await;
+    desktop.target_after(None).await;
     desktop.type_text("SAME_FOLDER_AFTER_SESSION_REMOVAL").await;
     desktop.control("Send message").await;
     assert_eq!(desktop.sessions().await.len(), 1);
@@ -713,155 +672,25 @@ async fn desktop_restores_new_workspace_text_and_attachment_without_creating_a_s
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_recovers_a_completed_create_before_composer_handoff() {
-    let mut fixture = images_fixture().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
-    desktop.type_text("RECOVER_COMPLETED_CREATE").await;
-    desktop.control("Send message").await;
-    let mut saved = desktop.saved_composer("RECOVER_COMPLETED_CREATE").await;
-    let operation = Uuid::new_v4();
-    let mutation = desktop.client.control(operation, "create", json!({
-        "title": "Recovered draft", "labels": [], "workspace": saved.value["draft"]["workspace"]
-    })).await.unwrap();
-    mutation.prepare().await.unwrap();
-    let reply = serde_json::to_value(mutation.confirm().await.unwrap()).unwrap();
-    assert_eq!(reply["receipt"]["outcome"]["value"]["kind"], "created");
-    let created = reply["receipt"]["outcome"]["value"]["session"]["id"].clone();
-    assert!(
-        desktop
-            .client
-            .pending_controls()
-            .await
-            .unwrap()
-            .iter()
-            .all(|item| item.id != operation)
-    );
-    saved.value["draft"]["target"] = json!({"kind":"creating", "operationId": operation});
-    desktop
-        .client
-        .save_composer(saved.revision, saved.value, None)
-        .await
-        .unwrap();
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Dark)
-        .await;
-    desktop.expect_text("RECOVER_COMPLETED_CREATE").await;
-    let mut disk = sqlx::SqliteConnection::connect_with(
-        &sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(fixture.directory.path().join("client.db")),
-    )
-    .await
-    .unwrap();
-    // The destination draft can save, but retiring the redundant source fails.
-    sqlx::query("CREATE TRIGGER fail_composer_clear BEFORE UPDATE ON composers WHEN json_extract(NEW.value,'$.draft') IS NULL BEGIN SELECT RAISE(FAIL,'fixture cleanup failure'); END").execute(&mut disk).await.unwrap();
-    desktop.press("Send message").await;
-    let request = desktop.request(&mut fixture).await;
-    assert!(
-        request
-            .body
-            .to_string()
-            .contains("RECOVER_COMPLETED_CREATE")
-    );
-    desktop
-        .wait("recovered send did not finish", request.finish())
-        .await;
-    let sessions = desktop.sessions().await;
-    assert_eq!(sessions.len(), 2);
-    assert!(sessions.iter().any(|session| session["id"] == created));
-    sqlx::query("DROP TRIGGER fail_composer_clear")
-        .execute(&mut disk)
-        .await
-        .unwrap();
-    let desktop = desktop
-        .restart(&fixture, nsh_core::platform::Appearance::Dark)
-        .await;
-    desktop.expect_text("RECOVER_COMPLETED_CREATE").await;
-    desktop.press("Send message").await;
-    desktop.press("Keep as new draft").await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("RECOVER_COMPLETED_CREATE").await;
-    desktop.control("Send message").await;
-    assert_eq!(desktop.sessions().await.len(), 2);
-    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 1);
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_retries_composer_storage_without_losing_local_edits() {
+async fn desktop_recovers_an_unavailable_remembered_folder() {
     let fixture = images_fixture().await;
     let desktop = Desktop::open(&fixture, &fixture.address).await;
     desktop.new_draft().await;
-    let (path, bytes) = image_file(&fixture);
-    desktop.attach(&path).await;
-    desktop.type_text("LOCAL_DRAFT").await;
-    let mut saved = desktop.saved_composer("LOCAL_DRAFT").await;
-    // Another window changed only its recent-folder order.
-    saved.value["recent"] = json!([]);
-    desktop
-        .client
-        .save_composer(saved.revision, saved.value, None)
-        .await
-        .unwrap();
-    desktop.type_text("LOCAL_DRAFT_KEPT").await;
-    desktop.control("Retry saving draft").await;
-    desktop
-        .retry(
-            "saving did not recover",
-            || desktop.controls("Retry saving draft").is_empty(),
-            || {
-                if let Some(bounds) = desktop.controls("Retry saving draft").first() {
-                    desktop.press_at(bounds.center());
-                }
-            },
-        )
-        .await;
-    let saved = desktop.saved_composer("LOCAL_DRAFT_KEPT").await;
-    assert_eq!(saved.files[0].contents, bytes);
-    assert!(!saved.value["recent"].as_array().unwrap().is_empty());
-    // A competing draft must not be overwritten by the same retry action.
-    let mut competing = saved.value;
-    competing["draft"]["text"] = json!("OTHER_WINDOW_DRAFT");
-    desktop
-        .client
-        .save_composer(saved.revision, competing, None)
-        .await
-        .unwrap();
-    desktop.press("Focus message composer").await;
-    desktop.type_text("LOCAL_DRAFT_KEPT_AGAIN").await;
-    desktop.press("Retry saving draft").await;
-    desktop.press("Focus message composer").await;
-    desktop.expect_text("LOCAL_DRAFT_KEPT_AGAIN").await;
-    assert_eq!(
-        desktop.client.load_composer().await.unwrap().value["draft"]["text"],
-        "OTHER_WINDOW_DRAFT"
-    );
-    let previous = desktop.platform.text_input_target();
-    desktop.press("Open conversation NSH real Agent").await;
-    desktop.target_after(previous).await;
-    desktop.new_draft().await;
-    desktop.expect_text("LOCAL_DRAFT_KEPT_AGAIN").await;
-    desktop.close().await;
-    fixture.finish().await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn desktop_restores_an_unavailable_workspace_without_discarding_the_draft() {
-    let fixture = images_fixture().await;
-    let desktop = Desktop::open(&fixture, &fixture.address).await;
-    desktop.new_draft().await;
-    desktop.type_text("KEEP_UNAVAILABLE_WORKSPACE_DRAFT").await;
     let workspace = fixture.directory.path().join("workspace");
+    desktop
+        .wait("folder selection was not saved", async {
+            while desktop.client.recent_workspaces().await.unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
     std::fs::rename(&workspace, fixture.directory.path().join("moved-workspace")).unwrap();
     let desktop = desktop
         .restart(&fixture, nsh_core::platform::Appearance::Dark)
         .await;
-    desktop
-        .expect_text("KEEP_UNAVAILABLE_WORKSPACE_DRAFT")
-        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("KEEP_CURRENT_WINDOW_DRAFT").await;
     desktop.control("Retry folder").await;
-    desktop.artifact("workspace-unavailable-dark");
     desktop.key("enter", false);
     assert_eq!(desktop.sessions().await.len(), 1);
     assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
@@ -878,9 +707,7 @@ async fn desktop_restores_an_unavailable_workspace_without_discarding_the_draft(
         )
         .await;
     desktop.press("Focus message composer").await;
-    desktop
-        .expect_text("KEEP_UNAVAILABLE_WORKSPACE_DRAFT")
-        .await;
+    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
     desktop.close().await;
     fixture.finish().await;
 }

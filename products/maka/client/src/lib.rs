@@ -20,8 +20,8 @@
 //! View-independent Maka calls. The launcher retains this scope until `close` succeeds.
 mod journal;
 pub use journal::{
-    ComposerFile, ComposerState, Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference,
-    Journal, Operation, UploadReference,
+    Draft, DraftAttachment, DraftEdit, DraftKey, DraftReference, Journal, Operation,
+    RecentWorkspace, UploadReference,
 };
 use maka_capabilities::call::{Attachments, ReadResource, ResourceEncoding, Resources};
 use maka_host_runtime::application::{
@@ -813,28 +813,23 @@ impl Client {
         )
         .await
     }
-    async fn composer_owner(&self) -> Result<String> {
+    async fn workspace_owner(&self) -> Result<String> {
         let owner = self.service_owner("agent").await?;
         serde_json::to_string(&(&self.0.source.state_domain, self.0.source.deployment, owner))
             .map_err(|error| error.to_string())
     }
 
-    pub async fn load_composer(&self) -> Result<ComposerState> {
+    pub async fn recent_workspaces(&self) -> Result<Vec<RecentWorkspace>> {
         self.0
             .journal
-            .load_composer(&self.composer_owner().await?)
+            .recent_workspaces(&self.workspace_owner().await?)
             .await
     }
 
-    pub async fn save_composer(
-        &self,
-        expected: u64,
-        value: Value,
-        files: Option<Vec<ComposerFile>>,
-    ) -> Result<u64> {
+    pub async fn remember_workspace(&self, workspace: RecentWorkspace) -> Result<()> {
         self.0
             .journal
-            .save_composer(self.composer_owner().await?, expected, value, files)
+            .remember_workspace(self.workspace_owner().await?, workspace)
             .await
     }
 

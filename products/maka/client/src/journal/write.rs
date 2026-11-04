@@ -61,11 +61,9 @@ impl Reservation {
 }
 
 pub(super) enum Command {
-    SaveComposer {
+    RememberWorkspace {
         owner: String,
-        expected: u64,
-        value: Value,
-        files: Option<Vec<super::ComposerFile>>,
+        workspace: super::RecentWorkspace,
     },
     SaveDraft {
         key: DraftKey,
@@ -107,7 +105,6 @@ pub(super) enum Command {
     },
 }
 pub(super) enum Output {
-    Revision(u64),
     Unit,
     Draft(Draft),
     Operation(Box<Operation>),
@@ -119,14 +116,11 @@ pub(super) struct Pending {
 impl Command {
     async fn execute(self, connection: &mut SqliteConnection) -> Result<Output> {
         match self {
-            Self::SaveComposer {
-                owner,
-                expected,
-                value,
-                files,
-            } => super::composer::save(connection, owner, expected, value, files)
-                .await
-                .map(Output::Revision),
+            Self::RememberWorkspace { owner, workspace } => {
+                super::workspaces::remember(connection, owner, workspace)
+                    .await
+                    .map(|()| Output::Unit)
+            }
             Self::SaveDraft {
                 key,
                 expected,
