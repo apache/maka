@@ -59,6 +59,7 @@ pub fn catalog() -> Value {
         root::<maka_plugin_core::deployment::management::InstanceSettingsRead>(&mut g),
         root::<maka_plugin_core::deployment::management::InstanceSettingsPage>(&mut g),
         root::<maka_plugin_core::deployment::management::InstanceConfigure>(&mut g),
+        root::<maka_plugin_core::deployment::management::InstanceConfigureBatch>(&mut g),
         root::<maka_plugin_core::deployment::management::BindingCandidatesRead>(&mut g),
         root::<maka_plugin_core::deployment::management::BindingCandidatesPage>(&mut g),
         root::<maka_plugin_core::deployment::management::PackageSettingsRead>(&mut g),

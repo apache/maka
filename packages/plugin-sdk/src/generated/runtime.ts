@@ -48,6 +48,7 @@ export type RuntimeProtocol =
   | InstanceSettingsRead
   | InstanceSettingsPage
   | InstanceConfigure
+  | InstanceConfigureBatch
   | BindingCandidatesRead
   | BindingCandidatesPage
   | PackageSettingsRead
@@ -5116,6 +5117,20 @@ export interface SettingChange {
    */
   value?: SettingValue | null;
 }
+export interface InstanceConfigureBatch {
+  expectedRevision: number;
+  /**
+   * @minItems 1
+   */
+  edits: [InstanceConfigureEdit, ...InstanceConfigureEdit[]];
+}
+export interface InstanceConfigureEdit {
+  instance: InstanceId;
+  /**
+   * @minItems 1
+   */
+  changes: [SettingChange, ...SettingChange[]];
+}
 export interface BindingCandidatesRead {
   source?: DeploymentRef | null;
   consumer: BindingConsumer;
@@ -5354,6 +5369,7 @@ export interface ExecutorSetupBinding {
  * Explicit opt-in to OAR's own default permissions and native agent tools.
  */
 export interface AgentOarConfiguration {
+  enabled?: boolean;
   /**
    * Absent selects the worker shipped beside the Maka executable.
    */

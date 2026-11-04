@@ -46,6 +46,7 @@ pub(super) async fn configured(
     let control = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let fixture = Fixture::configured(base, None, None, None, |settings| {
         settings.oar = Some(maka_agent_api::executor::OarConfiguration {
+            enabled: true,
             executable: Some(node.clone()),
             args: vec![
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

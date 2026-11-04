@@ -37,6 +37,87 @@ export type AgentCompactOutput_AgentCompactRejection =
 /**
  * Hierarchical, stable source keys. Display aliases never become data identities.
  */
+export type AgentExternalAgentsOutput_InstanceId = string[];
+export type AgentExternalAgentsOutput_AgentExternalAgentsState =
+  | {
+      kind: 'disabled';
+    }
+  | {
+      kind: 'enabled';
+    }
+  | {
+      kind: 'workspace_required';
+    }
+  | {
+      kind: 'unavailable';
+      message: string;
+    }
+  | {
+      kind: 'ready';
+      runtimes: AgentExternalAgentsOutput_AgentExternalRuntime[];
+    };
+export type AgentExternalAgentsOutput_AgentExternalInstallation =
+  | {
+      kind: 'available';
+      version?: string | null;
+    }
+  | {
+      kind: 'not_found';
+    }
+  | {
+      kind: 'unsupported';
+      detail: string;
+    }
+  | {
+      kind: 'error';
+      detail: string;
+    };
+export type AgentExternalAgentsOutput_AgentExternalAuthentication =
+  | {
+      kind: 'authenticated';
+      source: string;
+    }
+  | {
+      kind: 'unauthenticated';
+      source: string;
+      detail?: string | null;
+    }
+  | {
+      kind: 'unsupported';
+    }
+  | {
+      kind: 'unknown';
+      detail?: string | null;
+      source?: string | null;
+      configured?: string[] | null;
+    }
+  | {
+      kind: 'error';
+      detail: string;
+    };
+export type AgentExternalAgentsOutput_AgentExternalModels =
+  | {
+      kind: 'ready';
+      count: number;
+    }
+  | {
+      kind: 'unauthenticated';
+      detail?: string | null;
+    }
+  | {
+      kind: 'unsupported';
+      detail: string;
+    }
+  | {
+      kind: 'unavailable';
+    }
+  | {
+      kind: 'error';
+      detail: string;
+    };
+/**
+ * Hierarchical, stable source keys. Display aliases never become data identities.
+ */
 export type AgentHistoryCheckpointReceiptInput_InstanceId = string[];
 export type AgentHistoryCheckpointReceiptInput_Transport = 'local' | 'remote';
 export type AgentHistoryCheckpointReceiptInput_RecoveryProtocol = 'journal_v1';
@@ -515,6 +596,17 @@ export interface ServiceMethods {
       mode: 'query';
       input: Runtime.AgentExecutorsRead;
       output: Runtime.AgentExecutors;
+    };
+    externalAgents: {
+      mode: 'query';
+      input: {
+        inspect?: boolean;
+      };
+      output: {
+        target: AgentExternalAgentsOutput_AgentExternalAgentsTarget;
+        configured: boolean;
+        state: AgentExternalAgentsOutput_AgentExternalAgentsState;
+      };
     };
     fileCandidates: {
       mode: 'subscription';
@@ -1439,6 +1531,11 @@ export interface ServiceMethods {
       input: Runtime.InstanceConfigure;
       output: Runtime.ManagementResultForDeploymentRef;
     };
+    configureBatch: {
+      mode: 'mutation';
+      input: Runtime.InstanceConfigureBatch;
+      output: Runtime.ManagementResultForDeploymentRef;
+    };
     editComposition: {
       mode: 'mutation';
       input: Runtime.CompositionEdit;
@@ -1752,6 +1849,31 @@ export interface AgentCompactOutput_AgentExecution {
    */
   highWater: number;
   state: AgentCompactOutput_AgentExecutionState;
+}
+export interface AgentExternalAgentsOutput_AgentExternalAgentsTarget {
+  source: AgentExternalAgentsOutput_AgentDataSource;
+  path: string[];
+}
+/**
+ * Stable business-data origin, independent of package or activation revisions.
+ */
+export interface AgentExternalAgentsOutput_AgentDataSource {
+  stateDomain: string;
+  deployment: string;
+  namespace: AgentExternalAgentsOutput_InstanceId;
+}
+export interface AgentExternalAgentsOutput_AgentExternalRuntime {
+  id: string;
+  name: string;
+  installation: AgentExternalAgentsOutput_AgentExternalInstallation;
+  authentication: AgentExternalAgentsOutput_AgentExternalAuthentication;
+  models: AgentExternalAgentsOutput_AgentExternalModels;
+  canInstall: boolean;
+  installLines: AgentExternalAgentsOutput_AgentExternalInstallLine[];
+}
+export interface AgentExternalAgentsOutput_AgentExternalInstallLine {
+  line: string;
+  description: string;
 }
 export interface AgentHistoryCheckpointHeadOutput_AgentHistoryCheckpointHead {
   revision: string;

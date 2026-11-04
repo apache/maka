@@ -81,6 +81,21 @@ pub struct InstanceConfigure {
     pub changes: Vec<SettingChange>,
 }
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InstanceConfigureBatch {
+    #[schemars(range(min = 1, max = 9_007_199_254_740_990_u64))]
+    pub expected_revision: u64,
+    #[schemars(length(min = 1))]
+    pub edits: Vec<InstanceConfigureEdit>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct InstanceConfigureEdit {
+    pub instance: InstanceId,
+    #[schemars(length(min = 1))]
+    pub changes: Vec<SettingChange>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SettingChange {
     #[schemars(length(min = 1))]

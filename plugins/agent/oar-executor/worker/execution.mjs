@@ -81,7 +81,10 @@ export async function execute(runtime, request, host) {
     result =
       host.signal.aborted && outputFailure === undefined
         ? { kind: 'aborted', text: '' }
-        : { kind: 'failed', reason: error instanceof Error ? error.message : String(error) };
+        : {
+            kind: 'failed',
+            reason: error instanceof Error ? error.message : String(error),
+          };
   } finally {
     try {
       await session.dispose();
@@ -128,5 +131,97 @@ export async function setup(runtime, request) {
   return {
     kind: 'unsupported',
     detail: `OAR does not provide ${request.action} for ${runtime.id}`,
+  };
+}
+
+async function observe(read) {
+  try {
+    return await read();
+  } catch (error) {
+    return {
+      kind: 'error',
+      detail: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/** Fresh status is separate from model search: native auth readers may refresh credentials. */
+export async function status(runtime, cwd) {
+  const nativeInstallation = await observe(() => runtime.installation());
+  let installation;
+  switch (nativeInstallation.kind) {
+    case 'available':
+      installation = {
+        kind: 'available',
+        ...(nativeInstallation.version === undefined
+          ? {}
+          : { version: nativeInstallation.version }),
+      };
+      break;
+    case 'not_found':
+    case 'error':
+      installation = nativeInstallation;
+      break;
+    case 'unsupported':
+      installation = { kind: 'unsupported', detail: nativeInstallation.reason };
+      break;
+    default:
+      installation = {
+        kind: 'error',
+        detail: `Unknown installation status: ${nativeInstallation.kind}`,
+      };
+  }
+  const available = installation.kind === 'available';
+  const authentication = !available
+    ? {
+        kind: 'unknown',
+        detail: 'Authentication was not probed because the runtime is unavailable.',
+      }
+    : await observe(async () => {
+        if (!runtime.authStatus) return { kind: 'unsupported' };
+        const auth = await runtime.authStatus(nativeInstallation);
+        switch (auth.kind) {
+          case 'logged_in':
+            return { kind: 'authenticated', source: auth.source };
+          case 'logged_out':
+            return {
+              kind: 'unauthenticated',
+              source: auth.source,
+              ...(auth.detail === undefined ? {} : { detail: auth.detail }),
+            };
+          case 'unknown':
+            return auth;
+          default:
+            throw new Error(`Unknown authentication status: ${auth.kind}`);
+        }
+      });
+  const models = !available
+    ? { kind: 'unavailable' }
+    : await observe(async () => {
+        if (!runtime.listModels)
+          return {
+            kind: 'unsupported',
+            detail: 'Runtime has no model discovery',
+          };
+        const result = await runtime.listModels(nativeInstallation, { cwd });
+        switch (result.kind) {
+          case 'ok':
+            return { kind: 'ready', count: result.models.length };
+          case 'unauthenticated':
+            return result;
+          case 'unsupported':
+            return { kind: 'unsupported', detail: result.reason };
+          default:
+            throw new Error(`Unknown model status: ${result.kind}`);
+        }
+      });
+  return {
+    id: runtime.id,
+    name: runtime.brand.name,
+    installation,
+    authentication,
+    models,
+    canInstall: typeof runtime.install === 'function',
+    installLines: runtime.installLines ?? [],
   };
 }

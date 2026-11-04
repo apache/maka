@@ -31,6 +31,8 @@ import { GeneralSettings } from '../../../products/maka/workbench/app/GeneralSet
 import { NetworkSettings } from '../../../products/maka/workbench/app/NetworkSettings';
 import { PluginSettings } from '../../../products/maka/workbench/app/PluginSettings';
 import { SkillSettings } from '../../../products/maka/workbench/app/SkillSettings';
+import { ExternalAgentSettings } from '../../../products/maka/workbench/app/ExternalAgentSettings';
+import { createExternalAgentSettings } from '../../../products/maka/workbench/app/externalAgentSettingsState';
 import { McpSettings } from '../../../products/maka/workbench/app/McpSettings';
 import { createSkillSettings } from '../../../products/maka/workbench/app/skillSettingsState';
 import { createMcpSettings } from '../../../products/maka/workbench/app/mcpSettingsState';
@@ -116,6 +118,13 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
     context,
     restored?.plugins,
   );
+  const externalAgents = createExternalAgentSettings(
+    host,
+    context.services.agents,
+    operations,
+    active('external-agents'),
+    changed,
+  );
   const configurationWorkspace = createConfigurationWorkspace(operations);
   const skills = createSkillSettings(host, operations, configurationWorkspace);
   const mcp = createMcpSettings(host, operations, configurationWorkspace);
@@ -153,8 +162,15 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         mcp.recovered();
       else if (original.endpoint === 'agent' && original.method === 'selectWorkspace')
         configurationWorkspace.recovered(value);
-      else if (original.endpoint === 'management') plugins.reset();
-      else if (original.method === 'updateAssistantPreferences') general.reset();
+      else if (original.endpoint === 'agent' && original.method === 'oarSetup') {
+        externalAgents.reset();
+        changed();
+      } else if (original.endpoint === 'management') {
+        if (original.method === 'configureBatch') await host.refresh();
+        plugins.reset();
+        externalAgents.reset();
+        if (original.method === 'configureBatch') changed();
+      } else if (original.method === 'updateAssistantPreferences') general.reset();
       else if (original.method === 'updateNetwork') network.reset();
       else {
         connections.reset();
@@ -209,7 +225,10 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
           effect(() => {
             if (!input.opened()) return;
             untracked(() => {
-              if (restoreOpen) restoreOpen = false;
+              if (input.page) {
+                route.set({ instance: context.instance, id: input.page });
+                restoreOpen = false;
+              } else if (restoreOpen) restoreOpen = false;
               else {
                 route.set(defaultRoute);
                 if (input.model) connections.openModel(input.model);
@@ -318,6 +337,23 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
               busy: operations.busy,
             },
             () => <McpSettings owner={mcp} />,
+          ),
+      },
+      'external-agents': {
+        kind: 'settings',
+        render: (props) =>
+          mountPage(
+            'external-agents',
+            externalAgents,
+            props,
+            {
+              title: externalAgents.title,
+              nested: () => !!externalAgents.confirmation() || !!externalAgents.plan(),
+              navigation: externalAgents.navigation,
+              back: externalAgents.back,
+              busy: operations.busy,
+            },
+            () => <ExternalAgentSettings owner={externalAgents} />,
           ),
       },
       network: {

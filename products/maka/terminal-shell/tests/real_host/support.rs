@@ -159,6 +159,13 @@ impl Fixture {
     }
 
     pub async fn configured(options: Options) -> Self {
+        Self::open_with_configuration(options, |_, _| {}).await
+    }
+
+    pub async fn open_with_configuration(
+        options: Options,
+        customize: impl FnOnce(&mut Value, &Path),
+    ) -> Self {
         let directory = tempfile::Builder::new()
             .tempdir_in(std::env::temp_dir().canonicalize().unwrap())
             .unwrap();
@@ -214,6 +221,8 @@ impl Fixture {
         configuration["agent"]["recaps"] = json!(false);
         configuration["agent"]["permissions"] =
             json!({"access":"read_only","requestPermissions":true});
+
+        customize(&mut configuration, directory.path());
 
         let source = std::fs::read_to_string(
             PathBuf::from(env!("OUT_DIR")).join("product/authoring/composition.mjs"),
@@ -765,6 +774,9 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
+    pub fn oar_setup(directory: &Path, target: PathBuf) -> Self {
+        Self::for_method(directory, target, "agent", "oarSetup", "mutation")
+    }
     pub fn resume(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "resume", "mutation")
     }
