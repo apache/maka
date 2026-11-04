@@ -1266,7 +1266,7 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
-            json!({"sessionId":worker,"message":"Do the task","model":stale_model(&f).await}),
+            json!({"sessionId":worker,"message":"Do the task","model":f.selection().await}),
         )
         .await;
         let mut worker_socket = None;
@@ -1417,12 +1417,4 @@ async fn the_bot_is_woken_once_when_its_worker_finishes() {
 #[tokio::test]
 async fn a_report_for_a_worker_that_finished_while_the_bot_ran_waits_for_the_bot() {
     worker_wake(true).await;
-}
-
-/// The selection a Bot can produce: the right connection and model but a revision
-/// it has no way to know.
-async fn stale_model(f: &Fixture) -> Value {
-    let mut model = serde_json::to_value(f.selection().await).unwrap();
-    model["revision"] = json!(model["revision"].as_u64().unwrap() + 40);
-    model
 }

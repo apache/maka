@@ -101,14 +101,12 @@ pub struct ConnectionVersionBasis {
     pub revision: u64,
 }
 
-/// Exact public selection observed by a caller, checked once at run admission.
+/// Stable model identity, resolved from current connection settings at admission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
 pub struct ModelSelection {
     #[schemars(length(min = 1))]
     pub connection_id: String,
-    #[schemars(range(min = 1, max = 9_007_199_254_740_991u64))]
-    pub revision: u64,
     #[schemars(length(min = 1))]
     pub model_id: String,
 }

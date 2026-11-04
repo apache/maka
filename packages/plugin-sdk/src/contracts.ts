@@ -1206,26 +1206,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -1967,26 +1960,19 @@ export const contracts = {
             $defs: {
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -4086,7 +4072,7 @@ export const contracts = {
             $defs: {
               AgentSendRejection: {
                 type: 'string',
-                enum: ['skills_unavailable', 'turn_stopped'],
+                enum: ['model_unavailable', 'skills_unavailable', 'turn_stopped'],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -5800,26 +5786,19 @@ export const contracts = {
             $defs: {
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
             },
           },
@@ -18049,26 +18028,19 @@ export const contracts = {
             $defs: {
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -18213,26 +18185,19 @@ export const contracts = {
             $defs: {
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -18864,26 +18829,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -19695,26 +19653,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -20811,26 +20762,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -20931,7 +20875,7 @@ export const contracts = {
             $defs: {
               AgentSendRejection: {
                 type: 'string',
-                enum: ['skills_unavailable', 'turn_stopped'],
+                enum: ['model_unavailable', 'skills_unavailable', 'turn_stopped'],
               },
               SkillInvocationResult: {
                 type: 'object',
@@ -21660,26 +21604,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -25179,26 +25116,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -38798,9 +38728,10 @@ export const contracts = {
                 type: 'string',
               },
               revision: {
-                type: 'integer',
+                type: ['integer', 'null'],
                 format: 'uint64',
                 minimum: 0,
+                default: null,
               },
               includeEditingFacts: {
                 description:
@@ -38810,7 +38741,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['connectionId', 'revision'],
+            required: ['connectionId'],
           },
           output: {
             $schema: 'https://json-schema.org/draft/2020-12/schema',
@@ -40650,26 +40581,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -41921,26 +41845,19 @@ export const contracts = {
               },
               ModelSelection: {
                 description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+                  'Stable model identity, resolved from current connection settings at admission.',
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
                     minLength: 1,
                   },
-                  revision: {
-                    type: 'integer',
-                    format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
                   modelId: {
                     type: 'string',
                     minLength: 1,
                   },
                 },
-                additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'modelId'],
               },
               ThinkingLevel: {
                 type: 'string',
@@ -43156,8 +43073,11 @@ export const contracts = {
             title: 'SettingsUpdateModelSettings',
             type: 'object',
             properties: {
-              selection: {
-                $ref: '#/$defs/ModelSelection',
+              expected: {
+                $ref: '#/$defs/ConnectionVersionBasis',
+              },
+              modelId: {
+                type: 'string',
               },
               tools: {
                 $ref: '#/$defs/SettingsModelToolPreferences',
@@ -43167,30 +43087,22 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['selection', 'tools', 'limits'],
+            required: ['expected', 'modelId', 'tools', 'limits'],
             $defs: {
-              ModelSelection: {
-                description:
-                  'Exact public selection observed by a caller, checked once at run admission.',
+              ConnectionVersionBasis: {
                 type: 'object',
                 properties: {
                   connectionId: {
                     type: 'string',
-                    minLength: 1,
                   },
                   revision: {
                     type: 'integer',
                     format: 'uint64',
-                    minimum: 1,
-                    maximum: 9007199254740991,
-                  },
-                  modelId: {
-                    type: 'string',
-                    minLength: 1,
+                    minimum: 0,
                   },
                 },
                 additionalProperties: false,
-                required: ['connectionId', 'revision', 'modelId'],
+                required: ['connectionId', 'revision'],
               },
               SettingsModelToolPreferences: {
                 type: 'object',

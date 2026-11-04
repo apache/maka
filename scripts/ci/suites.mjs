@@ -168,6 +168,25 @@ export const suites = {
     filter:
       'test(native::tests::animated_props_) | test(=input::tests::nonpressable_focusable_views_join_native_stops_without_stealing_presses) | test(=tests::windows) | test(kitty::tests::)',
   },
+  'windows-desktop': {
+    workspace: 'root',
+    packages: ['maka-desktop-shell'],
+    cargoArgs: ['--locked', '-p', 'maka-desktop-shell'],
+    extraInputs: embeddedInputs,
+  },
+  'windows-nsh': {
+    workspace: 'nsh',
+    packages: ['nsh-platform-windows', 'nsh-windows-app', 'nsh-windows-host', 'gallery-native'],
+    cargoArgs: [
+      '--locked',
+      '--manifest-path',
+      manifests.nsh,
+      '-p',
+      'nsh-platform-windows',
+      '--lib',
+    ],
+    extraInputs: ['third-party/nsh/crates/nsh-cli/src/templates/rust/main.rs'],
+  },
   'macos-host': {
     workspace: 'root',
     packages: ['maka-cli', 'maka-host-shell'],
@@ -264,15 +283,15 @@ export const workers = [
   ...['ubuntu', 'macos', 'windows'].map((os) => ({
     id: `native-${os}`,
     suites:
-      os === 'macos'
-        ? ['native', 'macos-host']
-        : os === 'windows'
-          ? ['native', 'windows-shell']
+      os === 'windows'
+        ? ['native', 'windows-shell', 'windows-desktop', 'windows-nsh']
+        : os === 'macos'
+          ? ['native', 'macos-host']
           : ['native'],
     runner: `${os}-latest`,
     workspace: 'root',
     dependencies: os === 'ubuntu' ? 'computer-use' : '',
-    javascript: os === 'macos' || os === 'windows',
+    javascript: os === 'windows' || os === 'macos',
     compile: true,
   })),
 ];

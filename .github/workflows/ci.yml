@@ -311,6 +311,8 @@ jobs:
         run: node scripts/ci.mjs verify '${{ matrix.id }}'
       - uses: ./.github/actions/ci-cache
         if: ${{ !cancelled() && matrix.compile && steps.compile.outcome == 'success' }}
+        env:
+          MAKA_CI_ROLE: ${{ matrix.id }}
         with:
           key: ${{ steps.setup.outputs.compiled_key }}
           hit: ${{ steps.setup.outputs.compiled_hit }}

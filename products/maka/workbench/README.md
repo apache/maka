@@ -64,3 +64,47 @@ Only skills installed through Maka have an update button. Updating replaces thei
 The provider picker separates account sign-in, custom endpoints and named API services, with alphabetical choices within each section. Search accepts multiple terms, supports arrow keys and Enter, and Escape clears the query before returning. Returning from a new connection preserves the provider search and selection; adding another connection suggests an unused ID among the loaded connections.
 
 Built-in subscription, compatible-endpoint and region labels follow the interface language. Provider search matches both the original and localized labels. Saved connection names, brand names, model IDs and reasoning-effort values keep their original spelling.
+
+## Icons
+
+`app/Icon.tsx` keeps the Workbench name API and terminal glyphs. Desktop/Web
+uses the selected Lucide data in `app/lucide.ts`, on a 24-point grid with a
+two-point round stroke. Play, pause and stop stay filled; unread keeps its
+small filled dot. The context gauge, turn rail and choice indicators remain
+purpose-built data/control drawings.
+
+To regenerate, install the repository's npm tools, extract `lucide-static`
+1.61.0 from npm outside the checkout, then run:
+
+```sh
+python3 -I products/maka/workbench/scripts/lucide.py /path/to/package/icon-nodes.json
+```
+
+The generator checks the input digest and formats its output with the repository's
+Biome. Only selected geometry is shipped; there is no Lucide runtime dependency.
+Names map in `Icon.tsx` (for example `refresh` → `refresh-cw`, `edit` → `pencil`,
+`activity` → `clock`, `nowrap` → `move-right`).
+Upstream attribution is recorded in `LICENSE`, `NOTICE` and the source audit.
+
+The Markdown mark retains its M/down-arrow geometry because Lucide has no equivalent.
+
+### Terminal icons
+
+Each entry in `Icon.tsx` pairs a Lucide name with a terminal glyph under the same
+Workbench name. Both fields are required, and TypeScript checks the Lucide name
+against the bundled geometry. All current names have glyphs; this migration
+preserves their characters and the terminal's fixed 16 × 16 layout, which ignores
+the graphical `size` prop.
+
+TUI icons remain text. Glyphs are chosen for the action or status rather than
+derived from Lucide names: `activity`, `thinking` and `loader` all use `◌`, while
+`statusSuccess` uses `✓` without Lucide's enclosing circle. Loading, turn-rail and
+choice indicators retain their own terminal text and layout.
+
+No icon font is required; Workbench does not detect fonts or substitute glyphs. Existing emoji
+such as folder, file, pin and paperclip depend on the user's terminal font and
+cell-width handling; they may differ in appearance from the graphical icons.
+For a new icon, add both fields and prefer a recognizable text symbol without
+private-use font codepoints. Check it in terminal context for clipping, alignment
+and meaning before changing an existing glyph; Lucide has no automatic Unicode
+equivalent.

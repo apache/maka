@@ -148,7 +148,7 @@ function CompletionComposer(props: { prediction?: boolean }) {
   const unexpected = (): never => {
     throw new Error('Unexpected service outside composer completion');
   };
-  const selection = { connectionId: 'original-route', revision: 1, modelId: 'fixture-model' };
+  const selection = { connectionId: 'original-route', modelId: 'fixture-model' };
   const owner: ComposerSession<JSX.Element> = {
     sessionId: 'original-session',
     connected: () => true,

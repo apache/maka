@@ -28,7 +28,7 @@ export type ModelBackend = {
 };
 export type BackendIdentity = ModelBackend | null;
 export type ModelChoice = {
-  selection: { connectionId: string; modelId: string; revision: number };
+  selection: { connectionId: string; modelId: string };
   connectionName: string;
   label: string;
   thinkingLevels: ThinkingLevel[];

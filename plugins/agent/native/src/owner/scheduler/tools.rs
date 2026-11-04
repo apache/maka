@@ -203,15 +203,8 @@ impl Owner {
                         .model
                         .as_ref()
                         .ok_or("scheduler_model_unavailable")?;
-                    let catalog = self.configuration.catalog().await.map_err(reason)?;
-                    let connection = catalog
-                        .connections
-                        .iter()
-                        .find(|row| row.connection_id == accepted.binding.connection_id)
-                        .ok_or("scheduler_model_unavailable")?;
                     let model = ModelSelection {
-                        connection_id: connection.connection_id.clone(),
-                        revision: connection.revision,
+                        connection_id: accepted.binding.connection_id.clone(),
                         model_id: accepted.binding.model.clone(),
                     };
                     let session = self

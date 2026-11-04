@@ -157,6 +157,30 @@ async fn timeout_cancel_and_dropped_caller_clean_process_group() {
         let command = format!(
             r#"{root_trap}; /bin/sh -c 'trap "" TERM; echo $$ > child; while :; do sleep 1; done' & echo $$ > root; wait"#
         );
+        let readiness = if mode == "timeout" {
+            // A blocking readiness wait prevents paused time from auto-advancing
+            // before both real processes have published their PIDs.
+            tokio::time::pause();
+            let directory = dir.path().to_owned();
+            Some(tokio::task::spawn_blocking(move || {
+                let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                let read = |name: &str| loop {
+                    if let Ok(text) = std::fs::read_to_string(directory.join(name))
+                        && let Ok(pid) = text.trim().parse::<i32>()
+                    {
+                        break pid;
+                    }
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "{name} PID was not written"
+                    );
+                    std::thread::sleep(Duration::from_millis(10));
+                };
+                (read("root"), read("child"))
+            }))
+        } else {
+            None
+        };
         let task = tokio::spawn(executor.invoke(
             SHELL_NAME.into(),
             json!({
@@ -165,8 +189,16 @@ async fn timeout_cancel_and_dropped_caller_clean_process_group() {
             }),
             token.clone(),
         ));
-        let root = read_pid(&dir.path().join("root")).await;
-        let child = read_pid(&dir.path().join("child")).await;
+        let (root, child) = if let Some(readiness) = readiness {
+            let pids = readiness.await.unwrap();
+            tokio::time::resume();
+            pids
+        } else {
+            (
+                read_pid(&dir.path().join("root")).await,
+                read_pid(&dir.path().join("child")).await,
+            )
+        };
         match mode {
             "cancel" | "early-root" => token.cancel(),
             "drop" => task.abort(),

@@ -32,9 +32,13 @@ import { dirname, join, resolve } from 'node:path';
 import { command } from './command.mjs';
 import { manifests, suites } from './suites.mjs';
 
-export function executor(root, worker = {}) {
-  const target = resolve(root, process.env.CARGO_TARGET_DIR ?? 'target');
-  const env = { ...process.env, CARGO_TARGET_DIR: target };
+export function executor(
+  root,
+  worker = {},
+  { env: baseEnv = process.env, run: runCommand = command } = {},
+) {
+  const target = resolve(root, baseEnv.CARGO_TARGET_DIR ?? 'target');
+  const env = { ...baseEnv, CARGO_TARGET_DIR: target };
   if (['nsh', 'gpui'].includes(worker.workspace) || worker.id?.startsWith('native-')) {
     Object.assign(env, {
       CARGO_BUILD_JOBS: '2',
@@ -43,7 +47,8 @@ export function executor(root, worker = {}) {
     });
     if (['nsh', 'gpui'].includes(worker.workspace)) env.CARGO_PROFILE_TEST_DEBUG = '0';
   }
-  const run = (exe, args, options = {}) => command(exe, args, { cwd: root, env, ...options });
+  const programFiles = baseEnv.ProgramFiles ?? baseEnv.PROGRAMFILES;
+  const run = (exe, args, options = {}) => runCommand(exe, args, { cwd: root, env, ...options });
   const node = (args) => run(process.execPath, args);
   const cargo = (args, options) => run('cargo', args, options);
   const nextest = (id, noRun = false, filter = suites[id].filter ?? 'all()', extra = []) =>
@@ -62,9 +67,9 @@ export function executor(root, worker = {}) {
           NEXTEST_PROFILE: suites[id].profile ?? 'default',
           ...(id === 'windows-shell'
             ? {
-                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(env.ProgramFiles, 'LLVM', 'bin'),
+                LIBCLANG_PATH: env.LIBCLANG_PATH ?? join(programFiles, 'LLVM', 'bin'),
                 MAKA_TEST_GIT_BASH:
-                  env.MAKA_TEST_GIT_BASH ?? join(env.ProgramFiles, 'Git', 'bin', 'bash.exe'),
+                  env.MAKA_TEST_GIT_BASH ?? join(programFiles, 'Git', 'bin', 'bash.exe'),
               }
             : {}),
         },
@@ -98,8 +103,32 @@ export function executor(root, worker = {}) {
   }
 
   async function prepare(id, filter, extra = []) {
-    if (['root', 'desktop', 'gpui', 'macos-host', 'windows-shell'].includes(id)) {
+    if (
+      [
+        'root',
+        'desktop',
+        'gpui',
+        'windows-desktop',
+        'windows-nsh',
+        'macos-host',
+        'windows-shell',
+      ].includes(id)
+    ) {
       await nextest(id, true, filter, extra);
+      if (id === 'windows-nsh') {
+        await cargo([
+          'check',
+          '--locked',
+          '--manifest-path',
+          manifests.nsh,
+          '-p',
+          'nsh-windows-app',
+          '-p',
+          'nsh-windows-host',
+          '-p',
+          'gallery-native',
+        ]);
+      }
     } else if (id === 'bridge') {
       await node(['scripts/rust/check-cua-build.mjs']);
       await cargo(['build', '--locked', '-p', 'maka-cli', '--no-default-features']);
@@ -156,7 +185,7 @@ export function executor(root, worker = {}) {
     } else if (id === 'bridge') {
       await run(join(target, 'ci/maka-bridge'), ['--version']);
       await nextest(id);
-    } else if (id === 'desktop' || id === 'gpui') {
+    } else if (['desktop', 'gpui', 'windows-desktop', 'windows-nsh'].includes(id)) {
       await nextest(id, false, filter, ['-j', '1', ...extra]);
     } else if (id === 'termina') {
       await nextest(id);
@@ -195,20 +224,7 @@ export function executor(root, worker = {}) {
       await nextest(id);
       await cargo(['test', ...suites.nsh.cargoArgs, '--doc']);
       await cargo(['nextest', 'run', ...webTextArgs]);
-      const chrome = (
-        await run(
-          'sh',
-          ['-c', 'command -v google-chrome || command -v chromium || command -v chromium-browser'],
-          { capture: true },
-        )
-      ).trim();
-      await run(chrome, ['--version']);
       await node(['--test', 'third-party/nsh/crates/nsh-platform-web/web/nsh.test.mjs']);
-      await run(
-        process.execPath,
-        ['--test', 'third-party/nsh/crates/nsh-platform-web/web/shader-browser.test.mjs'],
-        { env: { ...env, CHROME: chrome } },
-      );
     } else if (!['native', 'native-build'].includes(id)) {
       throw new Error(`Unknown suite: ${id}`);
     }

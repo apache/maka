@@ -139,21 +139,10 @@ impl Owner {
             return;
         };
         let binding = route.binding_model();
-        let Ok(catalog) = self.configuration.catalog().await else {
-            return;
-        };
-        if let Some(entry) = catalog
-            .connections
-            .iter()
-            .find(|entry| entry.connection_id == binding.connection_id)
-            .filter(|entry| entry.enabled_model_ids.contains(&binding.model))
-        {
-            *model = Some(crate::contract::ModelSelection {
-                connection_id: entry.connection_id.clone(),
-                revision: entry.revision,
-                model_id: binding.model.clone(),
-            });
-        }
+        *model = Some(crate::contract::ModelSelection {
+            connection_id: binding.connection_id.clone(),
+            model_id: binding.model.clone(),
+        });
     }
 
     pub(in crate::owner) fn start_bot_wake(self: &Arc<Self>) {

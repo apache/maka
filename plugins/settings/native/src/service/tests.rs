@@ -250,10 +250,6 @@ async fn pages_keep_the_root_default_independent_of_the_visible_page_and_fence_o
         updated["defaultModel"]["choice"]["selection"]["modelId"],
         "model-19"
     );
-    assert_eq!(
-        updated["defaultModel"]["choice"]["selection"]["revision"],
-        updated["choices"][0]["selection"]["revision"]
-    );
     assert!(
         !updated["choices"]
             .as_array()
@@ -297,6 +293,21 @@ async fn model_search_returns_executable_selections_and_effective_thinking_metad
             }),
         )
         .await;
+    let current = crate::connections::detail(
+        &fixture.configuration,
+        json!({"connectionId":first.connection_id}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(current["name"], "Local Lab");
+    assert_eq!(current["enabledModelCount"], 2);
+    let stale = crate::connections::detail(
+        &fixture.configuration,
+        json!({"connectionId":first.connection_id,"revision":first.revision + 1}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(stale["kind"], "stale");
     fixture
         .add("other", "Other", vec!["reasoner-v1".into()], json!({}))
         .await;
@@ -308,7 +319,7 @@ async fn model_search_returns_executable_selections_and_effective_thinking_metad
     let choice = &page["choices"][0];
     assert_eq!(
         choice["selection"],
-        json!({"connectionId":first.connection_id,"revision":first.revision,"modelId":"reasoner-v1"})
+        json!({"connectionId":first.connection_id,"modelId":"reasoner-v1"})
     );
     assert_eq!(choice["thinkingLevels"], json!(["low", "high"]));
     assert_eq!(choice["defaultThinkingLevel"], "high");

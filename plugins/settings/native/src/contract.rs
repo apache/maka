@@ -19,7 +19,9 @@
 
 use maka_agent_facts::configuration::ModelSelection;
 use maka_agent_facts::configuration::SetDefaultConnectionTargetInput;
-use maka_agent_facts::configuration::{CatalogModelReference, CatalogMutationResult};
+use maka_agent_facts::configuration::{
+    CatalogModelReference, CatalogMutationResult, ConnectionVersionBasis,
+};
 use maka_plugin_core::contract::{Contract, Interface, Method, MethodMode, Transport};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -139,7 +141,8 @@ pub struct ModelLimitSettings {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "SettingsUpdateModelSettings")]
 pub struct UpdateModelSettings {
-    pub selection: ModelSelection,
+    pub expected: ConnectionVersionBasis,
+    pub model_id: String,
     pub tools: ModelToolPreferences,
     pub limits: ModelLimits,
 }
@@ -257,7 +260,8 @@ pub enum ConnectionsPage {
 #[schemars(rename = "SettingsConnectionRead")]
 pub struct ConnectionRead {
     pub connection_id: String,
-    pub revision: u64,
+    #[serde(default)]
+    pub revision: Option<u64>,
     /// Opt in to the complete editing projection; credential reads stay narrow.
     #[serde(default)]
     pub include_editing_facts: bool,

@@ -34,9 +34,10 @@
 use crate::{
     host::{self, Connection, Root},
     placement::Placement,
+    shell::{APP_ID, MIN_SIZE, Requests, SIZE, Shell, TITLE},
 };
 use maka_workbench::bindings::Bindings;
-use nsh_engine::{EngineConfig, HostCall, HostChannel, JsonValue, Limits};
+use nsh_engine::{EngineConfig, JsonValue, Limits};
 use nsh_platform_gpui::{
     AppOptions, AppView,
     gpui::{self, App, AppContext as _, Focusable as _, SystemNotification, WindowHandle},
@@ -46,33 +47,52 @@ use std::{
     cell::RefCell,
     path::PathBuf,
     rc::Rc,
-    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 use tokio::{runtime::Handle, sync::watch};
 
-pub(crate) const APP_ID: &str = "org.apache.maka.desktop";
-pub(crate) const TITLE: &str = "Maka";
-pub(crate) const SIZE: (i32, i32) = (1280, 820);
-/// The narrowest layout the workbench folds its sidebar for.
-pub(crate) const MIN_SIZE: (f32, f32) = (640., 480.);
 /// The first pause between attempts to reach the Root's next Host.
 const FIRST_PAUSE: Duration = Duration::from_secs(1);
+
 /// The longest pause between attempts to reach the Root's next Host.
 const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
 /// How long the window must have used a Host for the next one to be tried at
 /// once after it stops.
 const STEADY: Duration = Duration::from_secs(60);
 
+pub(crate) fn start(target: crate::Target) -> Result<(), String> {
+    use maka_host_runtime::application::host::Client as HostClient;
+    let root = Root::find(target.root, target.launcher)?;
+    let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+    let first = runtime.block_on(async {
+        let host = HostClient::connect(&target.endpoint, Some(target.epoch)).await?;
+        Connection::admit(
+            host,
+            target.endpoint,
+            root.path(),
+            tokio::runtime::Handle::current(),
+        )
+        .await
+    })?;
+    #[cfg(target_os = "macos")]
+    if std::env::var_os(crate::appkit::ENABLE).is_some_and(|value| !value.is_empty()) {
+        return crate::appkit::run(first, runtime);
+    }
+    run(first, root, runtime)
+}
+
 /// Runs the workbench on `first` in its window until the app quits.
 pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> Result<(), String> {
     let Connection {
         bindings,
         config,
-        directory,
         endpoint,
         epoch,
     } = first;
+    let directory = config
+        .data_dir
+        .as_ref()
+        .expect("Host admission sets the client directory");
     let handle = runtime.handle().clone();
     let detach = Detach::new(bindings, (endpoint.clone(), epoch), runtime);
     let (active, foreground) = watch::channel(false);
@@ -85,7 +105,8 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
             mut notices,
         },
     ) = Shell::new(foreground);
-    let mut start = Some((config, Placement::new(&directory), endpoint, epoch, root));
+    let placement = Placement::new(directory);
+    let mut start = Some((config, placement, endpoint, epoch, root));
     // Quitting waits for the detach: GPUI's default quits Linux and Windows
     // apps as their last window closes, giving the detach no more than its
     // quit handlers' 200 ms.
@@ -171,7 +192,21 @@ pub fn run(first: Connection, root: Root, runtime: tokio::runtime::Runtime) -> R
         // tells the workbench which conversation to show.
         cx.spawn(async move |cx| {
             while let Some(notice) = notices.recv().await {
-                cx.update(|cx| cx.show_system_notification(notice));
+                let text = |key: &str| notice.data()[key].as_str().map(str::to_owned);
+                match (text("tag"), text("title"), text("body")) {
+                    (Some(tag), Some(title), Some(body)) => {
+                        cx.update(|cx| {
+                            cx.show_system_notification(SystemNotification {
+                                tag: tag.into(),
+                                title: title.into(),
+                                body: body.into(),
+                                actions: Vec::new(),
+                            })
+                        });
+                        notice.resolve(JsonValue::Null);
+                    }
+                    _ => notice.reject("expected a tag, a title and a body"),
+                }
             }
         })
         .detach();
@@ -399,104 +434,6 @@ fn follow(
         }
     })
     .detach();
-}
-
-/// What the workbench asks of its window, for the window to carry out.
-pub(crate) struct Requests {
-    pub(crate) exits: tokio::sync::mpsc::UnboundedReceiver<()>,
-    pub(crate) folders: tokio::sync::mpsc::UnboundedReceiver<HostCall>,
-    pub(crate) text_sizes: tokio::sync::mpsc::UnboundedReceiver<f32>,
-    pub(crate) notices: tokio::sync::mpsc::UnboundedReceiver<SystemNotification>,
-}
-
-/// What the window gives each workbench it loads, beside its Host.
-#[derive(Clone)]
-pub(crate) struct Shell {
-    /// Whether the window is active.
-    foreground: watch::Receiver<bool>,
-    /// Closes the window.
-    exit: tokio::sync::mpsc::UnboundedSender<()>,
-    /// Asks for a folder with the system's dialog.
-    folder: tokio::sync::mpsc::UnboundedSender<HostCall>,
-    text_size: tokio::sync::mpsc::UnboundedSender<f32>,
-    /// Posts a system notification.
-    notify: tokio::sync::mpsc::UnboundedSender<SystemNotification>,
-    /// The loaded workbench's host channel, which hears the notification chosen.
-    events: Arc<Mutex<Option<HostChannel>>>,
-}
-
-impl Shell {
-    pub(crate) fn new(foreground: watch::Receiver<bool>) -> (Self, Requests) {
-        let (exit, exits) = tokio::sync::mpsc::unbounded_channel();
-        let (folder, folders) = tokio::sync::mpsc::unbounded_channel();
-        let (text_size, text_sizes) = tokio::sync::mpsc::unbounded_channel();
-        let (notify, notices) = tokio::sync::mpsc::unbounded_channel();
-        let shell = Self {
-            foreground,
-            exit,
-            folder,
-            text_size,
-            notify,
-            events: Arc::default(),
-        };
-        let requests = Requests {
-            exits,
-            folders,
-            text_sizes,
-            notices,
-        };
-        (shell, requests)
-    }
-
-    pub(crate) fn attach(&self, mut config: EngineConfig) -> EngineConfig {
-        config.context = config
-            .context
-            .with(maka_workbench::Foreground(self.foreground.clone()));
-        // The workbench's exit gesture (Ctrl+C twice) closes the window, as
-        // it ends the terminal.
-        let exit = self.exit.clone();
-        config.host.handle("terminal.exit", move |_| {
-            let _ = exit.send(());
-        });
-        let folder = self.folder.clone();
-        config.host.handle("workspace.chooseFolder", move |call| {
-            if let Err(error) = folder.send(call) {
-                error.0.reject("the window is closing");
-            }
-        });
-        let text_size = self.text_size.clone();
-        config.host.handle(
-            "appearance.textSize",
-            move |call| match call.data()["scale"].as_f64().map(|scale| scale as f32) {
-                Some(scale) if scale.is_finite() && scale > 0.0 => {
-                    if text_size.send(scale).is_ok() {
-                        call.resolve(JsonValue::Null);
-                    } else {
-                        call.reject("the window is closing");
-                    }
-                }
-                _ => call.reject("expected a finite positive text scale"),
-            },
-        );
-        let notify = self.notify.clone();
-        config.host.handle("notification.show", move |call| {
-            let text = |key: &str| call.data()[key].as_str().map(str::to_owned);
-            match (text("tag"), text("title"), text("body")) {
-                (Some(tag), Some(title), Some(body)) => {
-                    let _ = notify.send(SystemNotification {
-                        tag: tag.into(),
-                        title: title.into(),
-                        body: body.into(),
-                        actions: Vec::new(),
-                    });
-                    call.resolve(JsonValue::Null);
-                }
-                _ => call.reject("expected a tag, a title and a body"),
-            }
-        });
-        *self.events.lock().unwrap_or_else(|e| e.into_inner()) = Some(config.host.clone());
-        config
-    }
 }
 
 /// Detaches the client once: its tasks stop and its Host connection closes.

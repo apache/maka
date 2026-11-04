@@ -1380,7 +1380,6 @@ impl ListState {
         }
         if threshold != self.follow_end {
             self.follow_end = threshold;
-            self.anchored_end = f32::NAN;
             self.dirty = true;
         }
     }
@@ -1513,6 +1512,7 @@ impl ListState {
                 return 0.0;
             }
             let Some(threshold) = self.follow_end else {
+                self.anchored_end = end;
                 return 0.0;
             };
             let was = std::mem::replace(&mut self.anchored_end, end);
@@ -2544,6 +2544,21 @@ mod tests {
         m.anchor_end();
         m.offset = 5000.0 - 400.0;
         m.measured(99, 80.0);
+        assert_eq!(m.anchor_end(), 0.0);
+
+        // Re-enabling at the end follows an append in the same layout turn,
+        // while scrolled up it keeps what is visible.
+        m.offset = 5030.0 - 400.0;
+        m.splice(100, 0, 1);
+        m.set_follow_end(Some(10.0));
+        assert_eq!(m.anchor_end(), 50.0);
+        assert_eq!(m.offset, 5080.0 - 400.0);
+
+        m.set_follow_end(None);
+        m.offset = 1000.0;
+        m.anchor_end();
+        m.splice(101, 0, 1);
+        m.set_follow_end(Some(10.0));
         assert_eq!(m.anchor_end(), 0.0);
     }
 

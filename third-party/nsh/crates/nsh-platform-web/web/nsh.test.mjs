@@ -608,3 +608,229 @@ test("a paused WebSocket holds its events, in order, until the engine resumes it
     globalThis.WebSocket = saved;
   }
 });
+
+/** Minimal DOM tree + IntersectionObserver + RAF harness for `op_sh` / `op_d` / `stop` / `reset`. */
+function withShaderDom(run) {
+  const saved = {
+    document: globalThis.document,
+    IntersectionObserver: globalThis.IntersectionObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+    cancelAnimationFrame: globalThis.cancelAnimationFrame,
+  };
+  let nextFrame = 0;
+  const frames = new Map();
+  const requested = new Set();
+  const cancelled = new Set();
+  const disconnected = new Set();
+  function node(tagName) {
+    return {
+      tagName: tagName.toUpperCase(),
+      parentNode: null,
+      children: [],
+      style: {},
+      className: "",
+      classList: { add() {}, toggle() {} },
+      addEventListener() {},
+      get firstChild() {
+        return this.children[0] ?? null;
+      },
+      get nextSibling() {
+        if (!this.parentNode) return null;
+        const at = this.parentNode.children.indexOf(this);
+        return at >= 0 ? (this.parentNode.children[at + 1] ?? null) : null;
+      },
+      get isConnected() {
+        for (let cur = this; cur; cur = cur.parentNode) {
+          if (cur === body) return true;
+        }
+        return false;
+      },
+      set textContent(_value) {
+        for (const child of this.children) child.parentNode = null;
+        this.children.length = 0;
+      },
+      contains(other) {
+        for (let cur = other; cur; cur = cur.parentNode) {
+          if (cur === this) return true;
+        }
+        return false;
+      },
+      insertBefore(child, before) {
+        child.remove();
+        const at = before ? this.children.indexOf(before) : -1;
+        if (at >= 0) this.children.splice(at, 0, child);
+        else this.children.push(child);
+        child.parentNode = this;
+        return child;
+      },
+      append(...items) {
+        for (const item of items) this.insertBefore(item, null);
+      },
+      remove() {
+        if (!this.parentNode) return;
+        const at = this.parentNode.children.indexOf(this);
+        if (at >= 0) this.parentNode.children.splice(at, 1);
+        this.parentNode = null;
+      },
+    };
+  }
+  const body = node("body");
+  globalThis.document = {
+    body,
+    activeElement: null,
+    createElement: (tag) => node(tag),
+  };
+  globalThis.IntersectionObserver = class {
+    constructor(callback) {
+      this.callback = callback;
+    }
+    observe(target) {
+      this.target = target;
+    }
+    disconnect() {
+      disconnected.add(this);
+    }
+  };
+  globalThis.requestAnimationFrame = (callback) => {
+    const id = ++nextFrame;
+    requested.add(id);
+    frames.set(id, callback);
+    return id;
+  };
+  globalThis.cancelAnimationFrame = (id) => {
+    cancelled.add(id);
+    frames.delete(id);
+  };
+  const flushAnimationFrames = (time = 16) => {
+    const batch = [...frames.entries()];
+    frames.clear();
+    const fired = new Set();
+    for (const [id, callback] of batch) {
+      fired.add(id);
+      callback(time);
+    }
+    return fired;
+  };
+  try {
+    run({ body, requested, cancelled, disconnected, flushAnimationFrames });
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete globalThis[key];
+      else globalThis[key] = value;
+    }
+  }
+}
+
+test("deleting a shader releases its canvas and observer before an ID is reused", () => {
+  withShaderDom(({ body, disconnected }) => {
+    for (const deferred of [false, true]) {
+      const root = document.createElement("div");
+      root._id = 1;
+      root._kind = "root";
+      body.append(root);
+      const player = Object.create(Player.prototype);
+      Object.assign(player, {
+        root,
+        views: new Map([[1, root]]),
+        mouseTracked: new Set(),
+        shaderViews: new Set(),
+        shaderFrameRequest: 0,
+        removals: [],
+        disappearing: [],
+        changedStacks: new Set(),
+        layoutAnimation: deferred ? { delete: { duration: 100 } } : null,
+      });
+      const mount = () => {
+        player.op_c(["c", 2, "view"]);
+        player.op_i(["i", 1, 2, null]);
+        player.op_sh(["sh", 2, { key: "test", words: [], slots: [], paused: true, animated: false }]);
+        return player.view(2);
+      };
+      const old = mount();
+      const canvas = old._shaderCanvas;
+      const observer = old._shaderObserver;
+      assert.equal(canvas.parentNode, old);
+      assert.equal(player.shaderViews.has(old), true);
+      player.op_d(["d", 2]);
+      assert.equal(player.views.has(2), false);
+      assert.equal(player.shaderViews.has(old), false);
+      assert.equal(canvas.parentNode, null);
+      assert.equal(disconnected.has(observer), true);
+      if (deferred) {
+        assert.equal(old.isConnected, true, "exit keeps the host, not its shader");
+      } else {
+        player.finishRemovals();
+        assert.equal(old.isConnected, false);
+      }
+      const replacement = mount();
+      assert.notEqual(replacement, old);
+      assert.equal(replacement._shaderCanvas.parentNode, replacement);
+      assert.equal(disconnected.has(replacement._shaderObserver), false);
+      player.op_d(["d", 2]);
+      assert.equal(player.shaderViews.size, 0);
+      root.remove();
+    }
+  });
+});
+
+test("stop and reset cancel owned shader frames and release old observers across reloads", () => {
+  withShaderDom(({ body, requested, cancelled, disconnected, flushAnimationFrames }) => {
+    const root = document.createElement("div");
+    const live = document.createElement("div");
+    root._id = 1;
+    root._kind = "root";
+    root.append(live);
+    body.append(root);
+    const player = Object.create(Player.prototype);
+    Object.assign(player, {
+      root,
+      live,
+      views: new Map([[1, root]]),
+      mouseTracked: new Set(),
+      shaderViews: new Set(),
+      shaderFrameRequest: 0,
+      removals: [],
+      disappearing: [],
+      changedStacks: new Set(),
+      fileOperations: new Map(),
+      requests: new Map(),
+      websockets: new Map(),
+    });
+    const mount = () => {
+      player.op_c(["c", 2, "view"]);
+      player.op_i(["i", 1, 2, null]);
+      player.op_sh(["sh", 2, { key: "test", words: [], slots: [], paused: false, animated: true }]);
+      return player.view(2);
+    };
+    for (const action of ["stop", "reset", "reset"]) {
+      const el = mount();
+      const canvas = el._shaderCanvas;
+      const observer = el._shaderObserver;
+      const owned = player.shaderFrameRequest;
+      assert.ok(owned && requested.has(owned));
+      let unrelatedRan = false;
+      const unrelated = requestAnimationFrame(() => {
+        unrelatedRan = true;
+      });
+      player[action]();
+      assert.equal(cancelled.has(owned), true);
+      assert.equal(cancelled.has(unrelated), false);
+      assert.equal(player.shaderViews.size, 0);
+      assert.equal(disconnected.has(observer), true);
+      assert.equal(canvas.parentNode, null);
+      const scheduled = requested.size;
+      player.shaderDirty(el);
+      assert.equal(requested.size, scheduled, "late notification must not schedule a stopped shader");
+      const fired = flushAnimationFrames();
+      assert.equal(unrelatedRan, true);
+      assert.equal(fired.has(owned), false);
+      if (action === "stop") {
+        assert.equal(el.isConnected, true);
+        player.reset();
+      } else {
+        assert.equal(el.isConnected, false);
+        assert.equal(player.views.size, 1);
+      }
+    }
+  });
+});

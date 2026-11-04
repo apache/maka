@@ -35,10 +35,12 @@ uuid.workspace = true
 [build-dependencies]
 embed-resource = "3.0"
 
-[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
+[target.'cfg(any(target_os = "linux", target_os = "macos"))'.dependencies]
 # Shaders compile at run time, so building needs no Metal Toolchain (macOS).
 nsh-platform-gpui = { workspace = true, features = ["runtime-shaders"] }
 gpui_platform = { package = "gpui-fast-platform", version = "0.1.10", default-features = false, features = ["font-kit", "wayland", "x11"] }
 
+[target.'cfg(windows)'.dependencies]
+nsh-platform-windows = { path = "../../../third-party/nsh/crates/nsh-platform-windows" }
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-platform-macos.workspace = true
