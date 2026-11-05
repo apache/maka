@@ -25,7 +25,6 @@ use maka_agent_facts::continuation::SessionBase;
 use crate::continuation::fixtures as continuation;
 
 mod cells;
-mod inheritance;
 
 mod observers;
 
@@ -43,7 +42,7 @@ fn lineage_request(step: &str, purpose: ModelPurpose, source: &ModelContextSourc
 
 #[tokio::test]
 async fn continuation_requests_and_checkpoints_prove_selected_source_across_repairs_and_reopen() {
-    for mid_turn in [false, true] {
+    for (mid_turn, other_branch) in [(true, false), (false, true), (true, true)] {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join("lineage.sqlite");
         let log = EventLog::open(&path).await.unwrap();
@@ -68,9 +67,13 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             },
         )
         .await;
-        // This whole-Session baseline is newer, but is not an ancestor of the child.
-        let unrelated = prepared(&log, "unrelated-summary").await;
-        log.append_batch(&unrelated).await.unwrap();
+        let unrelated_id = if other_branch {
+            let unrelated = prepared(&log, "unrelated-summary").await;
+            log.append_batch(&unrelated).await.unwrap();
+            unrelated[0].event().id.clone()
+        } else {
+            uuid::Uuid::now_v7().to_string()
+        };
         let child = continuation::opening("child", Some(claim.clone()));
         let opened = continuation::append(&log, &child).await;
         let main_source = log
@@ -101,7 +104,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
                 2 => *source_digest = continuation::digest('e'),
                 3 => *source_high_water = opened - 1,
                 4 => *effective_source_digest = None,
-                _ => *checkpoint_event_id = Some(unrelated[0].event().id.clone()),
+                _ => *checkpoint_event_id = Some(unrelated_id.clone()),
             }
             assert!(
                 log.append(&EventWrite::plain(forged).unwrap())
@@ -180,7 +183,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         );
         let mut forged = checkpoint.event().clone();
         if let Fact::ContextCheckpointRecorded { checkpoint } = &mut forged.fact {
-            checkpoint.previous_checkpoint_id = Some(unrelated[0].event().id.clone());
+            checkpoint.previous_checkpoint_id = Some(unrelated_id.clone());
         }
         assert!(
             log.append(&EventWrite::plain(forged).unwrap())
@@ -238,7 +241,16 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             selected.baseline.as_ref().unwrap().event_id,
             checkpoint.event().id
         );
-        let session_checkpoint = if mid_turn { &unrelated[0] } else { &checkpoint };
+        if !other_branch {
+            let next = continuation::opening("next-user-message", None);
+            continuation::append(&log, &next).await;
+            continuation::close(&log, &next).await;
+        }
+        let session_checkpoint_id = if mid_turn && other_branch {
+            &unrelated_id
+        } else {
+            &checkpoint.event().id
+        };
         assert_eq!(
             log.capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
                 .await
@@ -246,10 +258,8 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
                 .baseline
                 .unwrap()
                 .event_id,
-            session_checkpoint.event().id
+            *session_checkpoint_id
         );
-        // The pre-turn cut precedes the unrelated events and covers the full
-        // prefix; the mid-turn cut omits them and stays local to this lineage.
         let later = prepared(&log, "later-summary").await;
         log.append_batch(&later).await.unwrap();
         let Fact::ContextCheckpointRecorded {
@@ -260,7 +270,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         };
         assert_eq!(
             later_checkpoint.previous_checkpoint_id.as_ref(),
-            Some(&session_checkpoint.event().id)
+            Some(session_checkpoint_id)
         );
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();

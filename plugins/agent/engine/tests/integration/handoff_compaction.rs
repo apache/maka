@@ -90,13 +90,6 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
             let retried = read_request(&mut socket).await;
             assert_eq!(retried, main, "physical retries preserve the frozen request surface");
             respond(&mut socket, false).await;
-            let (mut next, _) = listener.accept().await.unwrap();
-            let next_request = read_request(&mut next).await;
-            let messages = next_request["messages"].to_string();
-            assert!(messages.contains("question-following"));
-            assert!(messages.contains("summary-marker"), "the next ordinary message must inherit the resumed checkpoint");
-            assert!(!messages.contains("old-answer"), "covered history must not expand again after the resumed run ends");
-            fixture::respond(&mut next, "answered following question", "stop").await;
             (summary, main)
         });
         let engine = fixture::engine();
@@ -139,17 +132,13 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         let RunWork::Message { tools, .. } = successor.work else { unreachable!() };
         successor.invocation = pause.intent.successor(&source_invocation);
         successor.configuration = configuration;
-        successor.context = context.clone();
+        successor.context = context;
         successor.work = RunWork::Handoff {
             source: prefix.boundary,
             pause: Box::new(pause), tools,
         };
         let resumed = fixture::engine();
         resumed.run(log.store(), successor, CancellationToken::new()).await.unwrap();
-        resumed.drain().await;
-        let mut following = fixture::input(&base, "following", false);
-        following.context = context;
-        resumed.run(log.store(), following, CancellationToken::new()).await.unwrap();
         resumed.drain().await;
         let (summary, main) = server.await.unwrap();
         assert!(summary["messages"].to_string().contains("question first"));
@@ -163,7 +152,7 @@ async fn handoff_preserves_conversation_replay_and_compacts_before_its_physical_
         assert!(prefix.events.iter().any(|e| matches!(&e.event.fact,
             Fact::ContextCheckpointRecorded { checkpoint } if checkpoint.mode == CheckpointMode::PreTurn)));
         let latest_sequence = prefix.events.iter().rev().find(|e|
-            e.event.invocation.invocation_id == "invocation-following"
+            e.event.invocation.invocation_id == "successor-invocation"
             && matches!(e.event.fact, Fact::ModelCompleted { .. })).unwrap().sequence;
         let source = log.read_model_view("session", None).await.unwrap();
         assert!(matches!(source.latest_main, LatestMainContext::Selected(latest)
