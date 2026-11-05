@@ -128,6 +128,25 @@ export function stableOnboardingModels(models: readonly ModelInfo[]): ModelInfo[
   });
 }
 
+/**
+ * The catalog the picker shows after a probe.
+ *
+ * A relay can expose a partial catalog, or none at all, while the create
+ * writer would still save the model id the user typed. Offering that id
+ * alongside whatever the probe returned keeps the answer the form asked for
+ * instead of silently replacing it with the first discovered model.
+ */
+export function onboardingPickerModels(
+  discovered: readonly ModelInfo[],
+  typedDefaultModel: string,
+): ModelInfo[] {
+  const models =
+    typedDefaultModel && !discovered.some((model) => model.id === typedDefaultModel)
+      ? [{ id: typedDefaultModel }, ...discovered]
+      : discovered;
+  return stableOnboardingModels(models);
+}
+
 export function initialOnboardingModelIds(
   models: readonly ModelInfo[],
   recommendedModelId: string,

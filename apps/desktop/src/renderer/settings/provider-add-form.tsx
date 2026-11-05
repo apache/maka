@@ -73,6 +73,7 @@ import {
   createProviderWithDiscovery,
   apiKeyOnboardingRoute,
   initialOnboardingModelIds,
+  onboardingPickerModels,
   probeRequestHeaderUpdates,
   shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
@@ -161,11 +162,12 @@ export function AddProviderForm(props: {
   const isCloudflareWorkersAi = props.providerType === 'cloudflare-workers-ai';
   const requiresBaseUrl = !defaults.baseUrl && !isCloudflareWorkersAi;
   const showsDefaultModel = recommendedDefaultModel.trim() === '';
-  // The form asks for a model id exactly when the registry recommends none,
-  // and the probe's catalog is the only place that answer can be honored.
-  // Falling back to the recommendation keeps providers that ship one seeded
+  // The form asks for a model id exactly when the registry recommends none.
+  const typedDefaultModel = showsDefaultModel ? defaultModel.trim() : '';
+  // The probe's catalog is the only place that answer can be honored, and
+  // falling back to the recommendation keeps providers that ship one seeded
   // as they were.
-  const preferredDefaultModel = defaultModel.trim() || recommendedDefaultModel;
+  const preferredDefaultModel = typedDefaultModel || recommendedDefaultModel;
   const isExperimental = defaults.status === 'phase3-experimental';
   const supportsApiKey = providerAuthSupportsApiKey(props.providerType);
   const requiresApiKey = providerAuthRequiresSecret(props.providerType) && supportsApiKey;
@@ -287,7 +289,12 @@ export function AddProviderForm(props: {
       });
       if (!addProviderMountedRef.current) return true;
       if (result.kind !== 'verified') {
-        if (usesLegacyConnectionWriter(props.providerType)) return false;
+        // A relay's probe is allowed to be inconclusive, not to disagree: a
+        // wrong key or a rejected target would be refused by the create too,
+        // and creating anyway would store the key it just proved wrong and
+        // report only the discovery that broke because of it.
+        const inconclusive = result.kind === 'failed' && result.errorClass !== 'auth';
+        if (inconclusive && usesLegacyConnectionWriter(props.providerType)) return false;
         setError({
           field:
             result.kind === 'failed' && result.errorClass === 'auth'
@@ -297,7 +304,7 @@ export function AddProviderForm(props: {
         });
         return true;
       }
-      const models = stableOnboardingModels(result.models);
+      const models = onboardingPickerModels(result.models, typedDefaultModel);
       const selectedIds = initialOnboardingModelIds(models, preferredDefaultModel);
       if (selectedIds.length === 0) {
         if (usesLegacyConnectionWriter(props.providerType)) return false;

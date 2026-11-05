@@ -418,9 +418,7 @@ function decodeOnboardingRequestHeaders(
   // would let a caller discover a catalog the connection itself could not
   // fetch.
   if (target.kind !== 'create') {
-    throw invalidProtocolFrame(
-      'Connection onboarding request headers require a create target',
-    );
+    throw invalidProtocolFrame('Connection onboarding request headers require a create target');
   }
   try {
     return normalizeRequestHeaderUpdates(value).map((update) => {

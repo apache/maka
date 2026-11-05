@@ -24,6 +24,7 @@ import {
   createProviderWithDiscovery,
   apiKeyOnboardingRoute,
   initialOnboardingModelIds,
+  onboardingPickerModels,
   shouldShowManagedOnboardingOutcomeUnknown,
   stableOnboardingModels,
   usesLegacyConnectionWriter,
@@ -347,6 +348,35 @@ test('uses a stable discovered-model order and prefers the registered recommenda
   assert.deepEqual(initialOnboardingModelIds(models, 'z-model'), ['z-model']);
   assert.deepEqual(initialOnboardingModelIds(models, 'missing'), ['a-model']);
   assert.deepEqual(initialOnboardingModelIds([], 'missing'), []);
+});
+
+test('a typed model the catalog does not list still reaches the picker', () => {
+  const models = [
+    { id: 'z-model', displayName: 'Zulu' },
+    { id: 'a-model', displayName: 'Alpha' },
+  ];
+  // Present in the catalog: no duplicate.
+  assert.deepEqual(onboardingPickerModels(models, 'z-model').map(({ id }) => id).sort(), [
+    'a-model',
+    'z-model',
+  ]);
+  // Absent: offered alongside the catalog rather than silently replaced.
+  const withTyped = onboardingPickerModels(models, 'typed-model');
+  assert.deepEqual(withTyped.map(({ id }) => id).sort(), [
+    'a-model',
+    'typed-model',
+    'z-model',
+  ]);
+  assert.deepEqual(initialOnboardingModelIds(withTyped, 'typed-model'), ['typed-model']);
+  // A relay that exposes no catalog at all can still be completed with the
+  // model the user typed.
+  assert.deepEqual(onboardingPickerModels([], 'typed-model').map(({ id }) => id), [
+    'typed-model',
+  ]);
+  assert.deepEqual(onboardingPickerModels(models, '').map(({ id }) => id).sort(), [
+    'a-model',
+    'z-model',
+  ]);
 });
 
 test('only an idle form projects a dispatched save as outcome unknown', () => {
