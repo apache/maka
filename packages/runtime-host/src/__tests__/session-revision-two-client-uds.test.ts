@@ -156,6 +156,42 @@ test('two Clients share exact retryable Session branch and revision authority', 
       ACTIVE_SOURCE_SIDE_CONVERSATION_TARGET_ID,
       graphChildSessionId,
     );
+
+    // The rewrite-missing commit arm (#6246 review): a staged attachment whose
+    // source Artifact no longer exists cannot be re-keyed onto the copy. The
+    // commit must leave it off the response — the client keeps its fail-closed
+    // gate — instead of staging a dangling target-owned ref. This pins the
+    // `if (!relativePath) continue` arm in the coordinator's staged-attachment
+    // re-key, which the suites above never exercised: recording the dangling
+    // ref kept every one of them green. The deletion must stay at the very end
+    // of the flow: every copy kind that retains the upload turn (asserted by
+    // verifyDurableBranch) needs the source Artifact intact.
+    host = await startHost(root, capability.rootId);
+    const missingRewriteClient = await connectClient(root);
+    try {
+      await missingRewriteClient.request('artifact.delete', {
+        sessionId: sourceSessionId,
+        artifactId: 'source-artifact',
+      });
+      const sourceBeforeMissing = await querySession(missingRewriteClient, sourceSessionId);
+      const missingRewrite = await missingRewriteClient.request('session.revision.create', {
+        sourceSessionId,
+        targetSessionId: 'missing-rewrite-revision-target',
+        sourceTurnId: 'turn-1',
+        expectedSourceRevision: sourceBeforeMissing.revision,
+      });
+      assert.equal(missingRewrite.kind, 'committed');
+      if (missingRewrite.kind !== 'committed') assert.fail('Missing-rewrite revision must commit');
+      assert.equal(
+        missingRewrite.stagedAttachments,
+        undefined,
+        'a rewrite-missing staged attachment must stay off the response instead of coming back as a dangling target-owned ref',
+      );
+    } finally {
+      await missingRewriteClient.close();
+      await stopHost(host);
+      host = undefined;
+    }
   } finally {
     await terminateHost(host);
     await rm(join(resolveRootControlNamespace(), capability.rootId), {
@@ -552,6 +588,84 @@ async function verifyConcurrentRevisionAuthority(
     );
 
     const sourceAfterRevision = await querySession(tui, sourceSessionId);
+    // A revision of the upload turn itself (#5109): the edited turn's own
+    // attachment is a user upload whose ref names the Artifact record id, which
+    // the copy reports under `artifactIds`, not `relativePaths` — the committed
+    // response must still stage the rewritten ref (#6246 review).
+    const uploadedTurnRevision = await desktop.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: 'staged-upload-revision-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: sourceAfterRevision.revision,
+    });
+    assert.equal(uploadedTurnRevision.kind, 'committed');
+    if (uploadedTurnRevision.kind !== 'committed') assert.fail('Revision must commit');
+    assert.equal(uploadedTurnRevision.stagedAttachments?.length, 1);
+    const stagedUpload = uploadedTurnRevision.stagedAttachments?.[0];
+    assert.equal(stagedUpload?.name, 'source.txt');
+    assert.equal(stagedUpload?.ref.kind, 'session_file');
+    if (stagedUpload?.ref.kind !== 'session_file')
+      assert.fail('Staged ref must stay session-backed');
+    assert.equal(stagedUpload.ref.sessionId, 'staged-upload-revision-target');
+    assert.notEqual(stagedUpload.ref.relativePath, 'source-artifact');
+    assert.deepEqual(
+      await desktop.request('artifact.query', {
+        kind: 'read_text',
+        sessionId: 'staged-upload-revision-target',
+        artifactId: stagedUpload.ref.relativePath,
+      }),
+      {
+        kind: 'text',
+        sessionId: 'staged-upload-revision-target',
+        artifactId: stagedUpload.ref.relativePath,
+        preview: { ok: true, text: 'retained bytes' },
+      },
+    );
+    // A retried request whose target already committed resolves through the
+    // committed-probe path: it must answer with the same staged attachments
+    // the first attempt returned, not a bare committed response (#6246
+    // review).
+    const uploadedTurnRevisionRetry = await desktop.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: 'staged-upload-revision-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: sourceAfterRevision.revision,
+    });
+    assert.equal(uploadedTurnRevisionRetry.kind, 'committed');
+    if (uploadedTurnRevisionRetry.kind !== 'committed') assert.fail('Retry must stay committed');
+    assert.equal(uploadedTurnRevisionRetry.stagedAttachments?.length, 1);
+    const retriedStaged = uploadedTurnRevisionRetry.stagedAttachments?.[0];
+    assert.equal(retriedStaged?.name, 'source.txt');
+    assert.equal(retriedStaged?.ref.kind, 'session_file');
+    if (retriedStaged?.ref.kind !== 'session_file')
+      assert.fail('Retried staged ref must stay session-backed');
+    assert.equal(retriedStaged.ref.sessionId, 'staged-upload-revision-target');
+    // A staged attachment deleted from the target after the commit stays
+    // deleted: the replay is read-only and must not republish it (#6246
+    // review).
+    await desktop.request('artifact.delete', {
+      sessionId: 'staged-upload-revision-target',
+      artifactId: retriedStaged.ref.relativePath,
+    });
+    const afterDelete = await desktop.request('session.revision.create', {
+      sourceSessionId,
+      targetSessionId: 'staged-upload-revision-target',
+      sourceTurnId: 'turn-1',
+      expectedSourceRevision: sourceAfterRevision.revision,
+    });
+    assert.equal(afterDelete.kind, 'committed');
+    if (afterDelete.kind !== 'committed') assert.fail('Replay must stay committed');
+    assert.equal(
+      afterDelete.stagedAttachments,
+      undefined,
+      'a deleted staged attachment drops off the replay instead of being republished',
+    );
+    assert.deepEqual(
+      await desktop.request('session.revision.abandon', {
+        targetSessionId: 'staged-upload-revision-target',
+      }),
+      { kind: 'abandoned', sessionId: 'staged-upload-revision-target' },
+    );
     const staleExpectedRevision = sourceAfterRevision.revision + 1;
     const stale = await tui.request('session.revision.create', {
       ...revisionInput,
