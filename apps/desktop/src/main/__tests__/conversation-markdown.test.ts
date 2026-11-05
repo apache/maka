@@ -65,4 +65,54 @@ describe('renderConversationMarkdown', () => {
     assert.ok(!md.includes('Secret skill body'), 'export must not include skill body');
     assert.match(renderConversationMarkdown('skill session', messages, 'en'), /## You/);
   });
+
+  it('keeps the clipboard shape: italic exported line, bulleted rows, one tool-call block, [redacted] secrets', () => {
+    // The clipboard export predates the shared core renderer; pin its shape so
+    // the shared path cannot silently change what users paste (#6036 review).
+    const messages: StoredMessage[] = [
+      { type: 'user', id: 'u1', turnId: 't1', ts: 1, text: 'run the tools' },
+      {
+        type: 'tool_call',
+        id: 'c1',
+        turnId: 't1',
+        ts: 2,
+        toolName: 'read_file',
+        intent: 'read the sk-intent-secret config',
+        args: {},
+      },
+      {
+        type: 'tool_call',
+        id: 'c2',
+        turnId: 't1',
+        ts: 3,
+        toolName: 'list_dir',
+        intent: 'list the entries',
+        args: {},
+      },
+      {
+        type: 'assistant',
+        id: 'a1',
+        turnId: 't1',
+        ts: 4,
+        text: 'the sk-answer-secret file is ready',
+        modelId: 'fake',
+      },
+    ];
+    const md = renderConversationMarkdown('shape session', messages, 'zh-CN');
+    // The exported-at line stays italic, as the clipboard export always had it.
+    assert.match(md, /# shape session\n\n\*由 Maka 于 .+ 导出。\*\n/);
+    // A run of tool calls shares one section; each call must not open its own.
+    assert.equal((md.match(/### 工具调用/g) ?? []).length, 1, md);
+    // Rows keep their `- ` list marker.
+    assert.ok(md.includes('- `read_file` — read the [redacted] config'), md);
+    assert.ok(md.includes('- `list_dir` — list the entries'), md);
+    // Model-produced strings pass the shared redactor, and the placeholder is
+    // the `[redacted]` the CLI export prints (#5958 alignment) — never the raw
+    // secret.
+    assert.ok(!md.includes('sk-intent-secret'));
+    assert.ok(!md.includes('sk-answer-secret'));
+    assert.ok((md.match(/\[redacted\]/g) ?? []).length >= 2, md);
+    assert.ok(md.includes('## Maka'));
+    assert.ok(md.includes('the [redacted] file is ready'), md);
+  });
 });
