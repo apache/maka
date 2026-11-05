@@ -52,12 +52,11 @@ export const workspaceMessages = {
     '查看「{title}」的执行记录',
     '檢視「{title}」的執行記錄',
   ],
-  'Open the worker beside this conversation': [
-    'Open the worker beside this conversation',
-    '在右侧打开这个工作会话',
-    '在右側開啟這個工作會話',
+  'View the record of the worker': [
+    'View the record of the worker',
+    '查看工作会话的执行记录',
+    '檢視工作會話的執行記錄',
   ],
-  'the worker': ['the worker', '工作会话', '工作會話'],
   '{title} is waiting for your reply. Open it.': [
     '{title} is waiting for your reply. Open it.',
     '「{title}」在等你的回复，点这里处理。',

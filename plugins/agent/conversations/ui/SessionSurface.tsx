@@ -2143,6 +2143,9 @@ export function createConversationUi(
                         }
                       : undefined)
                   }
+                  openSessionHere={(sessionId) => {
+                    void shell()?.openSession(sessionId).catch(report);
+                  }}
                   focusComposer={focusComposer}
                   stopAction={stopAction}
                   restartBot={restartBot}

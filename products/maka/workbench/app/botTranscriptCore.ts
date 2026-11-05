@@ -224,6 +224,33 @@ export function reportedWorker(
   return undefined;
 }
 
+/** The most pages read for one window, so a Bot with a very long history cannot loop the read. */
+const MAX_PAGES = 16;
+type Session = { id: string };
+type Page<S extends Session = Session> = { revision: string; after?: string | null; sessions: S[] };
+
+/**
+ * Every session of one catalog window, following its continuation cursor. The catalog
+ * pages by recency, so a running or waiting worker may sit behind a full page of idle
+ * ones. A page of another revision means the catalog moved; the caller waits for the
+ * window that the subscription pushes next.
+ */
+export async function assembleChildren<S extends Session, P extends Page<S>>(
+  first: P,
+  next: (page: P) => Promise<P>,
+): Promise<S[]> {
+  const rows = new Map(first.sessions.map((session) => [session.id, session]));
+  let tail = first;
+  for (let pages = 1; tail.after && pages < MAX_PAGES; pages += 1) {
+    const page = await next(tail);
+    if (page.revision !== first.revision) throw new Error('agent_catalog_changed');
+    if (page.after === tail.after) break;
+    for (const session of page.sessions) rows.set(session.id, session);
+    tail = page;
+  }
+  return [...rows.values()];
+}
+
 export type ActiveWorker = { id: string; title: string; activity: 'working' | 'waiting' };
 /**
  * The conversations the Bot created that are running, or waiting for the user, now. Such a

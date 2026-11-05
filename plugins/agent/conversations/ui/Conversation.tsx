@@ -115,6 +115,7 @@ import {
   type ActiveWorker,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
+import { createBotWorkers } from '../../../../products/maka/workbench/app/botWorkers';
 import {
   BotNote,
   BotReply,
@@ -280,6 +281,8 @@ type ConversationProps = {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
   knownSession?(sessionId: string): AgentSession | undefined;
+  /** Opens a conversation in this pane, for when no side pane fits. */
+  openSessionHere?(sessionId: string): void;
   attach(handle: ConversationHandle): void;
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
@@ -446,40 +449,13 @@ export function Conversation(props: ConversationProps) {
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
   const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
-  // The Bot's own conversations, read from the Host: the sidebar list holds only top-level
-  // ones. Polled while this is the visible Bot, so a running or waiting worker shows up.
-  const botChildren = signal<readonly AgentSession[]>([]);
-  const refreshBotChildren = async () => {
-    try {
-      const page = await host.query('agent', 'list', {
-        filter: 'all',
-        includeArchived: false,
-        scope: { kind: 'children', sessionId },
-        position: { kind: 'start' },
-      });
-      if (alive) botChildren.set(page.sessions);
-    } catch {
-      // A failed read keeps the last list; the next poll tries again.
-    }
-  };
-  effect(() => {
-    if (bot.identity() !== 'bot' || !props.visible()) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const tick = async () => {
-      await refreshBotChildren();
-      if (alive && !stopped) timer = setTimeout(() => void tick(), 3000);
-    };
-    void tick();
-    cleanup(() => {
-      stopped = true;
-      if (timer) clearTimeout(timer);
-    });
-  });
-  const workerTitle = (id: string) =>
-    botChildren().find((child) => child.id === id)?.title ??
-    props.knownSession?.(id)?.title ??
-    tr('the worker');
+  // The Bot's own conversations come from the Host's catalog stream; the sidebar list
+  // holds only top-level ones. Not read for a replaced Bot, which has no live workers.
+  const botWorkers = createBotWorkers(
+    host,
+    () => sessionId,
+    () => bot.identity() === 'bot' && props.visible() && !formerBot(),
+  );
   // A Bot that was replaced is a Bot only as an archived record of what it told the user.
   // Restored, it is an ordinary conversation again: it holds no SendUser, so its own
   // replies must show in Chat.
@@ -626,6 +602,10 @@ export function Conversation(props: ConversationProps) {
     (id) => props.knownSession?.(id),
     () => props.openSessionBeside,
   );
+  // A worker opens beside the Bot when a side pane fits, otherwise in this pane (the Bot
+  // stays pinned in the sidebar to switch back).
+  const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
+  const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const canFoldTurn = (turn: TurnPresentation) =>
     turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
   const turnExpanded = (turn: TurnPresentation) => {
@@ -771,7 +751,7 @@ export function Conversation(props: ConversationProps) {
       // A worker that is running, or waiting for the user's approval or answer, has not
       // ended its run, so the Bot has nothing to say about it yet; Chat is where the user
       // would look for it.
-      const active = activeWorkers(botChildren(), props.botSession?.() ?? sessionId);
+      const active = activeWorkers(botWorkers.sessions(), sessionId);
       if (active.length > 0)
         result.push({
           kind: 'botWaiting',
@@ -3151,7 +3131,7 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <BotWaiting
                             workers={() => initial.workers}
-                            open={props.openSessionBeside}
+                            open={canOpenWorker() ? openWorker : undefined}
                           />
                         );
                       if (initial.kind === 'botNote')
@@ -3160,10 +3140,11 @@ export function Conversation(props: ConversationProps) {
                         return (
                           <BotReply
                             worker={
-                              initial.worker !== undefined && props.openSessionBeside
+                              initial.worker !== undefined && canOpenWorker()
                                 ? {
-                                    title: () => workerTitle(initial.worker!),
-                                    open: () => props.openSessionBeside?.(initial.worker!),
+                                    title: () => senders.session(initial.worker!)?.title ?? '',
+                                    exists: () => senders.session(initial.worker!) !== null,
+                                    open: () => openWorker(initial.worker!),
                                   }
                                 : undefined
                             }

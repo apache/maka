@@ -24,6 +24,7 @@ import {
   createBotTranscriptCore,
   reportedWorker,
   activeWorkers,
+  assembleChildren,
 } from '../app/botTranscriptCore.ts';
 
 const SESSION = 'bot-session';
@@ -372,4 +373,40 @@ test('the Bot’s running and waiting conversations are listed, waiting first', 
   ]);
   assert.deepEqual(activeWorkers(sessions, null), [], 'no Bot, no workers');
   assert.deepEqual(activeWorkers(sessions, undefined), []);
+});
+
+test('a worker behind a full first page of idle ones is still found by following the cursor', async () => {
+  const idle = (n) =>
+    Array.from({ length: 32 }, (_, i) => ({ id: `idle-${n}-${i}`, activity: 'idle' }));
+  const pages = [
+    { revision: 'r1', after: 'c1', sessions: idle(1) },
+    { revision: 'r1', after: 'c2', sessions: idle(2) },
+    { revision: 'r1', after: null, sessions: [{ id: 'old-waiting', activity: 'waiting' }] },
+  ];
+  const reads = [];
+  const all = await assembleChildren(pages[0], async (previous) => {
+    reads.push(previous.after);
+    return pages[reads.length];
+  });
+  assert.deepEqual(reads, ['c1', 'c2']);
+  assert.equal(all.length, 65);
+  assert.ok(all.some((session) => session.id === 'old-waiting'));
+});
+
+test('a catalog that moves while its pages are read is refused, and a stuck cursor ends the read', async () => {
+  const first = { revision: 'r1', after: 'c1', sessions: [{ id: 'a' }] };
+  await assert.rejects(
+    assembleChildren(first, async () => ({ revision: 'r2', after: null, sessions: [] })),
+    /agent_catalog_changed/,
+  );
+  const stuck = await assembleChildren(first, async () => ({
+    revision: 'r1',
+    after: 'c1',
+    sessions: [{ id: 'b' }],
+  }));
+  assert.deepEqual(
+    stuck.map((session) => session.id),
+    ['a'],
+    'a page that does not advance is not added and ends the read',
+  );
 });
