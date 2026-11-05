@@ -155,7 +155,7 @@ test('a transient authorization failure between admission and hints keeps the wa
     wake = await take();
     if (!outage && wake) {
       outage = true;
-      // The source fails after admission, before directions() re-authorizes the same hint.
+      // The source fails after admission, before prompt preparation re-authorizes the hint.
       f.ctx.sources.authorize = async () => {
         throw Error('offline');
       };
@@ -164,7 +164,8 @@ test('a transient authorization failure between admission and hints keeps the wa
   };
   await f.q.dispatch();
   await f.q.running;
-  assert.match(f.q.state().lastError, /wake hints could not be read/i);
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.q.state().pending, null, 'deferred hints cannot own a failed activation');
   assert.equal(f.counts().workerCalls, 0);
   assert.equal(
     f.q.store.db.prepare("SELECT COUNT(*) n FROM intake_wakes WHERE status='pending'").get()?.n,

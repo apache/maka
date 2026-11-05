@@ -28,6 +28,8 @@ import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
 import type { AssistantRunOutcome } from '../run-cost.js';
 import { memoryRead } from './notebook-memory.js';
+import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
+import { decodeMessageContent } from '../../protocol/turn.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
@@ -264,7 +266,7 @@ export class QuickDiscoveryController {
       return;
     }
     const waiting = this.parent.coordinator.waiting('quick');
-    const eventWake = s.intakeEnabled ? await this.intake.next() : undefined;
+    const eventWake = await this.intake.next(!s.intakeEnabled);
     const last = s.lastPeriodicFinishedAt ?? s.startedAt;
     const quiet = inQuietHours(now, s.quietHours);
     if (
@@ -321,9 +323,10 @@ export class QuickDiscoveryController {
           tokens: observation.tokens,
           messageId: randomUUID(),
           reports: [],
-          periodic: !eventWake || (now >= last + s.idleMs && !quiet),
+          periodic: state.checkRequested || !eventWake || (now >= last + s.idleMs && !quiet),
           ...(eventWake ? { eventWake } : {}),
         };
+        if (state.active.eventWake) this.intake.capture(state.active.eventWake);
         state.checkRequested = false;
         state.lastError = null;
         this.store.log('quick-started', {
@@ -335,16 +338,21 @@ export class QuickDiscoveryController {
       if (!current.active) return;
       admitted = true;
       this.agent = agent;
-      this.running = this.run(agent, current).finally(() => {
-        this.running = undefined;
-        const finished = this.state();
-        this.parent.coordinator.release(
-          permit,
-          finished?.active || finished?.pending || finished?.lastError
-            ? 'interrupted'
-            : 'completed',
-        );
-      });
+      let deferred = false;
+      this.running = this.run(agent, current)
+        .then((result) => {
+          deferred = result === 'deferred';
+        })
+        .finally(() => {
+          this.running = undefined;
+          const finished = this.state();
+          this.parent.coordinator.release(
+            permit,
+            deferred || finished?.active || finished?.pending || finished?.lastError
+              ? 'interrupted'
+              : 'completed',
+          );
+        });
     } finally {
       if (!admitted) this.parent.coordinator.release(permit);
     }
@@ -358,8 +366,8 @@ export class QuickDiscoveryController {
         s.pending && !s.contextWake ? 'legacy' : (this.parent.store.get()?.contextMode ?? 'legacy');
       const context = this.store.prepareContext(mode);
       const sessions = await this.ctx.sessionQuery.list();
-      const key = context.mode === 'scoped' ? context.id : 'legacy';
-      const label = `assistant-quick-discovery:${s.sessionId}${context.mode === 'scoped' ? ':' + key : ''}`;
+      const key = context.mode === 'scoped' ? context.id : (s.legacyWorkerKey ?? 'legacy');
+      const label = `assistant-quick-discovery:${s.sessionId}${key === 'legacy' ? '' : ':' + key}`;
       const matches = sessions.filter((x: any) => !x.isArchived && x.labels?.includes(label));
       const previous = this.store.worker(s.workerSession);
       const existing =
@@ -460,17 +468,99 @@ export class QuickDiscoveryController {
     try {
       this.forward();
       if (!active.executionCompleted) {
-        modelFrom = Date.now();
         this.parent.refreshNotebook();
         const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v2']);
-        const first = this.state().promptVersion !== version;
-        const directions = active.eventWake ? await this.intake.directions(active.eventWake) : [];
-        let input = active.eventWake
-          ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。${directions.length ? `模型概述：${JSON.stringify(directions.join('；'))}。` : ''}概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
-          : quickWakeInput(active.from, active.to, first);
+        let first = this.state().promptVersion !== version;
         const previous = this.parent.coordinator.previous();
-        if (previous)
-          input += `\n上一轮调查的记忆增量入口：${JSON.stringify(previous)}。用 DiscoveryNotebook 读取 memory 指定的历史范围；调查记录不是完整覆盖或已告知证明，结合当前认识、反馈与来源判断是否需要继续。`;
+        const inputFor = (directions: string[]) => {
+          let input = directions.length
+            ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。模型概述：${JSON.stringify(directions.join('；'))}。概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
+            : quickWakeInput(active.from, active.to, first);
+          if (previous)
+            input += `\n上一轮调查的记忆增量入口：${JSON.stringify(previous)}。用 DiscoveryNotebook 读取 memory 指定的历史范围；调查记录不是完整覆盖或已告知证明，结合当前认识、反馈与来源判断是否需要继续。`;
+          return input;
+        };
+        let directions: string[] = [];
+        if (active.eventWake) {
+          const fitsWorker = async () => {
+            // Read capacity from this worker's pinned model, not the intake model or
+            // a subsequently changed assistant selection. This makes no provider call.
+            const budget = await this.owner({ ...state, sessionId: agent.sessionId }, () =>
+              this.ctx.llm.budget({ maxOutputTokens: 2048 }),
+            );
+            // The auxiliary budget already reserves output/wrappers. Leave additional
+            // room for the investigator's tools, system prompt and retained history.
+            const limit = Math.floor(budget.maxInputTokens * 0.75);
+            if (!Number.isSafeInteger(limit) || limit <= 0)
+              throw Error('Investigation model input capacity is unavailable');
+            const fits = (items: string[]) => {
+              const input = inputFor(items);
+              if (estimatePluginLlmInputTokens('', input) > limit) return false;
+              try {
+                decodeMessageContent({ text: input });
+                return true;
+              } catch {
+                return false;
+              }
+            };
+            if (!fits([])) throw Error('Investigation model cannot fit the wake instructions');
+            return { fits, limit };
+          };
+          let capacity = await fitsWorker();
+          let batch = await this.intake.prepare(active.eventWake, capacity.fits);
+          if (
+            state.pending &&
+            (typeof active.wakeInputTokens === 'number'
+              ? active.wakeInputTokens > capacity.limit
+              : batch.oversized)
+          ) {
+            // Old unbounded captures may already have a rejected, uncompressible head
+            // message. Keep that history intact and recover on a fresh worker once.
+            const recovered = this.store.update((s) => {
+              if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
+              const mode = s.contextWake?.mode ?? this.parent.store.get()?.contextMode ?? 'legacy';
+              s.contextWake = { id: randomUUID(), mode };
+              if (mode === 'legacy') s.legacyWorkerKey = s.contextWake.id;
+              s.active.messageId = randomUUID();
+              s.active.wakeInputTokens = 0;
+            });
+            active.messageId = recovered.active.messageId;
+            agent = await this.worker(this.state());
+            this.agent = agent;
+            const snapshot = await agent.snapshot();
+            if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot))
+              throw Error('Recovery worker is not idle');
+            first = true;
+            capacity = await fitsWorker();
+            batch = await this.intake.prepare(active.eventWake, capacity.fits);
+          }
+          this.store.update((s) => {
+            if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
+            s.active.eventWake = { ids: batch.ids };
+          });
+          active.eventWake = { ids: batch.ids };
+          directions = batch.directions;
+          if (!directions.length && !active.periodic) {
+            // Unreadable/oversized hints stay captured in the intake journal. They do
+            // not own a failed activation or block another hint/the periodic cadence.
+            this.store.update((s) => {
+              if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
+              s.active = null;
+              s.pending = null;
+              s.retryAt = null;
+              s.lastError = null;
+              this.store.log('quick-deferred', { id: active.id });
+            });
+            return 'deferred' as const;
+          }
+        }
+        const input = inputFor(directions);
+        if (active.eventWake)
+          this.store.update((s) => {
+            if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
+            s.active.wakeInputTokens = estimatePluginLlmInputTokens('', input);
+          });
+        modelFrom = Date.now();
         const result = (await this.owner(state, () =>
           agent.followup(input, { messageId: active.messageId }),
         )) as any;

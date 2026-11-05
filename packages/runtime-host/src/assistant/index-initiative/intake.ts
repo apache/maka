@@ -67,6 +67,7 @@ export class EventIntake {
   private lastPoll = 0;
   private receiptWake?: ReturnType<typeof setTimeout>;
   private unavailable = new Map<string, number>();
+  private hintRetryAt = new Map<string, number>();
   constructor(readonly quick: QuickDiscoveryController) {
     chmodSync(join(quick.store.directory, 'initiative.sqlite'), 0o600);
     quick.store.db.exec(`CREATE TABLE IF NOT EXISTS intake_sources(id TEXT PRIMARY KEY,scope TEXT,cursor TEXT,error TEXT);
@@ -77,6 +78,15 @@ export class EventIntake {
       CREATE INDEX IF NOT EXISTS intake_group ON intake_events(source,json_extract(payload,'$.group'),status,seq);
       CREATE TABLE IF NOT EXISTS intake_groups(id TEXT PRIMARY KEY,checked INTEGER NOT NULL,retry_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS intake_wakes(id TEXT PRIMARY KEY,at INTEGER NOT NULL,payload TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'pending');`);
+    quick.store.transaction(() => {
+      if (
+        !this.db
+          .prepare('PRAGMA table_info(intake_wakes)')
+          .all()
+          .some((row) => row.name === 'captured')
+      )
+        this.db.exec('ALTER TABLE intake_wakes ADD COLUMN captured INTEGER NOT NULL DEFAULT 0');
+    });
     // Earlier versions' search tables and metadata can remain on disk; originals and
     // receipt states are unchanged. Screening no longer builds a second history index.
   }
@@ -683,19 +693,27 @@ export class EventIntake {
       .prepare("UPDATE intake_events SET status='pending',reason=NULL WHERE status='investigate'")
       .run();
     for (const activation of [state?.active, state?.pending]) {
-      if (!activation?.eventBatch) continue;
-      delete activation.eventBatch;
-      activation.eventWake = { ids: [] };
+      if (activation?.eventBatch) {
+        delete activation.eventBatch;
+        activation.eventWake = { ids: [] };
+      }
+      if (activation?.eventWake) this.capture(activation.eventWake);
     }
   }
-  private async readableWakes(ids?: string[]) {
+  private pendingWakes(ids?: string[], capturedOnly = false) {
     const rows = this.db
-      .prepare("SELECT id,payload FROM intake_wakes WHERE status='pending' ORDER BY at,rowid")
+      .prepare(
+        `SELECT id,payload FROM intake_wakes WHERE status='pending' ${capturedOnly ? 'AND captured=1' : ''} ORDER BY at,rowid`,
+      )
       .all();
     const wanted = ids ? new Set(ids) : undefined;
-    const wakes = rows
+    return rows
       .filter((row) => !wanted || wanted.has(String(row.id)))
+      .filter((row) => wanted || (this.hintRetryAt.get(String(row.id)) ?? 0) <= this.quick.now())
       .map((row) => ({ id: String(row.id), ...JSON.parse(String(row.payload)) }));
+  }
+  private async readableWakes(ids?: string[], capturedOnly = false) {
+    const wakes = this.pendingWakes(ids, capturedOnly);
     const evidence = new Map<string, any>();
     for (const wake of wakes)
       for (const id of wake.evidenceIds) {
@@ -726,28 +744,54 @@ export class EventIntake {
       false,
     );
   }
-  async next() {
-    this.ready();
-    const wakes = await this.readableWakes();
-    this.ready();
-    return wakes.length ? { ids: wakes.map((wake) => wake.id) } : undefined;
+  async next(capturedOnly = false) {
+    if (capturedOnly) this.quick.ready();
+    else this.ready();
+    const wakes = await this.readableWakes(undefined, capturedOnly);
+    if (capturedOnly) this.quick.ready();
+    else this.ready();
+    // Bound durable activation metadata too; model capacity selects a smaller FIFO batch.
+    return wakes.length ? { ids: wakes.slice(0, 128).map((wake) => wake.id) } : undefined;
+  }
+  /** Called within the activation transaction, including upgrades of old pending work. */
+  capture(wake: { ids: string[] }) {
+    this.quick.ready();
+    for (const id of wake.ids)
+      this.db.prepare("UPDATE intake_wakes SET captured=1 WHERE id=? AND status='pending'").run(id);
+  }
+  async prepare(wake: { ids: string[] }, fits: (directions: string[]) => boolean) {
+    // Measure old captures without releasing their content; a rejected oversized anchor
+    // must not be carried into the recovery Session's provider request.
+    const original = new Set<string>();
+    let oversized = false;
+    for (const item of this.pendingWakes(wake.ids)) {
+      original.add(item.direction);
+      if (!fits([...original])) {
+        oversized = true;
+        break;
+      }
+    }
+    const ids: string[] = [];
+    const directions = new Set<string>();
+    for (const item of await this.readableWakes(wake.ids)) {
+      if (!fits([item.direction])) {
+        this.hintRetryAt.set(item.id, this.quick.now() + 30000);
+        this.reportError(
+          'wake-capacity',
+          'A discovery hint exceeds the investigation model or Host message limit. It remains pending; other hints can continue.',
+        );
+        continue;
+      }
+      const next = [...new Set([...directions, item.direction])];
+      if (!fits(next)) break;
+      this.hintRetryAt.delete(item.id);
+      ids.push(item.id);
+      directions.add(item.direction);
+    }
+    return { ids, directions: [...directions], oversized };
   }
   async directions(wake: { ids: string[] }): Promise<string[]> {
-    const wakes = await this.readableWakes(wake.ids),
-      read = new Set(wakes.map((item) => item.id));
-    // Admission and hint delivery authorize separately. A transient source failure in between
-    // must fail this activation: complete() is only reached by a delivered prompt, so returning
-    // fewer hints here would mark an undelivered hint delivered and lose it without a retry.
-    // Revoked or already discarded wakes are absent from this check and still disappear.
-    const pending = new Set(
-      this.db
-        .prepare("SELECT id FROM intake_wakes WHERE status='pending'")
-        .all()
-        .map((row) => String(row.id)),
-    );
-    if (wake.ids.some((id) => pending.has(id) && !read.has(id)))
-      throw Error('Wake hints could not be read; the pending wake is retained for retry');
-    return [...new Set<string>(wakes.map((item) => item.direction))];
+    return (await this.prepare(wake, () => true)).directions;
   }
   /** Acknowledge this wake's execution, not completion of any underlying matter.
    * Called inside the successful activation's state transaction. New hints stay pending. */
