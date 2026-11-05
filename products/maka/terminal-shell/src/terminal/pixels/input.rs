@@ -715,89 +715,20 @@ mod tests {
         assert!(inbox.reserve_frame());
     }
 
-    // Use authentic, ordered native tokens without widening FrameToken's API.
-    // Only completion order is controlled below; no scheduler API is replaced.
-    fn native_frames(count: usize) -> Vec<nsh_gpui_terminal::CandidateFrame> {
-        use gpui::{
-            AppContext, Application, Bounds, Context, IntoElement, Render, Styled, Window,
-            WindowBounds, WindowOptions, div, point, px, rgb, size,
-        };
-        use std::{cell::RefCell, rc::Rc, sync::Arc};
-
-        struct Solid;
-        impl Render for Solid {
-            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
-                div().size_full().bg(rgb(0xff0000))
-            }
-        }
-        let frames = Rc::new(RefCell::new(Vec::new()));
-        let received = frames.clone();
-        let platform = nsh_gpui_terminal::TerminalPlatform::new(
-            Box::new(gpui_wgpu::WgpuHeadlessRenderer::new().unwrap()),
-            Box::new(move |frame| {
-                received
-                    .borrow_mut()
-                    .push(frame.submit().unwrap().complete().unwrap());
-            }),
-            Arc::new(|| {}),
-        )
-        .unwrap();
-        let window = Rc::new(RefCell::new(None));
-        let created = window.clone();
-        let application = Application::with_platform(platform.clone()).run_embedded(move |cx| {
-            *created.borrow_mut() = Some(
-                cx.open_window(
-                    WindowOptions {
-                        window_bounds: Some(WindowBounds::Windowed(Bounds::new(
-                            point(px(0.0), px(0.0)),
-                            size(px(32.0), px(12.0)),
-                        ))),
-                        inactive_frame_interval: None,
-                        ..Default::default()
-                    },
-                    |_, cx| cx.new(|_| Solid),
-                )
-                .unwrap(),
-            );
-        });
-        let mut completed = Vec::new();
-        for _ in 0..count {
-            application.update(|cx| {
-                window
-                    .borrow()
-                    .as_ref()
-                    .unwrap()
-                    .update(cx, |_, window, _| window.refresh())
-                    .unwrap();
-            });
-            assert!(platform.pump());
-            let frame = frames.borrow_mut().remove(0);
-            assert!(frames.borrow().is_empty());
-            completed.push(frame);
-        }
-        assert!(
-            completed
-                .windows(2)
-                .all(|pair| pair[0].token().sequence() < pair[1].token().sequence())
-        );
-        drop(application);
-        platform.shutdown();
-        completed
+    fn inert_tokens(count: usize) -> Vec<FrameToken> {
+        (1..=count as u64).map(FrameToken::inert).collect()
     }
 
-    fn native_encoded(frame: &nsh_gpui_terminal::CandidateFrame, geometry: u64) -> Encoded {
-        use nsh_gpui_terminal::inline::{InlineFrame, InlineProtocol};
+    fn inert_encoded(token: &FrameToken, geometry: u64) -> Encoded {
         Encoded {
-            frame: WireFrame::Inline(
-                InlineFrame::encode(frame, InlineProtocol::Sixel, 4, 2, false, true).unwrap(),
-            ),
+            frame: WireFrame::Inline(nsh_gpui_terminal::inline::InlineFrame::inert(token.clone())),
             geometry,
         }
     }
 
-    fn encoding(inbox: &mut Inbox, frame: &nsh_gpui_terminal::CandidateFrame) {
+    fn encoding(inbox: &mut Inbox, token: &FrameToken) {
         assert!(inbox.reserve_frame());
-        inbox.frames.back_mut().unwrap().work = FrameWork::Encoding(frame.token());
+        inbox.frames.back_mut().unwrap().work = FrameWork::Encoding(token.clone());
     }
 
     fn consume_flush(inbox: &mut Inbox, encoded: &Encoded) {
@@ -821,18 +752,18 @@ mod tests {
 
     #[test]
     fn sixel_latest_ready_bypasses_slow_work_and_never_publishes_an_unwritten_frame() {
-        let frames = native_frames(3);
+        let tokens = inert_tokens(3);
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.frame_capacity = 5;
         inbox.last_fully_written_geometry = Some(1);
-        for frame in &frames {
-            encoding(&mut inbox, frame);
+        for token in &tokens {
+            encoding(&mut inbox, token);
         }
-        inbox.finished(&frames[1].token(), Some(native_encoded(&frames[1], 1)));
+        inbox.finished(&tokens[1], Some(inert_encoded(&tokens[1], 1)));
         let current = inbox
             .take_encoded()
             .expect("a complete scene must pass an older active codec");
-        assert_eq!(current.frame.token(), frames[1].token());
+        assert_eq!(current.frame.token(), tokens[1]);
         assert!(inbox.published.is_none());
         assert_eq!(
             inbox.frames.len(),
@@ -840,7 +771,7 @@ mod tests {
             "active workers keep their original capacity"
         );
 
-        inbox.finished(&frames[0].token(), Some(native_encoded(&frames[0], 1)));
+        inbox.finished(&tokens[0], Some(inert_encoded(&tokens[0], 1)));
         assert_eq!(
             inbox.frames.len(),
             1,
@@ -848,32 +779,32 @@ mod tests {
         );
         assert!(inbox.take_encoded().is_none());
         consume_flush(&mut inbox, &current);
-        assert_eq!(inbox.published, Some(frames[1].token()));
+        assert_eq!(inbox.published, Some(tokens[1].clone()));
 
-        inbox.finished(&frames[2].token(), Some(native_encoded(&frames[2], 1)));
+        inbox.finished(&tokens[2], Some(inert_encoded(&tokens[2], 1)));
         let final_scene = inbox
             .take_encoded()
             .expect("a final quiet scene must remain visible");
-        assert_eq!(final_scene.frame.token(), frames[2].token());
+        assert_eq!(final_scene.frame.token(), tokens[2]);
         consume_flush(&mut inbox, &final_scene);
-        assert_eq!(inbox.published, Some(frames[2].token()));
+        assert_eq!(inbox.published, Some(tokens[2].clone()));
         assert!(inbox.frames.is_empty());
         assert!(inbox.in_flight.is_none());
     }
 
     #[test]
     fn sixel_latest_ready_coalesces_behind_a_blocked_writer_without_starving_updates() {
-        let frames = native_frames(5);
+        let tokens = inert_tokens(5);
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.frame_capacity = 5;
         inbox.last_fully_written_geometry = Some(1);
-        for frame in &frames {
-            encoding(&mut inbox, frame);
+        for token in &tokens {
+            encoding(&mut inbox, token);
         }
-        inbox.finished(&frames[0].token(), Some(native_encoded(&frames[0], 1)));
+        inbox.finished(&tokens[0], Some(inert_encoded(&tokens[0], 1)));
         let writing = inbox.take_encoded().unwrap();
-        for frame in frames[1..].iter().rev() {
-            inbox.finished(&frame.token(), Some(native_encoded(frame, 1)));
+        for token in tokens[1..].iter().rev() {
+            inbox.finished(token, Some(inert_encoded(token, 1)));
             assert!(
                 inbox.take_encoded().is_none(),
                 "a writing transaction is indivisible"
@@ -892,7 +823,7 @@ mod tests {
         assert!(inbox.published.is_none());
         consume_flush(&mut inbox, &writing);
         let latest = inbox.take_encoded().unwrap();
-        assert_eq!(latest.frame.token(), frames[4].token());
+        assert_eq!(latest.frame.token(), tokens[4]);
         consume_flush(&mut inbox, &latest);
 
         // An idle writer must start each ready scene even if a still newer
@@ -900,45 +831,45 @@ mod tests {
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.frame_capacity = 5;
         inbox.last_fully_written_geometry = Some(1);
-        for frame in &frames {
-            encoding(&mut inbox, frame);
+        for token in &tokens {
+            encoding(&mut inbox, token);
         }
-        for frame in &frames {
-            inbox.finished(&frame.token(), Some(native_encoded(frame, 1)));
+        for token in &tokens {
+            inbox.finished(token, Some(inert_encoded(token, 1)));
             let next = inbox
                 .take_encoded()
                 .expect("continuous updates cannot starve a ready scene");
-            assert_eq!(next.frame.token(), frame.token());
+            assert_eq!(next.frame.token(), *token);
             consume_flush(&mut inbox, &next);
         }
-        assert_eq!(inbox.published, Some(frames[4].token()));
+        assert_eq!(inbox.published, Some(tokens[4].clone()));
         assert!(inbox.frames.is_empty());
     }
 
     #[test]
     fn sixel_latest_ready_rejects_late_work_after_publication_and_resize() {
-        let frames = native_frames(3);
+        let tokens = inert_tokens(3);
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.frame_capacity = 5;
         inbox.last_fully_written_geometry = Some(1);
-        encoding(&mut inbox, &frames[0]);
-        encoding(&mut inbox, &frames[1]);
-        inbox.finished(&frames[1].token(), Some(native_encoded(&frames[1], 1)));
+        encoding(&mut inbox, &tokens[0]);
+        encoding(&mut inbox, &tokens[1]);
+        inbox.finished(&tokens[1], Some(inert_encoded(&tokens[1], 1)));
         let current = inbox.take_encoded().unwrap();
         consume_flush(&mut inbox, &current);
-        inbox.finished(&frames[0].token(), Some(native_encoded(&frames[0], 1)));
+        inbox.finished(&tokens[0], Some(inert_encoded(&tokens[0], 1)));
         assert!(
             inbox.frames.is_empty(),
             "late work cannot roll back an already visible scene"
         );
         assert!(inbox.take_encoded().is_none());
-        assert_eq!(inbox.published, Some(frames[1].token()));
+        assert_eq!(inbox.published, Some(tokens[1].clone()));
 
         inbox.frames.push_back(FrameJob {
             geometry: 1,
             work: FrameWork::Ready(encoded(1)),
         });
-        encoding(&mut inbox, &frames[2]);
+        encoding(&mut inbox, &tokens[2]);
         inbox
             .push(Event::WindowResized(capabilities().size))
             .unwrap();
@@ -952,7 +883,7 @@ mod tests {
             inbox.can_submit(),
             "spare capacity can admit the new geometry's first frame"
         );
-        inbox.finished(&frames[2].token(), Some(native_encoded(&frames[2], 1)));
+        inbox.finished(&tokens[2], Some(inert_encoded(&tokens[2], 1)));
         assert!(inbox.frames.is_empty());
         assert!(inbox.published.is_none());
         assert!(inbox.can_submit());
@@ -968,10 +899,10 @@ mod tests {
         let mut inbox = Inbox::new(capabilities(), false);
         inbox.frame_capacity = 5;
         inbox.last_fully_written_geometry = Some(1);
-        encoding(&mut inbox, &frames[0]);
-        encoding(&mut inbox, &frames[2]);
-        inbox.finished(&frames[2].token(), Some(native_encoded(&frames[2], 1)));
-        inbox.finished(&frames[0].token(), None);
+        encoding(&mut inbox, &tokens[0]);
+        encoding(&mut inbox, &tokens[2]);
+        inbox.finished(&tokens[2], Some(inert_encoded(&tokens[2], 1)));
+        inbox.finished(&tokens[0], None);
         assert_eq!(
             inbox.frames.len(),
             1,
@@ -982,9 +913,9 @@ mod tests {
             "a failed worker cannot manufacture a flush receipt"
         );
         let surviving = inbox.take_encoded().unwrap();
-        assert_eq!(surviving.frame.token(), frames[2].token());
+        assert_eq!(surviving.frame.token(), tokens[2]);
         consume_flush(&mut inbox, &surviving);
-        assert_eq!(inbox.published, Some(frames[2].token()));
+        assert_eq!(inbox.published, Some(tokens[2].clone()));
     }
 
     #[test]

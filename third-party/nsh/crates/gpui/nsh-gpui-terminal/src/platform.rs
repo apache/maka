@@ -796,6 +796,11 @@ mod tests {
         };
         platform.dispatch_input(press.clone())?;
         assert_eq!(presses.get(), 2);
+        assert!(
+            platform
+                .mark_presented(FrameToken::inert(current.sequence()))
+                .is_err()
+        );
         platform.mark_presented(current.clone())?;
         platform.dispatch_input(press)?;
         assert_eq!(presses.get(), 3);

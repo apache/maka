@@ -20,16 +20,12 @@
 import { AnimatedValue, mount, platform, signal, Text, View, windowSize, type JSX } from 'nsh';
 import { Button } from 'nsh/base';
 import { Composer } from '../../../../../plugins/agent/composer/ui/Composer';
-import { ContextGaugePreview } from './ContextGaugePreview';
-import { MessageRow } from '../../../workbench/app/MessageRow';
 import type { MessageViewState } from '../../../workbench/app/MessageRow';
 import { TurnPanel, type GroupViewState } from '../../../workbench/app/TurnPanel';
 import type { ComposerSession } from '../../../../../packages/plugin-sdk/src/composer-view.js';
 import { host as nativeHost } from 'maka/host';
 import { SessionPermissionsSelect } from '../../../workbench/app/SessionPermissionsSelect';
 import { InteractionComposer } from '../../../workbench/app/InteractionComposer';
-import { CompactionDivider } from '../../../workbench/app/CompactionDivider';
-import { currentLocale } from '../../../workbench/app/locale';
 import type { Row } from '../../../workbench/app/history';
 import { WorkspaceBrowser } from '../../../workbench/app/WorkspaceBrowser';
 import type { Browsing, BrowserSession } from '../../../workbench/app/browsing';
@@ -336,66 +332,6 @@ function CompletionComposer(props: { prediction?: boolean }) {
   );
 }
 
-/** The message the Host writes to start an approved Plan. */
-const planOpening: Row = {
-  key: 'plan-opening',
-  messageId: 'plan-opening',
-  field: 'body',
-  role: 'user',
-  text: 'Execute the user-approved plan.\n{"title":"FIXTURE_PLAN"}',
-  position: { sourceSequence: 1, itemIndex: 0 },
-  turnId: 'plan-turn',
-  origin: { kind: 'plan', executionId: 'execution_fixture', title: 'FIXTURE_PLAN' },
-};
-
-function Compaction() {
-  const startedAt = Date.now() - 125_000;
-  const state = signal<'background' | 'waiting' | 'completed'>('background');
-  return (
-    <View style={{ flex: 1 }}>
-      <Button
-        accessibilityLabel="Wait for background compaction"
-        style={{ height: 32, flexShrink: 0 }}
-        onPress={() => state.set('waiting')}
-      >
-        <Text>Wait for background compaction</Text>
-      </Button>
-      <Button
-        accessibilityLabel="Complete compaction"
-        style={{ height: 32, flexShrink: 0 }}
-        onPress={() => state.set('completed')}
-      >
-        <Text>Complete compaction</Text>
-      </Button>
-      <Button
-        accessibilityLabel="Use Chinese"
-        style={{ height: 32, flexShrink: 0 }}
-        onPress={() => currentLocale.set('zh-CN')}
-      >
-        <Text>Use Chinese</Text>
-      </Button>
-      <Each of={state() === 'background' ? [] : [state()]} key={(value) => value}>
-        {(value) =>
-          value() === 'waiting' ? (
-            <CompactionDivider state="running" startedAt={() => startedAt} />
-          ) : (
-            <CompactionDivider state="completed" durationMs={() => 3_726_700} />
-          )
-        }
-      </Each>
-      <MessageRow
-        item={() => planOpening}
-        sessionId="fixture-session"
-        through={() => 1}
-        previewImage={() => {}}
-        openLink={async () => {}}
-        userScroll={() => {}}
-        toolMaxHeight={() => 0}
-      />
-    </View>
-  );
-}
-
 function WorkspacePages(props: { busy: boolean }) {
   const session = (workspace: string, index: number): BrowserSession => ({
     id: `${workspace}-${index}`,
@@ -607,96 +543,12 @@ function ActivityFollow() {
   );
 }
 
-function ToolStatuses() {
-  const cases = [
-    { settlement: 'returned', dispatched: true },
-    { settlement: 'unknown', dispatched: true },
-    { settlement: 'failed', dispatched: true },
-    { settlement: 'rejected', dispatched: true },
-    { settlement: null, dispatched: true },
-    { settlement: null, dispatched: false },
-    { settlement: null, dispatched: true, progress: 'running' as const },
-  ] as const;
-  return (
-    <HostProvider value={{} as Host}>
-      <View>
-        <Each of={cases}>
-          {(item, index) => (
-            <MessageRow
-              item={() => ({
-                key: `tool-${index()}`,
-                messageId: `tool-${index()}`,
-                field: 'body',
-                role: 'tool_call',
-                text: '',
-                tool: {
-                  toolUseId: `tool-${index()}`,
-                  call: {
-                    position: { sourceSequence: index(), itemIndex: 0 },
-                    name: `fixture_${index()}`,
-                    title: null,
-                    ancestorToolUseIds: [],
-                    pending: item().settlement === null,
-                    dispatched: item().dispatched,
-                  },
-                  result:
-                    item().settlement === null
-                      ? null
-                      : {
-                          settlement: item().settlement,
-                          position: { sourceSequence: index(), itemIndex: 1 },
-                          isError: item().settlement !== 'returned',
-                          image: false,
-                          images: 0,
-                        },
-                },
-              })}
-              toolProgress={() => ('progress' in item() ? (item().progress ?? null) : null)}
-              sessionId="status-session"
-              through={() => 10}
-              previewImage={() => {}}
-              openLink={async () => {}}
-              userScroll={() => {}}
-              toolMaxHeight={() => 300}
-            />
-          )}
-        </Each>
-      </View>
-    </HostProvider>
-  );
-}
-
 const scenario = (nativeHost as unknown as { scenario: string }).scenario;
 mount(() =>
   scenario === 'activity-follow' ? (
     <ActivityFollow />
-  ) : scenario === 'context-gauge' ? (
-    <ContextGaugePreview />
-  ) : scenario === 'tool-statuses' ? (
-    <ToolStatuses />
-  ) : scenario === 'thinking-markdown' ? (
-    <HostProvider value={{} as Host}>
-      <MessageRow
-        item={() => ({
-          key: 'thinking',
-          messageId: 'thinking',
-          field: 'thinking',
-          role: 'assistant',
-          text: '**Opening Reddit homepage**\n\nChecking local models and AI coding.',
-          prefix: true,
-        })}
-        sessionId="thinking-session"
-        through={() => 1}
-        previewImage={() => {}}
-        openLink={async () => {}}
-        userScroll={() => {}}
-        toolMaxHeight={() => 300}
-      />
-    </HostProvider>
   ) : scenario.startsWith('workspace-pages') ? (
     <WorkspacePages busy={scenario === 'workspace-pages-busy'} />
-  ) : scenario === 'compaction' ? (
-    <Compaction />
   ) : scenario === 'sandbox' ? (
     <Sandbox />
   ) : scenario === 'composer' || scenario === 'composer-prediction' ? (

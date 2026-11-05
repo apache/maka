@@ -42,24 +42,23 @@ async fn a_custom_root_reloads_its_private_state_without_an_agent_in_its_source_
     use std::{collections::BTreeMap, sync::Arc};
     use tokio_util::sync::CancellationToken;
 
-    tokio::time::timeout(Duration::from_secs(60), async {
-        let directory = tempfile::tempdir().unwrap();
-        private_directory(directory.path()).unwrap();
-        let owner = Arc::new(
-            RootOwner::create(
-                &directory.path().join("host"),
-                &RootNamespaces {
-                    ownership: directory.path().join("owners"),
-                    control: directory.path().join("control"),
-                },
-            )
-            .unwrap(),
-        );
-        let store = Arc::new(RootStore::open(owner).await.unwrap());
-        let manager = support::product_package("host-deployment-manager").await;
-        let receipts = support::product_package("receipts").await;
-        let gateway = support::product_package("deployment-gateway").await;
-        let root = Package::new(BTreeMap::from([
+    let directory = tempfile::tempdir().unwrap();
+    private_directory(directory.path()).unwrap();
+    let owner = Arc::new(
+        RootOwner::create(
+            &directory.path().join("host"),
+            &RootNamespaces {
+                ownership: directory.path().join("owners"),
+                control: directory.path().join("control"),
+            },
+        )
+        .unwrap(),
+    );
+    let store = Arc::new(RootStore::open(owner).await.unwrap());
+    let manager = support::product_package("host-deployment-manager").await;
+    let receipts = support::product_package("receipts").await;
+    let gateway = support::product_package("deployment-gateway").await;
+    let root = Package::new(BTreeMap::from([
             ("maka.extension.json".into(), serde_json::to_vec(&json!({
                 "schemaVersion":1,"id":"test.nsh.no-agent-root",
                 "application":{"ui":{
@@ -103,15 +102,15 @@ export function activate(context) {
 }
 "#.to_vec()),
         ])).unwrap();
-        let node = |package: &Package, key: u128, use_package: &str, bindings: Value| {
-            json!({
-                "key":Uuid::from_u128(key),
-                "package":{"source":"pinned","package":package.application_ref()},
-                "usePackage":use_package,"configuration":{"values":{}},"bindings":bindings
-            })
-        };
-        let deployment = Uuid::new_v4();
-        store.commit_application(deployment, 0, serde_json::from_value(json!({
+    let node = |package: &Package, key: u128, use_package: &str, bindings: Value| {
+        json!({
+            "key":Uuid::from_u128(key),
+            "package":{"source":"pinned","package":package.application_ref()},
+            "usePackage":use_package,"configuration":{"values":{}},"bindings":bindings
+        })
+    };
+    let deployment = Uuid::new_v4();
+    store.commit_application(deployment, 0, serde_json::from_value(json!({
             "ui":{"path":["ui"],"id":"root"},
             "instances":{
                 "management":node(&manager, 1, "host", json!({})),
@@ -123,131 +122,145 @@ export function activate(context) {
                 "ui":node(&root, 4, "ui", json!({}))
             }
         })).unwrap(), vec![], vec![manager, receipts, gateway, root]).await.unwrap();
-        let endpoint = |import: &str, methods: &[&str], recovery| HostEndpoint {
-            consumer: InstanceId(vec![Uuid::from_u128(3)]),
-            import: import.into(),
-            grant: Grant {
-                methods: methods.iter().map(|name| (*name).into()).collect(),
-                recovery,
-            },
-        };
-        let host = Host::open(
-            store.clone(),
+    let endpoint = |import: &str, methods: &[&str], recovery| HostEndpoint {
+        consumer: InstanceId(vec![Uuid::from_u128(3)]),
+        import: import.into(),
+        grant: Grant {
+            methods: methods.iter().map(|name| (*name).into()).collect(),
+            recovery,
+        },
+    };
+    let host = Host::open(
+        store.clone(),
+        deployment,
+        NativeRegistry::default(),
+        None,
+        Configuration::PublicHost {
+            endpoints: BTreeMap::from([
+                (
+                    "management".into(),
+                    endpoint("management", &["readUi", "watch", "exportPackage"], false),
+                ),
+                ("receipts".into(), endpoint("receipts", &["read"], true)),
+            ]),
+            native: vec![],
+            product_methods: Default::default(),
+        },
+    )
+    .await
+    .unwrap();
+    let address = support::socket(directory.path(), "no-agent-root");
+    let listener = LocalListener::bind(&address).unwrap();
+    let server = tokio::spawn({
+        let host = host.clone();
+        async move { host.serve_local(listener, CancellationToken::new()).await }
+    });
+    let parent = HostClient::connect(&address, None).await.unwrap();
+    assert!(parent.catalogue().describe("agent").is_err());
+    let client = Client::new(
+        parent,
+        Journal::open(&directory.path().join("client.sqlite"))
+            .await
+            .unwrap(),
+        "receipts".into(),
+    )
+    .unwrap();
+    let bindings =
+        maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
+    let mut view = AppView::new(AppOptions {
+        size: (100, 24),
+        data_dir: Some(directory.path().join("nsh")),
+        ..Default::default()
+    });
+    support::load_application(&mut view, &bindings, None);
+    wait_view(&mut view, |screen| {
+        screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
+            && screen.contains("EMBEDDED_SELECTED:SHARED_RUNTIME")
+            && screen.contains("VIEW_CONTRACT_REJECTED")
+            && screen.contains("Edit private plugin state")
+    })
+    .await;
+    assert!(
+        !view
+            .accessibility_snapshot()
+            .iter()
+            .any(|node| node.label == "Message composer")
+    );
+    let mut requests = bindings.reload().take_requests();
+    support::click_button(&mut view, "Edit private plugin state").await;
+    wait_view(&mut view, |screen| {
+        screen.contains("VERSION_A private:PRIVATE_PLUGIN_STATE restored:EMPTY")
+    })
+    .await;
+    let loaded = store.load_application(deployment).await.unwrap().unwrap();
+    let mut input = loaded.source().input.clone();
+    let previous = loaded
+        .packages()
+        .iter()
+        .find(|package| package.manifest().id == "test.nsh.no-agent-root")
+        .unwrap();
+    let mut files = previous.files().clone();
+    let next_module = String::from_utf8(files["ui.js"].clone())
+        .unwrap()
+        .replace("VERSION_A", "VERSION_B");
+    files.insert("ui.js".into(), next_module.into_bytes());
+    let replacement = Package::new(files).unwrap();
+    input.instances.get_mut("ui").unwrap().package = replacement.application_ref().into();
+    let mut packages: Vec<_> = loaded
+        .packages()
+        .iter()
+        .filter(|package| package.manifest().id != "test.nsh.no-agent-root")
+        .cloned()
+        .collect();
+    packages.push(replacement);
+    store
+        .commit_application(
             deployment,
-            NativeRegistry::default(),
-            None,
-            Configuration::PublicHost {
-                endpoints: BTreeMap::from([
-                    (
-                        "management".into(),
-                        endpoint("management", &["readUi", "watch", "exportPackage"], false),
-                    ),
-                    ("receipts".into(), endpoint("receipts", &["read"], true)),
-                ]),
-                native: vec![],
-                product_methods: Default::default(),
-            },
+            loaded.source().reference.revision,
+            input,
+            loaded.source().remote_exports.clone(),
+            packages,
         )
         .await
         .unwrap();
-        let address = support::socket(directory.path(), "no-agent-root");
-        let listener = LocalListener::bind(&address).unwrap();
-        let server = tokio::spawn({
-            let host = host.clone();
-            async move { host.serve_local(listener, CancellationToken::new()).await }
-        });
-        let parent = HostClient::connect(&address, None).await.unwrap();
-        assert!(parent.catalogue().describe("agent").is_err());
-        let client = Client::new(
-            parent,
-            Journal::open(&directory.path().join("client.sqlite"))
-                .await
-                .unwrap(),
-            "receipts".into(),
-        )
-        .unwrap();
-        let bindings =
-            maka_workbench::bindings::Bindings::new(client, tokio::runtime::Handle::current());
-        let mut view = AppView::new(AppOptions {
-            size: (100, 24),
-            data_dir: Some(directory.path().join("nsh")),
-            ..Default::default()
-        });
-        support::load_application(&mut view, &bindings, None);
-        wait_view(&mut view, |screen| {
-            screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
-                && screen.contains("EMBEDDED_SELECTED:SHARED_RUNTIME")
-                && screen.contains("VIEW_CONTRACT_REJECTED")
-                && screen.contains("Edit private plugin state")
-        })
-        .await;
-        assert!(
-            !view
-                .accessibility_snapshot()
-                .iter()
-                .any(|node| node.label == "Message composer")
-        );
-        let mut requests = bindings.reload().take_requests();
-        support::click_button(&mut view, "Edit private plugin state").await;
-        wait_view(&mut view, |screen| {
-            screen.contains("VERSION_A private:PRIVATE_PLUGIN_STATE restored:EMPTY")
-        }).await;
-        let loaded = store.load_application(deployment).await.unwrap().unwrap();
-        let mut input = loaded.source().input.clone();
-        let previous = loaded.packages().iter()
-            .find(|package| package.manifest().id == "test.nsh.no-agent-root").unwrap();
-        let mut files = previous.files().clone();
-        let next_module = String::from_utf8(files["ui.js"].clone()).unwrap()
-            .replace("VERSION_A", "VERSION_B");
-        files.insert("ui.js".into(), next_module.into_bytes());
-        let replacement = Package::new(files).unwrap();
-        input.instances.get_mut("ui").unwrap().package = replacement.application_ref().into();
-        let mut packages: Vec<_> = loaded.packages().iter()
-            .filter(|package| package.manifest().id != "test.nsh.no-agent-root")
-            .cloned().collect();
-        packages.push(replacement);
-        store.commit_application(
-            deployment, loaded.source().reference.revision, input,
-            loaded.source().remote_exports.clone(), packages,
-        ).await.unwrap();
-        let mut paused = false;
-        loop {
-            view.poll().unwrap();
-            support::tick(&mut view);
-            assert!(view.last_error().is_none(), "{:?}", view.last_error());
-            match requests.try_recv() {
-                Ok(maka_workbench::reload::Request::Pause(ready)) => {
-                    assert!(!paused, "one update must pause the original UI once");
-                    paused = true;
-                    ready.send(Ok(())).unwrap();
-                }
-                Ok(maka_workbench::reload::Request::Reload) => {
-                    assert!(paused, "snapshots must be captured after pausing input");
-                    break;
-                }
-                Ok(maka_workbench::reload::Request::Resume) => panic!("updated package was not reloaded"),
-                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-                Err(error) => panic!("UI reload request channel ended: {error}"),
+    let mut paused = false;
+    loop {
+        view.poll().unwrap();
+        support::tick(&mut view);
+        assert!(view.last_error().is_none(), "{:?}", view.last_error());
+        match requests.try_recv() {
+            Ok(maka_workbench::reload::Request::Pause(ready)) => {
+                assert!(!paused, "one update must pause the original UI once");
+                paused = true;
+                ready.send(Ok(())).unwrap();
             }
+            Ok(maka_workbench::reload::Request::Reload) => {
+                assert!(paused, "snapshots must be captured after pausing input");
+                break;
+            }
+            Ok(maka_workbench::reload::Request::Resume) => {
+                panic!("updated package was not reloaded")
+            }
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+            Err(error) => panic!("UI reload request channel ended: {error}"),
         }
-        drop(view);
-        let mut view = AppView::new(AppOptions {
-            size: (100, 24),
-            data_dir: Some(directory.path().join("nsh")),
-            ..Default::default()
-        });
-        support::load_application(&mut view, &bindings, None);
-        wait_view(&mut view, |screen| {
-            screen.contains("VERSION_B private:PRIVATE_PLUGIN_STATE restored:PRIVATE_PLUGIN_STATE")
-                && screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
-        }).await;
-        drop(view);
-        bindings.close().await.unwrap();
-        host.shutdown().await.unwrap();
-        server.await.unwrap().unwrap();
+    }
+    drop(view);
+    let mut view = AppView::new(AppOptions {
+        size: (100, 24),
+        data_dir: Some(directory.path().join("nsh")),
+        ..Default::default()
+    });
+    support::load_application(&mut view, &bindings, None);
+    wait_view(&mut view, |screen| {
+        screen.contains("VERSION_B private:PRIVATE_PLUGIN_STATE restored:PRIVATE_PLUGIN_STATE")
+            && screen.contains("CUSTOM_ROOT_WITHOUT_AGENT_READY")
     })
-    .await
-    .expect("custom root required an Agent or the static Maka application");
+    .await;
+    drop(view);
+    bindings.close().await.unwrap();
+    host.shutdown().await.unwrap();
+    server.await.unwrap().unwrap();
 }

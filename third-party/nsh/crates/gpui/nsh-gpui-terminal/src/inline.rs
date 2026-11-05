@@ -40,6 +40,14 @@ pub struct InlineFrame {
 }
 
 impl InlineFrame {
+    /// An inert empty transaction carrying `token` for scheduler state-machine tests.
+    pub fn inert(token: FrameToken) -> Self {
+        Self {
+            token,
+            bytes: Vec::new(),
+        }
+    }
+
     /// Encodes the actual GPU readback without rescaling its pixels or reducing
     /// the selected codec's colour palette.
     ///
