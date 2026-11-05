@@ -441,9 +441,14 @@ export function replaceTranscriptWithStoredMessages(
         .map(transcriptEntryId)
         .reverse()
         .find((messageId) => messageId !== undefined && durableEntryIds.has(messageId));
+      // A durable message can project to several entries under one id (stored
+      // thinking resumes above the reply text), and a preserved entry follows
+      // the LAST of them — anchor there, not at the first match.
       const previousIndex = previousDurableId
-        ? durableEntries.findIndex(
-            (candidate) => transcriptEntryId(candidate) === previousDurableId,
+        ? durableEntries.reduce(
+            (last, candidate, index) =>
+              transcriptEntryId(candidate) === previousDurableId ? index : last,
+            -1,
           )
         : -1;
       const hadPrecedingEntry = priorEntries.some((candidate) => !isClientLocal(candidate));
