@@ -1318,7 +1318,17 @@ async fn the_bot_delegates_to_ordinary_sessions_and_controls_only_its_own() {
     .unwrap();
 }
 
-async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
+/// How a stored watch an earlier build wrote is damaged in a `worker_wake` run.
+#[derive(Clone, Copy, PartialEq)]
+enum Damage {
+    None,
+    /// Left for a worker that no longer exists: it must be retired.
+    GoneWorker,
+    /// Written over a live worker's watch before the Bot sends to it again.
+    LiveWorker,
+}
+
+async fn worker_wake(worker_first: bool, damage: Damage) {
     tokio::time::timeout(Duration::from_secs(90), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let f = Fixture::configured(
@@ -1336,7 +1346,7 @@ async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
         )
         .await;
         let bot = open(&f).await["sessionId"].as_str().unwrap().to_owned();
-        if unreadable_watch {
+        if damage == Damage::GoneWorker {
             // Sorts before any worker id, so a scan meets it first.
             f.owner.bot.plant_unreadable_watch("0-unreadable").await;
         }
@@ -1358,6 +1368,9 @@ async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
             other => other,
         };
         let worker = created["session"]["id"].as_str().unwrap().to_owned();
+        if damage == Damage::LiveWorker {
+            f.owner.bot.plant_unreadable_watch(&worker).await;
+        }
         service_tools::named_tool_response(
             &mut socket,
             "SessionSend",
@@ -1405,6 +1418,12 @@ async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
         );
         response(&mut socket).await;
         idle(&f, &bot).await;
+        if damage == Damage::GoneWorker {
+            assert!(
+                !f.owner.bot.has_watch("0-unreadable").await,
+                "an unreadable watch of a worker that is gone is retired"
+            );
+        }
 
         // The same finished run is never reported twice.
         assert!(
@@ -1420,15 +1439,20 @@ async fn worker_wake(worker_first: bool, unreadable_watch: bool) {
 
 #[tokio::test]
 async fn the_bot_is_woken_once_when_its_worker_finishes() {
-    worker_wake(false, false).await;
+    worker_wake(false, Damage::None).await;
 }
 
 #[tokio::test]
-async fn a_watch_this_build_cannot_read_does_not_stop_other_workers_waking_the_bot() {
-    worker_wake(false, true).await;
+async fn an_unreadable_watch_of_a_gone_worker_is_retired_and_does_not_stop_other_wakes() {
+    worker_wake(false, Damage::GoneWorker).await;
+}
+
+#[tokio::test]
+async fn the_next_send_to_a_worker_replaces_its_unreadable_watch_so_it_wakes_the_bot() {
+    worker_wake(false, Damage::LiveWorker).await;
 }
 
 #[tokio::test]
 async fn a_report_for_a_worker_that_finished_while_the_bot_ran_waits_for_the_bot() {
-    worker_wake(true, false).await;
+    worker_wake(true, Damage::None).await;
 }
