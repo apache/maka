@@ -282,6 +282,8 @@ export interface ComposerViewInput<Element = unknown> {
   readonly request: Element;
   stopAction(): () => void;
   chooseWorkspace(): void;
+  /** Optional product-owned directory switcher, in the existing composer location. */
+  readonly workspacePicker?: Element;
   settings(): void;
   /** The Host has no model connection: a desktop start pane asks for one first. */
   needsConnection?(): boolean;

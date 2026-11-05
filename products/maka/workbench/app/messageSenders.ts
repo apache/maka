@@ -20,6 +20,7 @@
 import { cleanup, effect, signal } from 'nsh';
 import type { AgentSessionPage, MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
+import { isObservationCancelled } from './text';
 
 type SenderSession = { title: string };
 export type MessageSenders = {
@@ -62,26 +63,46 @@ export function createMessageSenders(
       const entry: Source = { session: null, stream: null };
       sources.set(id, entry);
       void (async () => {
-        // Catalog metadata follows renames without observing the source's stream.
-        const stream = await host.subscribe('agent', 'catalog', {
-          filter: 'all',
-          includeArchived: true,
-          position: { kind: 'at', cursor: id },
-        });
-        if (sources.get(id) !== entry) {
-          await stream.close();
-          return;
-        }
-        entry.stream = stream;
-        for (;;) {
-          const page = await stream.next();
-          if (sources.get(id) !== entry) return;
-          if (page === null) throw new Error('Sender metadata updates ended.');
-          const session = page.sessions.find((session) => session.id === id);
-          const next = session ? { title: session.title } : null;
-          if (entry.session?.title === next?.title) continue;
-          entry.session = next;
-          revision.set(revision() + 1);
+        for (let reconnects = 0; sources.get(id) === entry; ) {
+          let stream: Awaited<ReturnType<typeof host.subscribe<'agent', 'catalog'>>> | null = null;
+          try {
+            // Catalog metadata follows renames without observing the source's stream.
+            stream = await host.subscribe('agent', 'catalog', {
+              filter: 'all',
+              includeArchived: true,
+              position: { kind: 'at', cursor: id },
+            });
+            if (sources.get(id) !== entry) {
+              await stream.close();
+              return;
+            }
+            entry.stream = stream;
+            for (;;) {
+              const page: AgentSessionPage | null = await stream.next();
+              if (sources.get(id) !== entry) return;
+              if (page === null) throw new Error('Sender metadata updates ended.');
+              reconnects = 0;
+              const session = page.sessions.find((session) => session.id === id);
+              const next = session ? { title: session.title } : null;
+              if (entry.session?.title === next?.title) continue;
+              entry.session = next;
+              revision.set(revision() + 1);
+            }
+          } catch (reason) {
+            if (sources.get(id) !== entry) return;
+            if (isObservationCancelled(reason) && reconnects < 3) {
+              reconnects += 1;
+              if (reconnects > 1)
+                await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+              continue;
+            }
+            throw reason;
+          } finally {
+            if (stream && entry.stream === stream) {
+              entry.stream = null;
+              await stream.close().catch(() => {});
+            }
+          }
         }
       })()
         .catch(() => {

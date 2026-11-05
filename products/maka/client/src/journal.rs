@@ -188,7 +188,9 @@ pub struct DraftReference {
 }
 
 mod recovery;
+mod workspaces;
 mod write;
+pub use workspaces::RecentWorkspace;
 
 impl Journal {
     async fn write(&self, command: write::Command) -> Result<write::Output> {
@@ -430,6 +432,8 @@ impl Journal {
             }
             sqlx::query("CREATE TABLE IF NOT EXISTS drafts (owner TEXT PRIMARY KEY, revision INTEGER NOT NULL, text TEXT NOT NULL, consumed INTEGER NOT NULL DEFAULT 0, attachments TEXT NOT NULL DEFAULT '[]')")
                 .execute(&mut *transaction).await.map_err(|error| format!("client journal creating drafts table: {error}"))?;
+            sqlx::query("CREATE TABLE IF NOT EXISTS recent_workspaces (owner TEXT PRIMARY KEY, value TEXT NOT NULL)")
+                .execute(&mut *transaction).await.map_err(error)?;
             transaction
                 .commit()
                 .await

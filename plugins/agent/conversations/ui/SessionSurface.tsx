@@ -76,6 +76,7 @@ import {
   controlStyle,
   controlHoverStyle,
   controlFocusStyle,
+  textTooltip,
   type BrowserHeader,
 } from '../../../../products/maka/workbench/app/ui';
 import {
@@ -96,7 +97,14 @@ import type {
   ComposerCommand,
 } from '../../../../products/maka/workbench/app/composerCommands';
 import { matchComposerCommand } from '../../../../products/maka/workbench/app/composerCommands';
-import { WorkspacePicker } from '../../../../products/maka/workbench/app/WorkspacePicker';
+import {
+  WorkspacePicker,
+  locateWorkspaceDirectory,
+} from '../../../../products/maka/workbench/app/WorkspacePicker';
+import {
+  RecentWorkspaces,
+  type RecentWorkspace,
+} from '../../../../products/maka/workbench/app/RecentWorkspaces';
 import { ModelSelect } from '../../../../products/maka/workbench/app/ModelSelect';
 import { goalRejection } from '../../../../products/maka/workbench/app/sessionGoal';
 import { GoalDialog } from '../../../../products/maka/workbench/app/GoalDialog';
@@ -257,6 +265,29 @@ export function createConversationUi(
     for (const file of previous?.files ?? []) file.file.dispose();
   };
   cleanup(() => replacePending(null));
+  const recentWorkspaces = signal<RecentWorkspace[]>([]);
+  const recentKnown = signal(platform.isTerminal || !!side);
+  const workspaceReady = signal(false);
+  const workspaceError = createText();
+  const recentOpen = signal(false);
+  let recentWrite = Promise.resolve();
+  const setRecentWorkspace = (path: string, workspace: RecentWorkspace['workspace'] | null) => {
+    // Keep this window's writes and their full-list receipts in user-action order.
+    const write = recentWrite.then(async () => {
+      const recent = (await host.setRecentWorkspace(path, workspace)) as RecentWorkspace[];
+      if (!alive) return;
+      recentKnown.set(true);
+      recentWorkspaces.set(recent);
+    });
+    recentWrite = write.catch(() => {});
+    return write;
+  };
+  const rememberWorkspace = (workspace: BrowserWorkspace, path: string) => {
+    if (platform.isTerminal || side || !path || workspace.kind === 'session') return;
+    void setRecentWorkspace(path, { kind: 'directory', selection: workspace.selection }).catch(
+      report,
+    );
+  };
   const pendingWorkspace = computed(() => pending()?.workspace ?? null);
   const pendingWorkspaceLabel = computed(() => pending()?.workspaceLabel ?? '');
   const pendingText = computed(() => pending()?.text ?? '');
@@ -353,6 +384,43 @@ export function createConversationUi(
   const report = (reason: unknown) => {
     if (alive) error.set(errorText(reason));
   };
+  const checkWorkspace = async () => {
+    const workspace = pendingWorkspace();
+    workspaceReady.set(false);
+    workspaceError.set('');
+    if (!workspace) return;
+    try {
+      if (workspace.kind === 'session') {
+        // The Host resolves a session's bound directory; no path is substituted.
+        await host.query('agent', 'listFiles', {
+          sessionId: workspace.sessionId,
+          path: null,
+          after: null,
+        });
+      } else {
+        await host.query('agent', 'directories', {
+          kind: 'children',
+          selection: workspace.selection,
+          after: null,
+        });
+      }
+      if (alive && pendingWorkspace() === workspace) workspaceReady.set(true);
+    } catch (reason) {
+      if (alive && pendingWorkspace() === workspace)
+        workspaceError.set(
+          uiMessage(
+            'This folder is unavailable or cannot be opened. Choose another location or retry.',
+          ),
+        );
+    }
+  };
+  effect(() => {
+    const workspace = pendingWorkspace();
+    if (!platform.isTerminal && !side && workspace)
+      untracked(() => {
+        void checkWorkspace();
+      });
+  });
   let observedSession: string | null = null;
   let wasVisible = false;
   const readPendingSession = async () => {
@@ -645,15 +713,37 @@ export function createConversationUi(
     workspace: BrowserWorkspace,
     expectedSessionId = selected(),
     workspaceLabel?: string,
+    remember = true,
   ) => {
     if (!alive || selected() !== expectedSessionId) return;
     if (!platform.isTerminal) {
       if (pendingSending() || pendingFileBusy() || pendingCreateUncertain()) return;
-      const label =
+      let recentWorkspace = workspace;
+      let label =
         workspaceLabel ??
         (workspace.kind === 'session'
           ? (handle()?.workspace() ?? '')
           : (workspace.selection.segments.at(-1) ?? ''));
+      if (workspace.kind === 'session') {
+        const observed = await host.query('agent', 'observe', { sessionId: workspace.sessionId });
+        if (!alive || selected() !== expectedSessionId) return;
+        label = observed.session.workspace.path;
+        if (!observed.session.workspace.worktree) {
+          const roots = await host.query('agent', 'directories', { kind: 'roots' });
+          if (!alive || selected() !== expectedSessionId) return;
+          const found =
+            roots.kind === 'roots' ? locateWorkspaceDirectory(roots.roots, label) : null;
+          if (found)
+            recentWorkspace = {
+              kind: 'directory',
+              selection: {
+                rootId: found.root.selection.rootId,
+                segments: [...found.root.selection.segments, ...found.names!],
+                directoryIdentity: observed.session.workspace.directoryIdentity,
+              },
+            };
+        }
+      }
       if (!(await shell()!.openSession(null)) || !alive || selected() !== null) return;
       if (expectedSessionId === null && pendingWorkspace()) {
         try {
@@ -671,6 +761,7 @@ export function createConversationUi(
           return;
         }
         updatePending({ workspace, workspaceLabel: label });
+        if (remember) rememberWorkspace(recentWorkspace, label);
         pendingDraftGeneration.set(pendingDraftGeneration() + 1);
         pendingModelInstance.set(null);
         overlay.set(null);
@@ -702,6 +793,7 @@ export function createConversationUi(
         target: null,
         revision: 0,
       });
+      if (remember) rememberWorkspace(recentWorkspace, label);
       pendingDraftGeneration.set(pendingDraftGeneration() + 1);
       const generation = ++pendingDefaultEpoch;
       pendingPicker.set(false);
@@ -865,7 +957,7 @@ export function createConversationUi(
       },
       confirmation,
       sending: pendingSending,
-      ready: () => !pendingCreateUncertain() && !pendingFileBusy(),
+      ready: () => workspaceReady() && !pendingCreateUncertain() && !pendingFileBusy(),
       files: pendingFiles,
       picking: pendingPicker,
       openPicker: (open: boolean) => {
@@ -905,6 +997,7 @@ export function createConversationUi(
         if (
           !owns() ||
           !workspace ||
+          !workspaceReady() ||
           text !== pendingText() ||
           (expected !== undefined && expected !== confirmation()) ||
           (!text.trim() && files.length === 0) ||
@@ -1151,13 +1244,8 @@ export function createConversationUi(
     void (async () => {
       try {
         error.set('');
-        // An existing Bot opens directly; only its first open needs a workspace.
-        const existing = botSession() ?? (await refreshBotSession().catch(() => null));
-        if (existing !== null) {
-          await switchSession(existing, { sessionId, instance: null });
-          return;
-        }
-        // The Host picks the workspace of the Bot's first open itself.
+        // The Host decides whether the current Bot is still usable or a new one is needed;
+        // the cached id only serves presentation. It returns an existing Bot unchanged.
         const result = await control('openBot', {});
         if (!alive) return;
         if (result.kind !== 'opened')
@@ -1171,6 +1259,47 @@ export function createConversationUi(
         report(reason);
       }
     })();
+  };
+  // An explicit start over: archives the current Bot and opens a new one. The new Bot starts
+  // empty; the old one's conversation stays readable, but its checklist and schedule stay behind.
+  const restartBot = async () => {
+    const current = botSession();
+    const owner = handle();
+    if (!alive || !current || owner?.sessionId !== current) return;
+    let observed = await host.query('agent', 'observe', { sessionId: current });
+    // Date the old Bot first, so the archived one is told apart from the new one.
+    const now = new Date();
+    const two = (value: number) => String(value).padStart(2, '0');
+    const stamp = `${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}:${two(now.getMinutes())}`;
+    const renamed = await control('metadata', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      title: `${observed.session.title} · ${stamp}`,
+      labels: observed.session.labels,
+    });
+    if (renamed.kind !== 'committed')
+      throw new UiError('The current Bot could not be renamed: {reason}', {
+        reason: renamed.reason ?? renamed.kind,
+      });
+    observed = await host.query('agent', 'observe', { sessionId: current });
+    const archived = await control('changeSession', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      action: 'archive',
+    });
+    if (archived.kind !== 'changed')
+      throw new UiError('The current Bot could not be archived: {reason}', {
+        reason: archived.reason ?? archived.kind,
+      });
+    const result = await control('openBot', {});
+    if (!alive) return;
+    if (result.kind !== 'opened')
+      throw new UiError('Bot could not be opened: {reason}', {
+        reason: result.reason ?? result.kind,
+      });
+    botSession.set(result.sessionId);
+    await switchSession(result.sessionId, { sessionId: current, instance: null });
+    await browsing.refresh();
   };
   const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
@@ -1236,6 +1365,7 @@ export function createConversationUi(
       const workspace = pendingWorkspace();
       if (
         !workspace ||
+        !workspaceReady() ||
         goalCreating() ||
         pendingSending() ||
         pendingFileBusy() ||
@@ -1745,6 +1875,17 @@ export function createConversationUi(
   });
   void refreshControls().catch(report);
   createPendingRecovery({
+    pending: () => !recentKnown(),
+    recover: async () => {
+      const recent = (await host.recentWorkspaces()) as RecentWorkspace[];
+      if (!alive || recentKnown()) return;
+      recentKnown.set(true);
+      recentWorkspaces.set(recent);
+      if (selected() === null && !pendingWorkspace() && overlay() === null && recent[0])
+        await create(recent[0].workspace, null, recent[0].path, false);
+    },
+  });
+  createPendingRecovery({
     pending: () => !controlsKnown() || controls().length > 0,
     blocked: () => recovering() || busy(),
     recover: recoverControls,
@@ -2004,6 +2145,7 @@ export function createConversationUi(
                   }
                   focusComposer={focusComposer}
                   stopAction={stopAction}
+                  restartBot={restartBot}
                   attach={(next) => {
                     handle.set(next);
                     const request = pendingReveal;
@@ -2035,6 +2177,48 @@ export function createConversationUi(
               needsConnection={noConnections}
               request={
                 <View style={{ minHeight: 0, flexShrink: 1 }}>
+                  <If when={selected() === null && workspaceError()}>
+                    <View
+                      style={{
+                        marginBottom: 8,
+                        flexDirection: 'row',
+                        flexWrap: 'wrap',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        columnGap: 12,
+                        rowGap: 4,
+                      }}
+                    >
+                      <Text
+                        tooltip={textTooltip(workspaceError)}
+                        style={{ ...bodyTextStyle, color: C.secondary }}
+                      >
+                        {tr('Folder unavailable')}
+                      </Text>
+                      <View style={{ flexDirection: 'row', gap: 8 }}>
+                        <Button
+                          accessibilityLabel={tr('Choose another folder…')}
+                          onPress={inputAction(() => recentOpen.set(true), null)}
+                          style={controlStyle}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
+                        >
+                          <Text style={{ color: C.accent }}>{tr('Choose another folder…')}</Text>
+                        </Button>
+                        <Button
+                          accessibilityLabel={tr('Retry folder')}
+                          onPress={inputAction(() => {
+                            void checkWorkspace();
+                          }, null)}
+                          style={controlStyle}
+                          hoverStyle={controlHoverStyle()}
+                          focusStyle={controlFocusStyle()}
+                        >
+                          <Text style={{ color: C.secondary }}>{tr('Retry folder')}</Text>
+                        </Button>
+                      </View>
+                    </View>
+                  </If>
                   <Each<ConversationHandle>
                     of={handle() ? [handle()!] : []}
                     key={(owner: ConversationHandle) => owner.sessionId}
@@ -2260,6 +2444,31 @@ export function createConversationUi(
                 id: 'workspace',
                 sessionId: selected(),
               })}
+              workspacePicker={
+                platform.isTerminal || side ? undefined : (
+                  <RecentWorkspaces
+                    path={() =>
+                      selected() === null ? pendingWorkspaceLabel() : (handle()?.workspace() ?? '')
+                    }
+                    recent={recentWorkspaces}
+                    open={recentOpen}
+                    changed={(open) => recentOpen.set(open)}
+                    disabled={() => pendingSending() || pendingFileBusy()}
+                    forget={(path) => {
+                      recentOpen.set(false);
+                      void setRecentWorkspace(path, null).catch(report);
+                    }}
+                    choose={(item) => {
+                      recentOpen.set(false);
+                      void create(item.workspace, selected(), item.path);
+                    }}
+                    browse={() => {
+                      recentOpen.set(false);
+                      invokeOwn('workspace');
+                    }}
+                  />
+                )
+              }
               settings={inputAction(invokeCommand, {
                 id: 'settings',
                 sessionId: selected(),

@@ -92,6 +92,29 @@ impl ApplicationClient {
         }
     }
 
+    async fn read<T, F, Fut>(&self, owner: &Owner, mut operation: F) -> Result<T, String>
+    where
+        F: FnMut(Client) -> Fut,
+        Fut: Future<Output = Result<T, String>>,
+    {
+        let client = self.resolve(owner).await?;
+        let was_retired = client.binding_retired();
+        match operation(client.clone()).await {
+            Ok(value) => Ok(value),
+            Err(_) if !was_retired && client.binding_retired() => {
+                let fresh = match self {
+                    Self::Root => {
+                        owner.client.refresh().await?;
+                        owner.client.clone()
+                    }
+                    Self::Ui(services) => services.client().await?,
+                };
+                operation(fresh).await
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     async fn local(&self, owner: &Owner) -> Result<Client, String> {
         match self {
             Self::Root => Ok(owner.client.clone()),
@@ -298,6 +321,37 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let client = source.local(&original).await?;
+            serde_json::to_value(client.recent_workspaces().await?)
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    pub async fn set_recent_workspace(
+        this: Instance<Self>,
+        path: String,
+        workspace: Option<JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let recent = source
+                .local(&original)
+                .await?
+                .set_recent_workspace(path, workspace)
+                .await?;
+            serde_json::to_value(recent).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
     /// Snapshot files selected for a conversation that has not yet been sent.
     pub async fn stage_files(
         this: Instance<Self>,
@@ -471,8 +525,14 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
-            Ok(client.describe(&endpoint).await.is_ok())
+            let ok = source
+                .read(&owner, |client| {
+                    let endpoint = endpoint.clone();
+                    async move { client.describe(&endpoint).await.map(|_| ()) }
+                })
+                .await
+                .is_ok();
+            Ok(ok)
         })
         .await
     }
@@ -563,8 +623,13 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
-            let record = system_permission::read(&client, &session_id, &request_id).await?;
+            let record = source
+                .read(&owner, |client| {
+                    let session_id = session_id.clone();
+                    let request_id = request_id.clone();
+                    async move { system_permission::read(&client, &session_id, &request_id).await }
+                })
+                .await?;
             Ok(system_permission::actions(
                 &record,
                 &owner.client.source().state_domain,
@@ -599,8 +664,14 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
-            client.query(&endpoint, &method, input).await
+            source
+                .read(&owner, |client| {
+                    let endpoint = endpoint.clone();
+                    let method = method.clone();
+                    let input = input.clone();
+                    async move { client.query(&endpoint, &method, input).await }
+                })
+                .await
         })
         .await
     }
@@ -622,8 +693,14 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let subscription = execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
-            let subscription = client.subscribe(&endpoint, &method, input).await?;
+            let subscription = source
+                .read(&owner, |client| {
+                    let endpoint = endpoint.clone();
+                    let method = method.clone();
+                    let input = input.clone();
+                    async move { client.subscribe(&endpoint, &method, input).await }
+                })
+                .await?;
             Ok(ScopedSubscription {
                 owner,
                 subscription: Arc::new(subscription),
@@ -644,9 +721,19 @@ impl ApplicationHost {
         let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
         drop(this);
         let subscription = execute(owner.clone(), async move {
-            let client = source.resolve(&owner).await?;
-            require_contract(AGENT, "readFile", &client.describe(AGENT).await?.contract)?;
-            let subscription = client.subscribe(AGENT, "readFile", input).await?;
+            let subscription = source
+                .read(&owner, |client| {
+                    let input = input.clone();
+                    async move {
+                        require_contract(
+                            AGENT,
+                            "readFile",
+                            &client.describe(AGENT).await?.contract,
+                        )?;
+                        client.subscribe(AGENT, "readFile", input).await
+                    }
+                })
+                .await?;
             Ok(ScopedSubscription {
                 owner,
                 subscription: Arc::new(subscription),

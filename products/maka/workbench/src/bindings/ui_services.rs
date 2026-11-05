@@ -145,12 +145,22 @@ impl Services {
 
     async fn capture(&self) -> Result<tokio::sync::MutexGuard<'_, Option<Binding>>, String> {
         let mut binding = self.binding.lock().await;
+        let mut refreshed_catalog = false;
         loop {
             let (source, metadata) = self.current_source()?;
-            if binding.as_ref().is_some_and(|bound| {
-                bound.binding_basis == metadata.binding_basis && !bound.client.binding_retired()
-            }) {
-                return Ok(binding);
+            if let Some(bound) = binding.as_ref() {
+                if bound.binding_basis == metadata.binding_basis && !bound.client.binding_retired()
+                {
+                    return Ok(binding);
+                }
+                if bound.binding_basis == metadata.binding_basis
+                    && bound.client.binding_retired()
+                    && !refreshed_catalog
+                {
+                    refreshed_catalog = true;
+                    self.owner.read_ui(json!({})).await?;
+                    continue;
+                }
             }
             let captured = self
                 .owner
@@ -178,6 +188,17 @@ impl Services {
                     return Err(error);
                 }
                 (Err(_), Ok((latest, _))) if latest != source => continue,
+                (Err(error), Ok(_)) if !refreshed_catalog => {
+                    refreshed_catalog = true;
+                    if self.owner.read_ui(json!({})).await.is_ok()
+                        && self
+                            .current_source()
+                            .is_ok_and(|(latest, _)| latest != source)
+                    {
+                        continue;
+                    }
+                    return Err(error);
+                }
                 (Err(error), Ok(_)) | (_, Err(error)) => return Err(error),
             }
         }
@@ -303,7 +324,15 @@ impl UiScope {
         drop(this);
         execute(services.owner.clone(), async move {
             let (client, endpoint) = services.resolve(&locator).await?;
-            client.query(&endpoint, &method, input).await
+            let was_retired = client.binding_retired();
+            match client.query(&endpoint, &method, input.clone()).await {
+                Ok(value) => Ok(value),
+                Err(_) if !was_retired && client.binding_retired() => {
+                    let (fresh, endpoint) = services.resolve(&locator).await?;
+                    fresh.query(&endpoint, &method, input).await
+                }
+                Err(error) => Err(error),
+            }
         })
         .await
     }
@@ -318,7 +347,15 @@ impl UiScope {
         drop(this);
         let subscription = execute(services.owner.clone(), async move {
             let (client, endpoint) = services.resolve(&locator).await?;
-            let subscription = client.subscribe(&endpoint, &method, input).await?;
+            let was_retired = client.binding_retired();
+            let subscription = match client.subscribe(&endpoint, &method, input.clone()).await {
+                Ok(subscription) => subscription,
+                Err(_) if !was_retired && client.binding_retired() => {
+                    let (fresh, endpoint) = services.resolve(&locator).await?;
+                    fresh.subscribe(&endpoint, &method, input).await?
+                }
+                Err(error) => return Err(error),
+            };
             Ok(ScopedSubscription {
                 owner: services.owner.clone(),
                 subscription: Arc::new(subscription),

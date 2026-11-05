@@ -52,6 +52,7 @@ mod progress;
 mod request_custody;
 mod settings;
 mod ui;
+mod workspaces;
 
 #[derive(Default)]
 struct Counter {

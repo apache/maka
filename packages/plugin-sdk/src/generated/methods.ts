@@ -402,10 +402,23 @@ export interface ServiceMethods {
          * (`sessionId` and `through`).
          */
         limit?: number;
+        /**
+         * Read this Session's records instead of the current Bot's, so a Bot that was
+         * replaced can still be read. Reading grants nothing: only the current Bot
+         * speaks.
+         */
+        sessionId?: string | null;
       };
       output: {
         enabled: boolean;
+        /**
+         * The current Bot Session, whatever `sessionId` was asked for.
+         */
         sessionId?: string | null;
+        /**
+         * Whether the Session that was read is, or once was, a Bot Session.
+         */
+        isBot: boolean;
         /**
          * Highest sequence recorded so far; 0 when empty.
          */
@@ -979,10 +992,23 @@ export interface ServiceMethods {
          * (`sessionId` and `through`).
          */
         limit?: number;
+        /**
+         * Read this Session's records instead of the current Bot's, so a Bot that was
+         * replaced can still be read. Reading grants nothing: only the current Bot
+         * speaks.
+         */
+        sessionId?: string | null;
       };
       output: {
         enabled: boolean;
+        /**
+         * The current Bot Session, whatever `sessionId` was asked for.
+         */
         sessionId?: string | null;
+        /**
+         * Whether the Session that was read is, or once was, a Bot Session.
+         */
+        isBot: boolean;
         /**
          * Highest sequence recorded so far; 0 when empty.
          */

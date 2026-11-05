@@ -257,6 +257,12 @@ export const contracts = {
                 maximum: 100,
                 default: 100,
               },
+              sessionId: {
+                description:
+                  "Read this Session's records instead of the current Bot's, so a Bot that was\nreplaced can still be read. Reading grants nothing: only the current Bot\nspeaks.",
+                type: ['string', 'null'],
+                default: null,
+              },
             },
             additionalProperties: false,
           },
@@ -269,7 +275,12 @@ export const contracts = {
                 type: 'boolean',
               },
               sessionId: {
+                description: 'The current Bot Session, whatever `sessionId` was asked for.',
                 type: ['string', 'null'],
+              },
+              isBot: {
+                description: 'Whether the Session that was read is, or once was, a Bot Session.',
+                type: 'boolean',
               },
               through: {
                 description: 'Highest sequence recorded so far; 0 when empty.',
@@ -292,7 +303,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'through', 'messages'],
+            required: ['enabled', 'isBot', 'through', 'messages'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',
@@ -25304,6 +25315,12 @@ export const contracts = {
                 maximum: 100,
                 default: 100,
               },
+              sessionId: {
+                description:
+                  "Read this Session's records instead of the current Bot's, so a Bot that was\nreplaced can still be read. Reading grants nothing: only the current Bot\nspeaks.",
+                type: ['string', 'null'],
+                default: null,
+              },
             },
             additionalProperties: false,
           },
@@ -25316,7 +25333,12 @@ export const contracts = {
                 type: 'boolean',
               },
               sessionId: {
+                description: 'The current Bot Session, whatever `sessionId` was asked for.',
                 type: ['string', 'null'],
+              },
+              isBot: {
+                description: 'Whether the Session that was read is, or once was, a Bot Session.',
+                type: 'boolean',
               },
               through: {
                 description: 'Highest sequence recorded so far; 0 when empty.',
@@ -25339,7 +25361,7 @@ export const contracts = {
               },
             },
             additionalProperties: false,
-            required: ['enabled', 'through', 'messages'],
+            required: ['enabled', 'isBot', 'through', 'messages'],
             $defs: {
               AgentBotMessage: {
                 description: 'One message the Bot deliberately sent to its user.',

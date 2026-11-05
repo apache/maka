@@ -150,6 +150,21 @@ pub struct SessionPage<T> {
     pub previous_cursor: Option<String>,
 }
 
+#[derive(Debug)]
+pub struct UnreadableSession {
+    pub id: String,
+    pub error: StoreError,
+}
+
+#[derive(Debug)]
+pub struct SessionOutcomePage<T> {
+    pub revision: String,
+    pub sessions: Vec<Result<SessionRecord<T>, UnreadableSession>>,
+    pub pending_session_count: u64,
+    pub next_cursor: Option<String>,
+    pub previous_cursor: Option<String>,
+}
+
 /// Keyset position within one revisioned session catalog.
 #[derive(Clone, Copy, Debug)]
 pub enum SessionPosition<'a> {

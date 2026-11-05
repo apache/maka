@@ -462,12 +462,12 @@ impl EventLog {
             .await
     }
 
-    pub(crate) async fn root_catalog_records<T: DeserializeOwned + Send + 'static>(
+    pub(crate) async fn root_catalog_record_outcomes<T: DeserializeOwned + Send + 'static>(
         &self,
         partition: usize,
         ids: Vec<String>,
         expected: Option<(i64, i64)>,
-    ) -> Result<Vec<SessionRecord<T>>, StoreError> {
+    ) -> Result<Vec<Result<SessionRecord<T>, crate::sessions::UnreadableSession>>, StoreError> {
         self.validate_root()?;
         if partition >= crate::root_store::PARTITION_COUNT || ids.len() > MAX_SESSION_PAGE {
             return Err(invalid("invalid Root catalog selection"));
@@ -484,16 +484,42 @@ impl EventLog {
                         if crate::root_store::catalog::session_visible(&mut tx, partition, &id)
                             .await?
                         {
-                            records.push(
-                                read(&mut tx, &id)
-                                    .await?
-                                    .ok_or(StoreError::SessionNotFound)?,
-                            );
+                            match read(&mut tx, &id).await {
+                                Ok(Some(record)) => records.push(Ok(record)),
+                                Ok(None) => return Err(StoreError::SessionNotFound),
+                                Err(error)
+                                    if matches!(
+                                        error,
+                                        StoreError::Json(_)
+                                            | StoreError::InvalidTransition(_)
+                                            | StoreError::Projection(_)
+                                    ) =>
+                                {
+                                    records.push(Err(crate::sessions::UnreadableSession {
+                                        id,
+                                        error,
+                                    }));
+                                }
+                                Err(error) => return Err(error),
+                            }
                         }
                     }
                     Ok(records)
                 })
             })
             .await
+    }
+
+    pub(crate) async fn root_catalog_records<T: DeserializeOwned + Send + 'static>(
+        &self,
+        partition: usize,
+        ids: Vec<String>,
+        expected: Option<(i64, i64)>,
+    ) -> Result<Vec<SessionRecord<T>>, StoreError> {
+        self.root_catalog_record_outcomes(partition, ids, expected)
+            .await?
+            .into_iter()
+            .map(|entry| entry.map_err(|unreadable| unreadable.error))
+            .collect()
     }
 }

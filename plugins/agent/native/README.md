@@ -126,6 +126,9 @@ already frozen request. Catalog changes alone therefore do not invalidate queued
 
 Goal scheduling skips authority decoding for inactive records without pending work and
 isolates unreadable records, so one stored Goal cannot prevent other Goals from continuing.
+All-session `Recall` searches and `catalog` pages likewise isolate unreadable session metadata
+and transcript source events into reported `gaps` or skipped entries without legacy decoders,
+while targeted single-session queries still surface the error directly.
 New admission reads the current settings after shared discovery completes.
 
 A cold or due ChatGPT catalog refresh is awaited during logical request preparation, including

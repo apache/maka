@@ -135,3 +135,57 @@ test('the stream moves the Goal forward and refreshes one at the same revision',
   await push(refreshed);
   assert.equal(goal.view().current.consumed, 100);
 });
+
+test('goal observation cancellation reconnects immediately without flashing connectionError', async () => {
+  let watches = 0;
+  let rejectFirst;
+  let resolveSecond;
+  const host = {
+    subscribe: async () => {
+      watches += 1;
+      if (watches === 1) {
+        let delivered = false;
+        return {
+          next: () => {
+            if (!delivered) {
+              delivered = true;
+              return Promise.resolve(snapshot(4));
+            }
+            return new Promise((_, reject) => {
+              rejectFirst = reject;
+            });
+          },
+          close: async () => {},
+        };
+      }
+      return {
+        next: () =>
+          new Promise((resolve) => {
+            resolveSecond = resolve;
+          }),
+        close: async () => {},
+      };
+    },
+    query: async () => snapshot(4),
+  };
+  const goal = createSessionGoal(
+    host,
+    'session',
+    async () => ({ kind: 'committed' }),
+    {},
+    async () => null,
+  );
+  await flush();
+  assert.equal(goal.view().current.revision, 4);
+  assert.equal(goal.error(), '');
+
+  rejectFirst(new Error('goal_observation_cancelled'));
+  await flush();
+  assert.equal(watches, 2);
+  assert.equal(goal.error(), '');
+
+  resolveSecond(snapshot(5));
+  await flush();
+  assert.equal(goal.view().current.revision, 5);
+  assert.equal(goal.error(), '');
+});

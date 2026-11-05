@@ -166,6 +166,76 @@ async fn bot_identity_alone_grants_send_user() {
 }
 
 #[tokio::test]
+async fn a_replaced_bot_keeps_its_replies_readable_without_its_authority() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let f = bot_fixture(&format!("http://{}/v1", listener.local_addr().unwrap())).await;
+        let old = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        f.send(&old).await.unwrap();
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        service_tools::named_tool_response(
+            &mut socket,
+            "SendUser",
+            json!({"messageId":"m1","messages":[{"text":"Said before the replacement."}]}),
+        )
+        .await;
+        let (mut socket, _) = listener.accept().await.unwrap();
+        request(&mut socket).await;
+        response(&mut socket).await;
+        idle(&f, &old).await;
+
+        let revision = f.owner.session(&old).await.unwrap().revision;
+        let archived = f
+            .mutation(
+                2,
+                "changeSession",
+                json!({"sessionId":old,"expectedRevision":revision,"action":"archive"}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(archived["kind"], "changed", "{archived}");
+        let new = open(&f).await["sessionId"].as_str().unwrap().to_owned();
+        assert_ne!(new, old);
+
+        // The old Bot is still a Bot and its replies are still there.
+        let read = f
+            .query("botOutbox", json!({"sessionId":old}))
+            .await
+            .unwrap();
+        assert_eq!(read["isBot"], true, "{read}");
+        assert_eq!(
+            read["sessionId"], new,
+            "the current Bot is still the new one"
+        );
+        assert_eq!(read["messages"][0]["text"], "Said before the replacement.");
+        // The current Bot has none of them, and an ordinary Session is no Bot.
+        let current = outbox(&f).await;
+        assert_eq!(current["isBot"], true);
+        assert_eq!(current["messages"], json!([]));
+        let ordinary = f.create("Ordinary").await;
+        let read = f
+            .query("botOutbox", json!({"sessionId":ordinary}))
+            .await
+            .unwrap();
+        assert_eq!(read["isBot"], false, "{read}");
+        assert_eq!(read["messages"], json!([]));
+        // Being readable gives the old Bot nothing back: it cannot be sent to, and it is
+        // not the Bot, so it would not hold SendUser either.
+        assert!(!f.owner.bot.is(&old));
+        assert!(
+            f.send(&old).await.is_err(),
+            "an archived former Bot accepts no message"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
 async fn new_conversation_from_bot_uses_installed_tools_in_the_same_workspace() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

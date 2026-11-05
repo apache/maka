@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::support::{Fixture, ModelRequest, Options, ReplyGate};
+use super::support::{Fixture, ModelRequest, Options, ReplyGate, mutate};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use gpui::{
     AppContext, Application, ApplicationHandle, Bounds, EntityInputHandler, Focusable, Keystroke,
@@ -29,6 +29,7 @@ use maka_workbench::bindings::Bindings;
 use nsh_gpui_terminal::{CandidateFrame, TerminalPlatform};
 use nsh_platform_gpui::{AppOptions, AppView};
 use serde_json::{Value, json};
+use sqlx::Connection;
 use std::{
     cell::RefCell,
     future::Future,
@@ -491,6 +492,49 @@ impl Desktop {
         .await
     }
 
+    async fn restart(
+        mut self,
+        fixture: &Fixture,
+        appearance: nsh_core::platform::Appearance,
+    ) -> Self {
+        // NSH has one process-wide platform queue. Keep that executor, but
+        // destroy the JS runtime, native bindings and journal connection.
+        // Match desktop detach: native tasks must drain before JS disposal.
+        self.wait(
+            "native detach waited for JS disposal",
+            self.bindings.close(),
+        )
+        .await
+        .unwrap();
+        self.app.update(|cx| {
+            self.window.update(cx, |view, _, _| view.stop()).unwrap();
+        });
+        self.client = fixture.client().await;
+        self.bindings = Bindings::new(self.client.clone(), tokio::runtime::Handle::current());
+        let mut config = maka_workbench::configuration(
+            self.bindings.registry(None),
+            tokio::runtime::Handle::current(),
+        );
+        config.assets = Some(self.bindings.assets());
+        config.chunk_loader = Some(self.bindings.chunk_loader());
+        let (foreground, receiver) = watch::channel(true);
+        self._foreground = foreground;
+        config.context = config
+            .context
+            .with(self.bindings.reload())
+            .with(maka_workbench::Foreground(receiver));
+        self.app.update(|cx| {
+            self.window
+                .update(cx, |view, window, cx| {
+                    view.set_appearance(appearance, cx);
+                    view.load_with_config(config);
+                    window.focus(&view.focus_handle(cx), cx);
+                })
+                .unwrap();
+        });
+        self
+    }
+
     async fn close(self) {
         self.app.update(|cx| {
             self.window.update(cx, |view, _, _| view.stop()).unwrap();
@@ -505,6 +549,285 @@ async fn images_fixture() -> Fixture {
         ..Options::default()
     })
     .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_remembers_folders_without_restoring_unsent_drafts() {
+    let mut fixture = images_fixture().await;
+    let (path, _) = image_file(&fixture);
+    let workspace = fixture.directory.path().join("workspace");
+    std::fs::create_dir_all(workspace.join("other-project/workspace")).unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.attach(&path).await;
+    desktop.type_text("UNSENT_LOCAL_ONLY").await;
+    desktop.press("Choose composer workspace").await;
+    desktop.press("Choose another folder…").await;
+    desktop.press("Browse folder Workspace").await;
+    desktop.press("Browse folder other-project").await;
+    desktop.press("Browse folder workspace").await;
+    desktop.press("Use this workspace folder").await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("UNSENT_LOCAL_ONLY").await;
+    desktop.press("Choose composer workspace").await;
+    desktop
+        .control(&format!("Use folder {}", workspace.display()))
+        .await;
+    desktop.key("home", false);
+    desktop.key("down", false);
+    desktop.key("enter", false);
+    desktop
+        .until("keyboard selection did not close recent folders", || {
+            desktop
+                .controls("Choose another folder…")
+                .is_empty()
+                .then_some(())
+        })
+        .await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("UNSENT_LOCAL_ONLY").await;
+    let recent = desktop
+        .wait("selected folder was not saved", async {
+            loop {
+                let recent = desktop.client.recent_workspaces().await.unwrap();
+                if recent
+                    .first()
+                    .is_some_and(|item| item.path == workspace.to_str().unwrap())
+                {
+                    break recent;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+
+    // Fail the initial history read, then repair it while the same window is open.
+    let mut disk = sqlx::SqliteConnection::connect_with(
+        &sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(fixture.directory.path().join("client.db")),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE recent_workspaces SET value='unreadable fixture'")
+        .execute(&mut disk)
+        .await
+        .unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.control("Choose composer workspace").await;
+    sqlx::query("UPDATE recent_workspaces SET value=?")
+        .bind(serde_json::to_string(&recent).unwrap())
+        .execute(&mut disk)
+        .await
+        .unwrap();
+    desktop.target_after(None).await;
+    let _ = desktop.platform.take_clipboard_write();
+    assert_eq!(desktop.copy_input().unwrap_or_default(), "");
+    assert!(
+        desktop
+            .controls(&format!(
+                "Remove attachment {}",
+                path.file_name().unwrap().to_str().unwrap()
+            ))
+            .is_empty()
+    );
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.type_text("FRESH_AFTER_REOPEN").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    let body = request.body.to_string();
+    assert!(body.contains("FRESH_AFTER_REOPEN"));
+    assert!(!body.contains("UNSENT_LOCAL_ONLY"));
+    assert!(!body.contains("data:image"));
+    desktop
+        .wait("message did not finish", request.finish())
+        .await;
+    let sent = desktop
+        .sessions()
+        .await
+        .into_iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap();
+    assert_eq!(sent["workspace"]["path"], workspace.to_str().unwrap());
+    desktop.wait("finished conversation could not be removed", async {
+        loop {
+            let observed = desktop.client.query("agent", "observe", json!({"sessionId": sent["id"]})).await.unwrap();
+            let result = mutate(&desktop.client, "changeSession", json!({"sessionId":sent["id"], "expectedRevision":observed["session"]["revision"], "action":"remove"})).await;
+            if result["kind"] == "removed" { break; }
+            assert!(result["kind"] == "revision_conflict" || result["reason"] == "busy", "{result}");
+            tokio::task::yield_now().await;
+        }
+    }).await;
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("SAME_FOLDER_AFTER_SESSION_REMOVAL").await;
+    desktop.control("Send message").await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_conversation_preserves_an_owned_worktree() {
+    let mut fixture = Fixture::open_with_configuration(Options::default(), |config, directory| {
+        config["agent"]["permissions"]["access"] = json!("workspace_write");
+        config["agent"]["workspaceRoots"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "label":"Parent", "path":directory
+            }));
+        // Project skill discovery currently excludes the Host's private worktree directory.
+        config["agent"]["skillLibrary"] = Value::Null;
+        let workspace = directory.join("workspace");
+        std::fs::write(workspace.join("tracked.txt"), "base").unwrap();
+        for args in [
+            vec!["init", "--quiet"],
+            vec!["add", "tracked.txt"],
+            vec![
+                "-c",
+                "user.name=Fixture",
+                "-c",
+                "user.email=fixture@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--quiet",
+                "-m",
+                "base",
+            ],
+        ] {
+            let result = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&workspace)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "{}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    })
+    .await;
+    let client = fixture.client().await;
+    let roots = client
+        .query("agent", "directories", json!({"kind":"roots"}))
+        .await
+        .unwrap();
+    let created = mutate(
+        &client,
+        "create",
+        json!({
+            "title":"Isolated", "labels":[],
+            "workspace":{"kind":"isolated_git", "selection":roots["roots"][0]["selection"]}
+        }),
+    )
+    .await;
+    assert_eq!(created["kind"], "created", "{created}");
+    fixture.session = created["session"]["id"].as_str().unwrap().to_owned();
+    let workspace = created["session"]["workspace"].clone();
+    assert!(!workspace["worktree"].is_null());
+    client.close().await.unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("SAME_OWNED_WORKTREE").await;
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    assert!(request.body.to_string().contains("SAME_OWNED_WORKTREE"));
+    desktop
+        .wait("message did not finish", request.finish())
+        .await;
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 3);
+    let sent = sessions
+        .iter()
+        .find(|session| {
+            session["id"] != fixture.session && session["workspace"]["path"] == workspace["path"]
+        })
+        .unwrap();
+    assert_eq!(sent["workspace"]["worktree"], workspace["worktree"]);
+    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_recovers_an_unavailable_remembered_folder() {
+    let fixture = images_fixture().await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    let previous = desktop.platform.text_input_target();
+    desktop.press("New conversation in workspace").await;
+    desktop.target_after(previous).await;
+    let workspace = fixture.directory.path().join("workspace");
+    desktop
+        .wait("folder selection was not saved", async {
+            while desktop.client.recent_workspaces().await.unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    std::fs::rename(&workspace, fixture.directory.path().join("moved-workspace")).unwrap();
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.target_after(None).await;
+    desktop.type_text("KEEP_CURRENT_WINDOW_DRAFT").await;
+    desktop.control("Retry folder").await;
+    desktop.key("enter", false);
+    assert_eq!(desktop.sessions().await.len(), 1);
+    assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
+    std::fs::rename(fixture.directory.path().join("moved-workspace"), &workspace).unwrap();
+    desktop
+        .retry(
+            "restored folder did not become usable",
+            || !desktop.controls("Send message").is_empty(),
+            || {
+                if let Some(bounds) = desktop.controls("Retry folder").first() {
+                    desktop.press_at(bounds.center());
+                }
+            },
+        )
+        .await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
+    desktop.press("Choose composer workspace").await;
+    desktop.artifact("recent-folders-remove");
+    desktop.press("Remove this folder from recents").await;
+    desktop
+        .wait("removed folder was still remembered", async {
+            while !desktop.client.recent_workspaces().await.unwrap().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    desktop.press("Focus message composer").await;
+    desktop.expect_text("KEEP_CURRENT_WINDOW_DRAFT").await;
+    assert!(workspace.is_dir());
+    let sessions = desktop.sessions().await;
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(
+        sessions[0]["workspace"]["path"],
+        workspace.to_str().unwrap()
+    );
+    let desktop = desktop
+        .restart(&fixture, nsh_core::platform::Appearance::Dark)
+        .await;
+    desktop.press("Choose composer workspace").await;
+    desktop.control("Choose another folder…").await;
+    assert!(
+        desktop
+            .controls(&format!("Use folder {}", workspace.display()))
+            .is_empty()
+    );
+    assert!(desktop.client.recent_workspaces().await.unwrap().is_empty());
+    desktop.close().await;
+    fixture.finish().await;
 }
 
 fn image_file(fixture: &Fixture) -> (std::path::PathBuf, Vec<u8>) {

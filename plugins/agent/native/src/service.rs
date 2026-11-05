@@ -1268,30 +1268,78 @@ async fn catalog_page(owner: &Owner, input: &List) -> Result<SessionPage, String
     {
         return Err("agent_cursor_invalid".into());
     }
-    let page = owner
-        .store
-        .scoped_sessions::<StoredSessionConfiguration>(
-            catalog_scope(owner, input).await?,
-            revision,
-            position,
-            catalog_filter(input),
-        )
-        .await
-        .map_err(|error| match error {
-            maka_event_log::StoreError::RevisionConflict { .. } => "agent_catalog_changed",
-            _ => "agent_catalog_unavailable",
-        })?;
+    let scope = catalog_scope(owner, input).await?;
+    let filter = catalog_filter(input);
     let reverse = matches!(position, SessionPosition::Before(_));
+    let mut step_revision = revision.map(str::to_owned);
+    let mut step_cursor: Option<String> = None;
+    let mut first_step = true;
+    let mut sessions = Vec::new();
+    let mut needs_you_count;
+    let mut before = None;
+    let mut after = None;
+    let page_revision = loop {
+        let current_position = if first_step {
+            position
+        } else if reverse {
+            SessionPosition::Before(step_cursor.as_deref().expect("continuation cursor"))
+        } else {
+            SessionPosition::After(step_cursor.as_deref().expect("continuation cursor"))
+        };
+        let page = owner
+            .store
+            .scoped_session_outcomes::<StoredSessionConfiguration>(
+                scope.clone(),
+                step_revision.as_deref(),
+                current_position,
+                filter,
+            )
+            .await
+            .map_err(|error| match error {
+                maka_event_log::StoreError::RevisionConflict { .. } => "agent_catalog_changed",
+                _ => "agent_catalog_unavailable",
+            })?;
+        needs_you_count = page.pending_session_count;
+        if first_step {
+            before = page.previous_cursor.clone();
+            after = page.next_cursor.clone();
+        } else if reverse {
+            before = page.previous_cursor.clone();
+        } else {
+            after = page.next_cursor.clone();
+        }
+        for outcome in page.sessions {
+            match outcome
+                .map_err(|unreadable| unreadable.error.to_string())
+                .and_then(resolve_session)
+            {
+                Ok(session) => sessions.push(summary(owner, session)),
+                Err(error) => {
+                    tracing::warn!("skipping unreadable catalog session: {error}");
+                }
+            }
+        }
+        if !sessions.is_empty() {
+            break page.revision;
+        }
+        let next = if reverse {
+            page.previous_cursor
+        } else {
+            page.next_cursor
+        };
+        let Some(cursor) = next else {
+            break page.revision;
+        };
+        first_step = false;
+        step_revision = Some(page.revision);
+        step_cursor = Some(cursor);
+    };
     let mut result = SessionPage {
-        revision: page.revision,
-        sessions: page
-            .sessions
-            .into_iter()
-            .map(|session| resolve_session(session).map(|session| summary(owner, session)))
-            .collect::<Result<Vec<_>, _>>()?,
-        needs_you_count: page.pending_session_count,
-        before: page.previous_cursor,
-        after: page.next_cursor,
+        revision: page_revision,
+        sessions,
+        needs_you_count,
+        before,
+        after,
     };
     while !maka_workspace_support::fits(&result) {
         if result.sessions.len() <= 1 {

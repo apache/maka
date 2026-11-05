@@ -209,29 +209,34 @@ fn ensure_for(
     Ok(())
 }
 
-fn optional_failure(error: &StoreError) -> Option<(&'static str, &str)> {
+fn optional_failure(error: &StoreError) -> Option<(&'static str, std::borrow::Cow<'_, str>)> {
+    use std::borrow::Cow;
     match error {
-        StoreError::Projection(ProjectionError::Invalid(reason)) => Some(("invalid", reason)),
+        StoreError::Projection(ProjectionError::Invalid(reason)) => {
+            Some(("invalid", Cow::Borrowed(reason)))
+        }
         StoreError::Projection(ProjectionError::Unsupported(reason)) => {
-            Some(("unsupported", reason))
+            Some(("unsupported", Cow::Borrowed(reason)))
         }
-        StoreError::Projection(ProjectionError::TooLarge) | StoreError::PrefixTooLarge => {
-            Some(("too_large", "presentation exceeds its byte limit"))
-        }
+        StoreError::Projection(ProjectionError::TooLarge) | StoreError::PrefixTooLarge => Some((
+            "too_large",
+            Cow::Borrowed("presentation exceeds its byte limit"),
+        )),
         StoreError::Projection(ProjectionError::OutOfRange) => Some((
             "out_of_range",
-            "presentation timestamp or sequence exceeds the wire range",
+            Cow::Borrowed("presentation timestamp or sequence exceeds the wire range"),
         )),
         StoreError::TranscriptConflict => Some((
             "reference",
-            "derived transcript reference conflicts with immutable ownership",
+            Cow::Borrowed("derived transcript reference conflicts with immutable ownership"),
         )),
         StoreError::InvalidTransition(reason)
             if reason == "missing or inconsistent durable tool payload" =>
         {
-            Some(("raw_binding", reason))
+            Some(("raw_binding", Cow::Borrowed(reason)))
         }
-        // Storage errors, serde failures, unexpected invariants and panics are not view failures.
+        StoreError::Json(error) => Some(("unreadable_source", Cow::Owned(error.to_string()))),
+        // Storage errors, unexpected invariants and panics are not source-decode failures.
         _ => None,
     }
 }
@@ -246,7 +251,7 @@ fn record_failure(
         return Err(error);
     };
     db.prepare_cached("INSERT INTO transcript_failures(session_id,source_sequence,category,reason) VALUES(?1,?2,?3,?4)")?
-        .execute(params![session,source,category,reason])?;
+        .execute(params![session,source,category,reason.as_ref()])?;
     Ok(())
 }
 
@@ -491,8 +496,15 @@ mod tests {
     #[test]
     fn projection_classification_does_not_hide_storage_or_invariant_errors() {
         assert_eq!(
-            optional_failure(&ProjectionError::Invalid("invalid view").into()),
+            optional_failure(&ProjectionError::Invalid("invalid view").into())
+                .as_ref()
+                .map(|(category, reason)| (*category, reason.as_ref())),
             Some(("invalid", "invalid view")),
+        );
+        let serde_error = serde_json::from_str::<serde_json::Value>("{").unwrap_err();
+        assert_eq!(
+            optional_failure(&StoreError::Json(serde_error)).map(|(category, _)| category),
+            Some("unreadable_source"),
         );
         assert!(optional_failure(&StoreError::Sqlite(rusqlite::Error::InvalidQuery)).is_none());
         assert!(

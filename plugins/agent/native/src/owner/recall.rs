@@ -92,6 +92,31 @@ impl Recall {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| "agent_session_unavailable".into())
     }
+    async fn session_record(
+        &self,
+        id: &str,
+    ) -> Result<
+        Result<maka_event_log::sessions::SessionRecord<super::ResolvedConfiguration>, String>,
+        maka_event_log::StoreError,
+    > {
+        if !super::owns_session(&self.prefix, id) {
+            return Ok(Err("Recall Session unavailable".into()));
+        }
+        match self
+            .store
+            .get_session::<StoredSessionConfiguration>(id)
+            .await
+        {
+            Ok(Some(record)) => Ok(resolve_session(record)),
+            Ok(None) => Ok(Err("agent_session_unavailable".into())),
+            Err(
+                error @ (maka_event_log::StoreError::Json(_)
+                | maka_event_log::StoreError::InvalidTransition(_)
+                | maka_event_log::StoreError::Projection(_)),
+            ) => Ok(Err(error.to_string())),
+            Err(error) => Err(error),
+        }
+    }
     async fn check(&self, call: &Scope) -> Result<(), ToolError> {
         if call.cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err(failed("Recall cancelled"));
@@ -141,6 +166,13 @@ impl Recall {
         let operation = async {
             self.check(call).await.map_err(|e| e.to_string())?;
             let mut summaries = BTreeMap::<String, crate::contract::Session>::new();
+            let mut gap_set = std::collections::BTreeSet::<String>::new();
+            let mut gaps = Vec::<String>::new();
+            let mut record_gap = |gap: String| {
+                if gap_set.insert(gap.clone()) {
+                    gaps.push(gap);
+                }
+            };
             if let Some(id) = &query.session_id {
                 summaries.insert(
                     id.clone(),
@@ -150,9 +182,12 @@ impl Recall {
                     ),
                 );
             }
-            let (titles, catalog_complete) = search::titles(self.as_ref(), call, &query)
+            let (titles, title_gaps) = search::titles(self.as_ref(), call, &query)
                 .await
                 .map_err(|e| e.to_string())?;
+            for gap in title_gaps {
+                record_gap(gap);
+            }
             let mut title_matches = Vec::new();
             for title in titles {
                 if query
@@ -162,13 +197,28 @@ impl Recall {
                     break;
                 }
                 if !summaries.contains_key(&title.id) {
-                    summaries.insert(
-                        title.id.clone(),
-                        crate::service::summary_for(
-                            &self.data_source,
-                            resolve_session(self.metadata(&title.id).await?)?,
-                        ),
-                    );
+                    match self
+                        .session_record(&title.id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        Ok(record) => {
+                            summaries.insert(
+                                title.id.clone(),
+                                crate::service::summary_for(&self.data_source, record),
+                            );
+                        }
+                        Err(reason) => {
+                            if query.session_id.is_some() {
+                                return Err(reason);
+                            }
+                            record_gap(format!(
+                                "Session {} was not fully read: {reason}",
+                                title.id
+                            ));
+                            continue;
+                        }
+                    }
                 }
                 title_matches.push(
                     summaries
@@ -180,6 +230,9 @@ impl Recall {
             let found = search::search(self.clone(), call, &query, search::Content::Anchor)
                 .await
                 .map_err(|e| e.to_string())?;
+            for gap in found.gaps {
+                record_gap(gap);
+            }
             let mut passages = Vec::new();
             for passage in found.passages {
                 if query
@@ -189,13 +242,28 @@ impl Recall {
                     break;
                 }
                 if !summaries.contains_key(&passage.session_id) {
-                    summaries.insert(
-                        passage.session_id.clone(),
-                        crate::service::summary_for(
-                            &self.data_source,
-                            resolve_session(self.metadata(&passage.session_id).await?)?,
-                        ),
-                    );
+                    match self
+                        .session_record(&passage.session_id)
+                        .await
+                        .map_err(|e| e.to_string())?
+                    {
+                        Ok(record) => {
+                            summaries.insert(
+                                passage.session_id.clone(),
+                                crate::service::summary_for(&self.data_source, record),
+                            );
+                        }
+                        Err(reason) => {
+                            if query.session_id.is_some() {
+                                return Err(reason);
+                            }
+                            record_gap(format!(
+                                "Session {} was not fully read: {reason}",
+                                passage.session_id
+                            ));
+                            continue;
+                        }
+                    }
                 }
                 let session = summaries
                     .get(&passage.session_id)
@@ -238,8 +306,8 @@ impl Recall {
             let page = RecallPage {
                 titles: title_matches,
                 passages,
-                complete: catalog_complete && found.searched_every_session,
-                gaps: found.gaps,
+                complete: found.searched_every_session && gaps.is_empty(),
+                gaps,
             };
             Ok(page)
         };
@@ -332,7 +400,7 @@ impl History for Recall {
             self.check(&call).await?;
             let page = self
                 .store
-                .scoped_sessions::<StoredSessionConfiguration>(
+                .scoped_session_outcomes::<StoredSessionConfiguration>(
                     CatalogScope::IdPrefix(self.prefix.clone()),
                     input.revision.as_deref(),
                     input
@@ -347,20 +415,45 @@ impl History for Recall {
                     },
                 )
                 .await
-                .map_err(failed)?;
+                .map_err(|error| match error {
+                    maka_event_log::StoreError::RevisionConflict { .. } => {
+                        failed(search::CATALOG_REVISION_CHANGED)
+                    }
+                    other => failed(other),
+                })?;
             self.check(&call).await?;
+            let mut entries = Vec::with_capacity(page.sessions.len());
+            let mut gaps = Vec::new();
+            for outcome in page.sessions {
+                match outcome {
+                    Ok(session) => {
+                        let id = session.id.clone();
+                        match resolve_session(session) {
+                            Ok(resolved) => entries.push(search::Session {
+                                id: resolved.id,
+                                title: resolved.configuration.title,
+                                last_message_at: resolved
+                                    .last_message
+                                    .map(|message| message.recorded_at),
+                            }),
+                            Err(reason) => {
+                                gaps.push(format!("Session {id} was not fully read: {reason}"));
+                            }
+                        }
+                    }
+                    Err(unreadable) => {
+                        gaps.push(format!(
+                            "Session {} was not fully read: {}",
+                            unreadable.id, unreadable.error
+                        ));
+                    }
+                }
+            }
             Ok(search::Catalog {
                 revision: page.revision,
                 next_cursor: page.next_cursor,
-                entries: page
-                    .sessions
-                    .into_iter()
-                    .map(|session| search::Session {
-                        id: session.id,
-                        title: session.configuration.title,
-                        last_message_at: session.last_message.map(|message| message.recorded_at),
-                    })
-                    .collect(),
+                entries,
+                gaps,
             })
         })
     }
@@ -374,6 +467,7 @@ impl History for Recall {
             let _cancel_on_drop = cancellation.clone().drop_guard();
             let operation = async {
                 self.check(&call).await?;
+                let targeted = query.session_id.is_some();
                 if let Some(id) = &query.session_id {
                     self.metadata(id).await.map_err(failed)?;
                 }
@@ -390,26 +484,42 @@ impl History for Recall {
                     .search_history(&self.prefix, input, cancellation)
                     .await
                     .map_err(failed)?;
-                let mut sessions = BTreeMap::new();
+                let mut sessions = BTreeMap::<String, Option<search::Session>>::new();
+                let mut gaps = batch.gaps;
                 let mut found = Vec::with_capacity(batch.hits.len());
                 for mut hit in batch.hits {
                     if !sessions.contains_key(&hit.session_id) {
-                        let record = self.metadata(&hit.session_id).await.map_err(failed)?;
-                        sessions.insert(
-                            hit.session_id.clone(),
-                            search::Session {
-                                id: record.id,
-                                title: record.configuration.title,
-                                last_message_at: record
-                                    .last_message
-                                    .map(|message| message.recorded_at),
-                            },
-                        );
+                        match self.session_record(&hit.session_id).await.map_err(failed)? {
+                            Ok(record) => {
+                                sessions.insert(
+                                    hit.session_id.clone(),
+                                    Some(search::Session {
+                                        id: record.id,
+                                        title: record.configuration.title,
+                                        last_message_at: record
+                                            .last_message
+                                            .map(|message| message.recorded_at),
+                                    }),
+                                );
+                            }
+                            Err(reason) => {
+                                if targeted {
+                                    return Err(failed(reason));
+                                }
+                                let gap = format!(
+                                    "Session {} was not fully read: {reason}",
+                                    hit.session_id
+                                );
+                                if !gaps.contains(&gap) {
+                                    gaps.push(gap);
+                                }
+                                sessions.insert(hit.session_id.clone(), None);
+                            }
+                        }
                     }
-                    let session = sessions
-                        .get(&hit.session_id)
-                        .expect("loaded source Session")
-                        .clone();
+                    let Some(session) = sessions.get(&hit.session_id).and_then(Clone::clone) else {
+                        continue;
+                    };
                     let matched_terms = std::mem::take(&mut hit.matched_terms);
                     let score = hit.score;
                     let through = hit.through;
@@ -422,10 +532,7 @@ impl History for Recall {
                     });
                 }
                 self.check(&call).await?;
-                Ok(search::Matches {
-                    hits: found,
-                    gaps: batch.gaps,
-                })
+                Ok(search::Matches { hits: found, gaps })
             };
             tokio::select! {
                 biased;
