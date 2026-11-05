@@ -468,12 +468,8 @@ export class EventIntake {
       else hi = mid - 1;
     }
     const end = intakeChunkEnd(content, start, lo);
-    if (end <= start || !fits(end))
-      throw Error(
-        'Long event metadata/context exceeds model input capacity; progress retained. Configure a larger screening model.',
-      );
-    const input = request(end);
     const group = hash([event.source, event.group]);
+    // Capacity failures must rotate/back off too, without discarding saved progress.
     this.transaction(() => {
       this.db
         .prepare(
@@ -481,6 +477,11 @@ export class EventIntake {
         )
         .run(group, this.quick.now(), this.quick.now() + 30000);
     });
+    if (end <= start || !fits(end))
+      throw Error(
+        'Long event metadata/context exceeds model input capacity; progress retained. Configure a larger screening model.',
+      );
+    const input = request(end);
     const result = await this.quick.parent.asOwner(
       this.quick.state(),
       () =>

@@ -167,6 +167,68 @@ test('failed or over-budget summaries retain offset; a smaller model continues w
   assert.equal(seen.join(''), original('未修复'));
 });
 
+test('a long summary that no longer fits backs off without starving an existing healthy group', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  let capacity = 16000,
+    calls = 0;
+  f.ctx.llm.budget = async () => ({
+    modelId: 'resize',
+    maxInputTokens: capacity,
+    maxOutputTokens: 2048,
+  });
+  f.ctx.llm.generate = async (input: any) => {
+    assert.ok(estimatePluginLlmInputTokens(input.system, input.prompt) <= capacity);
+    calls++;
+    return {
+      text:
+        JSON.parse(input.prompt).offsetChars === undefined
+          ? JSON.stringify('')
+          : JSON.stringify({ context: 'C'.repeat(5000), direction: '' }),
+    };
+  };
+  await f.q.intake.collect();
+  f.add('long', 'L'.repeat(100000), 'long-group');
+  await f.q.intake.collect();
+  f.advance();
+  await f.q.intake.judge();
+  const saved = { ...progress(f) };
+  assert.ok(saved.offset > 0 && saved.offset < 100000);
+  assert.equal(saved.context.length, 5000);
+
+  // This group must already have a later successful check; a never-seen group
+  // sorts ahead of the long event and would miss the starvation regression.
+  f.add('healthy-before', 'Earlier update', 'healthy-group');
+  await f.q.intake.collect();
+  f.advance();
+  await f.q.intake.judge();
+  capacity = 4000;
+  f.add('healthy-after', 'New update', 'healthy-group');
+  await f.q.intake.collect();
+  f.advance();
+  const before = calls;
+  await assert.rejects(f.q.intake.judge(), /context exceeds model input capacity/);
+  assert.equal(calls, before, 'an oversized context is rejected before a model call');
+  assert.deepEqual({ ...progress(f) }, saved);
+
+  // Even after the failed group's backoff expires, it must rotate behind the
+  // healthy group instead of retaining the oldest checked position forever.
+  f.advance(31000);
+  await f.q.intake.judge();
+  assert.equal(calls, before + 1);
+  assert.equal(pending(f), 1, 'only the incompatible long event remains pending');
+  assert.deepEqual({ ...progress(f) }, saved);
+  assert.equal(wakes(f), 0);
+
+  await f.restart();
+  await assert.rejects(f.q.intake.judge(), /context exceeds model input capacity/);
+  assert.deepEqual({ ...progress(f) }, saved);
+  capacity = 16000;
+  f.advance(31000);
+  await f.q.intake.judge();
+  assert.ok(progress(f).offset > saved.offset, 'restoring capacity resumes retained progress');
+});
+
 test('a short independent event can wake while a long original remains incomplete', async (t) => {
   const f = await setup(t, original('未修复'));
   f.ctx.llm.generate = async (input: any) => {
