@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { TranscriptOverlay } from '../app/transcriptOverlay.ts';
-import { orderProcessRows, projectProcessGroups } from '../app/processGroups.ts';
+import { orderProcessRows, projectProcessGroups, sameProcessRows } from '../app/processGroups.ts';
 
 const event = (sequence, fact, invocationId = 'run') => ({
   sequence,
@@ -322,4 +322,66 @@ test('tool input preview keeps a multi-page Unicode patch through admission', ()
   overlay.event(event(4, { kind: 'tool_dispatched', toolUseId: 'patch', name: 'ApplyPatch' }));
   assert.equal(overlay.snapshot().tools[0].phase, 'running');
   assert.equal(overlay.snapshot().tools[0].detail, input);
+});
+
+test('agent inputs share tool activity while human messages and answers stay outside', () => {
+  const origins = [
+    { kind: 'session', invocation: { session_id: 'reviewer' } },
+    { kind: 'bot_worker', sessionId: 'worker' },
+  ];
+  const rows = [
+    row('request', 'Review the change', 1, { role: 'user' }),
+    row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' }),
+    ...origins.map((origin, i) =>
+      row(`agent-${i}`, 'Internal report', 3 + i, { role: 'user', origin }),
+    ),
+    row('tool', 'Result', 6, { role: 'tool_result', tool: { toolUseId: 'lookup' } }),
+    row('human', 'Focus on correctness', 7, { role: 'user' }),
+    row('answer', 'Reviewed', 8, { finalOutput: true }),
+  ];
+  const projection = projectProcessGroups({ rows, toolActivity: [], activeTurnId: null });
+  assert.deepEqual(
+    projection.entries.map((entry) => (entry.kind === 'process' ? entry.rowIds : entry.rowId)),
+    [
+      'request/body',
+      ['thought/thinking', 'agent-0/body', 'agent-1/body', 'tool/body'],
+      'human/body',
+      'answer/body',
+    ],
+  );
+  assert.equal(projection.turns.get('run').interleavedInput, true, 'human steering stays visible');
+});
+
+test('an agent-started turn folds with its work without being treated as human steering', () => {
+  const origin = { kind: 'session', invocation: { session_id: 'parent' } };
+  const rows = [
+    row('delegation', 'Verify the patch', 1, { role: 'user', origin }),
+    row('thought', 'Checking', 2, { role: 'thinking', field: 'thinking' }),
+    row('report', 'Done', 3, { role: 'user', origin: { kind: 'bot_worker', sessionId: 'worker' } }),
+    row('answer', 'Verified', 4, { finalOutput: true }),
+  ];
+  const projection = projectProcessGroups({ rows, toolActivity: [], activeTurnId: null });
+  assert.deepEqual(
+    projection.entries.map((entry) => (entry.kind === 'process' ? entry.rowIds : entry.rowId)),
+    [['delegation/body', 'thought/thinking', 'report/body'], 'answer/body'],
+  );
+  assert.equal(projection.turns.get('run').interleavedInput, false);
+  const previous = projection.entries[0];
+  const reloaded = projectProcessGroups({
+    rows: rows.map((row) => ({ ...row })),
+    toolActivity: [],
+    activeTurnId: null,
+    previous: projection.entries,
+  });
+  assert.equal(reloaded.entries[0].key, previous.key, 'history refresh retains disclosure state');
+});
+
+test('agent attribution arriving with canonical metadata invalidates the live grouping', () => {
+  const pending = row('input', 'Task', 1, { role: 'user' });
+  const canonical = {
+    ...pending,
+    origin: { kind: 'session', invocation: { session_id: 'parent' } },
+  };
+  assert.equal(sameProcessRows([pending], [canonical]), false);
+  assert.equal(sameProcessRows([canonical], [{ ...canonical, text: 'Task details' }]), true);
 });

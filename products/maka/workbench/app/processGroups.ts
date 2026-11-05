@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { Row } from './history';
+import { senderSession, type Row } from './history.ts';
 import type { ToolActivity } from './toolActivity';
 
 /** Source identity, ordering and failure text; streamed answer text does not regroup rows. */
@@ -142,6 +142,7 @@ export function sameProcessRows(
       return (
         stableRowId(row) === stableRowId(next) &&
         row.role === next.role &&
+        row.origin?.kind === next.origin?.kind &&
         (row.role !== 'failure' || row.text === next.text) &&
         row.field === next.field &&
         row.turnId === next.turnId &&
@@ -327,7 +328,10 @@ export function projectProcessGroups(input: {
     if (current && current.turnId !== row.turnId) flush(true);
     const body = row.role === 'assistant' && row.field === 'body';
     const outside =
-      body || row.role === 'user' || row.role === 'failure' || row.role === 'compaction';
+      body ||
+      (row.role === 'user' && senderSession(row.origin) === null) ||
+      row.role === 'failure' ||
+      row.role === 'compaction';
     if (!row.turnId || outside) {
       flush(true);
       // A provider that keeps refusing (a rate limit, an overload) fails each retry

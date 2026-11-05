@@ -63,6 +63,12 @@ export type Row = {
   closedAt?: number | null;
 };
 
+export function senderSession(origin: MessageOrigin | null | undefined): string | null {
+  if (origin?.kind === 'session') return origin.invocation.session_id;
+  // A Bot Turn started because a worker finished names that worker.
+  return origin?.kind === 'bot_worker' ? origin.sessionId : null;
+}
+
 /** The opening user message, only when the loaded window proves the turn's start. */
 export function openingUserMessage(
   rows: readonly Row[],
