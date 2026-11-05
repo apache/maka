@@ -76,15 +76,20 @@ export class UiError extends Error {
 export const errorMessage = (reason: unknown): string =>
   reason instanceof Error ? reason.message : String(reason);
 
+export function isObservationCancelled(reason: unknown): boolean {
+  const detail = errorMessage(reason);
+  return detail === 'client subscription cancelled' || detail.endsWith('_observation_cancelled');
+}
+
 export function errorText(reason: unknown): UiText {
   if (reason instanceof UiError) return reason.text;
   const detail = errorMessage(reason);
   if (!detail) return '';
+  if (isObservationCancelled(reason)) return message('Connection interrupted. Your draft is kept.');
   switch (detail) {
     case 'client journal still has active preparation':
     case 'client operation ended before dispatch':
       return '';
-    case 'agent_observation_cancelled':
     case 'agent_observation_closed':
     case 'agent_closed':
       return message('Connection interrupted. Your draft is kept.');

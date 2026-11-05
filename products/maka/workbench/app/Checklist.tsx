@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import { createText, UiError, errorText } from './text';
+import { createText, UiError, errorText, isObservationCancelled } from './text';
 import { tr } from './locale';
 import { batch, cleanup, signal, Text, View, List } from 'nsh';
 import type { ComposerChecklistSource } from '../../../../packages/plugin-sdk/src/composer-view.js';
@@ -67,31 +67,43 @@ export function createChecklist(source: ComposerChecklistSource, height: () => n
     if (previous) void previous.close().catch(() => {});
   });
   void (async () => {
-    const opened = await source.watch(0);
-    if (!alive) {
-      await opened.close();
-      return;
-    }
-    stream = opened;
-    try {
-      for (;;) {
-        const page: AgentChecklist | null = await opened.next();
+    for (let reconnects = 0; alive; ) {
+      let opened: Subscription | null = null;
+      try {
+        opened = await source.watch(0);
+        if (!alive) {
+          await opened.close();
+          return;
+        }
+        stream = opened;
+        for (;;) {
+          const page: AgentChecklist | null = await opened.next();
+          if (!alive) return;
+          if (page === null) throw new UiError('Checklist updates ended. Reopen the conversation.');
+          reconnects = 0;
+          if (snapshot() && page.revision === snapshot()!.revision) continue;
+          generation += 1;
+          batch(() => {
+            snapshot.set(page);
+            items.set(page.items);
+            nextOffset.set(page.nextOffset);
+            loading.set(false);
+            error.set('');
+          });
+        }
+      } catch (reason) {
         if (!alive) return;
-        if (page === null) throw new UiError('Checklist updates ended. Reopen the conversation.');
-        if (snapshot() && page.revision === snapshot()!.revision) continue;
-        generation += 1;
-        batch(() => {
-          snapshot.set(page);
-          items.set(page.items);
-          nextOffset.set(page.nextOffset);
-          loading.set(false);
-          error.set('');
-        });
-      }
-    } finally {
-      if (stream === opened) {
-        stream = null;
-        await opened.close();
+        if (isObservationCancelled(reason) && reconnects < 3) {
+          reconnects += 1;
+          if (reconnects > 1) await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+          continue;
+        }
+        throw reason;
+      } finally {
+        if (opened && stream === opened) {
+          stream = null;
+          await opened.close().catch(() => {});
+        }
       }
     }
   })().catch((reason) => {

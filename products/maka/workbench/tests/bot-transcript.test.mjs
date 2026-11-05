@@ -283,6 +283,44 @@ test('a finished Turn is told apart by what the user could see', () => {
   assert.equal(botTurnEnding({ ...done, sent: false, slept: false }), 'unanswered');
 });
 
+test('bot outbox watch reconnects across service observation cancellation and catches up', async () => {
+  const state = { messages: [message(1, 't1', 'hello')], waiting: [], subscriptions: 0 };
+  const h = {
+    query: async (_endpoint, _method, input) => {
+      const through = state.messages.length;
+      if (input.limit === 0) return { sessionId: SESSION, isBot: true, through, messages: [] };
+      const rest = state.messages.filter((m) => m.sequence > (input.after ?? 0));
+      return { sessionId: SESSION, isBot: true, through, messages: rest, nextAfter: null };
+    },
+    subscribe: async () => {
+      state.subscriptions += 1;
+      return {
+        next: () => new Promise((resolve, reject) => state.waiting.push({ resolve, reject })),
+        close: async () => {},
+      };
+    },
+  };
+  const core = createBotTranscriptCore(
+    h,
+    SESSION,
+    () => {},
+    () => Promise.resolve(),
+  );
+  await core.started;
+  await settle();
+  assert.deepEqual(replies(core, 't1'), ['hello']);
+  assert.equal(state.subscriptions, 1);
+
+  state.messages.push(message(2, 't1', 'after-rebind'));
+  for (const waiter of state.waiting.splice(0)) {
+    waiter.reject(new Error('bot_observation_cancelled'));
+  }
+  await settle();
+  assert.equal(state.subscriptions, 2);
+  assert.deepEqual(replies(core, 't1'), ['hello', 'after-rebind']);
+  core.close();
+});
+
 test('a running, failed or stopped Turn is never reported as unanswered', () => {
   const quiet = { sent: false, slept: false };
   assert.equal(botTurnEnding({ finished: false, outcome: null, ...quiet }), 'running');
