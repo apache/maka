@@ -2844,7 +2844,7 @@ mount(App);
 
 fn set_frame_sizes_the_window_and_keeps_the_size_it_leaves_out(cx: &mut TestAppContext) {
     let code = nsh_bundler::compile_module("App.tsx", SIZED_WINDOW, &[]).unwrap();
-    let (view, cx) = owned_view(cx, code, |_| {});
+    let (view, cx) = owned_view(cx, AppOptions::default(), code, |_| {});
     wait_for(&view, cx, "sized");
     let size = |cx: &mut VisualTestContext| {
         cx.update(|window, _| {

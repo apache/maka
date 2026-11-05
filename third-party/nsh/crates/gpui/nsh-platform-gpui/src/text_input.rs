@@ -3034,11 +3034,14 @@ mod tests {
     fn hidden_windows_blink_no_caret() {
         let surface = Surface::new(nsh_engine::Environment::default());
         let view = NshView::new(2, nsh_core::ViewKind::Input);
+        // Only a mounted field with an input blinks.
+        view.set_invalidate(Rc::new(|| {}));
+        create(&surface, &view);
         FOCUS.with(|f| {
             f.borrow_mut().insert(
                 surface.key(),
                 Focus {
-                    view: Some(view),
+                    target: Some(FocusTarget::View(view)),
                     ..Default::default()
                 },
             )
@@ -3047,7 +3050,7 @@ mod tests {
         window_visibility(&surface, false);
         assert!(blink::carets().is_empty());
         // The field keeps the focus.
-        assert!(FOCUS.with(|f| f.borrow()[&surface.key()].view.is_some()));
+        assert!(FOCUS.with(|f| f.borrow()[&surface.key()].target.is_some()));
         // Shown again, it blinks.
         window_visibility(&surface, true);
         assert!(!surface.window_hidden.get());
@@ -3068,7 +3071,7 @@ mod tests {
             f.borrow_mut().insert(
                 surface.key(),
                 Focus {
-                    view: Some(view),
+                    target: Some(FocusTarget::View(view)),
                     ..Default::default()
                 },
             )
