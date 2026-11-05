@@ -73,7 +73,8 @@ async function main(action) {
         readFileSync('.cargo/config.toml'),
       ]),
     );
-    const compiled = `rust-deps-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
+    // Older caches omit V8's profile-level gn_out; exclude them from fallback restores too.
+    const compiled = `rust-deps-v2-${process.env.RUNNER_OS}-${process.env.RUNNER_ARCH}-${hash(compiler)}-${role}-${configuration}`;
     output({
       compiled: `${compiled}-${lock}-${hash(readFileSync(new URL(import.meta.url)))}`,
       compiled_prefix: `${compiled}-`,
