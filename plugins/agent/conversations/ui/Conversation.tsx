@@ -1523,20 +1523,23 @@ export function Conversation(props: ConversationProps) {
     const entry = display().find((item) =>
       item.kind === 'row'
         ? item.rowId === id
-        : item.kind === 'process' && item.group.rowIds.includes(id),
+        : item.kind === 'process' &&
+          item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
     );
     if (!entry) throw new UiError('The original message is not available in this conversation.');
     if (entry.kind === 'process') {
+      // A hidden script opens its group from the top.
+      const index = Math.max(0, entry.group.rowIds.indexOf(id));
       const state = groupState(entry.key);
       state.following.set(false);
       state.opening = undefined;
-      state.revealRow = id;
+      state.revealRow = entry.group.rowIds[index];
       state.open.set(true);
       state.requestFocus = true;
       innerReader.set(entry.key);
       if (state.list) {
         state.list.scrollToIndex({
-          index: entry.group.rowIds.indexOf(id),
+          index,
           viewPosition: 0,
           animated: false,
         });

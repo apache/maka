@@ -444,9 +444,9 @@ impl<'a> StepTools<'a> {
                         })
                     });
                     Ok(effect.titled(maka_agent_facts::display::Text::localized(
-                        "Run tools",
-                        "执行工具",
-                        "執行工具",
+                        "Run script",
+                        "运行脚本",
+                        "執行腳本",
                     )))
                 } else if call.name == "wait" && run.mode == ToolMode::CodeMode {
                     let input = cell::wait_input(input)?;

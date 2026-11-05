@@ -7411,6 +7411,9 @@ export const contracts = {
                       type: 'string',
                     },
                   },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
                   presentation: {
                     description:
                       'Opaque display contract captured at dispatch; no execution authority.',
@@ -7447,12 +7450,19 @@ export const contracts = {
                 additionalProperties: false,
                 required: [
                   'ancestorToolUseIds',
+                  'origin',
                   'position',
                   'name',
                   'title',
                   'pending',
                   'dispatched',
                 ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -7490,7 +7500,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   isError: {
-                    description: 'Does not distinguish failed from unknown effects.',
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
                     type: 'boolean',
                   },
                   image: {
@@ -23707,6 +23718,9 @@ export const contracts = {
                       type: 'string',
                     },
                   },
+                  origin: {
+                    $ref: '#/$defs/HistoryToolCallOrigin',
+                  },
                   presentation: {
                     description:
                       'Opaque display contract captured at dispatch; no execution authority.',
@@ -23743,12 +23757,19 @@ export const contracts = {
                 additionalProperties: false,
                 required: [
                   'ancestorToolUseIds',
+                  'origin',
                   'position',
                   'name',
                   'title',
                   'pending',
                   'dispatched',
                 ],
+              },
+              HistoryToolCallOrigin: {
+                description:
+                  "Who made a call: a model step, a script the model wrote, a tool's own work\nthrough the Host SDK, or a foreign record.",
+                type: 'string',
+                enum: ['provider', 'code_mode', 'host_sdk', 'imported'],
               },
               DisplayText: {
                 description:
@@ -23786,7 +23807,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   isError: {
-                    description: 'Does not distinguish failed from unknown effects.',
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
                     type: 'boolean',
                   },
                   image: {

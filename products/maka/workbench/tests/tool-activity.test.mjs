@@ -81,7 +81,16 @@ test('complete active tool identities survive 129 starts, updates and exact term
   assert.equal(active[128].detail, progress);
   assert.equal(
     toolActivitySummary(active[128], 'Running', title),
-    `Running · ${name} · ${title} · ${progress}`,
+    `Running · ${title} · ${progress}`,
+  );
+  assert.equal(toolActivitySummary(active[128], 'Running'), `Running · ${name} · ${progress}`);
+  assert.equal(
+    toolActivitySummary(
+      { ...active[128], source: 'native', detail: '{"code":"text(1)"}' },
+      'Preparing',
+    ),
+    `Preparing · ${name}`,
+    "a model's streamed arguments stay out of the caption",
   );
   assert.equal(active[128].startSequence, 129);
   active = updateToolActivity(

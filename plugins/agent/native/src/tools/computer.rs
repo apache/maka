@@ -57,9 +57,10 @@ pub(super) async fn project(
         unreachable!("validated receipt")
     };
     let result = serde_json::from_value(value.clone());
+    let failed = matches!(result, Ok(ResultValue::Failed { .. }));
     let raw = ToolOutput::Operation(Box::new(reply));
     match parts(store, invocation, result, language).await {
-        Ok(parts) => Ok(ToolSuccess::content(raw, parts)),
+        Ok(parts) => Ok(ToolSuccess::content(raw, parts).reporting_error(failed)),
         // A display failure cannot erase a completed native effect or its original receipt.
         Err(_) => Ok(ToolSuccess::projected(
             raw,

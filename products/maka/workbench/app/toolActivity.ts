@@ -152,6 +152,7 @@ export function toolActivitySummary(
   phaseLabel: string,
   title?: string,
 ): string {
-  const detail = tool.detail.replace(/\s+/g, ' ').trim();
-  return [phaseLabel, tool.name, title, detail].filter(Boolean).join(' · ');
+  // A model's streamed input is raw arguments; only an executor's progress reads as text.
+  const detail = tool.source === 'executor' ? tool.detail.replace(/\s+/g, ' ').trim() : '';
+  return [phaseLabel, title || tool.name, detail].filter(Boolean).join(' · ');
 }

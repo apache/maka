@@ -28,7 +28,8 @@ use serde_json::Value;
 pub(crate) fn project(result: rmcp::model::CallToolResult) -> ToolSuccess {
     let raw = serde_json::to_value(result).expect("MCP result is JSON");
     let mut parts = Vec::new();
-    if raw.get("isError").and_then(Value::as_bool) == Some(true) {
+    let is_error = raw.get("isError").and_then(Value::as_bool) == Some(true);
+    if is_error {
         parts.push(ToolContent::Text(
             "MCP tool reported an error (isError: true).".into(),
         ));
@@ -72,5 +73,5 @@ pub(crate) fn project(result: rmcp::model::CallToolResult) -> ToolSuccess {
             "MCP tool completed with no content.".into(),
         ));
     }
-    ToolSuccess::content(ToolOutput::Json(raw), parts)
+    ToolSuccess::content(ToolOutput::Json(raw), parts).reporting_error(is_error)
 }
