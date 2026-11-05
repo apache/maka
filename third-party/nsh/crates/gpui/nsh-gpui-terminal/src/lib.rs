@@ -38,6 +38,15 @@ pub struct FrameToken {
 }
 
 impl FrameToken {
+    /// An inert token with no platform issuer, rejected by [`TerminalPlatform::mark_presented`].
+    pub fn inert(sequence: u64) -> Self {
+        Self {
+            issuer: None,
+            sequence,
+            viewport_generation: 0,
+        }
+    }
+
     /// The draw sequence; zero is the inert default.
     pub fn sequence(&self) -> u64 {
         self.sequence
