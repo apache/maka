@@ -298,6 +298,37 @@ fn require_contract(endpoint: &str, method: &str, actual: &Contract) -> Result<(
 
 #[class]
 impl ApplicationHost {
+    pub async fn recent_workspaces(this: Instance<Self>) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let client = source.local(&original).await?;
+            serde_json::to_value(client.recent_workspaces().await?)
+                .map_err(|error| error.to_string())
+        })
+        .await
+    }
+
+    pub async fn set_recent_workspace(
+        this: Instance<Self>,
+        path: String,
+        workspace: Option<JsonValue>,
+    ) -> Result<JsonValue, String> {
+        let (owner, source) = this.with(|host| (host.owner.clone(), host.client.clone()));
+        drop(this);
+        let original = owner.clone();
+        execute(owner, async move {
+            let recent = source
+                .local(&original)
+                .await?
+                .set_recent_workspace(path, workspace)
+                .await?;
+            serde_json::to_value(recent).map_err(|error| error.to_string())
+        })
+        .await
+    }
+
     /// Snapshot files selected for a conversation that has not yet been sent.
     pub async fn stage_files(
         this: Instance<Self>,
