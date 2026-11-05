@@ -18,6 +18,8 @@
  */
 
 use maka_agent_facts::display::Text;
+use maka_agent_facts::read::{ReadInput, ReadRequest};
+use serde::Deserialize;
 use serde_json::Value;
 
 #[derive(Clone, Copy)]
@@ -50,11 +52,48 @@ impl Kind {
             Self::Fetch => (&input["url"], "Read web page", "读取网页", "讀取網頁"),
             Self::Search => (&input["query"], "Search the web", "搜索网络", "搜尋網路"),
         };
-        let target = Text::single_line(target.as_str()?)?.fallback;
+        let continuation = match self {
+            Self::Read => ReadInput::deserialize(input)
+                .ok()
+                .and_then(|read| read.resolve().ok())
+                .filter(ReadRequest::is_continuation),
+            _ => None,
+        };
+        let target = continuation
+            .as_ref()
+            .map_or_else(|| target.as_str(), |read| Some(read.path()))?;
+        let target = Text::single_line(target)?.fallback;
+        let (en_more, zh_more, tw_more) = if continuation.is_some() {
+            (" · continued", " · 续读", " · 續讀")
+        } else {
+            ("", "", "")
+        };
         Some(Text::localized(
-            &format!("{en} · {target}"),
-            &format!("{zh} · {target}"),
-            &format!("{tw} · {target}"),
+            &format!("{en} · {target}{en_more}"),
+            &format!("{zh} · {target}{zh_more}"),
+            &format!("{tw} · {target}{tw_more}"),
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn continued_read_names_the_original_path() {
+        let first = json!({"path": "src/main.rs"});
+        assert_eq!(
+            Kind::Read.render(&first).unwrap().fallback,
+            "Read file · src/main.rs"
+        );
+        let next = json!({
+            "path": "maka://read/c3JjL21haW4ucnM?at=120&sha=0123456789abcdef0123456789abcdef"
+        });
+        assert_eq!(
+            Kind::Read.render(&next).unwrap().fallback,
+            "Read file · src/main.rs · continued"
+        );
     }
 }
