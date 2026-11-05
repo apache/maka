@@ -1310,18 +1310,21 @@ impl Owner {
                 return Ok(result);
             }
         }
-        let mut selection = match &interruption {
-            Some(control) => Some(BackendPreference::Executor {
-                selection: control
-                    .basis
-                    .executor
+        let mut selection = selection
+            .or_else(|| {
+                interruption
                     .as_ref()
-                    .expect("interrupt-resume requires an external executor")
-                    .selection
-                    .clone(),
-            }),
-            None => selection.or_else(|| session.configuration.backend.clone()),
-        };
+                    .map(|control| BackendPreference::Executor {
+                        selection: control
+                            .basis
+                            .executor
+                            .as_ref()
+                            .expect("interrupt-resume requires an external executor")
+                            .selection
+                            .clone(),
+                    })
+            })
+            .or_else(|| session.configuration.backend.clone());
         self.use_bot_model(parent, &mut selection).await;
         let Some(selection) = selection else {
             return Ok(SendResult::Rejected {
@@ -1502,21 +1505,11 @@ impl Owner {
                 language,
                 Some(session.configuration.workspace.clone()),
                 parent,
-                if let Some(executor) = &basis.executor {
-                    if executor.selection.executor == "external" {
-                        self.external_tools(&id, &basis)?.catalog.names()
-                    } else {
-                        vec![]
-                    }
-                } else {
-                    self.selected_tools(
-                        &id,
-                        &basis,
-                        false,
-                        basis.model.as_ref().and_then(|model| model.editing_tools),
-                    )?
-                    .names()
-                },
+                self.skill_tool_names(
+                    &id,
+                    &basis,
+                    basis.model.as_ref().and_then(|model| model.editing_tools),
+                )?,
             )
             .await?
         {

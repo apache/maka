@@ -309,3 +309,44 @@ async fn claude_catalog_uses_bounded_real_cwd_even_when_the_first_record_is_part
     assert!(ambiguous.entries.is_empty());
     owner.finish().await.unwrap();
 }
+
+#[tokio::test]
+async fn catalog_titles_follow_import_filtering_without_hiding_user_tag_mentions() {
+    let directory = tempfile::tempdir().unwrap();
+    let instructions = "<maka_system_instructions>\nCaptured guidance\n</maka_system_instructions>";
+    let request = "Explain <maka_system_instructions> without treating it as setup.";
+    let codex = format!(
+        "{}\n{}\n{}\n",
+        json!({"type":"session_meta","payload":{"id":"a","source":"cli"}}),
+        json!({"type":"event_msg","payload":{"type":"user_message","message":instructions}}),
+        json!({"type":"event_msg","payload":{"type":"user_message","message":request}}),
+    );
+    write(
+        directory.path(),
+        "sessions/rollout-a.jsonl",
+        codex.as_bytes(),
+        10_000,
+    );
+    let claude = format!(
+        "{}\n{}\n{}\n{}\n",
+        json!({"type":"user","sessionId":"aa-bb","message":{"content":[{"type":"text","text":instructions}]}}),
+        json!({"type":"assistant","sessionId":"aa-bb","message":{"content":"Hidden readiness acknowledgement"}}),
+        json!({"type":"user","sessionId":"aa-bb","message":{"content":request}}),
+        json!({"type":"last-prompt","sessionId":"aa-bb","lastPrompt":instructions}),
+    );
+    write(
+        directory.path(),
+        "projects/workspace/aa-bb.jsonl",
+        claude.as_bytes(),
+        10_000,
+    );
+    let owner = owner();
+    let root = ReadRoot::open(directory.path()).await.unwrap();
+    let view = root.bind_scope(&owner);
+    for format in [Format::Codex, Format::ClaudeCode] {
+        let result = catalog::list(&view, format, query()).await.unwrap();
+        assert_eq!(result.entries.len(), 1);
+        assert_eq!(result.entries[0].title, request);
+    }
+    owner.finish().await.unwrap();
+}

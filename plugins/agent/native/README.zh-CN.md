@@ -66,6 +66,8 @@ agy 发现直接读取原生 `agy models` TSV，保留 Gemini、Claude、GPT-OSS
 
 桥接的 Files `Read` 只接受 Session 附件和归档结果资源，包括有界的 `page.next` 分页；拒绝工作区文件、任务资源和图片输出。较大的 Host 结果仍可通过相同的归档资源路径读取。此桥接不开放 CUA、Session 元数据／归档／删除、Graph／Swarm、Goal 和定时执行工具，也不自动转发第三方 MCP 配置。
 
+Windows 命令须选择原生 `.exe`，或显式使用 `node.exe` 加 CLI 脚本参数。`.cmd`／`.bat` 启动脚本会给出明确诊断，不隐式交给 shell 执行。
+
 Host 工具使用会话级本地 HTTP MCP endpoint，同一 Host 激活期间保持地址和私有配置路径稳定。工具目录持久冻结：本轮工具上限收紧时不改变公开定义，但不可用调用仍会被拒绝；新增工具或定义变化要求新建会话。每个 invocation 使用新 bearer 和隔离的 MCP transport session，不共享调用权限。Codex 刷新 thread 级 `http_headers`；Claude 和 agy 在原配置路径原子刷新凭据。已关闭的凭据和旧 transport session 不能借用下一轮权限；已接受调用在取消或断连后仍归原 invocation 和原操作回执。空闲会话仅保留 endpoint、目录和配置，删除会话及 Host 关闭会在物理结算后释放。Host 重启会创建新 listener 和私有目录，但保留冻结目录及已完成的初始化标记。凭据不出现在 argv 或日志中。
 
 启用工作区指令时，选中的全局 `AGENTS.md` 正文紧接内置身份介绍，仅用 `<global_instruction>` 和 `</global_instruction>` 包裹。优先使用 `~/.maka/AGENTS.md`，只有它不存在时才使用 `~/.agents/AGENTS.md`。其他全局和项目指令文件放在后面。指令在受理时捕获，恢复运行时保留原内容。Native 全局指令 API 读取和保存选中的完整 UTF-8 文件，提示词捕获不设独立的文件大小门槛。保存会检查选中的来源与内容 revision，再原子替换文件；助手编辑器使用共享的完整文本编辑与捕获路径。

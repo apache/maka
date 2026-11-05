@@ -67,11 +67,13 @@ Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-ser
 
 模型与推理档位来自原生协议，不来自 Settings connection。Claude 提供其已配置的原生默认模型，不启动 headless 发现进程。外部发现失败不会丢弃原生模型；目录读取和单模型校验共享有界缓存，刷新会使缓存失效。发现使用 Agent 配置的第一个工作区根目录。
 
-提交提示之前先持久化原生会话 ID 和运行中栅栏。后续 invocation 恢复同一原生会话；切换来源仅补充尚未交付的规范可读历史（最多 64 KiB / 128 片段），明确标注缺口，不重放历史工具、thinking 或历史附件内容。已有 journal 身份及未结算栅栏保留；旧 OAR 排队接纳不会被当作新执行重发。
+提交提示之前先持久化原生会话 ID 和运行中栅栏。后续 invocation 恢复同一原生会话；切换来源仅补充尚未交付的规范可读历史（最多 8 MiB 可读正文／64 MiB 编码源数据），明确标注缺口，不重放历史工具、thinking 或历史附件内容。已有 journal 身份及未结算栅栏保留；旧 OAR 排队接纳不会被当作新执行重发。
 
-后续消息保留在 Maka 可编辑队列。Stop 关闭 Host 工具准入、请求取消，等待已准入原操作结算，再确认原生进程与输出流收尾。静默、Stop hook、EOF 或退出码零都不证明成功；Claude 的本轮 JSONL 结束记录必须结合 API 错误标记判断。清理无法确认时不自动重发提示。
+后续消息通过 Maka 可编辑队列持久接纳。Codex 和 Claude 运行中默认接受 steering；Unix 上 Antigravity 在原操作与进程结算后，通过软中断在同一原生 conversation 中启动新的 Host invocation 续接。显式 `delivery: "queue"` 从不中断。Stop 关闭 Host 工具准入、请求取消，等待已准入原操作结算，再确认原生进程与输出流收尾。静默、Stop hook、EOF 或退出码零都不证明成功；Claude 的本轮 JSONL 结束记录必须结合 API 错误标记判断。清理无法确认时不自动重发提示。
 
-当前上传支持 UTF-8 文本/JSON，以及原生协议支持的 PNG/JPEG/GIF/WebP 图片。Claude PTY 暂不支持图片提交，会在提示提交前明确拒绝。
+当前上传支持 UTF-8 文本/JSON，以及原生模型支持的 PNG/JPEG/GIF/WebP 图片。Claude 交互 PTY 粘贴不可变图片路径并等待原生图片确认；Antigravity 接收有序路径与媒体类型。
+
+同一 Host 激活期间，MCP 地址、私有配置路径与冻结工具定义跨 invocation 保持稳定，原生会话仅初始化一次说明消息。每个 invocation 仍使用新凭据、自己的权限与原操作回执。Host 重启会重绑本地 endpoint，不重复已完成的初始化。Windows 启动命令须使用原生 `.exe`，或显式 `node.exe` 加 CLI 脚本参数；不支持 `.cmd`／`.bat` 启动脚本。
 
 ## 运行与开发
 

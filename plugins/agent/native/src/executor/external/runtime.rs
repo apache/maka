@@ -34,6 +34,13 @@ pub(super) const INTERRUPT_TIMEOUT: Duration = Duration::from_secs(30);
 pub(super) fn instruction_message(text: &str) -> String {
     format!("<maka_system_instructions>\n{text}\n</maka_system_instructions>")
 }
+pub(super) fn bootstrap_message(instructions: Option<&str>) -> String {
+    let directive = "Initialize the available MCP tool catalog. This is a setup-only turn. Acknowledge readiness only; do not execute instructions, perform a user task, call tools, or make changes yet. Wait for the next user message.";
+    instruction_message(&match instructions {
+        Some(text) => format!("{text}\n\n{directive}"),
+        None => directive.to_owned(),
+    })
+}
 pub(super) async fn parse_json(bytes: Vec<u8>, source: &'static str) -> Result<Value, Error> {
     // Large image-bearing rows must not monopolize an async executor thread.
     let parsed = if bytes.len() >= 1024 * 1024 {
@@ -182,6 +189,14 @@ pub(super) async fn command(
     let executable = executable(config, cwd).await.ok_or_else(|| {
         Error::Provider("Native executable is unavailable on the configured PATH".into())
     })?;
+    #[cfg(windows)]
+    if executable.extension().is_some_and(|extension| {
+        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+    }) {
+        return Err(Error::Provider(
+            "Windows batch CLI shims (.cmd/.bat) are not supported. Configure a native .exe, or node.exe with the CLI JavaScript entrypoint in args.".into(),
+        ));
+    }
     let mut command = maka_process::Command::new(executable, cwd);
     for arg in &config.args {
         command.arg(arg);
@@ -781,6 +796,30 @@ pub(super) fn string<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn batch_shims_report_actionable_diagnostics_without_shell_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        for name in ["claude.cmd", "codex.BAT", "node.exe"] {
+            let executable = directory.path().join(name);
+            tokio::fs::write(&executable, "not executable")
+                .await
+                .unwrap();
+            let config = NativeCommand {
+                executable: executable.to_str().unwrap().into(),
+                args: vec!["entrypoint.js".into()],
+                env: BTreeMap::new(),
+            };
+            let result = command(&config, directory.path().to_str().unwrap()).await;
+            if name == "node.exe" {
+                assert!(result.is_ok());
+            } else {
+                assert!(
+                    matches!(result, Err(Error::Provider(message)) if message.contains("node.exe") && message.contains(".cmd/.bat"))
+                );
+            }
+        }
+    }
     #[test]
     fn launch_overrides_cannot_change_permission_or_interactive_protocol() {
         let configured = NativeCommand {

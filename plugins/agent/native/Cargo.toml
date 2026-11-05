@@ -25,6 +25,7 @@ publish.workspace = true
 [dependencies]
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
 rmcp = { version = "=3.8.0", default-features = false, features = ["server", "transport-streamable-http-server"] }
+dunce = "1.0.5"
 tempfile.workspace = true
 fastrand.workspace = true
 unicode-normalization = "0.1.25"

@@ -135,7 +135,8 @@ struct Scan {
 impl Scan {
     fn title(&mut self, priority: u8, text: Option<String>) {
         if priority >= self.title_priority
-            && let Some(text) = text.filter(|text| !text.trim().is_empty())
+            && let Some(text) =
+                text.filter(|text| !text.trim().is_empty() && !crate::synthetic::instructions(text))
         {
             self.title = Some(title(&text));
             self.title_priority = priority;

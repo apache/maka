@@ -229,9 +229,7 @@ async fn converse(
         let mut cursor = TurnCursor::default();
         if !journal.bootstrap_completed() {
             let instructions = request.get("instructions").and_then(Value::as_str);
-            let bootstrap = runtime::instruction_message(instructions.unwrap_or(
-            "Initialize the available MCP tool catalog for this conversation and acknowledge readiness. Do not perform a user task yet."
-        ));
+            let bootstrap = runtime::bootstrap_message(instructions);
             io.send(user_message(&bootstrap)).await?;
             let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
             if !matches!(bootstrap, Outcome::Completed { .. }) {

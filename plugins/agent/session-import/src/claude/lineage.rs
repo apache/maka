@@ -59,7 +59,9 @@ impl Index {
         };
         let prompt = row.kind == Kind::User && !row.is_meta && !row.is_compact_summary && {
             let message = row.message(line)?;
-            !message.content.has_results() && !super::wire::synthetic(&message.content.text())
+            !message.content.has_results()
+                && !message.content.instructions()
+                && !super::wire::synthetic(&message.content.text())
         };
         self.nodes.insert(
             id.clone(),

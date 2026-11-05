@@ -43,10 +43,36 @@ pub(crate) use tools::HostTools;
 
 struct CatalogSnapshot {
     cwd: String,
+    selected: Option<NativeRuntime>,
     started: Instant,
     result: Shared<BoxFuture<'static, Result<Value, Error>>>,
 }
 
+impl CatalogSnapshot {
+    fn reusable(&self) -> bool {
+        let Some(result) = self.result.peek() else {
+            return true;
+        };
+        let Ok(catalog) = result else {
+            return false;
+        };
+        let rows = match self.selected {
+            Some(_) => std::slice::from_ref(catalog),
+            None => catalog
+                .as_array()
+                .expect("unscoped native catalog is an array"),
+        };
+        self.started.elapsed() < Duration::from_secs(30)
+            && !rows.iter().any(|row| {
+                ["installation", "models"].iter().any(|field| {
+                    row.get(field)
+                        .and_then(|value| value.get("kind"))
+                        .and_then(Value::as_str)
+                        == Some("error")
+                })
+            })
+    }
+}
 enum Catalog {
     Empty,
     Cached(CatalogSnapshot),
@@ -211,14 +237,14 @@ impl External {
         if selected.is_none() && kind == "models" {
             return Err(Error::Invalid("Models require a runtime selection".into()));
         }
-        if kind == "catalog" && selected.is_none() {
+        if kind == "catalog" {
             let discovery = {
                 let mut cached = self.catalog.lock().await;
                 cached.failure()?;
                 if let Catalog::Cached(entry) = &*cached
                     && entry.cwd == cwd
-                    && (entry.result.peek().is_none()
-                        || entry.started.elapsed() < Duration::from_secs(30))
+                    && entry.selected == selected
+                    && entry.reusable()
                 {
                     entry.result.clone()
                 } else {
@@ -226,7 +252,12 @@ impl External {
                     let work_cwd = cwd.clone();
                     let discovery = async move {
                         owner
-                            .discover(work_cwd, "catalog".into(), None, owner.stop.child_token())
+                            .discover(
+                                work_cwd,
+                                "catalog".into(),
+                                selected,
+                                owner.stop.child_token(),
+                            )
                             .await
                     }
                     .boxed()
@@ -237,6 +268,7 @@ impl External {
                     });
                     *cached = Catalog::Cached(CatalogSnapshot {
                         cwd,
+                        selected,
                         started: Instant::now(),
                         result: discovery.clone(),
                     });
@@ -516,6 +548,7 @@ mod tests {
     async fn evicted_catalog_probe_still_quarantines_metadata_and_drains_overlapping_status() {
         let cached = CatalogSnapshot {
             cwd: "workspace".into(),
+            selected: None,
             started: Instant::now(),
             result: futures_util::future::pending::<Result<Value, Error>>()
                 .boxed()

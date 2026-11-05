@@ -858,6 +858,7 @@ if (claude) {
       instructionOrder.push(m);
       request = {
         message: p.input[0].text,
+        model: opened.model ?? 'fixture-model',
         effort: p.effort ?? 'vendor-deep',
         images: p.input
           .filter((v) => v.type === 'localImage')

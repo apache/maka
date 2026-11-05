@@ -64,6 +64,10 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                     assert!(instructions.starts_with("<maka_system_instructions>\n"));
                     assert!(instructions.ends_with("\n</maka_system_instructions>"));
                     assert!(instructions.contains("CAPTURED EXTERNAL GUIDANCE 中文"));
+                    if runtime != "codex" {
+                        assert!(instructions.contains("Acknowledge readiness only"));
+                        assert!(instructions.contains("Wait for the next user message"));
+                    }
                     original_mcp = Some(opened["request"]["mcp"].clone());
                     original_tools = Some(opened["request"]["tools"].clone());
                 } else {

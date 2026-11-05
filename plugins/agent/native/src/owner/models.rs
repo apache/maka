@@ -87,7 +87,10 @@ impl Owner {
         let Some(cwd) = self.external_cwd().await.map_err(ExecutorError::Provider)? else {
             return Ok(Vec::new());
         };
-        let request = serde_json::json!({"kind":"catalog", "cwd":cwd});
+        let mut request = serde_json::json!({"kind":"catalog", "cwd":cwd});
+        if let Some(runtime) = requested_runtime {
+            request["runtime"] = runtime.into();
+        }
         let Some(catalog) = self
             .executors
             .external_query(cwd, request, cancellation.clone())
@@ -95,9 +98,13 @@ impl Owner {
         else {
             return Ok(Vec::new());
         };
-        let runtimes = catalog
-            .as_array()
-            .ok_or_else(|| ExecutorError::Provider("agent_external_catalog_invalid".into()))?;
+        let runtimes = if requested_runtime.is_some() {
+            std::slice::from_ref(&catalog)
+        } else {
+            catalog
+                .as_array()
+                .ok_or_else(|| ExecutorError::Provider("agent_external_catalog_invalid".into()))?
+        };
         let mut choices = Vec::new();
         for runtime in runtimes {
             let runtime_id = runtime

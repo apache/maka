@@ -124,6 +124,7 @@ async fn prepare(
     let cwd = tokio::fs::canonicalize(cwd)
         .await
         .map_err(|e| Error::Provider(e.to_string()))?;
+    let cwd = dunce::simplified(&cwd).to_owned();
     let transcript = transcript(config, &cwd, &session)?;
     let mut cursor = Cursor::fence(transcript, resume.is_some()).await?;
     // Commit the caller-selected UUID before native startup and any interactive submission.
@@ -220,7 +221,7 @@ async fn prepare(
             let native_prompt = if !journal.bootstrap_completed()
                 && let Some(instructions) = request.get("instructions").and_then(Value::as_str)
             {
-                let instructions = input::text(&runtime::instruction_message(instructions));
+                let instructions = input::text(&runtime::bootstrap_message(Some(instructions)));
                 let native_instructions = input::submit(
                     &io,
                     &mut screen,
@@ -299,21 +300,13 @@ async fn prepare(
     result
 }
 fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathBuf, Error> {
-    let root = config
-        .env
-        .get("CLAUDE_CONFIG_DIR")
-        .cloned()
-        .or_else(|| std::env::var("CLAUDE_CONFIG_DIR").ok())
-        .map(PathBuf::from)
-        .or_else(|| {
-            config
-                .env
-                .get("HOME")
-                .cloned()
-                .or_else(|| std::env::var("HOME").ok())
-                .map(|home| PathBuf::from(home).join(".claude"))
-        })
-        .ok_or_else(|| Error::Invalid("Claude configuration directory is unavailable".into()))?;
+    let root = configuration_directory(|key| {
+        config
+            .env
+            .get(key)
+            .cloned()
+            .or_else(|| std::env::var(key).ok())
+    })?;
     // Native Claude encodes each non-ASCII-alphanumeric UTF-16 code unit as '-'.
     let project: String = cwd
         .to_str()
@@ -331,6 +324,17 @@ fn transcript(config: &NativeCommand, cwd: &Path, session: &str) -> Result<PathB
         .join("projects")
         .join(project)
         .join(format!("{session}.jsonl")))
+}
+
+fn configuration_directory(env: impl Fn(&str) -> Option<String>) -> Result<PathBuf, Error> {
+    env("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| {
+            env("HOME")
+                .or_else(|| env("USERPROFILE"))
+                .map(|home| PathBuf::from(home).join(".claude"))
+        })
+        .ok_or_else(|| Error::Invalid("Claude configuration directory is unavailable".into()))
 }
 
 struct Cursor {
@@ -767,6 +771,37 @@ fn content_text(content: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn configuration_directory_uses_userprofile_after_home_and_keeps_explicit_override() {
+        for (entries, expected) in [
+            (vec![("USERPROFILE", "/profile")], "/profile/.claude"),
+            (
+                vec![("HOME", "/home"), ("USERPROFILE", "/profile")],
+                "/home/.claude",
+            ),
+            (
+                vec![
+                    ("CLAUDE_CONFIG_DIR", "/config"),
+                    ("HOME", "/home"),
+                    ("USERPROFILE", "/profile"),
+                ],
+                "/config",
+            ),
+        ] {
+            let actual = configuration_directory(|key| {
+                entries
+                    .iter()
+                    .find(|(name, _)| *name == key)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+            .unwrap();
+            assert_eq!(actual, PathBuf::from(expected));
+        }
+        assert!(matches!(
+            configuration_directory(|_| None),
+            Err(Error::Invalid(_))
+        ));
+    }
     struct Sink;
     impl OutputSink for Sink {
         fn emit(&self, _: Output) -> BoxFuture<'_, Result<(), Error>> {

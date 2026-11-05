@@ -1046,6 +1046,7 @@ async fn executor_attachments_use_only_owned_immutable_uploads_and_original_rece
 
 mod external;
 mod external_host_tools;
+mod external_owner_regressions;
 mod external_steering;
 
 mod external_attachments;
