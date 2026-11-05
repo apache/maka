@@ -27,6 +27,9 @@ import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
 import { intakeChunkEnd } from './intake-chunks.js';
 
 const hash = (v: unknown) => createHash('sha256').update(JSON.stringify(v)).digest('hex');
+/** A single event's metadata/context cannot fit the screening model. It is deferred on its
+ * own row so the queue head advances instead of retrying it on every tick. */
+class IntakeCapacityError extends Error {}
 const INTAKE_ROLE = `你负责判断是否需要唤醒用户的个人助手。助手醒来后可以调查情况、帮助用户处理事情，或向用户提出建议。
 
 阅读这批新信息，从用户的角度判断：现在让助手介入，可能给用户带来什么实际帮助？判断的是介入的价值，不是信息本身是否重要、是否还有事情没做完。不要把“可以继续关注”本身当作理由，也不必等问题完全确定才唤醒。
@@ -93,7 +96,7 @@ export class EventIntake {
   constructor(readonly quick: QuickDiscoveryController) {
     chmodSync(join(quick.store.directory, 'initiative.sqlite'), 0o600);
     quick.store.db.exec(`CREATE TABLE IF NOT EXISTS intake_sources(id TEXT PRIMARY KEY,scope TEXT,cursor TEXT,error TEXT);
-      CREATE TABLE IF NOT EXISTS intake_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,source TEXT,at INTEGER,payload TEXT,status TEXT DEFAULT 'pending',reason TEXT);
+      CREATE TABLE IF NOT EXISTS intake_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT UNIQUE,source TEXT,at INTEGER,payload TEXT,status TEXT DEFAULT 'pending',reason TEXT,retry_at INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE IF NOT EXISTS intake_long_events(id TEXT PRIMARY KEY,offset INTEGER NOT NULL,context TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS intake_meta(key TEXT PRIMARY KEY,value TEXT);
       CREATE INDEX IF NOT EXISTS intake_pending ON intake_events(status,seq);
@@ -108,6 +111,14 @@ export class EventIntake {
           .some((row) => row.name === 'captured')
       )
         this.db.exec('ALTER TABLE intake_wakes ADD COLUMN captured INTEGER NOT NULL DEFAULT 0');
+      // Per-event deferral: one unfittable event must not block its neighbours.
+      if (
+        !this.db
+          .prepare('PRAGMA table_info(intake_events)')
+          .all()
+          .some((row) => row.name === 'retry_at')
+      )
+        this.db.exec('ALTER TABLE intake_events ADD COLUMN retry_at INTEGER NOT NULL DEFAULT 0');
     });
     // Earlier versions' search tables and metadata can remain on disk; originals and
     // receipt states are unchanged. Screening no longer builds a second history index.
@@ -337,9 +348,9 @@ export class EventIntake {
     return this.db
       .prepare(
         `SELECT source,json_extract(payload,'$.group') topic,MIN(seq) first FROM intake_events
-      WHERE status=? GROUP BY source,topic`,
+      WHERE status=? AND retry_at<=? GROUP BY source,topic`,
       )
-      .all(status)
+      .all(status, now)
       .map((row) => ({
         source: String(row.source),
         topic: String(row.topic),
@@ -374,10 +385,10 @@ export class EventIntake {
       const read = (order: string) =>
         this.db
           .prepare(
-            `SELECT * FROM intake_events WHERE status=? AND source=?
+            `SELECT * FROM intake_events WHERE status=? AND retry_at<=? AND source=?
         AND json_extract(payload,'$.group')=? ORDER BY seq ${order} LIMIT 128`,
           )
-          .all('pending', group.source, group.topic);
+          .all('pending', this.quick.now(), group.source, group.topic);
       // Oldest and newest edges both make progress; a long chat cannot hide a fresh reply.
       const oldest = read('ASC'),
         newest = read('DESC'),
@@ -443,12 +454,12 @@ export class EventIntake {
     return this.db.prepare('SELECT offset,context FROM intake_long_events WHERE id=?').get(id);
   }
   private async judgeLong(event: any, budget: any) {
-    const progress = this.longProgress(event.id);
-    const start = Number(progress?.offset ?? 0),
-      earlierContext = String(progress?.context ?? '');
     const content = String(event.content);
     const contextBudget = Math.floor(budget.maxInputTokens / 3);
-    const request = (end: number) => ({
+    const progress = this.longProgress(event.id);
+    let start = Number(progress?.offset ?? 0),
+      earlierContext = String(progress?.context ?? '');
+    const request = (start: number, end: number, earlierContext: string) => ({
       ...this.screeningInput([{ ...event, content: content.slice(start, end) }]),
       earlierContext,
       offsetChars: start,
@@ -457,19 +468,45 @@ export class EventIntake {
       final: end === content.length,
       contextBudget: { maxJsonUtf8Bytes: contextBudget },
     });
-    const fits = (end: number) =>
-      estimatePluginLlmInputTokens(LONG_INTAKE_SYSTEM, JSON.stringify(request(end))) <=
-      budget.maxInputTokens;
-    let lo = start,
-      hi = content.length;
-    while (lo < hi) {
-      const mid = Math.ceil((lo + hi) / 2);
-      if (fits(mid)) lo = mid;
-      else hi = mid - 1;
+    const fits = (start: number, end: number, earlierContext: string) =>
+      estimatePluginLlmInputTokens(
+        LONG_INTAKE_SYSTEM,
+        JSON.stringify(request(start, end, earlierContext)),
+      ) <= budget.maxInputTokens;
+    // Widest chunk from the retained offset that fits, or undefined when not even one
+    // character more fits beside the retained summary and this event's metadata.
+    const chunk = () => {
+      let lo = start,
+        hi = content.length;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        if (fits(start, mid, earlierContext)) lo = mid;
+        else hi = mid - 1;
+      }
+      const end = intakeChunkEnd(content, start, lo);
+      return end > start && fits(start, end, earlierContext) ? end : undefined;
+    };
+    let end = chunk();
+    if (end === undefined && start > 0) {
+      // earlierContext was summarized under a previous, larger screening model's context
+      // budget. Cutting it would keep an offset whose prefix is no longer summarized, so
+      // restart the event from the beginning under the current budget instead.
+      this.transaction(() => {
+        this.db.prepare('DELETE FROM intake_long_events WHERE id=?').run(event.id);
+      });
+      start = 0;
+      earlierContext = '';
+      end = chunk();
     }
-    const end = intakeChunkEnd(content, start, lo);
+    if (end === undefined) {
+      // This event never fits: defer it on its own row so judge() can move the queue on.
+      this.deferLong(event);
+      throw new IntakeCapacityError(
+        'Long event metadata/context exceeds model input capacity; event deferred. Configure a larger screening model.',
+      );
+    }
+    const input = request(start, end, earlierContext);
     const group = hash([event.source, event.group]);
-    // Capacity failures must rotate/back off too, without discarding saved progress.
     this.transaction(() => {
       this.db
         .prepare(
@@ -477,11 +514,6 @@ export class EventIntake {
         )
         .run(group, this.quick.now(), this.quick.now() + 30000);
     });
-    if (end <= start || !fits(end))
-      throw Error(
-        'Long event metadata/context exceeds model input capacity; progress retained. Configure a larger screening model.',
-      );
-    const input = request(end);
     const result = await this.quick.parent.asOwner(
       this.quick.state(),
       () =>
@@ -563,6 +595,22 @@ export class EventIntake {
     });
     return Boolean(direction);
   }
+  /** Defer one event and rotate its group without delaying short neighbours. */
+  private deferLong(event: any) {
+    const retryAt = this.quick.now() + 30000;
+    this.transaction(() => {
+      this.db
+        .prepare("UPDATE intake_events SET retry_at=? WHERE id=? AND status='pending'")
+        .run(retryAt, event.id);
+      // Rotate the group even if the next tick arrives after this deferral expires.
+      // Keep group backoff unchanged so short neighbours remain eligible.
+      this.db
+        .prepare(
+          'INSERT INTO intake_groups VALUES(?,?,0) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked',
+        )
+        .run(hash([event.source, event.group]), this.quick.now());
+    });
+  }
   async judge() {
     this.ready();
     if (!this.groups('pending').length) return;
@@ -592,7 +640,13 @@ export class EventIntake {
       if (this.longProgress(event.id) || one > budget.maxInputTokens) {
         // Never mix a partial original with independent events or publish per-piece hints.
         if (events.length) break;
-        return this.judgeLong(event, budget);
+        try {
+          return await this.judgeLong(event, budget);
+        } catch (error) {
+          // A deferred event must not end the pass: keep the queue moving.
+          if (!(error instanceof IntakeCapacityError)) throw error;
+          continue;
+        }
       }
       const trial = this.screeningInput([...events, event]);
       if (

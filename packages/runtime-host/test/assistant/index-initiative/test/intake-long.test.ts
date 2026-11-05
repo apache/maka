@@ -167,68 +167,6 @@ test('failed or over-budget summaries retain offset; a smaller model continues w
   assert.equal(seen.join(''), original('未修复'));
 });
 
-test('a long summary that no longer fits backs off without starving an existing healthy group', async (t) => {
-  const f = await intakeFixture();
-  t.after(() => f.close());
-  let capacity = 16000,
-    calls = 0;
-  f.ctx.llm.budget = async () => ({
-    modelId: 'resize',
-    maxInputTokens: capacity,
-    maxOutputTokens: 2048,
-  });
-  f.ctx.llm.generate = async (input: any) => {
-    assert.ok(estimatePluginLlmInputTokens(input.system, input.prompt) <= capacity);
-    calls++;
-    return {
-      text:
-        JSON.parse(input.prompt).offsetChars === undefined
-          ? JSON.stringify('')
-          : JSON.stringify({ context: 'C'.repeat(5000), direction: '' }),
-    };
-  };
-  await f.q.intake.collect();
-  f.add('long', 'L'.repeat(100000), 'long-group');
-  await f.q.intake.collect();
-  f.advance();
-  await f.q.intake.judge();
-  const saved = { ...progress(f) };
-  assert.ok(saved.offset > 0 && saved.offset < 100000);
-  assert.equal(saved.context.length, 5000);
-
-  // This group must already have a later successful check; a never-seen group
-  // sorts ahead of the long event and would miss the starvation regression.
-  f.add('healthy-before', 'Earlier update', 'healthy-group');
-  await f.q.intake.collect();
-  f.advance();
-  await f.q.intake.judge();
-  capacity = 4000;
-  f.add('healthy-after', 'New update', 'healthy-group');
-  await f.q.intake.collect();
-  f.advance();
-  const before = calls;
-  await assert.rejects(f.q.intake.judge(), /context exceeds model input capacity/);
-  assert.equal(calls, before, 'an oversized context is rejected before a model call');
-  assert.deepEqual({ ...progress(f) }, saved);
-
-  // Even after the failed group's backoff expires, it must rotate behind the
-  // healthy group instead of retaining the oldest checked position forever.
-  f.advance(31000);
-  await f.q.intake.judge();
-  assert.equal(calls, before + 1);
-  assert.equal(pending(f), 1, 'only the incompatible long event remains pending');
-  assert.deepEqual({ ...progress(f) }, saved);
-  assert.equal(wakes(f), 0);
-
-  await f.restart();
-  await assert.rejects(f.q.intake.judge(), /context exceeds model input capacity/);
-  assert.deepEqual({ ...progress(f) }, saved);
-  capacity = 16000;
-  f.advance(31000);
-  await f.q.intake.judge();
-  assert.ok(progress(f).offset > saved.offset, 'restoring capacity resumes retained progress');
-});
-
 test('a short independent event can wake while a long original remains incomplete', async (t) => {
   const f = await setup(t, original('未修复'));
   f.ctx.llm.generate = async (input: any) => {
@@ -328,4 +266,158 @@ test('legacy unfinished fragments restart from the retained original and withdra
   assert.equal(f.counts().workerCalls, 1);
   await f.restart();
   assert.equal(pending(f), 0);
+});
+
+test('shrinking the screening model restarts retained progress instead of retrying it forever', async (t) => {
+  const text = original('最终已修复');
+  const f = await setup(t, text);
+  let capacity = 12000;
+  f.ctx.llm.budget = async () => ({
+    modelId: 'resize',
+    maxInputTokens: capacity,
+    maxOutputTokens: 2048,
+  });
+  const reads: { offset: number; content: string }[] = [];
+  f.ctx.llm.generate = async (input: any) => {
+    assert.ok(estimatePluginLlmInputTokens(input.system, input.prompt) <= capacity);
+    const p = JSON.parse(input.prompt);
+    reads.push({ offset: p.offsetChars, content: p.events[0].records[0].content });
+    return {
+      text: JSON.stringify({
+        context: 'x'.repeat(Math.max(1, p.contextBudget.maxJsonUtf8Bytes - 20)),
+        direction: p.final ? '服务已修复，可向用户确认' : '',
+      }),
+    };
+  };
+  await f.q.intake.judge();
+  const accumulated = { ...progress(f) };
+  assert.ok(accumulated.offset > 0);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(accumulated.context)) > Math.floor(3500 / 3),
+    "the retained summary is larger than the smaller model's whole context budget",
+  );
+  capacity = 3500;
+  await f.restart();
+  reads.length = 0;
+  // Previously threw "Configure a larger screening model" on every tick, forever.
+  await assert.doesNotReject(f.q.intake.judge());
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].offset, 0, 'progress restarted from the beginning under the new budget');
+  assert.ok(Number(progress(f).offset) < accumulated.offset);
+  await drain(f);
+  assert.equal(reads.map((read) => read.content).join(''), text, 'no text dropped by the restart');
+  assert.equal(wakes(f), 1);
+});
+
+test('an event that cannot fit is backed off on its own row instead of blocking the queue', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  f.ctx.llm.budget = async () => ({
+    modelId: 'small',
+    maxInputTokens: 5000,
+    maxOutputTokens: 2048,
+  });
+  await f.q.intake.collect();
+  // Its screening metadata alone can never fit, so no chunk size makes it readable.
+  f.feed.push({
+    id: 'giant',
+    group: 'chat',
+    occurredAt: f.q.now(),
+    object: {
+      id: 'giant',
+      revision: '1',
+      kind: 'message',
+      title: 'T'.repeat(60000),
+      locator: { id: 'giant' },
+    },
+    content: '正文很长的一条消息',
+  });
+  f.add('short', '客户改期，需要助手确认', 'other');
+  await f.q.intake.collect();
+  f.advance();
+  let longCalls = 0;
+  f.ctx.llm.generate = async (input: any) => {
+    if (JSON.parse(input.prompt).offsetChars !== undefined) longCalls++;
+    return { text: JSON.stringify('客户改期需要关注') };
+  };
+  const retry = () =>
+    f.q.store.db
+      .prepare(
+        "SELECT retry_at FROM intake_events WHERE json_extract(payload,'$.content')='正文很长的一条消息'",
+      )
+      .get();
+  // The queue head cannot fit: this used to throw before any backoff was written.
+  await assert.doesNotReject(f.q.intake.judge());
+  assert.equal(longCalls, 0);
+  assert.ok(Number(retry().retry_at) > f.q.now(), 'the unfittable event is backed off');
+  assert.equal(pending(f), 2);
+  // Within the same backoff window the queue moves on: the short event still screens.
+  await assert.doesNotReject(f.q.intake.judge());
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 1);
+  assert.equal(pending(f), 1);
+  assert.equal(longCalls, 0, 'the deferred event is not retried on every tick');
+  const deferred = Number(retry().retry_at);
+  f.advance(31000);
+  await assert.doesNotReject(f.q.intake.judge());
+  assert.ok(Number(retry().retry_at) > deferred, 'it retries once the backoff expires');
+  assert.equal(pending(f), 1);
+});
+
+test('an unfittable event rotates behind other groups even after its deferral expires', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  f.ctx.llm.budget = async () => ({
+    modelId: 'small',
+    maxInputTokens: 4000,
+    maxOutputTokens: 2048,
+  });
+  let calls = 0;
+  f.ctx.llm.generate = async (input: any) => {
+    assert.ok(estimatePluginLlmInputTokens(input.system, input.prompt) <= 4000);
+    calls++;
+    return { text: JSON.stringify('') };
+  };
+  await f.q.intake.collect();
+  // An already-screened group has a later checked position than a new bad event.
+  f.add('healthy-before', 'Earlier update', 'healthy');
+  await f.q.intake.collect();
+  f.advance();
+  await f.q.intake.judge();
+  const title = 'T'.repeat(6000);
+  f.feed.push({
+    id: 'large',
+    group: 'large',
+    occurredAt: f.q.now(),
+    object: { id: 'large', revision: '1', kind: 'message', title, locator: { id: 'large' } },
+    content: 'A short body',
+  });
+  f.add('healthy-after', 'New update', 'healthy');
+  await f.q.intake.collect();
+  f.advance();
+  await f.q.intake.judge();
+  assert.equal(calls, 1, 'oversized metadata cannot reach the model');
+  f.advance(31000);
+  await f.q.intake.judge();
+  assert.equal(calls, 2, 'the healthy group progresses even after the bad event is eligible again');
+  assert.equal(pending(f), 1);
+
+  f.advance(31000);
+  await f.q.intake.judge();
+  f.add('neighbour', 'A short message in the same group', 'large');
+  await f.q.intake.collect();
+  f.advance();
+  await f.q.intake.judge();
+  assert.equal(calls, 3, 'rotating the group must not put its healthy neighbours on backoff');
+  assert.equal(pending(f), 1);
+  await f.restart();
+  f.advance(31000);
+  await f.q.intake.judge();
+  assert.equal(calls, 3);
+  const retained = f.q.store.db
+    .prepare("SELECT payload,retry_at FROM intake_events WHERE status='pending'")
+    .get();
+  assert.equal(JSON.parse(String(retained.payload)).object.title, title);
+  assert.ok(Number(retained.retry_at) > f.q.now(), 'the original remains durable and retryable');
 });
