@@ -547,7 +547,7 @@ pub(crate) fn refresh_tracked_states(surface: &Surface, ids: &[NodeId]) {
             if hovered_chain.contains(&view) {
                 states |= HOVERED;
             }
-            state.states = states & state.tracked;
+            state.states = states & input::reported_states(state.tracked);
             state.states
         };
         surface.control(|control| control.set_states(*id, states));

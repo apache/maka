@@ -379,6 +379,13 @@ fn configured_loader_wakes_local_engine_and_ends_with_it() {
     engine.pump();
     let (id, source) = requested.recv_timeout(Duration::from_secs(5)).unwrap();
     assert_eq!(id, "pending.js");
+    // A module still loading keeps a flush from reporting the engine idle.
+    let (flushed, idle) = crossbeam_channel::unbounded();
+    engine.control().flush(move |idle| {
+        let _ = flushed.send(idle);
+    });
+    engine.pump();
+    assert_eq!(idle.recv_timeout(Duration::from_secs(5)), Ok(false));
     drop(engine);
     assert_eq!(
         ended.recv_timeout(Duration::from_secs(5)).unwrap(),

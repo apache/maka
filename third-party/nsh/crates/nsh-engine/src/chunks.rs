@@ -123,6 +123,10 @@ impl Loads {
     pub(crate) fn finished(&mut self, id: &str) {
         self.tasks.remove(id);
     }
+
+    pub(crate) fn idle(&self) -> bool {
+        self.tasks.is_empty()
+    }
 }
 
 impl Drop for Loads {

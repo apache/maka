@@ -536,14 +536,19 @@ impl<M: TextEngine> Core<M> {
             let Some(scroll) = node.scroll.as_mut() else {
                 continue;
             };
-            let Some(mut asked) = scroll.asked.take() else {
+            let Some(asked) = scroll.asked.take() else {
                 continue;
             };
-            // A scroll back may go before the content shrinks, which would put
-            // it ahead of the scroll to: one scroll to the sum keeps the order.
-            if let Some((to, _)) = &mut asked.to {
-                *to += std::mem::take(&mut asked.by);
-            }
+            // The scroll to goes last and to the sum, since a scroll back may
+            // go before the content shrinks. An animated one starts from the
+            // offset the scroll by compensated; an instant one makes it moot.
+            let (to, by) = match asked.to {
+                Some((to, animated)) => (
+                    Some((to + asked.by, animated)),
+                    if animated { asked.by } else { 0.0 },
+                ),
+                None => (None, asked.by),
+            };
             let horizontal = scroll.horizontal;
             let content_item = scroll.content_item.filter(|&(b, _)| b == batch);
             let along = |v: f32| {
@@ -553,42 +558,38 @@ impl<M: TextEngine> Core<M> {
                     (Points::ZERO, Points(v))
                 }
             };
-            if let Some((to, animated)) = asked.to {
+            if by != 0.0 {
+                match node.list.as_mut() {
+                    Some(own) => own.issue_scroll_by(by),
+                    None => issue(scroll, PendingScroll::By(by)),
+                }
+                let (dx, dy) = along(by);
+                let item = MountItem::ScrollBy { id, dx, dy };
+                let before = (by < 0.0)
+                    .then_some(content_item)
+                    .flatten()
+                    .and_then(|(_, i)| {
+                        let at = self.mount.get(i..)?.iter().position(
+                            |m| matches!(m, MountItem::ScrollContent { id: c, .. } if *c == id),
+                        )?;
+                        Some(i + at)
+                    });
+                match before {
+                    Some(at) => self.mount.insert(at, item),
+                    None => self.mount.push(item),
+                }
+            }
+            if let Some((to, animated)) = to {
+                let node = &mut self.nodes[view as usize];
                 match node.list.as_mut() {
                     Some(own) => own.issue_scroll_to(to),
-                    None => issue(scroll, PendingScroll::To(to)),
+                    None => issue(node.scroll.as_mut().expect("scroll"), PendingScroll::To(to)),
                 }
                 let (x, y) = along(to);
                 self.mount.push(MountItem::Command {
                     id,
                     command: Command::ScrollTo { x, y, animated },
                 });
-            }
-            if asked.by != 0.0 {
-                let node = &mut self.nodes[view as usize];
-                match node.list.as_mut() {
-                    Some(own) => own.issue_scroll_by(asked.by),
-                    None => issue(
-                        node.scroll.as_mut().expect("scroll"),
-                        PendingScroll::By(asked.by),
-                    ),
-                }
-                let (dx, dy) = along(asked.by);
-                let item = MountItem::ScrollBy { id, dx, dy };
-                let before =
-                    (asked.by < 0.0)
-                        .then_some(content_item)
-                        .flatten()
-                        .and_then(|(_, i)| {
-                            let at = self.mount.get(i..)?.iter().position(
-                                |m| matches!(m, MountItem::ScrollContent { id: c, .. } if *c == id),
-                            )?;
-                            Some(i + at)
-                        });
-                match before {
-                    Some(at) => self.mount.insert(at, item),
-                    None => self.mount.push(item),
-                }
             }
         }
     }

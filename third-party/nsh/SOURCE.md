@@ -72,8 +72,11 @@ indices change, covering upstream #740 without a second item-memo mechanism.
 Built-in List scrollbars remain independent decoration roots and stay above
 projected rows across rebinds and theme replacement. Automatic lists track the
 platform's reported `focus-within` with hover. A parent-viewport scroll to an
-offset and a scroll back in the same commit are sent as one scroll to their
-sum, so shrinking content cannot reorder them.
+offset and a scroll back in the same commit end on their sum: the scroll to
+goes last, and an animated one follows the scroll back so that it starts from
+the compensated offset. Platforms report focus whatever a view tracks, the
+Maka-local GPUI state refresh and terminal reports included, and a flush
+counts module loads still in flight.
 
 ## Retained local capabilities
 

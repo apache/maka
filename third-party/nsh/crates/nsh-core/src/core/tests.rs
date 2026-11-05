@@ -24291,6 +24291,27 @@ fn page_scrolls(batch: &MountBatch) -> Vec<(bool, f32)> {
 }
 
 #[test]
+fn a_scroll_to_and_back_in_one_commit_ends_on_their_sum() {
+    for animated in [false, true] {
+        let mut c = core();
+        page(&mut c, 2000.0, &[100]);
+        c.commit();
+        c.set_scroll_offset(2, point(px(0.0), px(500.0)), 0);
+        c.commit();
+        let view = c.key(2).unwrap();
+        c.ask_outer(view, Some((1000.0, animated)), -100.0);
+        let batch = c.commit().unwrap();
+        // An animation starts from the offset the scroll back keeps in place.
+        let expected = if animated {
+            vec![(false, -100.0), (true, 900.0)]
+        } else {
+            vec![(true, 900.0)]
+        };
+        assert_eq!(page_scrolls(&batch), expected, "animated: {animated}");
+    }
+}
+
+#[test]
 fn a_page_moves_only_for_rows_wholly_above_its_viewport() {
     let mut c = core();
     page(&mut c, 100.0, &[100]);

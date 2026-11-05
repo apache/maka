@@ -1948,11 +1948,16 @@ impl<M: TextEngine + 'static> Driver<M> {
 
     /// Whether nothing is left to run: no message queued, nothing due at
     /// the clock's time (a timer that keeps scheduling another at once
-    /// outlasts a flush's rounds) and no request in flight.
+    /// outlasts a flush's rounds) and no request or module load in flight.
     fn idle(&self, rx: &Receiver<Message>) -> bool {
         let now = self.clock.now();
+        #[cfg(not(target_arch = "wasm32"))]
+        let chunks = self.state.chunks.as_ref().is_none_or(chunks::Loads::idle);
+        #[cfg(target_arch = "wasm32")]
+        let chunks = true;
         rx.is_empty()
             && self.state.net.idle()
+            && chunks
             && [self.due(), self.clock.next_alarm()]
                 .into_iter()
                 .flatten()
