@@ -3801,6 +3801,38 @@ mod tests {
 
     #[tokio::test]
     async fn healthy_browser_discovery_keeps_other_provider_uncertainty() {
+        // Discovery must not enumerate the developer's real browser profiles.
+        const CHILD: &str = "MAKA_TEST_BROWSER_DISCOVERY_HOME";
+        const TEST: &str =
+            "browser::tests::healthy_browser_discovery_keeps_other_provider_uncertainty";
+        if std::env::var(CHILD).as_deref() != Ok(TEST) {
+            let directory = tempfile::tempdir().unwrap();
+            let home = directory.path().canonicalize().unwrap();
+            let output = tokio::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", TEST, "--nocapture"])
+                .env(CHILD, TEST)
+                .envs(
+                    [
+                        "HOME",
+                        "USERPROFILE",
+                        "LOCALAPPDATA",
+                        "APPDATA",
+                        "XDG_CONFIG_HOME",
+                        "XDG_RUNTIME_DIR",
+                    ]
+                    .map(|key| (key, &home)),
+                )
+                .output()
+                .await
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            assert!(
+                output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+                "{stdout}{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         for unhealthy_first in [true, false] {
             let (healthy, _, healthy_server) = inventory_provider("actual-cdp", 3, vec![]).await;
             let (unhealthy, generation, unhealthy_server) =

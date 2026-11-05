@@ -15,7 +15,7 @@ docs/assets/
 deepseek.key
 
 # Native and npm distribution build outputs.
-/target/
+target/
 /native-preview/
 /release/asf/
 /packages/cli/release/

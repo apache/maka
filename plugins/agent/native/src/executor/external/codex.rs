@@ -26,7 +26,16 @@ pub(super) async fn proxy(
     cwd: &str,
     cancellation: CancellationToken,
 ) -> Result<maka_process::Command, Error> {
-    let mut start = runtime::command(config, cwd).await?;
+    let resolved = runtime::resolve(config, cwd).await.require()?;
+    proxy_resolved(&resolved, cwd, cancellation).await
+}
+
+pub(super) async fn proxy_resolved(
+    config: &runtime::ResolvedCommand<'_>,
+    cwd: &str,
+    cancellation: CancellationToken,
+) -> Result<maka_process::Command, Error> {
+    let mut start = config.command(cwd);
     start.args(["app-server", "daemon", "start"]);
     let mut observed = start
         .observe(
@@ -53,7 +62,7 @@ pub(super) async fn proxy(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    let mut proxy = runtime::command(config, cwd).await?;
+    let mut proxy = config.command(cwd);
     proxy.args(["app-server", "proxy"]);
     Ok(proxy)
 }
@@ -171,26 +180,26 @@ async fn run(
         ));
     }
     journal.opened(storage, thread.clone()).await?;
-    if !journal.bootstrap_completed() {
-        if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
-            let injected = io
-                .request(
-                    "thread/inject_items",
-                    serde_json::json!({
-                        "threadId":thread,
-                        "items":[{"type":"message","role":"user","content":[{
-                            "type":"input_text","text":runtime::instruction_message(instructions)
-                        }]}]
-                    }),
-                )
-                .await?;
-            if !injected.is_object() {
-                return Err(Error::Invalid(
-                    "Codex instruction-message injection has no acknowledgement".into(),
-                ));
-            }
+    if let Some(update) =
+        journal.instruction_update(request.get("instructions").and_then(Value::as_str))
+    {
+        let injected = io
+            .request(
+                "thread/inject_items",
+                serde_json::json!({
+                    "threadId":thread,
+                    "items":[{"type":"message","role":"user","content":[{
+                        "type":"input_text","text":runtime::instruction_message(&update.text)
+                    }]}]
+                }),
+            )
+            .await?;
+        if !injected.is_object() {
+            return Err(Error::Invalid(
+                "Codex instruction-message injection has no acknowledgement".into(),
+            ));
         }
-        journal.complete_bootstrap(storage).await?;
+        journal.confirm_instructions(storage, update).await?;
     }
     bridge.admit()?;
     let mut input = vec![serde_json::json!({"type":"text","text":request["message"]})];

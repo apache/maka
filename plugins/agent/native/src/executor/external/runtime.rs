@@ -138,35 +138,94 @@ pub(super) fn validate_command(
     }
     Ok(())
 }
-pub(super) async fn executable(config: &NativeCommand, cwd: &str) -> Option<PathBuf> {
+pub(super) const BATCH_SHIM_UNSUPPORTED: &str = "Windows batch CLI shims (.cmd/.bat) are not supported. Configure a native .exe, or node.exe with the CLI JavaScript entrypoint in args.";
+
+pub(super) enum Resolution<'a> {
+    Native(ResolvedCommand<'a>),
+    Missing,
+    UnsupportedBatch,
+}
+pub(super) struct ResolvedCommand<'a> {
+    executable: PathBuf,
+    configuration: &'a NativeCommand,
+}
+impl<'a> Resolution<'a> {
+    pub fn require(self) -> Result<ResolvedCommand<'a>, Error> {
+        match self {
+            Self::Native(command) => Ok(command),
+            Self::Missing => Err(Error::Provider(
+                "Native executable is unavailable on the configured PATH".into(),
+            )),
+            Self::UnsupportedBatch => Err(Error::Provider(BATCH_SHIM_UNSUPPORTED.into())),
+        }
+    }
+}
+impl ResolvedCommand<'_> {
+    pub fn command(&self, cwd: &str) -> maka_process::Command {
+        let mut command = maka_process::Command::new(&self.executable, cwd);
+        for arg in &self.configuration.args {
+            command.arg(arg);
+        }
+        for (key, value) in &self.configuration.env {
+            command.env(key, value);
+        }
+        command
+    }
+}
+pub(super) async fn resolve<'a>(config: &'a NativeCommand, cwd: &str) -> Resolution<'a> {
     let executable = std::path::Path::new(&config.executable);
-    let candidates = if executable.is_absolute() {
-        vec![executable.to_owned()]
+    let mut native = Vec::new();
+    let mut batch = Vec::new();
+    let mut candidate = |path: PathBuf| {
+        if cfg!(windows)
+            && path.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
+            })
+        {
+            batch.push(path);
+        } else {
+            native.push(path);
+        }
+    };
+    if executable.is_absolute() {
+        candidate(executable.to_owned());
     } else if executable.components().count() > 1 {
-        vec![std::path::Path::new(cwd).join(executable)]
+        candidate(std::path::Path::new(cwd).join(executable));
     } else {
-        let search = config
+        let Some(search) = config
             .env
             .get("PATH")
             .map(std::ffi::OsString::from)
-            .or_else(|| std::env::var_os("PATH"))?;
-        let mut candidates = Vec::new();
+            .or_else(|| std::env::var_os("PATH"))
+        else {
+            return Resolution::Missing;
+        };
         for directory in std::env::split_paths(&search) {
             let directory = if directory.is_absolute() {
                 directory
             } else {
                 std::path::Path::new(cwd).join(directory)
             };
-            candidates.push(directory.join(executable));
             #[cfg(windows)]
-            for extension in ["exe", "cmd", "bat"] {
-                candidates.push(directory.join(executable).with_extension(extension));
+            if executable.extension().is_none() {
+                // Match Windows executable lookup, not npm's extensionless shell wrapper.
+                for extension in ["exe", "cmd", "bat"] {
+                    candidate(directory.join(executable).with_extension(extension));
+                }
+                continue;
             }
+            candidate(directory.join(executable));
         }
-        candidates
-    };
-    for path in candidates {
-        if let Ok(metadata) = tokio::fs::metadata(&path).await {
+    }
+    resolve_paths(config, native, batch).await
+}
+async fn resolve_paths<'a>(
+    config: &'a NativeCommand,
+    native: Vec<PathBuf>,
+    batch: Vec<PathBuf>,
+) -> Resolution<'a> {
+    for executable in native {
+        if let Ok(metadata) = tokio::fs::metadata(&executable).await {
             if !metadata.is_file() {
                 continue;
             }
@@ -177,34 +236,27 @@ pub(super) async fn executable(config: &NativeCommand, cwd: &str) -> Option<Path
                     continue;
                 }
             }
-            return Some(path);
+            return Resolution::Native(ResolvedCommand {
+                executable,
+                configuration: config,
+            });
         }
     }
-    None
+    for executable in batch {
+        if tokio::fs::metadata(executable)
+            .await
+            .is_ok_and(|metadata| metadata.is_file())
+        {
+            return Resolution::UnsupportedBatch;
+        }
+    }
+    Resolution::Missing
 }
 pub(super) async fn command(
     config: &NativeCommand,
     cwd: &str,
 ) -> Result<maka_process::Command, Error> {
-    let executable = executable(config, cwd).await.ok_or_else(|| {
-        Error::Provider("Native executable is unavailable on the configured PATH".into())
-    })?;
-    #[cfg(windows)]
-    if executable.extension().is_some_and(|extension| {
-        extension.eq_ignore_ascii_case("cmd") || extension.eq_ignore_ascii_case("bat")
-    }) {
-        return Err(Error::Provider(
-            "Windows batch CLI shims (.cmd/.bat) are not supported. Configure a native .exe, or node.exe with the CLI JavaScript entrypoint in args.".into(),
-        ));
-    }
-    let mut command = maka_process::Command::new(executable, cwd);
-    for arg in &config.args {
-        command.arg(arg);
-    }
-    for (key, value) in &config.env {
-        command.env(key, value);
-    }
-    Ok(command)
+    Ok(resolve(config, cwd).await.require()?.command(cwd))
 }
 
 #[expect(
@@ -796,6 +848,125 @@ pub(super) fn string<'a>(value: &'a Value, pointer: &str) -> Result<&'a str, Err
 #[cfg(test)]
 mod tests {
     use super::*;
+    async fn executable_file(path: &std::path::Path) {
+        tokio::fs::write(path, "fixture executable").await.unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+                .await
+                .unwrap();
+        }
+    }
+    #[tokio::test]
+    async fn native_candidates_win_before_batch_only_installation_is_reported() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("native.exe");
+        let batch = directory.path().join("wrapper.cmd");
+        let missing = directory.path().join("missing.exe");
+        executable_file(&executable).await;
+        tokio::fs::write(&batch, "fixture batch").await.unwrap();
+        let config = NativeCommand {
+            executable: "fixture".into(),
+            args: vec![],
+            env: BTreeMap::new(),
+        };
+        let resolved = resolve_paths(
+            &config,
+            vec![missing.clone(), executable.clone()],
+            vec![batch.clone()],
+        )
+        .await
+        .require()
+        .unwrap();
+        assert_eq!(resolved.executable, executable);
+        let unsupported = resolve_paths(&config, vec![missing.clone()], vec![batch]).await;
+        assert!(
+            matches!(unsupported.require(), Err(Error::Provider(detail)) if detail == BATCH_SHIM_UNSUPPORTED)
+        );
+        assert!(matches!(
+            resolve_paths(&config, vec![missing], vec![]).await,
+            Resolution::Missing
+        ));
+    }
+    #[tokio::test]
+    async fn explicit_paths_are_not_replaced_by_names_on_the_configured_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first");
+        let later = directory.path().join("later");
+        tokio::fs::create_dir_all(&first).await.unwrap();
+        tokio::fs::create_dir_all(&later).await.unwrap();
+        let name = if cfg!(windows) {
+            "native.exe"
+        } else {
+            "native"
+        };
+        let configured = first.join(name);
+        let other = later.join(name);
+        executable_file(&configured).await;
+        executable_file(&other).await;
+        let config = NativeCommand {
+            executable: configured.to_str().unwrap().into(),
+            args: vec![],
+            env: BTreeMap::from([("PATH".into(), later.to_str().unwrap().into())]),
+        };
+        assert_eq!(
+            resolve(&config, directory.path().to_str().unwrap())
+                .await
+                .require()
+                .unwrap()
+                .executable,
+            configured
+        );
+        tokio::fs::remove_file(&configured).await.unwrap();
+        assert!(matches!(
+            resolve(&config, directory.path().to_str().unwrap()).await,
+            Resolution::Missing
+        ));
+    }
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn implicit_path_lookup_skips_batch_shims_and_extensionless_npm_wrappers() {
+        let directory = tempfile::tempdir().unwrap();
+        let shims = directory.path().join("shims");
+        let native = directory.path().join("native");
+        tokio::fs::create_dir_all(&shims).await.unwrap();
+        tokio::fs::create_dir_all(&native).await.unwrap();
+        for name in ["codex", "codex.cmd", "codex.bat"] {
+            executable_file(&shims.join(name)).await;
+        }
+        let executable = native.join("codex.exe");
+        executable_file(&executable).await;
+        let config = NativeCommand {
+            executable: "codex".into(),
+            args: vec![],
+            env: BTreeMap::from([(
+                "PATH".into(),
+                std::env::join_paths([&shims, &native])
+                    .unwrap()
+                    .into_string()
+                    .unwrap(),
+            )]),
+        };
+        let cwd = directory.path().to_str().unwrap();
+        assert_eq!(
+            resolve(&config, cwd).await.require().unwrap().executable,
+            executable
+        );
+        let explicit = NativeCommand {
+            executable: "codex.cmd".into(),
+            ..config.clone()
+        };
+        assert!(matches!(
+            resolve(&explicit, cwd).await,
+            Resolution::UnsupportedBatch
+        ));
+        tokio::fs::remove_file(executable).await.unwrap();
+        assert!(matches!(
+            resolve(&config, cwd).await,
+            Resolution::UnsupportedBatch
+        ));
+    }
     #[cfg(windows)]
     #[tokio::test]
     async fn batch_shims_report_actionable_diagnostics_without_shell_fallback() {

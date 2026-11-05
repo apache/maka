@@ -31,7 +31,13 @@ struct Record {
     #[serde(default)]
     bootstrap_completed: bool,
     #[serde(default)]
-    mcp_catalog: Option<Vec<Value>>,
+    instructions_digest: Option<String>,
+    #[serde(rename = "mcpCatalog", default, skip_serializing)]
+    _legacy_mcp_catalog: Option<serde::de::IgnoredAny>,
+}
+pub(super) struct InstructionUpdate {
+    digest: String,
+    pub text: String,
 }
 pub(super) struct Journal {
     key: String,
@@ -58,7 +64,8 @@ impl Journal {
                 running: None,
                 last_delivered_run: None,
                 bootstrap_completed: false,
-                mcp_catalog: None,
+                instructions_digest: None,
+                _legacy_mcp_catalog: None,
             },
         };
         if record.cwd != request.cwd {
@@ -75,18 +82,29 @@ impl Journal {
             record,
         })
     }
-    pub async fn bind_catalog(
+    pub fn instruction_update(&self, instructions: Option<&str>) -> Option<InstructionUpdate> {
+        let digest = instruction_digest(instructions);
+        if self.record.instructions_digest.as_deref() == Some(digest.as_str())
+            || (instructions.is_none()
+                && self.record.instructions_digest.is_none()
+                && !self.record.bootstrap_completed)
+        {
+            return None;
+        }
+        let text = match instructions {
+            Some(text) => format!("These are the current Maka instructions. They replace all earlier Maka instruction blocks; do not retain superseded Maka instructions.\n\n{text}"),
+            None => "The previous Maka instruction blocks are now cleared. Do not apply their instructions to subsequent requests. Continue following your native system instructions and the user's requests.".into(),
+        };
+        Some(InstructionUpdate { digest, text })
+    }
+    pub async fn confirm_instructions(
         &mut self,
         storage: &Storage,
-        definitions: Vec<Value>,
-    ) -> Result<Vec<Value>, Error> {
-        if let Some(catalog) = &self.record.mcp_catalog {
-            return Ok(catalog.clone());
-        }
+        update: InstructionUpdate,
+    ) -> Result<(), Error> {
         let mut next = self.record.clone();
-        next.mcp_catalog = Some(definitions.clone());
-        self.save(storage, next).await?;
-        Ok(definitions)
+        next.instructions_digest = Some(update.digest);
+        self.save(storage, next).await
     }
     pub fn bootstrap_completed(&self) -> bool {
         self.record.bootstrap_completed
@@ -94,6 +112,9 @@ impl Journal {
     pub async fn complete_bootstrap(&mut self, storage: &Storage) -> Result<(), Error> {
         let mut next = self.record.clone();
         next.bootstrap_completed = true;
+        if next.instructions_digest.is_none() {
+            next.instructions_digest = Some(instruction_digest(None));
+        }
         self.save(storage, next).await
     }
     pub fn last_delivered_run(&self) -> Option<&str> {
@@ -132,6 +153,7 @@ impl Journal {
         let mut next = self.record.clone();
         next.native_session = None;
         next.bootstrap_completed = false;
+        next.instructions_digest = None;
         self.save(storage, next).await
     }
     pub async fn ready(&mut self, storage: &Storage) -> Result<(), Error> {
@@ -160,6 +182,37 @@ impl Journal {
         Ok(())
     }
 }
+fn instruction_digest(instructions: Option<&str>) -> String {
+    let mut digest = Sha256::new();
+    digest.update([u8::from(instructions.is_some())]);
+    if let Some(text) = instructions {
+        digest.update(text.as_bytes());
+    }
+    hex::encode(digest.finalize())
+}
+
 fn error(error: maka_capabilities::storage::StoreError) -> Error {
     Error::Persistence(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_catalog_is_read_but_not_rewritten_with_invocation_fences() {
+        let old = serde_json::json!({
+            "cwd":"/workspace", "nativeSession":"native-original", "running":"original-invocation",
+            "lastDeliveredRun":"original-run", "bootstrapCompleted":true,
+            "mcpCatalog":[{"name":"SessionRead","description":"old description","inputSchema":{}}]
+        });
+        let record: Record = serde_json::from_value(old).unwrap();
+        assert_eq!(
+            serde_json::to_value(record).unwrap(),
+            serde_json::json!({
+                "cwd":"/workspace", "nativeSession":"native-original", "running":"original-invocation",
+                "lastDeliveredRun":"original-run", "bootstrapCompleted":true, "instructionsDigest":null
+            })
+        );
+    }
 }

@@ -218,10 +218,10 @@ async fn prepare(
     };
     let business = async {
         let work = async {
-            let native_prompt = if !journal.bootstrap_completed()
-                && let Some(instructions) = request.get("instructions").and_then(Value::as_str)
+            let native_prompt = if let Some(update) =
+                journal.instruction_update(request.get("instructions").and_then(Value::as_str))
             {
-                let instructions = input::text(&runtime::bootstrap_message(Some(instructions)));
+                let instructions = input::text(&runtime::bootstrap_message(Some(&update.text)));
                 let native_instructions = input::submit(
                     &io,
                     &mut screen,
@@ -248,7 +248,7 @@ async fn prepare(
                 if !matches!(outcome, Outcome::Completed { .. }) {
                     return Ok(outcome);
                 }
-                journal.complete_bootstrap(storage).await?;
+                journal.confirm_instructions(storage, update).await?;
                 input::send(&io, &mut screen, &prompt, images, start).await?
             } else {
                 input::submit(

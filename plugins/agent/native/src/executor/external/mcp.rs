@@ -17,7 +17,7 @@
  * under the License.
  */
 
-//! Conversation endpoint, immutable catalog and invocation-bound transport sessions.
+//! Conversation endpoint and invocation-bound catalog, credentials and transport sessions.
 use super::*;
 use axum::{
     Router, extract::Request as HttpRequest, http::StatusCode, response::IntoResponse, routing::any,
@@ -40,6 +40,7 @@ struct Route {
     service: Service,
 }
 struct EndpointState {
+    catalog: Arc<Vec<Value>>,
     route: Option<Arc<Route>>,
     busy: bool,
     retired: bool,
@@ -49,7 +50,6 @@ pub(super) struct Endpoint {
     pub session_id: String,
     url: String,
     directory: PathBuf,
-    catalog: Arc<Vec<Value>>,
     state: Mutex<EndpointState>,
     server_stop: CancellationToken,
     server: tokio::sync::Mutex<Option<tokio::task::JoinHandle<std::io::Result<()>>>>,
@@ -76,8 +76,8 @@ impl Endpoint {
             session_id,
             url: format!("http://{address}/mcp"),
             directory,
-            catalog: Arc::new(definitions),
             state: Mutex::new(EndpointState {
+                catalog: Arc::new(definitions),
                 route: None,
                 busy: false,
                 retired: false,
@@ -129,7 +129,7 @@ impl Endpoint {
         Ok(endpoint)
     }
     pub fn bind(self: &Arc<Self>, tools: tools::Tools) -> Result<Arc<Bridge>, Error> {
-        validate_catalog(&self.catalog, &tools.definitions())?;
+        let definitions = tools.definitions();
         let mut state = self.state.lock().expect("MCP endpoint lock poisoned");
         if state.retired {
             return Err(Error::Retired);
@@ -142,10 +142,16 @@ impl Endpoint {
                 "Native MCP invocation has not settled".into(),
             ));
         }
+        if definitions
+            .iter()
+            .any(|definition| !state.catalog.contains(definition))
+        {
+            state.catalog = Arc::new(definitions);
+        }
         let bridge = Arc::new(Bridge {
             tools,
             endpoint: Arc::downgrade(self),
-            catalog: self.catalog.clone(),
+            catalog: state.catalog.clone(),
             state: Mutex::new(Admission {
                 phase: Phase::Opening,
                 pending: 0,
@@ -225,16 +231,6 @@ impl Drop for Endpoint {
     fn drop(&mut self) {
         self.server_stop.cancel();
     }
-}
-fn validate_catalog(frozen: &[Value], current: &[Value]) -> Result<(), Error> {
-    for definition in current {
-        if !frozen.iter().any(|tool| tool == definition) {
-            return Err(Error::Invalid(
-                "Native MCP catalog changed; start a new conversation".into(),
-            ));
-        }
-    }
-    Ok(())
 }
 impl Route {
     async fn handle(&self, request: HttpRequest) -> axum::response::Response {
@@ -551,6 +547,32 @@ mod tests {
     fn definition() -> Value {
         serde_json::json!({"name":"FrozenTool","description":"original","inputSchema":{"type":"object"}})
     }
+    fn catalog(definitions: Vec<Value>) -> maka_tools::ToolCatalog {
+        use maka_agent_facts::tools::{
+            ToolExecutor, ToolFuture, ToolHandler, ToolNesting, ToolRegistration, ToolSemantics,
+        };
+        struct Listing(Vec<String>);
+        impl ToolExecutor for Listing {
+            fn names(&self) -> Vec<String> {
+                self.0.clone()
+            }
+            fn invoke(&self, _: String, _: Value, _: CancellationToken) -> ToolFuture {
+                panic!("listing tools does not execute them")
+            }
+        }
+        let names = definitions
+            .iter()
+            .map(|value| value["name"].as_str().unwrap().to_owned())
+            .collect();
+        let handler = ToolHandler::Immediate(Arc::new(Listing(names)));
+        maka_tools::ToolCatalog::new(definitions.into_iter().map(|definition| ToolRegistration {
+            definition: serde_json::from_value(definition).unwrap(),
+            nesting: ToolNesting::DirectOnly,
+            semantics: ToolSemantics::Parallel,
+            handler: handler.clone(),
+        }))
+        .unwrap()
+    }
     fn initialize() -> Value {
         serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{
             "protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fixture","version":"1"}}})
@@ -609,7 +631,7 @@ mod tests {
             .await
             .unwrap();
         let first = endpoint
-            .bind(tools::Tools::for_test(store.clone()))
+            .bind(tools::Tools::for_test(store.clone(), Default::default()))
             .unwrap();
         let config_directory = first.directory().to_owned();
         let first_id = initialized(&first).await;
@@ -625,7 +647,9 @@ mod tests {
             "scope close cannot remove native input files"
         );
         first.settled(&Err(Error::Cancelled));
-        let second = endpoint.bind(tools::Tools::for_test(store)).unwrap();
+        let second = endpoint
+            .bind(tools::Tools::for_test(store, Default::default()))
+            .unwrap();
         assert_eq!(first.url, second.url);
         assert_eq!(first.directory(), second.directory());
         assert_ne!(first.bearer(), second.bearer());
@@ -665,7 +689,7 @@ mod tests {
         let (_directory, store) = tools().await;
         let endpoint = Endpoint::open("session".into(), vec![]).await.unwrap();
         let first = endpoint
-            .bind(tools::Tools::for_test(store.clone()))
+            .bind(tools::Tools::for_test(store.clone(), Default::default()))
             .unwrap();
         let old_route = endpoint.state.lock().unwrap().route.clone().unwrap();
         let guard = first.begin_request().unwrap();
@@ -680,13 +704,15 @@ mod tests {
         );
         assert!(
             endpoint
-                .bind(tools::Tools::for_test(store.clone()))
+                .bind(tools::Tools::for_test(store.clone(), Default::default()))
                 .is_err()
         );
         drop(guard);
         closing.await.unwrap().unwrap();
         first.settled(&Err(Error::Cancelled));
-        let second = endpoint.bind(tools::Tools::for_test(store)).unwrap();
+        let second = endpoint
+            .bind(tools::Tools::for_test(store, Default::default()))
+            .unwrap();
         let request = HttpRequest::builder()
             .method("POST")
             .uri("/mcp")
@@ -702,22 +728,77 @@ mod tests {
         second.settled(&Err(Error::Cancelled));
         endpoint.finish().await.unwrap();
     }
-    #[test]
-    fn catalog_reduction_is_allowed_but_addition_and_definition_changes_are_explicit_errors() {
-        let frozen = vec![definition()];
-        assert!(validate_catalog(&frozen, &[]).is_ok());
-        assert!(validate_catalog(&frozen, &frozen).is_ok());
+
+    #[tokio::test]
+    async fn settled_catalog_updates_keep_the_endpoint_and_do_not_rewrite_old_scopes() {
+        let (_directory, store) = tools().await;
+        let endpoint = Endpoint::open("session".into(), vec![definition()])
+            .await
+            .unwrap();
+        let first = endpoint
+            .bind(tools::Tools::for_test(
+                store.clone(),
+                catalog(vec![definition()]),
+            ))
+            .unwrap();
+        let first_id = initialized(&first).await;
         let mut changed = definition();
+        changed["description"] = "updated description".into();
         changed["inputSchema"] = serde_json::json!({"type":"object","required":["new"]});
-        assert!(matches!(
-            validate_catalog(&frozen, &[changed]),
-            Err(Error::Invalid(_))
-        ));
         let mut added = definition();
         added["name"] = "ExtraTool".into();
-        assert!(matches!(
-            validate_catalog(&frozen, &[added]),
-            Err(Error::Invalid(_))
-        ));
+        let updated = vec![added, changed];
+        assert!(
+            endpoint
+                .bind(tools::Tools::for_test(
+                    store.clone(),
+                    catalog(updated.clone())
+                ))
+                .is_err(),
+            "definitions cannot change while the original invocation is unsettled"
+        );
+        first.close().await.unwrap();
+        first.settled(&Err(Error::Cancelled));
+        let second = endpoint
+            .bind(tools::Tools::for_test(
+                store.clone(),
+                catalog(updated.clone()),
+            ))
+            .unwrap();
+        assert_eq!(second.url, first.url);
+        assert_eq!(second.directory(), first.directory());
+        assert_eq!(first.definitions(), &[definition()]);
+        assert_eq!(second.definitions(), updated);
+        assert_eq!(
+            post(&second, first.bearer(), None, initialize()).await.0,
+            401
+        );
+        let list = serde_json::json!({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}});
+        assert_eq!(
+            post(&second, second.bearer(), Some(&first_id), list.clone())
+                .await
+                .0,
+            404
+        );
+        let second_id = initialized(&second).await;
+        let (status, response) = post(&second, second.bearer(), Some(&second_id), list).await;
+        assert_eq!(status, 200, "{response}");
+        assert!(
+            response.contains("updated description") && response.contains("ExtraTool"),
+            "{response}"
+        );
+        second.close().await.unwrap();
+        second.settled(&Err(Error::Cancelled));
+        let reduced = endpoint
+            .bind(tools::Tools::for_test(store, Default::default()))
+            .unwrap();
+        assert_eq!(
+            reduced.definitions(),
+            updated,
+            "a reduced ceiling must not churn the catalog"
+        );
+        reduced.close().await.unwrap();
+        reduced.settled(&Err(Error::Cancelled));
+        endpoint.finish().await.unwrap();
     }
 }

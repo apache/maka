@@ -191,9 +191,20 @@ test('compiler cache pruning and both archive paths retain V8 native outputs', (
       mkdirSync(join(directory, path, '..'), { recursive: true });
       writeFileSync(join(directory, path), contents);
     }
-    const local = join(directory, 'target/debug/deps/libci_cache_fixture-0123456789abcdef.rlib');
-    mkdirSync(join(local, '..'), { recursive: true });
-    writeFileSync(local, 'checkout-local output');
+    const built = execFileSync('cargo', ['build', '--offline', '--message-format=json'], {
+      cwd: directory,
+      encoding: 'utf8',
+      env: { ...process.env, CARGO_TARGET_DIR: join(directory, 'target') },
+    });
+    const local = built
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line))
+      .filter((message) => message.reason === 'compiler-artifact')
+      .flatMap((message) => message.filenames)
+      .filter((path) => path.endsWith('.rlib'));
+    assert.ok(local.length > 0, 'Cargo must report a real local library artifact');
+    for (const path of local) assert.ok(existsSync(path), path);
     execFileSync(
       process.execPath,
       [fileURLToPath(new URL('./ci/setup.mjs', import.meta.url)), 'prune'],
@@ -202,7 +213,7 @@ test('compiler cache pruning and both archive paths retain V8 native outputs', (
         env: { ...process.env, MAKA_CI_ROLE: 'root', MAKA_CI_WORKSPACE: 'root' },
       },
     );
-    assert.equal(existsSync(local), false);
+    for (const path of local) assert.equal(existsSync(path), false, path);
     for (const action of ['ci-setup', 'ci-cache']) {
       const document = parse(
         readFileSync(new URL(`../.github/actions/${action}/action.yml`, import.meta.url), 'utf8'),
@@ -242,6 +253,14 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
     writeFileSync(join(directory, 'Cargo.toml'), '[workspace]');
     writeFileSync(join(directory, 'third-party/nsh/Cargo.toml'), '[workspace]');
     writeFileSync(join(directory, '.cargo/config.toml'), '');
+    const cacheActions = [
+      '.github/actions/ci-setup/action.yml',
+      '.github/actions/ci-cache/action.yml',
+    ];
+    for (const path of cacheActions) {
+      mkdirSync(join(directory, path, '..'), { recursive: true });
+      writeFileSync(join(directory, path), readFileSync(new URL('../' + path, import.meta.url)));
+    }
     writeFileSync(join(directory, 'Cargo.lock'), 'root-v1');
     writeFileSync(join(directory, 'third-party/nsh/Cargo.lock'), 'nsh-v1');
     const output = join(directory, 'output');
@@ -272,7 +291,7 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
     };
     assert.equal(setup('tool-list').tools, 'cargo-nextest@0.9.100');
     const before = setup('keys');
-    assert.ok(before.compiled_prefix.startsWith('rust-deps-v2-'));
+    assert.ok(before.compiled_prefix.startsWith('rust-deps-'));
     assert.ok(before.compiled.startsWith(before.compiled_prefix));
     writeFileSync(join(directory, 'third-party/nsh/Cargo.lock'), 'nsh-v2');
     const nsh = setup('keys');
@@ -286,6 +305,19 @@ test('Windows setup installs nextest and keys caches by both Cargo workspaces', 
     const features = setup('keys');
     assert.notEqual(root.compiled, features.compiled);
     assert.equal(root.downloads, features.downloads);
+    let previous = features;
+    for (const path of cacheActions) {
+      writeFileSync(join(directory, path), readFileSync(join(directory, path), 'utf8') + '\n');
+      const changed = setup('keys');
+      assert.notEqual(
+        previous.compiled_prefix,
+        changed.compiled_prefix,
+        'cache schema changes must also invalidate fallback restore keys',
+      );
+      assert.ok(changed.compiled.startsWith(changed.compiled_prefix));
+      assert.equal(previous.downloads, changed.downloads);
+      previous = changed;
+    }
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }

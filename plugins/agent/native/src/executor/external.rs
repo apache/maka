@@ -238,15 +238,16 @@ impl External {
             return Err(Error::Invalid("Models require a runtime selection".into()));
         }
         if kind == "catalog" {
-            let discovery = {
+            let (discovery, catalog_runtime) = {
                 let mut cached = self.catalog.lock().await;
                 cached.failure()?;
                 if let Catalog::Cached(entry) = &*cached
                     && entry.cwd == cwd
-                    && entry.selected == selected
+                    && (entry.selected == selected
+                        || (entry.selected.is_none() && entry.result.peek().is_some()))
                     && entry.reusable()
                 {
-                    entry.result.clone()
+                    (entry.result.clone(), entry.selected)
                 } else {
                     let owner = self.clone();
                     let work_cwd = cwd.clone();
@@ -272,13 +273,22 @@ impl External {
                         started: Instant::now(),
                         result: discovery.clone(),
                     });
-                    discovery
+                    (discovery, selected)
                 }
             };
             return tokio::select! { biased;
                 () = cancellation.cancelled() => Err(Error::Cancelled),
                 () = self.stop.cancelled() => Err(Error::Retired),
-                result = discovery => result,
+                result = discovery => {
+                    let value = result?;
+                    if catalog_runtime.is_none() && let Some(runtime) = selected {
+                        value.as_array().expect("unscoped native catalog is an array")
+                            .iter().find(|row| row["runtime"].as_str() == Some(runtime.as_str()))
+                            .cloned().ok_or_else(|| Error::Invalid("Native runtime missing from catalog".into()))
+                    } else {
+                        Ok(value)
+                    }
+                },
             };
         }
         if kind == "status" {
@@ -327,7 +337,6 @@ impl External {
         &self,
         request: &Request,
         tools: tools::Tools,
-        frozen: Vec<Value>,
     ) -> Result<Arc<mcp::Bridge>, Error> {
         let runtime = self.require_runtime(request.settings.runtime.as_deref())?;
         let mut endpoints = self.endpoints.lock().await;
@@ -337,7 +346,8 @@ impl External {
         let key = (request.conversation_key.clone(), runtime);
         if !endpoints.contains_key(&key) {
             let endpoint =
-                mcp::Endpoint::open(request.invocation.session_id.clone(), frozen).await?;
+                mcp::Endpoint::open(request.invocation.session_id.clone(), tools.definitions())
+                    .await?;
             endpoints.insert(key.clone(), endpoint);
         }
         endpoints[&key].bind(tools)
@@ -442,9 +452,6 @@ impl Call {
         )
         .await?;
         let mut journal = journal::Journal::load(&self.owner.storage, &self.request).await?;
-        let frozen = journal
-            .bind_catalog(&self.owner.storage, host_tools.definitions())
-            .await?;
         if let Some(mut context) =
             history::context(&store, &self.request, journal.last_delivered_run()).await?
         {
@@ -462,7 +469,7 @@ impl Call {
             .root
             .fork_execution(execution.as_ref(), &self.request.invocation)
             .map_err(|e| Error::Persistence(e.to_string()))?;
-        let bridge = match self.owner.bridge(&self.request, host_tools, frozen).await {
+        let bridge = match self.owner.bridge(&self.request, host_tools).await {
             Ok(bridge) => bridge,
             Err(error) => {
                 lease.finish();

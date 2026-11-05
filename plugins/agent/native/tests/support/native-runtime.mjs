@@ -211,6 +211,16 @@ async function pauseInput(stage, extra = {}) {
   trace(stage, extra);
   await gate.next();
 }
+async function confirmInstructions(text) {
+  if (
+    !process.env.MAKA_NATIVE_FIXTURE_PAUSE_INSTRUCTIONS ||
+    !text.includes('CANCEL_UNCONFIRMED_GUIDANCE')
+  )
+    return;
+  await connectControl();
+  trace('before_instructions_ack');
+  await gate.next();
+}
 async function mcp(method, params = {}, id = 1, signal) {
   const response = await fetch(server.url, {
     method: 'POST',
@@ -598,6 +608,7 @@ if (claude) {
           instructionMessage = input.message;
           instructionOrder.push('user/instructions');
           appendUser(input);
+          await confirmInstructions(instructionMessage);
           output('instructions acknowledged');
           terminal();
           ready();
@@ -678,7 +689,7 @@ if (claude) {
       if (value.event !== 'user' || typeof value.message?.content !== 'string')
         throw Error('agy requires native ordinary user messages');
       const text = value.message.content;
-      if (!agyBootstrapped) {
+      if (!agyBootstrapped || instructionMessageText(text)) {
         const readiness =
           'Initialize the available MCP tool catalog for this conversation and acknowledge readiness. Do not perform a user task yet.';
         if (!instructionMessageText(text) && text !== readiness)
@@ -727,6 +738,7 @@ if (claude) {
             }
           }
         }
+        await confirmInstructions(text);
         output('instructions acknowledged');
         terminal();
         agyBootstrapped = true;
@@ -826,6 +838,7 @@ if (claude) {
         );
       instructionMessage = content[0].text;
       instructionOrder.push(m);
+      await confirmInstructions(instructionMessage);
       reply(id, {});
     } else if (m === 'turn/steer') {
       if (p.threadId !== thread || p.expectedTurnId !== turn)

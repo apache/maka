@@ -38,7 +38,9 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
             let mut original_mcp = None;
             let mut original_tools = None;
             let mut original_operation = None;
-            for round in 0..2 {
+            for round in 0..4 {
+                let guidance = if round < 2 { "CAPTURED EXTERNAL GUIDANCE 中文" } else { "UPDATED EXTERNAL GUIDANCE 中文" };
+                std::fs::write(f.workspace.join("AGENTS.md"), guidance).unwrap();
                 let operation = Uuid::new_v4();
                 let input = input_runtime(&session, runtime, "complete");
                 let accepted = f.mutation(2,"send",input.clone(),operation).await.unwrap();
@@ -59,30 +61,30 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 let opened = packet(&mut control,"opened").await;
                 let names: Vec<_> = opened["request"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
                 assert_eq!(names, ["SessionRead"]);
-                if round == 0 {
+                if round == 0 || round == 2 {
                     let instructions = opened["request"]["instructions"].as_str().unwrap();
                     assert!(instructions.starts_with("<maka_system_instructions>\n"));
                     assert!(instructions.ends_with("\n</maka_system_instructions>"));
-                    assert!(instructions.contains("CAPTURED EXTERNAL GUIDANCE 中文"));
+                    assert!(instructions.contains(guidance));
+                    assert!(instructions.contains("replace all earlier Maka instruction blocks"));
+                    if round == 2 {
+                        assert!(!instructions.contains("CAPTURED EXTERNAL GUIDANCE"));
+                    }
                     if runtime != "codex" {
                         assert!(instructions.contains("Acknowledge readiness only"));
                         assert!(instructions.contains("Wait for the next user message"));
                     }
+                } else {
+                    assert!(opened["request"].get("instructions").is_none(), "unchanged instructions must not add another native turn");
+                }
+                if round == 0 {
                     original_mcp = Some(opened["request"]["mcp"].clone());
                     original_tools = Some(opened["request"]["tools"].clone());
                 } else {
-                    assert!(opened["request"].get("instructions").is_none(), "bootstrap must not be repeated on resume");
                     assert_eq!(Some(&opened["request"]["mcp"]), original_mcp.as_ref(), "endpoint and native config path must be session-scoped");
                     assert_eq!(Some(&opened["request"]["tools"]), original_tools.as_ref(), "native model tool definitions must stay stable");
                 }
                 assert_eq!(opened["request"]["message"], "complete", "instructions must be a distinct ordinary native message");
-                let order = match (runtime, round) {
-                    ("codex", 0) => json!(["thread/start", "thread/inject_items", "turn/start"]),
-                    ("codex", _) => json!(["thread/resume", "turn/start"]),
-                    (_, 0) => json!(["user/instructions", "user/task"]),
-                    _ => json!(["user/task"]),
-                };
-                assert_eq!(opened["request"]["instructionOrder"], order);
                 eprintln!("native fixture {runtime}: opened");
                 let journal = super::external_support::record_runtime(&f,&session,runtime).await;
                 assert_eq!(journal["running"],accepted["invocationId"],"journal must be durable before native prompt admission");
@@ -515,6 +517,179 @@ async fn native_external_codex_preserves_more_than_128_preack_deltas() {
                 (0..257).map(|i| format!("{i},")).collect::<String>()
             )
         );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+async fn complete_instruction_turn(
+    f: &Fixture,
+    session: &str,
+    accepted: &Value,
+    control: &mut BufReader<TcpStream>,
+) {
+    release(control).await;
+    packet(control, "output").await;
+    release(control).await;
+    packet(control, "terminal").await;
+    release(control).await;
+    f.drained().await;
+    assert_eq!(
+        work(f, session, accepted).await["execution"]["state"],
+        "completed"
+    );
+}
+
+#[tokio::test]
+async fn native_external_skill_instructions_arrive_after_none_and_clear_without_repeating() {
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let home = tempfile::tempdir().unwrap();
+        let tooling = service_tools::Setup::skill_preparation(home.path().into(), true).with_standard_sources();
+        let (f, listener) = super::external_support::with_tools("http://127.0.0.1:9/v1", Some(tooling), |_| {}).await;
+        let skill = f.workspace.join(".maka/skills/review");
+        for runtime in ["codex", "antigravity", "claude"] {
+            let session = f.create("Changing native skill metadata").await;
+            let mut original = None;
+            let mut previous_digest = Value::Null;
+            for round in 0..6 {
+                if round == 1 || round == 3 {
+                    std::fs::create_dir_all(&skill).unwrap();
+                    let version = if round == 1 { "VERSION ONE" } else { "VERSION TWO" };
+                    std::fs::write(skill.join("SKILL.md"), format!("---\nname: review\ndescription: {version}\nrequired-tools: FindGuide LoadGuide\n---\nReview instructions")).unwrap();
+                } else if round == 4 {
+                    std::fs::remove_dir_all(&skill).unwrap();
+                }
+                let accepted = f.mutation(2, "send", input_runtime(&session, runtime, "complete"), Uuid::new_v4()).await.unwrap();
+                assert_eq!(accepted["kind"], "started");
+                let mut control = BufReader::new(listener.accept().await.unwrap().0);
+                let opened = packet(&mut control, "opened").await;
+                let instructions = opened["request"]["instructions"].as_str();
+                match round {
+                    0 if runtime == "antigravity" => assert!(!instructions.unwrap().contains("FindGuide")),
+                    0 | 2 | 5 => assert!(instructions.is_none(), "unchanged instructions must not be resubmitted"),
+                    1 | 3 => {
+                        let instructions = instructions.unwrap();
+                        let version = if round == 1 { "VERSION ONE" } else { "VERSION TWO" };
+                        assert!(instructions.contains(version));
+                        assert!(instructions.contains("replace all earlier Maka instruction blocks"));
+                        if round == 3 { assert!(!instructions.contains("VERSION ONE")); }
+                    }
+                    4 => assert!(instructions.unwrap().contains("previous Maka instruction blocks are now cleared")),
+                    _ => unreachable!(),
+                }
+                assert_eq!(opened["request"]["message"], "complete");
+                let record = super::external_support::record_runtime(&f, &session, runtime).await;
+                if let Some(original) = &original { assert_eq!(&record["nativeSession"], original); }
+                else { original = Some(record["nativeSession"].clone()); }
+                if round == 2 || round == 5 { assert_eq!(record["instructionsDigest"], previous_digest); }
+                else if round > 0 { assert_ne!(record["instructionsDigest"], previous_digest); }
+                previous_digest = record["instructionsDigest"].clone();
+                complete_instruction_turn(&f, &session, &accepted, &mut control).await;
+            }
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_external_cancelled_instruction_ack_does_not_advance_confirmed_digest() {
+    tokio::time::timeout(Duration::from_secs(90), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            let home = settings.workspace_roots[0].path.clone();
+            settings.assistant = Some(crate::contract::AssistantConfiguration {
+                home: Some(home.to_str().unwrap().into()),
+            });
+            let commands = &mut settings.external.as_mut().unwrap().commands;
+            for command in [
+                &mut commands.codex,
+                &mut commands.antigravity,
+                &mut commands.claude,
+            ] {
+                command
+                    .as_mut()
+                    .unwrap()
+                    .env
+                    .insert("MAKA_NATIVE_FIXTURE_PAUSE_INSTRUCTIONS".into(), "1".into());
+            }
+        })
+        .await;
+        for runtime in ["codex", "antigravity", "claude"] {
+            std::fs::write(f.workspace.join("AGENTS.md"), "CONFIRMED GUIDANCE").unwrap();
+            let session = f
+                .create("Native instruction acknowledgement cancellation")
+                .await;
+            let first = f
+                .mutation(
+                    2,
+                    "send",
+                    input_runtime(&session, runtime, "complete"),
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            packet(&mut control, "opened").await;
+            complete_instruction_turn(&f, &session, &first, &mut control).await;
+            let before = super::external_support::record_runtime(&f, &session, runtime).await;
+            std::fs::write(f.workspace.join("AGENTS.md"), "CANCEL_UNCONFIRMED_GUIDANCE").unwrap();
+            let cancelled = f
+                .mutation(
+                    2,
+                    "send",
+                    input_runtime(&session, runtime, "must-not-be-submitted"),
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            packet(&mut control, "before_instructions_ack").await;
+            f.mutation(
+                2,
+                "stop",
+                json!({"sessionId":session,"invocationId":cancelled["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+            f.drained().await;
+            assert_eq!(
+                work(&f, &session, &cancelled).await["execution"]["state"],
+                "cancelled"
+            );
+            let after = super::external_support::record_runtime(&f, &session, runtime).await;
+            assert_eq!(after["instructionsDigest"], before["instructionsDigest"]);
+            assert_eq!(after["nativeSession"], before["nativeSession"]);
+            assert!(after["running"].is_null());
+            let retry = f
+                .mutation(
+                    2,
+                    "send",
+                    input_runtime(&session, runtime, "complete"),
+                    Uuid::new_v4(),
+                )
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            packet(&mut control, "before_instructions_ack").await;
+            release(&mut control).await;
+            let opened = packet(&mut control, "opened").await;
+            assert!(
+                opened["request"]["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .contains("CANCEL_UNCONFIRMED_GUIDANCE")
+            );
+            complete_instruction_turn(&f, &session, &retry, &mut control).await;
+            let confirmed = super::external_support::record_runtime(&f, &session, runtime).await;
+            assert_ne!(
+                confirmed["instructionsDigest"],
+                before["instructionsDigest"]
+            );
+            assert_eq!(confirmed["nativeSession"], before["nativeSession"]);
+        }
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })

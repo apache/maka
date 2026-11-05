@@ -227,9 +227,11 @@ async fn converse(
         }
         *submitted = true;
         let mut cursor = TurnCursor::default();
-        if !journal.bootstrap_completed() {
-            let instructions = request.get("instructions").and_then(Value::as_str);
-            let bootstrap = runtime::bootstrap_message(instructions);
+        let update =
+            journal.instruction_update(request.get("instructions").and_then(Value::as_str));
+        if !journal.bootstrap_completed() || update.is_some() {
+            let bootstrap =
+                runtime::bootstrap_message(update.as_ref().map(|update| update.text.as_str()));
             io.send(user_message(&bootstrap)).await?;
             let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
             if !matches!(bootstrap, Outcome::Completed { .. }) {
@@ -245,7 +247,12 @@ async fn converse(
                     recoverable: false,
                 });
             }
-            journal.complete_bootstrap(storage).await?;
+            if let Some(update) = update {
+                journal.confirm_instructions(storage, update).await?;
+            }
+            if !journal.bootstrap_completed() {
+                journal.complete_bootstrap(storage).await?;
+            }
         }
         io.send(user_message(&native_prompt(request)?)).await?;
         observe(io, &session, &mut cursor, output, true).await
@@ -476,7 +483,7 @@ async fn emit_tool(
 }
 
 pub(super) async fn models(
-    config: &NativeCommand,
+    config: &runtime::ResolvedCommand<'_>,
     cwd: &str,
     cancellation: CancellationToken,
 ) -> Result<Value, Error> {
@@ -484,7 +491,7 @@ pub(super) async fn models(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    let mut command = runtime::command(config, cwd).await?;
+    let mut command = config.command(cwd);
     command.arg("models");
     let mut process = maka_process::pipe::spawn(command)
         .await

@@ -73,7 +73,7 @@ Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-ser
 
 当前上传支持 UTF-8 文本/JSON，以及原生模型支持的 PNG/JPEG/GIF/WebP 图片。Claude 交互 PTY 粘贴不可变图片路径并等待原生图片确认；Antigravity 接收有序路径与媒体类型。
 
-同一 Host 激活期间，MCP 地址、私有配置路径与冻结工具定义跨 invocation 保持稳定，原生会话仅初始化一次说明消息。每个 invocation 仍使用新凭据、自己的权限与原操作回执。Host 重启会重绑本地 endpoint，不重复已完成的初始化。Windows 启动命令须使用原生 `.exe`，或显式 `node.exe` 加 CLI 脚本参数；不支持 `.cmd`／`.bat` 启动脚本。
+同一 Host 激活期间，MCP 地址与私有配置路径跨 invocation 保持稳定。工具定义在每轮内部不可变，结算后可刷新。接入初始化仅做一次；说明内容不变时不重复，变更或清空时在下个任务前明确交付。每个 invocation 仍使用新凭据、自己的权限与原操作回执。Host 重启会重绑本地 endpoint，不重复已完成的初始化。Windows 启动命令须使用原生 `.exe`，或显式 `node.exe` 加 CLI 脚本参数；不支持 `.cmd`／`.bat` 启动脚本。
 
 ## 运行与开发
 

@@ -46,9 +46,12 @@ pub(super) struct Tools {
 
 impl Tools {
     #[cfg(test)]
-    pub(super) fn for_test(store: Arc<SessionStore>) -> Self {
+    pub(super) fn for_test(store: Arc<SessionStore>, catalog: ToolCatalog) -> Self {
         Self {
-            tools: HostTools::default(),
+            tools: HostTools {
+                catalog,
+                resource_reads: Vec::new(),
+            },
             store,
             invocation: maka_agent_facts::event::Invocation {
                 session_id: "session".into(),

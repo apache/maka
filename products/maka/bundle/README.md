@@ -71,7 +71,7 @@ Follow-ups are durably admitted through Maka’s editable queue. Active Codex an
 
 Current uploads support UTF-8 text/JSON and PNG/JPEG/GIF/WebP images where the native model supports them. Claude’s interactive PTY pastes immutable image paths and waits for native image acknowledgements; Antigravity receives ordered paths and media types.
 
-MCP addresses, private configuration paths and frozen tool definitions remain stable across invocations within a Host activation; instructions bootstrap only once per native conversation. Each invocation still has fresh credentials, its own permissions and original operation receipts. Host restart rebinds the local endpoint without repeating completed bootstrap. Windows launch commands must use a native `.exe` or explicit `node.exe` plus CLI-script arguments; `.cmd`/`.bat` shims are not supported.
+MCP addresses and private configuration paths remain stable across invocations within a Host activation. Definitions are immutable within each invocation and can refresh after settlement. Setup runs once; unchanged instructions are not repeated, while changes or removal are delivered explicitly before the next task. Each invocation still has fresh credentials, its own permissions and original operation receipts. Host restart rebinds the local endpoint without repeating completed bootstrap. Windows launch commands must use a native `.exe` or explicit `node.exe` plus CLI-script arguments; `.cmd`/`.bat` shims are not supported.
 
 ## Run and develop
 

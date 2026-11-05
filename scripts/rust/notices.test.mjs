@@ -20,7 +20,7 @@
 import assert from 'node:assert/strict';
 import childProcess from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import test from 'node:test';
@@ -214,12 +214,14 @@ test('real Cargo build output supplies the bundle that the notice gate rejects',
     );
   }
   const inputs = JSON.stringify([join(root, 'node_modules/semver/dist/standalone/index.js')]);
+  const recordedBundle = join(root, 'built-bundle-path.txt');
   await put(
     'products/maka-cli/build.rs',
     `fn main() {
     let product = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap()).join("product");
     std::fs::create_dir_all(&product).unwrap();
     std::fs::write(product.join("bundle-inputs.json"), r#"${inputs}"#).unwrap();
+    std::fs::write(${JSON.stringify(recordedBundle)}, product.join("bundle-inputs.json").to_str().unwrap()).unwrap();
   }`,
   );
   childProcess.execFileSync('cargo', ['generate-lockfile', '--offline'], { cwd: root });
@@ -234,7 +236,10 @@ test('real Cargo build output supplies the bundle that the notice gate rejects',
     MAKA_CUA_BUILD_MODE: 'native',
   };
   const { bundleInputs } = await buildCli({ repositoryRoot: root, desktop: false, env });
-  assert.ok(bundleInputs.startsWith(target));
+  assert.equal(
+    await realpath(bundleInputs),
+    await realpath(await readFile(recordedBundle, 'utf8')),
+  );
   assert.deepEqual(JSON.parse(await readFile(bundleInputs, 'utf8')), JSON.parse(inputs));
   await assert.rejects(
     verifyNotices(root, {
