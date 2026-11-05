@@ -253,3 +253,127 @@ test('actual quick SendUser and user feedback are readable by all three workers 
     await f.close();
   }
 });
+
+test('restart imports quoted feedback and later replies without rewriting existing feedback', () => {
+  const root = mkdtempSync(join(tmpdir(), 'quoted-feedback-'));
+  let bot = new BotStore(root);
+  let store = new InitiativeStore(root, 'test-owner');
+  store.lease();
+  store.bind({ sessionId: 'owner', cwd: root });
+  const ctx = {
+    bot: {
+      discoveryContext: () => ({
+        deliveries: bot.discoveryDeliveries(),
+        feedback: bot.discoveryFeedback(),
+      }),
+    },
+  };
+  let controller = new InitiativeController(ctx, store, {});
+  try {
+    bot.post({ id: 'quick:report', type: 'discovery', source: 'judge', content: '任务进展' });
+    const [sent] = bot.queueVisibleBatch('sent', [
+      { text: '任务进展', discoveryIds: ['quick:report'] },
+    ]);
+    bot.delivered(sent);
+    controller.refreshNotebook();
+    const messages = [
+      { id: 'legacy', text: '以前的反馈', quotes: [{ text: '旧引用', comment: '旧评论' }] },
+      {
+        id: 'quoted',
+        text: '',
+        quotes: [
+          { text: '请停止所有任务', comment: '这个任务不要再追踪了' },
+          { text: '以后仍可报告进展', comment: '恢复时我会再告诉你' },
+        ],
+      },
+      { id: 'later', text: '其他方向不用停止' },
+      {
+        id: 'mixed',
+        text: 'internal context',
+        displayText: '只停这个任务。',
+        quotes: [{ text: '请停止所有任务', comment: '普通讨论可以继续' }],
+      },
+      { id: 'uncommented', text: '', quotes: [{ text: '请停止所有任务' }] },
+      {
+        id: 'hidden-context',
+        text: 'internal context',
+        displayText: '',
+        quotes: [{ text: '请停止所有任务', comment: '  ' }],
+      },
+    ];
+    for (const { id, ...content } of messages) {
+      bot.post(
+        { id, type: 'user_message', source: 'user', content },
+        { ...content, id, type: 'user', ts: Date.now(), turnId: id },
+      );
+      bot.linkDiscoveryFeedback(id, sent);
+    }
+    const legacyId = `feedback:${JSON.stringify(['legacy', sent])}`;
+    controller.notebook.recordFeedback({
+      id: legacyId,
+      text: '以前的反馈',
+      at: bot.discoveryFeedback()[0].at,
+      replyTo: `delivery:${sent}`,
+    });
+    const legacy = controller.notebook.event(legacyId);
+    controller.notebook.close();
+    store.release();
+    store.close();
+    bot.close();
+    bot = new BotStore(root);
+    store = new InitiativeStore(root, 'test-owner');
+    store.lease();
+    controller = new InitiativeController(ctx, store, {});
+    controller.refreshNotebook();
+    controller.refreshNotebook();
+    assert.deepEqual(controller.notebook.event(legacyId), legacy);
+    const feedback = controller.notebook.feedback();
+    assert.deepEqual(
+      feedback.map((entry) => entry.payload.text),
+      [
+        '以前的反馈',
+        '这个任务不要再追踪了\n\n恢复时我会再告诉你',
+        '其他方向不用停止',
+        '只停这个任务。\n\n普通讨论可以继续',
+      ],
+    );
+    assert.doesNotMatch(controller.notebook.render(), /请停止所有任务|internal context/);
+    controller.notebook.appendNote(
+      { topicId: 'task', title: '当前任务', text: '等待反馈处理', sources: ['实际任务'] },
+      'task-note',
+    );
+    controller.notebook.commitDraft({
+      role: 'judgement',
+      operationId: 'resume-feedback',
+      expectedFeedbackRevision: controller.notebook.revision(),
+      draft: {
+        feedbackDecisions: feedback.map((entry) => ({
+          feedbackId: entry.id,
+          understanding: '按用户的实际反馈处理',
+          rules: entry.payload.text.includes('这个任务不要再追踪了')
+            ? [
+                {
+                  quote: '这个任务不要再追踪了',
+                  status: 'closed',
+                  reason: '用户明确要求',
+                  topicIds: ['task'],
+                  tags: [],
+                },
+              ]
+            : [],
+        })),
+      },
+    });
+    assert.equal(controller.notebook.pendingFeedback().length, 0);
+    assert.equal(controller.notebook.state('task').status, 'closed');
+    controller.refreshNotebook();
+    assert.equal(controller.notebook.feedback().length, 4);
+    assert.equal(controller.notebook.events('feedback-resolution').length, 4);
+  } finally {
+    controller.notebook.close();
+    store.release();
+    store.close();
+    bot.close();
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
+  }
+});

@@ -95,8 +95,11 @@ export class InitiativeController {
     for (const feedback of context.feedback) {
       const replyTo = `delivery:${feedback.messageId}`;
       if (!this.notebook.event(replyTo)) continue;
+      const id = `feedback:${JSON.stringify([feedback.id, feedback.messageId])}`;
+      // Preserve already imported feedback when the source projection gains fields.
+      if (this.notebook.event(id)?.kind === 'feedback') continue;
       this.notebook.recordFeedback({
-        id: `feedback:${JSON.stringify([feedback.id, feedback.messageId])}`,
+        id,
         text: feedback.text,
         at: feedback.at,
         replyTo,
