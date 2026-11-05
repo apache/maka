@@ -171,23 +171,26 @@ async fn run(
         ));
     }
     journal.opened(storage, thread.clone()).await?;
-    if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
-        let injected = io
-            .request(
-                "thread/inject_items",
-                serde_json::json!({
-                    "threadId":thread,
-                    "items":[{"type":"message","role":"user","content":[{
-                        "type":"input_text","text":runtime::instruction_message(instructions)
-                    }]}]
-                }),
-            )
-            .await?;
-        if !injected.is_object() {
-            return Err(Error::Invalid(
-                "Codex instruction-message injection has no acknowledgement".into(),
-            ));
+    if !journal.bootstrap_completed() {
+        if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
+            let injected = io
+                .request(
+                    "thread/inject_items",
+                    serde_json::json!({
+                        "threadId":thread,
+                        "items":[{"type":"message","role":"user","content":[{
+                            "type":"input_text","text":runtime::instruction_message(instructions)
+                        }]}]
+                    }),
+                )
+                .await?;
+            if !injected.is_object() {
+                return Err(Error::Invalid(
+                    "Codex instruction-message injection has no acknowledgement".into(),
+                ));
+            }
         }
+        journal.complete_bootstrap(storage).await?;
     }
     bridge.admit()?;
     let mut input = vec![serde_json::json!({"type":"text","text":request["message"]})];

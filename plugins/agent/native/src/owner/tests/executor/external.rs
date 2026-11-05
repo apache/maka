@@ -20,12 +20,13 @@
 use super::external_support::{configured, input, input_runtime, packet, record, release, setup};
 use super::*;
 use futures_util::FutureExt;
-use tokio::io::BufReader;
+use tokio::io::{AsyncBufReadExt, BufReader};
 
 #[tokio::test]
 async fn native_external_all_protocols_persist_before_prompt_and_resume_original_identity() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings.tools = vec![super::external_support::host_tool("observe", "SessionRead")];
             let home = settings.workspace_roots[0].path.clone();
             std::fs::write(std::path::Path::new(&home).join("AGENTS.md"), "CAPTURED EXTERNAL GUIDANCE 中文").unwrap();
             settings.assistant = Some(crate::contract::AssistantConfiguration { home: Some(home.to_str().unwrap().into()) });
@@ -34,7 +35,10 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
         for runtime in ["codex", "antigravity", "claude"] {
             let session = f.create(&format!("Native {runtime}")).await;
             let mut original = None;
-            for _ in 0..2 {
+            let mut original_mcp = None;
+            let mut original_tools = None;
+            let mut original_operation = None;
+            for round in 0..2 {
                 let operation = Uuid::new_v4();
                 let input = input_runtime(&session, runtime, "complete");
                 let accepted = f.mutation(2,"send",input.clone(),operation).await.unwrap();
@@ -42,18 +46,38 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 eprintln!("native fixture {runtime}: admitted");
                 let socket = tokio::select! {
                     socket = listener.accept() => socket.unwrap().0,
-                    () = f.drained() => panic!("native ended before fixture prompt: {}",work(&f,&session,&accepted).await),
+                    () = f.drained() => {
+                        let facts = f.prefix(&session, 128, 1024 * 1024).await;
+                        let outcomes: Vec<_> = facts.events.iter().filter_map(|row| match &row.event.fact {
+                            maka_agent_facts::event::Fact::InvocationEnded { .. } | maka_agent_facts::event::Fact::ExecutorCompleted { .. } => Some(&row.event.fact),
+                            _ => None,
+                        }).collect();
+                        panic!("native ended before fixture prompt: {}; outcomes: {outcomes:?}",work(&f,&session,&accepted).await)
+                    },
                 };
                 let mut control = BufReader::new(socket);
                 let opened = packet(&mut control,"opened").await;
-                let instructions = opened["request"]["instructions"].as_str().unwrap();
-                assert!(instructions.starts_with("<maka_system_instructions>\n"));
-                assert!(instructions.ends_with("\n</maka_system_instructions>"));
-                assert!(instructions.contains("CAPTURED EXTERNAL GUIDANCE 中文"));
+                let names: Vec<_> = opened["request"]["tools"].as_array().unwrap().iter().map(|tool| tool["name"].as_str().unwrap()).collect();
+                assert_eq!(names, ["SessionRead"]);
+                if round == 0 {
+                    let instructions = opened["request"]["instructions"].as_str().unwrap();
+                    assert!(instructions.starts_with("<maka_system_instructions>\n"));
+                    assert!(instructions.ends_with("\n</maka_system_instructions>"));
+                    assert!(instructions.contains("CAPTURED EXTERNAL GUIDANCE 中文"));
+                    original_mcp = Some(opened["request"]["mcp"].clone());
+                    original_tools = Some(opened["request"]["tools"].clone());
+                } else {
+                    assert!(opened["request"].get("instructions").is_none(), "bootstrap must not be repeated on resume");
+                    assert_eq!(Some(&opened["request"]["mcp"]), original_mcp.as_ref(), "endpoint and native config path must be session-scoped");
+                    assert_eq!(Some(&opened["request"]["tools"]), original_tools.as_ref(), "native model tool definitions must stay stable");
+                }
                 assert_eq!(opened["request"]["message"], "complete", "instructions must be a distinct ordinary native message");
-                let order = if runtime == "codex" {
-                    json!([if original.is_some() { "thread/resume" } else { "thread/start" }, "thread/inject_items", "turn/start"])
-                } else { json!(["user/instructions", "user/task"]) };
+                let order = match (runtime, round) {
+                    ("codex", 0) => json!(["thread/start", "thread/inject_items", "turn/start"]),
+                    ("codex", _) => json!(["thread/resume", "turn/start"]),
+                    (_, 0) => json!(["user/instructions", "user/task"]),
+                    _ => json!(["user/task"]),
+                };
                 assert_eq!(opened["request"]["instructionOrder"], order);
                 eprintln!("native fixture {runtime}: opened");
                 let journal = super::external_support::record_runtime(&f,&session,runtime).await;
@@ -61,7 +85,12 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 let current = journal["nativeSession"].as_str().unwrap().to_owned();
                 if let Some(original) = &original { assert_eq!(original,&current); assert_eq!(opened["request"]["resume"],current); }
                 else { assert!(opened["request"].get("resume").is_none()); original = Some(current); }
-                release(&mut control).await;
+                let plan = json!({"calls":[{"callId":1,"name":"SessionRead","input":{"sessionId":session}}]});
+                control.get_mut().write_all(format!("{plan}\n").as_bytes()).await.unwrap();
+                packet(&mut control, "responsive").await;
+                let reply = packet(&mut control, "tool_result").await;
+                let result: Value = serde_json::from_str(reply["reply"]["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+                assert_eq!(result["session"]["id"], session);
                 packet(&mut control,"output").await;
                 release(&mut control).await;
                 packet(&mut control,"terminal").await;
@@ -73,7 +102,25 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 let final_work=work(&f,&session,&accepted).await;
                 assert_eq!(final_work["execution"]["state"],"completed","{runtime}: {final_work}");
                 assert_eq!(final_work["answer"]["text"],"committed output");
-                if runtime == "antigravity" {
+                let events = f.prefix(&session, 128, 1024 * 1024).await.events;
+                let dispatched: Vec<_> = events.iter().filter_map(|row| match &row.event.fact {
+                    maka_agent_facts::event::Fact::ToolDispatched { operation_id, name, .. }
+                        if row.event.invocation.invocation_id == accepted["invocationId"] && name == "SessionRead" => Some(operation_id.clone()),
+                    _ => None,
+                }).collect();
+                assert_eq!(dispatched.len(), 1);
+                if let Some(previous) = &original_operation {
+                    assert_ne!(previous, &dispatched[0], "each invocation owns its original operation");
+                } else {
+                    original_operation = Some(dispatched[0].clone());
+                }
+                let settled: Vec<_> = events.iter().filter_map(|row| match &row.event.fact {
+                    maka_agent_facts::event::Fact::ToolSettled { operation_id, outcome: maka_agent_facts::event::ToolOutcome::Succeeded { .. } }
+                        if row.event.invocation.invocation_id == accepted["invocationId"] => Some(operation_id.clone()),
+                    _ => None,
+                }).collect();
+                assert_eq!(settled, dispatched, "receipts must settle the original invocation only");
+                if runtime == "antigravity" && round == 0 {
                     let facts = f.prefix(&session, 128, 1024 * 1024).await;
                     let observed: Vec<_> = facts.events.iter().filter(|row| row.event.invocation.invocation_id == accepted["invocationId"]).filter_map(|row| {
                         match &row.event.fact {
@@ -106,6 +153,23 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 assert!(super::external_support::record_runtime(&f,&session,runtime).await["running"].is_null());
                 assert_eq!(f.mutation(2,"send",input,operation).await.unwrap(),accepted);
                 assert!(listener.accept().now_or_never().is_none());
+            }
+            let mcp = original_mcp.unwrap();
+            let url = mcp["url"].as_str().unwrap();
+            let address = url.strip_prefix("http://").unwrap().strip_suffix("/mcp").unwrap();
+            let mut socket = TcpStream::connect(address).await.unwrap();
+            socket.write_all(b"POST /mcp HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").await.unwrap();
+            let mut status = String::new();
+            BufReader::new(socket).read_line(&mut status).await.unwrap();
+            assert_eq!(status, "HTTP/1.1 401 Unauthorized\r\n",
+                "idle conversation keeps its listener without granting authority");
+            let observation = f.query("observe", json!({"sessionId":session})).await.unwrap();
+            let removed = f.mutation(2, "changeSession", json!({"sessionId":session,"expectedRevision":observation["session"]["revision"],"action":"remove"}), Uuid::new_v4()).await.unwrap();
+            assert_eq!(removed["kind"], "removed", "{removed}");
+            f.drained().await;
+            assert!(TcpStream::connect(address).await.is_err(), "deleted session must release its listener");
+            if let Some(path) = mcp.get("configPath").and_then(Value::as_str) {
+                assert!(!std::path::Path::new(path).exists(), "deleted session must release native MCP configuration");
             }
         }
         f.app.shutdown().await.unwrap(); f.config.shutdown().await.unwrap();

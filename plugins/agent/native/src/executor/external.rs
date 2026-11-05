@@ -86,6 +86,7 @@ pub(super) struct External {
     queries: Arc<maka_capabilities::call::Resources>,
     catalog: tokio::sync::Mutex<Catalog>,
     stop: CancellationToken,
+    endpoints: tokio::sync::Mutex<BTreeMap<(String, NativeRuntime), Arc<mcp::Endpoint>>>,
     root: Arc<RootStore>,
     package: String,
     activation: String,
@@ -144,6 +145,7 @@ impl External {
             queries: Arc::default(),
             catalog: tokio::sync::Mutex::new(Catalog::Empty),
             stop: CancellationToken::new(),
+            endpoints: tokio::sync::Mutex::new(BTreeMap::new()),
             root: persistence.store().clone(),
             package: context.package().id.clone(),
             activation: context.activation().epoch().to_string(),
@@ -289,13 +291,73 @@ impl External {
             }
         }
     }
+    async fn bridge(
+        &self,
+        request: &Request,
+        tools: tools::Tools,
+        frozen: Vec<Value>,
+    ) -> Result<Arc<mcp::Bridge>, Error> {
+        let runtime = self.require_runtime(request.settings.runtime.as_deref())?;
+        let mut endpoints = self.endpoints.lock().await;
+        if self.stop.is_cancelled() {
+            return Err(Error::Retired);
+        }
+        let key = (request.conversation_key.clone(), runtime);
+        if !endpoints.contains_key(&key) {
+            let endpoint =
+                mcp::Endpoint::open(request.invocation.session_id.clone(), frozen).await?;
+            endpoints.insert(key.clone(), endpoint);
+        }
+        endpoints[&key].bind(tools)
+    }
+    pub async fn remove_sessions(&self, sessions: &[String]) -> Result<(), String> {
+        let selected = self
+            .endpoints
+            .lock()
+            .await
+            .iter()
+            .filter(|(_, endpoint)| sessions.contains(&endpoint.session_id))
+            .map(|(key, endpoint)| (key.clone(), endpoint.clone()))
+            .collect::<Vec<_>>();
+        self.finish_endpoints(selected).await
+    }
+    async fn finish_endpoints(
+        &self,
+        selected: Vec<((String, NativeRuntime), Arc<mcp::Endpoint>)>,
+    ) -> Result<(), String> {
+        let mut failure = None;
+        for (key, endpoint) in selected {
+            match endpoint.finish().await {
+                Ok(()) => {
+                    let mut endpoints = self.endpoints.lock().await;
+                    if endpoints
+                        .get(&key)
+                        .is_some_and(|current| Arc::ptr_eq(current, &endpoint))
+                    {
+                        endpoints.remove(&key);
+                    }
+                }
+                Err(error) => failure = Some(error.to_string()),
+            }
+        }
+        failure.map_or(Ok(()), Err)
+    }
     pub async fn finish(&self) -> Result<(), String> {
         self.stop.cancel();
         self.catalog.lock().await.invalidate();
+        let selected = self
+            .endpoints
+            .lock()
+            .await
+            .iter()
+            .map(|(key, endpoint)| (key.clone(), endpoint.clone()))
+            .collect();
+        let endpoints = self.finish_endpoints(selected).await;
         let queries = self.queries.finish().await.map_err(|e| e.to_string());
         let storage = self.storage.finish().await;
         queries?;
-        storage
+        storage?;
+        endpoints
     }
 }
 struct Call {
@@ -348,6 +410,9 @@ impl Call {
         )
         .await?;
         let mut journal = journal::Journal::load(&self.owner.storage, &self.request).await?;
+        let frozen = journal
+            .bind_catalog(&self.owner.storage, host_tools.definitions())
+            .await?;
         if let Some(mut context) =
             history::context(&store, &self.request, journal.last_delivered_run()).await?
         {
@@ -365,12 +430,21 @@ impl Call {
             .root
             .fork_execution(execution.as_ref(), &self.request.invocation)
             .map_err(|e| Error::Persistence(e.to_string()))?;
+        let bridge = match self.owner.bridge(&self.request, host_tools, frozen).await {
+            Ok(bridge) => bridge,
+            Err(error) => {
+                lease.finish();
+                return Err(error);
+            }
+        };
         if let Err(error) = journal
             .start(&self.owner.storage, &self.request.invocation.invocation_id)
             .await
         {
             lease.finish();
-            return Err(error);
+            let result = bridge.close().await.and(Err(error));
+            bridge.settled(&result);
+            return result;
         }
         let runtime = self
             .owner
@@ -379,7 +453,7 @@ impl Call {
             "kind":"execute", "runtime":self.request.settings.runtime, "cwd":self.request.cwd,
             "message":materials.message,
             "images":materials.images,
-            "tools":host_tools.definitions(),
+            "tools":bridge.definitions(),
         });
         let mut request = request.as_object().expect("worker request").clone();
         for (key, value) in [
@@ -410,7 +484,7 @@ impl Call {
             &self.owner.storage,
             &mut journal,
             output,
-            host_tools,
+            bridge,
             cancellation,
             &mut steering,
         )

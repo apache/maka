@@ -179,7 +179,13 @@ impl Owner {
                         _ = tokio::time::sleep(Duration::from_millis(200)) => continue,
                     }
                 }
-                if owner.engine.release_session_state(&session).is_err() {
+                if owner
+                    .executors
+                    .remove_sessions(std::slice::from_ref(&session))
+                    .await
+                    .is_err()
+                    || owner.engine.release_session_state(&session).is_err()
+                {
                     tokio::select! {
                         _ = owner.stop.cancelled() => return,
                         _ = tokio::time::sleep(Duration::from_secs(1)) => continue,

@@ -28,6 +28,10 @@ struct Record {
     running: Option<String>,
     #[serde(default)]
     last_delivered_run: Option<String>,
+    #[serde(default)]
+    bootstrap_completed: bool,
+    #[serde(default)]
+    mcp_catalog: Option<Vec<Value>>,
 }
 pub(super) struct Journal {
     key: String,
@@ -53,6 +57,8 @@ impl Journal {
                 native_session: None,
                 running: None,
                 last_delivered_run: None,
+                bootstrap_completed: false,
+                mcp_catalog: None,
             },
         };
         if record.cwd != request.cwd {
@@ -68,6 +74,27 @@ impl Journal {
             revision,
             record,
         })
+    }
+    pub async fn bind_catalog(
+        &mut self,
+        storage: &Storage,
+        definitions: Vec<Value>,
+    ) -> Result<Vec<Value>, Error> {
+        if let Some(catalog) = &self.record.mcp_catalog {
+            return Ok(catalog.clone());
+        }
+        let mut next = self.record.clone();
+        next.mcp_catalog = Some(definitions.clone());
+        self.save(storage, next).await?;
+        Ok(definitions)
+    }
+    pub fn bootstrap_completed(&self) -> bool {
+        self.record.bootstrap_completed
+    }
+    pub async fn complete_bootstrap(&mut self, storage: &Storage) -> Result<(), Error> {
+        let mut next = self.record.clone();
+        next.bootstrap_completed = true;
+        self.save(storage, next).await
     }
     pub fn last_delivered_run(&self) -> Option<&str> {
         self.record.last_delivered_run.as_deref()
@@ -104,6 +131,7 @@ impl Journal {
     pub async fn revoke_unsubmitted(&mut self, storage: &Storage) -> Result<(), Error> {
         let mut next = self.record.clone();
         next.native_session = None;
+        next.bootstrap_completed = false;
         self.save(storage, next).await
     }
     pub async fn ready(&mut self, storage: &Storage) -> Result<(), Error> {

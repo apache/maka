@@ -178,6 +178,14 @@ impl Executors {
     pub fn names(&self) -> Vec<String> {
         self.0.keys().cloned().collect()
     }
+    pub async fn remove_sessions(&self, sessions: &[String]) -> Result<(), String> {
+        for backend in self.0.values() {
+            if let Implementation::External(owner) = &backend.implementation {
+                owner.remove_sessions(sessions).await?;
+            }
+        }
+        Ok(())
+    }
     pub async fn finish(&self) -> Result<(), String> {
         for backend in self.0.values() {
             if let Implementation::External(owner) = &backend.implementation {

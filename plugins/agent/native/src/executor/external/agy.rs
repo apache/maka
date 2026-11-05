@@ -96,11 +96,8 @@ async fn prepare(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    let directory = tempfile::Builder::new()
-        .prefix("maka-native-agy-")
-        .tempdir()
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    let plugin = directory.path().join(".agents/plugins/maka");
+    let directory = bridge.directory();
+    let plugin = directory.join(".agents/plugins/maka");
     tokio::fs::create_dir_all(&plugin)
         .await
         .map_err(|e| Error::Provider(e.to_string()))?;
@@ -109,12 +106,18 @@ async fn prepare(
         .map_err(|e| Error::Provider(e.to_string()))?;
     let mcp = serde_json::json!({"mcpServers":{"maka":{"url":bridge.url,"headers":{"Authorization":format!("Bearer {}",bridge.bearer())}}}});
     tokio::fs::write(
-        plugin.join("mcp_config.json"),
+        plugin.join("mcp_config.next"),
         serde_json::to_vec(&mcp).expect("MCP config is JSON"),
     )
     .await
     .map_err(|e| Error::Provider(e.to_string()))?;
-    let settings = directory.path().join("settings.json");
+    tokio::fs::rename(
+        plugin.join("mcp_config.next"),
+        plugin.join("mcp_config.json"),
+    )
+    .await
+    .map_err(|e| Error::Provider(e.to_string()))?;
+    let settings = directory.join("settings.json");
     tokio::fs::write(&settings, b"{\"queuedMessages\":\"send-immediately\"}")
         .await
         .map_err(|e| Error::Provider(e.to_string()))?;
@@ -127,7 +130,7 @@ async fn prepare(
         .arg("--disable-slash-commands")
         .arg("--dangerously-skip-permissions")
         .arg("--add-dir")
-        .arg(directory.path())
+        .arg(directory)
         .arg("--settings")
         .arg(&settings);
     let mut image_directories = std::collections::BTreeSet::new();
@@ -159,7 +162,7 @@ async fn prepare(
         plan.arg("--effort").arg(effort);
     }
     let host = bridge.clone();
-    let result = native_pipe(
+    native_pipe(
         plan,
         runtime::Transport::JsonLines,
         Some(bridge.clone()),
@@ -170,11 +173,7 @@ async fn prepare(
             (result, io)
         },
     )
-    .await;
-    if matches!(result, Err(Error::CleanupUnconfirmed)) {
-        let _retained = directory.keep();
-    }
-    result
+    .await
 }
 
 async fn converse(
@@ -226,26 +225,29 @@ async fn converse(
         if stop.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        let instructions = request.get("instructions").and_then(Value::as_str);
-        let bootstrap = runtime::instruction_message(instructions.unwrap_or(
+        *submitted = true;
+        let mut cursor = TurnCursor::default();
+        if !journal.bootstrap_completed() {
+            let instructions = request.get("instructions").and_then(Value::as_str);
+            let bootstrap = runtime::instruction_message(instructions.unwrap_or(
             "Initialize the available MCP tool catalog for this conversation and acknowledge readiness. Do not perform a user task yet."
         ));
-        *submitted = true;
-        io.send(user_message(&bootstrap)).await?;
-        let mut cursor = TurnCursor::default();
-        let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
-        if !matches!(bootstrap, Outcome::Completed { .. }) {
-            return Ok(bootstrap);
-        }
-        if stop.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
-        if !bridge.listed.is_cancelled() {
-            return Ok(Outcome::Failed {
-                message: "agy did not confirm the captured Host MCP tool catalog".into(),
-                code: Some("native_mcp_setup_failed".into()),
-                recoverable: false,
-            });
+            io.send(user_message(&bootstrap)).await?;
+            let bootstrap = observe(io, &session, &mut cursor, output, false).await?;
+            if !matches!(bootstrap, Outcome::Completed { .. }) {
+                return Ok(bootstrap);
+            }
+            if stop.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            if !bridge.listed.is_cancelled() {
+                return Ok(Outcome::Failed {
+                    message: "agy did not confirm the captured Host MCP tool catalog".into(),
+                    code: Some("native_mcp_setup_failed".into()),
+                    recoverable: false,
+                });
+            }
+            journal.complete_bootstrap(storage).await?;
         }
         io.send(user_message(&native_prompt(request)?)).await?;
         observe(io, &session, &mut cursor, output, true).await

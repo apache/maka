@@ -204,11 +204,11 @@ pub(super) async fn execute(
     storage: &Storage,
     journal: &mut journal::Journal,
     output: Arc<dyn OutputSink>,
-    tools: tools::Tools,
+    bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
     steering: &mut steering::Steering,
 ) -> Result<Outcome, Error> {
-    let bridge = mcp::Bridge::open(tools).await?;
+    let retained = bridge.clone();
     let running = &mut *journal;
     let result = match runtime {
         NativeRuntime::Claude => {
@@ -239,27 +239,32 @@ pub(super) async fn execute(
             )
             .await
         }
-        NativeRuntime::Codex => {
-            let proxy = match codex::proxy(config, cwd, cancellation.clone()).await {
-                Ok(proxy) => proxy,
-                Err(error) => {
-                    bridge.close().await?;
-                    return Err(error);
-                }
-            };
-            pipe(
-                proxy,
-                Transport::WebSocket,
-                Some(bridge.clone()),
-                cancellation.clone(),
-                |io| async move {
-                    codex::execute(io, &request, storage, running, output, bridge, steering).await
-                },
-            )
-            .await
-        }
+        NativeRuntime::Codex => match codex::proxy(config, cwd, cancellation.clone()).await {
+            Err(error) => Err(error),
+            Ok(proxy) => {
+                pipe(
+                    proxy,
+                    Transport::WebSocket,
+                    Some(bridge.clone()),
+                    cancellation.clone(),
+                    |io| async move {
+                        codex::execute(io, &request, storage, running, output, bridge, steering)
+                            .await
+                    },
+                )
+                .await
+            }
+        },
     };
-    let result = if cancellation.is_cancelled()
+    let closed = retained.close().await;
+    let mut result = match (result, closed) {
+        (Err(Error::CleanupUnconfirmed), _) | (_, Err(Error::CleanupUnconfirmed)) => {
+            Err(Error::CleanupUnconfirmed)
+        }
+        (_, Err(error)) => Err(error),
+        (result, Ok(())) => result,
+    };
+    result = if cancellation.is_cancelled()
         && !matches!(
             result,
             Err(Error::CleanupUnconfirmed | Error::Unknown | Error::Persistence(_))
@@ -269,9 +274,12 @@ pub(super) async fn execute(
         result
     };
     // An uncorrelated/missing terminal stays fenced; never turn a crashed request into a replayable one.
-    if matches!(result, Ok(_) | Err(Error::Cancelled)) {
-        journal.ready(storage).await?;
+    if matches!(result, Ok(_) | Err(Error::Cancelled))
+        && let Err(error) = journal.ready(storage).await
+    {
+        result = Err(error);
     }
+    retained.settled(&result);
     result
 }
 

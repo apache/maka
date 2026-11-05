@@ -131,17 +131,18 @@ async fn prepare(
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
     }
-    let directory = tempfile::Builder::new()
-        .prefix("maka-native-claude-")
-        .tempdir()
-        .map_err(|e| Error::Provider(e.to_string()))?;
-    let mcp_config = directory.path().join("mcp.json");
+    let directory = bridge.directory();
+    let mcp_config = directory.join("mcp.json");
+    let pending_config = directory.join("mcp.next");
     tokio::fs::write(
-        &mcp_config,
+        &pending_config,
         serde_json::to_vec(&bridge.claude()).expect("MCP config is JSON"),
     )
     .await
     .map_err(|e| Error::Provider(e.to_string()))?;
+    tokio::fs::rename(&pending_config, &mcp_config)
+        .await
+        .map_err(|e| Error::Provider(e.to_string()))?;
     let mut plan = runtime::command(
         config,
         cwd.to_str()
@@ -216,48 +217,50 @@ async fn prepare(
     };
     let business = async {
         let work = async {
-            let native_prompt =
-                if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
-                    let instructions = input::text(&runtime::instruction_message(instructions));
-                    let native_instructions = input::submit(
-                        &io,
-                        &mut screen,
-                        cwd.to_str().expect("validated UTF-8 cwd"),
-                        &instructions,
-                        &[],
-                        &bridge,
-                        start,
-                    )
-                    .await?;
-                    let bootstrap_output = BootstrapOutput(output.as_ref());
-                    let outcome = observe(
-                        &mut cursor,
-                        &session,
-                        &native_instructions,
-                        0,
-                        &bootstrap_output,
-                        &io,
-                        &mut screen,
-                        start,
-                        None,
-                    )
-                    .await?;
-                    if !matches!(outcome, Outcome::Completed { .. }) {
-                        return Ok(outcome);
-                    }
-                    input::send(&io, &mut screen, &prompt, images, start).await?
-                } else {
-                    input::submit(
-                        &io,
-                        &mut screen,
-                        cwd.to_str().expect("validated UTF-8 cwd"),
-                        &prompt,
-                        images,
-                        &bridge,
-                        start,
-                    )
-                    .await?
-                };
+            let native_prompt = if !journal.bootstrap_completed()
+                && let Some(instructions) = request.get("instructions").and_then(Value::as_str)
+            {
+                let instructions = input::text(&runtime::instruction_message(instructions));
+                let native_instructions = input::submit(
+                    &io,
+                    &mut screen,
+                    cwd.to_str().expect("validated UTF-8 cwd"),
+                    &instructions,
+                    &[],
+                    &bridge,
+                    start,
+                )
+                .await?;
+                let bootstrap_output = BootstrapOutput(output.as_ref());
+                let outcome = observe(
+                    &mut cursor,
+                    &session,
+                    &native_instructions,
+                    0,
+                    &bootstrap_output,
+                    &io,
+                    &mut screen,
+                    start,
+                    None,
+                )
+                .await?;
+                if !matches!(outcome, Outcome::Completed { .. }) {
+                    return Ok(outcome);
+                }
+                journal.complete_bootstrap(storage).await?;
+                input::send(&io, &mut screen, &prompt, images, start).await?
+            } else {
+                input::submit(
+                    &io,
+                    &mut screen,
+                    cwd.to_str().expect("validated UTF-8 cwd"),
+                    &prompt,
+                    images,
+                    &bridge,
+                    start,
+                )
+                .await?
+            };
             observe(
                 &mut cursor,
                 &session,
@@ -291,7 +294,6 @@ async fn prepare(
     };
     let (physical, result, drain) = tokio::join!(lifecycle, business, terminal);
     if physical.is_err() || drain.is_err() {
-        let _retained = directory.keep();
         return Err(Error::CleanupUnconfirmed);
     }
     result

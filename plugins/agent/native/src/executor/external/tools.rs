@@ -45,6 +45,25 @@ pub(super) struct Tools {
 }
 
 impl Tools {
+    #[cfg(test)]
+    pub(super) fn for_test(store: Arc<SessionStore>) -> Self {
+        Self {
+            tools: HostTools::default(),
+            store,
+            invocation: maka_agent_facts::event::Invocation {
+                session_id: "session".into(),
+                turn_id: "turn".into(),
+                run_id: "run".into(),
+                invocation_id: "invocation".into(),
+            },
+            origin: ToolOrigin::HostSdk {
+                package_id: "test".into(),
+                entry_id: "external".into(),
+                activation: "test".into(),
+                parent: None,
+            },
+        }
+    }
     pub async fn bind(
         mut tools: HostTools,
         store: Arc<SessionStore>,

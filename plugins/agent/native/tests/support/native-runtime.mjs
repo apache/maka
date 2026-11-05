@@ -152,7 +152,7 @@ let control,
   thread = 'native-fixture-session',
   turn = 'fixture-turn',
   interrupted = false;
-let opened, activePlan, instructionMessage;
+let opened, activePlan, instructionMessage, mcpSession, configPath;
 const instructionOrder = [];
 let agyStep = 0,
   agyTurns = 0,
@@ -219,8 +219,9 @@ async function mcp(method, params = {}, id = 1, signal) {
       'content-type': 'application/json',
       accept: 'application/json, text/event-stream',
       'mcp-protocol-version': '2025-03-26',
+      ...(method !== 'initialize' && mcpSession ? { 'mcp-session-id': mcpSession } : {}),
     },
-    body: JSON.stringify({ jsonrpc: '2.0', id, method, params }),
+    body: JSON.stringify({ jsonrpc: '2.0', ...(id === null ? {} : { id }), method, params }),
     signal,
   });
   if (!response.ok)
@@ -233,16 +234,25 @@ async function mcp(method, params = {}, id = 1, signal) {
         },
       ],
     };
-  let text = await response.text();
-  const value =
-    text.startsWith('event:') || text.startsWith('data:')
-      ? JSON.parse(
-          text
-            .split('\n')
-            .find((line) => line.startsWith('data:'))
-            .slice(5),
+  if (method === 'initialize') mcpSession = response.headers.get('mcp-session-id');
+  if (response.status === 202 || response.status === 204) return {};
+  const text = await response.text();
+  const value = response.headers.get('content-type')?.includes('text/event-stream')
+    ? text
+        .split(/\r?\n\r?\n/)
+        .map((frame) =>
+          frame
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5))
+            .join('\n')
+            .trim(),
         )
-      : JSON.parse(text);
+        .filter(Boolean)
+        .map((data) => JSON.parse(data))
+        .find((message) => message.jsonrpc === '2.0' && message.id === id)
+    : JSON.parse(text);
+  if (!value) throw Error('MCP response has no matching JSON-RPC result');
   return (
     value.result ?? {
       isError: true,
@@ -333,6 +343,7 @@ async function loadTools() {
     capabilities: {},
     clientInfo: { name: 'native-fixture', version: '1' },
   });
+  await mcp('notifications/initialized', {}, null);
   return (await mcp('tools/list')).tools ?? [];
 }
 async function preopenProbe() {
@@ -342,6 +353,7 @@ async function preopenProbe() {
     capabilities: {},
     clientInfo: { name: 'native-fixture', version: '1' },
   });
+  await mcp('notifications/initialized', {}, null);
   const premature = await mcp('tools/call', {
     name: '__before_identity__',
     arguments: {},
@@ -352,6 +364,7 @@ async function preopenProbe() {
 async function prompt() {
   await connectControl();
   request.tools = agy ? catalogTools : await loadTools();
+  request.mcp = { url: server.url, ...(configPath ? { configPath } : {}) };
   trace('opened', { cwd: process.cwd() });
   let first = (await gate.next()).value,
     plan;
@@ -508,9 +521,8 @@ if (claude) {
   const directory = join(process.env.CLAUDE_CONFIG_DIR, 'projects', project);
   mkdirSync(directory, { recursive: true });
   transcript = join(directory, thread + '.jsonl');
-  server = JSON.parse(
-    (await import('node:fs')).readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'),
-  ).mcpServers.maka;
+  configPath = option('--mcp-config');
+  server = JSON.parse(readFileSync(configPath, 'utf8')).mcpServers.maka;
   server.authorization = server.headers.Authorization;
   request = {
     message: '',
@@ -523,6 +535,7 @@ if (claude) {
     capabilities: {},
     clientInfo: { name: 'native-fixture', version: '1' },
   });
+  await mcp('notifications/initialized', {}, null);
   await mcp('tools/list');
   await pauseInput('startup', { cwd });
   const decoder = new StringDecoder('utf8');
@@ -617,6 +630,7 @@ if (claude) {
     .map((root) => join(root, '.agents/plugins/maka/mcp_config.json'))
     .find(existsSync);
   if (!config) throw Error('agy requires its private native MCP plugin');
+  configPath = config;
   const plugin = JSON.parse(readFileSync(join(dirname(config), 'plugin.json'), 'utf8'));
   if (plugin.name !== 'maka') throw Error('missing native plugin manifest');
   server = JSON.parse(readFileSync(config, 'utf8')).mcpServers.maka;
@@ -629,6 +643,10 @@ if (claude) {
     effort: option('--effort') ?? 'vendor-deep',
   };
   const resumed = option('--conversation');
+  const nativeHistory = join(process.env.MAKA_NATIVE_FIXTURE_CLAUDE_DIR, 'agy');
+  mkdirSync(nativeHistory, { recursive: true });
+  const bootstrapRecord = join(nativeHistory, `${resumed ?? thread}.bootstrap`);
+  agyBootstrapped = !!resumed && existsSync(bootstrapRecord);
   if (resumed) {
     thread = resumed;
     agyStep = 80;
@@ -712,8 +730,10 @@ if (claude) {
         output('instructions acknowledged');
         terminal();
         agyBootstrapped = true;
+        writeFileSync(bootstrapRecord, 'completed');
         return;
       }
+      if (!catalogTools.length) catalogTools = await loadTools();
       instructionOrder.push('user/task');
       request = {
         ...agyInput(text),
