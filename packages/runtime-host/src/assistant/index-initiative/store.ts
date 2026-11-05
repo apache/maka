@@ -197,6 +197,8 @@ export class InitiativeStore {
   claim() {
     return this.update((s) => {
       if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) return;
+      // A new cycle is where an unconfirmed recovery is retried, so its old bound ends here.
+      delete s.recovery;
       s.active = {
         id: randomUUID(),
         startedAt: Date.now(),

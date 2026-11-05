@@ -23,11 +23,26 @@ import type { InitiativeStore } from './store.js';
 type Lane = 'broad' | 'quick';
 type Outcome = 'completed' | 'interrupted';
 
+/** A reconciliation the Host never answers must not withhold the shared slot forever. */
+export const RECOVERY_LIMIT_MS = 60_000;
+export const RECOVERY_ATTEMPT_LIMIT = 120;
+
+/** A lane still owes the Host an answer about an interrupted submission. */
+export interface LaneRecovery {
+  readonly since: number;
+  readonly attempts: number;
+  /** Set once the lane stopped waiting: it no longer withholds the shared slot. */
+  readonly exceededAt?: number;
+  readonly reason?: string;
+}
+
 /** One non-preemptive investigation slot. Event receipt/screening never holds it. */
 export class DiscoveryCoordinator {
   private readonly pendingReleases = new Map<string, Outcome | undefined>();
   /** Reattach an admitted investigation before accepting new FIFO work. */
   readonly recoveryLanes: Partial<Record<Lane, () => boolean>> = {};
+  /** Why a lane withholds new work. Status only: scheduling uses `recoveryLanes`. */
+  readonly recoveryState: Partial<Record<Lane, () => LaneRecovery | undefined>> = {};
   constructor(
     private readonly store: InitiativeStore,
     private readonly sequence: () => number,
@@ -144,8 +159,15 @@ export class DiscoveryCoordinator {
   }
   status() {
     const active = this.store.db.prepare('SELECT lane,started_at FROM discovery_running').get();
+    // Never let a withheld lane look like an idle schedule.
+    const recovering: Partial<Record<Lane, LaneRecovery>> = {};
+    for (const lane of ['broad', 'quick'] as const) {
+      const state = this.recoveryState[lane]?.();
+      if (state) recovering[lane] = state;
+    }
     return {
       running: active ? { lane: active.lane, startedAt: active.started_at } : null,
+      recovering,
       waiting: this.store.db
         .prepare('SELECT lane,queued_at AS queuedAt FROM discovery_waiters ORDER BY seq')
         .all(),

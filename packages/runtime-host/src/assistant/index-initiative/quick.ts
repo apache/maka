@@ -24,6 +24,7 @@ import { z } from 'zod';
 import { EventIntake } from './intake.js';
 import type { WakeHint } from './intake.js';
 import { InitiativeStore } from './store.js';
+import { RECOVERY_ATTEMPT_LIMIT, RECOVERY_LIMIT_MS } from './coordination.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
 import { ASSISTANT_BACKGROUND_SESSION_LABEL } from '@maka/core/session';
@@ -113,9 +114,16 @@ export class QuickDiscoveryController {
   ) {
     this.store = new InitiativeStore(join(directory, 'quick-discovery'), randomUUID());
     this.intake = new EventIntake(this);
-    const unfinished = this.state()?.active ?? this.state()?.pending;
-    this.recovering = !!unfinished && !unfinished.executionCompleted;
+    this.recovering = this.owesHost();
     this.parent.coordinator.recoveryLanes.quick = () => this.recovering;
+    this.parent.coordinator.recoveryState.quick = () => this.state()?.recovery;
+  }
+  /** An unfinished wake whose admission the Host has not resolved. A recovery that was
+   * already given up keeps the wake pending without withholding the shared slot. */
+  private owesHost() {
+    const s = this.state();
+    const unfinished = s?.active ?? s?.pending;
+    return !s?.recovery?.exceededAt && !!unfinished && !unfinished.executionCompleted;
   }
   start(tickMs: number) {
     const acquire = () => {
@@ -130,9 +138,8 @@ export class QuickDiscoveryController {
             s.active = null;
             s.retryAt = this.now();
           }
-          const unfinished = s?.active ?? s?.pending;
-          this.recovering = !!unfinished && !unfinished.executionCompleted;
         });
+      if (owned) this.recovering = this.owesHost();
       if (!owned && this.owned) this.abort.abort(Error('Quick discovery ownership lost'));
       this.owned = owned;
     };
@@ -296,15 +303,7 @@ export class QuickDiscoveryController {
           s.active = null;
         }
       });
-      const permit =
-        this.permit ??
-        (this.parent.coordinator.status().running?.lane === 'quick'
-          ? this.parent.coordinator.acquire('quick')
-          : undefined);
-      this.recovering = false;
-      if (permit) this.parent.coordinator.release(permit, 'interrupted');
-      this.permit = undefined;
-      this.parent.coordinator.recover();
+      this.stopWaiting();
     };
     const sessions = await this.owner(state, () => this.ctx.sessionQuery.list());
     if (!sessions.some((session: any) => session.id === state.workerSession)) {
@@ -316,8 +315,19 @@ export class QuickDiscoveryController {
     );
     const execution = await agent.messageExecution(unfinished.messageId);
     this.ready();
-    if (!execution) return; // Startup or an uncertain query is not proof of absence.
-    if (execution.state === 'owned' || execution.state === 'pending') {
+    if (!execution) {
+      // Startup or an uncertain query is not proof of absence, but an answer that never
+      // comes must stop withholding the shared slot.
+      this.deferRecovery(unfinished);
+      return;
+    }
+    if (
+      execution.state === 'owned' ||
+      execution.state === 'pending' ||
+      // `inbox` is admitted and queued exactly like `pending`: the Host owns it, so it
+      // can be reattached but must never be submitted again.
+      execution.state === 'inbox'
+    ) {
       const permit = this.permit ?? this.parent.coordinator.acquire('quick');
       if (!permit) return;
       let restored = false;
@@ -327,6 +337,7 @@ export class QuickDiscoveryController {
             throw Error('Quick wake ownership changed');
           s.active = s.active ?? s.pending;
           s.pending = null;
+          delete s.recovery;
         });
         this.recovering = false;
         this.launch(agent, current, permit);
@@ -336,7 +347,58 @@ export class QuickDiscoveryController {
       }
       return;
     }
-    if (execution.state === 'not_admitted' || execution.state === 'cancelled') leavePending();
+    if (execution.state === 'not_admitted' || execution.state === 'cancelled') {
+      leavePending();
+      return;
+    }
+    // Any other answer is unusable: keep it bounded rather than waiting forever.
+    this.deferRecovery(unfinished);
+  }
+  /** Stop withholding the shared slot, including the reservation a crashed window left.
+   * Reclaim it while this lane still reports recovering: a reservation cannot be taken
+   * after the lane has stopped asking for it. */
+  private stopWaiting() {
+    const permit =
+      this.permit ??
+      (this.parent.coordinator.status().running?.lane === 'quick'
+        ? this.parent.coordinator.acquire('quick')
+        : undefined);
+    if (permit) this.parent.coordinator.release(permit, 'interrupted');
+    this.permit = undefined;
+    this.recovering = false;
+    this.parent.coordinator.recover();
+  }
+  /** Count one unresolved reconciliation. Past the bound the wake stays pending as
+   * unconfirmed: it is never resubmitted, and it no longer blocks the other lane. */
+  private deferRecovery(unfinished: any) {
+    this.store.update((s) => {
+      if ((s.active ?? s.pending)?.id !== unfinished.id)
+        throw Error('Quick wake ownership changed');
+      const now = this.now();
+      const previous = s.recovery?.id === unfinished.id ? s.recovery : undefined;
+      const since = previous?.since ?? now;
+      const attempts = (previous?.attempts ?? 0) + 1;
+      const exceeded =
+        !!previous?.exceededAt ||
+        now - since >= RECOVERY_LIMIT_MS ||
+        attempts >= RECOVERY_ATTEMPT_LIMIT;
+      s.recovery = exceeded
+        ? {
+            id: unfinished.id,
+            since,
+            attempts,
+            exceededAt: previous?.exceededAt ?? now,
+            reason: 'Host did not confirm the interrupted quick wake; continuing without it',
+          }
+        : { id: unfinished.id, since, attempts };
+      if (!exceeded) return;
+      s.pending = s.active ?? s.pending;
+      s.active = null;
+      s.lastError = s.recovery.reason;
+      s.retryAt = now + s.intervalMs;
+      this.store.log('quick-recovery-exceeded', { id: unfinished.id, attempts });
+    });
+    if (this.state()?.recovery?.exceededAt) this.stopWaiting();
   }
   async dispatch() {
     if (this.running) return;
@@ -445,10 +507,7 @@ export class QuickDiscoveryController {
         this.running = undefined;
         const finished = this.state();
         const unfinished = finished?.active ?? finished?.pending;
-        this.recovering =
-          !!unfinished &&
-          !unfinished.executionCompleted &&
-          unfinished.messageId === current.active.messageId;
+        this.recovering = this.owesHost() && unfinished?.messageId === current.active.messageId;
         if (this.recovering) return;
         this.permit = undefined;
         this.parent.coordinator.release(
@@ -763,6 +822,7 @@ export class QuickDiscoveryController {
         s.active = null;
         s.pending = null;
         delete s.contextWake;
+        delete s.recovery;
         this.store.log('quick-completed', { id: active.id, checkedThrough: active.to });
       });
     } catch (error) {

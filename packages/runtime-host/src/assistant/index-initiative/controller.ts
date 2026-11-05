@@ -28,7 +28,7 @@ import type { AssistantRunOutcome, RunSegment } from '../run-cost.js';
 import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync, readFileSync, rmSync, chmodSync } from 'node:fs';
 import { join } from 'node:path';
-import { DiscoveryCoordinator } from './coordination.js';
+import { DiscoveryCoordinator, RECOVERY_ATTEMPT_LIMIT, RECOVERY_LIMIT_MS } from './coordination.js';
 
 export class InitiativeController {
   readonly notebook: Notebook;
@@ -60,8 +60,9 @@ export class InitiativeController {
     const path = join(store.directory, 'notebook.sqlite');
     this.notebook = new Notebook(path);
     this.coordinator = new DiscoveryCoordinator(store, () => this.notebook.sequence());
-    this.recovering = !!(store.get()?.active || store.get()?.pendingDraft?.submission);
+    this.recovering = this.owesHost();
     this.coordinator.recoveryLanes.broad = () => this.recovering;
+    this.coordinator.recoveryState.broad = () => this.store.get()?.recovery;
     chmodSync(path, 0o600);
   }
   refreshNotebook(state = this.store.get()) {
@@ -138,9 +139,7 @@ export class InitiativeController {
       if (owned && !this.owned) {
         // A durable Root may resume before our first tick, including while scheduling is paused.
         this.store.recover(true);
-        this.recovering = !!(
-          this.store.get()?.active || this.store.get()?.pendingDraft?.submission
-        );
+        this.recovering = this.owesHost();
       }
       if (owned) this.coordinator.recover();
       if (!owned && this.owned) this.abort.abort(Error('Initiative ownership lost'));
@@ -210,6 +209,9 @@ export class InitiativeController {
     const sessionId =
       pending?.phase === 'discovery' ? state.discoverySession : state?.judgementSession;
     const abandon = () => {
+      this.store.update((s) => {
+        delete s.recovery;
+      });
       this.store.recover(); // Positive absence keeps the existing cadence; it does not replay a check.
       this.recovering = false;
       if (this.permit) this.coordinator.release(this.permit, 'interrupted');
@@ -257,7 +259,10 @@ export class InitiativeController {
     }
     const execution = await agent.messageExecution(submission.messageId);
     this.ready();
-    if (!execution) return;
+    if (!execution) {
+      // An answer that never comes must not withhold the shared slot from both lanes.
+      return this.deferRecovery('the Host did not resolve this submission');
+    }
     if (execution.state === 'not_admitted' || execution.state === 'cancelled') {
       if (execution.state === 'cancelled')
         this.store.update((s) => {
@@ -265,7 +270,8 @@ export class InitiativeController {
         });
       return abandon();
     }
-    if (!['owned', 'pending', 'inbox'].includes(execution.state)) return;
+    if (!['owned', 'pending', 'inbox'].includes(execution.state))
+      return this.deferRecovery('the Host returned an unusable admission state');
     const permit = this.permit ?? this.coordinator.acquire('broad');
     if (!permit) return;
     this.coordinator.assertActive(permit);
@@ -273,16 +279,53 @@ export class InitiativeController {
       if (s.pendingDraft?.id !== pending.id) throw Error('Heartbeat ownership changed');
       s.active ??= { id: pending.id, startedAt: Date.now(), phase: pending.phase };
       s.pendingDraft.submission = submission;
+      delete s.recovery;
     });
     this.recovering = false;
     this.launch(agent, current, permit);
+  }
+  /** An unfinished cycle whose admission the Host has not resolved. A recovery that was
+   * already given up keeps its saved submission without withholding the shared slot. */
+  private owesHost() {
+    const s = this.store.get();
+    return !s?.recovery?.exceededAt && !!(s?.active || s?.pendingDraft?.submission);
+  }
+  /** Count one unresolved admission. Past the bound the lane stops withholding the slot,
+   * keeps the saved submission, and reports the degradation instead of guessing. */
+  private deferRecovery(reason: string) {
+    const recovery = this.store.update((s) => {
+      const now = Date.now();
+      const before = s.recovery;
+      const since = before?.since ?? now;
+      const attempts = (before?.attempts ?? 0) + 1;
+      const exceeded =
+        !!before?.exceededAt ||
+        now - since >= RECOVERY_LIMIT_MS ||
+        attempts >= RECOVERY_ATTEMPT_LIMIT;
+      s.recovery = exceeded
+        ? { since, attempts, exceededAt: before?.exceededAt ?? now, reason }
+        : { since, attempts };
+      return s.recovery;
+    });
+    if (!recovery.exceededAt) return;
+    this.store.update((s) => {
+      s.active = null;
+      s.lastError = `Discovery wake is not confirmed yet: ${reason}`;
+      // Keep the failed cadence: the next scheduled check reattaches the saved submission
+      // instead of submitting it again.
+      s.nextAt = Date.now() + s.intervalMs;
+    });
+    this.recovering = false;
+    if (this.permit) this.coordinator.release(this.permit, 'interrupted');
+    this.permit = undefined;
+    this.coordinator.recover();
   }
   private launch(agent: any, current: any, permit: string) {
     this.permit = permit;
     this.running = this.run(agent, current).finally(() => {
       this.running = undefined;
       const state = this.store.get();
-      this.recovering = !!(state?.active || state?.pendingDraft?.submission);
+      this.recovering = this.owesHost();
       // Unknown or interrupted execution still owns the original memory interval.
       if (this.recovering) return;
       this.permit = undefined;
