@@ -120,6 +120,7 @@ async fn source_with_messages(
         through: sequence,
         before: u64::MAX,
         captured_through: sequence,
+        model: None,
         replay: None,
         prior_unknown: false,
     };

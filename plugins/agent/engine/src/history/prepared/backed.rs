@@ -105,6 +105,7 @@ pub(super) async fn capture(
             vision,
             provider,
             replay: captured.selection().replay.as_ref(),
+            model: captured.selection().model.as_ref(),
             budget: budget.clone(),
             directory_owner: owner.clone(),
             captured: Some(&captured),

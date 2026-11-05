@@ -266,6 +266,7 @@ impl Fixture {
                 through,
                 before: u64::MAX,
                 captured_through: through,
+                model: None,
                 replay: None,
                 prior_unknown: false,
             },

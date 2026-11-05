@@ -254,6 +254,7 @@ fn tool_selection(through: u64) -> crate::context::semantic::SemanticSelection {
         through,
         before: through + 1,
         captured_through: through,
+        model: None,
         replay: None,
         prior_unknown: false,
     }

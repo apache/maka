@@ -53,7 +53,15 @@ pub struct SemanticSelection {
     /// Physical publication watermark, distinct from the selected source cut.
     pub captured_through: u64,
     pub replay: Option<SemanticReplay>,
+    pub model: Option<SemanticModel>,
     pub prior_unknown: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticModel {
+    pub model: String,
+    pub codex: Option<maka_agent_facts::context::CodexRequestProvenance>,
+    pub operation: maka_agent_facts::context::ModelOperation,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

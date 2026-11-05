@@ -48,6 +48,7 @@ pub(super) struct ProjectContext<'a> {
     pub vision: bool,
     pub provider: &'a ProviderKind,
     pub replay: Option<&'a maka_event_log::context::semantic::SemanticReplay>,
+    pub model: Option<&'a maka_event_log::context::semantic::SemanticModel>,
     pub captured: Option<&'a maka_event_log::context::semantic::CapturedSource>,
     pub row_root: Option<&'a PayloadSource>,
     pub payload_root: Option<&'a maka_event_log::context::semantic::PayloadSource>,
@@ -68,6 +69,7 @@ impl ProjectContext<'_> {
             vision: self.vision,
             provider: self.provider,
             replay: self.replay,
+            model: self.model,
             captured: self.captured,
             row_root: self.row_root,
             payload_root,
@@ -193,7 +195,7 @@ pub(super) async fn project_row(
                     text_kind: TextKind::Thinking,
                     ..
                 }
-            ) && !reasoning_matches_route(row, context).await?
+            ) && !reasoning_replay_allowed(row, context).await?
             {
                 return Ok(ProjectedRow::Skip);
             }
@@ -369,10 +371,56 @@ async fn assistant(part: &PartDirectory, context: &ProjectContext<'_>) -> io::Re
         }
     }
 }
-async fn reasoning_matches_route(
+async fn reasoning_replay_allowed(
     row: &RowDirectory,
     context: &ProjectContext<'_>,
 ) -> io::Result<bool> {
+    let RowDirectory::AssistantPart {
+        model_id, codex, ..
+    } = row
+    else {
+        return Err(invalid());
+    };
+    if let Some(target) = context.model
+        && (target.codex.is_some() || codex.is_some())
+    {
+        let (Some(target_codex), Some(source_codex)) = (&target.codex, codex) else {
+            return Ok(false);
+        };
+        let root = context.row_root.ok_or_else(invalid)?;
+        let captured = context.captured.ok_or_else(invalid)?;
+        let source_codex = JsonSource::measured(
+            SourceBytes::Source(
+                captured
+                    .byte_range(root, source_codex.range.start, source_codex.range.len)
+                    .map_err(io::Error::other)?,
+            ),
+            source_codex.measure,
+        );
+        let same_model = json::text_eq(
+            &row_text(*model_id, context)?,
+            &target.model,
+            context.budget.clone(),
+        )
+        .await?;
+        let source_hash = json::field(
+            &source_codex,
+            &["compatibility", "comp_hash"],
+            context.budget.clone(),
+        )
+        .await?;
+        let hashes_match = match (source_hash, &target_codex.compatibility) {
+            (Some(source), Some(target)) => Some(
+                json::text_eq(&source.text()?, &target.comp_hash, context.budget.clone()).await?,
+            ),
+            _ => None,
+        };
+        return Ok(maka_agent_facts::context::codex_replay_allowed(
+            same_model,
+            hashes_match,
+            target.operation,
+        ));
+    }
     if let Some(replay) = context.replay {
         let RowDirectory::AssistantPart {
             model_id,

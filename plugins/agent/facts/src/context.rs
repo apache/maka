@@ -138,6 +138,18 @@ pub struct CodexCompatibility {
     pub fetched_at: u64,
 }
 
+/// Call only with ChatGPT provenance on both sides. Recorded observations do not
+/// expire with the catalog; a later catalog cannot certify a missing old hash.
+/// Native re-compaction may ask the producing model to convert its own old state.
+pub fn codex_replay_allowed(
+    same_model: bool,
+    hashes_match: Option<bool>,
+    operation: ModelOperation,
+) -> bool {
+    (same_model && operation == ModelOperation::CodexCompaction)
+        || hashes_match.unwrap_or(same_model)
+}
+
 impl ModelRequestContext {
     pub fn validate(&self) -> Result<(), &'static str> {
         if self.operation == ModelOperation::CodexCompaction && self.codex.is_none() {
@@ -317,6 +329,27 @@ impl ContextCheckpoint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_replay_distinguishes_same_model_reuse_from_cross_model_proof() {
+        for (same_model, hashes_match, inference, compaction) in [
+            (true, None, true, true),
+            (false, None, false, false),
+            (true, Some(true), true, true),
+            (false, Some(true), true, true),
+            (true, Some(false), false, true),
+            (false, Some(false), false, false),
+        ] {
+            assert_eq!(
+                codex_replay_allowed(same_model, hashes_match, ModelOperation::Inference),
+                inference
+            );
+            assert_eq!(
+                codex_replay_allowed(same_model, hashes_match, ModelOperation::CodexCompaction),
+                compaction
+            );
+        }
+    }
 
     #[test]
     fn request_context_keeps_unknown_windows_and_checks_utf16_and_safe_integers() {

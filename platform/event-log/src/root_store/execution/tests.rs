@@ -86,6 +86,7 @@ async fn captured_artifact_sources_cannot_cross_session_or_snapshot_authority() 
         through: 0,
         before: u64::MAX,
         captured_through: 0,
+        model: None,
         replay: None,
         prior_unknown: false,
     };
@@ -451,6 +452,7 @@ async fn captured_source_reads_admitted_canonical_bytes_at_its_frozen_cut() {
             through,
             before: through + 1,
             captured_through: through,
+            model: None,
             replay: None,
             prior_unknown: false,
         })
