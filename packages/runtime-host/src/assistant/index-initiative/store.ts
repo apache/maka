@@ -160,7 +160,7 @@ export class InitiativeStore {
       return s;
     });
   }
-  recover() {
+  recover(preserveActive = false) {
     return this.update((s) => {
       if (!s) return;
       if (s.version !== 2) {
@@ -181,7 +181,7 @@ export class InitiativeStore {
         };
         for (const key of Object.keys(s)) delete s[key];
         Object.assign(s, replacement);
-      } else if (s.active) {
+      } else if (s.active && !preserveActive) {
         s.checkRequested = false;
         s.active = null;
         s.nextAt = Date.now() + s.intervalMs;

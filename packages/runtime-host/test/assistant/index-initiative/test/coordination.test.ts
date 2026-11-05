@@ -263,3 +263,41 @@ test('a failed quick investigation releases capacity without consuming its pendi
   assert.ok(permit);
   f.parent.coordinator.release(permit!);
 });
+
+for (const lane of ['broad', 'quick'] as const) {
+  test(`recovered ${lane} reservation preserves its full memory interval and fences the former owner`, (t) => {
+    const { root, store, book, coordinator } = setup(t);
+    const other = lane === 'broad' ? 'quick' : 'broad';
+    const old = coordinator.acquire(lane)!;
+    book.appendNote(note, 'before-recovery');
+    coordinator.acquire(other);
+    store.release();
+    const successor = new InitiativeStore(root, 'successor');
+    try {
+      successor.lease();
+      const next = new DiscoveryCoordinator(successor, () => book.sequence());
+      next.recoveryLanes[lane] = () => true;
+      next.recover();
+      assert.equal(next.status().running?.lane, lane);
+      assert.equal(next.acquire(other), undefined);
+      const permit = next.acquire(lane)!;
+      assert.ok(permit);
+      assert.notEqual(permit, old);
+      coordinator.release(old, 'interrupted');
+      book.appendNote({ ...note, text: 'after' }, 'after-recovery');
+      next.release(permit, 'completed');
+      const entries: any = book.readMemory(next.previous().memory);
+      assert.deepEqual(
+        entries.items.map((entry: any) => entry.id),
+        ['before-recovery', 'after-recovery'],
+      );
+      next.recoveryLanes[lane] = () => false;
+      const otherPermit = next.acquire(other)!;
+      assert.ok(otherPermit);
+      next.release(otherPermit);
+    } finally {
+      successor.release();
+      successor.close();
+    }
+  });
+}

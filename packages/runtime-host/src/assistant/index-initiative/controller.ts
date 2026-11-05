@@ -39,6 +39,8 @@ export class InitiativeController {
   owned = false;
   running?: Promise<void>;
   private activeAgent?: any;
+  private recovering = false;
+  private permit?: string;
   ticking?: Promise<void>;
   enabling = false;
   private bindingResolution?: Promise<void>;
@@ -58,6 +60,8 @@ export class InitiativeController {
     const path = join(store.directory, 'notebook.sqlite');
     this.notebook = new Notebook(path);
     this.coordinator = new DiscoveryCoordinator(store, () => this.notebook.sequence());
+    this.recovering = !!(store.get()?.active || store.get()?.pendingDraft?.submission);
+    this.coordinator.recoveryLanes.broad = () => this.recovering;
     chmodSync(path, 0o600);
   }
   refreshNotebook(state = this.store.get()) {
@@ -132,7 +136,11 @@ export class InitiativeController {
     const acquire = () => {
       const owned = this.store.lease();
       if (owned && !this.owned) {
-        this.store.recover();
+        // A durable Root may resume before our first tick, including while scheduling is paused.
+        this.store.recover(true);
+        this.recovering = !!(
+          this.store.get()?.active || this.store.get()?.pendingDraft?.submission
+        );
       }
       if (owned) this.coordinator.recover();
       if (!owned && this.owned) this.abort.abort(Error('Initiative ownership lost'));
@@ -196,7 +204,102 @@ export class InitiativeController {
       });
     return this.ticking;
   }
+  private async restoreExecution() {
+    const state = this.store.get();
+    const pending = state?.pendingDraft;
+    const sessionId =
+      pending?.phase === 'discovery' ? state.discoverySession : state?.judgementSession;
+    const abandon = () => {
+      this.store.recover(); // Positive absence keeps the existing cadence; it does not replay a check.
+      this.recovering = false;
+      if (this.permit) this.coordinator.release(this.permit, 'interrupted');
+      this.permit = undefined;
+      this.coordinator.recover();
+    };
+    if (!pending || !sessionId) return abandon();
+    const sessions = await this.asOwner(state, () => this.ctx.sessionQuery.list());
+    if (!sessions.some((session: any) => session.id === sessionId)) {
+      this.store.update((s) => {
+        delete s.pendingDraft.submission;
+      });
+      return abandon();
+    }
+    const agent = await this.asOwner(state, () => this.ctx.agents.resume({ sessionId }));
+    const snapshot = await agent.snapshot();
+    if (snapshot.root?.kind === 'reserved') return;
+    let submission = pending.submission;
+    if (!submission) {
+      // Pre-upgrade wakes did not persist their message ID. Match the canonical user
+      // message for this exact draft, then ask the Host for its durable admission proof.
+      const role = pending.phase === 'discovery' ? 'exploration' : 'judgement';
+      const directory = join(this.store.directory, 'notebook-wakes', pending.id, role);
+      const messages = await agent.transcript();
+      const message = [...messages]
+        .reverse()
+        .find(
+          (m: any) =>
+            m.type === 'user' &&
+            typeof m.text === 'string' &&
+            m.text.startsWith('Runtime heartbeat, not a new human request.\nHeartbeat ID: ') &&
+            m.text.includes(`\nPhase: ${pending.phase}\n`) &&
+            m.text.includes(`完成后把增量操作写入 ${join(directory, 'operations.json')}，格式`),
+        );
+      if (!message) return abandon();
+      let revision = -1; // Missing old feedback snapshots must be repaired, never assumed current.
+      try {
+        const seed = readFileSync(join(directory, 'notebook.md'), 'utf8');
+        const value = JSON.parse(seed.slice(seed.indexOf('\n') + 1)).catalog?.feedbackRevision;
+        if (Number.isSafeInteger(value) && value >= 0) revision = value;
+      } catch {
+        /* Retain the Root and require a fresh draft after it finishes. */
+      }
+      submission = { messageId: message.id, sessionId, input: message.text, revision };
+    }
+    const execution = await agent.messageExecution(submission.messageId);
+    this.ready();
+    if (!execution) return;
+    if (execution.state === 'not_admitted' || execution.state === 'cancelled') {
+      if (execution.state === 'cancelled')
+        this.store.update((s) => {
+          delete s.pendingDraft.submission;
+        });
+      return abandon();
+    }
+    if (!['owned', 'pending', 'inbox'].includes(execution.state)) return;
+    const permit = this.permit ?? this.coordinator.acquire('broad');
+    if (!permit) return;
+    this.coordinator.assertActive(permit);
+    const current = this.store.update((s) => {
+      if (s.pendingDraft?.id !== pending.id) throw Error('Heartbeat ownership changed');
+      s.active ??= { id: pending.id, startedAt: Date.now(), phase: pending.phase };
+      s.pendingDraft.submission = submission;
+    });
+    this.recovering = false;
+    this.launch(agent, current, permit);
+  }
+  private launch(agent: any, current: any, permit: string) {
+    this.permit = permit;
+    this.running = this.run(agent, current).finally(() => {
+      this.running = undefined;
+      const state = this.store.get();
+      this.recovering = !!(state?.active || state?.pendingDraft?.submission);
+      // Unknown or interrupted execution still owns the original memory interval.
+      if (this.recovering) return;
+      this.permit = undefined;
+      this.coordinator.release(
+        permit,
+        state?.lastRun?.id === current.active.id && state.lastRun.outcome !== 'error'
+          ? 'completed'
+          : 'interrupted',
+      );
+    });
+  }
   async dispatch() {
+    if (this.running) return;
+    if (this.recovering) {
+      await this.restoreExecution();
+      if (this.recovering || this.running) return;
+    }
     const s = this.store.get();
     if ((!s?.enabled && !s?.checkRequested) || s.active || s.nextAt > Date.now()) {
       this.coordinator.withdraw('broad');
@@ -212,22 +315,18 @@ export class InitiativeController {
           (s.pendingJudgement || s.candidateReport ? 'judgement' : 'discovery'),
       );
       const snapshot = await agent.snapshot();
-      if (snapshot?.agent?.status === 'running' || awaitingUser(snapshot)) return;
+      if (
+        snapshot.root?.kind === 'reserved' ||
+        snapshot?.agent?.status === 'running' ||
+        awaitingUser(snapshot)
+      )
+        return;
       this.ready();
       this.coordinator.assertActive(permit);
       const current = this.store.claim();
       if (!current?.active) return;
       admitted = true;
-      this.running = this.run(agent, current).finally(() => {
-        this.running = undefined;
-        const finished = this.store.get()?.lastRun;
-        this.coordinator.release(
-          permit,
-          finished?.id === current.active.id && finished.outcome !== 'error'
-            ? 'completed'
-            : 'interrupted',
-        );
-      });
+      this.launch(agent, current, permit);
     } finally {
       if (!admitted) this.coordinator.release(permit);
     }
@@ -299,40 +398,82 @@ export class InitiativeController {
     while (!this.notebook.event(operationId)) {
       this.ready();
       await this.refreshNotebook(state);
-      mkdirSync(directory, { recursive: true, mode: 0o700 });
-      writeFileSync(viewPath, this.notebook.seed(this.coordinator.previous()), { mode: 0o600 });
-      const revision = this.notebook.revision();
-      let input = wakeInput({
-        role,
-        now: new Date().toISOString(),
-        viewPath,
-        outputPath,
-        first: this.store.get().promptVersions?.[role] !== version,
-      });
-      if (repair)
-        input += `\n上次结果未提交：${repair}\n整份操作未写入记事本，其中的消息未交给 Bot，也不在待发送队列。读取原结果文件（若存在）和更新后的记事本，修正后重交；保留仍值得交流的内容，不要因为已经写过文案就当成已安排。feedbackDecisions 只引用记事本“用户反馈”中的 ID，没有待整理反馈就留空。`;
-      if (role === 'judgement' && state.candidateReport?.path)
-        input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
-      const wakeId = randomUUID();
-      const admitted = await agent.followup(
-        `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nSubmission attempt: ${wakeId}\nPhase: ${state.active.phase}\n${input}`,
-      );
-      if (!['turn_started', 'followup'].includes(admitted?.disposition))
-        throw Error('Host rejected proactive wake');
-      while (
-        admitted.disposition === 'followup' &&
-        !JSON.stringify(await agent.transcript()).includes(`Submission attempt: ${wakeId}`)
-      )
+      let submission = this.store.get().pendingDraft.submission;
+      if (!submission) {
+        mkdirSync(directory, { recursive: true, mode: 0o700 });
+        writeFileSync(viewPath, this.notebook.seed(this.coordinator.previous()), { mode: 0o600 });
+        let input = wakeInput({
+          role,
+          now: new Date().toISOString(),
+          viewPath,
+          outputPath,
+          first: this.store.get().promptVersions?.[role] !== version,
+        });
+        if (repair)
+          input += `\n上次结果未提交：${repair}\n整份操作未写入记事本，其中的消息未交给 Bot，也不在待发送队列。读取原结果文件（若存在）和更新后的记事本，修正后重交；保留仍值得交流的内容，不要因为已经写过文案就当成已安排。feedbackDecisions 只引用记事本“用户反馈”中的 ID，没有待整理反馈就留空。`;
+        if (role === 'judgement' && state.candidateReport?.path)
+          input += `\n升级前保留的历史报告：${state.candidateReport.path}。它是参考材料，不是指定候选或当前指令。`;
+        const messageId = randomUUID();
+        submission = {
+          messageId,
+          sessionId: agent.sessionId,
+          revision: this.notebook.revision(),
+          version,
+          input: `Runtime heartbeat, not a new human request.\nHeartbeat ID: ${state.active.id}\nSubmission attempt: ${messageId}\nPhase: ${state.active.phase}\n${input}`,
+        };
+        this.store.update((s) => {
+          s.pendingDraft.submission = submission;
+        });
+      }
+      let execution = await agent.messageExecution(submission.messageId);
+      if (!execution) throw Error('Heartbeat admission is not yet known');
+      if (execution.state === 'not_admitted') {
+        const admitted = await agent.followup(submission.input, {
+          messageId: submission.messageId,
+        });
+        if (!['turn_started', 'followup'].includes(admitted?.disposition))
+          throw Error('Host rejected proactive wake');
+      }
+      for (;;) {
+        this.ready();
+        execution = await agent.messageExecution(submission.messageId);
+        if (execution?.state === 'owned') break;
+        if (execution?.state === 'cancelled') {
+          this.store.update((s) => {
+            delete s.pendingDraft.submission;
+          });
+          throw Error('Heartbeat wake was cancelled');
+        }
         await delay(25, undefined, { signal: this.abort.signal });
-      await agent.whenIdle(this.abort.signal);
-      const snapshot = await agent.snapshot();
-      const status = snapshot?.agent?.status;
-      if (['aborted', 'blocked', 'waiting_for_user'].includes(status) || awaitingUser(snapshot))
-        throw Error(`Heartbeat ended with ${status}; inspect before resuming`);
-      this.ready();
-      this.store.update((s) => {
-        (s.promptVersions ??= {})[role] = version;
-      });
+      }
+      for (;;) {
+        let failure: unknown;
+        try {
+          await agent.whenIdle(this.abort.signal);
+        } catch (error) {
+          failure = error;
+        }
+        this.ready();
+        const snapshot = await agent.snapshot();
+        if (awaitingUser(snapshot)) {
+          if (failure) throw failure;
+          await delay(1000, undefined, { signal: this.abort.signal });
+          continue;
+        }
+        const terminalFailure = ['failed', 'aborted', 'blocked'].includes(snapshot?.agent?.status);
+        if (failure && !terminalFailure) throw failure;
+        this.store.update((s) => {
+          delete s.pendingDraft.submission;
+        });
+        if (failure) throw failure;
+        if (terminalFailure)
+          throw Error(`Heartbeat ended with ${snapshot.agent.status}; inspect before resuming`);
+        break;
+      }
+      if (submission.version)
+        this.store.update((s) => {
+          (s.promptVersions ??= {})[role] = submission.version;
+        });
       await this.refreshNotebook(state);
       // I/O / provider failures remain execution failures. Only fixable draft errors
       // go back to the same agent immediately; never silently drop an invalid field.
@@ -341,7 +482,7 @@ export class InitiativeController {
         this.notebook.commitDraft({
           role,
           operationId,
-          expectedFeedbackRevision: revision,
+          expectedFeedbackRevision: submission.revision,
           draft: JSON.parse(raw),
         });
       } catch (error) {
@@ -402,7 +543,12 @@ export class InitiativeController {
           this.store.update((s) => {
             if (s.pendingDraft && !s.pendingDraft.error) s.pendingDraft.error = message;
           });
-          this.store.finish(id, message);
+          if (this.abort.signal.aborted || this.store.get()?.pendingDraft?.submission) {
+            // Preserve the activation until the Host proves the original execution settled.
+            this.store.update((s) => {
+              s.lastError = message;
+            });
+          } else this.store.finish(id, message);
         }
       } catch {
         /* A newer owner fences writes and cancellation. */

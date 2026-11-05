@@ -104,6 +104,7 @@ export class QuickDiscoveryController {
   private heartbeat?: ReturnType<typeof setInterval>;
   private agent?: any;
   private recovering = false;
+  private permit?: string;
   constructor(
     readonly ctx: any,
     readonly parent: any,
@@ -114,7 +115,7 @@ export class QuickDiscoveryController {
     this.intake = new EventIntake(this);
     const unfinished = this.state()?.active ?? this.state()?.pending;
     this.recovering = !!unfinished && !unfinished.executionCompleted;
-    this.parent.coordinator.recoveryLane = () => (this.recovering ? 'quick' : undefined);
+    this.parent.coordinator.recoveryLanes.quick = () => this.recovering;
   }
   start(tickMs: number) {
     const acquire = () => {
@@ -295,7 +296,15 @@ export class QuickDiscoveryController {
           s.active = null;
         }
       });
+      const permit =
+        this.permit ??
+        (this.parent.coordinator.status().running?.lane === 'quick'
+          ? this.parent.coordinator.acquire('quick')
+          : undefined);
       this.recovering = false;
+      if (permit) this.parent.coordinator.release(permit, 'interrupted');
+      this.permit = undefined;
+      this.parent.coordinator.recover();
     };
     const sessions = await this.owner(state, () => this.ctx.sessionQuery.list());
     if (!sessions.some((session: any) => session.id === state.workerSession)) {
@@ -309,7 +318,7 @@ export class QuickDiscoveryController {
     this.ready();
     if (!execution) return; // Startup or an uncertain query is not proof of absence.
     if (execution.state === 'owned' || execution.state === 'pending') {
-      const permit = this.parent.coordinator.acquire('quick');
+      const permit = this.permit ?? this.parent.coordinator.acquire('quick');
       if (!permit) return;
       let restored = false;
       try {
@@ -425,6 +434,7 @@ export class QuickDiscoveryController {
   }
 
   private launch(agent: any, current: any, permit: string) {
+    this.permit = permit;
     this.agent = agent;
     let deferred = false;
     this.running = this.run(agent, current)
@@ -439,6 +449,8 @@ export class QuickDiscoveryController {
           !!unfinished &&
           !unfinished.executionCompleted &&
           unfinished.messageId === current.active.messageId;
+        if (this.recovering) return;
+        this.permit = undefined;
         this.parent.coordinator.release(
           permit,
           deferred || finished?.active || finished?.pending || finished?.lastError

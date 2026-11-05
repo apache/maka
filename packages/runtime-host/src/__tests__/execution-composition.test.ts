@@ -6178,3 +6178,237 @@ test('a recovered quick investigation keeps its slot and memory identity ahead o
     }
   });
 });
+
+for (const phase of ['discovery', 'judgement'] as const) {
+  for (const legacy of [false, true]) {
+    test(`recovered broad ${phase} retains its identity and slot (legacy ${legacy})`, {
+      timeout: 30000,
+    }, async (t) => {
+      let quick!: QuickDiscoveryController;
+      let parent!: InitiativeController;
+      const quickStart = QuickDiscoveryController.prototype.start;
+      const parentStart = InitiativeController.prototype.start;
+      t.mock.method(
+        QuickDiscoveryController.prototype,
+        'start',
+        function (this: QuickDiscoveryController, ms: number) {
+          quick = this;
+          return quickStart.call(this, ms);
+        },
+      );
+      t.mock.method(InitiativeController.prototype, 'start', function (this: InitiativeController) {
+        parent = this;
+        return parentStart.call(this);
+      });
+      await withCompositionRoot(async ({ root, owner }) => {
+        const entered = deferred<void>(),
+          boundary = deferred<void>(),
+          requested = deferred<void>();
+        const resumed = deferred<void>(),
+          finish = deferred<void>(),
+          quickEntered = deferred<void>();
+        let heldSession = '',
+          heldTurn = '';
+        const prompts = new Map<string, string>();
+        const starts: Array<{ sessionId: string; continuation: boolean }> = [];
+        const factory: BackendFactory = (context) =>
+          new (class extends FakeBackend {
+            async prepareRunComposition(input: { runId: string; turnId: string }) {
+              await context.recordRunComposition!(input.runId, HANDOFF_TEST_COMPOSITION);
+            }
+            override async *send(input: BackendSendInput): AsyncIterable<SessionEvent> {
+              await this.prepareRunComposition({ runId: input.runId!, turnId: input.turnId });
+              const labels = context.header.labels ?? [];
+              const broad = labels.some(
+                (label) =>
+                  label.startsWith('assistant-discovery:') ||
+                  label.startsWith('assistant-judgement:'),
+              );
+              const target = labels.some((label) => label.startsWith(`assistant-${phase}:`));
+              if (broad) {
+                starts.push({ sessionId: context.sessionId, continuation: !!input.continuation });
+                if (!input.continuation) prompts.set(context.sessionId, input.text);
+              }
+              if (target && !heldSession) {
+                heldSession = context.sessionId;
+                heldTurn = input.turnId;
+                entered.resolve();
+                await boundary.promise;
+                assert.equal(
+                  await input.handoffBoundary!(new AbortController().signal, 3),
+                  'pause',
+                );
+                return;
+              }
+              if (context.sessionId === heldSession) {
+                assert.equal(input.turnId, heldTurn);
+                assert.ok(input.continuation);
+                resumed.resolve();
+                await finish.promise;
+              }
+              if (broad) {
+                const output = /完成后把增量操作写入 ([^\n]+)，格式/.exec(
+                  prompts.get(context.sessionId)!,
+                )?.[1];
+                assert.ok(output);
+                await writeFile(output, '{}');
+              }
+              if (labels.some((label) => label.startsWith('assistant-quick-discovery:')))
+                quickEntered.resolve();
+              yield {
+                type: 'complete',
+                id: randomUUID(),
+                turnId: input.turnId,
+                ts: Date.now(),
+                stopReason: 'end_turn',
+              };
+            }
+          })(context);
+        const residencies = new HostResidencyRegistry();
+        const first = await createCapturedExecutionComposition(owner, {
+          primaryBackendFactory: factory,
+          residencies,
+          assistantHomeDirectory: join(root, 'home'),
+        });
+        let nextOwner: InteractiveRootOwner | undefined;
+        let next: Awaited<ReturnType<typeof createCapturedExecutionComposition>> | undefined;
+        const caller: ConnectionContext = {
+          hostEpoch: 'execution-composition-test',
+          connectionId: 'broad-recovery',
+          principal: 'local_owner',
+          principalKind: 'local_owner',
+          acquireResidency: () => residencies.acquire('broad-recovery'),
+        };
+        try {
+          const call = async (method: string, input: unknown) => {
+            const result = await first.composition.handlers['personal-assistant.call'](
+              { method, input } as any,
+              caller,
+            );
+            assert.equal(result.ok, true, JSON.stringify(result));
+          };
+          await call('assistant.set-enabled', { enabled: true });
+          const chat = await first.manager.createSession({
+            cwd: root,
+            llmConnectionId: FAKE_CONNECTION_ID,
+            llmConnectionSlug: 'fake',
+            model: 'fake-model',
+            permissionMode: 'ask',
+            labels: ['personal-assistant'],
+          });
+          await call('assistant.bind', { sessionId: chat.id });
+          await parent.control('check', { sessionId: chat.id });
+          await entered.promise;
+          const original = parent.store.get();
+          const executionId = `${original.pendingDraft.id}:${phase}`;
+          const remember = async (key: string) => {
+            const tools = parent.ctx.tools.resolve(heldSession, []).tools;
+            const read = tools.find((tool: any) => tool.name === 'DiscoveryNotebook')!;
+            const write = tools.find((tool: any) => tool.name === 'DiscoveryNotebookRemember')!;
+            const invocation = {
+              sessionId: heldSession,
+              turnId: heldTurn,
+              toolCallId: randomUUID(),
+              cwd: root,
+              abortSignal: new AbortController().signal,
+              emitOutput() {},
+            };
+            const view = await read.impl(read.parameters.parse({}), invocation);
+            assert.equal(view.executionId, executionId);
+            await write.impl(
+              write.parameters.parse({
+                key,
+                executionId,
+                expectedFeedbackRevision: view.feedbackRevision,
+                notes: [
+                  {
+                    topicId: 'handoff',
+                    title: 'Handoff',
+                    text: key,
+                    sources: ['synthetic source'],
+                  },
+                ],
+              }),
+              invocation,
+            );
+          };
+          await remember('before-recovery');
+          await parent.control('pause', { sessionId: chat.id });
+          if (legacy)
+            parent.store.update((s) => {
+              delete s.pendingDraft.submission;
+            });
+          // Stop the observer without canceling the durable Root, then perform real handoff.
+          parent.store.release();
+          parent.abort.abort(Error('Observer exited after admission'));
+          await parent.running;
+          const request = first.manager.requestRunHandoff.bind(first.manager);
+          first.manager.requestRunHandoff = (...args) => {
+            const result = request(...args);
+            requested.resolve();
+            return result;
+          };
+          const preparing = first.composition.prepareHandoff!(
+            'execution-composition-test',
+            new AbortController().signal,
+          );
+          await requested.promise;
+          boundary.resolve();
+          const preparation = await preparing;
+          assert.ok(preparation);
+          assert.equal(await preparation.seal(), true);
+          await preparation.detach();
+          first.composition.beginDrain();
+          await first.composition.close();
+          await owner.close();
+          nextOwner = await tryAcquireInteractiveRootOwner(
+            await resolveStorageRoot({ path: root, kind: 'interactive' }),
+          );
+          assert.ok(nextOwner);
+          next = await createCapturedExecutionComposition(nextOwner, {
+            primaryBackendFactory: factory,
+            assistantHomeDirectory: join(root, 'home'),
+          });
+          await resumed.promise;
+          // The already-running Root must have its identity even before its first scheduler tick.
+          await remember('after-recovery');
+          await quick.control({ action: 'check', eventIntake: false });
+          await quick.tick();
+          assert.equal(quick.state().active, null);
+          await parent.tick();
+          assert.equal(parent.coordinator.status().running?.lane, 'broad');
+          assert.equal(parent.store.get().active.id, original.active.id);
+          assert.equal(
+            parent.store.get().enabled,
+            false,
+            'recovery must not re-enable paused checks',
+          );
+          finish.resolve();
+          await parent.running;
+          await pollFor(() => !parent.store.get().active);
+          assert.equal(parent.store.get().lastError, null);
+          const memory = parent.notebook.readMemory(parent.coordinator.previous().memory);
+          assert.ok('items' in memory);
+          const text = JSON.stringify(memory.items);
+          assert.match(text, /before-recovery/);
+          assert.match(text, /after-recovery/);
+          assert.equal(
+            starts.filter((start) => start.sessionId === heldSession && !start.continuation).length,
+            1,
+            'recovery never resubmits the original phase',
+          );
+          await quick.tick();
+          await quickEntered.promise;
+        } finally {
+          boundary.resolve();
+          finish.resolve();
+          first.composition.beginDrain();
+          await first.composition.close();
+          next?.composition.beginDrain();
+          await next?.composition.close();
+          await nextOwner?.close();
+        }
+      });
+    });
+  }
+}

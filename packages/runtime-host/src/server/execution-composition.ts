@@ -2497,7 +2497,10 @@ export async function createExecutionRuntimeHostComposition(
             ...describeAgent(session),
             ...(needsInput ? { status: 'waiting_for_user' } : {}),
           },
-          root: coordinator.readRootState(id),
+          root:
+            !rootRecoveryCompleted || draining
+              ? { kind: 'reserved' }
+              : coordinator.readRootState(id),
           pendingInteractions: pending.length + boundaries.length,
         };
       },

@@ -21,6 +21,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { InitiativeController } from '../../../../src/assistant/index-initiative/controller.js';
 import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
@@ -37,15 +38,33 @@ function fixture() {
     posted.push(message);
     return true;
   };
+  const admissions = new Set<string>();
+  let status = 'idle';
   const agent = {
-    followup: async (prompt: string) => {
+    sessionId: 'judge',
+    messageExecution: async (messageId: string) => ({
+      state: admissions.has(messageId) ? 'owned' : 'not_admitted',
+    }),
+    followup: async (prompt: string, options: { messageId: string }) => {
+      admissions.add(options.messageId);
+      status = 'running';
       prompts.push(prompt);
       return { disposition: 'turn_started' };
     },
-    whenIdle: async () => runner(prompts.at(-1)!),
-    snapshot: async () => ({ agent: { status: 'idle' } }),
+    whenIdle: async () => {
+      try {
+        await runner(prompts.at(-1)!);
+        status = 'idle';
+      } catch (error) {
+        status = 'blocked';
+        throw error;
+      }
+    },
+    snapshot: async () => ({ agent: { status }, pendingInteractions: 0 }),
   };
   const ctx = {
+    agents: { withInvocation: (_: any, fn: any) => fn(), resume: async () => agent },
+    sessionQuery: { list: async () => [{ id: 'judge' }] },
     bot: {
       discoveryContext: () => ({ deliveries: [], feedback: [] }),
       post: (_owner: string, message: any) => post(message),
@@ -54,10 +73,11 @@ function fixture() {
   let store: InitiativeStore;
   let controller: InitiativeController;
   const open = () => {
-    store = new InitiativeStore(directory, 'test-owner');
+    store = new InitiativeStore(directory, randomUUID());
     store.lease();
-    store.recover();
+    store.recover(true);
     controller = new InitiativeController(ctx, store, {});
+    controller.coordinator.recover();
   };
   open();
   store!.bind({ sessionId: 'owner', cwd: directory });
@@ -68,6 +88,11 @@ function fixture() {
   return {
     posted,
     prompts,
+    agent,
+    ctx,
+    get controller() {
+      return controller;
+    },
     get store() {
       return store;
     },
@@ -83,6 +108,10 @@ function fixture() {
     async run() {
       store.control('check');
       await controller.run(agent, store.claim());
+    },
+    async restore() {
+      await controller.dispatch();
+      await controller.running;
     },
     restart() {
       controller.notebook.close();
@@ -245,6 +274,85 @@ test('missing output remains recoverable without pretending it was committed', a
     });
     await f.run();
     assert.equal(f.posted.length, 1);
+  } finally {
+    f.close();
+  }
+});
+
+for (const accepted of [false, true]) {
+  test(`broad recovery reconciles an uncertain submission without bypassing pause or cadence (${accepted})`, async () => {
+    const f = fixture();
+    try {
+      const submit = f.agent.followup;
+      f.agent.followup = async (text, options) => {
+        if (accepted) await submit(text, options);
+        throw Error('Response lost before admission was known');
+      };
+      f.setRunner((prompt) => output(prompt, validDraft));
+      await f.run();
+      const original = f.store.get().active.id;
+      f.store.control('pause');
+      f.restart();
+      f.agent.followup = submit;
+      const query = f.agent.messageExecution;
+      f.agent.messageExecution = async () => undefined as any;
+      await f.restore();
+      assert.equal(f.store.get().active.id, original);
+      assert.equal(f.controller.coordinator.acquire('quick'), undefined);
+      assert.equal(f.prompts.length, Number(accepted));
+      f.agent.messageExecution = query;
+      await f.restore();
+      assert.equal(f.store.get().active, null);
+      assert.equal(f.store.get().enabled, false);
+      assert.equal(f.prompts.length, Number(accepted), 'never resubmit while reconciling');
+      assert.equal(f.posted.length, Number(accepted));
+      assert.ok(f.store.get().nextAt > Date.now());
+      const quick = f.controller.coordinator.acquire('quick');
+      assert.ok(quick);
+      f.controller.coordinator.release(quick);
+    } finally {
+      f.close();
+    }
+  });
+}
+
+test('feedback received during a recovered broad draft is validated before delivery', async () => {
+  const f = fixture();
+  try {
+    const submit = f.agent.followup;
+    f.agent.followup = async (text, options) => {
+      await submit(text, options);
+      throw Error('Lost admission response');
+    };
+    f.setRunner((prompt) => output(prompt, validDraft));
+    await f.run();
+    f.book.put('earlier-delivery', 'delivery', { text: 'Earlier recommendation', topicIds: [] });
+    f.book.recordFeedback({
+      id: 'late-feedback',
+      replyTo: 'earlier-delivery',
+      text: 'Do not send the old recommendation',
+      at: new Date().toISOString(),
+    });
+    f.restart();
+    f.agent.followup = submit;
+    f.setRunner(async (prompt) => {
+      if (f.prompts.length === 1) return output(prompt, validDraft);
+      assert.equal(f.posted.length, 0, 'the old draft was rejected atomically');
+      assert.match(prompt, /FEEDBACK_CHANGED/);
+      await output(prompt, {
+        feedbackDecisions: [
+          {
+            feedbackId: 'late-feedback',
+            understanding: 'The old recommendation should not be sent',
+            rules: [],
+          },
+        ],
+      });
+    });
+    await f.restore();
+    assert.equal(f.prompts.length, 2);
+    assert.equal(f.store.get().lastError, null);
+    assert.equal(f.posted.length, 0);
   } finally {
     f.close();
   }

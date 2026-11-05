@@ -27,7 +27,7 @@ type Outcome = 'completed' | 'interrupted';
 export class DiscoveryCoordinator {
   private readonly pendingReleases = new Map<string, Outcome | undefined>();
   /** Reattach an admitted investigation before accepting new FIFO work. */
-  recoveryLane?: () => Lane | undefined;
+  readonly recoveryLanes: Partial<Record<Lane, () => boolean>> = {};
   constructor(
     private readonly store: InitiativeStore,
     private readonly sequence: () => number,
@@ -64,7 +64,11 @@ export class DiscoveryCoordinator {
     this.store.transaction(() => {
       this.store.fence();
       const active = this.store.db.prepare('SELECT * FROM discovery_running WHERE id=1').get();
-      if (active && active.owner !== this.store.owner) {
+      if (
+        active &&
+        active.owner !== this.store.owner &&
+        !this.recoveryLanes[active.lane as Lane]?.()
+      ) {
         this.remember(active, 'interrupted');
         this.store.db.exec('DELETE FROM discovery_running');
       }
@@ -77,18 +81,25 @@ export class DiscoveryCoordinator {
       this.store.db
         .prepare('INSERT OR IGNORE INTO discovery_waiters(lane,queued_at) VALUES(?,?)')
         .run(lane, Date.now());
-      const recovering = this.recoveryLane?.();
-      if (recovering && recovering !== lane) return;
-      if (this.store.db.prepare('SELECT 1 FROM discovery_running').get()) return;
+      const recovering = this.recoveryLanes[lane]?.();
+      if (!recovering && Object.values(this.recoveryLanes).some((pending) => pending())) return;
+      const active = this.store.db.prepare('SELECT * FROM discovery_running').get();
+      if (active && (active.lane !== lane || !recovering)) return;
       const next = this.store.db
         .prepare('SELECT lane FROM discovery_waiters ORDER BY seq LIMIT 1')
         .get();
-      if (next?.lane !== lane && recovering !== lane) return;
+      if (next?.lane !== lane && !recovering) return;
       const token = randomUUID();
       this.store.db.prepare('DELETE FROM discovery_waiters WHERE lane=?').run(lane);
       this.store.db
-        .prepare('INSERT INTO discovery_running VALUES(1,?,?,?,?,?)')
-        .run(token, this.store.owner, lane, Date.now(), this.sequence());
+        .prepare('INSERT OR REPLACE INTO discovery_running VALUES(1,?,?,?,?,?)')
+        .run(
+          token,
+          this.store.owner,
+          lane,
+          active?.started_at ?? Date.now(),
+          active?.memory_after ?? this.sequence(),
+        );
       return token;
     });
   }

@@ -165,7 +165,7 @@ for (const eventIntake of [false, true]) {
     assert.ok(active && !active.executionCompleted);
     assert.equal(host.starts(), 1);
     assert.ok(host.receipts.has(active.messageId));
-    assert.equal(f.parent.coordinator.previous().outcome, 'interrupted');
+    assert.equal(f.parent.coordinator.status().running?.lane, 'quick');
     f.agent.followup = followup;
     f.advance(3600000); // Hint ages/current time also differ on replay.
     await host.restart();
