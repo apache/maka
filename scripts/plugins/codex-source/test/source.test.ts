@@ -152,10 +152,21 @@ test('read permission is checked again; missing source fails instead of publishi
   rmSync(join(home, 'thread_history_1.sqlite'));
   await assert.rejects(a.query({}, caller));
 });
-test('legacy history cannot silently masquerade as complete; cancellation stops reads', async (t) => {
-  const { a, s } = fixture(t);
-  s.exec("UPDATE threads SET history_mode='legacy'");
-  await assert.rejects(a.query({}, caller), /legacy/);
+test('legacy threads are skipped by scans and fail only when named; cancellation stops reads', async (t) => {
+  const { a, put, s } = fixture(t);
+  put('kept', since, 1);
+  s.prepare('INSERT INTO threads VALUES(?,?,?,?)').run(
+    'legacy-session',
+    '旧版线程',
+    'legacy',
+    since / 1000,
+  );
+  const page = await a.query({}, caller);
+  assert.deepEqual(
+    page.items.map((x) => x.id),
+    [(await a.query({ threadId: 'old-session' }, caller)).items[0].id],
+  );
+  await assert.rejects(a.query({ threadId: 'legacy-session' }, caller), /legacy rollout history/);
   const controller = new AbortController();
   controller.abort();
   await assert.rejects(a.query({}, { invocation: { abortSignal: controller.signal } }));
@@ -214,6 +225,34 @@ test('changes revoke deleted threads and reject foreign scope/signatures', async
   } finally {
     other.close();
   }
+});
+
+test('changes declare legacy rollout updates instead of returning an empty delta', async (t) => {
+  const f = fixture(t);
+  f.s
+    .prepare('INSERT INTO threads VALUES(?,?,?,?)')
+    .run('legacy-session', '旧版线程', 'legacy', since / 1000);
+  const baseline = await f.a.changes(undefined, 10, caller);
+  assert.equal(baseline.items.length, 0);
+  f.put('new', since + 1, 2);
+  f.s
+    .prepare('UPDATE threads SET updated_at=? WHERE id=?')
+    .run((since + 2000) / 1000, 'legacy-session');
+  const page = await f.a.changes(baseline.cursor, 10, caller);
+  assert.deepEqual(page.items.map((x) => x.object.kind).sort(), [
+    'legacyThreadNotice',
+    'userMessage',
+  ]);
+  const notice = page.items.find((x) => x.object.kind === 'legacyThreadNotice')!;
+  assert.match(notice.content, /legacy rollout history/);
+  assert.match(notice.content, /旧版线程/);
+  assert.deepEqual(await f.a.authorize([notice.object], caller), [notice.object.id]);
+  const read = await f.a.read(notice.object, caller);
+  assert.equal(read.status, 'ok');
+  assert.match(read.content!.item.notice, /legacy rollout history/);
+  const next = await f.a.changes(page.cursor, 10, caller);
+  assert.equal(next.items.length, 0);
+  assert.equal((await f.a.query({}, caller)).items.length, 1);
 });
 
 test('latest-first history queries apply time/thread filters before frozen pagination', async (t) => {

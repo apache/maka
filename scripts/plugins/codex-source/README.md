@@ -69,9 +69,12 @@ cursors bound to the source path, time scope and query. The key and snapshot cac
 persist across plugin reloads. The newest 64 snapshots are retained; evicted cursors
 fail explicitly and require a new query. Cache files are mode 0600. Codex databases
 are always opened read-only, and a missing/unsupported database fails visibly.
-This adapter currently requires Codex's paginated history format. An in-scope legacy
-thread is reported explicitly rather than silently omitted; no rollout migration is
-performed by Maka.
+This adapter requires Codex's paginated history format for its scans. Legacy rollout
+threads are skipped by both `query` and `changes` instead of failing the whole source:
+querying one by `threadId` fails with a targeted error, and a legacy thread update
+yields a `legacyThreadNotice` change item saying its turns are not representable
+incrementally, so an empty page never silently stands in for an unreadable update.
+No rollout migration is performed by Maka.
 
 Computer History is separate from agent tool-call records. This plugin does not
 activate screen recording or claim that tool calls represent the user's computer
