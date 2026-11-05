@@ -163,9 +163,8 @@ export function createTerminals(
     void (async () => {
       try {
         for (let reconnects = 0; current(); ) {
-          let opened: Stream<unknown> | null = null;
           try {
-            opened = await host.subscribe('terminal', 'watchList', {
+            const opened = await host.subscribe('terminal', 'watchList', {
               sessionId: session,
               offset: 0,
             });
@@ -174,23 +173,30 @@ export function createTerminals(
               return;
             }
             run.stream = opened;
-            for (;;) {
-              const outcome = await opened.next();
-              if (!current()) return;
-              if (!outcome) throw new UiError('The Host closed the terminal list.');
-              reconnects = 0;
-              const page = completed(outcome);
-              const resources = [...page.resources];
-              for (let offset = page.nextOffset ?? null; offset !== null; ) {
-                const more = completed(
-                  await host.query('terminal', 'list', { sessionId: session, offset }),
-                );
+            try {
+              for (;;) {
+                const outcome = await opened.next();
                 if (!current()) return;
-                resources.push(...more.resources);
-                offset = more.nextOffset ?? null;
+                if (!outcome) throw new UiError('The Host closed the terminal list.');
+                reconnects = 0;
+                const page = completed(outcome);
+                const resources = [...page.resources];
+                for (let offset = page.nextOffset ?? null; offset !== null; ) {
+                  const more = completed(
+                    await host.query('terminal', 'list', { sessionId: session, offset }),
+                  );
+                  if (!current()) return;
+                  resources.push(...more.resources);
+                  offset = more.nextOffset ?? null;
+                }
+                accept(resources);
+                loading.set(false);
               }
-              accept(resources);
-              loading.set(false);
+            } finally {
+              if (run.stream === opened) {
+                run.stream = null;
+                await opened.close().catch(() => {});
+              }
             }
           } catch (reason) {
             if (!current()) return;
@@ -201,11 +207,6 @@ export function createTerminals(
               continue;
             }
             throw reason;
-          } finally {
-            if (opened && run.stream === opened) {
-              run.stream = null;
-              await opened.close().catch(() => {});
-            }
           }
         }
       } catch (reason) {
