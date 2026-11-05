@@ -406,8 +406,11 @@ pub(crate) async fn latest_record(
         "c.kind='context_checkpoint_recorded' AND c.sequence <= ?1 AND {filter}
          AND NOT EXISTS(SELECT 1 FROM runtime_events r WHERE r.invocation_id=c.invocation_id
            AND r.kind='model_requested' AND r.operation_id=json_extract(c.event_header,'$.fact.checkpoint.summary_step_id')
-           AND json_extract(r.event_header,'$.fact.source_scope.kind')='lineage'
-           AND (?3 IS NULL OR NOT {contains}))"
+           AND CASE WHEN json_extract(r.event_header,'$.fact.source_scope.kind')='lineage'
+                    AND (?3 IS NULL OR NOT {contains})
+               THEN NOT context_lineage_covers_session(?2,c.invocation_id,
+                   json_extract(c.event_header,'$.fact.checkpoint.covered_through'))
+               ELSE 0 END)"
     );
     // Limit each indexed branch before combining: a wide UNION view would sort
     // every old body even when the newest native checkpoint is already known.

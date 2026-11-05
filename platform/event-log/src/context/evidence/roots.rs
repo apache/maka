@@ -398,6 +398,35 @@ fn lineage_contains(db: &Connection, selected: &str, candidate: &str) -> rusqlit
     Ok(current == candidate)
 }
 
+fn lineage_covers_session(
+    db: &Connection,
+    session: &str,
+    invocation: &str,
+    cut: i64,
+) -> rusqlite::Result<bool> {
+    let base: i64 = db.query_row(
+        "SELECT base_sequence FROM context_source_lineages WHERE invocation_id=?",
+        [invocation],
+        |row| row.get(0),
+    )?;
+    let entire =
+        session_prefix(db, session, cut)?.count - session_prefix(db, session, base.min(cut))?.count;
+    // A lineage is a subset of its Session. Equal event counts prove that no
+    // other branch was omitted, using indexed ordinals rather than event bodies.
+    let selected: i64 = db.query_row(
+        "WITH RECURSIVE ancestors(invocation_id) AS (
+            SELECT ?1 UNION ALL
+            SELECT l.parent_invocation_id FROM context_source_lineages l
+            JOIN ancestors a USING(invocation_id) WHERE l.parent_invocation_id IS NOT NULL)
+         SELECT COALESCE(SUM((SELECT p.ordinal FROM context_source_prefixes p
+            WHERE p.kind='invocation' AND p.owner=a.invocation_id AND p.sequence<=?2
+            ORDER BY p.sequence DESC LIMIT 1)),0) FROM ancestors a",
+        params![invocation, cut],
+        |row| row.get(0),
+    )?;
+    Ok(entire == selected)
+}
+
 fn selection_state(scope: &[u8], cut: i64) -> Sha256 {
     let mut state = Sha256::new();
     state.update(b"maka.source.selection.v1\0");
@@ -546,6 +575,18 @@ pub(crate) fn register(db: &Connection) -> Result<(), StoreError> {
             };
             let db = unsafe { ctx.get_connection() }?;
             lineage_contains(&db, &selected, &candidate)
+        },
+    )?;
+    db.create_scalar_function(
+        "context_lineage_covers_session",
+        3,
+        FunctionFlags::SQLITE_UTF8 | FunctionFlags::SQLITE_DIRECTONLY,
+        |ctx| {
+            let session: String = ctx.get(0)?;
+            let invocation: String = ctx.get(1)?;
+            let cut: i64 = ctx.get(2)?;
+            let db = unsafe { ctx.get_connection() }?;
+            lineage_covers_session(&db, &session, &invocation, cut)
         },
     )?;
     db.create_scalar_function(

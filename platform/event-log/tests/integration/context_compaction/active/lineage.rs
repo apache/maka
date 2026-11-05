@@ -25,6 +25,7 @@ use maka_agent_facts::continuation::SessionBase;
 use crate::continuation::fixtures as continuation;
 
 mod cells;
+mod inheritance;
 
 mod observers;
 
@@ -237,6 +238,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
             selected.baseline.as_ref().unwrap().event_id,
             checkpoint.event().id
         );
+        let session_checkpoint = if mid_turn { &unrelated[0] } else { &checkpoint };
         assert_eq!(
             log.capture_model_context("session", None, 100_000, 64 * 1024 * 1024)
                 .await
@@ -244,9 +246,10 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
                 .baseline
                 .unwrap()
                 .event_id,
-            unrelated[0].event().id
+            session_checkpoint.event().id
         );
-        // A later whole-Session summary must not adopt the narrower child checkpoint.
+        // The pre-turn cut precedes the unrelated events and covers the full
+        // prefix; the mid-turn cut omits them and stays local to this lineage.
         let later = prepared(&log, "later-summary").await;
         log.append_batch(&later).await.unwrap();
         let Fact::ContextCheckpointRecorded {
@@ -257,7 +260,7 @@ async fn continuation_requests_and_checkpoints_prove_selected_source_across_repa
         };
         assert_eq!(
             later_checkpoint.previous_checkpoint_id.as_ref(),
-            Some(&unrelated[0].event().id)
+            Some(&session_checkpoint.event().id)
         );
         log.close().await.unwrap();
         let log = EventLog::open(&path).await.unwrap();

@@ -90,6 +90,8 @@ Control 中的调用意图、项目登记、workspace attachment、Session 路�
 
 规范事件写入在同一事务中维护 Session、Invocation 和分区序号前缀的固定大小 SHA-256 承诺。复制的前缀引用保留获准来源身份；Source identity 将 scope/cut 与这些前缀根绑定，lineage 使用持久化链式 ancestry root，普通读取无需在 Rust 中保留完整祖先向量。新边界在写入或导入时验证；普通请求信任已获准事实和 checkpoint，不重新扫描整段来源或递归认证历史 checkpoint。
 
+续跑检查点若完整覆盖切分位置之前的 Session 历史，后续整个 Session 的请求也可沿用。覆盖判断比较 Session 区间与各祖先 Invocation 在已有前缀索引中的累计事件数，不读取事件正文，也不另存会话头。未覆盖其它分支的检查点仍只用于自身续跑链，避免丢弃中间出现的分支历史。
+
 `run_source` 读取持久化 Invocation 前缀和 opening/final 端点；身份绑定 Run 内事件数、Invocation 身份和已提交的有序来源根。普通 lineage 读取使用 opening 时安装的不可变 descriptor。Continuation 准入仍校验所有权、workspace 身份、精确封口端点和未完成 effect；来源根本身不授予执行权限。
 
 普通请求和正常重开信任受控写入或导入边界已接受的事实与 checkpoint，读取固定语义视图，不扫描规范尾部、不与 writer 握手确认、不保存进程内信任证明，也不重新认证历史 checkpoint。新 checkpoint 校验新增来源／前驱边及必要终态。直接改写 SQLite 不属于支持的编辑 API，普通读取不负责检测这种修改；显式有界历史导出继续保留事件数和字节预检。
