@@ -26,7 +26,7 @@ log.workspace = true
 [target.'cfg(target_os = "macos")'.dependencies]
 nsh-core = { workspace = true, features = ["svg"] }
 nsh-engine = { workspace = true, features = ["shader"] }
-nsh-base = { workspace = true, features = ["highlight"] }
+nsh-base = { workspace = true, features = ["highlight", "math"] }
 block2.workspace = true
 crossbeam-channel.workspace = true
 dispatch2.workspace = true

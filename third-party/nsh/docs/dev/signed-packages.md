@@ -25,6 +25,15 @@ For code an app downloads (first-party updates, third-party mini apps): `nsh_pac
   links against that CLI's native modules, so only it is known to run it. `nsh publish --min-runtime` / `nsh.json`
   `minRuntime` lowers it (`MAJOR.MINOR.PATCH`, never above the signer's; suffixes are ignored when comparing).
   `nsh publish` refuses to sign what a device would refuse (the certificate must cover the app and the time).
+- **Signing again** (`nsh_package::resign`, `nsh publish <package>`): CI builds and signs with keys of its own (test apps trust
+  their root), a platform signs the package again with the key production apps trust. Only the header's
+  `certificate` and `createdAt` and the signature change: the header is rewritten as JSON, not through `Header`,
+  which drops the fields this runtime does not know (dropping one `critical` names would lift its restriction on
+  runtimes that know it), the files' bytes are copied, and the minimum runtime stays the building CLI's (it may be
+  newer than the re-signing one). The input must be intact (its own certificate's key signed it, the file table tiles
+  the data, every hash matches); its certificate is not checked against a root. The new certificate must cover the
+  app and the time, as for `build`. Signing again vouches for the package's bytecode, which is trusted input: a
+  platform signs only what its own builds made.
 - **Forward compatibility** ("Format evolution" in `nsh-package/src/lib.rs`): older runtimes ignore header and `app`
   fields they do not know, and leave files of unknown kinds or with unknown fields unused (still tiled and hashed),
   so additions are optional by default; a field older runtimes must not ignore is named in the header's `critical`

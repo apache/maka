@@ -689,8 +689,7 @@ pub(crate) fn draw_content(cx: &mut DrawCx<'_>, view: &NshView, world: Mat4) {
     }
     cx.set_transform(world);
     let state = view.state();
-    let nested = state.scroll.is_some() && crate::scroll::nested(view);
-    crate::scroll::draw_indicator(cx, &state, nested);
+    crate::scroll::draw_indicator(cx, view, &state);
     if clip {
         cx.pop();
     }
@@ -797,7 +796,7 @@ impl Element for SurfaceElement {
             Some(theme) => theme.background.light.into(),
             None => crate::system::window_background(&surface),
         };
-        if background.0 & 0xff != 0 {
+        if background.0 & 0xff != 0 && !surface.transparent.get() {
             window.paint_quad(gpui::fill(bounds, hsla(background)));
         }
         // Before the tree: painting a native component's element leaves its

@@ -4,12 +4,14 @@
 // (`value`, `null` for none, one the app keeps), the select's own
 // (`defaultValue`), the open state (controlled, `defaultOpen`), search and
 // what shows while nothing matches (`searchable`, `empty`), the app's rows
-// and headers (`renderItem`, `renderGroup`), every part styled by the app
-// (row heights tell its `focus:` and `disabled:` classes), the roles and
+// and headers (`renderItem`, given what an item is, its content following
+// the row's states with `group-focus:`; `renderGroup`), every part styled
+// by the app (row heights tell its `focus:` and `disabled:` classes), the roles and
 // states screen readers get, and each change reported with its reason, the
 // lifecycle (`onOpen`, `onClose`) and Escape, back or the backdrop heard
-// (`onCancel`), and the clear button of a select's own value
-// (`cleanable`, `onChange(null)`). Its script checks each.
+// (`onCancel`), the clear button of a select's own value
+// (`cleanable`, `onChange(null)`), and the search field's name for screen
+// readers (`searchAccessibilityLabel`). Its script checks each.
 import { Text, View, signal } from "nsh";
 import { Select } from "nsh/base";
 
@@ -72,10 +74,10 @@ function App() {
         backdropStyle={{ opacity: 0.5 }}
         listClass="bg-[#0000ff]"
         listStyle={{ opacity: 0.75 }}
-        itemClass="h-[30px] focus:h-[40px] disabled:h-[24px]"
+        itemClass="group h-[30px] focus:h-[40px] disabled:h-[24px]"
         itemStyle={{ backgroundColor: "#ff00ff" }}
         trigger={<View testID="fruit" style={{ height: 30 }}><Text>{`Fruit: ${titleOf(value())}`}</Text></View>}
-        renderItem={(item) => <Text>{`${item.highlighted ? ">" : ""}${item.title}${item.selected ? " ✓" : ""}`}</Text>}
+        renderItem={(item) => <Text class="group-focus:text-[#ff0000]">{item.title}</Text>}
         renderGroup={(group) => <Text>{`[${group.title}]`}</Text>}
       />
       <View onPress={() => open.set(true)} style={{ height: 30 }}><Text>ShowFruit</Text></View>
@@ -110,6 +112,7 @@ function App() {
         items={FOOD}
         searchable
         searchPlaceholder="Find food"
+        searchAccessibilityLabel="FindField"
         searchClass="bg-[#abcdef]"
         searchStyle={{ borderRadius: 4 }}
         empty={<Text>Nothing found</Text>}

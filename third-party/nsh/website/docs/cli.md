@@ -267,6 +267,11 @@ nsh publish [ENTRY] --key <KEY.secret> --cert <CERT> [-o <OUT>] [--id <ID>] [--a
 
 Builds the app in release mode and signs it into a package. Metadata comes from `nsh.json`, overridden by the flags.
 
+Given a package (`ENTRY` is a `.nshpkg` file), it signs that package again with this key, as a platform does that signs
+the packages of its apps with one key of its own. The package's files and header stay as they are; its certificate,
+signing time and signature become the new key's ([Signed packages](./signed-packages.md#sign-a-package-again)). `-o`
+may name the package read, and only `--key`, `--cert` and `-o` apply.
+
 | Flag | Description |
 |---|---|
 | `--key <KEY>` | The release key's secret key. |

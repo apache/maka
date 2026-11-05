@@ -120,7 +120,7 @@ let code = std::fs::read_to_string("app/bundle.js").expect("bundle");
 view.load(Bundle::source(code).into());
 ```
 
-视图是一个子窗口：由你的消息循环驱动，父窗口改变大小时用 `MoveWindow` 摆放它的 `hwnd()`。`AppView::load` 会替换正在运行的
+视图是一个子窗口：由你的消息循环驱动，父窗口改变大小时用 `MoveWindow` 摆放它的 `hwnd()`。请在它所在窗口的线程上创建它：它的生命周期跟随该窗口的顶层窗口，即创建它时所在的那个窗口。`AppView::load` 会替换正在运行的
 内容；`stop`（或销毁窗口）结束应用。`asset_base` 指定 `asset:/` URI 从哪里解析（`AssetBase::Directory` 或 `AssetBase::Http`）。
 字节码 bundle（`bundle.nshc`）用 `unsafe { Bundle::bytecode(bytes) }`（或同样是 unsafe 的 `Bundle::read_trusted(path)`）加载：
 QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加载。独立窗口用 `nsh_platform_windows::run_app(source, options, on_active)`，传入 `AppSource::Rust(root)` 或
@@ -141,6 +141,9 @@ QuickJS 字节码是受信任的输入，只能从你自己应用的文件中加
 运行环境是桌面环境：安全区和键盘高度为 0，`idiom()` 是桌面（`platform.idiom` 为 `"desktop"`），`os_version()`（`platform.version`）为 `"10.0"`
 （Windows 11 上也是：Windows 沿用了这个版本号）。深色模式实时跟随“设置 > 个性化 > 颜色”，`fontScale()` 跟随“文本大小”设置，
 减少动态效果跟随“动画效果”设置，区域设置跟随用户的区域格式。见[设备与环境](./device-and-environment.md)。
+
+鼠标停在视图上时，`cursor` 样式也会跟随更新。批次改变光标后，Windows 会在整个批次应用完成时，
+根据指针下方的视图显示新形状或应用 `"none"`。标题栏和调整窗口大小的边框使用系统光标。
 
 ### 键盘
 

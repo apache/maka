@@ -363,7 +363,12 @@ fn update_area(surface: &Surface) {
             if fullscreen {
                 Edges::default()
             } else {
-                let height = |w: &gtk::WindowControls| w.measure(gtk::Orientation::Vertical, -1).1;
+                // GTK includes placement margins in measure(); exclude them
+                // so centering does not depend on the previous top margin.
+                let height = |w: &gtk::WindowControls| {
+                    let measured = w.measure(gtk::Orientation::Vertical, -1).1;
+                    (measured - w.margin_top() - w.margin_bottom()).max(0)
+                };
                 let width = |w: &gtk::WindowControls| {
                     if w.is_empty() {
                         0.0

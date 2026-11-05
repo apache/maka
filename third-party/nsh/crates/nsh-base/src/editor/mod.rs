@@ -44,8 +44,9 @@ pub use completion::{
 pub use data::{
     EditorDecoration, EditorDiagnostic, EditorDiagnosticCodeDescription,
     EditorDiagnosticRelatedInformation, EditorDiagnosticSeverity, EditorDiagnosticTag, EditorEdit,
-    EditorFoldRange, EditorLocation, EditorPosition, EditorRange, EditorSearch, EditorSearchResult,
-    EditorSelection, EditorToken,
+    EditorFoldRange, EditorGutterMark, EditorGutterPlacement, EditorLocation,
+    EditorOverviewRulerLane, EditorOverviewRulerMark, EditorPosition, EditorRange, EditorSearch,
+    EditorSearchResult, EditorSelection, EditorToken,
 };
 pub use definition::{EditorCodeActionRequest, EditorDefinitionRequest, EditorDefinitionTrigger};
 pub use highlighter::{
@@ -142,6 +143,11 @@ pub struct EditorProps {
     /// run), carried through edits until the app sets new ones.
     #[prop(default)]
     pub decorations: Prop<Vec<EditorDecoration>>,
+    /// The width of the gutter's strip of decorations' marks
+    /// ([`EditorDecoration::gutter`]), in points (default 3). The strip,
+    /// before the line numbers, shows while a decoration has a mark there.
+    #[prop(default = Points(3.0))]
+    pub gutter_decorations_width: Prop<Points>,
     /// Classes of the editor's parts, after their own styles.
     #[prop(default)]
     pub classes: Prop<EditorClasses>,

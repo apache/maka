@@ -262,6 +262,9 @@ pub struct Attrs {
     /// The states it shows as its control's part
     /// ([`Interactive::project_checked`]).
     pub(crate) projected_states: u16,
+    /// The `data-*` attributes it shows as a component's part, sorted
+    /// ([`Interactive::project_data`]).
+    pub(crate) projected_data: Vec<&'static str>,
     /// Where a JS renderer's content goes (the element is its
     /// placeholder: [`super::Renderer::render`]).
     pub(crate) render: Option<super::renderer::RenderAt>,
@@ -318,6 +321,9 @@ impl Attrs {
         }
         if self.projected_states != old.projected_states {
             out.push(Prop::ProjectedStates(self.projected_states));
+        }
+        if self.projected_data != old.projected_data {
+            out.push(Prop::ProjectedData(self.projected_data.as_slice().into()));
         }
         // Host props: the ones no longer set go back to their defaults,
         // then the new and changed ones.
@@ -1735,8 +1741,8 @@ pub trait Interactive: Element {
     }
 
     /// Presses also count this far outside it.
-    fn hit_slop(mut self, insets: EdgeInsets) -> Self {
-        super::host::set(self.node(), Prop::HitSlop(insets));
+    fn hit_slop(mut self, insets: impl IntoReactive<EdgeInsets>) -> Self {
+        super::host::bind_prop(self.node(), insets, Prop::HitSlop);
         self
     }
 
@@ -1819,6 +1825,16 @@ pub trait Interactive: Element {
     fn focus(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
         let s = f(StyleRefinement::default());
         self.style().extend_as(Variant::FOCUS, s);
+        self
+    }
+
+    /// Styles while it or an element inside it is focused (Tailwind's
+    /// `focus-within:`; TS: `focusWithinStyle`): a field's frame ringed
+    /// while the input in it edits. An overlay's content is inside the
+    /// element the overlay is in.
+    fn focus_within(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        let s = f(StyleRefinement::default());
+        self.style().extend_as(Variant::FOCUS_WITHIN, s);
         self
     }
 
@@ -1930,6 +1946,28 @@ pub trait Interactive: Element {
     fn project_focused(mut self, focused: impl IntoReactive<bool>) -> Self {
         self.node().bind_attr(focused, |a, focused| {
             project(a, crate::tailwind::state::FOCUSED, focused)
+        });
+        self
+    }
+
+    /// Gives it the boolean `data-*` attribute `name` (without `data-`)
+    /// while `on` holds, as Tailwind's `data-<name>:` variant reads it: its
+    /// `data-<name>:` classes apply, and with `group` the
+    /// `group-data-<name>:` classes inside it (a calendar's day at the
+    /// start of a range: `project_data("range-start", ..)`). For what a
+    /// component's part shows beyond the states screen readers hear; the
+    /// attribute tells them nothing. A view whose classes read none of its
+    /// attributes sends nothing when they change.
+    fn project_data(mut self, name: &'static str, on: impl IntoReactive<bool>) -> Self {
+        self.node().bind_attr(on, move |a, on| {
+            let at = a.projected_data.binary_search(&name);
+            match (at, on) {
+                (Err(i), true) => a.projected_data.insert(i, name),
+                (Ok(i), false) => {
+                    a.projected_data.remove(i);
+                }
+                _ => {}
+            }
         });
         self
     }
@@ -2450,6 +2488,14 @@ impl<C: Component> ComponentElement<C> {
         self
     }
 
+    /// Styles while its root or an element inside it has focus
+    /// (`focus-within:`).
+    pub fn focus_within(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        let s = f(StyleRefinement::default());
+        self.node.style.extend_as(Variant::FOCUS_WITHIN, s);
+        self
+    }
+
     /// Styles while its root is disabled (`disabled:`): the component's
     /// view disables it ([`Interactive::disabled`], a `disabled` prop).
     pub fn disabled_style(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
@@ -2606,6 +2652,14 @@ pub trait ComponentBuilder: Element {
     fn focus(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
         let s = f(StyleRefinement::default());
         self.node().style.extend_as(Variant::FOCUS, s);
+        self
+    }
+
+    /// Styles while its root or an element inside it has focus
+    /// (`focus-within:`).
+    fn focus_within(mut self, f: impl FnOnce(StyleRefinement) -> StyleRefinement) -> Self {
+        let s = f(StyleRefinement::default());
+        self.node().style.extend_as(Variant::FOCUS_WITHIN, s);
         self
     }
 

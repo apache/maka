@@ -131,7 +131,8 @@ view.load(Bundle::source(code).into());
 ```
 
 The view is a child window: your message loop runs it, and you place it with `MoveWindow` on its `hwnd()` when the
-parent resizes. `AppView::load` replaces whatever ran; `stop` (or destroying the window) ends the app. `asset_base`
+parent resizes. Make it on the thread of the window it is in: its lifecycle follows that window's top-level
+window, the one it was made under. `AppView::load` replaces whatever ran; `stop` (or destroying the window) ends the app. `asset_base`
 tells it where `asset:/` URIs resolve (`AssetBase::Directory` or `AssetBase::Http`). Bytecode bundles (`bundle.nshc`)
 load with `unsafe { Bundle::bytecode(bytes) }` (or `Bundle::read_trusted(path)`, unsafe too): QuickJS bytecode is trusted input, so
 only load it from your own app's files. A standalone window is `nsh_platform_windows::run_app(source, options, on_active)`, with
@@ -162,6 +163,10 @@ The environment is a desktop's: the safe area and the keyboard height are 0, `id
 (`platform.idiom` is `"desktop"`) and `os_version()` (`platform.version`) is `"10.0"` (on Windows 11 too: Windows kept the version number). Dark mode
 follows Settings > Personalization > Colors live, `fontScale()` the Text size setting, reduce motion the animation
 effects setting and the locale the user's regional format. See [Device and environment](./device-and-environment.md).
+
+The `cursor` style follows updates while the mouse rests over a view. When a batch changes the cursor,
+Windows applies the new shape or `"none"` after the whole batch, using the view under the pointer.
+The title bar and resize borders keep their system cursors.
 
 ### Keyboard
 

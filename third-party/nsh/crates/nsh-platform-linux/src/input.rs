@@ -418,11 +418,12 @@ pub(crate) fn track_states(surface: &Rc<Surface>, view: &NshView, states: u16) {
     {
         let mut s = view.state_mut();
         s.tracked = states;
-        // The core keeps the states still tracked and forgets the rest
+        // The core keeps the states still reported and forgets the rest
         // (`Core::update_tracking`): so do we, or a change it was not told
         // about (the pointer leaving a view whose hover was tracked
-        // throughout) would never reach it.
-        s.states &= states;
+        // throughout) would never reach it. The focus is reported
+        // whatever is tracked, so it stays.
+        s.states &= input::reported_states(states);
     }
     update_hover_tracking(surface, view);
 }
@@ -544,21 +545,67 @@ fn cursor_name(cursor: Cursor) -> Option<&'static str> {
         Cursor::ZoomOut => "zoom-out",
         Cursor::ColResize => "col-resize",
         Cursor::RowResize => "row-resize",
+        Cursor::NwseResize => "nwse-resize",
+        Cursor::NeswResize => "nesw-resize",
         Cursor::None => "none",
     })
 }
 
 fn update_cursor(view: &NshView) {
-    let name = {
+    set_cursor(view, false);
+}
+
+/// The cursor name of `view`, `over_link` when the mouse is on one of its
+/// pressable link spans.
+fn cursor_of(view: &NshView, over_link: bool) -> Option<&'static str> {
+    let (own, ibeam, is_text) = {
         let s = view.state();
-        // Selectable text and the texts of selectable views show the
-        // I-beam (a press target its pointer).
-        cursor_name(s.style.cursor).or_else(|| {
-            let selects = crate::text::selectable(&s)
-                || (s.text.is_some() && crate::selectable_view::takes_part(view));
-            selects.then_some("text")
-        })
+        (
+            s.style.cursor,
+            shows_ibeam_state(view, &s),
+            s.text.is_some(),
+        )
     };
+    // Only asked for views that are not text and would inherit.
+    let in_ibeam = || !is_text && view.parent_view().is_some_and(|p| shows_ibeam(&p));
+    choose_cursor(own, over_link, ibeam, in_ibeam)
+}
+
+/// The cursor name of a view whose own cursor is `own`: then, the mouse
+/// on a pressable link span of it (`over_link`), the pointer, which wins
+/// over the I-beam of selectable text (`ibeam`); a view inside text that
+/// shows the I-beam (`in_ibeam`: an attachment, such as a render's
+/// placeholder around a chip) the arrow, as `auto` over what is not text
+/// in CSS, rather than inheriting its text's I-beam. `None` inherits.
+fn choose_cursor(
+    own: Cursor,
+    over_link: bool,
+    ibeam: bool,
+    in_ibeam: impl FnOnce() -> bool,
+) -> Option<&'static str> {
+    cursor_name(own).or_else(|| {
+        if over_link {
+            Some("pointer")
+        } else if ibeam {
+            Some("text")
+        } else {
+            in_ibeam().then_some("default")
+        }
+    })
+}
+
+/// Whether text view `view` shows the I-beam of selectable text.
+fn shows_ibeam(view: &NshView) -> bool {
+    let s = view.state();
+    cursor_name(s.style.cursor).is_none() && shows_ibeam_state(view, &s)
+}
+
+fn shows_ibeam_state(view: &NshView, s: &crate::view::ViewState) -> bool {
+    s.text.is_some() && (crate::text::selectable(s) || crate::selectable_view::takes_part(view))
+}
+
+fn set_cursor(view: &NshView, over_link: bool) {
+    let name = cursor_of(view, over_link);
     let current = view.cursor().and_then(|c| c.name());
     if current.as_deref() != name {
         view.set_cursor_from_name(name);
@@ -691,6 +738,7 @@ fn dispatch(surface: &Rc<Surface>, event: &gdk::Event) -> glib::Propagation {
             // `onMouseEnter` / `onMouseLeave` first (`motion` hovers), as
             // in browsers; `onMouseMove` then goes to the views hovered.
             motion(surface, Key::Mouse, x, y, time);
+            link_cursor(surface, x, y);
             if event.device_tool().is_none()
                 && !event.device().is_some_and(|device| {
                     matches!(
@@ -1068,6 +1116,28 @@ fn chain(view: &NshView) -> Vec<NshView> {
 }
 
 /// A point in root coordinates in `view`'s.
+/// The cursor is per widget: a text with pressable link spans shows the
+/// pointer while the mouse at `(x, y)` (root coordinates) is on one, its
+/// own cursor elsewhere.
+fn link_cursor(surface: &Surface, x: f32, y: f32) {
+    let Some(hit) = pick(&surface.root, x, y) else {
+        return;
+    };
+    let view = &hit.view;
+    let over = {
+        let s = view.state();
+        let Some(text) = &s.text else { return };
+        if text.text.links.is_empty() {
+            return;
+        }
+        let (lx, ly) = local(surface, view, x, y);
+        crate::text::char_at(&s, lx, ly)
+            .and_then(|i| text.text.link_at(i))
+            .is_some_and(|l| has_press(l.events))
+    };
+    set_cursor(view, over);
+}
+
 fn local(surface: &Surface, view: &NshView, x: f32, y: f32) -> (f32, f32) {
     surface
         .root
@@ -2324,6 +2394,38 @@ mod tests {
         assert_eq!(cursor_name(Cursor::Default), Some("default"));
         assert_eq!(cursor_name(Cursor::Pointer), Some("pointer"));
         assert_eq!(cursor_name(Cursor::NotAllowed), Some("not-allowed"));
+        assert_eq!(cursor_name(Cursor::NwseResize), Some("nwse-resize"));
+        assert_eq!(cursor_name(Cursor::NeswResize), Some("nesw-resize"));
+    }
+
+    #[test]
+    fn links_and_attachments_win_over_the_ibeam() {
+        // Selectable text: the I-beam, the pointer over a pressable link.
+        assert_eq!(
+            choose_cursor(Cursor::Auto, false, true, || false),
+            Some("text")
+        );
+        assert_eq!(
+            choose_cursor(Cursor::Auto, true, true, || false),
+            Some("pointer")
+        );
+        // The text's own cursor wins everywhere.
+        assert_eq!(
+            choose_cursor(Cursor::Help, true, true, || false),
+            Some("help")
+        );
+        // A view inline in selectable text (a chip's placeholder, its
+        // margins): the arrow, not its text's I-beam; its own cursor first.
+        assert_eq!(
+            choose_cursor(Cursor::Auto, false, false, || true),
+            Some("default")
+        );
+        assert_eq!(
+            choose_cursor(Cursor::Pointer, false, false, || true),
+            Some("pointer")
+        );
+        // Elsewhere views inherit.
+        assert_eq!(choose_cursor(Cursor::Auto, false, false, || false), None);
     }
 
     #[test]

@@ -67,60 +67,66 @@ export function createModules(invoke, values, live, wake, makeComponent) {
     );
   };
   const exports = new Map();
-  const metadata = invoke(200, []);
-  // Register every prototype before constructing module values: classes
-  // referenced by another module retain their canonical identity.
-  for (const set of metadata) {
-    for (const spec of set.classes) {
-      if (classes.has(spec.id)) continue;
-      const ctor = spec.members.find(member => member.kind === "constructor");
-      const Constructor = function (...args) {
-        if (!new.target) throw new TypeError(`${spec.name} requires new`);
-        if (!ctor) throw new TypeError(`${spec.name} has no public constructor`);
-        return call(202, [spec.id, ctor.id], this, args, false);
-      };
-      Object.defineProperty(Constructor, "name", { value: spec.name });
-      classes.set(spec.id, Constructor);
-      const dispose = function () {
-        if (!live()) throw new Error("the app was disposed");
-        invoke(205, [this, spec.id]);
-      };
-      for (const member of spec.members) {
-        if (member.kind === "constructor") continue;
-        const fn = function (...args) {
-          return call(202, [spec.id, member.id], this, args, member.promise);
+  // Registers what `describe` (200) gives: everything at start, and after
+  // a gate ran while the app runs (`refresh`) only what it added.
+  const apply = metadata => {
+    // Register every prototype before constructing module values: classes
+    // referenced by another module retain their canonical identity.
+    for (const set of metadata) {
+      for (const spec of set.classes) {
+        if (classes.has(spec.id)) continue;
+        const ctor = spec.members.find(member => member.kind === "constructor");
+        const Constructor = function (...args) {
+          if (!new.target) throw new TypeError(`${spec.name} requires new`);
+          if (!ctor) throw new TypeError(`${spec.name} has no public constructor`);
+          return call(202, [spec.id, ctor.id], this, args, false);
         };
-        Object.defineProperty(fn, "name", { value: member.name });
-        const target = member.kind === "static" ? Constructor : Constructor.prototype;
-        const descriptor = Object.getOwnPropertyDescriptor(target, member.name) ?? { configurable: true };
-        if (member.kind === "get" || member.kind === "set") descriptor[member.kind] = fn;
-        else { descriptor.value = fn; descriptor.writable = true; }
-        Object.defineProperty(target, member.name, descriptor);
+        Object.defineProperty(Constructor, "name", { value: spec.name });
+        classes.set(spec.id, Constructor);
+        const dispose = function () {
+          if (!live()) throw new Error("the app was disposed");
+          invoke(205, [this, spec.id]);
+        };
+        for (const member of spec.members) {
+          if (member.kind === "constructor") continue;
+          const fn = function (...args) {
+            return call(202, [spec.id, member.id], this, args, member.promise);
+          };
+          Object.defineProperty(fn, "name", { value: member.name });
+          const target = member.kind === "static" ? Constructor : Constructor.prototype;
+          const descriptor = Object.getOwnPropertyDescriptor(target, member.name) ?? { configurable: true };
+          if (member.kind === "get" || member.kind === "set") descriptor[member.kind] = fn;
+          else { descriptor.value = fn; descriptor.writable = true; }
+          Object.defineProperty(target, member.name, descriptor);
+        }
+        Object.defineProperty(Constructor.prototype, "dispose", { value: dispose, configurable: true, writable: true });
+        if (Symbol.dispose) Object.defineProperty(Constructor.prototype, Symbol.dispose, { value: dispose, configurable: true, writable: true });
       }
-      Object.defineProperty(Constructor.prototype, "dispose", { value: dispose, configurable: true, writable: true });
-      if (Symbol.dispose) Object.defineProperty(Constructor.prototype, Symbol.dispose, { value: dispose, configurable: true, writable: true });
     }
-  }
-  for (const set of metadata) {
-    const namespace = exports.get(set.specifier) ?? Object.create(null);
-    exports.set(set.specifier, namespace);
-    for (const spec of set.components ?? []) namespace[spec.export] = makeComponent(spec, call);
-    for (const spec of set.classes) if (!spec.interface) namespace[spec.name] = classes.get(spec.id);
-    for (const module of set.modules) {
-      const object = module.flat ? namespace : (namespace[module.name] ??= {});
-      Object.assign(object, module.constants);
-      for (const spec of module.functions) {
-        const fn = function (...args) { return call(201, [spec.id], this, args, spec.promise); };
-        Object.defineProperty(fn, "name", { value: spec.name });
-        Object.defineProperty(object, spec.name, spec.getter
-          ? { get: fn, enumerable: true, configurable: true }
-          : { value: fn, writable: true, enumerable: true, configurable: true });
+    for (const set of metadata) {
+      const namespace = exports.get(set.specifier) ?? Object.create(null);
+      exports.set(set.specifier, namespace);
+      for (const spec of set.components ?? []) namespace[spec.export] = makeComponent(spec, call);
+      for (const spec of set.classes) if (!spec.interface) namespace[spec.name] = classes.get(spec.id);
+      for (const module of set.modules) {
+        const object = module.flat ? namespace : (namespace[module.name] ??= {});
+        Object.assign(object, module.constants);
+        for (const spec of module.functions) {
+          const fn = function (...args) { return call(201, [spec.id], this, args, spec.promise); };
+          Object.defineProperty(fn, "name", { value: spec.name });
+          Object.defineProperty(object, spec.name, spec.getter
+            ? { get: fn, enumerable: true, configurable: true }
+            : { value: fn, writable: true, enumerable: true, configurable: true });
+        }
+        if (module.default) namespace.default = object;
       }
-      if (module.default) namespace.default = object;
     }
-  }
+  };
+  apply(invoke(200, []));
   return {
     exports,
+    /** Adds what gates registered since the last call to `exports`' namespaces (in place). */
+    refresh() { if (live()) apply(invoke(200, [])); },
     measure(node) { return call(315, [], node, [], true, false); },
     reply(id, ok, value) {
       const waiter = pending.get(id);

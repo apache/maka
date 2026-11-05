@@ -1,6 +1,6 @@
 ---
 title: Signed Packages
-description: "Ship app code that host apps download and verify: keys, certificates, nsh publish, verification, revocation and rollback protection."
+description: "Ship app code that host apps download and verify: keys, certificates, nsh publish, signing again, verification, revocation and rollback protection."
 order: 20
 group: delivery
 ---
@@ -161,6 +161,36 @@ package may do:
   with a key it does not know is dropped as a whole, since that key may restrict it.
 
 What was left out is logged when the package loads.
+
+## Sign a package again
+
+A platform that distributes the packages of several apps can sign them all with one key of its own: CI builds each
+package and signs it with a key its test apps trust, and the platform signs it again with the key the production apps
+trust.
+
+```sh
+nsh publish ci/com.example.counter-2.nshpkg --key keys/platform.secret --cert keys/platform.cert -o com.example.counter-2.nshpkg
+```
+
+```text
+com.example.counter-2.nshpkg: com.example.counter 1.0.0 (build 2), signed again by d0eb0d3cb453b71b, for runtime 0.3.0 or newer
+```
+
+| Flag | Description |
+|---|---|
+| `--key <file>` | The release key's secret key. |
+| `--cert <file>` | Its certificate. |
+| `-o, --out <file>` | The package to write. It may be the package read. Default: `.nsh/out/<id>-<build>.nshpkg`. |
+
+The package keeps everything CI put in it: the files, the app id, version and build, the declared capabilities, the
+[minimum runtime](#which-runtimes-run-a-package) and what a [newer version of NSH](#packages-from-newer-versions-of-nsh)
+wrote. The certificate, the signing time and the signature become the new key's, so the package has a SHA-256 of its
+own, the one to [revoke](#revoke-keys-and-packages) it by.
+
+Before it signs, `nsh publish` checks that the package is intact (signed by the key its certificate names, its file
+table covering the data, every file matching its hash) and that the new certificate covers the app id and the current
+time. From then on the new signature vouches for the package, its bytecode included, so a platform signs again the
+packages its own builds made. Rust tools sign again with `nsh_package::resign(&bytes, &key, &certificate)`.
 
 ## Verify a package
 
@@ -346,6 +376,8 @@ refused there too.
 3. Run `nsh verify --root root.pub` on the package before uploading it.
 4. Ship `root.pub` inside the host app; ship revocation lists separately, so you can revoke without an app update.
 5. If a release key leaks, revoke it (`nsh revoke --extend … --key <id>`), certify a new one and publish again.
+6. With a platform that signs for its apps, give CI a root of its own that only the test apps trust, and ship the
+   platform's root in the production apps; the platform signs CI's packages again (`nsh publish <package>`).
 
 ## See also
 

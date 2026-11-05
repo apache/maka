@@ -145,3 +145,90 @@ fn figures_are_measured_character_by_character() {
         assert!(!measured_by_char(text), "{text}");
     }
 }
+
+#[test]
+fn figures_are_measured_with_the_kerning_of_their_pairs() {
+    use crate::css::figure_width;
+
+    // Arial at 20px as Chrome 156 measures it: no `tnum`, and `11` kerned
+    // by -152/2048 em (Liberation Sans 2.x, Linux Chrome's Arial, too).
+    let measure = |text: &str| -> f32 {
+        let chars: f32 = text
+            .chars()
+            .map(|c| match c {
+                '.' | ',' | ':' => 5.5625,
+                '-' => 6.65625,
+                '%' => 17.78125,
+                _ => 11.125,
+            })
+            .sum();
+        let kerned = text
+            .as_bytes()
+            .windows(2)
+            .filter(|pair| pair == b"11")
+            .count();
+        chars - 1.484375 * kerned as f32
+    };
+    for figure in ["$1,111.11", "111.11", "530.92", "-0.5%", "12:30"] {
+        let mut asked = Vec::new();
+        let width = figure_width(figure, |part| {
+            asked.push(part.to_owned());
+            measure(part)
+        });
+        assert!(
+            (width - measure(figure)).abs() < 1e-3,
+            "{figure}: {width} != {}",
+            measure(figure)
+        );
+        // Only characters and pairs: a new value is never measured whole.
+        assert!(
+            asked.iter().all(|part| part.chars().count() <= 2),
+            "{figure}: {asked:?}"
+        );
+    }
+    assert!((figure_width("$1,111.11", measure) - 84.546_875).abs() < 1e-3);
+}
+
+#[test]
+fn emoji_are_told_from_text() {
+    use crate::css::is_emoji;
+
+    // What the color emoji font may draw: emoji, text by default or not
+    // (☝ ✌ ✍ ⛹ have no glyph in macOS's text fonts), modifiers, regional
+    // indicators, the emoji variation selector and the keycap.
+    for c in [
+        '🤩', '👍', '🏻', '🇨', '🀄', '⌚', '⭐', '✅', '☝', '✌', '✍', '⛹', '❤', '©', '\u{fe0f}',
+        '\u{20e3}',
+    ] {
+        assert!(is_emoji(c), "{c}");
+    }
+    // Text: letters, CJK, digits, `#` and `*` (text without U+FE0F),
+    // symbols without the `Emoji` property, the joiner.
+    for c in ['a', '中', 'ไ', '1', '#', '*', '★', '✓', '\u{200d}'] {
+        assert!(!is_emoji(c), "{c}");
+    }
+}
+
+#[test]
+fn emoji_excess_adds_each_emoji_cluster_once() {
+    use crate::css::emoji_excess;
+
+    let clusters = |text: &str| {
+        let mut seen = Vec::new();
+        emoji_excess(text, |c| {
+            seen.push(c.to_owned());
+            0.0
+        });
+        seen
+    };
+    // 22 emoji, 4 points each too wide on canvas: the line is 88 narrower.
+    assert_eq!(emoji_excess(&"🤩".repeat(22), |_| 4.0), 88.0);
+    // Sequences are one cluster each: ZWJ, skin tone, flags, a subdivision
+    // flag's tags, a keycap, U+FE0F; text around them is no cluster.
+    assert_eq!(
+        clusters("a👨‍👩‍👧‍👦b 👍🏽🇨🇳🇺🇸 🏴󠁧󠁢󠁥󠁮󠁧󠁿 #️⃣ ❤️ ☝✌ 中"),
+        ["👨‍👩‍👧‍👦", "👍🏽", "🇨🇳", "🇺🇸", "🏴󠁧󠁢󠁥󠁮󠁧󠁿", "#️⃣", "❤️", "☝", "✌"]
+    );
+    // Text without emoji is not split at all.
+    assert!(clusters("Hello 世界 ไทย 123 #*").is_empty());
+}

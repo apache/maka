@@ -196,6 +196,9 @@ scroll::spokes ->                                                # an opacity pe
 scroll::wheel_end(vx)                                            # a velocity, points per second
 scroll::wheel_end(vy)                                            # a velocity, points per second
 shader::UniformValue::Number.0                                  # a uniform's value, whatever the app's program makes of it
+shader::TransitionKey::number(n)                                 # a transition's value: a key compared for equality, no quantity
+ops::Prop::TransitionDuration.0                                  # time (milliseconds, as JS gives it)
+shader::NavShaderSpec.duration                                   # time (milliseconds, as JS gives it)
 shader::builtins(scale)                                          # pixels per point, a ratio
 shader::builtins(time)                                           # time
 shape::SMOOTHING                                                 # a corner smoothing factor

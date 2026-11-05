@@ -149,6 +149,10 @@ pub(crate) fn decode_command<'js>(name: &str, arg: Value<'js>) -> compat::Result
         "stopLoading" => Command::StopLoading,
         "injectJavaScript" => Command::InjectJavaScript(string(&arg)?),
         "postMessage" => Command::PostMessage(string(&arg)?),
+        "sendInput" => match web_input(&arg) {
+            Some(input) => Command::SendInput(input),
+            None => return Ok(None),
+        },
         "seek" => Command::Seek(arg.as_number().unwrap_or(0.0)),
         "native" => {
             let o = arg.as_object();
@@ -251,6 +255,28 @@ pub(crate) fn animated_value(value: &Value<'_>) -> Option<nsh_core::animation::N
 
 fn number(value: &Value<'_>) -> Option<f32> {
     value.as_number().map(|n| n as f32)
+}
+
+/// `sendInput`'s argument (`None`: none of its forms, which sends nothing).
+fn web_input(arg: &Value<'_>) -> Option<nsh_core::WebInput> {
+    use nsh_core::{WebInput, WebKey};
+    let o = arg.as_object()?;
+    let text = |key: &str| o.get::<_, Option<String>>(key).ok().flatten();
+    let number = |key: &str| {
+        o.get::<_, Option<f64>>(key)
+            .ok()
+            .flatten()
+            .filter(|n| n.is_finite())
+    };
+    match text("type")?.as_str() {
+        "click" => Some(WebInput::Click {
+            x: nsh_core::Points(number("x")? as f32),
+            y: nsh_core::Points(number("y")? as f32),
+        }),
+        "text" => text("text").map(WebInput::Text),
+        "key" => WebKey::from_name(&text("key")?).map(WebInput::Key),
+        _ => None,
+    }
 }
 
 /// A string prop; anything else (null, undefined) is the empty string.
@@ -379,6 +405,22 @@ pub(crate) fn decode_prop<'js>(
         style_entries(&value, &mut entries)?;
         let (style, patch) = decode_style(entries, warnings)?;
         return Ok(Some(Op::SetStyle { id, style, patch }));
+    }
+    if let Some(prop) = nsh_core::js::host::style_patch_prop(name) {
+        let patch = style_patch(&value, warnings)?;
+        let prop = prop((!patch.is_empty()).then(|| std::rc::Rc::new(patch)));
+        return Ok(Some(Op::SetProp { id, prop }));
+    }
+    if let Some(prop) = nsh_core::js::host::part_class_prop(name, tag) {
+        let names: Box<str> = value
+            .as_string()
+            .and_then(|s| s.to_string().ok())
+            .unwrap_or_default()
+            .into();
+        return Ok(Some(Op::SetProp {
+            id,
+            prop: prop(names),
+        }));
     }
     let mut cx = tag.map_or_else(HostCx::default, HostCx::for_element);
     let input = Js(value);

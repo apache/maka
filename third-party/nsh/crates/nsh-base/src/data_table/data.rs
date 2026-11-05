@@ -4,7 +4,10 @@
 //! A row is an object whose fields are the columns' `key`s, or an array
 //! indexed by the columns' positions. Numbers, booleans and strings are
 //! kept (a date as the milliseconds it is, a number); anything else is a
-//! gap.
+//! gap. A Rust app gives the same rows a column at a time, each of one
+//! type ([`DataTableRows::new`], then [`DataTableRows::texts`],
+//! [`DataTableRows::numbers`], [`DataTableRows::bools`]), as the core's
+//! `Rows::from_columns` does.
 
 use std::{collections::HashMap, sync::Arc};
 
@@ -79,6 +82,61 @@ pub struct DataTableRows {
 }
 
 impl DataTableRows {
+    /// `len` rows with no fields yet: [`Self::texts`], [`Self::numbers`]
+    /// and [`Self::bools`] give them their columns, by the columns' `key`s.
+    pub fn new(len: usize) -> Self {
+        Self {
+            len,
+            ..Default::default()
+        }
+    }
+
+    /// The field `key` of the rows: `values` in order, a text each (the
+    /// rows past them have none; values past the rows are left out).
+    /// A text starting with `+` is a rise and one starting with `-` or `−`
+    /// a fall, as from JS (the column's `positive_class` / `negative_class`).
+    pub fn texts(mut self, key: &str, values: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        self.set_column(
+            key,
+            values.into_iter().map(|v| Cell::Text(v.as_ref().into())),
+        );
+        self
+    }
+
+    /// The field `key` of the rows: `values` in order, a number each,
+    /// shown as JS shows numbers; a positive one is a rise and a negative
+    /// one a fall (the column's `positive_class` / `negative_class`),
+    /// `NaN` a gap.
+    pub fn numbers(mut self, key: &str, values: impl IntoIterator<Item = f64>) -> Self {
+        self.set_column(
+            key,
+            values.into_iter().map(|n| {
+                if n.is_nan() {
+                    Cell::Empty
+                } else {
+                    Cell::Number(n)
+                }
+            }),
+        );
+        self
+    }
+
+    /// The field `key` of the rows: `values` in order, shown as `true` or
+    /// `false`.
+    pub fn bools(mut self, key: &str, values: impl IntoIterator<Item = bool>) -> Self {
+        self.set_column(key, values.into_iter().map(Cell::Bool));
+        self
+    }
+
+    /// The column of field `key` made of `cells`, in place of what it held.
+    fn set_column(&mut self, key: &str, cells: impl Iterator<Item = Cell>) {
+        let len = self.len;
+        let column = self.named_column(key);
+        column.clear();
+        column.extend(cells.take(len));
+        column.resize(len, Cell::Empty);
+    }
+
     /// How many rows there are.
     pub fn len(&self) -> usize {
         self.len
@@ -252,6 +310,34 @@ mod tests {
         assert_eq!(Cell::Number(f64::NAN).text(), "");
         assert_eq!(Cell::Bool(true).text(), "true");
         assert_eq!(Cell::Empty.text(), "");
+    }
+
+    #[test]
+    fn rust_columns_fill_their_rows() {
+        let rows = DataTableRows::new(3)
+            .texts("symbol", ["AAPL", "MSFT", "NVDA", "past the rows"])
+            .numbers("change", [1.2, -0.4, f64::NAN])
+            .bools("open", [true])
+            .numbers("change", [0.5]);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows.cell(2, "symbol", 0).text(), "NVDA");
+        assert_eq!(
+            rows.cell(0, "change", 0),
+            &Cell::Number(0.5),
+            "given again: replaced"
+        );
+        assert_eq!(rows.cell(1, "change", 0), &Cell::Empty);
+        assert_eq!(rows.cell(0, "open", 0).text(), "true");
+        assert_eq!(rows.cell(2, "open", 0), &Cell::Empty);
+        assert_eq!(rows.cell(0, "missing", 5), &Cell::Empty);
+        let signs = DataTableRows::new(2).numbers("change", [1.2, -0.4]);
+        assert_eq!(signs.cell(0, "change", 0).sign(), Some(true));
+        assert_eq!(signs.cell(1, "change", 0).sign(), Some(false));
+        let owned = ["+1.2%".to_owned(), "\u{2212}0.4%".to_owned()];
+        let borrowed = DataTableRows::new(2).texts("change", owned.iter().map(String::as_str));
+        assert_eq!(borrowed.cell(0, "change", 0).text(), "+1.2%");
+        assert_eq!(borrowed.cell(0, "change", 0).sign(), Some(true));
+        assert_eq!(borrowed.cell(1, "change", 0).sign(), Some(false));
     }
 
     #[test]

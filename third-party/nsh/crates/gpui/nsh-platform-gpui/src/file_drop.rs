@@ -1,22 +1,3 @@
-/*
- * Licensed to the Apache Software Foundation (ASF) under one
- * or more contributor license agreements.  See the NOTICE file
- * distributed with this work for additional information
- * regarding copyright ownership.  The ASF licenses this file
- * to you under the Apache License, Version 2.0 (the
- * "License"); you may not use this file except in compliance
- * with the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing,
- * software distributed under the License is distributed on an
- * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
- * KIND, either express or implied.  See the License for the
- * specific language governing permissions and limitations
- * under the License.
- */
-
 //! Files dragged in from other applications (`onFileDragEnter`,
 //! `onFileDragLeave`, `onFileDrop`).
 //!
@@ -30,7 +11,7 @@
 //! Moving between destinations leaves one and enters the other; leaving the
 //! window, dropping, and the destination's removal or disablement clear it.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use nsh_core::{EventKind, EventPayload, NodeId};
 
@@ -40,14 +21,21 @@ use crate::{surface::Surface, view::NshView};
 #[derive(Default)]
 pub(crate) struct State {
     target: RefCell<Option<NshView>>,
+    /// A [`clear`] is scheduled for a drag that ended ([`take_needs_clear`]).
+    clearing: Cell<bool>,
 }
 
 fn set_target(surface: &Surface, target: Option<NshView>) {
-    let mut current = surface.file_drop.target.borrow_mut();
-    if current.as_ref().map(NshView::id) == target.as_ref().map(NshView::id) {
-        return;
-    }
-    if let Some(previous) = current.take()
+    let previous = {
+        let mut current = surface.file_drop.target.borrow_mut();
+        if current.as_ref().map(NshView::id) == target.as_ref().map(NshView::id) {
+            return;
+        }
+        std::mem::replace(&mut *current, target.clone())
+    };
+    // The events go out once the destination is stored and no longer
+    // borrowed, so whatever handles them may ask for it again.
+    if let Some(previous) = previous
         && previous.state().events.contains(EventKind::FileDragLeave)
     {
         surface.event(previous.id(), EventKind::FileDragLeave, EventPayload::None);
@@ -57,12 +45,18 @@ fn set_target(surface: &Surface, target: Option<NshView>) {
     {
         surface.event(next.id(), EventKind::FileDragEnter, EventPayload::None);
     }
-    *current = target;
 }
 
-/// Whether a file drag has a destination.
-pub(crate) fn active(surface: &Surface) -> bool {
-    surface.file_drop.target.borrow().is_some()
+/// No drag is active: whether the last one still has a destination for
+/// which no [`clear`] is scheduled yet. Answering yes counts the clear as
+/// scheduled, so a window redrawn again before it runs schedules no other.
+pub(crate) fn take_needs_clear(surface: &Surface) -> bool {
+    let state = &surface.file_drop;
+    if state.clearing.get() || state.target.borrow().is_none() {
+        return false;
+    }
+    state.clearing.set(true);
+    true
 }
 
 /// The drag moved to `(x, y)` (root points).
@@ -72,6 +66,7 @@ pub(crate) fn update(surface: &Surface, x: f32, y: f32) {
 
 /// The drag left the window or ended.
 pub(crate) fn clear(surface: &Surface) {
+    surface.file_drop.clearing.set(false);
     set_target(surface, None);
 }
 
@@ -124,16 +119,36 @@ fn uris(paths: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
+/// An absolute path to `name` for tests: `/tmp/name`, or `C:\tmp\name` on
+/// Windows, where a path without a drive is not absolute.
+#[cfg(test)]
+pub(crate) fn test_path(name: &str) -> String {
+    if cfg!(windows) {
+        format!(r"C:\tmp\{name}")
+    } else {
+        format!("/tmp/{name}")
+    }
+}
+
+/// The `file:` URL of [`test_path`]`(name)`, `escaped` being `name`
+/// percent-encoded.
+#[cfg(test)]
+pub(crate) fn test_url(escaped: &str) -> String {
+    if cfg!(windows) {
+        format!("file:///C:/tmp/{escaped}")
+    } else {
+        format!("file:///tmp/{escaped}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn only_absolute_paths_become_file_urls() {
-        let paths = ["/tmp/a b.txt", "relative.txt", "/tmp/é"].map(std::path::PathBuf::from);
-        assert_eq!(
-            uris(&paths),
-            ["file:///tmp/a%20b.txt", "file:///tmp/%C3%A9"]
-        );
+        let paths = [test_path("a b.txt"), "relative.txt".into(), test_path("é")]
+            .map(std::path::PathBuf::from);
+        assert_eq!(uris(&paths), [test_url("a%20b.txt"), test_url("%C3%A9")]);
     }
 }

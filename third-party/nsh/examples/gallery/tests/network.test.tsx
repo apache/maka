@@ -37,3 +37,11 @@ test("asks the server again on each press", async () => {
   await app.waitFor("Answer 2");
   expect(app.requests().map((r) => r.url)).toEqual([URL, URL]);
 });
+
+test("reads the files the app ships", async () => {
+  // Its bytes with their type, at its `asset:/` URL; one it does not ship
+  // rejects as a network error.
+  const app = await open("./fixtures/assets.tsx");
+  await app.waitFor("File: 200 image/png PNG true");
+  await app.waitFor("Missing: TypeError");
+});

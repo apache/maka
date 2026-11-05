@@ -11,6 +11,17 @@
 //! trust the root. Every key id is derived from its public key
 //! ([`PublicKey::id`]).
 //!
+//! # Signing again
+//!
+//! [`resign`] signs a package again with another release key: a platform
+//! that signs, with the key its apps trust, what builds signed with keys of
+//! their own (CI's, which test apps trust). Only the certificate, the
+//! signing time and the signature change; the files and every other header
+//! field are kept as written, those this runtime does not know included,
+//! and so is the minimum runtime. The package must be intact (its own
+//! signature, file table and hashes); its first certificate is not checked
+//! against any root, as the new signer vouches for it from then on.
+//!
 //! # Revocation and rollback
 //!
 //! A root also signs **revocation lists** ([`Revocations`]): release keys and
@@ -75,8 +86,8 @@ mod trust;
 pub use crate::{
     keys::{PublicKey, SecretKey},
     package::{
-        App, Contents, FileKind, Header, PackageReceipt, VerifiedPackage, build, source_map,
-        verify_signature,
+        App, Contents, FileKind, Header, PackageReceipt, VerifiedPackage, build, resign,
+        source_map, verify_signature,
     },
     trust::{Certificate, Revocations, TrustStore, certify, revoke},
 };

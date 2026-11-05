@@ -26,9 +26,7 @@
   `decay` takes `clamp: [min, max]` and `bounce`: at a bound it stops, or a new segment of the closed form starts from the
   bound at the exact time it got there with `-bounce` of its speed (frame-rate independent, several per frame if need be).
   Values have an offset (`setOffset` / `flattenOffset` / `extractOffset`, React Native's): they evaluate to value +
-  offset; drivers, `set` and gestures move the value. A node is evaluated once for each state of the graph
-  (`Graph::eval` keeps its value until an op, a `set`, a settling or a frame changes the graph), so a node many read
-  (the time, a shared track) costs one evaluation a frame. JS reads a node back with `getValue()` (and `stop()`'s promise):
+  offset; drivers, `set` and gestures move the value. JS reads a node back with `getValue()` (and `stop()`'s promise):
   `AnimationOp::Read` answers with a `Finished` carrying `value`, through the same path as animation ends (Rust
   components: `AnimatedValue::value()`, its request id odd, answered in `Core::animations_finished`).
   `Easing.sample`, `Animated.sampleSpring` / `sampleDecay` return the curves from `nsh_core::animation::sample_easing` /
@@ -41,7 +39,7 @@
   component's own props (`AnimationProp::ComponentSlot(slot)`, `docs/dev/embedding.md`: the component is handed the value,
   a number or an ARGB color, on the frames it changes). iOS shapes the decoration with a bound
   border color (and the layers for it even while it is transparent: `bound_style`), then sets the colors on those
-  layers each frame; Android and web get them as properties (`Mounter.java` codes 11 and 12). Driven on the main thread by `CADisplayLink`,
+  layers each frame; Android and web get them as properties. Driven on the main thread by `CADisplayLink`,
   paused while nothing animates. `scrollValue` writes the scroll offset into an animated value in the same frame; `pan` lets drags drive animated values
   directly, and JS receives the velocity when the drag ends. Animated values referenced by a view's style (or `pan`, `scrollValue`, ...) are kept by its node
   (`nsh-js` `dom.rs`) and derived nodes hold their inputs, so bindings do not break when JS objects are collected. In

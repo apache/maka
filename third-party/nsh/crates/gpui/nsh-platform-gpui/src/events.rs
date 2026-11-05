@@ -104,6 +104,8 @@ fn cursor_style(c: Cursor) -> CursorStyle {
         Cursor::NotAllowed => CursorStyle::OperationNotAllowed,
         Cursor::ResizeEw => CursorStyle::ResizeLeftRight,
         Cursor::ResizeNs => CursorStyle::ResizeUpDown,
+        Cursor::ResizeNwse => CursorStyle::ResizeUpLeftDownRight,
+        Cursor::ResizeNesw => CursorStyle::ResizeUpRightDownLeft,
         Cursor::Wait | Cursor::Progress | Cursor::Help => CursorStyle::Arrow,
         Cursor::Hidden => CursorStyle::Arrow,
     }

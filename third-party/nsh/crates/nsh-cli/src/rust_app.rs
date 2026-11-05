@@ -59,6 +59,11 @@ use crate::{runtime::Platform, ui};
 /// (`nsh-macros` `native_module.rs`): the crate's UI set.
 const ENTRY: &str = "__nsh_native_module";
 
+/// The prefix of the function `#[native_components(<platform>)]` makes at
+/// the root of the app's crate (`nsh-macros` `native_components.rs`): the
+/// native components it registers on that platform.
+const COMPONENTS_ENTRY: &str = "__nsh_native_components_";
+
 /// The app of this command, if it has Rust crates ([`set_current`]).
 static CURRENT: std::sync::Mutex<Option<RustApp>> = std::sync::Mutex::new(None);
 
@@ -1044,7 +1049,8 @@ panic = \"abort\"
                  [[bin]]\nname = {:?}\npath = \"main.rs\"\n\n[dependencies]\nnsh-core = {}\n{}\n",
                 self.bin("describe"),
                 self.bin("describe"),
-                self.nsh.dep("nsh-core", ""),
+                // The sets' declarations make `.nsh/types`.
+                self.nsh.dep("nsh-core", ", features = [\"declarations\"]"),
                 self.dependencies(),
             ),
         )?;
@@ -1156,6 +1162,8 @@ panic = \"abort\"
             &format!(
                 "[package]\nname = {:?}\nversion = \"0.0.0\"\nedition = \"2024\"\npublish = false\n\n\
                  [lib]\nname = {:?}\npath = \"lib.rs\"\ncrate-type = [\"cdylib\"]\n\n\
+                 [features]\n# What `nsh package` links the app's runtime from (its relocations kept).\n\
+                 linkable = [\"nsh-platform-web/linkable\"]\n\n\
                  [dependencies]\nnsh-core = {}\nnsh-base = {}\n{app}\n\n\
                  [target.'cfg(target_arch = \"wasm32\")'.dependencies]\n\
                  nsh-platform-web = {}\n",
@@ -1247,6 +1255,13 @@ panic = \"abort\"
         } else {
             ("", ";")
         };
+        let (set_components, components_fn) = match components_platform(dir) {
+            Some(key) => (
+                format!("\n        {platform}::set_components(app_components);"),
+                self.app_components(&cfg, &platform, key),
+            ),
+            None => (String::new(), String::new()),
+        };
         write(
             &ws.join(dir).join("main.rs"),
             &format!(
@@ -1254,9 +1269,9 @@ panic = \"abort\"
                  //! components, on {lib}'s runner; no JS runtime.\n{subsystem}\n\
                  fn main(){ret} {{\n    \
                  #[cfg({os})]\n    {{\n        \
-                 {platform}::set_ui_sets({sets});\n        \
+                 {platform}::set_ui_sets({sets});{set_components}\n        \
                  {lib}::run_rust(app_root()){tail}\n    }}\n    \
-                 #[cfg(not({os}))]\n    {lib}::main(){tail}\n}}\n{}{}",
+                 #[cfg(not({os}))]\n    {lib}::main(){tail}\n}}\n{}{components_fn}{}",
                 self.app_sets(&cfg),
                 self.root_fn(&cfg, root),
             ),
@@ -1293,7 +1308,8 @@ panic = \"abort\"
                  [features]\n# The runtime of published apps: TSX on the browser's JavaScript engine.\n\
                  browser = [\"nsh-platform-web/browser\"]\n\
                  # The development host's: hot updates, and what `nsh test --target web` asks about.\n\
-                 dev = [\"nsh-platform-web/dev\"]\n\n\
+                 dev = [\"nsh-platform-web/dev\"]\n                 # What `nsh package` links the app's runtime from (its relocations kept).\n\
+                 linkable = [\"nsh-platform-web/linkable\"]\n\n\
                  [dependencies]\nnsh-core = {}\nnsh-base = {}\n{app}\n\n\
                  [target.'cfg(target_arch = \"wasm32\")'.dependencies]\nnsh-platform-web = {}\n",
                 self.bin("web"),
@@ -1312,19 +1328,18 @@ panic = \"abort\"
         // when a test session says so (`nsh test --target web`).
         let (register, root) = match &self.root {
             Some(root) => (
-                format!("nsh_platform_web::rust_app!({sets}, app_root());"),
+                format!("{wasm}nsh_platform_web::rust_app!({sets}, app_root());\n"),
                 self.root_fn(wasm, root),
             ),
-            None => (
-                format!("nsh_platform_web::ui_sets!({sets});"),
-                String::new(),
-            ),
+            // One gate per set (`nsh_ui_set_*`), as `nsh/base`'s parts have:
+            // `nsh package` keeps those of the sets the app imports.
+            None => (self.set_gates(wasm), String::new()),
         };
         write(
             &ws.join("web/lib.rs"),
             &format!(
                 "//! The app's web runtime: `nsh.wasm` with `nsh/base` and the app's\n//! Rust components.\n\n\
-                 {wasm}{register}\n{}{root}\n\
+                 {register}{}{root}\n\
                  // Off WebAssembly it is empty, as nsh-platform-web is.\n\
                  #[cfg(not(target_arch = \"wasm32\"))]\nuse nsh_core as _;\n\
                  #[cfg(not(target_arch = \"wasm32\"))]\nuse nsh_base as _;\n",
@@ -1442,9 +1457,12 @@ opt-level = \"s\"
             cmd.env(&ar, "llvm-ar");
         }
         // A Rust app's runtime is one: it has no JS, so no hot updates.
+        // The published one is linkable, as nsh's own (`runtime::WebKind`):
+        // `nsh package` drops the parts and sets the app does not use.
         let features: &[&str] = match kind {
+            crate::runtime::WebKind::Browser if rust => &["--features", "linkable"],
             _ if rust => &[],
-            crate::runtime::WebKind::Browser => &["--features", "browser"],
+            crate::runtime::WebKind::Browser => &["--features", "browser,linkable"],
             crate::runtime::WebKind::Dev => &["--features", "dev"],
         };
         let (package, artifact) = if rust {
@@ -1614,11 +1632,20 @@ opt-level = \"s\"
             ),
             _ => (String::new(), String::new()),
         };
+        // The desktops' standalone backends and iOS register the app's
+        // native components on every view they make.
+        let (set_components, components_fn) = match components_platform(dir) {
+            Some(key) => (
+                format!("\n    #[cfg({os})]\n    {platform}::set_components(app_components);"),
+                self.app_components(&cfg, &platform, key),
+            ),
+            None => (String::new(), String::new()),
+        };
         write(
             &ws.join(dir).join("main.rs"),
             &format!(
                 "//! The {name} {what} with `nsh/base` and the app's Rust components.\n{subsystem}\n\
-                 fn main(){exit} {{\n    #[cfg({os})]\n    {platform}::set_ui_sets({sets});{set_root}\n    {lib}::main()\n}}\n{}{root_fn}",
+                 fn main(){exit} {{\n    #[cfg({os})]\n    {platform}::set_ui_sets({sets});{set_components}{set_root}\n    {lib}::main()\n}}\n{}{components_fn}{root_fn}",
                 self.app_sets(&cfg)
             ),
         )
@@ -1701,17 +1728,25 @@ opt-level = \"s\"
             }
             return Err(error);
         }
-        let mut path = self.target_dir()?;
-        if let Some(triple) = triple {
-            path.push(triple);
+        let place = |mut path: PathBuf| {
+            if let Some(triple) = triple {
+                path.push(triple);
+            }
+            path.push(match profile {
+                Some(profile) => profile,
+                None if release => "release",
+                None => "debug",
+            });
+            path.push(artifact);
+            path
+        };
+        let path = place(self.target_dir()?);
+        if path.exists() {
+            return Ok(path);
         }
-        path.push(match profile {
-            Some(profile) => profile,
-            None if release => "release",
-            None => "debug",
-        });
-        path.push(artifact);
-        Ok(path)
+        // A cargo that keeps its own target directory (a wrapper ignoring
+        // CARGO_TARGET_DIR) built it elsewhere: Cargo says where.
+        Ok(cargo_target_directory(workspace).map(place).unwrap_or(path))
     }
 
     /// The development host (`runner` false) or release runner of the app,
@@ -1970,6 +2005,25 @@ impl RustApp {
         format!("vec![{}]", sets.join(", "))
     }
 
+    /// The web runtime's gates of the app's sets: one
+    /// `nsh_platform_web::ui_set!` per crate, exporting
+    /// [`crate::web::ui_set_gate`] of its specifier, which registers the
+    /// crate's set ([`Self::app_sets`]). `nsh/base` is the runtime's own
+    /// (its parts' `nsh_part_*`).
+    fn set_gates(&self, cfg: &str) -> String {
+        self.crates
+            .iter()
+            .map(|krate| {
+                let specifier = specifier_of(&krate.dir).unwrap_or_else(|| krate.name());
+                format!(
+                    "{cfg}nsh_platform_web::ui_set!({}, {}());\n",
+                    crate::web::ui_set_gate(&specifier),
+                    set_fn(krate)
+                )
+            })
+            .collect()
+    }
+
     /// A function per crate (`set_app_charts()`), for the generated code
     /// (each item under `cfg`): the crate's UI set, the [`ENTRY`]
     /// `#[native_module]` makes in it. Each glob-imports its crate in a
@@ -1997,6 +2051,34 @@ impl RustApp {
         code
     }
 
+    /// `app_components()`, for the generated code of the platform `key`
+    /// (`windows`; its crate `platform`, `nsh_platform_windows`), under
+    /// `cfg`: the native components each crate registers there, with the
+    /// entry `#[native_components(<key>)]` makes in it ([`COMPONENTS_ENTRY`]).
+    /// Each crate's call glob-imports it in a block, as [`Self::app_sets`]
+    /// does, over nsh's stand-in, which registers nothing: most crates have
+    /// no native components. The parameter's name is nsh's (`__nsh_`), as
+    /// the entry's: the glob would shadow it with any value of the same name
+    /// the crate exports (`pub fn components`).
+    fn app_components(&self, cfg: &str, platform: &str, key: &str) -> String {
+        let entry = format!("{COMPONENTS_ENTRY}{key}");
+        let mut calls = String::new();
+        for krate in &self.crates {
+            calls.push_str(&format!(
+                "    {{\n        #[allow(unused_imports)]\n        use {}::*;\n        \
+                 {entry}(__nsh_components); // the crate {} (nsh.json \"rust\")\n    }}\n",
+                krate.name(),
+                krate.package,
+            ));
+        }
+        format!(
+            "\n/// The app's native components on this platform: what `#[native_components({key})]` registers in its crates.\n\
+             {cfg}fn app_components(__nsh_components: &{platform}::Components) {{\n{calls}}}\n\
+             \n// Without the entry: nsh's stand-in, which registers nothing.\n\
+             {cfg}#[allow(unused_imports)]\nuse nsh_core::element::__private::no_native_components as {entry};\n"
+        )
+    }
+
     /// `app_root()`, a Rust app's root (`nsh.json` `"root"`, `"theme"`,
     /// `"appearance"`, `"statusBar"`: a component of the first crate `"rust"` lists), for
     /// the generated code, under `cfg`.
@@ -2004,6 +2086,21 @@ impl RustApp {
         let krate = self.crates.first().map(AppCrate::name).unwrap_or_default();
         root_fn(cfg, &krate, root)
     }
+}
+
+/// The platform (`#[native_components(<platform>)]`) whose native
+/// components the generated crate `dir` registers: the desktops' standalone
+/// backends and iOS (`windows-host`, `windows-app`, `rust-windows`,
+/// `ios-host`, ...).
+fn components_platform(dir: &str) -> Option<&'static str> {
+    let platform = dir.strip_prefix("rust-").unwrap_or(dir);
+    ["windows", "macos", "linux", "ios"]
+        .into_iter()
+        .find(|key| {
+            platform
+                .strip_prefix(key)
+                .is_some_and(|rest| rest.is_empty() || rest == "-host" || rest == "-app")
+        })
 }
 
 /// The function of the generated code that makes the UI set of `krate`
@@ -2175,6 +2272,24 @@ fn install_stripped(
 }
 
 /// The cargo to run.
+/// The target directory Cargo reports for the workspace at `workspace`.
+fn cargo_target_directory(workspace: &Path) -> Option<PathBuf> {
+    let out = Command::new(cargo())
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(workspace.join("Cargo.toml"))
+        .output()
+        .ok()
+        .filter(|out| out.status.success())?;
+    let json: serde_json::Value = serde_json::from_slice(&out.stdout).ok()?;
+    json.get("target_directory")?.as_str().map(PathBuf::from)
+}
+
 fn cargo() -> std::ffi::OsString {
     env::var_os("CARGO").unwrap_or_else(|| "cargo".into())
 }
@@ -2698,6 +2813,8 @@ mod tests {
         let web = read("rust-web/lib.rs");
         assert!(web.contains("nsh_platform_web::rust_app!(vec![nsh_base::registry(), set_app_app_native()], app_root());"), "{web}");
         assert!(read("rust-web/Cargo.toml").contains("default-features = false"));
+        // Linkable for `nsh package`, as the TSX app's runtime.
+        assert!(read("rust-web/Cargo.toml").contains("linkable = [\"nsh-platform-web/linkable\"]"));
         assert!(read("rust-web/build.rs").contains("-zstack-size=8388608"));
         // Its headless runner opens the root for the tests.
         let test = read("test/main.rs");
@@ -3098,7 +3215,18 @@ panic = \"abort\"
         assert!(web.contains("dev = [\"nsh-platform-web/dev\"]"), "{web}");
         let build = read("web/build.rs");
         assert!(build.contains("-zstack-size=8388608"), "{build}");
-        assert!(read("web/lib.rs").contains("nsh_platform_web::ui_sets!("));
+        // The web runtime: linkable, with a gate per set (`nsh/base`'s are
+        // the runtime's own parts), which `nsh package` keeps when imported.
+        assert!(
+            web.contains("linkable = [\"nsh-platform-web/linkable\"]"),
+            "{web}"
+        );
+        let lib = read("web/lib.rs");
+        assert!(
+            lib.contains("#[cfg(target_arch = \"wasm32\")]\nnsh_platform_web::ui_set!(nsh_ui_set_app_app_native, set_app_app_native());"),
+            "{lib}"
+        );
+        assert!(!lib.contains("nsh_base::registry()"), "{lib}");
         assert!(!app.workspace.join("gpui").exists());
         assert_eq!(app.gpui_workspace().unwrap(), app.workspace.join("gpui"));
         assert!(read("gpui/Cargo.toml").contains("members = [\"gpui-host\"]"));
@@ -3128,8 +3256,14 @@ panic = \"abort\"
             ("web/lib.rs", "#[cfg(target_arch = \"wasm32\")]\n"),
         ] {
             let code = read(file);
+            // The web runtime registers each set through its gate.
+            let sets = if file == "web/lib.rs" {
+                "set_app_app_native()".to_owned()
+            } else {
+                "vec![nsh_base::registry(), set_app_app_native()]".to_owned()
+            };
             for line in [
-                "vec![nsh_base::registry(), set_app_app_native()]".to_owned(),
+                sets,
                 format!(
                     "{cfg}fn set_app_app_native() -> nsh_core::element::Registry {{\n    #[allow(unused_imports)]\n    use app_app_native::*;\n    __nsh_native_module() // the crate app-native (nsh.json \"rust\")\n}}"
                 ),
@@ -3162,6 +3296,58 @@ panic = \"abort\"
                 "{dir}"
             );
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_generated_registration_compiles_whatever_the_crates_export() {
+        // `app_components()` as the hosts have it, built by `rustc` with
+        // stand-ins for the platform's crate, nsh-core and two crates: one
+        // exporting a function named as a parameter of the generated code
+        // could be (`pub fn components`), one without native components.
+        let dir = std::env::temp_dir().join(format!("nsh-rust-components-{}", std::process::id()));
+        let app = app(
+            &dir,
+            &[
+                ("charts", dir.join("native/charts")),
+                ("app-storage", dir.join("native/storage")),
+            ],
+            None,
+        );
+        let generated = app.app_components("", "nsh_platform_windows", "windows");
+        let source = format!(
+            "mod nsh_platform_windows {{\n    pub struct Components(pub std::cell::Cell<u32>);\n}}\n\
+             mod nsh_core {{\n    pub mod element {{\n        pub mod __private {{\n            \
+             pub fn no_native_components<C>(_components: C) {{}}\n        }}\n    }}\n}}\n\
+             mod app_charts {{\n    use crate::nsh_platform_windows::Components;\n    \
+             pub fn components(components: &Components) {{\n        components.0.set(components.0.get() + 1);\n    }}\n    \
+             pub fn __nsh_native_components_windows(registry: &Components) {{\n        components(registry)\n    }}\n}}\n\
+             mod app_app_storage {{}}\n{generated}\n\
+             fn main() {{\n    let components = nsh_platform_windows::Components(Default::default());\n    \
+             app_components(&components);\n    assert_eq!(components.0.get(), 1, \"charts registers once, storage nothing\");\n}}\n"
+        );
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("registration.rs");
+        let exe = dir.join(format!("registration{}", std::env::consts::EXE_SUFFIX));
+        std::fs::write(&file, &source).unwrap();
+        let rustc = std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into());
+        let built = std::process::Command::new(rustc)
+            .args(["--edition", "2024", "--crate-type", "bin", "-o"])
+            .arg(&exe)
+            .arg(&file)
+            .output()
+            .unwrap();
+        assert!(
+            built.status.success(),
+            "{}\n{source}",
+            String::from_utf8_lossy(&built.stderr)
+        );
+        let ran = std::process::Command::new(&exe).output().unwrap();
+        assert!(
+            ran.status.success(),
+            "{}",
+            String::from_utf8_lossy(&ran.stderr)
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3247,6 +3433,54 @@ panic = \"abort\"
                     "{dir}: {code}"
                 );
             }
+            // The desktops' standalone backends and iOS register each
+            // crate's native components, over one stand-in that registers
+            // nothing.
+            match super::components_platform(dir) {
+                Some(key) => {
+                    let platform = format!("nsh_platform_{key}");
+                    let set = format!("{platform}::set_components(app_components);");
+                    assert!(code.contains(&set), "{dir}: no {set:?} in\n{code}");
+                    let entry = format!("__nsh_native_components_{key}");
+                    assert!(
+                        code.contains(&format!(
+                            "fn app_components(__nsh_components: &{platform}::Components) {{\n"
+                        )),
+                        "{dir}: {code}"
+                    );
+                    for (name, package) in
+                        [("app_charts", "charts"), ("app_app_storage", "app-storage")]
+                    {
+                        let call = format!(
+                            "    {{\n        #[allow(unused_imports)]\n        use {name}::*;\n        {entry}(__nsh_components); // the crate {package} (nsh.json \"rust\")\n    }}\n"
+                        );
+                        assert!(code.contains(&call), "{dir}: no {call:?} in\n{code}");
+                    }
+                    assert_eq!(
+                        code.matches(&format!("no_native_components as {entry};"))
+                            .count(),
+                        1,
+                        "{dir}"
+                    );
+                }
+                None => assert!(!code.contains("set_components"), "{dir}: {code}"),
+            }
+        }
+        for (dir, key) in [
+            ("windows-host", Some("windows")),
+            ("windows-app", Some("windows")),
+            ("rust-windows", Some("windows")),
+            ("macos-app", Some("macos")),
+            ("rust-linux", Some("linux")),
+            ("linux-host", Some("linux")),
+            ("rust-ios", Some("ios")),
+            ("ios-host", Some("ios")),
+            ("ios-app", Some("ios")),
+            ("gpui-host", None),
+            ("android", None),
+            ("web", None),
+        ] {
+            assert_eq!(super::components_platform(dir), key, "{dir}");
         }
         // The describe program: the app's sets only, and nsh-core.
         let describe = read("describe/main.rs");

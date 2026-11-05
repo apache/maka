@@ -54,6 +54,8 @@ expect Flying…
 wait 1000
 expect Fly hop
 expect Hop 41: nominal · hover 12 s
+# The log, on the flights tab, has the new hop.
+tap label:Flights
 expect 41 flown · 4 off-nominal in the last 40
 # The vehicle.
 tap label:Vehicle

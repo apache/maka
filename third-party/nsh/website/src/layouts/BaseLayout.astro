@@ -3,6 +3,7 @@ import '../styles/global.css';
 import 'virtual:nsh-gallery-ui.css';
 import exampleTheme from '../../../examples/nsh-gallery-ui/theme.json';
 import { BASE, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, type Lang } from '../lib/site';
+import { isLatestVersion, siteVersions, latestVersion, versionHref, versionPath } from '../lib/versions';
 
 export interface Props {
   title?: string;
@@ -13,13 +14,18 @@ export interface Props {
   robots?: string;
 }
 
-const { title, description = SITE_DESCRIPTION, lang = 'en', alternates, robots } = Astro.props;
+const { title, description = SITE_DESCRIPTION, lang = 'en', alternates, robots: robotsProp } = Astro.props;
+// Other versions are not indexed: their canonical is the same page of the latest.
+const robots = robotsProp ?? (isLatestVersion ? undefined : 'noindex');
 
 // A title that already names the site (the home pages') is used as it is.
 const pageTitle = !title || title === SITE_TITLE
   ? `${SITE_TITLE} — Build once, native everywhere | Rust UI framework`
   : title.startsWith(SITE_TITLE) ? title : `${title} · ${SITE_TITLE}`;
-const canonical = new URL(Astro.url.pathname.replace(/\/+$/, '') || '/', SITE_URL).href;
+const latest = siteVersions.find((version) => version.id === latestVersion);
+const canonical = isLatestVersion || !latest
+  ? new URL(Astro.url.pathname.replace(/\/+$/, '') || '/', SITE_URL).href
+  : new URL(versionHref(latest, versionPath(Astro.url.pathname, BASE)), SITE_URL).href;
 const abs = (route: string) => new URL(`${BASE.replace(/\/$/, '')}${route}`, SITE_URL).href;
 ---
 

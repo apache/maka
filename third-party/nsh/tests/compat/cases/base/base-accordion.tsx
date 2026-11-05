@@ -4,9 +4,20 @@
 // several with `multiple`). Each item is a 20-point trigger in a level-2
 // heading over a 30-point panel: the first panel kept mounted while closed,
 // the second revealed with a springing height (in the layout while closed,
-// zero high), the third item disabled.
+// zero high), the third item disabled. Each panel's content counts its own
+// presses, which it shows again when it reopens.
 import { Text, View, signal } from "nsh";
 import { Accordion, AccordionHeader, AccordionItem, AccordionPanel, AccordionTrigger } from "nsh/base";
+
+function Details(props: { value: string; title: string }) {
+  const taps = signal(0);
+  return (
+    <View testID={`details-${props.value}`} style={{ height: 30, flexDirection: "row", gap: 8 }} onPress={() => taps.set(taps() + 1)}>
+      <Text>{`${props.title} details`}</Text>
+      <Text>{`Taps ${props.value}: ${taps()}`}</Text>
+    </View>
+  );
+}
 
 function App() {
   const open = signal<string[]>([]);
@@ -25,9 +36,7 @@ function App() {
         </AccordionTrigger>
       </AccordionHeader>
       <AccordionPanel testID={`panel-${value}`} accessibilityLabel={title} reveal={panel.reveal} keepMounted={panel.keepMounted}>
-        <View style={{ height: 30 }}>
-          <Text>{`${title} details`}</Text>
-        </View>
+        <Details value={value} title={title} />
       </AccordionPanel>
     </AccordionItem>
   );
@@ -39,7 +48,7 @@ function App() {
         multiple={multiple()}
         onChange={({ value }) => {
           changes.set(changes() + 1);
-          open.set(value);
+          open.set(value ?? []);
         }}
       >
         {item("a", "Shipping", { keepMounted: true })}

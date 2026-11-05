@@ -271,6 +271,38 @@ const NSH: &[Item] = &[
             &["(props: ShaderProps): JSX.Element"],
         ),
     ),
+    (
+        "ShaderEffect",
+        Export::Value(|cx| dom::host_component(cx, "shadereffect", true)),
+        Ts::function(
+            "A view whose children draw through a GPU shader: its WGSL `shade` reads\nwhat they draw with `sample_content(uv)` (and what is behind the view with\n`sample_backdrop(uv)`), `nsh.progress` from `progress` (a number or an\nanimated value), and draws `maxSampleOffset` points beyond the box. The\nchildren keep their presses. Without `source` they draw as they are.",
+            &["(props: ShaderEffectProps): JSX.Element"],
+        ),
+    ),
+    (
+        "ShaderTransition",
+        Export::Value(|cx| dom::host_component(cx, "shadertransition", true)),
+        Ts::function(
+            "A view whose children change through a GPU shader: when `value` changes\n(not the first one) its WGSL `shade` draws, for `duration` ms (300),\n`sample_from(uv)` (a picture of what they drew) changing into\n`sample_to(uv)` (what they draw now) as `nsh.progress` goes from 0 to 1.\nWithout `source` it runs `fallback`: `\"fade\"` (a cross-fade) or `\"none\"`.",
+            &["(props: ShaderTransitionProps): JSX.Element"],
+        ),
+    ),
+    (
+        "ScreenEffect",
+        Export::Value(|cx| dom::host_component(cx, "screeneffect", false)),
+        Ts::function(
+            "The whole surface (its pages, dialogs and overlays) drawn through a GPU\nshader, which reads it with `sample_content(uv)`. It takes no space and\nhas no children; the last one mounted with a `source` draws.",
+            &["(props: ScreenEffectProps): JSX.Element"],
+        ),
+    ),
+    (
+        "ScreenTransition",
+        Export::Value(|cx| dom::host_component(cx, "screentransition", false)),
+        Ts::function(
+            "The whole surface changing through a GPU shader when `value` changes,\nas `ShaderTransition` does for its children.",
+            &["(props: ScreenTransitionProps): JSX.Element"],
+        ),
+    ),
 ];
 
 /// `nsh`'s types; its element and style types and `JSX` are `types.d.ts`'s.

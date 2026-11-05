@@ -2,22 +2,27 @@
 // of `nsh/base` on a phone, where its calendar is a sheet: an ISO date the
 // app owns (`value`, `onChange({ value })`, `null` once cleared), what
 // screen readers hear as the value (`dateFormat`), the app's items
-// (`renderItem`, `itemStyle`), weekends that take no press
-// (`disabledMatcher`), the week's first day, Previous and Next; a range
-// of the picker's own (`defaultValue`) over two months with a preset; and
+// (`renderItem`, given what an item is, never its state; `itemStyle`),
+// weekends that take no press (`disabledMatcher`), the week's first day,
+// Previous and Next; a range of the picker's own (`defaultValue`) over
+// two months with a preset, its days styled by their `data-range-*:` and
+// `data-outside:` classes and their content by `group-data-*:`; and
 // a date and time whose sheet a tap on a day closes and which opens
 // again for the time (`timePrecision`, `hourCycle`, the time's label and
 // segments). The
 // dates are fixed, so nothing depends on today. Its script checks each.
 import { Text, View, signal } from "nsh";
-import { type CalendarItemState, DatePicker, type DatePickerValue } from "nsh/base";
+import { type CalendarEntry, DatePicker, type DatePickerValue } from "nsh/base";
 
-/** Each item as a short text: a day's number (`*` selected, `~` in the range), the month and year toggles, the weekdays. */
-function Item(props: { item: CalendarItemState }) {
+/**
+ * Each item as a short text: a day's month and number, the month and year toggles, the weekdays; a range's middle
+ * days in the color their item's `data-range-middle` gives them (`group-data-*:`).
+ */
+function Item(props: { item: CalendarEntry }) {
   const i = props.item;
   const text =
     i.kind === "day"
-      ? `D${i.value}${i.active ? "*" : ""}${i.inRange ? "~" : ""}`
+      ? `D${i.month}.${i.value}`
       : i.kind === "monthToggle"
         ? `M${i.value}`
         : i.kind === "yearToggle"
@@ -25,7 +30,7 @@ function Item(props: { item: CalendarItemState }) {
           : i.kind === "weekday"
             ? `W${i.value}`
             : i.kind;
-  return <Text>{text}</Text>;
+  return <Text class="group-data-range-middle:text-[#00ff00]">{text}</Text>;
 }
 
 function App() {
@@ -66,6 +71,7 @@ function App() {
         presets={[{ label: "Week", value: ["2026-10-19", "2026-10-25"] }]}
         presetsStyle={{ backgroundColor: "#0000ff" }}
         presetStyle={{ backgroundColor: "#00ff00" }}
+        itemClass="group data-range-start:bg-[#ff0000] data-range-middle:bg-[#00ff00] data-range-end:bg-[#0000ff] data-outside:opacity-50"
         renderItem={(item) => <Item item={item} />}
         trigger={<View testID="trip" style={{ height: 30 }}><Text>TripTrigger</Text></View>}
       />

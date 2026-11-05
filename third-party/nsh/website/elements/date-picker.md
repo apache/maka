@@ -177,7 +177,7 @@ spread apart (`flex-row items-center justify-between`, as `gpui-component`'s). T
 | `presetClass`, `presetStyle` | `.preset_class(..)`, `.preset_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each preset's button. |
 | `calendarClass`, `calendarStyle` | `.calendar_class(..)`, `.calendar_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The calendar. |
 | `headerClass` … `itemStyle` | as `Calendar`'s | as `Calendar`'s | none | The calendar's header, body, months, rows and items. |
-| `renderItem` | `.render_item(..)` | `(item: CalendarItemState) => JSX.Element` | none | Each item of the calendar, drawn by the app. |
+| `renderItem` | `.render_item(..)` | `(item: CalendarEntry) => JSX.Element` | none | Each item of the calendar, drawn by the app from what it is; its states are the items' classes, as `Calendar`'s. |
 | `timeClass`, `timeStyle` | `.time_class(..)`, `.time_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The time's row: its label at the start, the field at the end. |
 | `timeLabel` | `.time_label(..)` | `JSX.Element` | none | What the time's row shows before the field. |
 | `timeFieldClass`, `timeFieldStyle` | `.time_field_class(..)`, `.time_field_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The time field. |

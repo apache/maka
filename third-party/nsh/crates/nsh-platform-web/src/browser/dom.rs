@@ -18,6 +18,9 @@ struct Node {
     tag: Option<Tag>,
     parent: Option<NodeId>,
     children: Vec<Value>,
+    /// A scroll view's content container, once `contentStyle` /
+    /// `contentClass` made it: its children are inserted into it.
+    content: Option<NodeId>,
 }
 pub(super) struct Dom {
     bindings: Rc<Bindings>,
@@ -36,6 +39,7 @@ impl Dom {
                     tag: Some(Tag::View),
                     parent: None,
                     children: Vec::new(),
+                    content: None,
                 }),
             ]),
             next: Cell::new(2),
@@ -61,6 +65,7 @@ impl Dom {
                 tag,
                 parent: None,
                 children: Vec::new(),
+                content: None,
             });
         }
         let op = match text {
@@ -73,6 +78,49 @@ impl Dom {
         self.bindings.ops.borrow_mut().push(op);
         Value::checked(invoke(39, id, u32::from(tag.is_none()), 0, 0.0))
     }
+    /// Where `child` goes when it is inserted into or removed from `parent`:
+    /// a scroll view's content container once it has one (but for the
+    /// container itself), as QuickJS' renderer does (`content_of` in
+    /// nsh-js' `dom.rs`). Unlike that one it does not look the container up
+    /// among the children: apps never hold its node, so it stays there.
+    fn content_of(&self, parent: NodeId, child: NodeId) -> NodeId {
+        match self
+            .nodes
+            .borrow()
+            .get(parent as usize)
+            .and_then(Option::as_ref)
+            .and_then(|n| n.content)
+        {
+            Some(content) if content != child => content,
+            _ => parent,
+        }
+    }
+    /// The content container of scroll view `id`, made on first use: a view
+    /// its children move into, which `contentStyle` / `contentClass` style.
+    fn scroll_content(&self, id: NodeId) -> Result<NodeId, PropError> {
+        let (existing, children) = {
+            let nodes = self.nodes.borrow();
+            let node = nodes
+                .get(id as usize)
+                .and_then(Option::as_ref)
+                .ok_or_else(|| PropError("released node".into()))?;
+            (node.content, node.children.clone())
+        };
+        if let Some(content) = existing {
+            return Ok(content);
+        }
+        let value = self.new_node(Some(Tag::View), None)?;
+        let content = Self::id(&value)?;
+        self.insert_at(id, value, content, children.first().and_then(Value::node))?;
+        if let Some(Some(node)) = self.nodes.borrow_mut().get_mut(id as usize) {
+            node.content = Some(content);
+        }
+        for child in children {
+            let child_id = Self::id(&child)?;
+            self.insert_at(content, child, child_id, None)?;
+        }
+        Ok(content)
+    }
     fn insert(
         &self,
         parent: NodeId,
@@ -80,6 +128,18 @@ impl Dom {
         before: Option<NodeId>,
     ) -> Result<(), PropError> {
         let id = Self::id(&child)?;
+        let parent = self.content_of(parent, id);
+        self.insert_at(parent, child, id, before)
+    }
+    /// Inserts `child` (node `id`) into `parent` itself, never its content
+    /// container.
+    fn insert_at(
+        &self,
+        parent: NodeId,
+        child: Value,
+        id: NodeId,
+        before: Option<NodeId>,
+    ) -> Result<(), PropError> {
         if id == 1 {
             return Err(PropError("cannot insert the root".into()));
         }
@@ -309,14 +369,22 @@ impl Dom {
                     .and_then(Option::as_ref)
                     .ok_or_else(|| PropError("released node".into()))?
                     .tag;
+                // A scroll view's content style is its content container's
+                // style, as in QuickJS' renderer.
+                let (id, tag, name) = match name.as_str() {
+                    "contentStyle" | "contentClass" if tag == Some(Tag::Scroll) => {
+                        let prop = if name == "contentStyle" {
+                            "style"
+                        } else {
+                            "class"
+                        };
+                        (self.scroll_content(id)?, Some(Tag::View), prop)
+                    }
+                    other => (id, tag, other),
+                };
                 let mut warnings = protocol::Warnings::deferred();
-                let decoded = protocol::decode_prop(
-                    id,
-                    tag,
-                    &name,
-                    compat::Value::new(value),
-                    &mut warnings,
-                )?;
+                let decoded =
+                    protocol::decode_prop(id, tag, name, compat::Value::new(value), &mut warnings)?;
                 self.warnings.borrow_mut().merge(warnings);
                 if let Some(op) = decoded {
                     self.bindings.ops.borrow_mut().push(op);
@@ -379,8 +447,8 @@ impl Dom {
                 Value::array(next)
             }
             306 => {
-                let parent = Self::id(&args.index(0)?)?;
                 let child = Self::id(&args.index(1)?)?;
+                let parent = self.content_of(Self::id(&args.index(0)?)?, child);
                 let old = {
                     let mut nodes = self.nodes.borrow_mut();
                     let node = nodes

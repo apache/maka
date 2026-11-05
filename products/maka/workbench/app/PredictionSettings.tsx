@@ -161,6 +161,7 @@ function PredictionChoice(props: {
           <Icon name="down" color={C.muted} />
         </View>
       }
+      itemClass={`rounded-lg focus:bg-[${C.raised}]`}
       renderItem={(item) => (
         <View
           style={{
@@ -169,13 +170,16 @@ function PredictionChoice(props: {
             flexDirection: 'row',
             alignItems: 'center',
             gap: 8,
-            backgroundColor: item.highlighted ? C.raised : undefined,
           }}
         >
           <Text style={{ ...captionTextStyle, color: item.disabled ? C.muted : C.text, flex: 1 }}>
             {item.title}
           </Text>
-          <ChoiceIndicator kind="radio" checked={item.selected} disabled={item.disabled} />
+          <ChoiceIndicator
+            kind="radio"
+            checked={item.value === props.value}
+            disabled={item.disabled}
+          />
         </View>
       )}
     />

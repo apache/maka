@@ -570,7 +570,7 @@ impl<M: TextEngine> Core<M> {
                     // An app's slot, or a node around a fill: what is not a
                     // style goes to its target (`super::slots`).
                     self.apply_slot_attrs(id, host, &attrs, &old, None);
-                } else if !self.apply_target_attrs(id, &attrs, &old) {
+                } else if !self.apply_target_attrs(id, &attrs, &old, app.as_ref()) {
                     self.apply_attrs_over(id, &attrs, &old, app.as_ref());
                 }
                 if let Some((style, classes, class)) = restyle {

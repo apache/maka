@@ -157,6 +157,13 @@ impl Surface {
             .clone()
     }
 
+    /// Settles [`Surface::shader_renderer`] as opened without a device, as
+    /// a machine without one would: the tests open none.
+    #[cfg(test)]
+    pub(crate) fn without_shader_renderer(&self) {
+        let _ = self.shader_renderer.set(None);
+    }
+
     /// A surface with no app yet.
     pub(crate) fn new(environment: Environment) -> Rc<Surface> {
         let key = NEXT_KEY.fetch_add(1, Ordering::Relaxed);

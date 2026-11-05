@@ -10,8 +10,10 @@ demo: el-select
 A select chooses one value from a list of items: a setting, a filter, a country, a time zone. The app's trigger
 opens the list, presented as each device expects:
 
-- On the desktops and in desktop browsers, a popup at the trigger, at least as wide as the trigger and as tall as its
-  rows up to the room beside it; the keyboard moves through the items and chooses one.
+- On the desktops and in desktop browsers, a popup over the trigger with the selected row laid over the trigger, so
+  the chosen title stays where it was (shadcn/ui's `item-aligned` position), as wide as the trigger (the app's
+  `popupStyle` / `popupClass` width sets another, as `gpui-component`'s `menu_width`) and as tall as its rows up to the room on the screen; with nothing selected it opens below the trigger. The keyboard moves
+  through the items and chooses one.
 - On phones and tablets, a sheet at the bottom of the screen over a backdrop.
 
 The select owns the behavior: the value (the app's, or its own), the open state, the keyboard, typeahead, search,
@@ -19,7 +21,7 @@ sections, the highlighted row and what screen readers hear. The look is the app'
 the list, the rows, the sections' headers and the search field, or draws the rows itself.
 
 ```rust tabs
-use nsh_base::{SelectItem, SelectItemState, select, theme};
+use nsh_base::{SelectEntry, SelectItem, select, theme};
 use nsh_core::prelude::*;
 
 const FRUITS: [(&str, &str); 5] = [
@@ -60,7 +62,7 @@ fn fruit_select() -> impl IntoElement {
                 .text_color(move || theme().popover_foreground)
                 .shadow_md()
         })
-        .item_style(|s| s.rounded_md().overflow_hidden())
+        .item_class("rounded-md focus:bg-accent selected:font-medium disabled:opacity-50")
         .trigger(
             view()
                 .h_9()
@@ -76,17 +78,13 @@ fn fruit_select() -> impl IntoElement {
                 .child(text(title))
                 .child(text("▾").text_color(move || theme().muted_foreground)),
         )
-        .render_item(|item: &SelectItemState| {
+        .render_item(|item: &SelectEntry| {
             view()
                 .flex_row()
                 .items_center()
-                .justify_between()
                 .px_2()
                 .py_1p5()
-                .when(item.highlighted, |v| v.bg(move || theme().accent))
-                .when(item.disabled, |v| v.opacity(0.5))
                 .child(text(item.title.clone()).text_sm())
-                .when(item.selected, |v| v.child(text("✓").text_sm()))
         })
 }
 ```
@@ -182,7 +180,7 @@ opens the list; the app places it (over the trigger's end with `absolute`, where
 The trigger is the app's element, so it shows whatever the app wants for the chosen item: its title, an icon, a
 placeholder while nothing is chosen. In TSX it is the element you pass: it is the combobox and takes the presses, the
 keyboard focus, the expanded state and `disabled` itself, so its own `active:`, `focus:` and `disabled:` classes
-follow the select, its own `onPress` runs too, and the list is placed against it and is at least as wide.
+follow the select, its own `onPress` runs too, and the list is placed against it and is as wide.
 
 ## Open state
 
@@ -202,6 +200,7 @@ keyboard, and Return chooses it. `empty` is what the list shows while nothing ma
   items={zones}
   searchable
   searchPlaceholder="Search time zones"
+  searchAccessibilityLabel="Search time zones"
   searchClass="mx-1 mb-1 rounded-md border border-input px-2 py-1.5 text-sm"
   empty={<Text class="px-2 py-6 text-center text-sm text-muted-foreground">No time zone found</Text>}
   trigger={trigger}
@@ -215,17 +214,19 @@ the field is pressed. Each opening starts with an empty search.
 
 `itemClass` styles each item's row, which shows the item's title until `renderItem` draws it: `focus:` applies to the highlighted row (where the
 keys or the pointer are), `selected:` to the chosen one and `disabled:` to a disabled one. To draw a row, give
-`renderItem`: it gets the item and its state ([`SelectItemState`](#types)) and returns the row's content, for the rows
-in view. `renderGroup` draws a section's header the same way:
+`renderItem`: it gets what the item is ([`SelectEntry`](#types)) and returns the row's content, for the rows in view.
+It never gets the row's state: with `group` in `itemClass`, the content follows the row's states with `group-focus:`,
+`group-selected:` and `group-disabled:` classes, so the drawing is made once per item and a move of the highlight or a
+choice draws nothing again. `renderGroup` draws a section's header the same way:
 
 ```tsx
 <Select
   items={fonts}
-  itemClass="rounded-md focus:bg-accent"
+  itemClass="group rounded-md focus:bg-accent disabled:opacity-50"
   renderItem={(item) => (
     <View class="flex-row items-center gap-2 px-2 py-1.5">
       <Text class="flex-1 text-sm" style={{ fontFamily: item.value }}>{item.title}</Text>
-      <Text class="w-4 text-right text-sm">{item.selected ? "✓" : ""}</Text>
+      <Text class="w-4 text-right text-sm opacity-0 group-selected:opacity-100">✓</Text>
     </View>
   )}
   renderGroup={(group) => <Text class="px-2 pt-2 text-xs font-medium text-muted-foreground">{group.title}</Text>}
@@ -244,6 +245,7 @@ in view. `renderGroup` draws a section's header the same way:
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | Open at first, without `open`. |
 | `searchable` | `.searchable(..)` | `boolean` | `false` | A search field above the items filters them by title. |
 | `searchPlaceholder` | `.search_placeholder(..)` | `string` | none | The search field's placeholder. |
+| `searchAccessibilityLabel` | `.search_accessibility_label(..)` | `string` | none | What screen readers call the search field: what it searches. |
 | `cleanable` | `.cleanable(..)` | `boolean` | `false` | A clear button while an item is chosen; a press clears the value (`onChange({ value: null })`). |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | It stays closed: the trigger takes no presses and no keyboard focus, and `disabled:` styles apply to it. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call it: what the choice is about. |
@@ -262,7 +264,7 @@ in view. `renderGroup` draws a section's header the same way:
 | `clearButtonAccessibilityLabel` | `.clear_button_accessibility_label(..)` | `string` | none | What screen readers call the clear button. |
 | `trigger` | `.trigger(..)` | `JSX.Element` | none | What opens the list when pressed; the list is placed against it. |
 | `empty` | `.empty(..)` | `JSX.Element` | none | What the list shows while no item does (a search with no match). |
-| `renderItem` | `.render_item(..)` | `(item: SelectItemState) => JSX.Element` | none | An item's row, drawn by the app; the item's title otherwise. |
+| `renderItem` | `.render_item(..)` | `(item: SelectEntry) => JSX.Element` | none | An item's row, drawn by the app from what the item is (its states are the row's classes); the item's title otherwise. |
 | `renderGroup` | `.render_group(..)` | `(group: SelectGroup) => JSX.Element` | none | A section's header, drawn by the app; its title otherwise. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The view around the trigger. |
 
@@ -286,10 +288,10 @@ They come in this order: `onChange` for a choice, or `onCancel` for a close with
 | Type | Members | Description |
 |---|---|---|
 | `SelectItem` | `value: string`, `title: string`, `disabled?: boolean`, `group?: string` | An item of `items`. |
-| `SelectItemState` | `value`, `title`, `disabled`, `group?` (the item's), `selected: boolean`, `highlighted: boolean`, `index: number` | What `renderItem` gets: the item, whether it is the chosen one, whether the keys or the pointer are on it (Return or a press chooses it), and its index among the `items`. |
+| `SelectEntry` | `value`, `title`, `disabled`, `group?` (the item's), `index: number` | What `renderItem` gets: the item and its index among the `items`, never its state (the row's `focus:`, `selected:` and `disabled:`). |
 | `SelectGroup` | `title: string` | What `renderGroup` gets: the section's `group`. |
 
-In Rust they are `nsh_base::SelectItem`, `SelectItemState` and `SelectGroup`; `value` is a `SelectValue`
+In Rust they are `nsh_base::SelectItem`, `SelectEntry` and `SelectGroup`; `value` is a `SelectValue`
 (`Controlled(Some(..))` for a value, `Controlled(None)` for `null`), which `.value(..)` makes from an
 `Option<SharedString>` or a string.
 
@@ -301,10 +303,10 @@ In Rust they are `nsh_base::SelectItem`, `SelectItemState` and `SelectGroup`; `v
 | The clear button | the select's view, after the trigger (`cleanable`, while an item is chosen) | `clearButtonClass`, `clearButtonStyle`; its content `clearButton` |
 | The popup or sheet | over everything, at the trigger (desktops) or at the bottom (touch screens) | `popupClass`, `popupStyle` |
 | The backdrop | behind the sheet (touch screens) | `backdropClass`, `backdropStyle` |
-| The search field | the popup, first (`searchable`) | `searchClass`, `searchStyle`, `searchPlaceholder` |
+| The search field | the popup, first (`searchable`) | `searchClass`, `searchStyle`, `searchPlaceholder`, `searchAccessibilityLabel` |
 | The list | the popup, after the search field | `listClass`, `listStyle` |
 | A section's header | the list, before its items | `groupClass`, `groupStyle`, `renderGroup` |
-| An item's row | the list | `itemClass`, `itemStyle`, `renderItem` |
+| An item's row | the list | `itemClass`, `itemStyle`, `renderItem` (`group-focus:`, `group-selected:`, `group-disabled:` inside, under `group` in `itemClass`) |
 | The empty state | the popup, while no item shows | its own element (`empty`) |
 
 The popup is a column: its height follows the search field and the rows, so a `max-h-*` on `popupClass` caps it and
@@ -334,7 +336,7 @@ pointer highlights the row it moves over; the highlighted row is revealed as the
 
 | | Desktops and desktop browsers | Phones and tablets |
 | --- | --- | --- |
-| The list | a popup at the trigger (`placement`, `align`, `offset`, `margin`), at least as wide as the trigger, as tall as its rows up to the room beside it | a sheet at the bottom over a backdrop, as tall as its rows up to the status bar |
+| The list | a popup over the trigger, the selected row on it (below it while none is), as wide as the trigger unless `popupStyle` sets a width, as tall as its rows up to the room on the screen | a sheet at the bottom over a backdrop, as tall as its rows up to the status bar |
 | Closing it | a choice, Escape, a press outside (which goes on to what is under the pointer) | a choice, the backdrop, the Android back button |
 | Search | the field takes the keyboard as the list opens | the keyboard comes up when the field is pressed |
 | A choice | the press going down chooses, so the search field keeps the keyboard | a tap |
@@ -347,6 +349,8 @@ pointer highlights the row it moves over; the highlighted row is revealed as the
 - The trigger is a combobox for screen readers: its label is `accessibilityLabel`, its value the chosen item's title,
   and it says whether the list is expanded. `disabled` dims it.
 - The clear button is a button named by `clearButtonAccessibilityLabel`; it is no stop of Tab.
+- The search field is a text field named by `searchAccessibilityLabel`; its placeholder is a hint shown while it is
+  empty.
 - The list is a listbox and each row an option, named by its title; the chosen option is selected and a disabled one
   dimmed. Sections' headers are headers.
 - As the keys move the highlight, the screen reader's focus moves to the highlighted row; while the search field has

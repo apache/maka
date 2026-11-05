@@ -224,7 +224,8 @@ On macOS and the web, where Tab reaches the views that take presses, a `Tabs` li
 
 The arrow keys skip disabled tabs, and the tab they move to reports `onPress`, so the app selects it as the focus
 moves: the section follows the focus. Both pairs of arrows move, whatever the list's layout, which is the app's
-class. `focus:` styles show where the focus is. A `Tab` outside a `Tabs` is a stop of its own.
+class. In a right-to-left layout the row runs from the right, so Left and Right trade places: Left moves to the next
+tab and Right to the previous; Up, Down, Home and End keep theirs. `focus:` styles show where the focus is. A `Tab` outside a `Tabs` is a stop of its own.
 
 ## Platform notes
 

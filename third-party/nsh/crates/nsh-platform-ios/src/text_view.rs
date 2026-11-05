@@ -290,6 +290,15 @@ define_class!(
             Some(self.sel_input_view())
         }
 
+        /// `UITextInput`'s `isEditable`: the text is not editable. Defined
+        /// on the class rather than in the protocol's block because the
+        /// protocol declares it only from iOS 18 (objc2 checks a protocol
+        /// block's selectors against the running OS's protocol).
+        #[unsafe(method(isEditable))]
+        fn is_editable(&self) -> bool {
+            false
+        }
+
         #[unsafe(method(drawRect:))]
         fn draw_rect(&self, _dirty: CGRect) {
             let layout = self.ivars().layout.borrow();
@@ -521,11 +530,6 @@ define_class!(
         #[unsafe(method_id(characterRangeAtPoint:))]
         fn character_at(&self, point: CGPoint) -> Option<Retained<UITextRange>> {
             self.sel_character_at(point)
-        }
-
-        #[unsafe(method(isEditable))]
-        fn is_editable(&self) -> bool {
-            false
         }
 
         #[unsafe(method_id(textInputView))]

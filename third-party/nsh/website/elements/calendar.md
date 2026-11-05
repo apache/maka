@@ -20,7 +20,7 @@ row share the row equally, so a calendar in a phone's sheet spans the screen and
 keeps its items' widths (`flex-none` in `itemClass` or `monthClass` keeps an item or a month at its own width).
 
 ```rust tabs
-use nsh_base::{CalendarItemKind, CalendarItemState, Date, Matcher, calendar, theme};
+use nsh_base::{CalendarEntry, CalendarItemKind, Date, Matcher, calendar};
 use nsh_core::prelude::*;
 
 const MONTHS: [&str; 12] = [
@@ -37,7 +37,8 @@ fn due_date() -> impl IntoElement {
         .disabled_matcher(Matcher::DayOfWeek(vec![0, 6]))
         .previous_accessibility_label("Previous month")
         .next_accessibility_label("Next month")
-        .render_item(|item: &CalendarItemState| {
+        .item_class("rounded-md selected:bg-primary selected:text-primary-foreground disabled:opacity-50")
+        .render_item(|item: &CalendarEntry| {
             let label = match item.kind {
                 CalendarItemKind::Previous => "‹".to_string(),
                 CalendarItemKind::Next => "›".to_string(),
@@ -52,8 +53,6 @@ fn due_date() -> impl IntoElement {
                 .h_8()
                 .items_center()
                 .justify_center()
-                .rounded_md()
-                .when(item.active, |v| v.bg(move || theme().primary))
                 .child(text(label).text_sm())
         })
 }
@@ -78,7 +77,7 @@ function App() {
       class="w-72 gap-2 rounded-lg border border-border p-3"
       headerClass="flex-row items-center justify-between"
       rowClass="flex-row justify-between"
-      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
+      itemClass="group h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground data-range-middle:rounded-none data-range-middle:bg-accent data-range-middle:text-accent-foreground data-outside:text-muted-foreground disabled:opacity-50"
       renderItem={(item) => (
         <Text class={item.today ? "font-semibold" : ""}>
           {item.kind === "weekday"
@@ -114,9 +113,9 @@ The value is an ISO date, `"2026-10-28"`, as an HTML `<input type="date">`'s; wi
 `onChange` reports complete values only, as `gpui-base`'s `Selected`: a pressed day, or a range's end.
 
 - Without `range`, a press on a day picks it.
-- With `range`, the first press starts the range and the second ends it, the days between them in the range
-  (`inRange` on each, its ends included). A second press on an earlier day starts the range over from it, as does a
-  press once the range is complete. A half range shows until it is complete and only then is reported.
+- With `range`, the first press starts the range and the second ends it, the days between them in the range (each
+  `selected`, its ends included, see [Items](#items)). A second press on an earlier day starts the range over from it,
+  as does a press once the range is complete. A half range shows until it is complete and only then is reported.
 
 The calendar opens on the month of the value (a range's start), else today's.
 
@@ -128,7 +127,7 @@ a time. `firstDayOfWeek` is the day the weeks start on, `0` Sunday (the default)
 The header holds Previous, two toggles and Next:
 
 - The day view shows the months' days, each month a column of its weekdays' row and its weeks; the days of the
-  months before and after fill the weeks and are `muted`.
+  months before and after fill the weeks (`outside`, `data-outside`).
 - The month toggle (`monthToggle`) opens the month view: the twelve months, in rows of three. Picking one shows it in
   the day view.
 - The year toggle (`yearToggle`) opens the year view: a page of 20 years, in rows of five, Previous and Next turning
@@ -151,29 +150,48 @@ press), as `gpui-base`'s.
 
 The function is asked once per shown day, in the next JS turn, and not again for a day it answered: turning the
 months asks only about the days they bring, so its answer is a pure function of the date. Passing another function
-asks again. A disabled day is `disabled` and `muted`: it takes no press, and Return and Space do not pick it.
+asks again. A disabled day is `disabled:`: it takes no press, and Return and Space do not pick it.
 
 ## Items
 
 Every press target and label of the calendar is an item: Previous, the toggles, Next, the weekdays, the days, the
 months and the years. Each is drawn in a part styled by `itemClass` and `itemStyle`, whose variants follow its state:
-`selected:` while active (the date or a range's end, the shown month or year, the open view's toggle), `disabled:`
-while it takes no press, `focus:` with the keyboard on it.
 
-`renderItem` draws an item's content from its `CalendarItemState`:
+| Variant | The item |
+|---|---|
+| `selected:` | Is selected: the date, every day of a complete range (its ends included, as React Aria's range calendar), a half range's start, the shown month or year, the open view's toggle. Screen readers hear it selected. |
+| `disabled:` | Takes no press: a disabled date, a weekday, a month's title, Previous and Next in the month view or at the ends of the years. |
+| `focus:` | Has the keyboard. |
+| `data-range-start:`, `data-range-end:` | Is a complete range's first or last day (a range of one day is both). |
+| `data-range-middle:` | Is a day inside a complete range, not an end. |
+| `data-today:` | Is today. |
+| `data-outside:` | Is a day of the month before or after, filling its weeks. |
+
+The `data-*` variants are Tailwind's (`data-range-start:` matches `[data-range-start]`), as shadcn's calendar styles
+its days; with `group` in `itemClass`, the content follows them with `group-selected:`, `group-data-range-middle:`,
+and so on. `selected:` means every day of a range, so a range's ends take their look over it (later variants win:
+`data-*` comes after `selected:`), and its middle days theirs:
+
+```tsx
+<Calendar
+  range
+  itemClass="group rounded-md selected:bg-primary selected:text-primary-foreground data-range-middle:rounded-none data-range-middle:bg-accent data-range-middle:text-accent-foreground data-range-start:rounded-r-none data-range-end:rounded-l-none data-range-start:data-range-end:rounded-md"
+/>
+```
+
+`renderItem` draws an item's content from what it is, a `CalendarEntry`, never from its state: the drawing is made
+once and kept while the item is selected, focused or put in a range, so the keys, a pick and the focus draw nothing
+again, and a turn of the months draws the days it brings once each (a day keeps its drawing by its month and date:
+with several months, the months still shown keep theirs).
 
 | Field | Meaning |
 |---|---|
 | `kind` | `"previous"`, `"monthToggle"`, `"yearToggle"`, `"next"`, `"weekday"`, `"day"`, `"month"` or `"year"`. |
 | `value` | Its number: the day of the month, the month (1 to 12), the year, the day of the week (`0` Sunday to `6`); `0` for Previous and Next. |
 | `date` | A day's ISO date. |
-| `year`, `month` | The year and month it belongs to, else the shown ones. |
-| `active` | It is selected. |
-| `inRange` | A day inside the complete range, its ends included. |
-| `muted` | A weekday, a day of the month before or after, a disabled day. |
-| `disabled` | It takes no press. |
+| `year`, `month` | The year and month it belongs to: a day's (the month whose weeks show it), a month toggle's or title's, a month's of the month view; a year toggle's and a year's own year. `0` for Previous, Next and the weekdays (and `month` for the year toggle and the years). |
 | `today` | The day is today. |
-| `focused` | The keyboard is on the day. |
+| `outside` | The day is of the month before or after. |
 
 Without `renderItem`, an item shows its number, and Previous and Next show `‹` and `›`, as `gpui-base`'s; a weekday
 shows its number too, `0` to `6`, since the names of the months and weekdays are the app's words in the app's
@@ -196,8 +214,8 @@ language.
 | `bodyClass`, `bodyStyle` | `.body_class(..)`, `.body_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The body: the months side by side, or the month or year view's rows. |
 | `monthClass`, `monthStyle` | `.month_class(..)`, `.month_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Each month of the day view. |
 | `rowClass`, `rowStyle` | `.row_class(..)`, `.row_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Each row: the weekdays, a week, a row of months or years. |
-| `itemClass`, `itemStyle` | `.item_class(..)`, `.item_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each item: `selected:`, `disabled:`, `focus:`. |
-| `renderItem` | `.render_item(..)` | `(item: CalendarItemState) => JSX.Element` | none | An item's content, drawn by the app; its number otherwise. |
+| `itemClass`, `itemStyle` | `.item_class(..)`, `.item_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each item: `selected:`, `disabled:`, `focus:`; a day's `data-range-start:`, `data-range-end:`, `data-range-middle:`, `data-today:`, `data-outside:` ([Items](#items)). |
+| `renderItem` | `.render_item(..)` | `(item: CalendarEntry) => JSX.Element` | none | An item's content, drawn by the app from what the item is; its number otherwise. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The calendar: the header above the body. |
 
 ## Events
@@ -215,7 +233,7 @@ language.
 | The body | the calendar, after the header | `bodyClass`, `bodyStyle` |
 | A month | the body (day view) | `monthClass`, `monthStyle` |
 | A row | a month, or the body (month and year views) | `rowClass`, `rowStyle` |
-| An item | the header and the rows | `itemClass`, `itemStyle`, `renderItem` |
+| An item | the header and the rows | `itemClass`, `itemStyle`, `renderItem` (`group-selected:`, `group-data-range-middle:`, ... inside, under `group` in `itemClass`) |
 
 ## Keyboard
 
@@ -230,12 +248,15 @@ The days are one stop of Tab: it lands on the selected day, else today, else the
 | Shift+Page Up / Shift+Page Down | The same day a year before or after. |
 | Return, Space | Picks the day. |
 
-Moving past the shown months turns them. Previous, the toggles, Next, the months and the years take presses.
+In a right-to-left layout the weeks run from the right, so Left is the day after and Right the day before; Up and Down
+keep the weeks. Moving past the shown months turns them. Previous, the toggles, Next, the months and the years take
+presses.
 `gpui-base`'s days take presses only; the keys are NSH's, after the WAI-ARIA date picker dialog.
 
 ## Accessibility
 
-- Each day is a button named by its ISO date, selected while it is the date or a range's end, dimmed while disabled.
+- Each day is a button named by its ISO date, selected while it is the date or a day of the range (its ends included, as
+  React Aria's range calendar), dimmed while disabled.
 - Previous and Next are buttons named by `previousAccessibilityLabel` and `nextAccessibilityLabel`; the toggles,
   months and years are buttons named by what they show.
 

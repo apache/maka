@@ -19,6 +19,10 @@ pub(super) struct Modules {
     bindings: Rc<Bindings>,
     functions: RefCell<Vec<FunctionSpec>>,
     components: RefCell<Vec<std::sync::Arc<nsh_core::element::ComponentSpec>>>,
+    /// What `describe` gave the realm already (`"<kind>\0<specifier>\0…"`):
+    /// a later call (a gate that ran after the app started) gives only
+    /// what is new.
+    described: RefCell<std::collections::HashSet<String>>,
 }
 impl Modules {
     pub(super) fn new(bindings: Rc<Bindings>) -> Self {
@@ -26,9 +30,13 @@ impl Modules {
             bindings,
             functions: RefCell::default(),
             components: RefCell::default(),
+            described: RefCell::default(),
         }
     }
+    /// The sets' exports the realm does not have yet: all of them on the
+    /// first call, what gates added since on later ones.
     pub(super) fn describe(&self, registries: &[Registry]) -> Result<Value, PropError> {
+        let new = |key: String| self.described.borrow_mut().insert(key);
         let mut sets = Vec::new();
         for registry in registries.iter().flat_map(Registry::sets) {
             let Some(specifier) = registry.specifier() else {
@@ -42,8 +50,12 @@ impl Modules {
                 module.set("name", &Value::string(spec.name)?)?;
                 module.set("flat", &Value(if spec.flat { 3 } else { 2 }))?;
                 module.set("default", &Value(if spec.default { 3 } else { 2 }))?;
+                let first = new(format!("m\0{specifier}\0{}", spec.name));
                 let mut functions = Vec::new();
                 for f in &spec.functions {
+                    if !new(format!("f\0{specifier}\0{}\0{}", spec.name, f.name)) {
+                        continue;
+                    }
                     let id = {
                         let mut all = self.functions.borrow_mut();
                         let id = all.len();
@@ -56,6 +68,9 @@ impl Modules {
                     function.set("getter", &Value(if f.getter { 3 } else { 2 }))?;
                     function.set("promise", &Value(if f.promises() { 3 } else { 2 }))?;
                     functions.push(function);
+                }
+                if !first && functions.is_empty() {
+                    continue;
                 }
                 module.set("functions", &Value::array(functions)?)?;
                 let constants = Value::object()?;
@@ -74,6 +89,9 @@ impl Modules {
             set.set("modules", &Value::array(modules)?)?;
             let mut components = Vec::new();
             for spec in registry.specs() {
+                if !new(format!("c\0{specifier}\0{}\0{}", spec.export, spec.name)) {
+                    continue;
+                }
                 let id = {
                     let mut all = self.components.borrow_mut();
                     let id = all.len();
@@ -125,6 +143,9 @@ impl Modules {
             set.set("components", &Value::array(components)?)?;
             let mut classes = Vec::new();
             for spec in registry.class_specs() {
+                if !new(format!("k\0{specifier}\0{}", spec.name)) {
+                    continue;
+                }
                 let class = Value::object()?;
                 class.set(
                     "id",

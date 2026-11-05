@@ -879,6 +879,9 @@ fn field_css(c: &InputConfig) -> String {
     if let Some(c) = c.caret_color {
         let _ = write!(css, "caret-color:{};", css_color(c));
     }
+    if input::shows_nothing(c) {
+        css.push_str("opacity:0;");
+    }
     css
 }
 
@@ -1238,6 +1241,26 @@ pub(crate) fn encode(out: &mut Out, item: &MountItem) {
             out.item("cv")
                 .num(*id)
                 .raw(&crate::canvas::encode(drawing))
+                .end();
+        }
+        MountItem::ShaderTransition { id, duration } => {
+            out.item("sht")
+                .num(*id)
+                .num(duration.as_secs_f64() * 1000.0)
+                .end();
+        }
+        MountItem::ShaderInput { id } => {
+            out.item("shi").num(*id).end();
+        }
+        MountItem::NavShader { id, shader } => {
+            let layer = shader.as_ref().map(|s| &*s.layer);
+            let ms = shader
+                .as_ref()
+                .map_or(0.0, |s| s.duration.as_secs_f64() * 1000.0);
+            out.item("shn")
+                .num(*id)
+                .raw(&crate::shader::encode_layer(layer))
+                .num(ms)
                 .end();
         }
         MountItem::Shader { id, layer } => {

@@ -1318,6 +1318,8 @@ fn payload_object<'js>(cx: &Ctx<'js>, payload: &EventPayload) -> rquickjs::Resul
         EventPayload::Picked { id, .. } => obj.set("id", *id)?,
         // The core answers these too.
         EventPayload::FileRequest { id, .. } => obj.set("id", *id)?,
+        // And speech sessions' events (`Speech`'s listeners get them).
+        EventPayload::Speech { id, .. } => obj.set("id", *id)?,
         EventPayload::Native { name, data } => {
             obj.set("name", &**name)?;
             obj.set("data", json_value(cx, data)?)?;

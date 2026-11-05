@@ -225,6 +225,26 @@ mod tests {
     }
 
     #[test]
+    fn a_stale_anchor_at_the_origin_jumps_until_it_is_retargeted() {
+        // A million rows of 28 points. The scroll view was brought back to 0
+        // while the anchor still stood for content further down (a rest that
+        // skipped retargeting because the offset was already the bar's).
+        let axis = Axis::new(28_000_000.0, 600.0);
+        let stale = axis.anchor_at(900.0, 2.0);
+        assert!(
+            axis.content_offset_from(0.0, stale).abs() < 1.0,
+            "the origin still shows the top"
+        );
+        let jumped = axis.content_offset_from(58.0, stale);
+        assert!(
+            jumped > 500.0,
+            "a short drag is followed from the stale anchor: {jumped}"
+        );
+        let fresh = axis.anchor_at(0.0, 2.0);
+        assert!((axis.content_offset_from(58.0, fresh) - 58.0).abs() < 1e-6);
+    }
+
+    #[test]
     fn an_anchor_stands_where_the_bar_does() {
         let axis = Axis::new(28_000_000.0, 600.0);
         let anchor = axis.anchor_at(14_000_000.0, 2.625);

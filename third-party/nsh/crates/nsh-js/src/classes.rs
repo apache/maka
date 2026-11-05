@@ -2933,7 +2933,8 @@ pub(crate) mod tests {
             call: 999,
             result: Ok(Box::new(Grenade)),
         });
-        // An event's data panics as it converts: logged.
+        // An event no handler waits for drops unconverted (its data would
+        // panic as it converts).
         host.deliver(JsEvent::Component {
             host: 2,
             event: Box::new(BrittleEvent),

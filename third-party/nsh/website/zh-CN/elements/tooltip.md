@@ -82,7 +82,7 @@ function SaveButton(props: { onSave: () => void }) {
 | `endingClass`、`endingStyle` | `.ending_class(..)`、`.ending_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 它隐藏后的外观：过渡播放期间它会保留。 |
 | `open` | `.open(..)` | `boolean` | 无 | 是否显示，由应用控制。 |
 | `defaultOpen` | `.default_open(..)` | `boolean` | `false` | 没有 `open` 时，初始是否显示。 |
-| `delay` | `.delay(..)` | `number` | `500` | 指针在触发元素上停留多少毫秒后显示。 |
+| `delay` | `.delay(..)` | `number` | `500` | 指针在触发元素上停留多少毫秒后显示；`Infinity`：不会自行显示，只在应用打开它时显示。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 它从不显示。 |
 | `placement` | `.placement(..)` | `"top" \| "bottom" \| "left" \| "right"` | `"top"` | 它位于触发元素的哪一侧。 |
 | `align` | `.align(..)` | `"start" \| "center" \| "end"` | `"center"` | 它沿这一侧如何与触发元素对齐。 |

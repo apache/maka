@@ -148,7 +148,9 @@ page and files named after their content.
 | `index.html` | The app's page: its name as the title, the icons, the colors of its `appearance`, a loading indicator, and a message when the app cannot load or start |
 | `manifest.webmanifest` | The name, id, icons and colors browsers install the app with |
 | `nsh.<digest>.js` | The DOM runtime, minified (79 KB, 22.5 KB with brotli) |
-| `nsh.<digest>.wasm` | The Rust engine, layout and components, plus a Rust app’s own crate. TSX runs in browser JavaScript; packaging links it with only the components and standard modules the app imports. |
+| `nsh.<digest>.wasm` | The Rust engine, layout and components, plus a Rust app’s own crate. TSX runs in browser JavaScript; packaging links it with only the components and standard modules the app's first screen imports. |
+| `nsh-<name>.<digest>.wasm` | Components, standard modules and shaders the app uses beyond its first screen: downloaded in the background after it shows |
+| `<file>.br`, `<file>.gz` | Each file compressed ahead of time, for hosts that send precompressed files |
 | `nsh-syntaxes.<digest>.bin` | The syntaxes code is highlighted with (bat's set: 0.92 MB, 0.8 MB with brotli), downloaded the first time a code block, an `Editor` or a `DiffView` shows code in a language |
 | `nsh-bindgen.<digest>.js` | The wasm-bindgen glue of an app whose crates call [browser APIs from Rust](#browser-apis-from-rust), minified |
 | `snippets.<digest>/<crate>-<hash>/…` | The JS of those crates that the glue imports (`inline_js`, `module = "/js/…"`), under the paths wasm-bindgen gives it |
@@ -164,16 +166,16 @@ works from any directory of any host (`https://example.com/apps/counter/`).
 
 ### Runtime size
 
-Packaging links each app its own `nsh.<digest>.wasm`, holding the engine and only the `nsh/base` components,
-standard modules and shaders the app imports. Measured with `nsh package --target web` (MB = 10^6 bytes, gzip
-level 9):
+Packaging links each app its own `nsh.<digest>.wasm`, holding the engine and the `nsh/base` components, standard
+modules and shaders the app's first screen imports. What the app's other screens import is downloaded in the
+background once the first screen shows. An app whose crates call [browser APIs from Rust](#browser-apis-from-rust)
+gets the whole runtime, its crates included, in its `nsh.<digest>.wasm`. Measured with `nsh package --target web`
+(MB = 10^6 bytes):
 
-| App | Uses | `nsh.<digest>.wasm` | gzip |
-|---|---|---|---|
-| `examples/counter` | The core components | 3.40 MB | 1.12 MB |
-| A `Shader` view | The core components and shaders | 4.34 MB | 1.42 MB |
-| `Editor`, `Plot` and `zlib` | The core components, two more parts of `nsh/base` and `zlib` | 7.02 MB | 2.32 MB |
-| `examples/gallery` | Every component, `zlib` and shaders | 11.22 MB | 3.56 MB |
+| App | Uses | `nsh.<digest>.wasm` | gzip | Brotli |
+|---|---|---|---|---|
+| `examples/counter` | The core components | 3.96 MB | 1.32 MB | 0.97 MB |
+| `examples/gallery` | Every component, `zlib` and shaders | 4.13 MB | 1.36 MB | 1.01 MB |
 
 ### Deploy it
 
@@ -185,9 +187,10 @@ nginx. Two rules make it load fast and update reliably:
 | `index.html`, `manifest.webmanifest` | `no-cache` (revalidated on every load, so a release shows at once) |
 | everything else | `public, max-age=31536000, immutable` |
 
-Serve `.wasm` as `application/wasm` (browsers then compile it while it downloads) and let the host or CDN compress
-text and WebAssembly (gzip or brotli). `nsh package --target web --run` serves the site this way on
-`http://127.0.0.1:4173/`.
+Serve `.wasm` as `application/wasm` (browsers then compile it while it downloads), and send the precompressed
+copies to browsers that accept them: nginx's `brotli_static on; gzip_static on;`, Caddy's `file_server {
+precompressed br gzip }`, or a CDN that compresses with Brotli. With Brotli the runtime is about a quarter smaller
+than with gzip. `nsh package --target web --run` serves the site this way on `http://127.0.0.1:4173/`.
 
 An app published for the web runs like a packaged native app: as a release, with the capabilities its `nsh.json` declares
 ([Sandbox and capabilities](./sandbox-and-capabilities.md)), a TSX app on the browser's JavaScript engine. When they restrict `network`, the page also carries a

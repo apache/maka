@@ -36,7 +36,7 @@ use crate::{
     EventKind, EventPayload, NodeId, PayloadValue, Prop, ROOT_ID, Tag, TextEngine, TouchEvent,
     TouchPhase,
     element::task::{Action, Task, act_after},
-    geometry::{Bounds, Point, Points, Size, px, rect},
+    geometry::{Bounds, Point, Points, Size, point, px, rect},
     keymap::{KeyBinding, Keystroke, When},
     ops::{Op, OverlayProp},
     overlay::{
@@ -122,6 +122,9 @@ pub(super) struct OverlayState {
     pub(super) hinted: Option<HintOrigin>,
     /// A hint: the pointer is on its anchor, resting until it shows.
     pub(super) waiting: Option<HintTimer>,
+    /// Its `cover` view's frame in it, once that was laid out, with the
+    /// overlay's size and the view's origin in its parent then.
+    pub(super) covered: Option<(Bounds<Points>, Size<Points>, Point<Points>)>,
 }
 
 /// What the overlays add to the native side: the nodes listening to
@@ -156,6 +159,7 @@ impl<M: TextEngine> Core<M> {
                 placed: None,
                 hinted: None,
                 waiting: None,
+                covered: None,
             }));
         }
         self.overlays.push(key);
@@ -663,7 +667,9 @@ impl<M: TextEngine> Core<M> {
     /// (its parent, unless that is a span of text).
     fn hint_anchor(&self, key: Key) -> Option<Key> {
         match self.overlay(key)?.config.anchor {
-            OverlayAnchor::Node(id) | OverlayAnchor::Content(id) => self.key(id).ok(),
+            OverlayAnchor::Node(id)
+            | OverlayAnchor::Content(id)
+            | OverlayAnchor::Beside { node: id, .. } => self.key(id).ok(),
             OverlayAnchor::Point(_) | OverlayAnchor::Bounds(_) => None,
             OverlayAnchor::None => {
                 let mut k = self.nodes[key as usize].parent;
@@ -1217,6 +1223,30 @@ impl<M: TextEngine> Core<M> {
                 size: m.frame.size,
             }),
             OverlayAnchor::Content(id) => self.content_bounds(self.content_anchor(id)),
+            OverlayAnchor::Beside { node, edges } => {
+                match (self.measure(node), self.measure(edges)) {
+                    (Some(n), Some(e)) => Some(if config.placement.is_horizontal() {
+                        rect(
+                            e.page.x.0,
+                            n.page.y.0,
+                            e.frame.size.width.0,
+                            n.frame.size.height.0,
+                        )
+                    } else {
+                        rect(
+                            n.page.x.0,
+                            e.page.y.0,
+                            n.frame.size.width.0,
+                            e.frame.size.height.0,
+                        )
+                    }),
+                    (Some(n), None) => Some(Bounds {
+                        origin: n.page,
+                        size: n.frame.size,
+                    }),
+                    _ => None,
+                }
+            }
         };
         let Some(anchor) = anchor else {
             return frame.origin;
@@ -1234,13 +1264,41 @@ impl<M: TextEngine> Core<M> {
                 insets.left.0 + m,
             ],
         );
-        let placed = place(
-            anchor,
-            frame.size,
-            area,
-            &config,
-            self.nodes[key as usize].rtl,
-        );
+        let placed = match self.covering(key, config, frame.size) {
+            Some(at) => {
+                // Its start on the anchor's (a list as wide as its
+                // trigger lines up with it), the cover view's middle on
+                // the anchor's (a row taller or shorter than the trigger
+                // keeps its text on the trigger's), inside the area as far
+                // as it fits.
+                let keep = |v: f32, lo: f32, hi: f32, len: f32| v.min(hi - len).max(lo);
+                let x = keep(
+                    anchor.origin.x.0,
+                    area.origin.x.0,
+                    area.right().0,
+                    frame.size.width.0,
+                );
+                let y = keep(
+                    anchor.origin.y.0 + (anchor.size.height.0 - at.size.height.0) / 2.0
+                        - at.origin.y.0,
+                    area.origin.y.0,
+                    area.bottom().0,
+                    frame.size.height.0,
+                );
+                Placed {
+                    origin: point(Points(x), Points(y)),
+                    placement: config.placement,
+                    available: area.size,
+                }
+            }
+            None => place(
+                anchor,
+                frame.size,
+                area,
+                &config,
+                self.nodes[key as usize].rtl,
+            ),
+        };
         let bounds = Bounds {
             origin: placed.origin,
             size: frame.size,
@@ -1268,8 +1326,43 @@ impl<M: TextEngine> Core<M> {
         placed.origin
     }
 
+    /// Where overlay `key`'s `cover` view is in it: taken once both are
+    /// laid out and kept while the overlay keeps its size `size` and the
+    /// view its place in its parent, so its content scrolling moves
+    /// nothing (a new width once the trigger's is known, a row inserted
+    /// before it, take it again).
+    fn covering(
+        &mut self,
+        key: Key,
+        config: OverlayConfig,
+        size: Size<Points>,
+    ) -> Option<Bounds<Points>> {
+        let cover = config.cover?;
+        let inner = self.measure(cover)?;
+        // Its frame in its parent: a scroll moves the parent's content,
+        // not this; a row inserted before it does.
+        let place = inner.frame.origin;
+        if let Some((at, kept, was)) = self.overlay(key)?.covered
+            && kept == size
+            && was == place
+        {
+            return Some(at);
+        }
+        let id = self.nodes[key as usize].id;
+        let outer = self.measure(id)?;
+        let at = Bounds {
+            origin: point(inner.page.x - outer.page.x, inner.page.y - outer.page.y),
+            size: inner.frame.size,
+        };
+        self.overlay_mut(key)?.covered = Some((at, size, place));
+        Some(at)
+    }
+
     /// The box around what view `id` draws in its root view: around its
     /// children's frames, or its own while it has none (laid out ones only).
+    /// Only along an axis its style leaves the size `auto` (a wrapper its
+    /// parent stretches): along one it sets (a trigger 28 points tall with
+    /// its label centered), its own box is what shows.
     fn content_bounds(&self, id: NodeId) -> Option<Bounds<Points>> {
         let own = self.measure(id)?;
         let key = self.key(id).ok()?;
@@ -1297,10 +1390,24 @@ impl<M: TextEngine> Core<M> {
                 let (left, top) = (own.page.x.0, own.page.y.0);
                 let (right, bottom) =
                     (left + own.frame.size.width.0, top + own.frame.size.height.0);
-                let x0 = (x0 - l.padding.left - l.border.left).max(left);
-                let y0 = (y0 - l.padding.top - l.border.top).max(top);
-                let x1 = (x1 + l.padding.right + l.border.right).min(right);
-                let y1 = (y1 + l.padding.bottom + l.border.bottom).min(bottom);
+                let size = self.layout.style(self.nodes[key as usize].layout?).size;
+                let auto = taffy::Dimension::auto();
+                let (x0, x1) = if size.width == auto {
+                    (
+                        (x0 - l.padding.left - l.border.left).max(left),
+                        (x1 + l.padding.right + l.border.right).min(right),
+                    )
+                } else {
+                    (left, right)
+                };
+                let (y0, y1) = if size.height == auto {
+                    (
+                        (y0 - l.padding.top - l.border.top).max(top),
+                        (y1 + l.padding.bottom + l.border.bottom).min(bottom),
+                    )
+                } else {
+                    (top, bottom)
+                };
                 rect(x0, y0, (x1 - x0).max(0.0), (y1 - y0).max(0.0))
             }
             None => Bounds {
@@ -1339,7 +1446,9 @@ impl<M: TextEngine> Core<M> {
 /// The view an overlay is anchored to.
 fn anchor_node(state: &OverlayState) -> Option<NodeId> {
     match state.config.anchor {
-        OverlayAnchor::Node(id) | OverlayAnchor::Content(id) => Some(id),
+        OverlayAnchor::Node(id)
+        | OverlayAnchor::Content(id)
+        | OverlayAnchor::Beside { node: id, .. } => Some(id),
         _ => None,
     }
 }

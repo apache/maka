@@ -2,7 +2,8 @@
 //! of the keyboard focus over its `Button`s, `Toggle`s and `Link`s (in its
 //! groups and in a `ToggleGroup` inside it too), at the item the focus last
 //! left, else the first enabled one; its axis's arrows, Home and End move
-//! the focus past disabled items, around the ends, pressing nothing; a
+//! the focus past disabled items, around the ends, pressing nothing (a
+//! row's Left and Right traded in a right-to-left layout); a
 //! `ToggleGroup` inside it is a group of it; `disabled` disables every
 //! item; what a popup an item opens shows is no part of it; a key press
 //! changes the item left and the item reached, however many items there
@@ -25,11 +26,16 @@ use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
 fn launch(root: Root) -> Headless {
+    launch_in(root, false)
+}
+
+fn launch_in(root: Root, rtl: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(844.0)),
         ..EngineConfig::new(root)
     };
     config.environment.os = Os::MacOs;
+    config.environment.rtl = rtl;
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
     app
@@ -219,6 +225,28 @@ fn right_and_left_move_along_a_row_past_disabled_items_and_around_the_ends() {
 }
 
 #[test]
+fn right_to_left_a_row_trades_left_and_right() {
+    let mut app = launch_in(Root::of::<Formatting>(), true);
+    enter(&mut app);
+    // The row runs from the right: Left is the next item, Right the
+    // previous, Home and End keep the first and the last.
+    app.press_key("left").unwrap();
+    press_focused(&mut app, "Bold");
+    app.press_key("left").unwrap();
+    press_focused(&mut app, "Italic");
+    app.press_key("right").unwrap();
+    press_focused(&mut app, "Bold");
+    app.press_key("right").unwrap();
+    press_focused(&mut app, "Undo");
+    app.press_key("right").unwrap();
+    press_focused(&mut app, "Help");
+    app.press_key("home").unwrap();
+    press_focused(&mut app, "Undo");
+    app.press_key("end").unwrap();
+    press_focused(&mut app, "Help");
+}
+
+#[test]
 fn up_and_down_are_left_to_the_items_of_a_row() {
     let mut app = start::<Formatting>();
     enter(&mut app);
@@ -334,6 +362,21 @@ fn down_and_up_move_along_a_column_and_left_and_right_are_left_to_the_items() {
     press_focused(&mut app, "Text");
 }
 
+#[test]
+fn right_to_left_a_column_keeps_up_and_down() {
+    let mut app = launch_in(Root::of::<Palette>(), true);
+    app.press_key("tab").unwrap();
+    press_focused(&mut app, "Select");
+    app.press_key("down").unwrap();
+    press_focused(&mut app, "Shape");
+    app.press_key("left").unwrap();
+    app.press_key("right").unwrap();
+    app.press_key("left").unwrap();
+    press_focused(&mut app, "Shape");
+    app.press_key("up").unwrap();
+    press_focused(&mut app, "Select");
+}
+
 /// A toolbar whose first item is a popover's trigger (a view the popover
 /// gives its presses, as popups' triggers are; held open by the app) with a
 /// button in it, then Bold; a button after the toolbar. The text lists
@@ -403,6 +446,57 @@ fn a_popups_trigger_is_an_item_of_the_toolbar() {
     app.press_key("left").unwrap();
     app.press_key("enter").unwrap();
     app.wait_for("text:reached:Bold,More").unwrap();
+}
+
+/// A toolbar of A, a popover whose trigger is a `Button` (P, a listener of
+/// its own) and Z. The texts say what was pressed and whether the popover
+/// is open.
+#[component]
+fn WithButtonTrigger() -> impl IntoElement {
+    let pressed = signal(Vec::<&'static str>::new());
+    let open = signal(false);
+    let note = move |name: &'static str| move || pressed.update(|p| p.push(name));
+    view()
+        .child(
+            toolbar()
+                .child(button().on_press(note("A")).child(text("A")))
+                .child(
+                    popover()
+                        .open(move || Some(open.get()))
+                        .on_open_change(move |e: &PopoverEvent| {
+                            if let PopoverEvent::OpenChange(next, _) = e {
+                                open.set(*next);
+                            }
+                        })
+                        .trigger(button().on_press(note("P")).child(text("P")))
+                        .child(text("Popped")),
+                )
+                .child(button().on_press(note("Z")).child(text("Z"))),
+        )
+        .child(text(move || format!("pressed:{}", pressed.get().join(","))))
+        .child(text(move || format!("open:{}", open.get())))
+}
+
+#[test]
+fn a_button_as_a_popups_trigger_opens_it_and_is_one_item() {
+    let mut app = start::<WithButtonTrigger>();
+    // A press on the button opens the popover and runs its own listener.
+    app.press("text:P").unwrap();
+    app.wait_for("text:open:true").unwrap();
+    app.wait_for("text:pressed:P").unwrap();
+    app.press("text:P").unwrap();
+    app.wait_for("text:open:false").unwrap();
+    // The trigger is one item: Right from A reaches it, then Z; Left
+    // twice from Z comes back to A.
+    app.press_key("tab").unwrap();
+    app.press_key("right").unwrap();
+    app.press_key("right").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("text:pressed:P,P,Z").unwrap();
+    app.press_key("left").unwrap();
+    app.press_key("left").unwrap();
+    app.press_key("enter").unwrap();
+    app.wait_for("text:pressed:P,P,Z,A").unwrap();
 }
 
 /// A toolbar of three buttons the app keeps in a keyed list, and a view

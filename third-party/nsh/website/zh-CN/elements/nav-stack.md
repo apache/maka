@@ -220,6 +220,7 @@ TSX 的子函数接收路由值本身，以及一个表示它在栈中位置的 
 | `popOnBack` | `.pop_on_back(..)` | `boolean` | `true` | 返回按钮和侧滑返回会弹出页面。见[离开页面](#leaving-a-page)。 |
 | `popOnSwipe` | `.pop_on_swipe(..)` | `boolean` | `true` | 交互式返回手势会弹出页面：iOS 的侧滑返回、Android 跟随手指的预测性返回。返回按钮在任何情况下都会弹出页面。 |
 | `animation` | `.animation(..)` | `"default" \| "slide" \| "fade" \| "none"` | `"default"` | 页面进入和离开的方式。 |
+| `transitionShader` | `.transition_shader(TransitionShader::new(program))` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | 无 | 页面通过一个 WGSL 着色器进入和离开，取代它的 `animation`：`shade(uv)` 以 `sample_from` 读取下面的页面、以 `sample_to` 读取这个页面，`nsh.progress` 在 `duration` 毫秒内（默认 350）从 0 走到 1，页面离开时从 1 回到 0。系统要求减少动态效果时，页面使用自己的 `animation`。见 [Shader](./shader.md)。 |
 | `statusBar` | `.status_bar(..)` | `{ foreground?, hidden?, animated? }` | 无 | iOS 和 Android：页面位于顶部时的状态栏。见[状态栏](../modules/nsh-base.md#status-bar)。 |
 | `style`、`class` | 样式方法 | | 无 | 页面的样式。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容。 |

@@ -62,7 +62,7 @@ pub use nsh_core::{
     js::{HostLimits, Limits},
     platform::{
         ColorScheme, Environment, FetchEvent, FetchOp, HostEnvironment, HttpBody, HttpHead,
-        HttpRequest, Idiom, Locale, Os, Renderer,
+        HttpRequest, Idiom, Lifecycle, Locale, Os, Renderer,
     },
     storage::{StorageBackend, StorageChange},
     time::Clock,
@@ -645,10 +645,23 @@ pub trait Network: Send + Sync + 'static {
 }
 
 /// Reads the app's bundled files (`asset:/…` URIs): from the app's
-/// resources, or from the dev server during development.
+/// resources, or from the dev server during development. The engine reads
+/// the fonts it registers with it, and answers the app's requests of
+/// `asset:/` URLs (`fetch`) from it.
 pub trait Assets: Send + Sync + 'static {
-    /// The bytes of `uri`. Blocking; called on the engine thread.
+    /// The bytes of `uri`. Blocking: the engine calls it on its thread for
+    /// the fonts it registers, and on a thread of the runtime's blocking
+    /// pool for the app's requests (in WebAssembly on its thread).
     fn read(&self, uri: &str) -> Result<Vec<u8>, String>;
+
+    /// Where `uri` is served, for files [`Assets::read`] does not have at
+    /// hand: the engine downloads them from there with its network stack
+    /// (the web page, which holds only the files it preloaded). `None`, the
+    /// default, when `read` is the only way.
+    fn url(&self, uri: &str) -> Option<String> {
+        let _ = uri;
+        None
+    }
 
     /// Where `asset:/` URIs resolve, when it is a directory or a URL the
     /// image loader can read itself: the core's image loads ([`svg`]s)
@@ -741,6 +754,11 @@ pub struct EngineConfig {
     /// platform's picker: the embedding app's own picker, or a test's
     /// files; `None`: the platform's.
     pub picker: Option<Arc<dyn nsh_core::picker::PickerBackend>>,
+    /// Recognizes the app's speech (`Speech.start`) instead of the
+    /// platform's recognizer: the embedding app's own, or a test's fake
+    /// (`nsh_testing`'s). `None` (the default): the platform's, where it
+    /// has one (`Environment::speech`).
+    pub speech: Option<Arc<dyn nsh_core::speech::SpeechBackend>>,
 }
 
 /// Values of the environment an engine keeps whatever its platform reports
@@ -836,6 +854,7 @@ impl EngineConfig {
             clipboard: None,
             host: HostChannel::default(),
             picker: None,
+            speech: None,
         }
     }
 }
@@ -891,6 +910,7 @@ impl std::fmt::Debug for EngineConfig {
             .field("clipboard", &self.clipboard.is_some())
             .field("host", &self.host)
             .field("picker", &self.picker.is_some())
+            .field("speech", &self.speech.is_some())
             .finish()
     }
 }
@@ -899,6 +919,11 @@ impl std::fmt::Debug for EngineConfig {
 /// due at most (sinon's fake timers stop at 1000 for one `runAll`; this
 /// leaves room for a long run of 60 Hz intervals).
 const MAX_ADVANCE_ROUNDS: usize = 100_000;
+
+/// How many times [`EngineControl::flush`] runs what is queued again when
+/// running it queued more (a task woken by another, a request answered at
+/// once): a task that keeps waking itself leaves the engine busy.
+const MAX_FLUSH_ROUNDS: usize = 64;
 
 enum Message {
     Event(NodeId, EventKind, EventPayload),
@@ -925,6 +950,10 @@ enum Message {
     /// An event of a request (by the hop it is for: events of a hop the
     /// engine left are dropped).
     Fetch(Requester, u64, FetchEvent),
+    /// Hop `.1` of the request `.2` for a bundled file read it on a
+    /// blocking thread ([`Net::asset`]): its bytes, or why there are none.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    AssetRead(Requester, u64, HttpRequest, Result<Vec<u8>, String>),
     Hot(HotUpdate),
     /// A chunk [`MountSink::load_chunk`] was asked for, or why it could
     /// not be loaded (its id and the message).
@@ -946,6 +975,9 @@ enum Message {
     },
     /// Moves a manual clock forward by this much, then calls back.
     Advance(std::time::Duration, Box<dyn FnOnce() + Send>),
+    /// Runs what is queued and due now, then calls back with whether the
+    /// engine is idle ([`EngineControl::flush`]).
+    Flush(Box<dyn FnOnce(bool) + Send>),
     /// Sent by a dropped [`Engine`] (there is none in WebAssembly).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     Shutdown,
@@ -1125,6 +1157,19 @@ impl EngineControl {
     /// system's clock it only runs `done`.
     pub fn advance_clock(&self, by: std::time::Duration, done: impl FnOnce() + Send + 'static) {
         let _ = self.tx.send(Message::Advance(by, Box::new(done)));
+    }
+
+    /// Runs everything sent to the engine before it and everything due on
+    /// its clock now (timers, woken tasks, answers that came at once), with
+    /// what they queue in turn, without moving the clock. Then `done` runs,
+    /// after the batches of what ran were submitted, with whether the
+    /// engine is idle: nothing is left to run and no request waits for
+    /// the network. False when work keeps coming (a task that keeps waking
+    /// itself) or a request is in flight, whose answer comes later from
+    /// elsewhere. A headless driver on a manual clock settles a step with
+    /// it, instead of waiting for the batches to stop for a while.
+    pub fn flush(&self, done: impl FnOnce(bool) + Send + 'static) {
+        let _ = self.tx.send(Message::Flush(Box::new(done)));
     }
 
     /// Reports the interaction states of view `id` that the core asked to
@@ -1392,6 +1437,21 @@ impl<M: TextEngine + 'static> LocalEngine<M> {
         }
     }
 
+    /// Serves `ui_sets` (a superset of the config's, after a UI set or
+    /// part was registered while the app runs: the web runtime's late
+    /// gates) to what is mounted from now on.
+    pub fn extend_ui_sets(&mut self, ui_sets: &[nsh_core::element::Registry]) {
+        let sets: Vec<_> = nsh_core::runtime::registries()
+            .iter()
+            .chain(ui_sets)
+            .cloned()
+            .collect();
+        self.driver
+            .state
+            .core
+            .extend_components(nsh_core::element::Registry::merged(&sets));
+    }
+
     /// Handles the input sent since the last call, runs what is due
     /// (timers, tasks) and commits. Returns when to call again at the
     /// latest (sooner if input arrives); `None`: only for input.
@@ -1523,6 +1583,7 @@ impl<M: TextEngine + 'static> Driver<M> {
         core.set_storage(app_storage(&config));
         core.set_clipboard(config.clipboard.clone());
         core.set_picker(config.picker.clone());
+        core.set_speech(config.speech.clone());
         core.set_font_scale(config.environment.font_scale);
         core.set_class_environment(class_environment(&config.environment));
         core.set_header_heights(config.header_heights.0, config.header_heights.1);
@@ -1531,7 +1592,9 @@ impl<M: TextEngine + 'static> Driver<M> {
         // WebAssembly has no threads for a runtime: tasks' timers are
         // `nsh_core::time`'s there, fired by the driver.
         #[cfg(not(target_arch = "wasm32"))]
-        core.set_task_runtime(config.runtime.clone().unwrap_or_else(shared_runtime));
+        let runtime = config.runtime.clone().unwrap_or_else(shared_runtime);
+        #[cfg(not(target_arch = "wasm32"))]
+        core.set_task_runtime(runtime.clone());
         // A Rust app's theme and fonts come with its root (a JS app's from
         // its bundle).
         if let App::Rust(root) = &config.app {
@@ -1634,6 +1697,9 @@ impl<M: TextEngine + 'static> Driver<M> {
                 abandoned: Vec::new(),
                 access: access.clone(),
                 hops: 0,
+                assets: config.assets.clone(),
+                #[cfg(not(target_arch = "wasm32"))]
+                runtime,
             },
         };
 
@@ -1715,7 +1781,7 @@ impl<M: TextEngine + 'static> Driver<M> {
             .into_iter()
             .chain(std::iter::from_fn(|| rx.try_recv().ok()));
         for message in pending {
-            if let Message::Advance(..) = message {
+            if let Message::Advance(..) | Message::Flush(..) = message {
                 moves.push(message);
             } else if !handle(script, state, message) {
                 return None;
@@ -1787,6 +1853,11 @@ impl<M: TextEngine + 'static> Driver<M> {
                 done();
                 running
             }
+            Message::Flush(done) => {
+                let running = self.flush(rx);
+                done(running && self.idle(rx));
+                running
+            }
             // A test's clock on a real platform: the display's frame moves it
             // to the frame's time first (a frame after the last, else now),
             // as a headless run's frames do.
@@ -1849,6 +1920,48 @@ impl<M: TextEngine + 'static> Driver<M> {
             }
         }
         true
+    }
+
+    /// Runs what is queued and what is due now ([`EngineControl::flush`]),
+    /// again while that queues more, [`MAX_FLUSH_ROUNDS`] times at most.
+    /// False on shutdown.
+    fn flush(&mut self, rx: &Receiver<Message>) -> bool {
+        let frames = self.clock.moves_with_frames();
+        for _ in 0..MAX_FLUSH_ROUNDS {
+            while let Ok(message) = rx.try_recv() {
+                if !self.handle(message, rx) {
+                    return false;
+                }
+            }
+            // A manual clock stays where it is: what is due now runs.
+            if !self.advance(std::time::Duration::ZERO, rx, frames) {
+                return false;
+            }
+            // What a turn queued (a task's wake, a response answered at
+            // once) runs too, as long as it stops coming.
+            if rx.is_empty() {
+                break;
+            }
+        }
+        true
+    }
+
+    /// Whether nothing is left to run: no message queued, nothing due at
+    /// the clock's time (a timer that keeps scheduling another at once
+    /// outlasts a flush's rounds) and no request or module load in flight.
+    fn idle(&self, rx: &Receiver<Message>) -> bool {
+        let now = self.clock.now();
+        #[cfg(not(target_arch = "wasm32"))]
+        let chunks = self.state.chunks.as_ref().is_none_or(chunks::Loads::idle);
+        #[cfg(target_arch = "wasm32")]
+        let chunks = true;
+        rx.is_empty()
+            && self.state.net.idle()
+            && chunks
+            && [self.due(), self.clock.next_alarm()]
+                .into_iter()
+                .flatten()
+                .all(|at| at > now)
     }
 
     /// When the next display frame of a clock that moves with the
@@ -2059,6 +2172,88 @@ struct Net {
     access: Arc<nsh_core::access::Access>,
     /// Hops started so far (the id of the next).
     hops: u64,
+    /// Where requests of `asset:/` URLs are answered from
+    /// ([`EngineConfig::assets`]).
+    assets: Option<Arc<dyn Assets>>,
+    /// The runtime whose blocking pool reads them (the components'
+    /// tasks').
+    #[cfg(not(target_arch = "wasm32"))]
+    runtime: tokio::runtime::Handle,
+}
+
+/// The task of a request for a bundled file while it is read: the read
+/// finishes on its own, and a cancelled request drops what it gives.
+struct AssetTask;
+
+impl FetchTask for AssetTask {
+    fn send(&mut self, _: Vec<u8>) {}
+    fn finish(&mut self) {}
+    fn pause(&mut self, _: bool) {}
+    fn cancel(self: Box<Self>) {}
+}
+
+/// Whether `url` names a bundled file (`asset:/…`).
+fn is_asset(url: &str) -> bool {
+    url.get(..6)
+        .is_some_and(|scheme| scheme.eq_ignore_ascii_case("asset:"))
+}
+
+/// Whether the bundled file `url` names stays inside the app's files
+/// whichever way a host maps `asset:/<path>` to its asset directory: the
+/// path is relative, and no segment is empty, `.` or `..` (encoded or not)
+/// or holds a backslash, a NUL or a colon (a Windows drive). Hosts join the
+/// path to their directory as it comes, so they never see one that
+/// escapes it.
+fn is_inside_assets(url: &str) -> bool {
+    let Some(path) = url.get(6..).and_then(|rest| rest.strip_prefix('/')) else {
+        return false;
+    };
+    path.split('/').all(|segment| {
+        let segment = segment.to_ascii_lowercase();
+        let named = !matches!(segment.replace("%2e", ".").as_str(), "" | "." | "..");
+        let plain = !segment.contains(['\\', '\0', ':'])
+            && !["%2f", "%5c", "%00", "%3a"]
+                .iter()
+                .any(|encoded| segment.contains(encoded));
+        named && plain
+    })
+}
+
+/// The media type a bundled file's response carries, from its extension:
+/// the dev server's (`nsh-dev`'s `content_type`), so a file read from the
+/// app's files and one downloaded from where a web app serves them answer
+/// with the same type.
+fn asset_type(url: &str) -> &'static str {
+    let name = url.rsplit('/').next().unwrap_or_default();
+    let extension = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js" | "mjs") => "text/javascript; charset=utf-8",
+        Some("json" | "map") => "application/json",
+        Some("webmanifest") => "application/manifest+json",
+        Some("wasm") => "application/wasm",
+        Some("css") => "text/css; charset=utf-8",
+        Some("txt") => "text/plain; charset=utf-8",
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("avif") => "image/avif",
+        Some("svg") => "image/svg+xml",
+        Some("ico") => "image/x-icon",
+        Some("heic") => "image/heic",
+        Some("ttf") => "font/ttf",
+        Some("otf") => "font/otf",
+        Some("woff") => "font/woff",
+        Some("woff2") => "font/woff2",
+        Some("mp4" | "m4v") => "video/mp4",
+        Some("webm") => "video/webm",
+        Some("mov") => "video/quicktime",
+        Some("mp3") => "audio/mpeg",
+        Some("m4a") => "audio/mp4",
+        Some("wav") => "audio/wav",
+        _ => "application/octet-stream",
+    }
 }
 
 /// A request in flight.
@@ -2068,9 +2263,17 @@ struct Inflight {
     hop: u64,
     /// Requests whose redirects the engine follows (to check each hop).
     followed: Option<access::Followed>,
+    /// The bundled file (`asset:/…`) a download is of: a status other than
+    /// a success fails it, as a file the host does not have does.
+    asset: Option<String>,
 }
 
 impl Net {
+    /// Whether no request waits for the network.
+    fn idle(&self) -> bool {
+        self.inflight.is_empty()
+    }
+
     /// Hands what JS and the components' tasks asked of their requests to
     /// the network.
     fn pump<M: TextEngine>(&mut self, script: Option<&Script>, core: &mut Core<M>) {
@@ -2124,9 +2327,12 @@ impl Net {
         }
     }
 
-    /// Makes `who`'s request, if the app may (else why not).
+    /// Makes `who`'s request, if the app may (else why not). Bundled files
+    /// are the app's own: their requests need no capability.
     fn request(&mut self, who: Requester, request: HttpRequest) -> Result<(), access::Refused> {
-        if self.access.is_unrestricted() {
+        if is_asset(&request.url) {
+            self.asset(who, request);
+        } else if self.access.is_unrestricted() {
             self.start(who, request, None);
         } else if !self.access.allows_http(&request.method, &request.url) {
             return Err(access::refused(&request.method, &request.url));
@@ -2160,8 +2366,123 @@ impl Net {
                 task,
                 hop,
                 followed,
+                asset: None,
             },
         );
+    }
+
+    /// Answers `who`'s request of a bundled file (an `asset:/` URL) from
+    /// the host's assets: read on the runtime's blocking pool, which reports
+    /// with [`Message::AssetRead`] (in WebAssembly, which has no threads,
+    /// here).
+    fn asset(&mut self, who: Requester, request: HttpRequest) {
+        self.hops += 1;
+        let hop = self.hops;
+        self.inflight.insert(
+            who,
+            Inflight {
+                task: Box::new(AssetTask),
+                hop,
+                followed: None,
+                asset: None,
+            },
+        );
+        // Failed here, before any host reads the file or serves it
+        // ([`Assets::url`]): a request no host may answer reaches none.
+        let refused = if !is_inside_assets(&request.url) {
+            Some(format!(
+                "{}: bundled files are named by a path inside the app's files",
+                request.url
+            ))
+        } else if !matches!(request.method.as_str(), "GET" | "HEAD") {
+            Some(format!(
+                "{} {}: bundled files are read with GET",
+                request.method, request.url
+            ))
+        } else {
+            None
+        };
+        if let Some(refused) = refused {
+            let _ = self
+                .tx
+                .send(Message::Fetch(who, hop, FetchEvent::Failed(refused)));
+            return;
+        }
+        let Some(assets) = &self.assets else {
+            let failed = Err("this host cannot load assets".to_owned());
+            self.asset_read(who, hop, request, failed);
+            return;
+        };
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let assets = assets.clone();
+            let tx = self.tx.clone();
+            // The read reports itself; nothing awaits its handle.
+            drop(self.runtime.spawn_blocking(move || {
+                let bytes = assets.read(&request.url);
+                let _ = tx.send(Message::AssetRead(who, hop, request, bytes));
+            }));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = assets.read(&request.url);
+            self.asset_read(who, hop, request, bytes);
+        }
+    }
+
+    /// Hop `hop` of `who`'s request of a bundled file read it: its response,
+    /// or, when the host has no copy but serves the file at a URL
+    /// ([`Assets::url`]), the download of it. Only requests [`Net::asset`]
+    /// let through come here. Dropped when the request was cancelled
+    /// meanwhile.
+    fn asset_read(
+        &mut self,
+        who: Requester,
+        hop: u64,
+        request: HttpRequest,
+        read: Result<Vec<u8>, String>,
+    ) {
+        if self.inflight.get(&who).is_none_or(|i| i.hop != hop) {
+            return;
+        }
+        let events = match read {
+            Ok(bytes) => {
+                let head = HttpHead {
+                    status: 200,
+                    status_text: "OK".to_owned(),
+                    headers: vec![
+                        ("content-length".to_owned(), bytes.len().to_string()),
+                        (
+                            "content-type".to_owned(),
+                            asset_type(&request.url).to_owned(),
+                        ),
+                    ],
+                    url: request.url.clone(),
+                    ..HttpHead::default()
+                };
+                let mut events = vec![FetchEvent::Head(head)];
+                if request.method == "GET" && !bytes.is_empty() {
+                    events.push(FetchEvent::Data(bytes));
+                }
+                events.push(FetchEvent::End);
+                events
+            }
+            Err(error) => match self.assets.as_ref().and_then(|a| a.url(&request.url)) {
+                Some(url) => {
+                    self.inflight.remove(&who);
+                    let uri = request.url.clone();
+                    self.start(who, HttpRequest { url, ..request }, None);
+                    if let Some(download) = self.inflight.get_mut(&who) {
+                        download.asset = Some(uri);
+                    }
+                    return;
+                }
+                None => vec![FetchEvent::Failed(error)],
+            },
+        };
+        for event in events {
+            let _ = self.tx.send(Message::Fetch(who, hop, event));
+        }
     }
 
     /// An event of hop `hop` of request `id`: what JS is told, if anything
@@ -2178,7 +2499,31 @@ impl Net {
         }
         let inflight = self.inflight.get_mut(&id).filter(|i| i.hop == hop)?;
         match event {
-            FetchEvent::Head(head) => {
+            FetchEvent::Head(mut head) => {
+                let missing = (inflight.asset.as_ref())
+                    .filter(|_| !(200..300).contains(&head.status))
+                    .map(|uri| format!("{uri}: HTTP {}", head.status));
+                if let Some(missing) = missing {
+                    if let Some(i) = self.inflight.remove(&id) {
+                        i.task.cancel();
+                    }
+                    return Some(Ok(FetchEvent::Failed(missing)));
+                }
+                // A downloaded bundled file answers as one read from the
+                // app's files: its `asset:/` URL, and a type even where the
+                // server gave none.
+                if let Some(uri) = &inflight.asset {
+                    head.url = uri.clone();
+                    head.redirected = false;
+                    if !head
+                        .headers
+                        .iter()
+                        .any(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+                    {
+                        head.headers
+                            .push(("content-type".to_owned(), asset_type(uri).to_owned()));
+                    }
+                }
                 let Some(followed) = &mut inflight.followed else {
                     return Some(Ok(FetchEvent::Head(head)));
                 };
@@ -2652,6 +2997,10 @@ impl<M: TextEngine> State<M> {
                 _ => false,
             };
             let more_paced = script.is_some() && paced.left() && self.core.has_paced_list_binds();
+            // What waited for the app's answer to the events just taken runs
+            // in the next round, once JS has handled them, and shows in this
+            // batch.
+            let answers = self.core.has_due_answers();
             if self.binds.is_empty()
                 && self.events.is_empty()
                 && !posted
@@ -2659,6 +3008,7 @@ impl<M: TextEngine> State<M> {
                 && !more_paced
                 && !urls
                 && !cancelled_input
+                && !answers
             {
                 break;
             }
@@ -2715,8 +3065,11 @@ fn ui_environment(env: &Environment, window: Size<Points>) -> nsh_core::element:
         apple_keyboard: env.apple_keyboard,
         terminal_keyboard: env.terminal_keyboard,
         host: env.host,
+        lifecycle: env.lifecycle,
         screen_color: env.screen_color,
         file_requests: env.file_requests,
+        speech: env.speech,
+        web_input: env.web_input,
     }
 }
 
@@ -2957,6 +3310,9 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
                 }
             }
         },
+        Message::AssetRead(who, hop, request, read) => {
+            state.net.asset_read(who, hop, request, read)
+        }
         Message::Hot(update) => state.hot.push(update),
         Message::Chunk(chunk) => {
             #[cfg(not(target_arch = "wasm32"))]
@@ -3000,7 +3356,7 @@ fn handle<M: TextEngine>(script: Option<&Script>, state: &mut State<M>, message:
         }
         // The driver handles it ([`Driver::handle`]), and keeps the ones
         // sent before it started for after the first frame.
-        Message::Advance(..) => unreachable!("the driver moves the clock"),
+        Message::Advance(..) | Message::Flush(..) => unreachable!("the driver moves the clock"),
         Message::Shutdown => return false,
     }
     true

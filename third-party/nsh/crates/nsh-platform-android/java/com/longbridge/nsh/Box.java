@@ -26,7 +26,7 @@ import android.widget.ScrollView;
  * drags drive `pan` values; two fingers drive `pinch` / `rotation`.
  */
 @SuppressLint("ViewConstructor")
-class Box extends ViewGroup implements Node {
+class Box extends ViewGroup implements Node, NshView.ShaderFrames {
     final Mounter mounter;
     final int id;
     /** The events it listens to, kinds below 64 ({@link Mounter#wants} has all). */
@@ -51,6 +51,33 @@ class Box extends ViewGroup implements Node {
     private final Path clipPath = new Path();
     /** Whether a shader draws its box (`SHADER`; libnsh renders it). */
     private boolean shader;
+    /**
+     * What it draws (`nsh_core::shader::ShaderRole`): {@link #FILL} under the
+     * children, {@link #EFFECT} through them, {@link #TRANSITION} changing them,
+     * {@link #SCREEN} and {@link #SCREEN_TRANSITION} the same over the whole
+     * `NshView` (this box has no size then).
+     */
+    private int shaderRole;
+    static final int FILL = 0, EFFECT = 1, TRANSITION = 2, SCREEN = 3, SCREEN_TRANSITION = 4;
+    /** The pictures it reads, bit `nsh_core::shader::ShaderInput::index`. */
+    private int shaderInputs;
+    static final int CONTENT = 0, BACKDROP = 1, FROM = 2, TO = 3;
+    /** Its frame shows instead of the children (or the surface). */
+    private boolean replaced;
+    /** How far its frames reach beyond the box, px. */
+    private int shaderOverflow;
+    /** The children changed since their picture was taken. */
+    private boolean stale;
+    /** Until when (`uptimeMillis`) a transition started here runs. */
+    private long transitionEnd;
+    private Pictures pictures, backdropPictures;
+    /** What showed when a transition started, shown until its first frame comes. */
+    private Bitmap fromBitmap;
+    private final android.view.ViewTreeObserver.OnPreDrawListener picturing = () -> {
+        takePictures();
+        return true;
+    };
+    private boolean watching;
     /** The shader's last frame, reused while its size stays. */
     private Bitmap shaderBitmap;
     private final Path shaderPath = new Path();
@@ -139,30 +166,262 @@ class Box extends ViewGroup implements Node {
         invalidateOutline();
         decor.applyPivot(this);
         if (content != null) content.layout(0, 0, w, h);
-        if (shader) shaderSize();
+        if (shader && !screen()) {
+            shaderSize();
+            stale = true;
+        }
     }
 
     // --- Shaders -----------------------------------------------------------------
 
-    /** A shader draws its box (or no longer does). */
-    void setShader(boolean on) {
+    /**
+     * A shader draws (or no longer does): its `role`, how far it reaches
+     * beyond the box (`overflow`, points) and the pictures it reads
+     * (`inputs`).
+     */
+    void setShader(boolean on, int role, float overflow, int inputs) {
         shader = on;
+        shaderRole = on ? role : FILL;
+        shaderInputs = on ? inputs : 0;
+        shaderOverflow = Math.round(Math.max(0, overflow) * mounter.density);
+        stale = true;
+        // A screen shader draws over the surface while it is in the window;
+        // one not in it yet takes the surface once attached.
+        if (on && screen()) {
+            if (isAttachedToWindow()) takeScreen();
+        } else {
+            giveUpScreen();
+        }
         if (on) {
             shaderSize();
-        } else if (shaderBitmap != null) {
+        } else {
             shaderBitmap = null;
-            invalidate();
+            replaced = false;
+            transitionEnd = 0;
+            fromBitmap = null;
+            if (pictures != null) pictures.release();
+            if (backdropPictures != null) backdropPictures.release();
+            pictures = backdropPictures = null;
+            shown().invalidate();
         }
+        watch();
     }
 
-    /** Tells libnsh the size its frames are rendered at. */
-    private void shaderSize() {
+    /** Its node is deleted: its shader goes, with its pictures and the surface it drew over. */
+    void dropShader() {
+        if (shader) setShader(false, FILL, 0, 0);
+    }
+
+    /** Whether it draws over the whole surface. */
+    boolean screen() {
+        return shaderRole == SCREEN || shaderRole == SCREEN_TRANSITION;
+    }
+
+    /**
+     * Draws over the surface (a screen shader's frame, the surface as it is
+     * until one comes), in place of another screen shader's frame.
+     */
+    private void takeScreen() {
+        NshView host = mounter.host;
+        if (host.screen == this) return;
+        host.screen = this;
+        // The surface changed unseen while another shader (or none) had it.
+        stale = true;
+        host.invalidate();
+    }
+
+    /**
+     * Stops drawing over the surface, which draws itself again: its display
+     * list holds this shader's frame instead of the views. A screen shader
+     * that replaced this one keeps it.
+     */
+    private void giveUpScreen() {
+        NshView host = mounter.host;
+        if (host.screen != this) return;
+        host.screen = null;
+        host.invalidate();
+    }
+
+    private boolean reads(int input) {
+        return (shaderInputs & 1 << input) != 0;
+    }
+
+    /** The view its frame shows in. */
+    private View shown() {
+        return screen() ? mounter.host : this;
+    }
+
+    /** Tells libnsh the size its frames are rendered at (the surface's for a screen shader). */
+    void shaderSize() {
         long handle = mounter.handle();
-        if (handle != 0 && Native.shaderSize(handle, id, getWidth(), getHeight())) mounter.host.requestFrames();
+        View v = shown();
+        if (handle != 0 && Native.shaderSize(handle, id, v.getWidth(), v.getHeight())) mounter.host.requestFrames();
     }
 
-    /** A new frame: premultiplied RGBA rows, copied before returning (the buffer is libnsh's). */
-    void shaderFrame(java.nio.ByteBuffer pixels, int width, int height) {
+    /** What its pictures show changed (`SHADER_INPUT`). */
+    void picturesChanged() {
+        stale = true;
+        if (watching) shown().invalidate();
+    }
+
+    /**
+     * A screen shader's surface: a view in it draws anew, which brings the
+     * window frame its picture is taken before.
+     */
+    void surfaceChanged() {
+        stale = true;
+    }
+
+    @Override
+    public void onDescendantInvalidated(View child, View target) {
+        super.onDescendantInvalidated(child, target);
+        stale = true;
+    }
+
+    /** Whether a transition started here still runs. */
+    private boolean transitioning() {
+        return replaced || android.os.SystemClock.uptimeMillis() < transitionEnd;
+    }
+
+    /** Whether pictures are taken before every window frame. */
+    private boolean needsPictures() {
+        if (!shader || !Pictures.supported()) return false;
+        boolean effect = shaderRole == EFFECT || shaderRole == SCREEN;
+        boolean transition = shaderRole == TRANSITION || shaderRole == SCREEN_TRANSITION;
+        return effect && reads(CONTENT) || transition && reads(TO) && transitioning() || reads(BACKDROP);
+    }
+
+    /** Starts or stops taking pictures before window frames, as needed. */
+    private void watch() {
+        boolean want = needsPictures() && isAttachedToWindow();
+        if (want == watching) return;
+        watching = want;
+        if (want) getViewTreeObserver().addOnPreDrawListener(picturing);
+        else getViewTreeObserver().removeOnPreDrawListener(picturing);
+    }
+
+    @Override
+    protected void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        if (shader && screen() && mounter.host.screen == null) takeScreen();
+        watch();
+    }
+
+    @Override
+    protected void onDetachedFromWindow() {
+        // Its subtree left the window, maybe before its node is deleted:
+        // the surface shows as it is (moved, it takes it back when attached).
+        giveUpScreen();
+        if (watching) {
+            getViewTreeObserver().removeOnPreDrawListener(picturing);
+            watching = false;
+        }
+        // Each holds a HardwareRenderer and an ImageReader: they go now and
+        // are made again for the first picture once it is back, which is
+        // due then (what it shows may have changed out of the window).
+        if (pictures != null) pictures.release();
+        if (backdropPictures != null) backdropPictures.release();
+        pictures = backdropPictures = null;
+        stale = true;
+        super.onDetachedFromWindow();
+    }
+
+    /**
+     * Before a window frame: the pictures that changed go to libnsh. The
+     * children (a screen shader's surface: `NshView.onDescendantInvalidated`)
+     * are pictured only after they drew anew; the backdrop before every
+     * frame, libnsh dropping one equal to the last.
+     */
+    private void takePictures() {
+        long handle = mounter.handle();
+        if (handle == 0 || !needsPictures()) {
+            watch();
+            return;
+        }
+        boolean more = false;
+        if (stale) {
+            int input = shaderRole == EFFECT || shaderRole == SCREEN ? CONTENT : TO;
+            if (reads(input)) more |= picture(input, false);
+            stale = false;
+        }
+        if (reads(BACKDROP)) more |= picture(BACKDROP, false);
+        if (more) mounter.host.requestFrames();
+    }
+
+    /**
+     * Takes picture `input` (the backdrop, or what the children draw: `now`,
+     * what shows on screen, the frame where it replaces them), covering the
+     * box and its overflow; whether libnsh wants a frame.
+     */
+    private boolean picture(int input, boolean now) {
+        View v = shown();
+        int m = screen() ? 0 : shaderOverflow;
+        int w = v.getWidth() + 2 * m, h = v.getHeight() + 2 * m;
+        boolean backdrop = input == BACKDROP;
+        if (backdrop && backdropPictures == null) backdropPictures = new Pictures();
+        if (!backdrop && pictures == null) pictures = new Pictures();
+        boolean[] wants = new boolean[1];
+        long handle = mounter.handle();
+        boolean taken = (backdrop ? backdropPictures : pictures).take(w, h, canvas -> {
+            canvas.translate(m, m);
+            if (backdrop) Pictures.drawBehind(canvas, v);
+            else if (now && (replaced || fromBitmap != null)) drawFrame(canvas);
+            else if (screen()) mounter.host.drawSurface(canvas);
+            else drawChildren(canvas);
+        }, (pixels, pw, ph, stride) -> {
+            if (input == FROM) keepFrom(pixels, pw, ph, stride);
+            wants[0] = Native.shaderInput(handle, id, input, pixels, pw, ph, stride);
+        });
+        return taken && wants[0];
+    }
+
+    /** Copies the `from` rows (`stride` bytes apart) into {@link #fromBitmap}. */
+    private void keepFrom(java.nio.ByteBuffer pixels, int width, int height, int stride) {
+        if (fromBitmap == null || fromBitmap.getWidth() != width || fromBitmap.getHeight() != height) {
+            fromBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+        }
+        if (stride == width * 4) {
+            fromBitmap.copyPixelsFromBuffer(pixels);
+            return;
+        }
+        java.nio.ByteBuffer tight = java.nio.ByteBuffer.allocateDirect(width * height * 4);
+        for (int y = 0; y < height; y++) {
+            pixels.limit(y * stride + width * 4).position(y * stride);
+            tight.put(pixels);
+        }
+        tight.rewind();
+        fromBitmap.copyPixelsFromBuffer(tight);
+    }
+
+    /**
+     * A transition starts (`SHADER_TRANSITION`), before the rest of its batch:
+     * what shows now becomes its `from`, and its progress runs over `ms`.
+     */
+    void startTransition(float ms) {
+        long handle = mounter.handle();
+        boolean transition = shaderRole == TRANSITION || shaderRole == SCREEN_TRANSITION;
+        if (!shader || !transition || handle == 0 || !Pictures.supported()) return;
+        if (shown().getWidth() <= 0 || shown().getHeight() <= 0) return;
+        if (!picture(FROM, true) || !Native.shaderTransition(handle, id, ms)) {
+            // No run (no GPU): the children show as they are, not the
+            // picture of what showed.
+            if (!transitioning()) fromBitmap = null;
+            return;
+        }
+        transitionEnd = android.os.SystemClock.uptimeMillis() + Math.round(ms);
+        stale = true;
+        shown().invalidate();
+        mounter.host.requestFrames();
+        watch();
+    }
+
+    /**
+     * A new frame: premultiplied RGBA rows, copied before returning (the
+     * buffer is libnsh's); whether it `replaces` the children, how far it
+     * reaches beyond the box (`overflow`, points).
+     */
+    @Override
+    public void shaderFrame(java.nio.ByteBuffer pixels, int width, int height, boolean replaces, float overflow) {
         if (!shader) return;
         if (pixels == null || width <= 0 || height <= 0) {
             shaderBitmap = null;
@@ -172,20 +431,45 @@ class Box extends ViewGroup implements Node {
             }
             shaderBitmap.copyPixelsFromBuffer(pixels);
         }
-        invalidate();
+        shaderOverflow = Math.round(Math.max(0, overflow) * mounter.density);
+        replaced = replaces && shaderBitmap != null;
+        if (replaced || !transitioning()) fromBitmap = null;
+        shown().invalidate();
+        watch();
     }
 
     /** The shader's frame, stretched over the box inside its rounded corners, under the children. */
     @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
-        if (shaderBitmap == null || getWidth() <= 0 || getHeight() <= 0) return;
+        if (shaderRole != FILL || shaderBitmap == null || getWidth() <= 0 || getHeight() <= 0) return;
         shaderBounds.set(0, 0, getWidth(), getHeight());
         canvas.save();
         if (decor.rounded()) canvas.clipPath(decor.shape(shaderBounds, 0, shaderPath));
         else canvas.clipRect(shaderBounds);
+        shaderBounds.inset(-shaderOverflow, -shaderOverflow);
         canvas.drawBitmap(shaderBitmap, null, shaderBounds, shaderPaint);
         canvas.restore();
+    }
+
+    /**
+     * Draws the frame where it replaces the children (or the surface), from
+     * the box's top-left, or what showed when a transition started until its
+     * first frame comes; false where they show as they are.
+     */
+    private boolean drawFrame(Canvas canvas) {
+        Bitmap bitmap = replaced ? shaderBitmap : transitioning() ? fromBitmap : null;
+        if (bitmap == null) return false;
+        int m = screen() ? 0 : shaderOverflow;
+        View v = shown();
+        shaderBounds.set(-m, -m, v.getWidth() + m, v.getHeight() + m);
+        canvas.drawBitmap(bitmap, null, shaderBounds, shaderPaint);
+        return true;
+    }
+
+    /** Draws the surface's frame for a screen shader; false where the surface shows as it is. */
+    boolean drawScreen(Canvas canvas) {
+        return drawFrame(canvas);
     }
 
     /** Applies clipping after a style change. */
@@ -228,6 +512,14 @@ class Box extends ViewGroup implements Node {
 
     @Override
     protected void dispatchDraw(Canvas canvas) {
+        // An effect, or a running transition, shows its frame instead (the
+        // children still take touches and stay accessible).
+        if (!screen() && drawFrame(canvas)) return;
+        drawChildren(canvas);
+    }
+
+    /** Draws the children as they are. */
+    private void drawChildren(Canvas canvas) {
         if (decor.needsPathClip(clip) && content == null) {
             canvas.save();
             canvas.clipPath(decor.shape(new Rect(0, 0, getWidth(), getHeight()), 0, clipPath));
@@ -470,6 +762,28 @@ class Box extends ViewGroup implements Node {
         return true;
     }
 
+    /**
+     * Whether a scroll view inside {@code v} that took this touch's DOWN (at {@code downTime}) can move for this
+     * drag: the drag is its scroll, and the pan takes only what it cannot (a sheet's list scrolls; at its top, a drag
+     * down moves the sheet). A scroll view under a button that took the touch does not count. iOS shares the touch
+     * the same way, with the scroll views between the touched view and the pan (`pan_touch`, `pan_scroll_handoff`).
+     */
+    private static boolean scrollTakes(View v, long downTime, float dx, float dy) {
+        if (!(v instanceof ViewGroup)) return false;
+        ViewGroup g = (ViewGroup) v;
+        for (int i = g.getChildCount() - 1; i >= 0; i--) {
+            View c = g.getChildAt(i);
+            if (c.getVisibility() != VISIBLE) continue;
+            if (c instanceof ScrollBox) {
+                // A scroll view the touch did not go to: nor did it go to anything inside.
+                if (!((ScrollBox) c).took(downTime)) continue;
+                if (((ScrollBox) c).scrolls(dx, dy)) return true;
+            }
+            if (scrollTakes(c, downTime, dx, dy)) return true;
+        }
+        return false;
+    }
+
     @Override
     public boolean onInterceptTouchEvent(MotionEvent e) {
         if (pointerEvents == 3) return true;
@@ -487,7 +801,7 @@ class Box extends ViewGroup implements Node {
         if (pannable() && action == MotionEvent.ACTION_MOVE && !panning) {
             float slop = ViewConfiguration.get(getContext()).getScaledTouchSlop();
             float dx = e.getRawX() - downRawX, dy = e.getRawY() - downRawY;
-            if (panStarts(dx, dy, slop)) {
+            if (panStarts(dx, dy, slop) && !scrollTakes(this, e.getDownTime(), dx, dy)) {
                 // The DOWN went to the child: the pan starts with this move
                 // (which onTouchEvent never sees), so a quick flick still
                 // pans and ends.

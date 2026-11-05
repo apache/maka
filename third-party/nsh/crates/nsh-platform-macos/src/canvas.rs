@@ -265,7 +265,9 @@ fn slot_number(args: &[Option<AnimationValue>], s: u16) -> f32 {
 /// Draws a canvas view's drawing (in its content layer's
 /// `drawLayer:inContext:`; the context is y down, in points, `size` points
 /// at `scale` pixels each) where it is `dirty`: Core Graphics skips the
-/// rest.
+/// rest. `base` takes the view's space to the context's base space, in
+/// which Core Graphics takes shadow offsets and blurs (no transform
+/// reaches them).
 pub(crate) fn draw(
     cx: &CGContext,
     state: &ViewState,
@@ -273,9 +275,10 @@ pub(crate) fn draw(
     size: CGSize,
     scale: f64,
     asynchronous: bool,
+    base: CGAffineTransform,
 ) {
     if let Some(canvas) = state.canvas.as_ref() {
-        canvas.paint(cx, dirty, size, scale, asynchronous);
+        canvas.paint(cx, dirty, size, scale, asynchronous, base);
     }
 }
 
@@ -295,7 +298,15 @@ impl CanvasState {
 
     /// [`draw`]'s replay; `asynchronous`: `cx` records for Core Animation's
     /// drawing threads.
-    fn paint(&self, cx: &CGContext, dirty: CGRect, size: CGSize, scale: f64, asynchronous: bool) {
+    fn paint(
+        &self,
+        cx: &CGContext,
+        dirty: CGRect,
+        size: CGSize,
+        scale: f64,
+        asynchronous: bool,
+        base: CGAffineTransform,
+    ) {
         self.cadence.paint(Instant::now());
         let canvas = self;
         let Some(drawing) = canvas.drawing.as_ref() else {
@@ -309,7 +320,7 @@ impl CanvasState {
         let prefix = (0 < split && split < ops.len())
             .then(|| canvas.prefix(cx, drawing, split, size, scale, asynchronous))
             .flatten();
-        let mut replay = Replay::new(cx, canvas);
+        let mut replay = Replay::new(cx, canvas, base);
         // Clearing and composite operations combine with what the canvas drew,
         // as on a canvas bitmap: never with what is behind it (AppKit may draw
         // views into one context, as when caching a display for a snapshot).
@@ -402,7 +413,16 @@ impl CanvasState {
         // y down, in points, as the layer's context.
         CGContext::translate_ctm(Some(&context), 0.0, px.1 as CGFloat);
         CGContext::scale_ctm(Some(&context), scale, -scale);
-        let mut replay = Replay::new(&context, self);
+        // The layer's base space: its pixels, y up.
+        let base = CGAffineTransform {
+            a: scale,
+            b: 0.0,
+            c: 0.0,
+            d: -scale,
+            tx: 0.0,
+            ty: 0.0,
+        };
+        let mut replay = Replay::new(&context, self, base);
         for op in &drawing.ops[..split] {
             replay.op(op);
         }
@@ -513,6 +533,8 @@ struct Replay<'a> {
     stack: Vec<State>,
     /// The current path, in the view's space.
     path: CFRetained<CGMutablePath>,
+    /// The view's space in the context's base space ([`draw`]).
+    base: CGAffineTransform,
 }
 
 /// What fills or strokes.
@@ -523,7 +545,7 @@ enum Mode {
 }
 
 impl<'a> Replay<'a> {
-    fn new(c: &'a CGContext, canvas: &'a CanvasState) -> Self {
+    fn new(c: &'a CGContext, canvas: &'a CanvasState, base: CGAffineTransform) -> Self {
         Replay {
             c,
             args: &canvas.args,
@@ -531,6 +553,7 @@ impl<'a> Replay<'a> {
             state: State::default(),
             stack: Vec::new(),
             path: CGMutablePath::new(),
+            base,
         }
     }
 
@@ -845,9 +868,12 @@ impl<'a> Replay<'a> {
         let (color, blur, x, y) = s.shadow;
         if self.shadowed() {
             let color = crate::text::cg_color(color);
-            // Shadow offsets are in the layer's base space, which is y up
-            // under AppKit's flipped context: a positive offset goes down.
-            CGContext::set_shadow_with_color(c, CGSize::new(x, -y), blur, Some(&color));
+            // Shadow offsets and blurs are in the context's base space, which
+            // no transform reaches: taken there from the view's space.
+            let m = self.base;
+            let offset = CGSize::new(m.a * x + m.c * y, m.b * x + m.d * y);
+            let scale = (m.a * m.d - m.b * m.c).abs().sqrt();
+            CGContext::set_shadow_with_color(c, offset, blur * scale, Some(&color));
         }
     }
 
@@ -1374,6 +1400,15 @@ mod tests {
 
     /// `canvas` painted into a fresh 100 × 40 point bitmap at scale 2.
     fn pixels(canvas: &CanvasState) -> Vec<u8> {
+        pixels_in(canvas, true)
+    }
+
+    /// `canvas` painted into a fresh 100 × 40 point bitmap at scale 2, the
+    /// view's space y down over the bitmap's y up base space (as AppKit's
+    /// flipped views over a window's), or (`flipped` false) as a
+    /// layer-backed view's, whose base space is y down already: drawn
+    /// upside down in the bitmap's rows.
+    fn pixels_in(canvas: &CanvasState, flipped: bool) -> Vec<u8> {
         let (w, h, scale) = (100.0, 40.0, 2.0);
         let (pw, ph) = (200, 80);
         let space = CGColorSpace::new_device_rgb().unwrap();
@@ -1389,10 +1424,23 @@ mod tests {
                 CGImageAlphaInfo::PremultipliedFirst.0 | CGImageByteOrderInfo::Order32Little.0,
             )
             .unwrap();
-            CGContext::translate_ctm(Some(&cx), 0.0, ph as CGFloat);
-            CGContext::scale_ctm(Some(&cx), scale, -scale);
+            if flipped {
+                CGContext::translate_ctm(Some(&cx), 0.0, ph as CGFloat);
+                CGContext::scale_ctm(Some(&cx), scale, -scale);
+            } else {
+                CGContext::scale_ctm(Some(&cx), scale, scale);
+            }
+            // The bitmap's base space: its pixels, y up.
+            let base = CGContext::ctm(Some(&cx));
             let size = CGSize::new(w, h);
-            canvas.paint(&cx, CGRect::new(CGPoint::ZERO, size), size, scale, false);
+            canvas.paint(
+                &cx,
+                CGRect::new(CGPoint::ZERO, size),
+                size,
+                scale,
+                false,
+                base,
+            );
             let data = CGBitmapContextGetData(Some(&cx)).cast::<u8>();
             std::slice::from_raw_parts(data, pw * ph * 4).to_vec()
         }
@@ -1478,5 +1526,52 @@ mod tests {
         );
         whole.args[0] = Some(AnimationValue::Number(8.0));
         assert_eq!(grown, pixels(&whole));
+    }
+
+    /// The bytes (BGRA) of the pixel at `(x, y)` in the view's points of
+    /// what [`pixels_in`] painted.
+    fn pixel(bytes: &[u8], flipped: bool, x: f64, y: f64) -> [u8; 4] {
+        let (px, py) = ((x * 2.0) as usize, (y * 2.0) as usize);
+        // Rows run down from the bitmap's top, its base space's y up.
+        let row = if flipped { py } else { 79 - py };
+        let at = (row * 200 + px) * 4;
+        [bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]
+    }
+
+    #[test]
+    fn a_shadow_falls_by_its_offset_in_the_views_points_in_any_context() {
+        // A black square at (10, 10), 10 points wide, casting a hard red
+        // shadow 20 points right and 15 down: the shadow's middle is at
+        // (35, 30).
+        let c = Num::Const;
+        let canvas = CanvasState {
+            drawing: Some(Arc::new(Drawing {
+                ops: vec![
+                    CanvasOp::ShadowColor(Color(0xff0000ff)),
+                    CanvasOp::ShadowBlur(Points(0.0)),
+                    CanvasOp::ShadowOffset(Point::new(Points(20.0), Points(15.0))),
+                    CanvasOp::FillStyle(Paint::Color(Color(0x000000ff))),
+                    CanvasOp::FillRect([c(10.0), c(10.0), c(10.0), c(10.0)]),
+                ],
+                ..Drawing::default()
+            })),
+            ..CanvasState::default()
+        };
+        for flipped in [true, false] {
+            let bytes = pixels_in(&canvas, flipped);
+            assert_eq!(
+                pixel(&bytes, flipped, 15.0, 15.0),
+                [0, 0, 0, 255],
+                "the square"
+            );
+            assert_eq!(
+                pixel(&bytes, flipped, 35.0, 30.0),
+                [0, 0, 255, 255],
+                "its shadow"
+            );
+            // Not cast the other way, nor half as far (base space pixels).
+            assert_eq!(pixel(&bytes, flipped, 35.0, 0.5)[3], 0);
+            assert_eq!(pixel(&bytes, flipped, 25.0, 22.5)[3], 0);
+        }
     }
 }

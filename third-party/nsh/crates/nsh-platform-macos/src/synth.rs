@@ -202,8 +202,10 @@ pub(crate) fn key(surface: &Rc<Surface>, window: &NSWindow, name: &str) {
         other => {
             let mut chars = other.chars();
             let code = match (chars.next(), chars.next()) {
-                (Some(c), None) => crate::input::us_key_code(c).unwrap_or(0),
-                _ => 0,
+                (Some(c), None) => {
+                    crate::input::us_typing_key(c).map_or(crate::input::NO_KEY, |(code, _)| code)
+                }
+                _ => crate::input::NO_KEY,
             };
             if flags.contains(NSEventModifierFlags::Shift) {
                 let mut one = other.chars();
@@ -270,7 +272,11 @@ pub(crate) fn shot(window: &NSWindow) -> Result<Vec<u8>, String> {
     let rep = view
         .bitmapImageRepForCachingDisplayInRect(bounds)
         .ok_or("cannot make a bitmap of the window")?;
+    // An in-process picture draws masked layers whole: the children of
+    // effects (shown through their shader's frames) stay out of it.
+    let hidden = crate::shader::hide_masked(window);
     view.cacheDisplayInRect_toBitmapImageRep(bounds, &rep);
+    hidden.iter().for_each(|c| c.setHidden(false));
     let properties = NSDictionary::<NSBitmapImageRepPropertyKey, objc2::runtime::AnyObject>::new();
     // SAFETY: an empty property dictionary is valid for PNG.
     let data =

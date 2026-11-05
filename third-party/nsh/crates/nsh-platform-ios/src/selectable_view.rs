@@ -34,6 +34,7 @@ use nsh_core::{
         Handle, KeptRows, SelectionModel, SelectionTexts, TextPosition, reading_order, reorder,
     },
 };
+use nsh_engine::EngineControl;
 use objc2::{
     ClassType, DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
     rc::{Allocated, Retained},
@@ -47,8 +48,6 @@ use objc2_ui_kit::{
     UILongPressGestureRecognizer, UIPanGestureRecognizer, UIResponder, UIScrollView,
     UITapGestureRecognizer, UITouch, UITraitEnvironment, UIView,
 };
-
-use nsh_engine::EngineControl;
 
 use crate::{native_view::NshView, text_view::TextView};
 

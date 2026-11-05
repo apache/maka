@@ -15,7 +15,7 @@ use super::{
     values::{Value, invoke},
 };
 impl Runtime {
-    fn notify(&self, name: &str, args: impl IntoIterator<Item = Value>) {
+    pub(super) fn notify(&self, name: &str, args: impl IntoIterator<Item = Value>) {
         if self.bindings.stopped.get() {
             return;
         }

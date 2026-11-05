@@ -68,6 +68,16 @@ expect Picked: pending
 wait 300
 expect Picked: pending
 covers [nsh] Picker
+# mod-speech
+tap id:case-mod-speech
+# nothing recognizes speech there: available() resolves false and a session
+# ends at once with "unavailable"; a lang that is no tag throws a RangeError.
+expect Available: false
+expect Speech: not started
+tap id:start
+expect Refused: threw RangeError
+expect Speech: end unavailable "" true
+covers [nsh] Speech
 # mod-desktop
 tap id:case-mod-desktop
 # no title bar area, the window and menu functions do nothing, and a popup
@@ -101,6 +111,7 @@ expect Ratio: 1
 expect Font scale: 1
 expect Window: 390x844
 expect Scheme: light
+expect Lifecycle: active
 tap id:dark
 expect Scheme: dark
 absent Scheme: light
@@ -118,6 +129,7 @@ covers [nsh] colorScheme
 covers [nsh] setColorScheme
 covers [nsh] fontScale
 covers [nsh] windowSize
+covers [nsh] lifecycle
 # mod-host-channel
 tap id:case-mod-host-channel
 # no embedding app: no parameters, posts go nowhere and calls reject at

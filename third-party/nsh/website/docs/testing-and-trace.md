@@ -171,7 +171,7 @@ options as the test gives them: one the target's platform cannot honor makes `op
 | `colorScheme` | `"light"` | The system's appearance: `"light"` or `"dark"` (`colorScheme()`, `dark:` classes). |
 | `locale` | `"en-US"` | The device's locale, a BCP 47 tag (`locale()`, `Intl`'s default). |
 | `reducedMotion` | `false` | The user asked for less motion (`reduceMotion()`). |
-| `platform` | `"ios"` | The platform the app runs as headless: `"ios"`, `"android"`, or a desktop's, `"macos"`, `"windows"`, `"linux"`, or `"web"` in the desktop idiom (`platform.os`, `ios={{…}}` / `android={{…}}` / `desktop={{…}}` props, keyboard shortcuts). With `--target`, the app runs as the target's platform: a desktop's `platform` on any desktop and the web, `"ios"` and `"android"` on their own. |
+| `platform` | `"ios"` | The platform the app runs as headless: `"ios"`, `"android"`, or a desktop's, `"macos"`, `"windows"`, `"linux"`, or `"web"` in the desktop idiom (`platform.os`, `ios={{…}}` / `android={{…}}` / `desktop={{…}}` props, keyboard shortcuts). With `--target`, the app runs as the target's platform: a desktop's `platform` on any desktop and the web, always as a desktop (in the browser in the desktop idiom at any width, `platform.os` staying `"web"`), `"ios"` and `"android"` on their own. |
 | `clock` | the system's | A manual clock, whose time moves only as the test moves it: `{}`, or `{ time }` to start at a `Date` (or milliseconds since the Unix epoch). See [Controlling time](#controlling-time). |
 | `host` | none | The embedding app's part, which the test plays: `{ params, handlers }`. See [Playing the host app](#playing-the-host-app). |
 
@@ -396,6 +396,9 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.dialogs()` | The dialogs the app showed, in order. |
 | `app.onPick(handler)` | Answers the picks the app asks for from now on (`Picker.pickImages`): `handler` gets what the pick asks (`multiple`, `limit`, `maxDimension`, `quality`, `format`) and returns the files the user picks (`{ name, type?, data: Uint8Array }`, given to the app as they are), or `null` to cancel. Without a handler, picks are cancelled. Headless runs. |
 | `app.picks()` | The picks the app asked for, in order. |
+| `app.hear(text)` | The user says `text` into the running speech session (`Speech.start`): its `result` reports `text` as the whole transcript so far. Headless runs. |
+| `app.endSpeech(error?)` | Ends the running speech session: with `error` (`"no-speech"`, `"network"`, ...) it fails, else a last final result and `end` come, `no-speech` when nothing was heard. Headless runs. |
+| `app.speechRequests()` | The speech sessions the app started, in order: `lang` (`null` for the user's) and `interim`. |
 | `app.clipboard()` | The text on the clipboard now, `null` when it holds none. |
 | `app.requests()` | The requests the app made, in order: `method`, `url`, `headers`, `body`. |
 | `await app.host.send(name, data?)` | Sends an event of the host app's to the app (`host.on`), then waits until it is quiet. See [Playing the host app](#playing-the-host-app). |
@@ -403,11 +406,17 @@ one: a selector matching several fails the step, and the error says how to narro
 | `app.openedUrls()` | The URLs the app opened (`openUrl`), in order: recorded, never opened. |
 | `await app.setViewport(width, height)` | Resizes the viewport, as rotating the device or resizing a window does (`windowSize()`). |
 | `await app.setColorScheme(scheme)` | Switches the system's appearance to `"light"` or `"dark"`, as the user does. |
+| `await app.setLifecycle(state)` | Moves the app to `"background"`, `"inactive"` or `"active"`, as the system does when the user leaves it, switches to another app or window and comes back (`lifecycle()`). Headless runs only. |
 | `await app.screenshot(path?)` | A picture of the app's window as a PNG (a `Uint8Array`), also saved at `path` on this machine when given (relative to the current directory). Only a real platform draws the app: see [On a real platform](#on-a-real-platform). |
 
 A step resolves once the app rendered nothing for 100 ms and no native animation runs that ends by itself (2 s at
 most, for apps that render all the time; on a manual clock, also 2 s of the app's time), so what it changed is on
-screen when the next line runs; use `waitFor` for what comes later (a response, a timer). An animation that loops
+screen when the next line runs; use `waitFor` for what comes later (a response, a timer). On a manual clock a step
+does not wait for those 100 ms: it resolves as soon as the app has run everything the step and the clock's time made
+due (timers due now, promises, a stubbed response answered at once) and wants no frame, unless a request is still in
+flight, so tests on a manual clock run without pauses between their steps. What another thread answers (an
+`nsh/host` call, a file read, a Rust task's work on a thread) arrives after the step resolves: `waitFor` what it
+shows. An animation that loops
 forever, such as a loading spinner, keeps running in the background while steps and `waitFor` go on, as an infinite
 CSS animation does in a browser's tests. A step rejects, failing the test, when nothing matches its selector (the error lists the texts on
 screen), when the app threw an exception meanwhile, and when the app asked for what only a real platform answers.
@@ -449,6 +458,7 @@ that only a real platform can do:
   so what it does not declare is refused.
 - **URLs are recorded**: what the app opens is reported opened, and `app.openedUrls()` lists it.
 - **Picks are answered**: with the test's files (`onPick`), else cancelled, so `Picker.pickImages` resolves `[]`.
+- **Speech is the test's**: `Speech.available()` resolves `true`, a session starts at once and hears what `hear` says.
 - **Modals show at once**: `onShow` comes when one is presented.
 - **Images are not loaded**: no `onLoad` or `onError` comes, and `Image.getSize` and `Image.prefetch` reject.
 - **What only a real platform answers fails the step**: an image or files on the clipboard.
@@ -521,7 +531,8 @@ own input at the views their selectors name, as Playwright does in a browser:
   `scroll` is a trackpad gesture over the scroll view, `back` is what a user does (Escape on macOS and Linux, the mouse's
   back button on Windows and in GPUI, the browser's back button on the web, a sheet swiped down, VoiceOver's escape
   gesture while a menu, popover or `Sheet` is open, else the header's back button on iOS, the back button on Android);
-- a view off screen is scrolled into view first, a gesture at a time;
+- a view off screen is scrolled into view first, a gesture at a time; on a touch screen the finger lands where the
+  page itself takes it, beside the views that follow a drag (a slider, a drawing area), as a user scrolls;
 - selectors, waits and queries see the same model of the app as headless runs, built from what the host draws, so
   they find the same views;
 - dialogs are the platform's own: `app.dialogs()` reads them, and answering one (`onDialog`, or its cancel button
@@ -556,7 +567,9 @@ headless, where the test answers the app's calls. `open` checks its options agai
 `height` on iOS and Android, a `platform` of another kind of device (a phone's on a desktop or the web, a desktop's or
 the other phone's on iOS or Android) and `host.handlers` reject with `ERR_NSH_TEST_UNSUPPORTED`, so a test runs as it
 is written or says what it needs. A desktop's `platform` (`"macos"` for a desktop's mouse and keys) runs on every
-desktop target and the web, as that target's platform. An app with Rust crates of its own runs in a development host built with its crates, which NSH
+desktop target and the web, as that target's platform and always as a desktop: in the browser the page starts in the
+desktop idiom whatever its width, where without a `platform` (or with `"web"`) it measures its idiom as a browser does
+(a desktop from 600 points wide). An app with Rust crates of its own runs in a development host built with its crates, which NSH
 builds for the platform; a Rust app's host runs its root, so `open(".")` starts it there as it does headless.
 
 On the web, the apps run in the development host's page in a headless Chrome, Edge or Chromium: the one installed

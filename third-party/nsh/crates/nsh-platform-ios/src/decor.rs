@@ -16,7 +16,7 @@ use nsh_core::{
     BorderStyle, Borders, Color, CornerRadii, ObjectPosition, ResizeMode, ViewStyle,
     geometry::{px, size},
 };
-use objc2::{MainThreadMarker, rc::Retained, runtime::AnyObject};
+use objc2::{MainThreadMarker, MainThreadOnly, rc::Retained, runtime::AnyObject};
 use objc2_core_foundation::{CFRetained, CGFloat, CGPoint, CGRect, CGSize};
 use objc2_core_graphics::{CGColor, CGImage, CGMutablePath};
 use objc2_foundation::{NSArray, NSNumber};
@@ -24,7 +24,7 @@ use objc2_quartz_core::{
     CACornerMask, CALayer, CAMediaTiming, CAShapeLayer, CATransaction, kCACornerCurveCircular,
     kCACornerCurveContinuous, kCAFillRuleEvenOdd, kCAGravityResize, kCALineCapRound,
 };
-use objc2_ui_kit::{UIColor, UIImage, UIView};
+use objc2_ui_kit::{UIColor, UIImage, UIView, UIViewAutoresizing};
 
 /// Fills sit behind the children. Borders too (CSS), except where the
 /// children are clipped: there the layer's own border, which Core Animation
@@ -57,6 +57,9 @@ pub(crate) struct Decor {
     mask: Option<Retained<CAShapeLayer>>,
     /// Holds the children while the view both clips them and casts a shadow.
     content: Option<Retained<UIView>>,
+    /// Holds the children while a shader effect or transition draws them
+    /// ([`crate::shader`]), inside [`Decor::content`] when there is one.
+    effect: Option<Retained<UIView>>,
     /// Image content (image views only): clips the picture to the view's
     /// shape.
     image: Option<Retained<CALayer>>,
@@ -101,7 +104,47 @@ impl Decor {
 
     /// The view children are added to.
     pub(crate) fn container<'a>(&'a self, view: &'a UIView) -> &'a UIView {
-        self.content.as_deref().unwrap_or(view)
+        self.effect
+            .as_deref()
+            .or(self.content.as_deref())
+            .unwrap_or(view)
+    }
+
+    /// Moves the children of `view` into a view of their own, which a
+    /// shader that draws them masks while its frames show instead (`on`),
+    /// or back out of it; that view.
+    pub(crate) fn set_effect(&mut self, view: &UIView, on: bool) -> Option<Retained<UIView>> {
+        let parent = self.content.as_deref().unwrap_or(view);
+        match (on, &self.effect) {
+            (true, None) => {
+                let effect = UIView::new(view.mtm());
+                effect.setFrame(parent.bounds());
+                effect.setAutoresizingMask(
+                    UIViewAutoresizing::FlexibleWidth | UIViewAutoresizing::FlexibleHeight,
+                );
+                let children = parent.subviews();
+                parent.addSubview(&effect);
+                // The backdrop blur is the view's own, below its background,
+                // not a child the shader draws: masked with the children, it
+                // would show nowhere.
+                let backdrop = self.visual.backdrop_view();
+                for child in children.iter() {
+                    if !backdrop.is_some_and(|b| std::ptr::eq(b, &*child)) {
+                        effect.addSubview(&child);
+                    }
+                }
+                self.effect = Some(effect);
+            }
+            (false, Some(effect)) => {
+                for child in effect.subviews().iter() {
+                    parent.insertSubview_belowSubview(&child, effect);
+                }
+                effect.removeFromSuperview();
+                self.effect = None;
+            }
+            _ => {}
+        }
+        self.effect.clone()
     }
 
     /// True if [`Decor::apply`] must run again when the view is resized.
@@ -370,7 +413,11 @@ impl Decor {
         // Core Animation's continuous corners differ slightly from the
         // shared outline (`nsh_core::shape`): a stroke drawn along the latter
         // gets its background from the same outline, so none shows outside.
-        let fill = (shared.is_none() || (raw.continuous && stroke)) && kind != Kind::Text;
+        // A backdrop blur is a subview, above the layer's own background:
+        // the background moves to a fill layer above the blur.
+        let fill =
+            (shared.is_none() || (raw.continuous && stroke) || crate::visual::has_backdrop(style))
+                && kind != Kind::Text;
         let mask = shared.is_none() && (style.overflow_hidden || kind == Kind::Text) && !content;
 
         self.sized = kind == Kind::Image
@@ -649,8 +696,13 @@ impl Decor {
                 let content = UIView::new(mtm);
                 let children = view.subviews();
                 view.addSubview(&content);
+                // The backdrop blur is the view's own, below its background:
+                // in the content view it would cover the background.
+                let backdrop = self.visual.backdrop_view();
                 for child in children.iter() {
-                    content.addSubview(&child);
+                    if !backdrop.is_some_and(|b| std::ptr::eq(b, &*child)) {
+                        content.addSubview(&child);
+                    }
                 }
                 self.content = Some(content);
             }

@@ -73,11 +73,13 @@ pub(crate) mod virtual_list;
 pub(crate) mod watch;
 
 /// Whether this build carries the text of declarations: the documentation
-/// and TypeScript of the specs, which only make `.nsh/types`. The
-/// WebAssembly runtime, which pages download and which writes no
-/// declarations, goes without ([`decl!`](crate::decl)); the specs keep
-/// their shape (names, kinds, whether a method returns).
-pub const DECLARATIONS: bool = !cfg!(target_arch = "wasm32");
+/// and TypeScript of the specs, which only make `.nsh/types` (feature
+/// `declarations`, which `nsh` and the program describing an app's UI sets
+/// turn on). Apps and the WebAssembly runtime, which write no declarations,
+/// go without ([`decl!`](crate::decl)): building the text took a native app
+/// about a megabyte at startup. The specs keep their shape (names, kinds,
+/// whether a method returns).
+pub const DECLARATIONS: bool = cfg!(any(test, feature = "declarations"));
 
 /// Declaration text: `$text` where the build carries it
 /// ([`DECLARATIONS`]), `""` (a list: `&[]`) where it does not. In a
@@ -94,7 +96,7 @@ macro_rules! decl {
 
 pub use nsh_macros::{
     Event, JsObject, PropEnum, Props, asset, assets, class, component, methods, module,
-    native_module,
+    native_components, native_module,
 };
 
 // The core's parts of `nsh_base`'s navigation and dialogs.
@@ -143,8 +145,9 @@ pub use self::{
     host::{
         CanvasArg, CanvasPaint, CanvasView, Input, InputAccessoryView, IntoUniform, Modal,
         NativeView, Orientation, Overlay, Painter, Screen, Scroll, ShaderView, Stack, Svg, Uniform,
-        Video, WebView, canvas, input, input_accessory_view, native, overlay, scroll, shader, svg,
-        video, web_view, web_view_html,
+        Video, WebView, canvas, input, input_accessory_view, native, overlay, screen_effect,
+        screen_transition, scroll, shader, shader_effect, shader_transition, svg, video, web_view,
+        web_view_html,
     },
     js::{JsClass, JsHost, JsIn, JsKind, JsOwned, JsPrimitive, JsRaw},
     json_host::from_json,
@@ -185,7 +188,7 @@ pub(crate) use self::{
     back::BackListener,
     builder::{ElKind, PlaceFn},
     component::{AnyInstance, caught},
-    task::{Action, AnswerSlot, ClipboardRead, Executor, FileAnswer},
+    task::{Action, AfterAnswer, AnswerSlot, ClipboardRead, Executor, FileAnswer, SpeechAction},
 };
 /// The geometry Rust components style with (`crate::geometry`).
 pub use crate::geometry::{
@@ -214,7 +217,7 @@ pub use crate::{
     },
     overlay::{Align, Placement},
     platform::{
-        Appearance, HttpBody, HttpHead, HttpRequest, Idiom, Locale, Os,
+        Appearance, HttpBody, HttpHead, HttpRequest, Idiom, Lifecycle, Locale, Os,
         Renderer as PlatformRenderer,
     },
     style::Color,
@@ -293,6 +296,28 @@ pub mod __private {
     /// Stands in for `crate::__nsh_native_module` when `#[native_module]`
     /// is not at the crate's root (as [`no_native_module`]).
     pub fn native_module_not_at_root<R: NotAtRoot>() -> R {
+        unreachable!("never compiles")
+    }
+
+    /// Stands in for the entry `#[native_components(…)]` makes for a
+    /// platform (`app::__nsh_native_components_windows`) when the app's
+    /// crate has none: a glob import of the crate in a block shadows it.
+    /// Most crates have no native components, so it registers nothing.
+    pub fn no_native_components<C>(_components: C) {}
+
+    /// Implemented by nothing: `#[native_components]` in a module other
+    /// than the crate's root fails with this message.
+    #[diagnostic::on_unimplemented(
+        message = "`#[native_components]` goes at the root of the crate (lib.rs)",
+        label = "nsh's generated hosts call the entry it makes there",
+        note = "move the function with `#[native_components(…)]` to the crate's lib.rs"
+    )]
+    pub trait NativeComponentsNotAtRoot {}
+
+    /// Stands in for `crate::__nsh_native_components_<platform>` when
+    /// `#[native_components]` is not at the crate's root (as
+    /// [`native_module_not_at_root`]).
+    pub fn native_components_not_at_root<C, R: NativeComponentsNotAtRoot>(_components: C) -> R {
         unreachable!("never compiles")
     }
 }

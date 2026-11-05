@@ -58,7 +58,7 @@ mount(App);
 
 ## 行和列
 
-`data` 是行：对象（字段由各列的 `key` 指定），或按位置被各列索引的数组。数字、布尔值和字符串显示为文本。列是一个 `DataTableColumn`：
+`data` 是行：对象（字段由各列的 `key` 指定），或按位置被各列索引的数组。数字、布尔值和字符串显示为文本。Rust 按字段逐列给出这些行，每列一种类型：`DataTableRows::new(2).texts("symbol", ["AAPL", "MSFT"]).numbers("change", [1.2, -0.4])`。列是一个 `DataTableColumn`：
 
 | 字段 | 说明 |
 |---|---|

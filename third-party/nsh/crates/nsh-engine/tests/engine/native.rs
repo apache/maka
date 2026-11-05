@@ -45,6 +45,21 @@ mount(App);
 "#;
 
 fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
+    start_with(app, None)
+}
+
+fn start_with(
+    app: &str,
+    declared: Option<nsh_core::access::Capabilities>,
+) -> (Engine, Receiver<MountBatch>) {
+    start_in(app, declared, Default::default())
+}
+
+fn start_in(
+    app: &str,
+    declared: Option<nsh_core::access::Capabilities>,
+    environment: nsh_core::platform::Environment,
+) -> (Engine, Receiver<MountBatch>) {
     // One directory per app started: the tests run in parallel.
     static STARTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let n = STARTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -59,9 +74,11 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         ui_sets: vec![nsh_base::registry().into()],
     })
     .unwrap();
+    let mut app = Bundle::source(bundle.code);
+    app.policy.declared = declared;
     let (tx, rx) = crossbeam_channel::unbounded();
     let config = EngineConfig {
-        app: nsh_engine::App::Js(Bundle::source(bundle.code)),
+        app: nsh_engine::App::Js(app),
         viewport: Size::new(px(320.0), px(480.0)),
         trace: false,
         network: None,
@@ -70,7 +87,7 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         filesystem: None,
         assets: None,
         chunk_loader: None,
-        environment: Default::default(),
+        environment,
         header_heights: (nsh_core::Points(44.0), nsh_core::Points(96.0)),
         limits: nsh_engine::Limits::default(),
         ui_sets: Vec::new(),
@@ -84,6 +101,7 @@ fn start(app: &str) -> (Engine, Receiver<MountBatch>) {
         clipboard: None,
         host: Default::default(),
         picker: None,
+        speech: None,
     };
     (
         Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap(),
@@ -291,4 +309,144 @@ fn animated_component_prop_survives_rerender() {
             batch.items
         );
     }
+}
+
+const WEB_INPUT_APP: &str = r#"import { mount, View, WebView } from "nsh";
+
+function App() {
+  return (
+    <View>
+      <WebView
+        src="https://example.com/"
+        style={{ height: 100 }}
+        ref={(page: any) =>
+          page &&
+          queueMicrotask(() => {
+            page.sendInput({ type: "click", x: 12.5, y: 40 });
+            page.sendInput({ type: "text", text: "a b!" });
+            page.sendInput({ type: "key", key: "Enter" });
+            // Not one of its forms: nothing is sent.
+            page.sendInput({ type: "key", key: "F13" });
+            page.sendInput({ type: "click", x: 1 });
+          })
+        }
+      />
+    </View>
+  );
+}
+
+mount(App);
+"#;
+
+/// The web view's id and the input the app sent it, within `wait`.
+fn sent_input(
+    declared: Option<nsh_core::access::Capabilities>,
+    wait: Duration,
+) -> (
+    nsh_core::NodeId,
+    Vec<(nsh_core::NodeId, nsh_core::WebInput)>,
+) {
+    let (_engine, rx) = start_with(WEB_INPUT_APP, declared);
+    let mut web = None;
+    let mut sent = Vec::new();
+    let deadline = std::time::Instant::now() + wait;
+    while sent.len() < 3 && std::time::Instant::now() < deadline {
+        let Ok(batch) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        for item in &batch.items {
+            match item {
+                MountItem::Create {
+                    id,
+                    kind: ViewKind::WebView,
+                } => web = Some(*id),
+                MountItem::Command {
+                    id,
+                    command: Command::SendInput(input),
+                } => sent.push((*id, input.clone())),
+                _ => {}
+            }
+        }
+    }
+    (web.expect("a web view"), sent)
+}
+
+#[test]
+fn a_web_view_ref_sends_trusted_input_to_its_view() {
+    use nsh_core::{WebInput, WebKey, access::Capabilities};
+    let declared =
+        Capabilities::from_json(&json!({ "webview": { "hosts": ["example.com"], "input": true } }))
+            .unwrap();
+    let (web, sent) = sent_input(Some(declared), Duration::from_secs(5));
+    assert_eq!(
+        sent,
+        [
+            (
+                web,
+                WebInput::Click {
+                    x: nsh_core::Points(12.5),
+                    y: nsh_core::Points(40.0)
+                }
+            ),
+            (web, WebInput::Text("a b!".into())),
+            (web, WebInput::Key(WebKey::Enter)),
+        ]
+    );
+    // Not declared (also with no declaration at all): the core sends none.
+    let hosts =
+        Capabilities::from_json(&json!({ "webview": { "hosts": ["example.com"] } })).unwrap();
+    for declared in [Some(hosts), None] {
+        let (_, sent) = sent_input(declared, Duration::from_secs(1));
+        assert_eq!(sent, []);
+    }
+}
+
+const WEB_INPUT_AVAILABLE_APP: &str = r#"import { mount, signal, Text, WebView } from "nsh";
+
+function App() {
+  const available = signal("asking");
+  WebView.inputAvailable().then((v: boolean) => available.set(`web input ${v}`));
+  return <Text>{available()}</Text>;
+}
+
+mount(App);
+"#;
+
+/// What `WebView.inputAvailable()` resolves with on a platform that does
+/// (`platform`) or does not deliver trusted web input, with the
+/// capabilities `declared`.
+fn web_input_available(platform: bool, declared: Option<nsh_core::access::Capabilities>) -> String {
+    let environment = nsh_core::platform::Environment {
+        web_input: platform,
+        ..Default::default()
+    };
+    let (_engine, rx) = start_in(WEB_INPUT_AVAILABLE_APP, declared, environment);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        let Ok(batch) = rx.recv_timeout(Duration::from_millis(200)) else {
+            continue;
+        };
+        if let Some(shown) = texts(&batch)
+            .into_iter()
+            .find(|t| t.starts_with("web input"))
+        {
+            return shown;
+        }
+    }
+    panic!("WebView.inputAvailable() did not resolve");
+}
+
+#[test]
+fn web_view_input_available_needs_the_platform_and_the_grant() {
+    use nsh_core::access::Capabilities;
+    let granted = || {
+        Some(
+            Capabilities::from_json(&json!({ "webview": { "hosts": [], "input": true } })).unwrap(),
+        )
+    };
+    assert_eq!(web_input_available(true, granted()), "web input true");
+    assert_eq!(web_input_available(false, granted()), "web input false");
+    let hosts = Capabilities::from_json(&json!({ "webview": { "hosts": [] } })).unwrap();
+    assert_eq!(web_input_available(true, Some(hosts)), "web input false");
+    assert_eq!(web_input_available(true, None), "web input false");
 }

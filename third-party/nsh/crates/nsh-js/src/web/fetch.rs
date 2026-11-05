@@ -3,7 +3,8 @@
 //! byte stream filled as the stack delivers chunks (the request is paused
 //! while more than [`QUEUE_LIMIT`] bytes wait unread), and a request body
 //! that is a `ReadableStream` is sent chunk by chunk as the stack asks for
-//! them. `data:` and `blob:` URLs are answered locally. Relative URLs
+//! them. `data:` and `blob:` URLs are answered locally, and `asset:/` URLs
+//! (the app's bundled files) by the engine from the host's assets. Relative URLs
 //! resolve against `HostOptions::base_url` (the page's URL on the web);
 //! hosts without one reject them.
 //!
@@ -1498,7 +1499,8 @@ fn start_fetch(cx: Ctx, input: Raw, init: Raw) -> R<V> {
             let r = local_response(cx, &url, b.bytes().to_vec(), &mime)?;
             return js::resolved(cx, r.raw());
         }
-        "http" | "https" => {}
+        // The engine answers `asset:` from the host's assets.
+        "http" | "https" | "asset" => {}
         other => {
             return js::rejected(
                 cx,
@@ -2046,7 +2048,7 @@ pub(crate) const FUNCTIONS: &[super::Function] = &[super::Function {
     native: fetch,
     length: 1,
     doc: nsh_core::decl!(
-        "HTTP through the platform's network stack (NSURLSession,\nHttpURLConnection), streaming both ways; `data:` and `blob:` URLs are\nanswered locally."
+        "HTTP through the platform's network stack (NSURLSession,\nHttpURLConnection), streaming both ways; `data:` and `blob:` URLs are\nanswered locally, and `asset:/` URLs with the app's bundled files."
     ),
     signature: nsh_core::decl!(
         "(input: string | URL | Request, init?: RequestInit): Promise<Response>"

@@ -1,5 +1,5 @@
 import { type JSX, LayoutAnimation, reduceMotion, Scroll, setColorScheme, signal, Text, token, View } from "nsh";
-import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu } from "nsh/base";
+import { ContextMenu, Menu, MenuItem, MenuSeparator, type OpenChangeReason, Submenu, Toolbar } from "nsh/base";
 import { platform } from "nsh";
 import { keymap } from "nsh";
 import { Icon, LucideIcon, type LucideIconName } from "../icons";
@@ -83,7 +83,7 @@ function Item(props: {
       <If when={props.icon && props.checked === undefined}>
         <LucideIcon name={props.icon!} size={item.icon} tint={props.danger ? colors.danger : colors.muted} />
       </If>
-      <Text style={{ flex: 1, fontSize: item.font, color: props.danger ? colors.danger : colors.text }}>{props.label}</Text>
+      <Text style={{ numberOfLines: 1, flexGrow: 1, flexShrink: 0, fontSize: item.font, color: props.danger ? colors.danger : colors.text }}>{props.label}</Text>
       <If when={props.shortcut ?? props.note}>
         <Text style={{ fontSize: item.note, color: colors.faint }}>{props.shortcut ?? props.note}</Text>
       </If>
@@ -95,6 +95,7 @@ function Item(props: {
 function SubmenuOf(props: { label: string; icon?: LucideIconName; children: JSX.Element; disabled?: boolean }) {
   return (
     <Submenu
+      offset={4}
       disabled={props.disabled}
       trigger={
         <View
@@ -105,7 +106,7 @@ function SubmenuOf(props: { label: string; icon?: LucideIconName; children: JSX.
           <If when={props.icon}>
             <LucideIcon name={props.icon!} size={item.icon} tint={colors.muted} />
           </If>
-          <Text style={{ flex: 1, fontSize: item.font, color: colors.text }}>{props.label}</Text>
+          <Text style={{ numberOfLines: 1, flexGrow: 1, flexShrink: 0, fontSize: item.font, color: colors.text }}>{props.label}</Text>
           <Icon name="chevron" size={pointer ? 12 : 14} tint={colors.faint} />
         </View>
       }
@@ -314,7 +315,8 @@ export function Menus() {
     const key = (k: string) => (platform.desktop ? keymap.label(k) : undefined);
     return (
       <Card icon="lists" title="Menu bar" subtitle={platform.desktop ? "Hover across submenus; the shortcuts work too" : "Each menu a sheet; submenus take its place"}>
-        <View style={{ flexDirection: "row", gap: 2, marginLeft: pointer ? -10 : 0 }}>
+        {/* A toolbar: with one menu open, the pointer over another title opens it. */}
+        <Toolbar accessibilityLabel="Menu bar" style={{ flexDirection: "row", gap: 2, marginLeft: pointer ? -10 : 0 }}>
           <Menu offset={4} margin={8} popupStyle={sheet} backdropStyle={backdrop} onOpenChange={changed("File")} trigger={<Chip bar label="File" open={isOpen("File")} />}>
             <Panel>
               <Item label="New document" icon="file-plus" shortcut={key("mod+alt+n")} onSelect={() => act("New document")} />
@@ -367,7 +369,7 @@ export function Menus() {
               </SubmenuOf>
             </Panel>
           </Menu>
-        </View>
+        </Toolbar>
         <Preview sidebar={sidebar()} minimap={minimap()} sort={sort()} zoom={zoom()} />
         <Caption label={`Sidebar ${sidebar() ? "on" : "off"} · minimap ${minimap() ? "on" : "off"} · by ${sort()} · zoom ${zoom()}`} />
         <Caption label={history().length ? `Done: ${history().join(", ")}` : "Nothing done yet"} />
@@ -424,8 +426,9 @@ export function Menus() {
                         hoverStyle={hovered()}
                         activeStyle={{ backgroundColor: alpha(colors.text, 0.1) }}
                         style={{
-                          paddingHorizontal: 8,
+                          width: 28,
                           height: 28,
+                          alignItems: "center",
                           justifyContent: "center",
                           borderRadius: 6,
                           backgroundColor: isOpen(`${file().name} ⋯`) ? token("accent") : "transparent",

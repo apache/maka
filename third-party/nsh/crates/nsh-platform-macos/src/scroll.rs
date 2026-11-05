@@ -443,8 +443,14 @@ const COMMIT_MS: u64 = 140;
 /// puts AppKit's model right for the price of one walk per scroll.
 fn apply_offset(surface: &Rc<Surface>, view: &NshView) {
     let origin = bounds_origin(view);
+    // Every offset, inset and mirroring change comes through here: what
+    // shows under it changed ([`crate::sight`]).
+    crate::sight::moved();
     let committed = view.container_bounds_origin();
     view.set_layer_scroll(committed.0 - origin.0, committed.1 - origin.1);
+    // What it shows moved without a view moving: the effects around it
+    // (and a screen effect reading the surface) picture it again.
+    crate::shader::ui_changed(view);
     arm_commit(surface, view);
 }
 

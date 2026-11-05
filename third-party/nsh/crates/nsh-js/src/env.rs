@@ -1,6 +1,6 @@
 //! The surface's environment: one signal per part
 //! (window, safe area, keyboard, color scheme, font scale, screen reader,
-//! reduced motion, pixel ratio, locale) written when the platform reports a
+//! reduced motion, pixel ratio, locale, lifecycle) written when the platform reports a
 //! change, read through read-only accessors; `nsh/device` (`platform`) and
 //! `nsh/accessibility`; the layout direction, which follows the user's
 //! language; the insets
@@ -43,9 +43,10 @@ enum Part {
     PixelRatio,
     TitleBar,
     Locale,
+    Lifecycle,
 }
 
-const PARTS: usize = 10;
+const PARTS: usize = 11;
 
 /// The environment's part of a context's state.
 pub(crate) struct Env {
@@ -376,6 +377,9 @@ pub(crate) fn set_environment(cx: *mut JsContext, next: &Environment) -> Result<
     if changed(&|p| p.pixel_ratio == next.pixel_ratio) {
         writes.push((Part::PixelRatio, number(next.pixel_ratio)));
     }
+    if changed(&|p| p.lifecycle == next.lifecycle) {
+        writes.push((Part::Lifecycle, string(cx, next.lifecycle.name())));
+    }
     // The layout direction follows the user's language.
     // SAFETY: the state's renderer, by shared reference.
     unsafe { &(*crate::state::state(cx)).dom }.set_direction(next.rtl);
@@ -634,6 +638,14 @@ pub(crate) const DEVICE_EXPORTS: &[Item] = &[
         Ts::value(
             "The user's locale as a BCP 47 tag (`\"en-US\"`, `\"zh-Hans-CN\"`), which\n`Intl` formats for by default (reactive): the system's, unless the\nembedding app set its own.",
             "Accessor<string>",
+        ),
+    ),
+    (
+        "lifecycle",
+        Export::Value(|cx| accessor(cx, Part::Lifecycle)),
+        Ts::value(
+            "Whether the app is in use (reactive): `\"active\"` in the foreground,\n`\"inactive\"` while visible without the focus (another app or window has\nit, or the system shows something over it), `\"background\"` while not\nvisible (in the background, minimized or hidden). An embedded app\nfollows the embedding app's.",
+            "Accessor<\"active\" | \"inactive\" | \"background\">",
         ),
     ),
     (

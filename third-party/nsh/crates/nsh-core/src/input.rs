@@ -15,7 +15,7 @@ use crate::{
     Bounds, EdgeInsets, EventKind, EventMask, GestureValues, NodeId, PanActivation, Point, Points,
     ROOT_ID, Size, ViewKind,
     geometry::Radians,
-    tailwind::state::{HOVERED, PRESSED},
+    tailwind::state::{FOCUSED, HOVERED, PRESSED},
 };
 
 /// Distance a pointer moves before a pan or scroll drag starts.
@@ -460,10 +460,21 @@ pub fn released_inside(local: Point<Points>, size: Size<Points>, slop: EdgeInset
 
 // --- States and hover ---------------------------------------------------------------
 
+/// The interaction states a view that tracks `tracked`
+/// ([`crate::MountItem::TrackStates`]) reports: those, and always
+/// `FOCUSED`. The core keeps one keyboard focus per surface and works out
+/// `focus-within` from it (the views around the focused one, the overlays
+/// counting as inside the view the app put them in), so every view the
+/// focus reaches tells it, whatever its classes read. A focus change is
+/// one report.
+pub fn reported_states(tracked: u16) -> u16 {
+    tracked | FOCUSED
+}
+
 /// Interaction states `states` with `bit` set (or cleared), when the view
-/// tracks it and they change.
+/// reports it ([`reported_states`]) and they change.
 pub fn next_states(tracked: u16, states: u16, bit: u16, on: bool) -> Option<u16> {
-    if tracked & bit == 0 {
+    if reported_states(tracked) & bit == 0 {
         return None;
     }
     let next = if on { states | bit } else { states & !bit };
@@ -844,6 +855,14 @@ mod tests {
         assert_eq!(next_states(hovered, 0, hovered, true), Some(hovered));
         assert_eq!(next_states(hovered, hovered, hovered, true), None);
         assert_eq!(next_states(hovered, hovered, hovered, false), Some(0));
+    }
+
+    #[test]
+    fn focus_is_reported_whatever_is_tracked() {
+        assert_eq!(reported_states(0), FOCUSED);
+        assert_eq!(next_states(0, 0, FOCUSED, true), Some(FOCUSED));
+        assert_eq!(next_states(0, FOCUSED, FOCUSED, false), Some(0));
+        assert_eq!(next_states(0, FOCUSED, FOCUSED, true), None);
     }
 
     #[test]

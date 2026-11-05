@@ -177,6 +177,73 @@ shader 是一个容器：它接受 [view](./view.md) 的全部属性（样式、
 
 请通过样式给 shader 一个尺寸（宽 / 高、`flex`、宽高比），或由子元素撑开。
 
+## 效果、过渡与整个屏幕
+
+shader 也可以绘制其他视图绘制的内容。此时它的 WGSL 通过四个函数读取画面，每个函数接受区域中的一点 `uv`，返回带 alpha 的直通（非预乘）sRGB 颜色，画面之外为透明：
+
+| 函数 | 读取 |
+|---|---|
+| `sample_content(uv)` | 效果的子元素；屏幕效果则是整个界面 |
+| `sample_backdrop(uv)` | 视图后面的内容（任何 shader 都可以读取） |
+| `sample_from(uv)` | 过渡离开的一侧 |
+| `sample_to(uv)` | 过渡到达的一侧 |
+
+`nsh.progress` 是效果的 `progress`，或过渡进行到的程度（0 到 1）；`nsh.overflow` 是 shader 超出区域绘制的距离（点）。
+
+**`ShaderEffect`** 让子元素经过 shader 绘制：子元素保留点按、焦点和无障碍，显示的是 shader 的结果。`progress` 是一个数或一个动画值，动画值在原生侧驱动效果。`maxSampleOffset` 让 shader 超出区域绘制这么多点（光晕、模糊的边缘），此时 `uv` 会小于 0、大于 1。没有 `source` 时子元素按原样绘制。
+
+```tsx
+import { createAnimatedValue, ShaderEffect, Text } from "nsh";
+
+const WIPE_OUT = `
+fn shade(uv: vec2f) -> vec4f {
+  let c = sample_content(uv);
+  let edge = smoothstep(nsh.progress - 0.05, nsh.progress + 0.05, uv.x);
+  return vec4f(c.rgb, c.a * edge);
+}`;
+
+const gone = createAnimatedValue(0);
+
+<ShaderEffect source={WIPE_OUT} progress={gone} style={{ padding: 16 }}>
+  <Text>随 `gone` 变为 1 被擦除</Text>
+</ShaderEffect>
+```
+
+**`ShaderTransition`** 在 `value`（字符串、数或布尔值）变化时让子元素经过 shader 变化，第一个值不触发：`sample_from` 是子元素之前绘制内容的画面，`sample_to` 是它们现在绘制的内容，`nsh.progress` 在 `duration` 毫秒（300）内从 0 变到 1。没有 `source` 时运行 `fallback`：`"fade"`（淡入淡出，默认）或 `"none"`。
+
+```tsx
+<ShaderTransition source={WIPE} value={card()} duration={450}>
+  <Card name={card()} />
+</ShaderTransition>
+```
+
+**`ScreenEffect`** 和 **`ScreenTransition`** 对整个界面（它的页面、对话框和浮层）做同样的事。它们不占空间，也没有子元素，可以放在应用中的任何位置。最后挂载且带 `source` 的屏幕效果生效。
+
+页面和对话框可以通过 **`transitionShader`** 经过 shader 出现和离开：在 `NavPage` 或 `Dialog` 上设置 `{ source, uniforms, duration }`（Rust：在 `nav_page()` 或 `dialog()` 上调用 `.transition_shader(TransitionShader::new(program))`）。页面入栈或出栈、对话框显示或关闭时，下层一侧（下面的页面、没有对话框的应用）是 `sample_from`，上层是 `sample_to`；页面或对话框出现时 `nsh.progress` 从 0 走到 1，离开时从 1 走到 0，因此一个 shader 就能画出两个方向。
+
+```rust tabs
+use std::time::Duration;
+
+use nsh_base::nav_page;
+use nsh_core::{prelude::*, shader::{Shader, TransitionShader}};
+
+fn details() -> impl IntoElement {
+    let ripple = Shader::compile(RIPPLE).expect("a valid shader");
+    nav_page()
+        .title("详情")
+        .transition_shader(TransitionShader::new(ripple).duration(Duration::from_millis(500)))
+        .child(text("…"))
+}
+```
+
+```tsx tabs
+<NavPage title="详情" transitionShader={{ source: RIPPLE, duration: 500 }}>…</NavPage>
+```
+
+shader 取代页面或对话框的 `animation`，无论它是什么（包括 `"none"`）。在没有 GPU 的设备上、用户要求减少动态效果时（减弱动态效果、移除动画），以及源码无法编译时，运行的是 `animation`；若为 `"none"`，变化会立即显示。一次切换进行中又开始新的入栈、出栈、显示或关闭时，先完成正在进行的那一次：它的页面或对话框到达或离开，`onShow` 或 `onDismiss` 触发，新的切换从那里开始。
+
+平台在画面内容变化时重新获取画面，每个显示帧最多一次。画面由平台自己的渲染器绘制，因此它无法画进画面的内容（视频、网页、其他应用的视图）在画面中是透明的。
+
 ## 属性
 
 shader 接受 [view](./view.md) 的属性，另外还有：
@@ -186,6 +253,27 @@ shader 接受 [view](./view.md) 的属性，另外还有：
 | `source` | `.source(program)` | `string` | 定义 `fn shade(uv: vec2f) -> vec4f` 的 WGSL 源码。Rust 用 `Shader::compile(source)` 编译。 |
 | `uniforms` | `.uniform(name, value)` | `Record<string, ShaderUniform>` | `struct Uniforms` 各成员的值，按名称：数、颜色、动画值以及它们的列表。 |
 | `paused` | `.paused(bool)` | `boolean` | 停止 `nsh.time` 的时钟。默认 `false`。 |
+
+`ShaderEffect` 和 `ScreenEffect` 接受上述属性（`source` 可省略），另外还有：
+
+| 属性 | Rust | 类型 | 说明 |
+|---|---|---|---|
+| `progress` | `.progress(n)`、`.animated_progress(&value)` | `number \| AnimatedNode` | `nsh.progress`。默认 0。 |
+| `maxSampleOffset` | `.max_sample_offset(px(n))` | `number` | shader 超出区域绘制、画面延伸的距离（点）（`ShaderEffect` 和 `ShaderTransition`）。默认 0。 |
+
+`ShaderTransition` 和 `ScreenTransition` 接受 `source`、`uniforms` 和 `paused`，另外还有：
+
+| 属性 | Rust | 类型 | 说明 |
+|---|---|---|---|
+| `value` | `.value(key)` | `string \| number \| boolean` | 变化时运行过渡（第一个值不触发）。 |
+| `duration` | `.duration(Duration)` | `number` | 运行时长（毫秒）。默认 300。 |
+| `fallback` | `.fallback(TransitionFallback)` | `"fade" \| "none"` | 没有 `source` 时运行的内容。默认 `"fade"`。 |
+
+`NavPage` 和 `Dialog` 接受：
+
+| 属性 | Rust | 类型 | 说明 |
+|---|---|---|---|
+| `transitionShader` | `.transition_shader(TransitionShader::new(program))`、`.uniform(name, value)`、`.duration(Duration)` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | 页面或对话框出现和离开时经过的 shader，取代它的 `animation`。`duration` 以毫秒为单位，默认 350。 |
 
 ## 错误
 
@@ -223,4 +311,4 @@ shader 每个显示帧最多绘制一次，并且只在显示的内容变化时�
 | `.uniform(name, value)` | 设置 `struct Uniforms` 的一个成员：一个数、一个 `Color` 或 `Hsla`、`[f32; 2]` / `[f32; 3]` / `[f32; 4]`，或一个 `Vec<UniformValue>`。绑定的值（`move \|\| …`）变化时重新设置；动画值（`&wave`：一个数，或用于 `vec3f` / `vec4f` 的颜色）在原生侧逐帧驱动它。 |
 | `.paused(bool)` | 停止 `nsh.time` 的时钟；可绑定。 |
 
-子元素用 `.child(..)` 添加，样式用常用的类型化方法。
+子元素用 `.child(..)` 添加，样式用常用的类型化方法。`shader_effect()`、`shader_transition()`、`screen_effect()` 和 `screen_transition()` 创建其他元素，方法见上表。

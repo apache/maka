@@ -17,7 +17,7 @@ draws the segments itself.
 
 ```rust tabs
 use chrono::NaiveTime;
-use nsh_base::{HourCycle, TimeFieldSegmentState, TimeOfDay, time_field, theme};
+use nsh_base::{HourCycle, TimeFieldSegmentEntry, TimeOfDay, time_field};
 use nsh_core::prelude::*;
 
 fn reminder_time() -> impl IntoElement {
@@ -27,13 +27,8 @@ fn reminder_time() -> impl IntoElement {
         .on_change(move |next: &TimeOfDay| at.set(*next))
         .hour_cycle(HourCycle::H12)
         .accessibility_label("Reminder time")
-        .render_segment(|segment: &TimeFieldSegmentState| {
-            view()
-                .px_1()
-                .rounded_sm()
-                .when(segment.selected, |v| v.bg(move || theme().accent))
-                .child(text(segment.label.clone()))
-        })
+        .segment_class("rounded-sm focus:bg-accent disabled:opacity-50")
+        .render_segment(|segment: &TimeFieldSegmentEntry| view().px_1().child(text(segment.label.clone())))
 }
 ```
 
@@ -97,14 +92,23 @@ phones and tablets it brings up the number pad.
 | `hourCycle` | `.hour_cycle(..)` | `"h23" \| "h12"` | `"h23"` | How it counts the hours; `"h12"` adds an AM/PM segment. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No focus and no editing; `disabled:` styles apply to the field and its segments. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers call the field. |
-| `segmentClass`, `segmentStyle` | `.segment_class(..)`, `.segment_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each segment: `focus:` on the selected one while the field has the focus, `disabled:` with the field. |
+| `segmentClass`, `segmentStyle` | `.segment_class(..)`, `.segment_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each segment: `focus:` on the selected one while the field has the focus, `disabled:` with the field; with `group`, its content follows them (`group-focus:`, `group-disabled:`). |
 | `separatorClass`, `separatorStyle` | `.separator_class(..)`, `.separator_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each `:` between the numbers. |
-| `renderSegment` | `.render_segment(..)` | `(segment: TimeFieldSegmentState) => JSX.Element` | none | A segment's content, drawn by the app; its label otherwise. |
+| `renderSegment` | `.render_segment(..)` | `(segment: TimeFieldSegmentEntry) => JSX.Element` | none | A segment's content, drawn by the app from what it shows; its label otherwise. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The field, around its segments (a row). |
 
-`renderSegment` gets a `TimeFieldSegmentState`: `segment` (`"hour"`, `"minute"`, `"second"` or `"period"`), `value`
-(the hour on the field's clock, the minute or the second; `0` for AM and `1` for PM), `label` (two digits, or `AM` /
-`PM`), `selected` (the keys edit it) and `disabled`.
+`renderSegment` gets a `TimeFieldSegmentEntry`: `segment` (`"hour"`, `"minute"`, `"second"` or `"period"`), `value`
+(the hour on the field's clock, the minute or the second; `0` for AM and `1` for PM) and `label` (two digits, or `AM` /
+`PM`). It never gets the segment's state: the segment is `focus:` while the keys edit it and `disabled:` with the
+field, and with `group` in `segmentClass` its content follows with `group-focus:` and `group-disabled:`. So a segment
+is drawn again only when its value changes; moving between the segments and the focus coming and going draw nothing:
+
+```tsx
+<TimeField
+  segmentClass="group rounded-sm px-0.5 focus:bg-primary"
+  renderSegment={(segment) => <Text class="text-sm tabular-nums text-foreground group-focus:text-primary-foreground">{segment.label}</Text>}
+/>
+```
 
 ## Events
 
@@ -117,7 +121,7 @@ phones and tablets it brings up the number pad.
 | Part | Where | Styled with |
 |---|---|---|
 | The field | the root, a row | `class`, `style` |
-| A segment | the field: hour, minute, second, AM/PM | `segmentClass`, `segmentStyle`, `renderSegment` |
+| A segment | the field: hour, minute, second, AM/PM | `segmentClass`, `segmentStyle`, `renderSegment` (`group-focus:`, `group-disabled:` inside, under `group` in `segmentClass`) |
 | A separator | the field, between two numbers | `separatorClass`, `separatorStyle` |
 
 ## Keyboard

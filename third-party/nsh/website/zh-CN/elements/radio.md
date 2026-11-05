@@ -91,6 +91,7 @@ mount(App);
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不响应按压，也没有按压反馈；`disabled:` 样式生效，屏幕阅读器会报告它不可用。 |
 | `checkedStyle` | `.checked_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | 勾选且未禁用时单选框自身的样式，与 `checked:` 类相同。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器读出的文字：子元素没有说明这个选项的文字时设置。 |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 应用的指示器和标签，屏幕阅读器会读出。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 单选框自身：包住指示器和标签的那一行。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 单选框按下、悬停、获得焦点或禁用时的样式，与对应的 `<state>:` 类相同。 |
@@ -144,6 +145,24 @@ mount(App);
 </Radio>
 ```
 
+<a id="a-small-target-with-hitslop"></a>
+
+## 用 hitSlop 扩大小目标
+
+旁边没有标签的单选框（表格行里的一个圆点）可能比手指还小。`hitSlop` 让落在它附近的按压也算数，单位为超出每一边的点数，不改变它的布局和外观：一个数字表示每一边，或分别指定各边（`{ top: 8, bottom: 8 }`），与[视图的 `hitSlop`](./index.md#按压与反馈) 取值相同。
+
+```tsx
+<Radio
+  checked={plan() === "team"}
+  hitSlop={12}
+  accessibilityLabel="Team"
+  onChange={() => plan.set("team")}
+  class="group size-5 items-center justify-center rounded-full border-2 border-border group-checked:border-primary"
+>
+  <View class="size-2.5 rounded-full group-checked:bg-primary" />
+</Radio>
+```
+
 <a id="accessibility"></a>
 
 ## 无障碍
@@ -169,7 +188,7 @@ mount(App);
 | Up、Left | 把焦点移到上一个单选框（从第一个回到最后一个），并勾选它。 |
 | Space | 勾选拥有焦点的单选框。 |
 
-方向键跳过禁用的单选框；焦点移到的单选框通过 `onChange` 请求被勾选，由应用勾选它。`focus:` 样式显示焦点所在。不在 `RadioGroup` 里的 `Radio` 是独立的一站，Tab 可以到达它，Space 和 Return 勾选它。
+方向键跳过禁用的单选框；焦点移到的单选框通过 `onChange` 请求被勾选，由应用勾选它。在从右到左的布局里，Left 和 Right 互换：Left 移到下一个单选框，Right 移到上一个；Up 和 Down 不变。`focus:` 样式显示焦点所在。不在 `RadioGroup` 里的 `Radio` 是独立的一站，Tab 可以到达它，Space 和 Return 勾选它。
 
 <a id="platform-notes"></a>
 

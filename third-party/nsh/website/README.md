@@ -137,6 +137,21 @@ CI sets `NSH_REQUIRE_PLAY=1`, so a failed player build fails the deployment
 instead of publishing pages without their live demos. Pull requests build and
 test without deploying.
 
+The published site holds every version of the documentation, as GPUI Kit's
+does: the latest release at `/`, `main` at `/versions/main` and each earlier
+release (from v0.2.0) at `/versions/<tag>`, with a menu in the header that
+opens the same page in another version. `bun run build:versions`
+(`scripts/versions.js`) builds them all into `dist/`. Every version uses this
+checkout's site (layouts, components, styles); a release takes from its tag
+only its pages (`docs`, `elements`, `modules`, `zh-CN`) and its demos, which
+run on the player its own `cargo xtask web` builds, so a page and its demo
+always match. Releases' builds are kept in `.versions/` (cached in CI) and
+rebuilt only when the site's own files change. Versions other than the latest
+are not indexed (their canonical link is the latest's page) and link to the
+latest's App Stories. The Release workflow's completion deploys the site, so
+a new release moves to the root. `NSH_SITE_VERSIONS=main,v0.3.0` limits a
+local run to those versions.
+
 ## App Stories
 
 `/apps` (`src/components/Apps.astro`, `src/pages/apps/`) presents apps built

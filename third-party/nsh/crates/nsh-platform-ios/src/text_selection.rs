@@ -591,6 +591,9 @@ mod tests {
         let _ = SelectionRect::class();
         let class = TextView::class();
         assert!(class.conforms_to(<dyn UITextInput>::protocol().expect("UITextInput")));
+        // Declared by `UITextInput` only from iOS 18, so defined on the
+        // class itself: still there for UIKit to ask.
+        assert!(class.instance_method(objc2::sel!(isEditable)).is_some());
     }
 
     /// A type encoding without its frame offsets (`@24@0:8` → `@@:`).

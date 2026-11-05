@@ -1,4 +1,4 @@
-import { Canvas, cleanup, createAnimatedValue, Easing, effect, type JSX, LayoutAnimation, Path2D, platform, reduceMotion, signal, Text, token, View, type ViewStyle } from "nsh";
+import { Canvas, cleanup, computed, createAnimatedValue, Easing, effect, type JSX, LayoutAnimation, Path2D, platform, reduceMotion, signal, Text, token, View, type ViewStyle } from "nsh";
 import { Button as BaseButton, Link, Menu, MenuItem, MenuSeparator, Popover, Slider, Toggle, ToggleGroup, Toolbar, ToolbarGroup, ToolbarSeparator } from "nsh/base";
 import { alpha, Badge, Caption, Card, chart, colors, DemoPage, finish, focusRing, hovered, menuIndicator, MenuMark, mono, motion, PopIn, popupSurface, sliderFill, sliderLook, Tip, Toggle as Switch } from "../ui";
 import { Field } from "./OverlayUi";
@@ -208,17 +208,20 @@ const BLOCKS: { value: Block; icon: LucideIconName }[] = [
   { value: "Quote", icon: "text-quote" },
 ];
 
-/** A row of a toolbar's menu; `checked` makes it one choice of a group (the block, the alignment), its dot the app's mark. */
-function Item(props: { label: string; icon?: LucideIconName; onSelect: () => void; checked?: boolean; disabled?: boolean }) {
+/**
+ * A row of a toolbar's menu; `checked` makes it one choice of a group (the block, the alignment), its dot the app's
+ * mark, or with `check` an on / off tool folded into the menu (a mark), its check the app's.
+ */
+function Item(props: { label: string; icon?: LucideIconName; onSelect: () => void; checked?: boolean; check?: boolean; disabled?: boolean }) {
   const row = pointer ? { height: 26, radius: 6, font: 13, icon: 14 } : { height: 46, radius: 10, font: 16, icon: 18 };
   return (
     <MenuItem
       onSelect={props.onSelect}
       disabled={props.disabled}
       checked={props.checked}
-      role={props.checked === undefined ? undefined : "menuitemradio"}
+      role={props.checked === undefined ? undefined : props.check ? "menuitemcheckbox" : "menuitemradio"}
       indicatorClass={menuIndicator}
-      indicator={props.checked === undefined ? undefined : <MenuMark kind="dot" size={row.icon} tint={colors.accent} />}
+      indicator={props.checked === undefined ? undefined : <MenuMark kind={props.check ? "check" : "dot"} size={row.icon} tint={colors.accent} />}
       hoverStyle={{ backgroundColor: token("accent") }}
       activeStyle={{ backgroundColor: alpha(colors.text, 0.1) }}
       disabledStyle={{ opacity: 0.35 }}
@@ -236,6 +239,26 @@ function Item(props: { label: string; icon?: LucideIconName; onSelect: () => voi
 function MenuPanel(props: { children: JSX.Element }) {
   if (!pointer) return props.children;
   return <PopIn style={{ ...popupSurface(), minWidth: 190, padding: 4 }}>{props.children}</PopIn>;
+}
+
+/** What a narrow formatting bar folds into "⋯" after the alignment, least used first. */
+const FOLDS = ["strike", "underline", "redo", "undo"] as const;
+
+/**
+ * The width the formatting bar takes once compact (the alignment folded, the block menu's label hidden) with the
+ * first `folded` of `FOLDS` folded too: the tools' sides, the rules, the gaps between them, the track's padding and
+ * border, and some slack.
+ */
+function compactWidth(folded: number): number {
+  const out = new Set<string>(FOLDS.slice(0, folded));
+  const history = ["undo", "redo"].filter((h) => !out.has(h)).length;
+  const marks = MARKS.filter((m) => !out.has(m.value)).length;
+  const [gap, rule, side] = [2, 9, TOOL.side];
+  // The block menu's trigger: its border, padding, icon, gap and caret.
+  const block = 2 + 16 + TOOL.icon + 6 + 7;
+  const run = (n: number) => n * side + (n - 1) * gap;
+  const parts = [...(history ? [run(history), rule] : []), block, rule, run(marks), rule, side, 0, side];
+  return parts.reduce((a, b) => a + b, 0) + (parts.length - 1) * gap + 8 + 8;
 }
 
 const sheet = pointer ? undefined : { backgroundColor: colors.surface, borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 10, paddingTop: 10, paddingBottom: 34 };
@@ -280,11 +303,21 @@ export function ToolbarDemo() {
     const has = (m: string) => state().marks.includes(m);
     const toggleMark = (m: { value: string; label: string }, on: boolean) =>
       commit({ marks: on ? [...state().marks, m.value] : state().marks.filter((v) => v !== m.value) }, `${m.label}: ${on ? "on" : "off"}`);
-    // A narrow pane folds the alignment into the overflow menu.
+    // A narrow pane folds the alignment into the overflow menu; a narrower one (a phone) folds more, a tool at a
+    // time, until the bar fits: "⋯" stays in reach at any width.
     const width = signal(0);
     const compact = () => width() > 0 && width() < (pointer ? 470 : 520);
+    const folds = computed(() => {
+      if (!compact()) return 0;
+      let n = 0;
+      while (n < FOLDS.length && compactWidth(n) > width()) n++;
+      return n;
+    });
+    /** Whether `tool` (a fold, or a mark's value) is in "⋯" now. */
+    const folded = (tool: string) => (FOLDS.slice(0, folds()) as readonly string[]).includes(tool);
     effect(() => {
       compact();
+      folds();
       if (!reduceMotion()) LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     });
     const blockOpen = signal(false);
@@ -300,11 +333,15 @@ export function ToolbarDemo() {
     return (
       <Card title="Text formatting" subtitle="History, a block menu, marks, alignment and a link: one stop of Tab" right={<Badge label={`${past().length} edits`} />}>
         <Toolbar accessibilityLabel="Formatting" style={track()} onLayout={({ bounds }) => width.set(bounds.size.width)}>
-          <ToolbarGroup accessibilityLabel="History" style={{ gap: 2 }}>
-            <Command icon="undo-2" label="Undo" shortcut="⌘Z" disabled={past().length === 0} onPress={undo} />
-            <Command icon="redo-2" label="Redo" shortcut="⌘⇧Z" disabled={future().length === 0} onPress={redo} />
-          </ToolbarGroup>
-          <Rule />
+          <If when={!folded("undo")}>
+            <ToolbarGroup accessibilityLabel="History" style={{ gap: 2 }}>
+              <Command icon="undo-2" label="Undo" shortcut="⌘Z" disabled={past().length === 0} onPress={undo} />
+              <If when={!folded("redo")}>
+                <Command icon="redo-2" label="Redo" shortcut="⌘⇧Z" disabled={future().length === 0} onPress={redo} />
+              </If>
+            </ToolbarGroup>
+            <Rule />
+          </If>
           <Menu
             offset={6}
             margin={8}
@@ -332,7 +369,9 @@ export function ToolbarDemo() {
           <Rule />
           {/* A toggle group inside the toolbar is one of its groups: its toggles are the toolbar's items. */}
           <ToggleGroup style={{ flexDirection: "row", gap: 2 }}>
-            <Each of={MARKS}>{(m) => <Mark icon={m().icon} label={m().label} shortcut={m().shortcut} pressed={has(m().value)} onChange={(on) => toggleMark(m(), on)} />}</Each>
+            <Each of={MARKS.filter((m) => !folded(m.value))}>
+              {(m) => <Mark icon={m().icon} label={m().label} shortcut={m().shortcut} pressed={has(m().value)} onChange={(on) => toggleMark(m(), on)} />}
+            </Each>
           </ToggleGroup>
           <If when={!compact()}>
             <Rule />
@@ -399,6 +438,20 @@ export function ToolbarDemo() {
             }
           >
             <MenuPanel>
+              {/* What the bar folded: the history, the marks, then the alignment. */}
+              <If when={folded("redo")}>
+                <If when={folded("undo")}>
+                  <Item label="Undo" icon="undo-2" disabled={past().length === 0} onSelect={undo} />
+                </If>
+                <Item label="Redo" icon="redo-2" disabled={future().length === 0} onSelect={redo} />
+                <MenuSeparator style={{ height: 1, marginVertical: 4, marginHorizontal: 4, backgroundColor: colors.line }} />
+              </If>
+              <If when={folded("strike")}>
+                <Each of={MARKS.filter((m) => folded(m.value))}>
+                  {(m) => <Item label={m().label} icon={m().icon} check checked={has(m().value)} onSelect={() => toggleMark(m(), !has(m().value))} />}
+                </Each>
+                <MenuSeparator style={{ height: 1, marginVertical: 4, marginHorizontal: 4, backgroundColor: colors.line }} />
+              </If>
               <If when={compact()}>
                 <Each of={ALIGNS}>
                   {(a) => <Item label={a().label} checked={state().align === a().value} onSelect={() => commit({ align: a().value }, `Align: ${a().value}`)} />}
@@ -428,8 +481,8 @@ export function ToolbarDemo() {
           </Text>
         </View>
         <Caption
-          label={pointer ? "Tab into the bar: ← → move, Home / End jump, Space presses" : "Press a tool; narrow panes fold the alignment into ⋯"}
-          note={`${state().marks.length} marks · ${state().align}${compact() ? " · folded" : ""}`}
+          label={pointer ? "Tab into the bar: ← → move, Home / End jump, Space presses" : "Press a tool; what the bar has no room for folds into ⋯"}
+          note={`${state().marks.length} marks · ${state().align}${compact() ? ` · ${1 + folds()} in ⋯` : ""}`}
         />
       </Card>
     );

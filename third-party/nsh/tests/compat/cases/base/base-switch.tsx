@@ -5,8 +5,9 @@
 // (`checked`), `disabled`, and the app's look of the switch
 // (`checkedStyle`) and of its track and thumb (`trackClass`, `trackStyle`,
 // `thumbClass`, `thumbStyle`), whose `checked:` and `disabled:` classes
-// follow the switch. The parts' widths move the label after them, which
-// is how its script sees them.
+// follow the switch, and how far outside it presses count (`hitSlop`, a
+// number for every side or some sides). The parts' widths move the label
+// after them, which is how its script sees them.
 import { Text, View, signal } from "nsh";
 import { Switch } from "nsh/base";
 
@@ -23,6 +24,7 @@ function App() {
   const changes = signal(0);
   const asked = signal("");
   const disabled = signal(true);
+  const wide = signal(false);
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Switch
@@ -49,6 +51,7 @@ function App() {
         <Text>Locked</Text>
       </Switch>
       <View testID="enable" onPress={() => disabled.set(!disabled())} style={{ height: 20 }} />
+      <Switch testID="mute" checked={wide()} accessibilityLabel="Mute" hitSlop={wide() ? { top: 4, left: 2 } : 12} onChange={({ checked }) => wide.set(checked)} />
     </View>
   );
 }

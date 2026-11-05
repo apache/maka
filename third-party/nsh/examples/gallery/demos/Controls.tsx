@@ -1,5 +1,5 @@
 import { type AnimatedValue, cleanup, computed, createAnimatedValue, createMotion, Easing, effect, type JSX, LayoutAnimation, Scroll, signal, Text, token, View } from "nsh";
-import { Button as BaseButton, type CalendarItemState, Checkbox, Collapsible, Combobox, type DateMatcher, DatePicker, type DateRangePreset, NumberInput, OtpInput, type OtpInputRef, Progress, Radio, RadioGroup, Select, type SelectGroup, type SelectItemState, Slider, Switch, Tab, Tabs } from "nsh/base";
+import { Button as BaseButton, type CalendarEntry, Checkbox, Collapsible, Combobox, type DateMatcher, DatePicker, type DateRangePreset, NumberInput, OtpInput, type OtpInputRef, Progress, Radio, RadioGroup, Select, type SelectEntry, type SelectGroup, Slider, Switch, Tab, Tabs } from "nsh/base";
 import { reduceMotion } from "nsh";
 import { platform, windowSize } from "nsh";
 import { Icon, type IconName } from "../icons";
@@ -1463,6 +1463,28 @@ export function Controls(props: { show: Control }) {
    * as under the pointer). `lead` goes before the title (a flag, a status's dot, faces); `error` edges it in the
    * danger tone.
    */
+  /**
+   * A field's focus ring, as the Input demo's: a 2-point accent edge around the border, fading in while the field
+   * (`group-focus:`) or a view in it (`group-focus-within:`) has the focus. It lies over the field and takes no touches.
+   */
+  function FieldRing(props: { within?: boolean; error?: boolean }) {
+    return (
+      <View
+        class={`opacity-0 transition-opacity duration-150 motion-reduce:transition-none ${props.within ? "group-focus-within:opacity-100" : "group-focus:opacity-100"}`}
+        style={{
+          pointerEvents: "none",
+          position: "absolute",
+          top: -2,
+          left: -2,
+          right: -2,
+          bottom: -2,
+          borderRadius: radius.control + 1,
+          borderWidth: 2,
+          borderColor: props.error ? colors.danger : colors.accent,
+        }}
+      />
+    );
+  }
   function Picker(props: { title: string; open: boolean; disabled?: boolean; placeholder?: boolean; clearable?: boolean; lead?: JSX.Element; error?: boolean }) {
     return (
       <View
@@ -1471,6 +1493,8 @@ export function Controls(props: { show: Control }) {
           alignItems: "center",
           gap: 8,
           height: size.line,
+          // Room for the list's rows, which are as wide as the trigger.
+          minWidth: pointer ? 180 : undefined,
           paddingLeft: 10,
           // Room for the clear button, which goes over the trigger's end in place of the chevron.
           paddingRight: props.clearable ? clearInset + size.clear + 8 : 10,
@@ -1486,23 +1510,29 @@ export function Controls(props: { show: Control }) {
         }}
         hoverStyle={props.disabled || props.error ? undefined : { borderColor: colors.faint }}
         activeStyle={pressed}
-        focusStyle={focusRing()}
+        class="group"
         disabledStyle={dimmed}
       >
         {props.lead}
-        <Text style={{ numberOfLines: 1, fontSize: size.label, color: props.placeholder ? colors.faint : colors.text }}>{props.title}</Text>
+        <Text style={{ flex: 1, numberOfLines: 1, fontSize: size.label, color: props.placeholder ? colors.faint : colors.text }}>{props.title}</Text>
         <Chevron open={props.open} hidden={props.clearable} />
+        <FieldRing error={props.error} />
       </View>
     );
   }
   /**
-   * A row of the list, its look on the row (`itemClass`), which the list keeps while it draws the row's content
-   * again: lit while highlighted (`focus:`, the keys or the pointer on it), the fill and edge fading between rows as
-   * the highlight moves; at once with reduced motion.
+   * A row of the list, its look on the row (`itemClass`): lit while highlighted (`focus:`, the keys or the pointer
+   * on it), the fill and edge fading between rows as the highlight moves (at once with reduced motion), dimmed while
+   * disabled. Every state is the row's class (`group`), so the list draws a row's content once per item and the
+   * highlight moves without drawing anything.
    */
-  const optionClass = "rounded-[7px] border border-transparent transition-colors duration-100 motion-reduce:transition-none focus:border-brand/30 focus:bg-brand-tint active:opacity-70";
-  /** A row's content: bolder with a check while chosen; `lead` before the title (a flag, a dot, a face, an icon), `note` after it. */
-  function Option(props: { item: SelectItemState; note?: string; lead?: JSX.Element; detail?: string }) {
+  const optionClass =
+    "group rounded-[7px] border border-transparent transition-colors duration-100 motion-reduce:transition-none focus:border-brand/30 focus:bg-brand-tint active:opacity-70 disabled:opacity-35";
+  /**
+   * A row's content: bolder with a check while chosen (`group-selected:`); `lead` before the title (a flag, a dot, a
+   * face, an icon), `note` after it.
+   */
+  function Option(props: { item: SelectEntry; note?: string; lead?: JSX.Element; detail?: string }) {
     return (
       <View
         style={{
@@ -1511,13 +1541,15 @@ export function Controls(props: { show: Control }) {
           gap: 8,
           // The row's 1-point border on each side.
           height: props.detail ? (pointer ? 38 : 52) : pointer ? 30 : 44,
-          paddingHorizontal: 7,
-          opacity: props.item.disabled ? 0.35 : 1,
+          // With its border and the popup's padding, the trigger's inset: a select's chosen row lies over the trigger, title on title.
+          paddingHorizontal: pointer ? 3 : 7,
         }}
       >
         {props.lead}
         <View style={{ flex: 1, minWidth: 0 }}>
-          <Text style={{ numberOfLines: 1, fontSize: 14, fontWeight: props.item.selected ? "600" : "400", color: colors.text }}>{props.item.title}</Text>
+          <Text class="font-normal group-selected:font-semibold" style={{ numberOfLines: 1, fontSize: 14, color: colors.text }}>
+            {props.item.title}
+          </Text>
           <If when={props.detail}>
             <Text style={{ numberOfLines: 1, fontSize: 12, color: colors.muted }}>{props.detail}</Text>
           </If>
@@ -1525,10 +1557,8 @@ export function Controls(props: { show: Control }) {
         <If when={props.note}>
           <Text style={{ fontSize: 12, color: colors.faint, fontVariant: ["tabular-nums"] }}>{props.note}</Text>
         </If>
-        <View style={{ width: 16, alignItems: "center" }}>
-          <If when={props.item.selected}>
-            <Icon name="check" size={14} tint={colors.accent} />
-          </If>
+        <View class="opacity-0 group-selected:opacity-100" style={{ width: 16, alignItems: "center" }}>
+          <Icon name="check" size={14} tint={colors.accent} />
         </View>
       </View>
     );
@@ -1545,6 +1575,33 @@ export function Controls(props: { show: Control }) {
     backgroundColor: colors.field,
     ...finish.field,
   });
+  /**
+   * A combobox's field, shadcn's input group: the root draws the box, the input types inside it, and the chevron
+   * opens and closes the list.
+   */
+  const comboStyle = (open: boolean) => ({
+    flexDirection: "row" as const,
+    alignItems: "center" as const,
+    // A set width with a pointer, as a select's; the row's on a touch screen.
+    ...(pointer ? { width: 260 } : { alignSelf: "stretch" as const }),
+    minHeight: size.line,
+    paddingLeft: 10,
+    paddingRight: 4,
+    borderRadius: radius.control,
+    borderWidth: 1,
+    borderColor: open ? colors.faint : colors.fieldBorder,
+    backgroundColor: colors.field,
+    ...finish.field,
+  });
+  const comboInputStyle = () => ({ flex: 1, minWidth: 40, height: size.line - 2 });
+  /** A combobox's toggle: the chevron in a square that lights under the pointer. */
+  function ComboToggle(props: { id: string; open: boolean }) {
+    return (
+      <View testID={props.id} style={{ width: 24, height: 24, alignItems: "center", justifyContent: "center", borderRadius: 6 }} hoverStyle={{ backgroundColor: colors.track }}>
+        <Chevron open={props.open} />
+      </View>
+    );
+  }
   /** What a list shows while its search matches nothing. */
   function Empty(props: { label: string }) {
     return <Text style={{ paddingVertical: 20, textAlign: "center", fontSize: 14, color: colors.muted }}>{props.label}</Text>;
@@ -1590,7 +1647,7 @@ export function Controls(props: { show: Control }) {
               margin={8}
               align="end"
               // Wider than the trigger with a pointer: the titles whole.
-              popupStyle={pointer ? { ...surface(), width: 200 } : surface()}
+              popupStyle={surface()}
               backdropStyle={backdrop}
               itemClass={optionClass}
               trigger={<Picker title={titleOf(SORTS, sort())} open={sortOpen()} />}
@@ -1610,13 +1667,14 @@ export function Controls(props: { show: Control }) {
               accessibilityLabel="Font"
               searchable
               searchPlaceholder="Search fonts"
+              searchAccessibilityLabel="Search fonts"
               searchClass={searchClass}
               searchStyle={searchStyle()}
               empty={<Empty label="No font matches" />}
               offset={4}
               margin={8}
               align="end"
-              popupStyle={pointer ? { ...surface(), width: 260 } : surface()}
+              popupStyle={pointer ? { ...surface(), minWidth: 260 } : surface()}
               backdropStyle={backdrop}
               itemClass={optionClass}
               cleanable
@@ -1638,12 +1696,12 @@ export function Controls(props: { show: Control }) {
     );
   }
 
-  /** What the lists of the cards below share: at the trigger's end with a pointer (`width` wide), a sheet on a phone. */
-  const listProps = (width?: number) => ({
+  /** What the lists of the cards below share: as wide as the trigger with a pointer (wider with `minWidth`), a sheet on a phone. */
+  const listProps = (minWidth?: number) => ({
     offset: 4,
     margin: 8,
     align: "end" as const,
-    popupStyle: pointer && width ? { ...surface(), width } : surface(),
+    popupStyle: pointer && minWidth ? { ...surface(), minWidth } : surface(),
     backdropStyle: backdrop,
     itemClass: optionClass,
   });
@@ -1788,6 +1846,7 @@ export function Controls(props: { show: Control }) {
             accessibilityLabel="Country"
             searchable
             searchPlaceholder="Search countries"
+            searchAccessibilityLabel="Search countries"
             searchClass={searchClass}
             searchStyle={searchStyle()}
             empty={<Empty label="We do not ship there" />}
@@ -1912,25 +1971,27 @@ export function Controls(props: { show: Control }) {
               onConfirm={({ value }) => last.set(`Topics confirmed: ${value.length}`)}
               onOpenChange={opened((open) => topicsOpen.set(open))}
               accessibilityLabel="Topics"
-              searchable
-              searchPlaceholder="Search topics"
-              searchClass={searchClass}
-              searchStyle={searchStyle()}
+              class="group"
+              prefix={<FieldRing within />}
+              style={comboStyle(topicsOpen())}
+              placeholder={topics().length ? topicsTitle() : "Add topics"}
+              inputClass={searchClass}
+              inputStyle={comboInputStyle()}
+              triggerButton={<ComboToggle id="topics-toggle" open={topicsOpen()} />}
               empty={<Empty label="No topic matches" />}
               offset={4}
               margin={8}
               align="end"
-              popupStyle={pointer ? { ...surface(), width: 240 } : surface()}
+              popupStyle={surface()}
               backdropStyle={backdrop}
               itemClass={optionClass}
               cleanable
               clearButtonAccessibilityLabel="Clear the topics"
               clearButtonClass="items-center justify-center rounded-full enabled:hover:bg-accent active:bg-track"
-              clearButtonStyle={{ position: "absolute", top: (size.line - size.clear) / 2, right: clearInset, width: size.clear, height: size.clear }}
+              clearButtonStyle={{ width: size.clear, height: size.clear }}
               clearButton={<Icon name="close" size={size.clear - 6} tint={colors.muted} />}
               footerStyle={{ marginTop: 6, paddingTop: 6, paddingHorizontal: 9, borderTopWidth: 1, borderColor: colors.border }}
               footer={<Text style={{ fontSize: 12, color: colors.muted }}>{`${topics().length} selected`}</Text>}
-              trigger={<Picker title={topics().length ? topicsTitle() : "Add topics"} open={topicsOpen()} placeholder={!topics().length} clearable={topics().length > 0} />}
               renderItem={(item) => <Option item={item} note={item.disabled ? "Archived" : undefined} />}
               renderGroup={(group) => <Header group={group} />}
             />
@@ -1949,10 +2010,16 @@ export function Controls(props: { show: Control }) {
               offset={4}
               margin={8}
               align="end"
-              popupStyle={pointer ? { ...surface(), width: 200 } : surface()}
+              popupStyle={surface()}
               backdropStyle={backdrop}
               itemClass={optionClass}
-              trigger={<Picker title={names(REVIEWERS, reviewer())[0] ?? "Nobody"} open={reviewerOpen()} placeholder={!reviewer().length} />}
+              class="group"
+              prefix={<FieldRing within />}
+              style={comboStyle(reviewerOpen())}
+              placeholder={"Nobody"}
+              inputClass={searchClass}
+              inputStyle={comboInputStyle()}
+              triggerButton={<ComboToggle id="reviewer-toggle" open={reviewerOpen()} />}
               renderItem={(item) => <Option item={item} />}
             />
           </View>
@@ -1987,29 +2054,27 @@ export function Controls(props: { show: Control }) {
             onChange={({ value }) => set(value)}
             onOpenChange={opened((o) => open.set(o))}
             accessibilityLabel="Assignees"
-            searchable
-            searchPlaceholder="Search people"
-            searchClass={searchClass}
-            searchStyle={searchStyle()}
+            class="group"
+            style={comboStyle(open())}
+            placeholder={people().length ? `${people().length} ${people().length === 1 ? "person" : "people"}` : "Assign"}
+            inputClass={searchClass}
+            inputStyle={comboInputStyle()}
+            triggerButton={<ComboToggle id="assignees-toggle" open={open()} />}
+            prefix={
+              <>
+              <FieldRing within />
+              {/* The faces overlap, each ringed in the card's color. */}
+              <If when={people().length}>
+                <View style={{ flexDirection: "row", marginRight: 6 }}>
+                  <Each of={people().slice(0, 3)}>{(v, i) => <View style={{ marginLeft: i() ? -6 : 0 }}><Avatar name={person(v()).title} tone={person(v()).tone} size={pointer ? 20 : 24} ring /></View>}</Each>
+                </View>
+              </If>
+              </>
+            }
             empty={<Empty label="Nobody by that name" />}
-            {...listProps(260)}
+            {...listProps()}
             footerStyle={{ marginTop: 6, paddingTop: 6, paddingHorizontal: 9, borderTopWidth: 1, borderColor: colors.border }}
             footer={<Text style={{ fontSize: 12, color: colors.muted }}>{full() ? "Four assigned: take one off to add another" : `${MAX_PEOPLE - people().length} more can be added`}</Text>}
-            trigger={
-              <Picker
-                title={people().length ? `${people().length} ${people().length === 1 ? "person" : "people"}` : "Assign"}
-                placeholder={!people().length}
-                open={open()}
-                lead={
-                  // The faces overlap, each ringed in the card's color.
-                  <If when={people().length}>
-                    <View style={{ flexDirection: "row" }}>
-                      <Each of={people().slice(0, 3)}>{(v, i) => <View style={{ marginLeft: i() ? -6 : 0 }}><Avatar name={person(v()).title} tone={person(v()).tone} size={pointer ? 20 : 24} ring /></View>}</Each>
-                    </View>
-                  </If>
-                }
-              />
-            }
             renderItem={(item) => (
               <Option
                 item={item}
@@ -2080,12 +2145,14 @@ export function Controls(props: { show: Control }) {
               if (!o) query.set("");
             }}
             accessibilityLabel="Labels"
-            searchable
-            searchPlaceholder="Search or create labels"
-            searchClass={searchClass}
-            searchStyle={searchStyle()}
-            {...listProps(240)}
-            trigger={<Picker title={labels().length ? `${labels().length} ${labels().length === 1 ? "label" : "labels"}` : "Add labels"} placeholder={!labels().length} open={open()} />}
+            class="group"
+            prefix={<FieldRing within />}
+            style={comboStyle(open())}
+            placeholder={"Search or create labels"}
+            inputClass={searchClass}
+            inputStyle={comboInputStyle()}
+            triggerButton={<ComboToggle id="labels-toggle" open={open()} />}
+            {...listProps()}
             renderItem={(item) =>
               item.value.startsWith(NEW_LABEL) && !label(item.value) ? (
                 <Option item={item} lead={<Icon name="plus" size={14} tint={colors.accent} />} note={pointer ? "Return" : undefined} />
@@ -2133,43 +2200,42 @@ export function Controls(props: { show: Control }) {
           }}
           onOpenChange={opened((o) => open.set(o))}
           accessibilityLabel="Command"
-          searchable
-          searchPlaceholder="Type a command"
-          searchClass={searchClass}
-          searchStyle={searchStyle()}
-          empty={<Empty label="No command matches" />}
-          {...listProps(300)}
-          align="start"
-          trigger={
-            // A field that opens the list, as a command palette's: the search icon, a hint, the shortcut.
-            <View
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                height: size.line,
-                paddingHorizontal: 10,
-                borderRadius: radius.control,
-                borderWidth: 1,
-                borderColor: open() ? colors.faint : colors.fieldBorder,
-                backgroundColor: colors.field,
-                ...finish.field,
-                transitionProperty: "border-color",
-                transitionDuration: reduceMotion() ? 0 : 120,
-              }}
-              hoverStyle={{ borderColor: colors.faint }}
-              activeStyle={pressed}
-              focusStyle={focusRing()}
-            >
-              <Icon name="search" size={size.check} tint={colors.faint} />
-              <Text style={{ flex: 1, fontSize: size.label, color: colors.faint }}>Search commands…</Text>
-              <If when={pointer}>
-                <Text style={{ paddingHorizontal: 5, borderRadius: 4, borderWidth: 1, borderColor: colors.line, fontSize: 11, color: colors.muted }}>⌘K</Text>
-              </If>
-            </View>
+          class="group"
+          style={comboStyle(open())}
+          placeholder={"Search commands…"}
+          inputClass={searchClass}
+          inputStyle={comboInputStyle()}
+          triggerButton={<ComboToggle id="command-toggle" open={open()} />}
+          prefix={
+            <>
+              <FieldRing within />
+              <View style={{ marginRight: 8 }}><Icon name="search" size={size.check} tint={colors.faint} /></View>
+            </>
           }
+          suffix={
+            <If when={pointer}>
+              <Text style={{ marginHorizontal: 4, paddingHorizontal: 5, borderRadius: 4, borderWidth: 1, borderColor: colors.line, fontSize: 11, color: colors.muted }}>⌘K</Text>
+            </If>
+          }
+          empty={<Empty label="No command matches" />}
+          {...listProps()}
+          align="start"
           renderItem={(item) => (
-            <Option item={item} lead={<Icon name={command(item.value).icon} size={14} tint={item.highlighted ? colors.text : colors.muted} />} note={item.disabled ? "At 100%" : pointer ? command(item.value).keys : undefined} />
+            <Option
+              item={item}
+              lead={
+                // The icon takes the text's color while its row is highlighted.
+                <View style={{ width: 14, height: 14 }}>
+                  <View class="group-focus:hidden">
+                    <Icon name={command(item.value).icon} size={14} tint={colors.muted} />
+                  </View>
+                  <View class="hidden group-focus:flex">
+                    <Icon name={command(item.value).icon} size={14} tint={colors.text} />
+                  </View>
+                </View>
+              }
+              note={item.disabled ? "At 100%" : pointer ? command(item.value).keys : undefined}
+            />
           )}
           renderGroup={(group) => <Header group={group} />}
         />
@@ -2195,16 +2261,22 @@ export function Controls(props: { show: Control }) {
    */
   const toggleWidth = () => Math.floor((windowSize().width - 2 * 10) / 2 - cell);
   /**
-   * An item of the calendar (`renderItem`): Previous and Next as chevrons, the month and year toggles
-   * (or each month's title) by name, the weekdays' initials, and the days: today on the theme's quiet `accent`
-   * fill (gpui-component's), the selected ones on the accent's, the days of a complete range on a band from end to end (`range` says where it
-   * starts and ends), the other months' days and the disabled ones faint.
+   * The calendar's items (`itemClass`): pressed at 70%; `group`, so the drawing inside follows the item's states.
    */
-  function CalendarItem(props: { item: CalendarItemState; range?: [string | null, string | null] | null }) {
+  const calendarItemClass = "group active:opacity-70";
+  /**
+   * An item of the calendar (`renderItem`), drawn once from what it is, its states the item's classes: Previous and
+   * Next as chevrons (faint while they take no press), the month and year toggles (or each month's title, with
+   * `months` over one) by name, the open view's toggle in the accent, the weekdays' initials, and the days: today on
+   * the theme's quiet `accent` fill (gpui-component's), the selected date and a range's ends on the accent's, the days
+   * of a complete range on a band from end to end (`data-range-*`), the other months' days and the disabled ones faint,
+   * the keyboard's day ringed.
+   */
+  function CalendarItem(props: { item: CalendarEntry; months?: number }) {
     const kind = props.item.kind;
     if (kind === "previous" || kind === "next") {
       return (
-        <View style={{ width: cell, height: cell, alignItems: "center", justifyContent: "center", opacity: props.item.disabled ? 0.3 : 1 }}>
+        <View class="group-disabled:opacity-30" style={{ width: cell, height: cell, alignItems: "center", justifyContent: "center" }}>
           <View style={{ transform: [{ rotate: kind === "previous" ? "180deg" : "0deg" }] }}>
             <Icon name="chevron" size={size.check} tint={colors.muted} />
           </View>
@@ -2213,16 +2285,16 @@ export function Controls(props: { show: Control }) {
     }
     if (kind === "monthToggle" || kind === "yearToggle") {
       // A month's title in a calendar of several takes no press: the month and its year, over the month.
-      const title = kind === "monthToggle" && props.item.disabled;
+      const title = kind === "monthToggle" && (props.months ?? 1) > 1;
       return (
         <Text
+          class="text-foreground group-selected:text-brand"
           style={{
             width: !pointer ? toggleWidth() : title ? 6 * cell + monthGap / 2 : kind === "monthToggle" ? 3 * cell : 2 * cell,
             paddingHorizontal: 3,
             textAlign: title ? "center" : kind === "monthToggle" ? "right" : "left",
             fontSize: size.label,
             fontWeight: "600",
-            color: props.item.active ? colors.accent : colors.text,
           }}
         >
           {title ? `${MONTHS[props.item.value - 1]} ${props.item.year}` : kind === "monthToggle" ? MONTHS[props.item.value - 1] : String(props.item.value)}
@@ -2233,55 +2305,45 @@ export function Controls(props: { show: Control }) {
       return <Text style={{ minWidth: cell, paddingVertical: 4, textAlign: "center", fontSize: 11, fontWeight: "600", color: colors.faint }}>{WEEKDAYS[props.item.value]}</Text>;
     }
     if (kind === "month" || kind === "year") {
-      // The month view's months (rows of 3) and the year view's years (rows of 5), as wide as a month.
+      // The month view's months (rows of 3) and the year view's years (rows of 5), as wide as a month; the shown one
+      // filled.
       return (
         <View
-          style={{
-            minWidth: (7 * cell) / (kind === "month" ? 3 : 5),
-            height: cell + 6,
-            alignItems: "center",
-            justifyContent: "center",
-            borderRadius: radius.control,
-            backgroundColor: props.item.active ? colors.accentFill : "transparent",
-          }}
+          class="group-selected:bg-brand-fill"
+          style={{ minWidth: (7 * cell) / (kind === "month" ? 3 : 5), height: cell + 6, alignItems: "center", justifyContent: "center", borderRadius: radius.control }}
         >
-          <Text style={{ fontSize: size.label, color: props.item.active ? colors.onAccent : colors.text }}>
+          <Text class="text-foreground group-selected:text-on-brand" style={{ fontSize: size.label }}>
             {kind === "month" ? MONTHS[props.item.value - 1].slice(0, 3) : String(props.item.value)}
           </Text>
         </View>
       );
     }
-    // A day, as wide as its column (the calendar's columns share its width). The band reaches from the start's middle
-    // to the end's.
-    const band = () => {
-      const r = props.range;
-      if (!props.item.inRange || !r || r[0] === r[1]) return null;
-      return { left: props.item.date === r[0] ? ("50%" as const) : 0, right: props.item.date === r[1] ? ("50%" as const) : 0 };
-    };
+    // A day, as wide as its column (the calendar's columns share its width). The band spans a range's middle days
+    // and reaches from its ends' middles; a range of one day has none. The circle fills for the selected date and a
+    // range's ends (not its middle days), else for today.
+    const own = props.item.outside ? "text-faint" : "text-foreground";
     return (
       <View style={{ minWidth: cell, height: cell, alignItems: "center", justifyContent: "center" }}>
-        <View style={{ position: "absolute", top: 2, bottom: 2, left: band()?.left ?? 0, right: band()?.right ?? 0, backgroundColor: band() ? tints.accent : "transparent" }} />
         <View
-          style={{
-            width: cell - 4,
-            height: cell - 4,
-            borderRadius: (cell - 4) / 2,
-            alignItems: "center",
-            justifyContent: "center",
-            borderWidth: 1.5,
-            // The keyboard's day ringed.
-            borderColor: props.item.focused ? colors.accent : "transparent",
-            backgroundColor: props.item.active ? colors.accentFill : props.item.today ? token("accent") : "transparent",
-          }}
+          class={
+            "absolute inset-y-0.5 left-0 right-0 hidden group-data-range-middle:flex group-data-range-start:flex group-data-range-start:left-1/2 " +
+            "group-data-range-end:flex group-data-range-end:right-1/2 group-data-range-start:group-data-range-end:hidden"
+          }
+          style={{ backgroundColor: tints.accent }}
+        />
+        <View
+          class={
+            `${props.item.today ? "bg-accent" : ""} border-[1.5px] border-transparent group-focus:border-brand ` +
+            "group-selected:bg-brand-fill group-data-range-middle:bg-transparent"
+          }
+          style={{ width: cell - 4, height: cell - 4, borderRadius: (cell - 4) / 2, alignItems: "center", justifyContent: "center" }}
         >
           <Text
-            style={{
-              fontSize: pointer ? 13 : 15,
-              fontVariant: ["tabular-nums"],
-              fontWeight: props.item.active || props.item.today ? "600" : "400",
-              color: props.item.active ? colors.onAccent : props.item.muted ? colors.faint : colors.text,
-              opacity: props.item.disabled ? 0.5 : 1,
-            }}
+            class={
+              `${own} ${props.item.today ? "font-semibold" : "font-normal"} group-selected:font-semibold group-selected:text-on-brand ` +
+              `group-data-range-middle:${own} group-disabled:text-faint group-disabled:opacity-50`
+            }
+            style={{ fontSize: pointer ? 13 : 15, fontVariant: ["tabular-nums"] }}
           >
             {String(props.item.value)}
           </Text>
@@ -2289,19 +2351,14 @@ export function Controls(props: { show: Control }) {
       </View>
     );
   }
-  /** The time field's segments (`renderSegment`): the selected one filled while the field has the keys. */
-  function Segment(props: { label: string; selected: boolean }) {
+  /**
+   * The time field's segments: filled while the field has the keys on one (`focus:` on the segment, `segmentClass`),
+   * its digits (`renderSegment`) in the color on the fill (`group-focus:`), so moving between them draws nothing.
+   */
+  const segmentClass = "group rounded-[4px] active:opacity-70 focus:bg-brand-fill";
+  function Segment(props: { label: string }) {
     return (
-      <Text
-        style={{
-          paddingHorizontal: 3,
-          borderRadius: 4,
-          fontSize: size.label,
-          fontVariant: ["tabular-nums"],
-          color: props.selected ? colors.onAccent : colors.text,
-          backgroundColor: props.selected ? colors.accentFill : "transparent",
-        }}
-      >
+      <Text class="text-foreground group-focus:text-on-brand" style={{ paddingHorizontal: 3, fontSize: size.label, fontVariant: ["tabular-nums"] }}>
         {props.label}
       </Text>
     );
@@ -2369,7 +2426,7 @@ export function Controls(props: { show: Control }) {
               backdropStyle={backdrop}
               calendarStyle={calendar}
               headerStyle={header}
-              itemClass="active:opacity-70"
+              itemClass={calendarItemClass}
               renderItem={(item) => <CalendarItem item={item} />}
               cleanable
               clearButtonAccessibilityLabel="Clear the due date"
@@ -2405,8 +2462,8 @@ export function Controls(props: { show: Control }) {
               calendarStyle={calendar}
               headerStyle={header}
               bodyStyle={{ gap: monthGap }}
-              itemClass="active:opacity-70"
-              renderItem={(item) => <CalendarItem item={item} range={trip()} />}
+              itemClass={calendarItemClass}
+              renderItem={(item) => <CalendarItem item={item} months={twoMonths() ? 2 : 1} />}
               trigger={<Picker title={tripTitle()} open={tripOpen()} placeholder={!trip()} />}
             />
           </View>
@@ -2431,15 +2488,15 @@ export function Controls(props: { show: Control }) {
               backdropStyle={backdrop}
               calendarStyle={calendar}
               headerStyle={header}
-              itemClass="active:opacity-70"
+              itemClass={calendarItemClass}
               renderItem={(item) => <CalendarItem item={item} />}
               timeStyle={time}
               timeLabel={<Text style={{ fontSize: size.label, color: colors.muted }}>Time</Text>}
               timeAccessibilityLabel="Meeting time"
               timeFieldClass={timeField}
-              segmentClass="active:opacity-70"
+              segmentClass={segmentClass}
               separatorStyle={{ color: colors.faint, fontSize: size.label }}
-              renderSegment={(segment) => <Segment label={segment.label} selected={segment.selected} />}
+              renderSegment={(segment) => <Segment label={segment.label} />}
               trigger={<Picker title={meeting() ? shortDate(meeting()!) : "Not scheduled"} open={meetingOpen()} placeholder={!meeting()} />}
             />
           </View>
@@ -2457,7 +2514,7 @@ export function Controls(props: { show: Control }) {
     backdropStyle: backdrop,
     calendarStyle: calendar,
     headerStyle: header,
-    itemClass: "active:opacity-70",
+    itemClass: calendarItemClass,
   });
   /** A line of a bill: what it is for, and the amount rolling to each new value. */
   function BillLine(props: { label: string; amount: number; total?: boolean }) {
@@ -2525,7 +2582,7 @@ export function Controls(props: { show: Control }) {
           disabledMatcher={closed}
           {...calendarProps("start")}
           bodyStyle={{ gap: monthGap }}
-          renderItem={(item) => <CalendarItem item={item} range={stay()} />}
+          renderItem={(item) => <CalendarItem item={item} months={twoMonths() ? 2 : 1} />}
           trigger={
             // Both ends in one field, parted by a hairline; the whole field opens the calendar.
             <View
@@ -3573,12 +3630,13 @@ export function Controls(props: { show: Control }) {
 
   // The codes' cells, shared by their cards: recessed wells, the one that
   // takes the next digit ringed while the code has the focus, its caret
-  // blinking there (steady with reduced motion: the input's own). A verdict
-  // edges and tints them all in its tone, the change faded
-  // (`transition-colors`).
+  // blinking there (steady with reduced motion: the input's own). A cell
+  // that holds a digit (a bullet too) lifts out of its well, a card's fill
+  // under a firmer edge (`data-filled:`). A verdict edges and tints them
+  // all in its tone, over that; each change fades (`transition-colors`).
   const cellClass = (cells: string) =>
-    `${cells} items-center justify-center rounded-lg font-semibold text-foreground transition-colors motion-reduce:transition-none focus:outline-2 focus:outline-info focus:-outline-offset-2 disabled:opacity-50`;
-  const cellStyle = (tone?: Tone) => ({ ...finish.inset, backgroundColor: tone ? toneTint(tone) : colors.inset, borderWidth: 1, borderColor: tone ? toneColor(tone) : colors.line });
+    `${cells} items-center justify-center rounded-lg border border-line bg-inset font-semibold text-foreground transition-colors motion-reduce:transition-none data-filled:border-input data-filled:bg-card focus:outline-2 focus:outline-info focus:-outline-offset-2 disabled:opacity-50`;
+  const cellStyle = (tone?: Tone) => (tone ? { ...finish.inset, backgroundColor: toneTint(tone), borderColor: toneColor(tone) } : finish.inset);
   const sixCells = pointer ? "w-9 h-11 text-lg" : "w-11 h-13 text-xl";
 
   function Verify() {
@@ -3848,6 +3906,7 @@ export function Controls(props: { show: Control }) {
               }}
               accessibilityLabel="PIN, 4 digits"
               class="flex-row items-center gap-2"
+              groupClass="flex-row gap-2"
               cellClass={cellClass(pinCells)}
               cellStyle={cellStyle(step() === "mismatch" ? "danger" : step() === "set" ? "up" : undefined)}
               caretClass="w-0.5 h-6 rounded-full"

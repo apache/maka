@@ -86,9 +86,10 @@ pub(crate) struct AppConfig {
     /// Read and checked by the bundler.
     #[serde(default, rename = "tailwind")]
     _tailwind: Option<serde::de::IgnoredAny>,
-    /// Read and checked by the bundler.
-    #[serde(default, rename = "capabilities")]
-    _capabilities: Option<serde::de::IgnoredAny>,
+    /// Read and checked by the bundler; packages read only what the
+    /// system must be told ahead (`speech`'s usage descriptions).
+    #[serde(default)]
+    pub(crate) capabilities: Option<serde_json::Value>,
     /// `"light"` / `"dark"` / `"system"`: the app's appearance (checked by
     /// the bundler, which hands it to the runtime); packages also start in
     /// it (the launch screen, the window's theme).
@@ -113,6 +114,43 @@ pub(crate) struct AppConfig {
     #[serde(default)]
     pub(crate) web: WebConfig,
 }
+
+impl AppConfig {
+    /// Whether the app may recognize speech: it declares no capabilities
+    /// (it gets them all) or grants `speech`.
+    fn speech(&self) -> bool {
+        match &self.capabilities {
+            None => true,
+            Some(capabilities) => {
+                capabilities.get("speech") == Some(&serde_json::Value::Bool(true))
+            }
+        }
+    }
+
+    /// Adds what the system shows when the app first asks for the
+    /// microphone and speech recognition, which it requires (it ends an app
+    /// that asks without them), when the app may recognize speech.
+    fn usage_descriptions(&self, info: &mut plist::Dictionary) {
+        if !self.speech() {
+            return;
+        }
+        for (key, text) in USAGE_DESCRIPTIONS {
+            info.insert(key.into(), plist::Value::String(text.to_owned()));
+        }
+    }
+}
+
+/// The usage descriptions of an app that recognizes speech (`Speech`).
+pub(crate) const USAGE_DESCRIPTIONS: [(&str, &str); 2] = [
+    (
+        "NSMicrophoneUsageDescription",
+        "The app listens to the microphone while you dictate.",
+    ),
+    (
+        "NSSpeechRecognitionUsageDescription",
+        "The app turns what you say into text.",
+    ),
+];
 
 /// `nsh.json` `"web"`.
 #[derive(Debug, Default, Deserialize)]
@@ -807,6 +845,7 @@ fn macos_info_plist(
     if icon {
         d.insert("CFBundleIconFile".into(), s("AppIcon"));
     }
+    config.usage_descriptions(&mut d);
     d
 }
 
@@ -867,6 +906,7 @@ fn info_plist(
         Value::Array(vec![1.into(), 2.into()]),
     );
     d.insert("LSRequiresIPhoneOS".into(), true.into());
+    config.usage_descriptions(&mut d);
     // A launch screen entry opts into the full screen (no letterboxing).
     d.insert(
         "UILaunchScreen".into(),
@@ -1109,6 +1149,26 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(error.contains("x86_64"), "{error}");
+    }
+
+    #[test]
+    fn apps_that_may_recognize_speech_explain_it() {
+        let usage = |capabilities: Option<serde_json::Value>| {
+            let config = AppConfig {
+                capabilities,
+                ..AppConfig::default()
+            };
+            let info = macos_info_plist("A", "com.a", "a", &config, false);
+            let ios = info_plist("A", "com.a", "a", &config, "iphoneos");
+            assert_eq!(
+                info.contains_key("NSMicrophoneUsageDescription"),
+                ios.contains_key("NSSpeechRecognitionUsageDescription")
+            );
+            info.contains_key("NSSpeechRecognitionUsageDescription")
+        };
+        assert!(usage(None));
+        assert!(usage(Some(serde_json::json!({ "speech": true }))));
+        assert!(!usage(Some(serde_json::json!({ "picker": true }))));
     }
 
     #[test]

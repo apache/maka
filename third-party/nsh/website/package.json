@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "bun scripts/play.js --kill-dev && bunx --bun astro dev",
     "build": "bun scripts/play.js && bunx --bun astro build && bunx pagefind --site dist",
+    "build:versions": "bun scripts/play.js && bun scripts/versions.js",
     "preview": "bunx --bun astro preview",
     "test": "bun test tests",
     "play": "bun scripts/play.js",

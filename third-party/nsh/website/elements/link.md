@@ -83,6 +83,7 @@ Opening a URL outside the app takes the `openUrl` capability when the app declar
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No presses, no press feedback, no keyboard focus; `disabled:` styles apply, and screen readers say it is dimmed. |
 | `current` | `.current(..)` | `boolean` | `false` | The link to the page the user is on, in a navigation or a breadcrumb: screen readers say it is the current page. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say, when the content says too little (an icon). |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content: a label, an icon, anything the app shows. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The link's look: its color, underline, padding; text properties pass to the texts inside it. |
 | `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle` | `.active(\|s\| ..)`, `.hover(..)`, `.focus(..)`, `.disabled_style(..)` | `StyleProp<ViewStyle>` | none | The link's style while pressed, hovered, focused or disabled, as the `<state>:` classes. |
@@ -141,6 +142,18 @@ the paragraph's baseline:
 
 A link that wraps with the paragraph's lines is a nested `<Text>` with `role="link"` and `onPress` (see
 [Text](./text.md)), as [TextView](./text-view.md) draws the links of a document.
+
+## A small target with hitSlop
+
+A link can be smaller than a finger: an icon, a short word. `hitSlop` makes presses that land near it count, in points
+past each side, without changing its layout or its look: one number for every side, or the sides named
+(`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presses-and-feedback) takes them.
+
+```tsx
+<Link href="https://example.com/help" hitSlop={12} accessibilityLabel="Help" class="size-5 items-center justify-center">
+  <Text>?</Text>
+</Link>
+```
 
 ## Accessibility
 

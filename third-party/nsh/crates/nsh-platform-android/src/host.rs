@@ -23,7 +23,7 @@ use nsh_core::{
 };
 use nsh_engine::{
     App, Assets, Bundle, ColorScheme, Edges, Engine, EngineConfig, EngineControl, Environment,
-    Idiom, Locale, MountSink, Policy, Root,
+    Idiom, Lifecycle, Locale, MountSink, Policy, Root,
 };
 
 use crate::{
@@ -203,6 +203,7 @@ impl Host {
             clipboard: None,
             host: self.host.clone(),
             picker: None,
+            speech: None,
         };
         let density = self.density.clone();
         let control_slot = Arc::new(OnceLock::new());
@@ -1078,7 +1079,7 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
 ) {
     // SAFETY: Java passes its live handle.
     let host = unsafe { host(handle) };
-    let mut v = [0f32; 13];
+    let mut v = [0f32; 14];
     if env.get_float_array_region(&values, 0, &mut v).is_err() {
         return;
     }
@@ -1102,6 +1103,12 @@ extern "system" fn Java_com_longbridge_nsh_Native_environment(
         1 => Idiom::Pad,
         3 => Idiom::Tv,
         _ => Idiom::Phone,
+    };
+    // `NshView`'s activity: resumed, paused or stopped.
+    environment.lifecycle = match v[13] as u8 {
+        1 => Lifecycle::Inactive,
+        2 => Lifecycle::Background,
+        _ => Lifecycle::Active,
     };
     if let Ok(tag) = env.get_string(&locale) {
         environment.locale = Locale::parse(&String::from(tag)).unwrap_or_default();
@@ -1489,6 +1496,10 @@ extern "system" fn Java_com_longbridge_nsh_Native_eventMap(
                 "currentTime" => "currentTime",
                 "isBuffering" => "isBuffering",
                 "id" => "id",
+                "state" => "state",
+                "filename" => "filename",
+                "path" => "path",
+                "bytes" => "bytes",
                 "index" => "index",
                 "start" => "start",
                 "end" => "end",
@@ -1661,6 +1672,134 @@ extern "system" fn Java_com_longbridge_nsh_Native_keepRendered(
     if let Some(control) = host.control() {
         control.keep_rendered(nodes.into_iter().map(|id| id as NodeId).collect());
     }
+}
+
+/// The bytes of a direct `ByteBuffer` (empty when it is not one).
+fn direct_bytes<'a>(env: &JNIEnv<'_>, buffer: &'a JObject<'_>) -> &'a [u8] {
+    if buffer.is_null() {
+        return &[];
+    }
+    let buffer = <&jni::objects::JByteBuffer>::from(buffer);
+    match (
+        env.get_direct_buffer_address(buffer),
+        env.get_direct_buffer_capacity(buffer),
+    ) {
+        // SAFETY: Java keeps the buffer alive and unchanged during the call.
+        (Ok(ptr), Ok(len)) if !ptr.is_null() => unsafe { std::slice::from_raw_parts(ptr, len) },
+        _ => &[],
+    }
+}
+
+/// Shader view `id`'s picture of `input` (0 content, 1 backdrop, 2 from,
+/// 3 to): `height` rows of `width` premultiplied RGBA pixels in `pixels`,
+/// `stride` bytes apart (null: none). Whether frames should come.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+extern "system" fn Java_com_longbridge_nsh_Native_shaderInput(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    id: jint,
+    input: jint,
+    pixels: JObject<'_>,
+    width: jint,
+    height: jint,
+    stride: jint,
+) -> jboolean {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let Some(&input) = nsh_core::shader::ShaderInput::ALL.get(input.max(0) as usize) else {
+        return 0;
+    };
+    let bytes = direct_bytes(&env, &pixels);
+    let (w, h, stride) = (
+        width.max(0) as u32,
+        height.max(0) as u32,
+        stride.max(0) as u32,
+    );
+    let picture =
+        crate::shader::picture_fits(bytes.len(), w, h, stride).then_some((bytes, w, h, stride));
+    let mut ui = host.ui.lock().expect("ui");
+    ui.shaders.input(id as u32, input, picture);
+    ui.shaders.wants_frame().into()
+}
+
+/// Shader view `id`'s transition starts, `ms` long (its `from` picture came
+/// first). Whether it runs (false without a GPU: the children show as they
+/// are); Java then asks for frames.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_shaderTransition(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    id: jint,
+    ms: jfloat,
+) -> jboolean {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let mut ui = host.ui.lock().expect("ui");
+    let duration = std::time::Duration::from_secs_f32(ms.max(0.0) / 1000.0);
+    ui.shaders.start_transition(id as u32, duration).into()
+}
+
+/// Page or dialog `page` comes or goes (`reverse`) through its
+/// `transitionShader` over view `key` (its stack, or the dialog), `width` ×
+/// `height` pixels: `from` its lower side, `to` its upper side (RGBA rows
+/// `stride` bytes apart). Whether it runs (false: the platform's own
+/// animation, as when the user asks for less motion); Java then asks for
+/// frames.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+extern "system" fn Java_com_longbridge_nsh_Native_navTransition(
+    env: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    key: jint,
+    page: jint,
+    width: jint,
+    height: jint,
+    from: JObject<'_>,
+    from_stride: jint,
+    to: JObject<'_>,
+    to_stride: jint,
+    reverse: jboolean,
+) -> jboolean {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    let (from, to) = (direct_bytes(&env, &from), direct_bytes(&env, &to));
+    let (w, h) = (width.max(0) as u32, height.max(0) as u32);
+    let (fs, ts) = (from_stride.max(0) as u32, to_stride.max(0) as u32);
+    let fits = crate::shader::picture_fits;
+    if !fits(from.len(), w, h, fs) || !fits(to.len(), w, h, ts) {
+        return 0;
+    }
+    let reduce_motion = host.environment.lock().expect("environment").reduce_motion;
+    let mut ui = host.ui.lock().expect("ui");
+    let runs = ui.shaders.nav_transition(
+        key as u32,
+        page as u32,
+        (width, height),
+        host.density.get(),
+        (from, fs),
+        (to, ts),
+        reverse != 0,
+        reduce_motion,
+    );
+    runs.into()
+}
+
+/// The page or dialog transition over view `key` ends at once (a change
+/// that starts while it runs ended it): no more frames come for it.
+#[unsafe(no_mangle)]
+extern "system" fn Java_com_longbridge_nsh_Native_navTransitionEnd(
+    _: JNIEnv<'_>,
+    _: JClass<'_>,
+    handle: jlong,
+    key: jint,
+) {
+    // SAFETY: Java passes its live handle.
+    let host = unsafe { host(handle) };
+    host.ui.lock().expect("ui").shaders.end_nav(key as u32);
 }
 
 /// A scroll view moved: the engine (lists) and its scroll value learn the

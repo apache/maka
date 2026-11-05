@@ -28,12 +28,17 @@ export function createBrowserHost(player) {
       if (!current) throw new Error("the browser host was not initialized");
       return current.imports.value(...args);
     } },
-    // `owned`: blob URLs that go with the app.
-    async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {} } = {}, owned = []) {
+    // `owned`: blob URLs that go with the app. `nativeExports`
+    // (`{ specifier: [name] }`): names chunks import from native modules
+    // that a gate called after the start registers (a side module loaded
+    // before the chunk); their bindings are live and filled then.
+    async run(entry, { appId = "", capabilities = "", imports: moduleMap = {}, chunks = {}, nativeExports = {} } = {}, owned = []) {
       if (current?.stopping) throw new Error("cannot start an app during disposal");
       const [width, height] = player.reset();
       let values;
       let running = true, modules, components, animation, lists, host, frame, rejectLoad;
+      // The facades' updates of their late bindings (`nativeExports`).
+      const watchers = [];
       const urls = [...owned];
       const active = () => running;
       const call = (op, args) => {
@@ -116,6 +121,7 @@ export function createBrowserHost(player) {
         const hot = app.hot = createHot(reactive, report);
         dom.setHot(hot);
         const env = createEnvironment(reactive, call, dom);
+        dom.setPlatform(env.api.platform);
         const gestures = createGestures(call, values, reactive, dom, active, requestPump);
         dom.setTouches(gestures);
         dom.rt.setup = env.setup;
@@ -136,6 +142,8 @@ export function createBrowserHost(player) {
             case "environment": env.update(args[0]); break;
             case "tokens": env.changedTokens(); break;
             case "animationsFinished": animation?.finished(args[0]); break;
+            // A gate ran after the start (`nsh_after_gate`).
+            case "registry": modules?.refresh(); for (const watcher of watchers) watcher(); break;
             default: throw new Error(`browser host event is not implemented: ${name}`);
           }
         };
@@ -154,6 +162,8 @@ export function createBrowserHost(player) {
         dom.rt.list = lists.render;
         components = createComponents(call, values, reactive, dom);
         modules = createModules(call, values, active, requestPump, components.make);
+        // A UI set a later gate registers fills this namespace in place.
+        for (const specifier of Object.keys(nativeExports)) if (!modules.exports.has(specifier)) modules.exports.set(specifier, Object.create(null));
         dom.setMeasure(node => modules.measure(node));
         animation = createAnimation(call, active, requestPump, env);
         const nsh = modules.exports.get("nsh") ?? {};
@@ -195,11 +205,20 @@ export function createBrowserHost(player) {
         if (chunkBase === entryURL) map[new URL("bundle.js", entryURL).href] = entryURL.href;
         for (const [id, url] of Object.entries(chunks)) map[new URL(id, chunkBase).href] = new URL(url, document.baseURI).href;
         for (const [specifier, namespace] of namespaces) {
-          const declarations = Object.keys(namespace).map((name, index) => {
+          const names = Object.keys(namespace);
+          const late = (nativeExports[specifier] ?? []).filter(name => !Object.hasOwn(namespace, name));
+          const declarations = names.map((name, index) => {
             if (name === "default") return `export default host.get(${JSON.stringify(specifier)})["default"];`;
             return `const e${index}=host.get(${JSON.stringify(specifier)})[${JSON.stringify(name)}];export{e${index} as ${JSON.stringify(name)}};`;
-          }).join("\n");
-          const source = `const host=globalThis.__nsh_browser_realm.modules;\n${declarations}`;
+          });
+          // Live bindings: what a later gate registers reaches modules
+          // that imported the name before it.
+          const updates = late.map((name, index) => {
+            declarations.push(`let l${index}=host.get(${JSON.stringify(specifier)})[${JSON.stringify(name)}];export{l${index} as ${JSON.stringify(name)}};`);
+            return `l${index}=host.get(${JSON.stringify(specifier)})[${JSON.stringify(name)}];`;
+          });
+          if (updates.length) declarations.push(`globalThis.__nsh_browser_realm.watch(()=>{${updates.join("")}});`);
+          const source = `const host=globalThis.__nsh_browser_realm.modules;\n${declarations.join("\n")}`;
           const url = URL.createObjectURL(new Blob([source], { type: "text/javascript" }));
           urls.push(url);
           map[specifier] = url;
@@ -211,7 +230,7 @@ export function createBrowserHost(player) {
         const finished = new Promise((resolve, reject) => {
           rejectLoad = reject;
           Object.defineProperty(realm, "__nsh_browser_realm", { value: Object.freeze({
-            entry: entryURL.href, base: chunkBase.href, modules: namespaces,
+            entry: entryURL.href, base: chunkBase.href, modules: namespaces, watch: watcher => { watchers.push(watcher); },
             setImporter: load => { app.importModule = load; },
             live: active, prepareChunk: id => player.options.prepareChunk?.(id), ready: resolve, failed: reject,
           }) });

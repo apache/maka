@@ -1,6 +1,6 @@
 ---
 title: 签名包
-description: 发布由宿主应用下载并验证的应用代码：密钥、证书、nsh publish、验证、吊销与回滚保护。
+description: 发布由宿主应用下载并验证的应用代码：密钥、证书、nsh publish、重新签名、验证、吊销与回滚保护。
 order: 20
 group: delivery
 ---
@@ -148,6 +148,33 @@ nsh publish App.tsx --key keys/release.secret --cert keys/release.cert --min-run
   因为这个键可能是对它的限制。
 
 包加载时会把略过的内容记录到日志。
+
+## 重新签名包
+
+分发多个应用的包的平台，可以用自己的一个密钥为它们统一签名：CI 构建每个包，并用测试应用信任的密钥签名；平台再用正式应用信任的
+密钥重新签名。
+
+```sh
+nsh publish ci/com.example.counter-2.nshpkg --key keys/platform.secret --cert keys/platform.cert -o com.example.counter-2.nshpkg
+```
+
+```text
+com.example.counter-2.nshpkg: com.example.counter 1.0.0 (build 2), signed again by d0eb0d3cb453b71b, for runtime 0.3.0 or newer
+```
+
+| 参数 | 说明 |
+|---|---|
+| `--key <file>` | 发布密钥的私钥。 |
+| `--cert <file>` | 它的证书。 |
+| `-o, --out <file>` | 要写入的包。可以就是读入的那个包。默认：`.nsh/out/<id>-<build>.nshpkg`。 |
+
+包里 CI 放入的内容全部保留：文件，app id、版本和构建号，声明的能力，[最低运行时版本](#哪些运行时能运行包)，以及
+[更新版本的 NSH](#由更新版本的-nsh-签名的包) 写入的内容。证书、签名时间和签名换成新密钥的，因此包有了自己的 SHA-256，
+[吊销](#吊销密钥和包)时用的就是这个值。
+
+签名前，`nsh publish` 会检查包是否完好（由其证书指明的密钥签名，文件表与数据吻合，每个文件都与其哈希一致），以及新证书是否
+覆盖该 app id 和当前时间。此后由新签名为这个包担保，字节码也包括在内，所以平台只为自己的构建产出的包重新签名。Rust 工具用
+`nsh_package::resign(&bytes, &key, &certificate)` 重新签名。
 
 ## 验证包
 
@@ -328,6 +355,7 @@ adb shell am start -S -n com.longbridge.nsh.host/com.longbridge.nsh.DevActivity 
 3. 上传前对包运行 `nsh verify --root root.pub`。
 4. 将 `root.pub` 内置在宿主应用中；吊销列表单独分发，这样无需更新应用就能吊销。
 5. 如果发布密钥泄露，吊销它（`nsh revoke --extend … --key <id>`），签发新的发布密钥并重新发布。
+6. 由平台为应用统一签名时，给 CI 一个只有测试应用信任的根密钥，正式应用内置平台的根密钥；平台为 CI 的包重新签名（`nsh publish <package>`）。
 
 ## 另请参阅
 

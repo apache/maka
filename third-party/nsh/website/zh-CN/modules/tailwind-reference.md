@@ -49,7 +49,7 @@ view()
 ## 类如何组合
 
 - **后写的生效。** 同一变体层级的工具类中，字符串里靠后的那个生效：`"p-4 p-2"` 等于 `p-2`。组件可以接收 `class` 属性并直接拼接到自己的类后面，不需要 `tailwind-merge`。
-- **变体在普通工具类之后应用**，顺序与 Tailwind 的变体顺序一致：`group-*:`（先按状态，再按组名）、`selection:`、`placeholder:`、位置（`first:` 等）、`checked:`、`indeterminate:`、`selected:`、`focus-within:`、`hover:`、`focus:`、`focus-visible:`、`active:`、`enabled:`、`disabled:`、`aria-busy:`、`aria-checked:`、`aria-expanded:`、`aria-pressed:`、`aria-selected:`、动效偏好、从宽到窄的 `max-*:` 断点、按宽度升序的断点、方向（横竖屏）、书写方向、`dark:`，最后是平台。与 Tailwind 的排序一样，先比较类中顺序最靠后的变体，再比较次靠后的变体，多一个变体的排在后面（`dark:hover:` 在 `dark:` 之后）。因此 `"active:bg-red-500 bg-blue-500"` 按下时是红色。
+- **变体在普通工具类之后应用**，顺序与 Tailwind 的变体顺序一致：`group-*:`（先按状态，再按组名）、`selection:`、`placeholder:`、位置（`first:` 等）、`checked:`、`indeterminate:`、`selected:`、`focus-within:`、`hover:`、`focus:`、`focus-visible:`、`active:`、`enabled:`、`disabled:`、`aria-busy:`、`aria-checked:`、`aria-expanded:`、`aria-pressed:`、`aria-selected:`、`data-*:`（按名称）、动效偏好、从宽到窄的 `max-*:` 断点、按宽度升序的断点、方向（横竖屏）、书写方向、`dark:`，最后是平台。与 Tailwind 的排序一样，先比较类中顺序最靠后的变体，再比较次靠后的变体，多一个变体的排在后面（`dark:hover:` 在 `dark:` 之后）。因此 `"active:bg-red-500 bg-blue-500"` 按下时是红色。
 - **`style` 优先于类。** 内联 `style` 叠加在解析后的类之上。样式键就是与它同名的 CSS 属性，也就是工具类设置的那个属性，因此它只替换这一个属性：`style={{ paddingLeft: 8 }}` 胜过 `pl-4`，并保留 `pr-4`。重要标记的工具类（`!p-4` 或 `p-4!`）连内联样式也能覆盖。
 - **文字样式会继承。** 写在视图上的文字类（`text-white`、`font-bold`、`text-center` 等）会像 CSS 一样传给其中的 `<Text>` 和 `<Input>`。
 - **display 遵循 CSS。** `flex` 和 `inline-flex` 是横向排列，除非有方向类另行指定，且与其在字符串中的位置无关（`flex-col flex` 是纵向）。样式中的 `display: "flex"` 同样是横向；未设置 display 的视图保持 NSH 默认的纵向排列。
@@ -480,7 +480,7 @@ view()
 | `active:` | 元素被按下 | `.active(\|s\| …)` |
 | `hover:` | 指针悬停其上（iPad 指针、Mac Catalyst、Android 鼠标） | `.hover(\|s\| …)` |
 | `focus:`、`focus-visible:` | 输入框获得焦点 | `.focus(\|s\| …)` |
-| `focus-within:` | 元素自身或其后代获得焦点 |  |
+| `focus-within:` | 元素自身或其后代获得焦点（`Overlay` 的内容是它所在元素的后代） | `.focus_within(…)` |
 | `disabled:` | 元素设置了 `disabled` 属性 | `.disabled_style(\|s\| …)` |
 | `enabled:` | 元素没有设置 `disabled` 属性 |  |
 | `selected:` | 元素处于选中状态：`Button` 的 `selected`，或 `accessibilityState.selected` |  |
@@ -491,6 +491,7 @@ view()
 | `aria-busy:` | 元素处于忙碌状态：`accessibilityState.busy` 为 `true` |  |
 | `aria-checked:` | 元素已勾选：`accessibilityState.checked` 为 `true`，同 `checked:` |  |
 | `aria-selected:` | 元素已选中：`accessibilityState.selected` 为 `true`，同 `selected:` |  |
+| `data-<name>:` | 元素带有名为 `name` 的布尔 `data-*` 属性（Tailwind 的 `&[data-<name>]`；名称由小写字母、数字和 `-` 组成）：组件的部件在状态之外显示的信息，比如日历中区间起点的那一天带 `data-range-start` | 用 `Interactive::project_data(name, …)` 设置 |
 
 这些状态写成样式对象，就是每个元素都有的 `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle`、`checkedStyle`、`indeterminateStyle`、`expandedStyle` 和 `pressedStyle` 属性（以及 `Button` 的 `selectedStyle`）；它们叠加在元素的样式和类之上。
 
@@ -537,6 +538,7 @@ view()
 | `group-aria-expanded:` | 展开 |  |
 | `group-aria-pressed:` | 处于开启状态的切换按钮 |  |
 | `group-aria-busy:`、`group-aria-checked:`、`group-aria-selected:` | 忙碌、已勾选、已选中 |  |
+| `group-data-<name>:` | 带有名为 `name` 的 `data-*` 属性 |  |
 
 ```rust tabs
 view()

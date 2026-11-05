@@ -5,7 +5,8 @@
 // or its own (`defaultValue`), `onComplete` once full, the focus
 // (`onFocus`, `onBlur`), `masked` and `disabled`, and the app's look of
 // its cells, groups and caret (`groups`, `cellClass`, `cellStyle`,
-// `groupClass`, `groupStyle`, `caretClass`, `caretStyle`). The parts'
+// `groupClass`, `groupStyle`, `caretClass`, `caretStyle`), the filled
+// cells styled by their `data-filled:` classes. The parts'
 // heights, paddings and margins make the input's height, which is how its
 // script sees them.
 import { Text, View, signal } from "nsh";
@@ -30,7 +31,7 @@ function App() {
         class="flex-row items-start gap-[10px]"
         groupClass="flex-row gap-[4px]"
         groupStyle={{ padding: 2 }}
-        cellClass="w-[30px] min-h-[20px] text-[10px] leading-[12px] focus:bg-[#00ff00]"
+        cellClass="w-[30px] min-h-[20px] text-[10px] leading-[12px] focus:bg-[#00ff00] data-filled:opacity-50"
         cellStyle={{ marginTop: 2 }}
         caretClass="w-[2px] h-[50px]"
         caretStyle={{ marginTop: 4 }}

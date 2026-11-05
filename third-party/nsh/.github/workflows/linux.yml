@@ -106,11 +106,13 @@ jobs:
       - name: Clippy (without WebKitGTK)
         run: cargo clippy --all-targets -p nsh-platform-linux -- -D warnings
 
-      # Tests need no display: they do not start GTK.
+      # The backend's tests that make GTK widgets (`gtk_test`) run where a
+      # display opens: the second run has a virtual one, with a session bus
+      # of its own, as the examples' tests below.
       - name: Test
         run: >
           cargo test -p nsh-platform-linux -p nsh-cli -p nsh-dev
-          && cargo test -p nsh-platform-linux --features webview
+          && dbus-run-session -- xvfb-run -a cargo test -p nsh-platform-linux --features webview
 
       # The examples' tests in GTK windows on a virtual display, with the
       # platform's input (`nsh test --target linux`): those a real platform
