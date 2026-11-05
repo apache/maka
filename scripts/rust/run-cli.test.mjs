@@ -33,24 +33,7 @@ import { runCli } from './run-cli.mjs';
 const launcher = fileURLToPath(new URL('./run-cli.mjs', import.meta.url));
 const root = fileURLToPath(new URL('../../', import.meta.url));
 
-function mockWorker(t) {
-  t.mock.method(childProcess, 'execFile', (command, args, options, callback) => {
-    assert.equal(command, process.execPath);
-    assert.ok(args[0].endsWith('scripts/oar/build.mjs'));
-    const output = args[args.indexOf('--output') + 1];
-    const target = args[args.indexOf('--target') + 1];
-    (async () => {
-      await mkdir(output, { recursive: true });
-      await writeFile(
-        join(output, 'maka-oar-worker' + (target.includes('windows') ? '.exe' : '')),
-        'worker',
-      );
-    })().then(() => callback(null, '', ''), callback);
-  });
-}
-
 test('development builds select capabilities once for the CLI and worker, then run the Cargo artifact', async (t) => {
-  mockWorker(t);
   const invocations = [];
   const directory = await mkdtemp(join(tmpdir(), 'maka-artifacts-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -136,7 +119,6 @@ test('development builds select capabilities once for the CLI and worker, then r
 });
 
 test('desktop development stages the current macOS shell before starting Maka', async (t) => {
-  mockWorker(t);
   const execute = childProcess.execFileSync;
   t.mock.method(childProcess, 'execFileSync', (command, args, options) =>
     command === '/usr/bin/codesign' ? Buffer.alloc(0) : execute(command, args, options),

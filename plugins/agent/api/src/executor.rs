@@ -39,34 +39,121 @@ pub struct ServiceExecutor {
     pub setup: Option<setup::Binding>,
 }
 pub use maka_agent_facts::executor::Selection;
-/// Explicit opt-in to OAR's own default permissions and native agent tools.
+/// Explicit opt-in to the three CLIs' native full-access tools and permissions.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[schemars(rename = "AgentOarConfiguration")]
-pub struct OarConfiguration {
-    #[serde(default = "oar_enabled")]
+#[schemars(rename = "AgentExternalConfiguration")]
+pub struct ExternalConfiguration {
+    #[serde(default = "external_enabled")]
     pub enabled: bool,
-    /// Each runtime requires explicit opt-in, even when the legacy gate is enabled.
     #[serde(default)]
-    pub runtimes: BTreeMap<String, bool>,
-    /// Absent selects the worker shipped beside the Maka executable.
+    pub runtimes: NativeRuntimeSwitches,
     #[serde(default)]
-    pub executable: Option<String>,
-    #[serde(default)]
-    pub args: Vec<String>,
+    pub commands: NativeCommands,
 }
-
-impl OarConfiguration {
-    pub fn enabled_runtimes(&self) -> impl Iterator<Item = &str> {
-        self.runtimes
-            .iter()
-            .filter(|(_, enabled)| self.enabled && **enabled)
-            .map(|(id, _)| id.as_str())
+impl ExternalConfiguration {
+    pub fn enabled_runtimes(&self) -> impl Iterator<Item = NativeRuntime> + '_ {
+        NativeRuntime::ALL
+            .into_iter()
+            .filter(|runtime| self.enabled && self.runtimes.enabled(*runtime))
+    }
+    pub fn command(&self, runtime: NativeRuntime) -> Option<&NativeCommand> {
+        match runtime {
+            NativeRuntime::Antigravity => self.commands.antigravity.as_ref(),
+            NativeRuntime::Codex => self.commands.codex.as_ref(),
+            NativeRuntime::Claude => self.commands.claude.as_ref(),
+        }
     }
 }
-
-fn oar_enabled() -> bool {
+fn external_enabled() -> bool {
     true
+}
+
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "AgentNativeRuntime")]
+pub enum NativeRuntime {
+    Antigravity,
+    Codex,
+    Claude,
+}
+impl NativeRuntime {
+    pub const ALL: [Self; 3] = [Self::Antigravity, Self::Codex, Self::Claude];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Antigravity => "antigravity",
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Antigravity => "Antigravity",
+            Self::Codex => "Codex",
+            Self::Claude => "Claude Code",
+        }
+    }
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Antigravity => "agy",
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+        }
+    }
+}
+impl std::str::FromStr for NativeRuntime {
+    type Err = String;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::ALL
+            .into_iter()
+            .find(|runtime| runtime.as_str() == value)
+            .ok_or_else(|| format!("unsupported native runtime: {value}"))
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentNativeRuntimeSwitches")]
+pub struct NativeRuntimeSwitches {
+    #[serde(default)]
+    pub antigravity: bool,
+    #[serde(default)]
+    pub codex: bool,
+    #[serde(default)]
+    pub claude: bool,
+}
+impl NativeRuntimeSwitches {
+    pub fn enabled(&self, runtime: NativeRuntime) -> bool {
+        match runtime {
+            NativeRuntime::Antigravity => self.antigravity,
+            NativeRuntime::Codex => self.codex,
+            NativeRuntime::Claude => self.claude,
+        }
+    }
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentNativeCommands")]
+pub struct NativeCommands {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub antigravity: Option<NativeCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex: Option<NativeCommand>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<NativeCommand>,
+}
+/// Ordinary launch overrides. Authentication remains in the native CLI login store.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[schemars(rename = "AgentNativeCommand")]
+pub struct NativeCommand {
+    #[schemars(length(min = 1))]
+    pub executable: String,
+    #[serde(default)]
+    pub args: Vec<String>,
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
 }
 
 /// Observations and text; immutable attachments travel in the actual request resources.
@@ -132,30 +219,43 @@ mod tests {
     use maka_agent_facts::language::Language;
 
     #[test]
-    fn oar_runtime_opt_in_preserves_old_launch_settings_without_enabling_any_runtime() {
-        let mut settings: OarConfiguration = serde_json::from_value(serde_json::json!({
-            "executable":"/custom/worker", "args":["--custom"]
-        }))
-        .unwrap();
+    fn native_runtime_opt_in_preserves_launch_overrides() {
+        let mut settings: ExternalConfiguration = serde_json::from_value(serde_json::json!({
+            "commands":{"claude":{"executable":"/custom/claude", "args":["--debug"], "env":{"CLAUDE_CONFIG_DIR":"/private/config"}}}
+        })).unwrap();
         assert!(settings.enabled);
         assert_eq!(settings.enabled_runtimes().count(), 0);
-        settings.runtimes.insert("codex".into(), true);
-        settings.runtimes.insert("claude".into(), false);
+        settings.runtimes.codex = true;
         assert_eq!(
             settings.enabled_runtimes().collect::<Vec<_>>(),
-            vec!["codex"]
+            vec![NativeRuntime::Codex]
         );
         settings.enabled = false;
         assert_eq!(settings.enabled_runtimes().count(), 0);
+        let restored: ExternalConfiguration =
+            serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+        assert_eq!(restored, settings);
         assert_eq!(
-            serde_json::to_value(&settings).unwrap(),
-            serde_json::json!({
-                "enabled":false, "runtimes":{"codex":true,"claude":false}, "executable":"/custom/worker", "args":["--custom"]
-            })
+            restored.command(NativeRuntime::Claude).unwrap().executable,
+            "/custom/claude"
         );
-        let restored: OarConfiguration =
-            serde_json::from_value(serde_json::to_value(settings).unwrap()).unwrap();
-        assert!(!restored.enabled);
+    }
+
+    #[test]
+    fn unsupported_native_runtime_is_rejected_at_configuration_boundary() {
+        assert!(
+            serde_json::from_value::<ExternalConfiguration>(
+                serde_json::json!({"runtimes":{"unsupported":true}})
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_value::<ExternalConfiguration>(
+                serde_json::json!({"commands":{"unsupported":{"executable":"other"}}})
+            )
+            .is_err()
+        );
+        assert!("unsupported".parse::<NativeRuntime>().is_err());
     }
 
     #[test]

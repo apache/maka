@@ -4517,26 +4517,9 @@ export const contracts = {
                   models: {
                     $ref: '#/$defs/AgentExternalModels',
                   },
-                  canInstall: {
-                    type: 'boolean',
-                  },
-                  installLines: {
-                    type: 'array',
-                    items: {
-                      $ref: '#/$defs/AgentExternalInstallLine',
-                    },
-                  },
                 },
                 additionalProperties: false,
-                required: [
-                  'id',
-                  'name',
-                  'installation',
-                  'authentication',
-                  'models',
-                  'canInstall',
-                  'installLines',
-                ],
+                required: ['id', 'name', 'installation', 'authentication', 'models'],
               },
               AgentExternalInstallation: {
                 oneOf: [
@@ -4750,19 +4733,6 @@ export const contracts = {
                     required: ['kind', 'detail'],
                   },
                 ],
-              },
-              AgentExternalInstallLine: {
-                type: 'object',
-                properties: {
-                  line: {
-                    type: 'string',
-                  },
-                  description: {
-                    type: 'string',
-                  },
-                },
-                additionalProperties: false,
-                required: ['line', 'description'],
               },
             },
           },
@@ -14282,89 +14252,6 @@ export const contracts = {
                 required: ['query', 'offset'],
               },
             },
-          },
-          resources: {},
-        },
-        oarSetup: {
-          mode: 'mutation',
-          input: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentOarSetup',
-            description:
-              "Only OAR's declared installation operations; not an agent registry or login shim.",
-            type: 'object',
-            properties: {
-              runtime: {
-                type: 'string',
-                minLength: 1,
-              },
-              action: {
-                $ref: '#/$defs/AgentOarSetupAction',
-              },
-            },
-            additionalProperties: false,
-            required: ['runtime', 'action'],
-            $defs: {
-              AgentOarSetupAction: {
-                oneOf: [
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'probe',
-                      },
-                    },
-                    required: ['kind'],
-                    additionalProperties: false,
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'plan',
-                      },
-                      line: {
-                        type: ['string', 'null'],
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                  {
-                    type: 'object',
-                    properties: {
-                      kind: {
-                        type: 'string',
-                        const: 'install',
-                      },
-                      line: {
-                        type: ['string', 'null'],
-                      },
-                    },
-                    additionalProperties: false,
-                    required: ['kind'],
-                  },
-                ],
-              },
-            },
-          },
-          output: {
-            $schema: 'https://json-schema.org/draft/2020-12/schema',
-            title: 'AgentOarSetupResult',
-            type: 'object',
-            properties: {
-              runtime: {
-                type: 'string',
-              },
-              result: {
-                description:
-                  "The pinned OAR version's native result, including unsupported capabilities.",
-              },
-            },
-            additionalProperties: false,
-            required: ['runtime', 'result'],
           },
           resources: {},
         },

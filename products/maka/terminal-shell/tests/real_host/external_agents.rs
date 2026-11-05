@@ -40,24 +40,18 @@ async fn fixture() -> Fixture {
     .await
     .unwrap();
     Fixture::open_with_configuration(Default::default(), move |configuration, directory| {
-        let worker = directory.join("external-agent-worker.mjs");
-        std::fs::write(
-            &worker,
-            include_str!("../support/external-agent-worker.mjs"),
-        )
-        .unwrap();
+        let worker = directory.join("external-agent-cli.mjs");
+        std::fs::write(&worker, include_str!("../support/external-agent-cli.mjs")).unwrap();
         let state = directory.join("external-state.json");
-        std::fs::write(
-            &state,
-            r#"{"installed":false,"signedIn":false,"installCount":0}"#,
-        )
-        .unwrap();
+        std::fs::write(&state, r#"{"signedIn":true,"modelsFail":false}"#).unwrap();
         let trace = directory.join("external-requests.jsonl");
         std::fs::write(&trace, "").unwrap();
-        let oar =
-            json!({"enabled":true,"runtimes":{},"executable":node,"args":[worker,state,trace]});
-        configuration["agent"]["oar"] = oar.clone();
-        configuration["coordinator"]["oar"] = oar;
+        let external = json!({"enabled":true,"runtimes":{},"commands":{
+            "codex":{"executable":node,"args":[worker,state,trace]},
+            "claude":{"executable":directory.join("not-installed-claude")}
+        }});
+        configuration["agent"]["external"] = external.clone();
+        configuration["coordinator"]["external"] = external;
     })
     .await
 }
@@ -188,10 +182,10 @@ async fn source(client: &Client) -> (u64, Value) {
     )
 }
 
-fn oars(document: &Value) -> [Value; 2] {
+fn externals(document: &Value) -> [Value; 2] {
     [
-        document["input"]["instances"]["agent"]["configuration"]["values"]["oar"].clone(),
-        document["input"]["instances"]["workhub"]["configuration"]["values"]["agent"]["oar"]
+        document["input"]["instances"]["agent"]["configuration"]["values"]["external"].clone(),
+        document["input"]["instances"]["workhub"]["configuration"]["values"]["agent"]["external"]
             .clone(),
     ]
 }
@@ -204,7 +198,7 @@ async fn open_settings(view: &mut AppView) {
 
 async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &str, enabled: bool) {
     let (revision, before) = source(client).await;
-    let mut expected = oars(&before);
+    let mut expected = externals(&before);
     click(
         view,
         &format!("{} {name}", if enabled { "Enable" } else { "Disable" }),
@@ -230,11 +224,11 @@ async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &st
         &format!("{} {name}", if enabled { "Disable" } else { "Enable" }),
     )
     .await;
-    for oar in &mut expected {
+    for external in &mut expected {
         if enabled {
-            oar["enabled"] = json!(true);
+            external["enabled"] = json!(true);
         }
-        oar["runtimes"][id] = json!(enabled);
+        external["runtimes"][id] = json!(enabled);
     }
     let (changed_revision, changed) = source(client).await;
     assert_eq!(
@@ -243,44 +237,10 @@ async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &st
         "both targets change in one source revision"
     );
     assert_eq!(
-        oars(&changed),
+        externals(&changed),
         expected,
-        "only this runtime changes; preserve executable, args and other switches"
+        "only this runtime changes; preserve native launch settings and other switches"
     );
-}
-
-fn assert_only_runtime_requests(rows: &[Value], allowed: &[&str]) {
-    for request in rows {
-        match request["kind"].as_str().unwrap() {
-            "started" => {}
-            "status" | "catalog" if request.get("runtime").is_none() => {
-                let selected = request["runtimes"]
-                    .as_array()
-                    .expect("bulk reads require explicit runtime IDs");
-                assert!(!selected.is_empty());
-                for id in selected {
-                    assert!(
-                        allowed.contains(&id.as_str().unwrap()),
-                        "unselected runtime requested: {request}"
-                    );
-                }
-            }
-            "status" | "catalog" | "setup" | "runtime_call" => {
-                assert!(
-                    allowed.contains(&request["runtime"].as_str().unwrap()),
-                    "unselected runtime invoked: {request}"
-                );
-            }
-            _ => panic!("unexpected worker request: {request}"),
-        }
-    }
-}
-
-async fn see_installed(view: &mut AppView) {
-    button(view, "Disable Qwen Code").await;
-    click(view, "Show Qwen Code details").await;
-    see(view, "Installed (fixture-installed)").await;
-    click(view, "Hide Qwen Code details").await;
 }
 
 async fn model_choices(view: &mut AppView) {
@@ -301,359 +261,140 @@ async fn model_choices(view: &mut AppView) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn external_agents_ui_consent_updates_both_sources_and_preserves_native_selection() {
+async fn external_agents_ui_consent_native_catalog_cache_and_failure_isolation() {
     tokio::time::timeout(Duration::from_secs(120), async {
         let fixture = fixture().await;
         let client = fixture.client().await;
         let (revision, before) = source(&client).await;
-        let original = oars(&before);
-        assert_eq!(original[0]["runtimes"], json!({}));
-        assert_eq!(original[1], original[0]);
         let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
         view.resize(180, 160);
         wait_editable_composer(&mut view).await;
         open_settings(&mut view).await;
-        for name in ["Antigravity", "Claude Code", "CodeBuddy Code", "Codex", "Grok Build", "Kimi Code", "OpenCode", "Qoder", "Qwen Code"] {
-            let switch = button(&mut view, &format!("Enable {name}")).await;
-            assert!(!switch.state.selected, "{name} must start off");
+        for name in ["Antigravity", "Codex", "Claude Code"] {
+            assert!(
+                !button(&mut view, &format!("Enable {name}"))
+                    .await
+                    .state
+                    .selected
+            );
         }
-        let nodes = view.accessibility_snapshot();
-        assert!(!nodes.iter().any(|node| {
-            ["Enable external agents", "1 models available", "Not installed", "Models unavailable", "Sign in required", "Could not verify sign-in"].contains(&node.label.as_str())
-                || (node.label.starts_with("Show ") && node.label.ends_with(" details"))
-        }), "disabled rows expose only names and switches, not unrequested runtime status");
-        for root in ["agent", "workhub"] {
-            let key = before["input"]["instances"][root]["key"].as_str().unwrap();
-            assert!(!nodes.iter().any(|node| node.label.contains(key) || node.label.contains("agent.oar")));
-        }
-        assert_eq!(requests(fixture.directory.path()), Vec::<Value>::new());
-
+        assert!(
+            !view
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label.contains("Qwen Code")
+                    || node.label.contains("View installation plan"))
+        );
+        assert!(requests(fixture.directory.path()).is_empty());
         click(&mut view, "Enable Codex").await;
-        let acknowledge = button(&mut view, ACKNOWLEDGE).await;
-        assert!(!acknowledge.state.selected);
-        assert!(view.accessibility_snapshot().iter().any(|node| node.label == CONFIRM && node.state.disabled));
-        see(&mut view, "outside the Maka sandbox").await;
+        assert!(!button(&mut view, ACKNOWLEDGE).await.state.selected);
+        assert!(
+            view.accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == CONFIRM && node.state.disabled)
+        );
+        see(&mut view, "native full-access mode").await;
         click(&mut view, "Cancel enabling external agents").await;
         button(&mut view, "Enable Codex").await;
         assert_eq!(source(&client).await, (revision, before));
-        assert_eq!(requests(fixture.directory.path()), Vec::<Value>::new());
+        assert!(requests(fixture.directory.path()).is_empty());
 
         toggle_runtime(&mut view, &client, "codex", "Codex", true).await;
         see(&mut view, "1 models available").await;
         click(&mut view, "Show Codex details").await;
-        see(&mut view, "Installed (1.0)").await;
-        see(&mut view, "Signed in (codex login status)").await;
+        see(&mut view, "Signed in (codex account/read)").await;
         click(&mut view, "Hide Codex details").await;
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["codex"]);
-        assert!(requests(fixture.directory.path()).iter().any(|request| request["kind"] == "runtime_call" && request["runtime"] == "codex" && request["phase"] == "authentication"));
-
-        toggle_runtime(&mut view, &client, "claude", "Claude Code", true).await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label.contains("fixture-vendor-error")));
-        click(&mut view, "Show Claude Code details").await;
-        see(&mut view, "Claude listModels failed: fixture-vendor-error").await;
-        click(&mut view, "Hide Claude Code details").await;
         click(&mut view, "Close settings").await;
         model_choices(&mut view).await;
         button(&mut view, "Use fixture-model-alt · NSH fixture").await;
-        button(&mut view, "Use External model · OAR · codex").await;
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["codex", "claude"]);
-        assert!(requests(fixture.directory.path()).iter().any(|request| request["kind"] == "catalog" && request["runtimes"].as_array().is_some_and(|ids| ids.contains(&json!("claude")) && ids.contains(&json!("codex")))));
-        click(&mut view, "Use External model · OAR · codex").await;
+        button(&mut view, "Use External model · Native CLI · codex").await;
+
+        let page = client
+            .query("agent", "models", json!({"kind":"start","query":""}))
+            .await
+            .unwrap();
+        let external = page["choices"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|choice| {
+                choice.pointer("/selection/selection/settings/model")
+                    == Some(&json!("external-model"))
+            })
+            .unwrap();
+        let count = requests(fixture.directory.path())
+            .iter()
+            .filter(|row| row["method"] == "launch")
+            .count();
+        for _ in 0..3 {
+            let checked = client
+                .query("agent", "model", json!({"backend":external["selection"]}))
+                .await
+                .unwrap();
+            assert_eq!(checked["kind"], "ready");
+        }
+        assert_eq!(
+            requests(fixture.directory.path())
+                .iter()
+                .filter(|row| row["method"] == "launch")
+                .count(),
+            count,
+            "single-model validation must reuse the shared catalog, not launch native processes"
+        );
+
+        click(&mut view, "Use External model · Native CLI · codex").await;
         wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
-        click(&mut view, "Choose model and effort").await;
-        click(&mut view, "Choose reasoning effort").await;
-        click(&mut view, "Use effort vendor-deep").await;
-        let screen = wait_view_state(&mut view, |view, screen| {
-            model_menu_closed(view) && screen.contains("External model · vendor-deep")
-        }).await;
-        assert!(!screen.contains("OAR · codex"), "provider belongs in the tooltip, not the model button: {screen}");
-        let observed = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
-        assert_eq!(observed["session"]["backend"], json!({"kind":"executor","selection":{"executor":"oar","settings":{"runtime":"codex","model":"external-model","thinkingLevel":"vendor-deep"}}}));
+        let observed = client
+            .query("agent", "observe", json!({"sessionId":fixture.session}))
+            .await
+            .unwrap();
+        assert_eq!(
+            observed["session"]["backend"].pointer("/selection/executor"),
+            Some(&json!("external"))
+        );
 
         open_settings(&mut view).await;
-        toggle_runtime(&mut view, &client, "antigravity", "Antigravity", true).await;
-        see(&mut view, "Sign in required").await;
-        click(&mut view, "Show Antigravity details").await;
-        see(&mut view, "Native login required").await;
-        click(&mut view, "Hide Antigravity details").await;
-        update_worker_state(fixture.directory.path(), |state| state["signedIn"] = json!(true));
-        let count = requests(fixture.directory.path()).iter().filter(|request| request["kind"] == "status").count();
+        update_worker_state(fixture.directory.path(), |state| {
+            state["modelsFail"] = json!(true)
+        });
         click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Disable Antigravity").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label.contains("Not signed in")));
-        click(&mut view, "Show Antigravity details").await;
-        see(&mut view, "Signed in (native login status)").await;
-        click(&mut view, "Hide Antigravity details").await;
-        assert_eq!(requests(fixture.directory.path()).iter().filter(|request| request["kind"] == "status").count(), count + 1);
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["codex", "claude", "antigravity"]);
-        toggle_runtime(&mut view, &client, "grok", "Grok Build", true).await;
-        see(&mut view, "Could not verify sign-in").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label.contains("Vendor cannot determine account status")));
-        click(&mut view, "Show Grok Build details").await;
-        see(&mut view, "Vendor cannot determine account status").await;
-        click(&mut view, "Hide Grok Build details").await;
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["codex", "claude", "antigravity", "grok"]);
-
-        toggle_runtime(&mut view, &client, "codex", "Codex", false).await;
-        let after_disable = requests(fixture.directory.path()).len();
-        click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Enable Codex").await;
+        button(&mut view, "Disable Codex").await;
         click(&mut view, "Close settings").await;
         model_choices(&mut view).await;
         button(&mut view, "Use fixture-model-alt · NSH fixture").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label == "Use External model · OAR · codex"));
+        assert!(
+            !view
+                .accessibility_snapshot()
+                .iter()
+                .any(|node| node.label == "Use External model · Native CLI · codex"),
+            "failed external discovery must not retain stale external choices"
+        );
         click(&mut view, "Use fixture-model-alt · NSH fixture").await;
         wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
-        let observed = client.query("agent", "observe", json!({"sessionId":fixture.session})).await.unwrap();
-        assert_eq!(observed["session"]["backend"], json!({"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model-alt","thinkingLevel":null}));
-        assert_only_runtime_requests(&requests(fixture.directory.path())[after_disable..], &["claude", "antigravity", "grok"]);
+        let observed = client
+            .query("agent", "observe", json!({"sessionId":fixture.session}))
+            .await
+            .unwrap();
+        assert_eq!(observed["session"]["backend"]["kind"], "model");
+
         open_settings(&mut view).await;
-        for (id, name) in [("claude", "Claude Code"), ("antigravity", "Antigravity"), ("grok", "Grok Build")] {
-            toggle_runtime(&mut view, &client, id, name, false).await;
-        }
-        let settled_requests = requests(fixture.directory.path());
+        toggle_runtime(&mut view, &client, "codex", "Codex", false).await;
+        let settled = requests(fixture.directory.path());
         click(&mut view, "Refresh external agents").await;
         button(&mut view, "Enable Codex").await;
         click(&mut view, "Close settings").await;
         model_choices(&mut view).await;
         button(&mut view, "Use fixture-model · NSH fixture").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label.contains("Use External model")));
-        click(&mut view, "Use fixture-model · NSH fixture").await;
-        wait_view_state(&mut view, |view, _| model_menu_closed(view)).await;
-        assert_eq!(requests(fixture.directory.path()), settled_requests, "no runtime selected means no worker starts");
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
-        drop(view);
-        bindings.close().await.unwrap();
-        client.close().await.unwrap();
-        fixture.finish().await;
-    }).await.expect("external agent consent and picker workflow timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn external_agents_ui_installation_requires_a_plan_and_explicit_confirmation() {
-    tokio::time::timeout(Duration::from_secs(120), async {
-        let fixture = fixture().await;
-        let client = fixture.client().await;
-        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
-        view.resize(180, 160);
-        wait_editable_composer(&mut view).await;
-        open_settings(&mut view).await;
-        toggle_runtime(&mut view, &client, "qwen", "Qwen Code", true).await;
-        click(&mut view, "Select Qwen Code installation line stable").await;
-        click(&mut view, "View installation plan for Qwen Code").await;
-        for text in [
-            "Installation plan for Qwen Code", "npm install --global fixture-qwen",
-            "Installation source: https://vendor.invalid/qwen",
-            "Network access: yes. Elevated privileges: no. Installation changes files on this machine.",
-        ] {
-            see(&mut view, text).await;
-        }
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 0);
-        click(&mut view, "Cancel external agent installation").await;
-        button(&mut view, "View installation plan for Qwen Code").await;
-        assert_eq!(worker_state(fixture.directory.path())["installed"], false);
-        assert!(
-            !requests(fixture.directory.path())
-                .iter()
-                .any(|request| request["action"] == "install")
-        );
-        click(&mut view, "View installation plan for Qwen Code").await;
-        click(&mut view, "Install Qwen Code").await;
-        see_installed(&mut view).await;
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
-        let setup: Vec<_> = requests(fixture.directory.path())
-            .into_iter()
-            .filter(|request| request["kind"] == "setup")
-            .collect();
         assert_eq!(
-            setup
-                .iter()
-                .map(|request| request["action"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["plan", "plan", "install"]
+            requests(fixture.directory.path()),
+            settled,
+            "disabled runtimes must not launch native processes"
         );
-        assert!(
-            setup
-                .iter()
-                .all(|request| request["runtime"] == "qwen" && request["options"]["line"] == "stable")
-        );
-
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen"]);
-        update_worker_state(fixture.directory.path(), |state| state["antigravityMissing"] = json!(true));
-        toggle_runtime(&mut view, &client, "antigravity", "Antigravity", true).await;
-        click(&mut view, "View installation plan for Antigravity").await;
-        for text in [
-            "Installation plan for Antigravity",
-            "curl -fsSL https://antigravity.google/cli/install.sh | bash",
-            "Installation source: https://antigravity.google/docs/getting-started/?tab=cli",
-            "Network access: yes. Elevated privileges: no. Installation changes files on this machine.",
-        ] {
-            see(&mut view, text).await;
-        }
-        assert_eq!(worker_state(fixture.directory.path())["antigravityMissing"], true);
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
-        click(&mut view, "Cancel external agent installation").await;
-        button(&mut view, "View installation plan for Antigravity").await;
-        assert_eq!(worker_state(fixture.directory.path())["antigravityMissing"], true);
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
-        assert!(!requests(fixture.directory.path()).iter().any(|request| request["runtime"] == "antigravity" && request["action"] == "install"));
-
-        click(&mut view, "View installation plan for Antigravity").await;
-        click(&mut view, "Install Antigravity").await;
-        button(&mut view, "Disable Antigravity").await;
-        click(&mut view, "Show Antigravity details").await;
-        see(&mut view, "Installed (fixture-agy-installed)").await;
-        click(&mut view, "Hide Antigravity details").await;
-        let installed = worker_state(fixture.directory.path());
-        assert_eq!(installed["antigravityMissing"], false);
-        assert_eq!(installed["installed"], true, "Antigravity installation must preserve Qwen state");
-        assert_eq!(installed["installCount"], 2, "one Qwen install and one Antigravity install");
-        click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Disable Antigravity").await;
-        click(&mut view, "Show Antigravity details").await;
-        see(&mut view, "Installed (fixture-agy-installed)").await;
-        click(&mut view, "Hide Antigravity details").await;
-        let antigravity_setup: Vec<_> = requests(fixture.directory.path())
-            .into_iter()
-            .filter(|request| request["kind"] == "setup" && request["runtime"] == "antigravity")
-            .collect();
-        assert_eq!(
-            antigravity_setup.iter().map(|request| request["action"].as_str().unwrap()).collect::<Vec<_>>(),
-            ["plan", "plan", "install"],
-        );
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 2);
-
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen", "antigravity"]);
-        toggle_runtime(&mut view, &client, "qoder", "Qoder", true).await;
-        click(&mut view, "View installation plan for Qoder").await;
-        see(&mut view, "Installation options for Qoder").await;
-        assert!(!view.accessibility_snapshot().iter().any(|node| node.label.contains("Fixture platform has no Qoder installer")));
-        click(&mut view, "Show Qoder details").await;
-        see(&mut view, "Fixture platform has no Qoder installer").await;
-        assert!(
-            !view
-                .accessibility_snapshot()
-                .iter()
-                .any(|node| node.label == "Install Qoder")
-        );
-        click(&mut view, "Cancel external agent installation").await;
-
-        // A vendor may return an unrecognized result after doing the work. Refresh
-        // observes its effect; it must not turn that result into another install.
-        update_worker_state(fixture.directory.path(), |state| {
-            state["installed"] = json!(false);
-            state["unknownResult"] = json!(true);
-        });
-        click(&mut view, "Refresh external agents").await;
-        click(&mut view, "Select Qwen Code installation line stable").await;
-        click(&mut view, "View installation plan for Qwen Code").await;
-        click(&mut view, "Install Qwen Code").await;
-        click(&mut view, "Show external agent error details").await;
-        see(&mut view, "External agent installation returned an unknown result. Refresh to check its status.").await;
-        see_installed(&mut view).await;
-        click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Disable Qwen Code").await;
-        click(&mut view, "Close settings").await;
-        open_settings(&mut view).await;
-        see_installed(&mut view).await;
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 3);
-        assert_eq!(
-            requests(fixture.directory.path())
-                .iter()
-                .filter(|request| request["action"] == "install")
-                .count(),
-            3
-        );
-        assert_eq!(requests(fixture.directory.path()).iter().filter(|request| request["runtime"] == "antigravity" && request["action"] == "install").count(), 1);
-        assert_eq!(worker_state(fixture.directory.path())["antigravityMissing"], false);
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen", "antigravity", "qoder"]);
-        assert_eq!(fixture.request_count.load(Ordering::SeqCst), 0);
         drop(view);
         bindings.close().await.unwrap();
         client.close().await.unwrap();
         fixture.finish().await;
     })
     .await
-    .expect("external agent installation workflow timed out");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn external_agents_ui_recovers_the_original_install_receipt_without_reinstalling() {
-    tokio::time::timeout(Duration::from_secs(120), async {
-        let fixture = fixture().await;
-        let gate = ReplyGate::oar_setup(fixture.directory.path(), fixture.address.clone());
-        let client = fixture.client_at(&gate.address).await;
-        let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
-        view.resize(180, 160);
-        wait_editable_composer(&mut view).await;
-        open_settings(&mut view).await;
-        toggle_runtime(&mut view, &client, "qwen", "Qwen Code", true).await;
-        click(&mut view, "Select Qwen Code installation line stable").await;
-        click(&mut view, "View installation plan for Qwen Code").await;
-        button(&mut view, "Install Qwen Code").await;
-        gate.arm();
-        click(&mut view, "Install Qwen Code").await;
-        tokio::time::timeout(Duration::from_secs(20), gate.held.notified())
-            .await
-            .unwrap();
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
-        let pending = client.pending_settings().await.unwrap();
-        assert_eq!(pending.len(), 1);
-        assert_eq!(pending[0].endpoint, "agent");
-        assert_eq!(pending[0].method, "oarSetup");
-        let original = pending[0].id;
-        let reference = pending[0].reference.clone().unwrap();
-        // The Host has committed, but this UI has never received that receipt.
-        drop(view);
-        drop(gate);
-        bindings
-            .close()
-            .await
-            .expect_err("the original transport was deliberately severed");
-        drop(client);
-
-        let reopened = fixture.client().await;
-        assert!(
-            reopened
-                .pending_settings()
-                .await
-                .unwrap()
-                .iter()
-                .any(|operation| operation.id == original)
-        );
-        let (mut view, bindings) = fixture.view(reopened.clone(), Some(fixture.session.clone()));
-        view.resize(180, 160);
-        wait_editable_composer(&mut view).await;
-        open_settings(&mut view).await;
-        see_installed(&mut view).await;
-        button(&mut view, "Disable Qwen Code").await;
-        assert!(reopened.pending_settings().await.unwrap().is_empty());
-        let recovered = reopened.operation(original).await.unwrap();
-        assert_eq!(recovered.reference.as_ref(), Some(&reference));
-        let receipt = serde_json::to_value(recovered.receipt.unwrap()).unwrap();
-        assert_eq!(receipt["outcome"]["kind"], "returned");
-        assert_eq!(receipt["outcome"]["value"]["result"]["kind"], "installed");
-        assert_eq!(receipt["cleanup"]["kind"], "confirmed");
-        click(&mut view, "Refresh external agents").await;
-        button(&mut view, "Disable Qwen Code").await;
-        assert_eq!(worker_state(fixture.directory.path())["installCount"], 1);
-        let setup: Vec<_> = requests(fixture.directory.path())
-            .into_iter()
-            .filter(|request| request["kind"] == "setup")
-            .collect();
-        assert_eq!(
-            setup
-                .iter()
-                .map(|request| request["action"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["plan", "install"]
-        );
-        assert_only_runtime_requests(&requests(fixture.directory.path()), &["qwen"]);
-        drop(view);
-        bindings.close().await.unwrap();
-        reopened.close().await.unwrap();
-        fixture.finish().await;
-    })
-    .await
-    .expect("external agent original receipt recovery timed out");
+    .expect("native external agent settings workflow timed out");
 }

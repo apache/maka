@@ -774,9 +774,6 @@ pub struct ReplyGate {
     worker: JoinHandle<()>,
 }
 impl ReplyGate {
-    pub fn oar_setup(directory: &Path, target: PathBuf) -> Self {
-        Self::for_method(directory, target, "agent", "oarSetup", "mutation")
-    }
     pub fn resume(directory: &Path, target: PathBuf) -> Self {
         Self::for_method(directory, target, "agent", "resume", "mutation")
     }

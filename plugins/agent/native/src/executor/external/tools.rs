@@ -50,7 +50,7 @@ impl Tools {
         store: Arc<SessionStore>,
         request: &Request,
         execution: Arc<dyn ExecutionCustody>,
-        owner: &Oar,
+        owner: &External,
         cancellation: CancellationToken,
     ) -> Result<Self, Error> {
         tools
@@ -73,7 +73,7 @@ impl Tools {
             invocation: request.invocation.clone(),
             origin: ToolOrigin::HostSdk {
                 package_id: owner.package.clone(),
-                entry_id: "oar".into(),
+                entry_id: "external".into(),
                 activation: owner.activation.clone(),
                 parent: None,
             },
@@ -178,7 +178,7 @@ impl Tools {
                     if image {
                         return (
                             mcp_error(
-                                serde_json::json!({"message":"Image resources are unsupported by the OAR Host bridge", "operationId":operation_id}),
+                                serde_json::json!({"message":"Image resources are unsupported by the External agent Host bridge", "operationId":operation_id}),
                             ),
                             None,
                         );

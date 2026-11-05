@@ -56,7 +56,9 @@ impl Journal {
             },
         };
         if record.cwd != request.cwd {
-            return Err(Error::Invalid("OAR conversation workspace changed".into()));
+            return Err(Error::Invalid(
+                "External agent conversation workspace changed".into(),
+            ));
         }
         if record.running.is_some() {
             return Err(Error::Unknown);
@@ -91,7 +93,7 @@ impl Journal {
             .is_some_and(|previous| *previous != id)
         {
             return Err(Error::Invalid(
-                "OAR did not resume the original native session".into(),
+                "External agent did not resume the original native session".into(),
             ));
         }
         let mut next = self.record.clone();
@@ -117,7 +119,7 @@ impl Journal {
         self.revision = Some(
             updated
                 .first()
-                .ok_or_else(|| Error::Persistence("OAR journal receipt missing".into()))?
+                .ok_or_else(|| Error::Persistence("External agent journal receipt missing".into()))?
                 .revision,
         );
         self.record = record;

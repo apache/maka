@@ -667,11 +667,6 @@ export interface ServiceMethods {
       input: Runtime.AgentModelsRead;
       output: Runtime.AgentModelsPage;
     };
-    oarSetup: {
-      mode: 'mutation';
-      input: Runtime.AgentOarSetup;
-      output: Runtime.AgentOarSetupResult;
-    };
     observe: {
       mode: 'query';
       input: Runtime.AgentSessionRead;

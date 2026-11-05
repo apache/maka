@@ -135,7 +135,9 @@ pub(super) async fn context(
 }
 
 fn invalid(message: &str) -> Error {
-    Error::Invalid(format!("OAR history handoff unavailable: {message}"))
+    Error::Invalid(format!(
+        "External agent history handoff unavailable: {message}"
+    ))
 }
 fn persistence(error: maka_event_log::StoreError) -> Error {
     Error::Persistence(error.to_string())

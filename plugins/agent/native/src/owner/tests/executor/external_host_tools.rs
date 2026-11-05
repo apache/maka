@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::oar_support::{host_tool, input, packet, release, with_tools};
+use super::external_support::{host_tool, input, packet, release, with_tools};
 use super::*;
 use maka_agent_facts::{
     event::{Fact, ToolOutcome},
@@ -64,7 +64,7 @@ async fn finish(f: &Fixture, control: &mut BufReader<TcpStream>) {
 }
 
 #[tokio::test]
-async fn native_oar_host_query_mutation_preserve_origin_receipt_and_allowlist() {
+async fn native_external_host_query_mutation_preserve_origin_receipt_and_allowlist() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let tooling = service_tools::Setup::javascript().with_host_tools(vec![host_tool("observe", "SessionRead"), host_tool("create", "SessionCreate"), host_tool("metadata", "SessionUpdate"), host_tool("changeSession", "SessionChange")]);
         let (f, listener) = with_tools("http://127.0.0.1:9/v1", Some(tooling), |_| {}).await;
@@ -97,7 +97,7 @@ async fn native_oar_host_query_mutation_preserve_origin_receipt_and_allowlist() 
             Fact::ToolDispatched { name, call, .. } => Some((name, call)), _ => None,
         }).collect();
         assert_eq!(calls.len(), 2);
-        assert!(calls.iter().all(|(_, call)| matches!(&call.origin, ToolOrigin::HostSdk { entry_id, parent: None, .. } if entry_id == "oar")));
+        assert!(calls.iter().all(|(_, call)| matches!(&call.origin, ToolOrigin::HostSdk { entry_id, parent: None, .. } if entry_id == "external")));
         assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. })));
         finish(&f, &mut control).await;
         // A narrower Session ceiling must also reject adversarial out-of-catalog calls.
@@ -117,7 +117,7 @@ async fn native_oar_host_query_mutation_preserve_origin_receipt_and_allowlist() 
 }
 
 #[tokio::test]
-async fn native_oar_host_read_accepts_resources_and_rejects_decoded_local_paths() {
+async fn native_external_host_read_accepts_resources_and_rejects_decoded_local_paths() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = with_tools(
             "http://127.0.0.1:9/v1",
@@ -188,7 +188,7 @@ async fn native_oar_host_read_accepts_resources_and_rejects_decoded_local_paths(
 }
 
 #[tokio::test]
-async fn native_oar_host_questions_wait_inline_while_stream_acknowledgements_continue() {
+async fn native_external_host_questions_wait_inline_while_native_stream_remains_active() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let mut tooling = service_tools::Setup::questions();
         tooling.confirmation = contract::ToolConfirmation::Required;
@@ -217,7 +217,7 @@ async fn native_oar_host_questions_wait_inline_while_stream_acknowledgements_con
 }
 
 #[tokio::test]
-async fn native_oar_host_excludes_third_party_aliases_and_local_shell_services() {
+async fn native_external_host_excludes_third_party_aliases_and_local_shell_services() {
     tokio::time::timeout(Duration::from_secs(45), async {
         for tooling in [
             service_tools::Setup::javascript().named("SessionRead"),
@@ -259,7 +259,7 @@ async fn native_oar_host_excludes_third_party_aliases_and_local_shell_services()
 }
 
 #[tokio::test]
-async fn native_oar_host_large_results_archive_at_actual_t2_and_continue_through_read() {
+async fn native_external_host_large_results_archive_at_actual_t2_and_continue_through_read() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let tooling = service_tools::Setup::files("readText").with_host_tools(vec![host_tool("list", "SessionList")]);
         let (f, listener) = with_tools("http://127.0.0.1:9/v1", Some(tooling), |_| {}).await;
@@ -332,7 +332,7 @@ impl NativeOwner for HeldHostQuestion {
 }
 
 #[tokio::test]
-async fn native_oar_host_stop_drains_admitted_tool_after_worker_terminal_and_exit() {
+async fn native_external_host_stop_drains_admitted_tool_after_worker_terminal_and_exit() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let held = Arc::new(HeldHostQuestion { entered: Arc::new(Semaphore::new(0)), cancelled: Arc::new(Semaphore::new(0)), release: Arc::new(Semaphore::new(0)) });
         let tooling = service_tools::Setup::questions().with_handler(held.clone(), held.clone());
@@ -362,7 +362,7 @@ async fn native_oar_host_stop_drains_admitted_tool_after_worker_terminal_and_exi
 }
 
 #[tokio::test]
-async fn native_oar_host_bindings_hide_private_recall_and_supply_real_skill_tools() {
+async fn native_external_host_bindings_hide_private_recall_and_supply_real_skill_tools() {
     tokio::time::timeout(Duration::from_secs(45), async {
         let (f, listener) = with_tools("http://127.0.0.1:9/v1", None, |settings| settings.recall = true).await;
         let session = f.create("Private Recall bridge").await;
@@ -386,7 +386,7 @@ async fn native_oar_host_bindings_hide_private_recall_and_supply_real_skill_tool
         std::fs::create_dir_all(&skill).unwrap();
         std::fs::write(skill.join("SKILL.md"), "---\nname: review\ndescription: Review bridge\nrequired-tools: FindGuide LoadGuide\n---\nBRIDGE REVIEW INSTRUCTIONS").unwrap();
         for runtime in ["codex", "antigravity"] {
-        let accepted = f.mutation(2, "send", super::oar_support::input_runtime(&session, runtime, "/skill:review inspect"), Uuid::new_v4()).await.unwrap();
+        let accepted = f.mutation(2, "send", super::external_support::input_runtime(&session, runtime, "/skill:review inspect"), Uuid::new_v4()).await.unwrap();
         assert_eq!(accepted["kind"], "started", "{accepted}");
         let mut control = BufReader::new(listener.accept().await.unwrap().0);
         let opened = packet(&mut control, "opened").await;
@@ -431,7 +431,7 @@ impl NativeOwner for UncertainHostQuestion {
     }
 }
 #[tokio::test]
-async fn native_oar_host_uncertainty_keeps_operation_receipts_and_fatal_execution_evidence() {
+async fn native_external_host_uncertainty_keeps_operation_receipts_and_fatal_execution_evidence() {
     tokio::time::timeout(Duration::from_secs(45), async {
         for cleanup_failed in [false, true] {
             let handler = Arc::new(UncertainHostQuestion { cleanup_failed });
@@ -457,7 +457,7 @@ async fn native_oar_host_uncertainty_keeps_operation_receipts_and_fatal_executio
             assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::Failed { .. } })));
             if cleanup_failed {
                 assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Succeeded { .. }, .. })));
-                assert_eq!(super::oar_support::record(&f, &session).await["running"], accepted["invocationId"]);
+                assert_eq!(super::external_support::record(&f, &session).await["running"], accepted["invocationId"]);
             } else {
                 assert!(events.iter().any(|row| matches!(&row.event.fact, Fact::ToolSettled { outcome: ToolOutcome::Unknown { operation: Some(_), .. }, .. })));
             }
@@ -468,7 +468,7 @@ async fn native_oar_host_uncertainty_keeps_operation_receipts_and_fatal_executio
 }
 
 #[tokio::test]
-async fn native_oar_host_tool_only_frames_commit_without_following_output() {
+async fn native_external_host_mcp_calls_commit_without_following_native_output() {
     tokio::time::timeout(Duration::from_secs(30), async {
         let tooling = service_tools::Setup::javascript()
             .with_host_tools(vec![host_tool("observe", "SessionRead")]);
@@ -478,7 +478,11 @@ async fn native_oar_host_tool_only_frames_commit_without_following_output() {
             f.mutation(
                 2,
                 "send",
-                super::oar_support::input_runtime(&session, "antigravity", "tool frame commit"),
+                super::external_support::input_runtime(
+                    &session,
+                    "antigravity",
+                    "tool frame commit",
+                ),
                 Uuid::new_v4(),
             )
             .await

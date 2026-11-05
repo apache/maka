@@ -22,8 +22,6 @@
   },
   "devDependencies": {
     "@biomejs/biome": "2.6.3",
-    "@botiverse/oar": "0.86.0",
-    "deno": "2.9.6",
     "esbuild": "0.28.2",
     "husky": "^9.1.7",
     "patch-package": "8.0.1",

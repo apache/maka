@@ -19,7 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -52,6 +52,7 @@ function fixture() {
   const metadata = {
     root: workspace([
       ['maka-code-runtime', 'platform/code-runtime'],
+      ['maka-agent-native', 'plugins/agent/native'],
       ['maka-computer-use', 'platform/computer-use', ['platform/code-runtime']],
       ['maka-skills-core', 'plugins/skills/core'],
       ['nsh-core', 'third-party/nsh/crates/nsh-core'],
@@ -394,22 +395,29 @@ test('Windows shell execution resolves Git Bash and LLVM paths from uppercase PR
 });
 
 test('the external-agent UI worker fixture reaches real CLI tests', () => {
-  const plan = fixture()(['products/maka/terminal-shell/tests/support/external-agent-worker.mjs']);
+  const plan = fixture()(['products/maka/terminal-shell/tests/support/external-agent-cli.mjs']);
   assert.equal(plan.full, false);
   assert.ok(plan.suites.root);
   assert.equal(plan.suites.root.filter, 'all()');
 });
 
-test('OAR source, dependency patch, worker tests and native fixture reach their consumers', () => {
+test('native interpreted fixtures reach the root tests replayed from archives', () => {
+  const directory = 'plugins/agent/native/tests/support';
+  const inputs = readdirSync(new URL('../' + directory + '/', import.meta.url), {
+    recursive: true,
+  }).filter((path) => path.endsWith('.mjs'));
+  assert.ok(inputs.length, 'native runtime behavior fixtures must be present');
+  for (const input of inputs) {
+    const path = directory + '/' + input.replaceAll('\\', '/');
+    const plan = fixture()([path]);
+    assert.equal(plan.full, false, path);
+    assert.equal(plan.suites.root.filter, 'all()', path);
+    assert.ok(plan.suites.tooling, path);
+  }
+});
+
+test('distribution build and license inputs reach their consumers', () => {
   for (const path of [
-    'patches/@botiverse+oar+0.86.0.patch',
-    'scripts/oar/antigravity.test.mjs',
-    'scripts/oar/fixtures/antigravity.mjs',
-    'plugins/agent/oar-executor/worker/main.mjs',
-    'plugins/agent/oar-executor/runtimes.json',
-    'plugins/agent/native/tests/support/oar-worker.mjs',
-    'scripts/oar/build.mjs',
-    'scripts/oar/worker.test.mjs',
     'scripts/rust/cargo.mjs',
     'scripts/rust/build-v8.mjs',
     'scripts/rust/v8-source.json',
@@ -432,7 +440,7 @@ test('OAR source, dependency patch, worker tests and native fixture reach their 
 });
 
 test('product verification reaches the reviewed notice gate and propagates its failure', async () => {
-  const plan = fixture()(['scripts/rust/licenses/deno-runtime-2.9.6-aarch64-apple-darwin.txt']);
+  const plan = fixture()(['scripts/rust/licenses/deno-2.9.6-source-notices.txt']);
   assert.ok(plan.suites.product);
   const missingCoverage = new Error('Third-party notices do not cover cargo:windows@1.0.0');
   let productChecked = false;

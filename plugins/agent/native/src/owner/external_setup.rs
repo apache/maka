@@ -18,85 +18,27 @@
  */
 
 use super::*;
-use maka_agent_api::oar::{Action, Setup, SetupResult};
-use maka_host_runtime::application::Context;
-
-impl Owner {
-    pub(crate) async fn oar_setup(
-        &self,
-        input: Setup,
-        context: Context,
-    ) -> Result<SetupResult, String> {
-        if !matches!(
-            context.scope().identity,
-            maka_capabilities::call::Identity::Remote { .. }
-        ) {
-            return Err("oar_setup_requires_application_request".into());
-        }
-        context.operation().ok_or("oar_setup_requires_mutation")?;
-        if input.runtime.trim().is_empty() || input.runtime.chars().any(char::is_control) {
-            return Err("oar_runtime_invalid".into());
-        }
-        if !self.executors.contains("oar") {
-            return Err("agent_oar_disabled".into());
-        }
-        let cwd = self.oar_cwd().await?.ok_or("agent_workspace_unavailable")?;
-        let (action, line) = match input.action {
-            Action::Probe => ("probe", None),
-            Action::Plan { line } => ("plan", line),
-            Action::Install { line } => ("install", line),
-        };
-        let request = serde_json::json!({"kind":"setup","runtime":input.runtime,"action":action,"options":line.map(|line|serde_json::json!({"line":line})).unwrap_or_else(||serde_json::json!({})),"cwd":cwd});
-        let mut ticket = context
-            .scope()
-            .resources
-            .reserve()
-            .map_err(|error| error.to_string())?;
-        ticket.start();
-        let result = self
-            .executors
-            .oar_query(cwd, request, context.scope().cancellation.clone())
-            .await;
-        ticket.complete(
-            if matches!(
-                &result,
-                Err(maka_agent_ports::executor::Error::CleanupUnconfirmed)
-            ) {
-                Err("OAR setup cleanup is unconfirmed".into())
-            } else {
-                Ok(())
-            },
-        );
-        Ok(SetupResult {
-            runtime: input.runtime,
-            result: result
-                .map_err(|error| error.to_string())?
-                .ok_or("agent_oar_disabled")?,
-        })
-    }
-}
-
 impl Owner {
     pub(crate) async fn external_agents(
         &self,
         inspect: bool,
         scope: &maka_capabilities::call::Scope,
-    ) -> Result<maka_agent_api::oar::ExternalAgents, String> {
-        use maka_agent_api::oar::{ConfigurationTarget, ExternalAgents, ExternalAgentsState};
+    ) -> Result<maka_agent_api::external::ExternalAgents, String> {
+        use maka_agent_api::external::{ConfigurationTarget, ExternalAgents, ExternalAgentsState};
         let target = ConfigurationTarget {
             source: self.data_source.clone(),
             path: if matches!(self.behavior, Some(BuiltinBehavior::WorkHub)) {
-                vec!["agent".into(), "oar".into()]
+                vec!["agent".into(), "external".into()]
             } else {
-                vec!["oar".into()]
+                vec!["external".into()]
             },
         };
-        let state = if !self.executors.contains("oar") {
+        let state = if !self.executors.contains("external") {
             ExternalAgentsState::Disabled
         } else if inspect {
             ExternalAgentsState::Enabled
         } else {
-            match self.oar_cwd().await {
+            match self.external_cwd().await {
                 Ok(None) => ExternalAgentsState::WorkspaceRequired,
                 Err(message) => ExternalAgentsState::Unavailable { message },
                 Ok(Some(cwd)) => {
@@ -107,7 +49,7 @@ impl Owner {
                     ticket.start();
                     let result = self
                         .executors
-                        .oar_query(
+                        .external_query(
                             cwd.clone(),
                             serde_json::json!({"kind":"status", "cwd":cwd}),
                             scope.cancellation.clone(),
@@ -118,7 +60,7 @@ impl Owner {
                             &result,
                             Err(maka_agent_ports::executor::Error::CleanupUnconfirmed)
                         ) {
-                            Err("OAR status cleanup is unconfirmed".into())
+                            Err("Native CLI status cleanup is unconfirmed".into())
                         } else {
                             Ok(())
                         },
@@ -127,7 +69,7 @@ impl Owner {
                         Ok(Some(value)) => match serde_json::from_value(value) {
                             Ok(runtimes) => ExternalAgentsState::Ready { runtimes },
                             Err(error) => ExternalAgentsState::Unavailable {
-                                message: format!("Invalid OAR status: {error}"),
+                                message: format!("Invalid Native CLI status: {error}"),
                             },
                         },
                         Ok(None) => ExternalAgentsState::Disabled,
@@ -140,8 +82,8 @@ impl Owner {
         };
         Ok(ExternalAgents {
             target,
-            configured: self.settings.oar.is_some(),
-            runtimes: maka_agent_api::oar::runtime_options(self.settings.oar.as_ref()),
+            configured: self.settings.external.is_some(),
+            runtimes: maka_agent_api::external::runtime_options(self.settings.external.as_ref()),
             state,
         })
     }

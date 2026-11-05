@@ -41,7 +41,7 @@ pub(super) async fn with_tools(
     let node = NODE
         .get_or_init(|| async {
             let output = tokio::process::Command::new("node")
-                .args(["-p", "process.execPath"])
+                .args(["-e", "process.stdout.write(process.execPath)"])
                 .output()
                 .await
                 .unwrap();
@@ -53,21 +53,59 @@ pub(super) async fn with_tools(
         .await;
     let control = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let fixture = Fixture::configured(base, None, None, tooling, |settings| {
-        settings.oar = Some(maka_agent_api::executor::OarConfiguration {
-            enabled: true,
-            runtimes: ["codex", "antigravity", "claude", "missing", "broken"]
-                .into_iter()
-                .map(|id| (id.into(), true))
-                .collect(),
-            executable: Some(node.clone()),
+        let command = maka_agent_api::executor::NativeCommand {
+            executable: std::path::Path::new(node)
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .into(),
             args: vec![
                 std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("tests/support/oar-worker.mjs")
+                    .join("tests/support/native-runtime.mjs")
                     .to_str()
                     .unwrap()
                     .into(),
                 control.local_addr().unwrap().port().to_string(),
             ],
+            env: BTreeMap::from([
+                ("MAKA_NATIVE_PREOPEN_PROBE".into(), "1".into()),
+                (
+                    "PATH".into(),
+                    std::path::Path::new(node)
+                        .parent()
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .into(),
+                ),
+                (
+                    "MAKA_NATIVE_FIXTURE_CLAUDE_DIR".into(),
+                    std::path::PathBuf::from(&settings.workspace_roots[0].path)
+                        .join(".fixture-claude")
+                        .to_str()
+                        .unwrap()
+                        .into(),
+                ),
+            ]),
+        };
+        let mut claude = command.clone();
+        claude.env.insert(
+            "CLAUDE_CONFIG_DIR".into(),
+            command.env["MAKA_NATIVE_FIXTURE_CLAUDE_DIR"].clone(),
+        );
+        settings.external = Some(maka_agent_api::executor::ExternalConfiguration {
+            enabled: true,
+            runtimes: maka_agent_api::executor::NativeRuntimeSwitches {
+                codex: true,
+                antigravity: true,
+                claude: true,
+            },
+            commands: maka_agent_api::executor::NativeCommands {
+                codex: Some(command.clone()),
+                antigravity: Some(command),
+                claude: Some(claude),
+            },
         });
         configure(settings);
     })
@@ -76,7 +114,7 @@ pub(super) async fn with_tools(
 }
 
 pub(super) fn backend(runtime: &str) -> Value {
-    json!({"kind":"executor","selection":{"executor":"oar","settings":{"runtime":runtime,"model":"fixture-model","thinkingLevel":"vendor-deep"}}})
+    json!({"kind":"executor","selection":{"executor":"external","settings":{"runtime":runtime,"model":"fixture-model","thinkingLevel":"vendor-deep"}}})
 }
 pub(super) fn input(session: &str, message: &str) -> Value {
     input_runtime(session, "codex", message)
@@ -95,10 +133,13 @@ pub(super) async fn release(control: &mut BufReader<TcpStream>) {
     control.get_mut().write_all(b"continue\n").await.unwrap();
 }
 pub(super) async fn record(f: &Fixture, session: &str) -> Value {
+    record_runtime(f, session, "codex").await
+}
+pub(super) async fn record_runtime(f: &Fixture, session: &str, runtime: &str) -> Value {
     let suffix = format!(
         "conversation/{}",
         hex::encode(Sha256::digest(
-            serde_json::to_vec(&(session, Some("codex"))).unwrap()
+            serde_json::to_vec(&(session, Some(runtime))).unwrap()
         ))
     );
     let page = f

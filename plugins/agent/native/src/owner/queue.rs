@@ -804,7 +804,7 @@ impl Owner {
         let tools_changed = if basis
             .executor
             .as_ref()
-            .is_some_and(|executor| executor.selection.executor != "oar")
+            .is_some_and(|executor| executor.selection.executor != "external")
         {
             !basis.tools.is_empty()
                 || !basis.internal_tools.is_empty()
@@ -967,7 +967,7 @@ impl Owner {
                 || (basis
                     .executor
                     .as_ref()
-                    .is_some_and(|executor| executor.selection.executor != "oar")
+                    .is_some_and(|executor| executor.selection.executor != "external")
                     && basis.allowed_tools.is_some())
             {
                 return Err("agent_session_configuration_changed".into());
@@ -1116,7 +1116,7 @@ impl Owner {
             }
             PreparedBackend::Executor(backend) => {
                 let mut backend = *backend;
-                backend.bind_host_tools(self.oar_tools(&invocation.session_id, &basis)?);
+                backend.bind_host_tools(self.external_tools(&invocation.session_id, &basis)?);
                 configuration.thinking_level = None;
                 PreparedRun::Executor(Box::new(maka_agent_engine::ExecutorInput {
                     request: maka_agent_ports::executor::Request {

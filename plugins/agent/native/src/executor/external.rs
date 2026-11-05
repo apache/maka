@@ -18,20 +18,26 @@
  */
 
 use super::*;
-use futures_util::{FutureExt, future::Shared};
+use futures_util::future::Shared;
+use maka_agent_api::executor::{ExternalConfiguration, NativeCommand, NativeRuntime};
 use maka_agent_ports::executor::{Outcome, Request};
 use maka_capabilities::storage::Store;
 use maka_host_runtime::storage::Storage;
-use std::collections::BTreeSet;
-use std::path::PathBuf;
-use std::time::{Duration, Instant};
+use std::{
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
+mod agy;
 mod attachments;
+mod claude;
+mod codex;
+mod discovery;
 mod history;
 mod journal;
-mod projection;
+mod mcp;
+mod runtime;
 mod tools;
-mod worker;
 pub(crate) use tools::HostTools;
 
 struct CatalogSnapshot {
@@ -40,10 +46,8 @@ struct CatalogSnapshot {
     result: Shared<BoxFuture<'static, Result<Value, Error>>>,
 }
 
-pub(super) struct Oar {
-    executable: PathBuf,
-    args: Vec<String>,
-    runtimes: BTreeSet<String>,
+pub(super) struct External {
+    commands: BTreeMap<NativeRuntime, NativeCommand>,
     storage: Storage,
     queries: Arc<maka_capabilities::call::Resources>,
     catalog: tokio::sync::Mutex<Option<CatalogSnapshot>>,
@@ -53,24 +57,27 @@ pub(super) struct Oar {
     activation: String,
     pub basis: String,
 }
-impl Oar {
+impl External {
     pub fn capture(
         context: &NativeContext,
-        configuration: &maka_agent_api::executor::OarConfiguration,
+        configuration: &ExternalConfiguration,
     ) -> Result<Arc<Self>, String> {
-        let persistence = context.persistence().ok_or("OAR requires persistence")?;
-        let executable = match &configuration.executable {
-            Some(path) => PathBuf::from(path),
-            None => std::env::current_exe()
-                .map_err(|e| e.to_string())?
-                .with_file_name(if cfg!(windows) {
-                    "maka-oar-worker.exe"
-                } else {
-                    "maka-oar-worker"
-                }),
-        };
-        if !executable.is_absolute() {
-            return Err("OAR worker requires an absolute executable".into());
+        let persistence = context
+            .persistence()
+            .ok_or("External agents require persistence")?;
+        let mut commands = BTreeMap::new();
+        for runtime in configuration.enabled_runtimes() {
+            let command =
+                configuration
+                    .command(runtime)
+                    .cloned()
+                    .unwrap_or_else(|| NativeCommand {
+                        executable: runtime.executable().into(),
+                        args: Vec::new(),
+                        env: BTreeMap::new(),
+                    });
+            runtime::validate_command(runtime, &command)?;
+            commands.insert(runtime, command);
         }
         let prefix = hex::encode(Sha256::digest(
             serde_json::to_vec(&(
@@ -79,6 +86,7 @@ impl Oar {
             ))
             .map_err(|e| e.to_string())?,
         ));
+        // Historical physical namespace: retain the deployed CAS records and native IDs.
         let storage = Storage::new(
             persistence.store().clone(),
             format!("{prefix}/"),
@@ -88,24 +96,16 @@ impl Oar {
             )
             .map_err(|e| e.to_string())?,
         );
-        let runtimes = configuration
-            .enabled_runtimes()
-            .map(str::to_owned)
-            .collect::<BTreeSet<_>>();
         let basis = hex::encode(Sha256::digest(
             serde_json::to_vec(&(
                 context.activation().epoch(),
-                &executable,
-                &configuration.args,
-                &runtimes,
+                &commands,
                 storage.execution_basis(),
             ))
             .map_err(|e| e.to_string())?,
         ));
         Ok(Arc::new(Self {
-            executable,
-            args: configuration.args.clone(),
-            runtimes,
+            commands,
             storage,
             queries: Arc::default(),
             catalog: tokio::sync::Mutex::new(None),
@@ -124,9 +124,12 @@ impl Oar {
         self.require_runtime(request.settings.runtime.as_deref())?;
         Ok(Admitted {
             identity: maka_agent_facts::executor::Binding {
-                executor_id: "oar".to_owned().try_into().expect("OAR identity"),
+                executor_id: "external"
+                    .to_owned()
+                    .try_into()
+                    .expect("external executor identity"),
                 package_id: self.package.clone(),
-                entry_id: "oar".into(),
+                entry_id: "external".into(),
                 activation: self.activation.clone(),
             },
             execution: Box::new(Call {
@@ -136,47 +139,58 @@ impl Oar {
             }),
         })
     }
-    fn require_runtime(&self, runtime: Option<&str>) -> Result<(), Error> {
-        let runtime =
-            runtime.ok_or_else(|| Error::Invalid("OAR requires a runtime selection".into()))?;
-        if !self.runtimes.contains(runtime) {
+    pub(super) fn require_runtime(&self, runtime: Option<&str>) -> Result<NativeRuntime, Error> {
+        let runtime = runtime
+            .ok_or_else(|| Error::Invalid("External agent requires a runtime selection".into()))?
+            .parse::<NativeRuntime>()
+            .map_err(Error::Invalid)?;
+        if !self.commands.contains_key(&runtime) {
             return Err(Error::Invalid(format!(
-                "OAR runtime is not enabled: {runtime}"
+                "External agent runtime is not enabled: {}",
+                runtime.as_str()
             )));
         }
-        Ok(())
+        Ok(runtime)
     }
-
     pub async fn query(
         self: &Arc<Self>,
         cwd: String,
-        mut request: Value,
+        request: Value,
         cancellation: CancellationToken,
     ) -> Result<Value, Error> {
         if cancellation.is_cancelled() || self.stop.is_cancelled() {
             return Err(Error::Cancelled);
         }
-        if let Some(runtime) = request.get("runtime") {
-            self.require_runtime(runtime.as_str())?;
-        } else if matches!(
-            request.get("kind").and_then(Value::as_str),
-            Some("catalog" | "status")
-        ) {
-            request["runtimes"] = serde_json::json!(self.runtimes);
-        } else {
-            return Err(Error::Invalid("OAR requires a runtime selection".into()));
+        let kind = request
+            .get("kind")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::Invalid("Missing external query kind".into()))?;
+        if !matches!(kind, "status" | "catalog" | "models") {
+            return Err(Error::Invalid("Unsupported external query kind".into()));
         }
-        if request.get("kind").and_then(Value::as_str) == Some("catalog")
-            && request.get("runtime").is_none()
+        let selected = request
+            .get("runtime")
+            .map(|id| self.require_runtime(id.as_str()))
+            .transpose()?;
+        if selected.is_none() && kind == "models" {
+            return Err(Error::Invalid("Models require a runtime selection".into()));
+        }
+        if let Some(Err(error @ (Error::CleanupUnconfirmed | Error::Unknown))) = self
+            .catalog
+            .lock()
+            .await
+            .as_ref()
+            .and_then(|entry| entry.result.peek())
         {
-            // One bounded discovery result is shared across filtering and pagination.
+            return Err(error.clone());
+        }
+        if kind == "catalog" && selected.is_none() {
             let discovery = {
                 let mut cached = self.catalog.lock().await;
                 if let Some(entry) = cached.as_ref().filter(|entry| {
                     entry.cwd == cwd
                         && (entry.result.peek().is_none()
-                            || (entry.started.elapsed() < Duration::from_secs(30)
-                                && matches!(entry.result.peek(), Some(Ok(_)))))
+                            || entry.started.elapsed() < Duration::from_secs(30))
                 }) {
                     entry.result.clone()
                 } else {
@@ -184,7 +198,7 @@ impl Oar {
                     let work_cwd = cwd.clone();
                     let discovery = async move {
                         owner
-                            .query_worker(work_cwd, request, owner.stop.child_token())
+                            .discover(work_cwd, "catalog".into(), None, owner.stop.child_token())
                             .await
                     }
                     .boxed()
@@ -201,51 +215,39 @@ impl Oar {
                     discovery
                 }
             };
-            return tokio::select! {
-                biased;
+            return tokio::select! { biased;
                 () = cancellation.cancelled() => Err(Error::Cancelled),
                 () = self.stop.cancelled() => Err(Error::Retired),
                 result = discovery => result,
             };
         }
-        let installs = request.get("kind").and_then(Value::as_str) == Some("setup")
-            && request.get("action").and_then(Value::as_str) == Some("install");
-        let result = self.query_worker(cwd, request, cancellation).await;
-        if installs {
+        if kind == "status" {
             self.catalog.lock().await.take();
         }
-        result
+        self.discover(cwd, kind.to_owned(), selected, cancellation)
+            .await
     }
-
-    async fn query_worker(
+    async fn discover(
         self: &Arc<Self>,
         cwd: String,
-        request: Value,
+        kind: String,
+        selected: Option<NativeRuntime>,
         cancellation: CancellationToken,
     ) -> Result<Value, Error> {
-        if cancellation.is_cancelled() || self.stop.is_cancelled() {
-            return Err(Error::Cancelled);
-        }
         let mut ticket = self.queries.reserve().map_err(|_| Error::Retired)?;
         let owner = self.clone();
         let (send, receive) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             ticket.start();
-            let stopped = cancellation.child_token();
-            let work = worker::query(
-                &owner.executable,
-                &owner.args,
-                &cwd,
-                request,
-                stopped.clone(),
-            );
+            let cancel = cancellation.child_token();
+            let work = discovery::query(&owner.commands, &cwd, &kind, selected, cancel.clone());
             tokio::pin!(work);
             let result = tokio::select! {
                 result = &mut work => result,
-                () = owner.stop.cancelled() => { stopped.cancel(); work.await },
+                () = owner.stop.cancelled() => { cancel.cancel(); work.await },
             };
-            ticket.complete(if matches!(&result, Err(Error::CleanupUnconfirmed)) {
-                Err("OAR query cleanup is unconfirmed".into())
+            ticket.complete(if matches!(result, Err(Error::CleanupUnconfirmed)) {
+                Err("Native discovery cleanup is unconfirmed".into())
             } else {
                 Ok(())
             });
@@ -255,18 +257,15 @@ impl Oar {
     }
     pub async fn finish(&self) -> Result<(), String> {
         self.stop.cancel();
-        let queries = self
-            .queries
-            .finish()
-            .await
-            .map_err(|error| error.to_string());
+        self.catalog.lock().await.take();
+        let queries = self.queries.finish().await.map_err(|e| e.to_string());
         let storage = self.storage.finish().await;
         queries?;
         storage
     }
 }
 struct Call {
-    owner: Arc<Oar>,
+    owner: Arc<External>,
     request: Request,
     host_tools: Option<HostTools>,
 }
@@ -331,6 +330,9 @@ impl Call {
             lease.finish();
             return Err(error);
         }
+        let runtime = self
+            .owner
+            .require_runtime(self.request.settings.runtime.as_deref())?;
         let request = serde_json::json!({
             "kind":"execute", "runtime":self.request.settings.runtime, "cwd":self.request.cwd,
             "message":materials.message,
@@ -358,9 +360,9 @@ impl Call {
         // From this point cancellation/drop must not remove paths that the native
         // agent may still be reading. Only confirmed worker settlement releases them.
         let directory = materials.handoff();
-        let result = worker::execute(
-            &self.owner.executable,
-            &self.owner.args,
+        let result = runtime::execute(
+            runtime,
+            &self.owner.commands[&runtime],
             &self.request.cwd,
             request.into(),
             &self.owner.storage,
@@ -373,9 +375,9 @@ impl Call {
         if !matches!(result, Err(Error::CleanupUnconfirmed)) {
             lease.finish();
             if let Some(directory) = directory {
-                tokio::fs::remove_dir_all(directory)
-                    .await
-                    .map_err(|e| Error::Provider(format!("OAR attachment cleanup failed: {e}")))?;
+                tokio::fs::remove_dir_all(directory).await.map_err(|e| {
+                    Error::Provider(format!("External agent attachment cleanup failed: {e}"))
+                })?;
             }
         }
         if matches!(&result, Ok(Outcome::Completed { .. })) {

@@ -575,7 +575,6 @@ mod tests {
         }
         append(target.executable(), &binary);
         append(target.python_worker(), &binary);
-        append(target.oar_worker(), &binary);
         if let Some(gui) = desktop_gui {
             if target == Target::Win32X64 {
                 binary[156..158].copy_from_slice(&(if gui { 2_u16 } else { 3_u16 }).to_le_bytes());
@@ -697,7 +696,6 @@ mod tests {
             assert_eq!(artifact.integrity, integrity);
             assert!(artifact.executable.is_file());
             assert!(artifact.directory.join(target.python_worker()).is_file());
-            assert!(artifact.directory.join(target.oar_worker()).is_file());
             let desktop = artifact.directory.join(target.desktop_executable());
             assert!(desktop.is_file());
             let offline = Url::parse("http://127.0.0.1:1/").unwrap();
@@ -899,18 +897,11 @@ mod tests {
             (linux, Some("bin/extra"), false, None),
             (linux, None, false, Some("DISCLAIMER")),
             (linux, None, false, Some("bin/maka-python-worker")),
-            (linux, None, false, Some("bin/maka-oar-worker")),
             (
                 Target::Win32X64,
                 None,
                 false,
                 Some("bin/maka-python-worker.exe"),
-            ),
-            (
-                Target::Win32X64,
-                None,
-                false,
-                Some("bin/maka-oar-worker.exe"),
             ),
             (macos, None, false, Some("bin/Maka.app/Contents/Info.plist")),
             (

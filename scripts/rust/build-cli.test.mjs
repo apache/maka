@@ -79,22 +79,6 @@ test('CLI builds use the requested target and artifact path', async (t) => {
   for (const directory of [root, sourceRoot]) await repository(directory);
   const previous = process.env.CARGO_TARGET_DIR;
   process.env.CARGO_TARGET_DIR = 'target/isolated release';
-  let workerInvocation;
-  t.mock.method(childProcess, 'execFile', (command, args, options, callback) => {
-    workerInvocation = { command, args, options };
-    const output = args[args.indexOf('--output') + 1];
-    const target = args[args.indexOf('--target') + 1];
-    (async () => {
-      await mkdir(output, { recursive: true });
-      await writeFile(
-        join(output, 'maka-oar-worker' + (target.includes('windows') ? '.exe' : '')),
-        target,
-      );
-      await writeFile(join(output, 'bundle-inputs.json'), JSON.stringify({ inputs: {} }));
-      if (args.includes('--release'))
-        await writeFile(join(output, 'runtime-notices.txt'), `runtime notices for ${target}`);
-    })().then(() => callback(null, '', ''), callback);
-  });
   let invocation;
   let exitCode = 0;
   let executable;
@@ -158,36 +142,12 @@ test('CLI builds use the requested target and artifact path', async (t) => {
     const inputManifest = join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json');
     await mkdir(dirname(inputManifest), { recursive: true });
     await writeFile(inputManifest, JSON.stringify(['actual-input-for-' + triple]));
-    const {
-      binary: output,
-      bundleInputs,
-      oarBundleInputs,
-      oarRuntimeNotices,
-    } = await buildCli({
+    const { binary: output, bundleInputs } = await buildCli({
       release: true,
       target,
       timings: true,
       repositoryRoot: root,
     });
-    assert.equal(workerInvocation.command, process.execPath);
-    assert.deepEqual(workerInvocation.args, [
-      join(root, 'scripts/oar/build.mjs'),
-      '--output',
-      join(binaryDirectory, 'oar'),
-      '--target',
-      triple,
-      '--release',
-    ]);
-    assert.equal(workerInvocation.options.cwd, root);
-    assert.equal(
-      await readFile(
-        join(binaryDirectory, 'maka-oar-worker' + (triple.includes('windows') ? '.exe' : '')),
-        'utf8',
-      ),
-      triple,
-    );
-    assert.deepEqual(JSON.parse(await readFile(oarBundleInputs, 'utf8')), { inputs: {} });
-    assert.equal(await readFile(oarRuntimeNotices, 'utf8'), `runtime notices for ${triple}`);
     assert.equal(
       bundleInputs,
       join(binaryDirectory, 'build/cli-source/out/product/bundle-inputs.json'),

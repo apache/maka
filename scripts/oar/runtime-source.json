@@ -1,7 +1,0 @@
-{
-  "version": "2.9.6",
-  "repository": "https://github.com/denoland/deno",
-  "revision": "e518fbd66dda5debcbdefc0beb0b3756b37b64fa",
-  "url": "https://github.com/denoland/deno/releases/download/v2.9.6/deno_src.tar.gz",
-  "sha256": "dfd816eea5147eeafda5e235c241a3286e67aeaae1d0e50f9973ff6bf4f14fb2"
-}

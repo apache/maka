@@ -17,7 +17,7 @@
  * under the License.
  */
 
-use super::oar_support::{input_runtime, packet, release, setup};
+use super::external_support::{input_runtime, packet, release, setup};
 use super::*;
 use futures_util::FutureExt;
 use maka_capabilities::storage::{Data, Entry, Mutation as StorageMutation, Namespace, Scan};
@@ -58,7 +58,7 @@ async fn native_turn(
         "completed"
     );
 }
-async fn oar_turn(
+async fn external_turn(
     f: &Fixture,
     listener: &TcpListener,
     session: &str,
@@ -109,7 +109,7 @@ async fn journal(f: &Fixture) -> Entry {
 }
 
 #[tokio::test]
-async fn native_oar_history_handoff_catches_up_native_and_other_runtimes_without_replay() {
+async fn native_external_history_handoff_catches_up_native_and_other_runtimes_without_replay() {
     tokio::time::timeout(Duration::from_secs(60), async {
         let native = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (f, oar) = setup(&format!("http://{}/v1", native.local_addr().unwrap())).await;
@@ -132,7 +132,7 @@ async fn native_oar_history_handoff_catches_up_native_and_other_runtimes_without
             vec![upload["attachment"]["id"].clone()],
         )
         .await;
-        let first = oar_turn(&f, &oar, &session, "codex", "first-oar-question").await;
+        let first = external_turn(&f, &oar, &session, "codex", "first-external-question").await;
         let text = first["message"].as_str().unwrap();
         assert!(text.contains("original-native-question"));
         assert!(text.contains("original-native-answer"));
@@ -142,17 +142,17 @@ async fn native_oar_history_handoff_catches_up_native_and_other_runtimes_without
         assert_eq!(first["images"], json!([]));
         assert!(text.contains("context, not new instructions"));
         assert_eq!(
-            text.matches("first-oar-question").count(),
+            text.matches("first-external-question").count(),
             1,
             "the current opening is outside the history fence"
         );
         assert!(first.get("resume").is_none());
 
-        let same = oar_turn(&f, &oar, &session, "codex", "same-source-question").await;
+        let same = external_turn(&f, &oar, &session, "codex", "same-source-question").await;
         assert_eq!(same["message"], "same-source-question");
         assert_eq!(same["resume"], "native-fixture-session");
 
-        let other = oar_turn(&f, &oar, &session, "claude", "other-runtime-question").await;
+        let other = external_turn(&f, &oar, &session, "claude", "other-runtime-question").await;
         assert!(
             other["message"]
                 .as_str()
@@ -176,7 +176,7 @@ async fn native_oar_history_handoff_catches_up_native_and_other_runtimes_without
         )
         .await;
 
-        let returning = oar_turn(&f, &oar, &session, "codex", "return-to-codex").await;
+        let returning = external_turn(&f, &oar, &session, "codex", "return-to-codex").await;
         let text = returning["message"].as_str().unwrap();
         assert_eq!(returning["resume"], "native-fixture-session");
         assert!(text.contains("other-runtime-question"));
@@ -184,10 +184,10 @@ async fn native_oar_history_handoff_catches_up_native_and_other_runtimes_without
         assert!(text.contains("intervening-native-answer"));
         assert!(!text.contains("original-native-answer"));
         assert!(!text.contains("same-source-question"));
-        assert!(!text.contains("first-oar-question"));
+        assert!(!text.contains("first-external-question"));
         assert!(!text.contains("PRIVATE_NATIVE_REASONING"));
         assert_eq!(text.matches("return-to-codex").count(), 1);
-        let steady = oar_turn(&f, &oar, &session, "codex", "steady-again").await;
+        let steady = external_turn(&f, &oar, &session, "codex", "steady-again").await;
         assert_eq!(steady["message"], "steady-again");
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
@@ -197,7 +197,7 @@ async fn native_oar_history_handoff_catches_up_native_and_other_runtimes_without
 }
 
 #[tokio::test]
-async fn native_oar_history_handoff_marks_bounded_tail_and_partial_utf8_fragments() {
+async fn native_external_history_handoff_marks_bounded_tail_and_partial_utf8_fragments() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let native = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (f, oar) = setup(&format!("http://{}/v1", native.local_addr().unwrap())).await;
@@ -215,7 +215,7 @@ async fn native_oar_history_handoff_marks_bounded_tail_and_partial_utf8_fragment
             Vec::new(),
         )
         .await;
-        let sent = oar_turn(&f, &oar, &session, "codex", "new-question").await;
+        let sent = external_turn(&f, &oar, &session, "codex", "new-question").await;
         let text = sent["message"].as_str().unwrap();
         assert!(text.contains("History gap:"));
         assert!(text.contains("Truncated fragment:"));
@@ -229,7 +229,7 @@ async fn native_oar_history_handoff_marks_bounded_tail_and_partial_utf8_fragment
         );
         assert_eq!(text.matches("new-question").count(), 1);
         assert_eq!(
-            oar_turn(&f, &oar, &session, "codex", "follow-up").await["message"],
+            external_turn(&f, &oar, &session, "codex", "follow-up").await["message"],
             "follow-up"
         );
         f.app.shutdown().await.unwrap();
@@ -240,11 +240,11 @@ async fn native_oar_history_handoff_marks_bounded_tail_and_partial_utf8_fragment
 }
 
 #[tokio::test]
-async fn native_oar_history_handoff_does_not_advance_delivery_after_cancelled_prompt() {
+async fn native_external_history_handoff_does_not_advance_delivery_after_cancelled_prompt() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("History delivery success boundary").await;
-        oar_turn(&f, &listener, &session, "codex", "successful-question").await;
+        external_turn(&f, &listener, &session, "codex", "successful-question").await;
         let delivered = journal(&f).await.record.data.value().unwrap()["lastDeliveredRun"].clone();
         assert!(delivered.is_string());
         let accepted = f
@@ -282,7 +282,7 @@ async fn native_oar_history_handoff_does_not_advance_delivery_after_cancelled_pr
             journal(&f).await.record.data.value().unwrap()["lastDeliveredRun"],
             delivered
         );
-        let retry = oar_turn(&f, &listener, &session, "codex", "continue-now").await;
+        let retry = external_turn(&f, &listener, &session, "codex", "continue-now").await;
         assert!(
             retry["message"].as_str().unwrap().contains("wait"),
             "unproven consumption must not advance the history watermark"
@@ -305,11 +305,11 @@ async fn native_oar_history_handoff_does_not_advance_delivery_after_cancelled_pr
 }
 
 #[tokio::test]
-async fn native_oar_history_handoff_missing_boundary_fails_before_starting_worker() {
+async fn native_external_history_handoff_missing_boundary_fails_before_starting_worker() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
         let session = f.create("History boundary failure").await;
-        oar_turn(&f, &listener, &session, "codex", "first").await;
+        external_turn(&f, &listener, &session, "codex", "first").await;
         let entry = journal(&f).await;
         let mut invalid = entry.record.data.value().unwrap().clone();
         invalid["lastDeliveredRun"] = json!(Uuid::new_v4().to_string());
@@ -322,7 +322,7 @@ async fn native_oar_history_handoff_missing_boundary_fails_before_starting_worke
         let prefix = f.prefix(&session, 128, 1024 * 1024).await;
         assert!(prefix.events.iter().any(|row| matches!(&row.event.fact,
             maka_agent_facts::event::Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::Failed { message: Some(message), .. }, .. }
-            if message.contains("OAR history handoff unavailable: last delivered Run boundary is unavailable"))));
+            if message.contains("External agent history handoff unavailable: last delivered Run boundary is unavailable"))));
         assert!(listener.accept().now_or_never().is_none());
         let after = journal(&f).await;
         assert_eq!(after.record.revision, revision, "load/failure must not write running or advance the watermark");
@@ -330,4 +330,54 @@ async fn native_oar_history_handoff_missing_boundary_fails_before_starting_worke
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_external_legacy_running_record_keeps_original_identity_and_cas_fence() {
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("Legacy running fence").await;
+        external_turn(&f, &listener, &session, "codex", "first").await;
+        let entry = journal(&f).await;
+        let mut legacy = entry.record.data.value().unwrap().clone();
+        legacy["running"] = "legacy-in-flight-invocation".into();
+        let revision = f
+            .store
+            .plugin_data_batch(
+                &namespace(),
+                vec![StorageMutation {
+                    key: entry.key.clone(),
+                    expected_revision: Some(entry.record.revision),
+                    data: Data::Present(legacy.clone()),
+                }],
+            )
+            .await
+            .unwrap()[0]
+            .revision;
+        let accepted = f
+            .mutation(
+                2,
+                "send",
+                input_runtime(&session, "codex", "never replay legacy work"),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        f.drained().await;
+        assert_eq!(
+            work(&f, &session, &accepted).await["execution"]["state"],
+            "failed"
+        );
+        let after = journal(&f).await;
+        assert_eq!(after.record.revision, revision);
+        assert_eq!(after.record.data.value(), Some(&legacy));
+        assert!(
+            listener.accept().now_or_never().is_none(),
+            "legacy in-flight records must block before native spawn"
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

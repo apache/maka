@@ -18,7 +18,7 @@
  */
 
 use super::super::attachments::upload;
-use super::oar_support::{input, packet, release, setup};
+use super::external_support::{input, packet, release, setup};
 use super::*;
 use futures_util::FutureExt;
 use std::path::PathBuf;
@@ -42,10 +42,10 @@ fn image_path(packet: &Value, bytes: &[u8]) -> PathBuf {
 }
 
 #[tokio::test]
-async fn native_oar_attachments_deliver_immutable_utf8_and_image_bytes_on_send_and_resume() {
+async fn native_external_attachments_deliver_immutable_utf8_and_image_bytes_on_send_and_resume() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-        let session = f.create("OAR uploads").await;
+        let session = f.create("External uploads").await;
         let text = "Original UTF-8 attachment: 中文\n".repeat(3000);
         let note = upload(&f, &session, "notes.md", text.as_bytes(), Uuid::new_v4()).await.unwrap();
         let bytes = png();
@@ -98,10 +98,10 @@ async fn native_oar_attachments_deliver_immutable_utf8_and_image_bytes_on_send_a
 }
 
 #[tokio::test]
-async fn native_oar_attachments_stop_retains_images_until_disposal_and_root_exit() {
+async fn native_external_attachments_stop_retains_images_until_disposal_and_root_exit() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-        let session = f.create("OAR stop with image").await;
+        let session = f.create("External stop with image").await;
         let bytes = png();
         let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
             .await
@@ -141,15 +141,15 @@ async fn native_oar_attachments_stop_retains_images_until_disposal_and_root_exit
 }
 
 #[tokio::test]
-async fn native_oar_attachments_unconfirmed_cleanup_keeps_materials_and_original_receipt() {
+async fn native_external_attachments_unconfirmed_cleanup_keeps_materials_and_original_receipt() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-        let session = f.create("OAR uncertain image custody").await;
+        let session = f.create("External uncertain image custody").await;
         let bytes = png();
         let image = upload(&f, &session, "image.png", &bytes, Uuid::new_v4())
             .await
             .unwrap();
-        let mut request = input(&session, "crash");
+        let mut request = input(&session, "pipe-holder-crash");
         request["attachments"] = json!([image["attachment"]["id"]]);
         let operation = Uuid::new_v4();
         let accepted = f
@@ -161,6 +161,8 @@ async fn native_oar_attachments_unconfirmed_cleanup_keeps_materials_and_original
         release(&mut control).await;
         packet(&mut control, "output").await;
         release(&mut control).await;
+        let escaped = packet(&mut control, "escaped").await;
+        let pid = escaped["pid"].as_u64().unwrap().to_string();
         f.drained().await;
         assert_eq!(
             work(&f, &session, &accepted).await["execution"]["state"],
@@ -185,8 +187,15 @@ async fn native_oar_attachments_unconfirmed_cleanup_keeps_materials_and_original
             "retiring an owner must not delete uncertain materials"
         );
         f.config.shutdown().await.unwrap();
-        // This fixture has no native descendants and its root has exited; the
-        // test can remove its retained material without inventing product recovery.
+        assert!(
+            tokio::process::Command::new("/bin/kill")
+                .args(["-KILL", &pid])
+                .status()
+                .await
+                .unwrap()
+                .success()
+        );
+        // Only the test knows the escaped fixture is now gone.
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     })
     .await
@@ -194,10 +203,10 @@ async fn native_oar_attachments_unconfirmed_cleanup_keeps_materials_and_original
 }
 
 #[tokio::test]
-async fn native_oar_attachments_reject_unsupported_media_and_non_upload_sources() {
+async fn native_external_attachments_reject_unsupported_media_and_non_upload_sources() {
     tokio::time::timeout(Duration::from_secs(40), async {
         let (f, listener) = setup("http://127.0.0.1:9/v1").await;
-        let session = f.create("OAR attachment refusals").await;
+        let session = f.create("External attachment refusals").await;
         for (name, bytes, mime) in [
             ("binary.bin", &b"\xff\x00binary"[..], "application/octet-stream"),
             ("document.pdf", &b"%PDF-1.7\n\x00binary"[..], "application/pdf"),
@@ -210,7 +219,7 @@ async fn native_oar_attachments_reject_unsupported_media_and_non_upload_sources(
             f.drained().await;
             assert_eq!(work(&f, &session, &accepted).await["execution"]["state"], "failed");
             let prefix = f.prefix(&session, 128, 1024 * 1024).await;
-            let expected = format!("OAR attachment media unsupported: {mime}");
+            let expected = format!("External agent attachment media unsupported: {mime}");
             assert!(prefix.events.iter().any(|row| matches!(&row.event.fact,
                 maka_agent_facts::event::Fact::InvocationEnded { outcome: maka_agent_facts::event::InvocationOutcome::Failed { message: Some(message), .. }, .. }
                 if message.contains(&expected))));

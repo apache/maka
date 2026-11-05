@@ -37,7 +37,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 pub(crate) mod attachments;
-pub(crate) mod oar;
+pub(crate) mod external;
 pub mod setup;
 
 use maka_agent_api::executor::{Execute, Selection, ServiceExecutor, contract};
@@ -54,12 +54,12 @@ pub(crate) struct Accepted {
 pub(crate) struct Backend {
     pub accepted: Accepted,
     implementation: Implementation,
-    host_tools: Option<oar::HostTools>,
+    host_tools: Option<external::HostTools>,
 }
 #[derive(Clone)]
 enum Implementation {
-    Service(ServiceBackend),
-    Oar(Arc<oar::Oar>),
+    Service(Box<ServiceBackend>),
+    External(Arc<external::External>),
 }
 #[derive(Clone)]
 struct ServiceBackend {
@@ -76,7 +76,7 @@ impl Executors {
     pub fn capture(
         context: &NativeContext,
         selected: &[ServiceExecutor],
-        oar: Option<&maka_agent_api::executor::OarConfiguration>,
+        external: Option<&maka_agent_api::executor::ExternalConfiguration>,
     ) -> Result<Self, String> {
         let mut result = BTreeMap::new();
         for selection in selected {
@@ -116,37 +116,37 @@ impl Executors {
                     basis: binding.execution_basis().into(),
                 },
                 host_tools: None,
-                implementation: Implementation::Service(ServiceBackend {
+                implementation: Implementation::Service(Box::new(ServiceBackend {
                     binding: binding.clone(),
                     setup: selection.setup.clone(),
                     services: services.clone(),
                     store: persistence.store().clone(),
                     deployment: persistence.source().deployment,
                     consumer: context.activation().instance().clone(),
-                }),
+                })),
             };
             if result.insert(selection.name.clone(), backend).is_some() {
                 return Err("agent_executor_name_ambiguous".into());
             }
         }
         if let Some(configuration) =
-            oar.filter(|configuration| configuration.enabled_runtimes().next().is_some())
+            external.filter(|configuration| configuration.enabled_runtimes().next().is_some())
         {
-            let owner = oar::Oar::capture(context, configuration)?;
+            let owner = external::External::capture(context, configuration)?;
             let backend = Backend {
                 accepted: Accepted {
                     selection: Selection {
-                        executor: "oar".into(),
+                        executor: "external".into(),
                         settings: Default::default(),
                     },
-                    import: "oar".into(),
+                    import: "external".into(),
                     member: 0,
                     basis: owner.basis.clone(),
                 },
                 host_tools: None,
-                implementation: Implementation::Oar(owner),
+                implementation: Implementation::External(owner),
             };
-            if result.insert("oar".into(), backend).is_some() {
+            if result.insert("external".into(), backend).is_some() {
                 return Err("agent_executor_name_ambiguous".into());
             }
         }
@@ -160,22 +160,22 @@ impl Executors {
     }
     pub async fn finish(&self) -> Result<(), String> {
         for backend in self.0.values() {
-            if let Implementation::Oar(owner) = &backend.implementation {
+            if let Implementation::External(owner) = &backend.implementation {
                 owner.finish().await?;
             }
         }
         Ok(())
     }
-    pub async fn oar_query(
+    pub async fn external_query(
         &self,
         cwd: String,
         request: Value,
         cancellation: CancellationToken,
     ) -> Result<Option<Value>, Error> {
         let Some(Backend {
-            implementation: Implementation::Oar(owner),
+            implementation: Implementation::External(owner),
             ..
-        }) = self.0.get("oar")
+        }) = self.0.get("external")
         else {
             return Ok(None);
         };
@@ -195,8 +195,13 @@ impl Executors {
             Implementation::Service(_) if selection.settings.runtime.is_some() => {
                 return Err("agent_executor_runtime_unsupported".into());
             }
-            Implementation::Oar(_) if selection.settings.runtime.is_none() => {
-                return Err("agent_executor_runtime_required".into());
+            Implementation::External(owner) => {
+                if selection.settings.runtime.is_none() {
+                    return Err("agent_executor_runtime_required".into());
+                }
+                owner
+                    .require_runtime(selection.settings.runtime.as_deref())
+                    .map_err(|error| error.to_string())?;
             }
             _ => {}
         }
@@ -212,8 +217,8 @@ impl Executors {
     }
 }
 impl Backend {
-    pub fn bind_host_tools(&mut self, tools: oar::HostTools) {
-        if matches!(self.implementation, Implementation::Oar(_)) {
+    pub fn bind_host_tools(&mut self, tools: external::HostTools) {
+        if matches!(self.implementation, Implementation::External(_)) {
             self.host_tools = Some(tools);
         }
     }
@@ -241,7 +246,7 @@ impl executor::Backend for Backend {
             ));
         }
         let service = match &self.implementation {
-            Implementation::Oar(owner) => return owner.admit(input, self.host_tools.clone()),
+            Implementation::External(owner) => return owner.admit(input, self.host_tools.clone()),
             Implementation::Service(service) => service,
         };
         let identity = maka_agent_facts::executor::Binding {
@@ -286,7 +291,7 @@ impl executor::Backend for Backend {
         Ok(Admitted {
             identity,
             execution: Box::new(Call {
-                backend: service.clone(),
+                backend: service.as_ref().clone(),
                 accepted: self.accepted.clone(),
                 input: value,
                 invocation: input.invocation,

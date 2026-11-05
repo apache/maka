@@ -54,7 +54,7 @@ impl Media {
             "application/json" => Ok(Self::Text),
             mime if mime.starts_with("text/") => Ok(Self::Text),
             _ => Err(Error::Invalid(format!(
-                "OAR attachment media unsupported: {mime}"
+                "External agent attachment media unsupported: {mime}"
             ))),
         }
     }
@@ -79,12 +79,12 @@ pub(super) async fn prepare(
         } = &attachment.storage_ref
         else {
             return Err(Error::Invalid(
-                "OAR attachment must be a session user upload".into(),
+                "External agent attachment must be a session user upload".into(),
             ));
         };
         if session_id != session || !seen.insert(relative_path) {
             return Err(Error::Invalid(
-                "OAR attachment must be a distinct upload owned by this session".into(),
+                "External agent attachment must be a distinct upload owned by this session".into(),
             ));
         }
         let attachment = attachment.clone();
@@ -101,13 +101,12 @@ pub(super) async fn prepare(
                         .map_err(|e| Error::Invalid(e.to_string()))?;
                     if record.source != ArtifactSource::UserUpload {
                         return Err(Error::Invalid(
-                            "OAR attachment is not an immutable user upload".into(),
+                            "External agent attachment is not an immutable user upload".into(),
                         ));
                     }
-                    let digest = record
-                        .summary
-                        .as_deref()
-                        .ok_or_else(|| Error::Invalid("OAR upload digest missing".into()))?;
+                    let digest = record.summary.as_deref().ok_or_else(|| {
+                        Error::Invalid("External agent upload digest missing".into())
+                    })?;
                     let media = Media::parse(&attachment.mime_type)?;
                     let mut text = Vec::new();
                     let mut image = match media {
@@ -116,7 +115,7 @@ pub(super) async fn prepare(
                             if materials.directory.is_none() {
                                 materials.directory = Some(
                                     tempfile::Builder::new()
-                                        .prefix("maka-oar-")
+                                        .prefix("maka-native-")
                                         .tempdir()
                                         .map_err(io_error)?,
                                 );
@@ -131,7 +130,7 @@ pub(super) async fn prepare(
                                 .join(format!("{}.{}", materials.images.len(), extension));
                             let file = std::fs::File::create_new(&path).map_err(io_error)?;
                             let path = path.into_os_string().into_string().map_err(|_| {
-                                Error::Invalid("OAR image path is not UTF-8".into())
+                                Error::Invalid("External agent image path is not UTF-8".into())
                             })?;
                             materials.images.push(Image {
                                 path,
@@ -158,11 +157,13 @@ pub(super) async fn prepare(
                         remaining -= length as u64;
                     }
                     if format!("sha256:{}", hex::encode(hash.finalize())) != digest {
-                        return Err(Error::Invalid("OAR upload digest mismatch".into()));
+                        return Err(Error::Invalid(
+                            "External agent upload digest mismatch".into(),
+                        ));
                     }
                     if image.is_none() {
                         let text = String::from_utf8(text).map_err(|_| {
-                            Error::Invalid("OAR text attachment is not UTF-8".into())
+                            Error::Invalid("External agent text attachment is not UTF-8".into())
                         })?;
                         materials.message.push_str(&format!(
                             "\n\n--- Attachment {} ({}) ---\n{}\n--- End attachment ---",
@@ -176,7 +177,7 @@ pub(super) async fn prepare(
             )
             .await
             .map_err(|e| Error::Persistence(e.to_string()))?
-            .ok_or_else(|| Error::Invalid("OAR user upload unavailable".into()))??;
+            .ok_or_else(|| Error::Invalid("External agent user upload unavailable".into()))??;
     }
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -185,5 +186,5 @@ pub(super) async fn prepare(
 }
 
 fn io_error(error: std::io::Error) -> Error {
-    Error::Provider(format!("OAR attachment I/O failed: {error}"))
+    Error::Provider(format!("External agent attachment I/O failed: {error}"))
 }

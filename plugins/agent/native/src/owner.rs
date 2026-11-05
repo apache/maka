@@ -31,6 +31,7 @@ mod compaction;
 mod computer_apps;
 mod context;
 mod execution;
+mod external_setup;
 mod files;
 mod fork;
 mod goal;
@@ -40,7 +41,6 @@ mod interactions;
 mod lifecycle;
 mod models;
 mod notifications;
-mod oar_setup;
 mod preferences;
 mod projects;
 pub(crate) use notifications::ReturnRoute;
@@ -393,7 +393,7 @@ impl Owner {
         let executors = crate::executor::Executors::capture(
             &context,
             &settings.executors,
-            settings.oar.as_ref(),
+            settings.external.as_ref(),
         )?;
         let configuration = Arc::new(
             ConfigurationStore::for_root(root)
@@ -1161,11 +1161,11 @@ impl Owner {
         };
         Ok(selected)
     }
-    fn oar_tools(
+    fn external_tools(
         &self,
         session: &str,
         basis: &MessageBasis,
-    ) -> Result<crate::executor::oar::HostTools, String> {
+    ) -> Result<crate::executor::external::HostTools, String> {
         let selected = self.selected_tools(session, basis, false, None)?;
         let excluded = selected
             .names()
@@ -1177,7 +1177,7 @@ impl Owner {
         for name in &self.resource_reads {
             catalog = catalog.with_description(name, "Read only Maka Session attachment:<id> and archive:<event-id> resources. Workspace files and task resources are unavailable. Pass the complete page.next object unchanged to continue. Image resources are unsupported by this external runtime.");
         }
-        Ok(crate::executor::oar::HostTools {
+        Ok(crate::executor::external::HostTools {
             catalog,
             resource_reads: self.resource_reads.clone(),
         })
@@ -1338,7 +1338,7 @@ impl Owner {
                 if self
                     .admitted_tools(&id, &session.configuration.tools)
                     .is_some()
-                    && selection.executor != "oar"
+                    && selection.executor != "external"
                 {
                     return Err("agent_executor_cannot_enforce_tool_selection".into());
                 }
@@ -1358,7 +1358,7 @@ impl Owner {
         let external = executor.is_some();
         let host_bridge = executor
             .as_ref()
-            .is_some_and(|executor| executor.selection.executor == "oar");
+            .is_some_and(|executor| executor.selection.executor == "external");
         let snapshot = self
             .configuration
             .runtime_policy()
@@ -1472,8 +1472,8 @@ impl Owner {
                 Some(session.configuration.workspace.clone()),
                 parent,
                 if let Some(executor) = &basis.executor {
-                    if executor.selection.executor == "oar" {
-                        self.oar_tools(&id, &basis)?.catalog.names()
+                    if executor.selection.executor == "external" {
+                        self.external_tools(&id, &basis)?.catalog.names()
                     } else {
                         vec![]
                     }

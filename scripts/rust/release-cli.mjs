@@ -35,32 +35,7 @@ import { buildCli, desktopShell, rustTarget } from './build-cli.mjs';
 import { nativeCliTargets, packNativeCli } from './pack-cli.mjs';
 import { verifyNotices } from './notices.mjs';
 import { buildV8 } from './build-v8.mjs';
-import { verifyOarWorker } from './verify-release.mjs';
-
 const run = promisify(execFile);
-
-/** Check the compiled worker, not the Rust linker's independent glibc target. */
-export async function verifyWorkerGlibc(binary) {
-  const stdout = await new Promise((resolveOutput, reject) => {
-    execFile(
-      'readelf',
-      ['--version-info', binary],
-      {
-        encoding: 'utf8',
-        maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, LC_ALL: 'C' },
-      },
-      (error, stdout) => (error ? reject(error) : resolveOutput(stdout)),
-    );
-  });
-  const versions = [...stdout.matchAll(/Name: GLIBC_(\d+)\.(\d+)(?:\.(\d+))?/g)].map((match) =>
-    match.slice(1).map((part) => Number(part ?? 0)),
-  );
-  if (!versions.length) throw new Error('OAR worker has no inspectable glibc version requirements');
-  for (const [major, minor, patch] of versions)
-    if (major > 2 || (major === 2 && (minor > 28 || (minor === 28 && patch > 0))))
-      throw new Error(`OAR worker requires GLIBC_${major}.${minor}.${patch}, above the 2.28 floor`);
-}
 
 export function previewVersion(sourceVersion, buildId) {
   if (
@@ -191,17 +166,14 @@ export async function releaseNativeCli({ source, keys, target, validator, output
       ),
     });
     const triple = rustTarget(platform.os, platform.cpu);
-    const { binary, bundleInputs, oarBundleInputs, oarRuntimeNotices } = await buildCli({
+    const { binary, bundleInputs } = await buildCli({
       release: true,
       target: triple,
       repositoryRoot,
       env: { ...env, ...v8.environment },
     });
-    if (platform.os === 'linux') await verifyWorkerGlibc(join(dirname(binary), 'maka-oar-worker'));
     const reviewedNotices = await verifyNotices(repositoryRoot, {
       bundleInputs,
-      oarBundleInputs,
-      oarRuntimeNotices,
       target: triple,
       env,
     });
@@ -218,9 +190,6 @@ export async function releaseNativeCli({ source, keys, target, validator, output
       [await readFile(reviewedNotices, 'utf8'), v8.notices, rustNotices].join('\n\n'),
     );
     if (native) {
-      await verifyOarWorker(
-        join(dirname(binary), platform.os === 'win32' ? 'maka-oar-worker.exe' : 'maka-oar-worker'),
-      );
       const { stdout } = await run(
         join(dirname(binary), desktopShell(platform.os)),
         ['--version'],

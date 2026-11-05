@@ -660,7 +660,7 @@ impl Fixture {
                 path: workspace.clone(),
             }],
             executors: vec![],
-            oar: None,
+            external: None,
             skill_library: tooling
                 .as_ref()
                 .and_then(service_tools::Setup::skill_import),
