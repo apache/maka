@@ -74,6 +74,9 @@ impl Mounter {
                 view.unparent();
             }
         }
+        // A screen effect's or transition's layer is the root's: it goes
+        // with the views that mounted it.
+        root.state_mut().shader = None;
         self.views.insert(ROOT_ID, root);
         self.layout_animation = None;
     }
@@ -209,6 +212,8 @@ impl Mounter {
                     crate::navigation::removing(surface, &view);
                     crate::navigation::deleted_parked_root(surface, &view);
                     crate::native::deleted(surface, &view);
+                    crate::shader::deleted(surface, &view);
+                    crate::navigation::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, &view, self.layout_animation.as_ref())
                     {
@@ -263,6 +268,9 @@ impl Mounter {
                 let Some(view) = &self.get(*id) else { return };
                 let old = std::mem::replace(&mut view.state_mut().style, style.clone());
                 crate::input::style_changed(view);
+                if old.cursor != style.cursor {
+                    crate::input::cursor_changed(surface);
+                }
                 crate::transition::style_changed(surface, view, &old);
                 crate::access::style_changed(view, &old);
                 view.moved();
@@ -368,6 +376,16 @@ impl Mounter {
                 if let Some(view) = &self.get(*id) {
                     crate::shader::set(surface, view, layer.clone());
                 }
+            }
+            // A shader's pictures are taken as the window draws.
+            MountItem::ShaderInput { .. } => {}
+            MountItem::ShaderTransition { id, duration } => {
+                if let Some(view) = &self.get(*id) {
+                    crate::shader::start_transition(surface, view, *duration);
+                }
+            }
+            MountItem::NavShader { id, shader } => {
+                crate::navigation::nav_shader(surface, *id, shader.clone());
             }
             MountItem::Gestures { id, values } => {
                 if let Some(view) = &self.get(*id) {
@@ -573,7 +591,8 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::LayoutAnimation(_)
         | MountItem::Animation(_)
         | MountItem::AnimationBindings { .. }
-        | MountItem::ComponentPropSlots { .. } => Redraw::Nothing,
+        | MountItem::ComponentPropSlots { .. }
+        | MountItem::NavShader { .. } => Redraw::Nothing,
         MountItem::Frame { id, .. }
         | MountItem::ViewStyle { id, .. }
         | MountItem::Text { id, .. }
@@ -587,6 +606,8 @@ fn redrawn(item: &MountItem) -> Redraw {
         | MountItem::Refreshing { id, .. }
         | MountItem::Canvas { id, .. }
         | MountItem::Shader { id, .. }
+        | MountItem::ShaderInput { id }
+        | MountItem::ShaderTransition { id, .. }
         | MountItem::ViewProps { id, .. }
         | MountItem::Input { id, .. }
         | MountItem::InputValue { id, .. }

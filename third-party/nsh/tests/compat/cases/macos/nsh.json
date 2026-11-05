@@ -9,6 +9,10 @@
       "write": [
         "${dataDir}"
       ]
+    },
+    "webview": {
+      "hosts": [],
+      "input": true
     }
   }
 }

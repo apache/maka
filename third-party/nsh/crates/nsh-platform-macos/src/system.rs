@@ -14,6 +14,12 @@
 //! - right to left: the user's first preferred language;
 //! - reduce motion and VoiceOver: `NSWorkspace`'s accessibility settings,
 //!   live;
+//! - whether the app is in use (`lifecycle()`): `background` while none of
+//!   it shows (hidden, or `NSApplication.occlusionState` without
+//!   `visible`: its windows minimized or covered), `active` while it is the
+//!   active app, `inactive` otherwise; live, from `NSApplication`'s
+//!   activation, hiding and occlusion notifications. An embedded surface
+//!   follows the embedding app's, which is the application;
 //! - the pixel ratio: the window's backing scale factor;
 //! - the OS version: `NSProcessInfo.operatingSystemVersion`.
 //!
@@ -43,7 +49,7 @@ use nsh_core::{
     Command, Dialog, DialogButtonStyle, EventKind, EventPayload, NodeId, PayloadValue, ROOT_ID,
     geometry::px, platform::clipboard,
 };
-use nsh_engine::{ColorScheme, Edges, Environment, Idiom, Locale, Os};
+use nsh_engine::{ColorScheme, Edges, Environment, Idiom, Lifecycle, Locale, Os};
 use objc2::{
     AllocAnyThread, MainThreadMarker, MainThreadOnly, define_class, msg_send,
     rc::Retained,
@@ -51,7 +57,10 @@ use objc2::{
 };
 use objc2_app_kit::{
     NSAccessibilityPriorityLevel, NSAlert, NSAlertFirstButtonReturn, NSAlertStyle, NSAppearance,
-    NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua,
+    NSAppearanceCustomization, NSAppearanceNameAqua, NSAppearanceNameDarkAqua, NSApplication,
+    NSApplicationDidBecomeActiveNotification, NSApplicationDidChangeOcclusionStateNotification,
+    NSApplicationDidHideNotification, NSApplicationDidResignActiveNotification,
+    NSApplicationDidUnhideNotification, NSApplicationOcclusionState,
     NSAttributedStringAppKitDocumentFormats, NSAttributedStringDocumentFormats,
     NSBitmapImageFileType, NSBitmapImageRep, NSDocumentTypeDocumentAttribute,
     NSExcludedElementsDocumentAttribute, NSHTMLTextDocumentType, NSModalResponse, NSPasteboard,
@@ -182,6 +191,35 @@ fn install(mtm: MainThreadMarker) {
             ),
         ]
     };
+    // Whether the app is in use (`lifecycle`).
+    // SAFETY: as above.
+    let observers = observers
+        .into_iter()
+        .chain(
+            unsafe {
+                [
+                    NSApplicationDidBecomeActiveNotification,
+                    NSApplicationDidResignActiveNotification,
+                    NSApplicationDidHideNotification,
+                    NSApplicationDidUnhideNotification,
+                    NSApplicationDidChangeOcclusionStateNotification,
+                ]
+            }
+            .into_iter()
+            .map(|name| {
+                // SAFETY: as above.
+                unsafe {
+                    NSNotificationCenter::defaultCenter()
+                        .addObserverForName_object_queue_usingBlock(
+                            Some(name),
+                            None,
+                            Some(&queue),
+                            &block,
+                        )
+                }
+            }),
+        )
+        .collect();
     // VoiceOver posts no notification: its setting is observed.
     // SAFETY: NSObject's initializer.
     let observer: Retained<Observer> = unsafe { msg_send![Observer::alloc(mtm), init] };
@@ -239,7 +277,26 @@ fn update(surface: &Surface) {
     env.idiom = Idiom::Desktop;
     env.safe_area = Edges::default();
     env.keyboard_height = px(0.0);
+    env.lifecycle = lifecycle(surface.mtm);
     surface.set_environment(env);
+}
+
+/// Whether the app is in use: `background` while none of it shows (hidden,
+/// or its windows minimized or covered), `active` while it is the active
+/// app, `inactive` otherwise.
+fn lifecycle(mtm: MainThreadMarker) -> Lifecycle {
+    let app = NSApplication::sharedApplication(mtm);
+    if app.isHidden()
+        || !app
+            .occlusionState()
+            .contains(NSApplicationOcclusionState::Visible)
+    {
+        Lifecycle::Background
+    } else if app.isActive() {
+        Lifecycle::Active
+    } else {
+        Lifecycle::Inactive
+    }
 }
 
 /// The surface's environment changed: its background follows the scheme.
@@ -345,6 +402,7 @@ pub(crate) fn command(surface: &Rc<Surface>, _id: NodeId, command: &Command) {
         Command::ReadClipboardFiles { id } => read_clipboard_files(surface, *id),
         Command::PickImages { id, request } => crate::picker::pick_images(surface, *id, *request),
         Command::PickScreenColor { id } => crate::screen_color::pick_screen_color(surface, *id),
+        Command::Speech(command) => surface.control(|c| crate::speech::command(c, command)),
         Command::FileRequest { id, request } => {
             crate::file_requests::request(surface, *id, request)
         }

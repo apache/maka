@@ -18,7 +18,7 @@ Every tag is a component in scope (`native-pipeline.md`): the primitives `View`,
 | `<Dialog>` | presented UIViewController | `open` (default true), `animation`, `onOpen`, `onClose`, `onCancel` (every close attempt), `onOpenChange({ open, reason })` (`"cancel"` / `"backdropPress"` / `"swipe"`); `closeOnEscape` / `closeOnBackdropPress` / `closeOnSwipe` (default true; iOS sheets swipe away, Escape and Android back close natively, then `onCancel` + `onOpenChange({ open: false, reason })` + `onClose`; the renderer keeps a removed dialog's `onClose` until the platform reports it, `dom.rs` `dismissed`); `class` / `style` style the popup (the view holding the children), `backdropClass` / `backdropStyle` add a backdrop part behind it (none otherwise) whose presses are close attempts; `presentation` (iOS: `fullScreen` over a clear background, `pageSheet` / `formSheet` keep the system's sheet background; ignored on Android, the desktops and the web, where a dialog is a transparent layer over the whole window); `statusBar` (below); `ios={{ supportedOrientations }}`, `android={{ statusBarTranslucent }}` (otherwise the content starts below the status bar) |
 | `<Overlay>` | a `NshView` in the root view (the surface's, or the dialog's around it) | its children on top of that root view, outside the parent's layout and clipping; `anchor` (a ref, `{ x, y }` or `{ origin, size }`), `placement`, `align`, `offset`, `margin`, `onPosition`, `onPressOutside`, `onCancel` ("Overlays" below) |
 | `<InputAccessoryView>` | a NshView set as `inputAccessoryView` | `nativeID`; inputs name it with `ios={{ inputAccessoryViewID }}`. A layout root as wide as the window and as tall as its content; the core resolves the id (`InputConfig::accessory`). Renders nothing on Android |
-| `<WebView>` | WKWebView (WebKit loaded on first use) | `src` (a URL) or `html` (inline HTML, shown instead of `src`) + `baseUrl`, `injectedJavaScript(BeforeContentLoaded)`, `onMessage` (pages call `window.nsh.postMessage`), `onLoad*`, `onNavigationStateChange`; ref: `reload()`, `goBack()`, `goForward()`, `postMessage(data)`, `injectJavaScript(js)` |
+| `<WebView>` | WKWebView (WebKit loaded on first use) | `src` (a URL) or `html` (inline HTML, shown instead of `src`) + `baseUrl`, `injectedJavaScript(BeforeContentLoaded)`, `onMessage` (pages call `window.nsh.postMessage`), `onLoad*`, `onNavigationStateChange`, `onDownload` (macOS: `WKDownload` into the app's data directory's `downloads/<id>/`, only with a listener); ref: `reload()`, `goBack()`, `goForward()`, `postMessage(data)`, `injectJavaScript(js)` |
 | `nativeComponent` (`nsh`'s `nativeComponent`) | a `NshView` box filled by the registered component's view; own props may be bound to animated values | see [embedding.md](embedding.md) |
 | `<Video>` | AVPlayerLayer / AVPlayerViewController (AVFoundation loaded on first use) | `src` (a URL), `paused`, `muted`, `volume`, `rate`, `repeat`, the `objectFit` style (`object-*`), `controls`, `onLoad` / `onProgress` / `onEnd` / `onBuffer` / `onError`; ref: `seek(seconds)` |
 
@@ -80,11 +80,13 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
 
 ## Interaction and the environment
 
-- **State styles** (native, no JS round trip): `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle`,
-  `checkedStyle`, `indeterminateStyle`, `expandedStyle`, `pressedStyle` (and a `Button`'s `selectedStyle`) on any view
-  (declared in `StateStyleProps`), the same as the `active:` / `hover:` / `focus:` / `disabled:` / `selected:` /
-  `checked:` / `indeterminate:` / `aria-expanded:` / `aria-pressed:` classes: the core restyles the view while the
-  platform reports it pressed, hovered or focused, and while its accessibility state is selected, checked, mixed,
+- **State styles** (native, no JS round trip): `activeStyle`, `hoverStyle`, `focusStyle`, `focusWithinStyle`,
+  `disabledStyle`, `checkedStyle`, `indeterminateStyle`, `expandedStyle`, `pressedStyle` (and a `Button`'s
+  `selectedStyle`) on any view (declared in `StateStyleProps`), the same as the `active:` / `hover:` / `focus:` /
+  `focus-within:` / `disabled:` / `selected:` / `checked:` / `indeterminate:` / `aria-expanded:` / `aria-pressed:`
+  classes: the core restyles the view while the platform reports it pressed, hovered or focused, while the focus is on
+  it or a view inside it (the content of an overlay is inside the view the overlay is in; `docs/dev/styles.md`), and
+  while its accessibility state is selected, checked, mixed,
   expanded (a `Popover`'s or `Menu`'s trigger while its popup is open), pressed (a toggle button that is on) or busy; a Rust component's touch responder stays pressed from its grant until its
   touches end, wherever they go (CSS's `:active` until the button is released: a resize handle dragged off its band
   keeps its `group-active:` look; `Core::hold_pressed`); later
@@ -296,7 +298,18 @@ misses the deadline is not waited for again until it catches up (`docs/dev/macos
   offset logic stays left to right.
 - **Environment** (reactive accessors; `nsh` (`safeArea()`, `safeAreaInsets()`, `keyboardFrame()`)): `windowSize()`, `safeArea()`, `keyboardFrame()` (`{ height, duration }`: how
   far the keyboard reaches into the surface, the bottom safe area under it included, on every platform),
-  `colorScheme()`, `fontScale()`. `padding-bottom: env(keyboard-inset-height)` pads a view by the keyboard's height, animated with the keyboard
+  `colorScheme()`, `fontScale()`, `lifecycle()` (`Environment::lifecycle`, `Lifecycle`: `active` / `inactive` /
+  `background`, React Native's states; the platforms write it as the system reports the app's, the web from the
+  page's `visibilityState` and focus, iOS from the notifications of the scene of the surface's window
+  (`UIScene`'s `didActivate` / `willDeactivate` / `didEnterBackground` / `willEnterForeground`, filtered by the view's
+  `window.windowScene`, its `activationState` read when the view moves to a window), UIApplication's
+  (`didBecomeActive` / `willResignActive` / `didEnterBackground` / `willEnterForeground`) while it is in no window
+  with a scene, by the notification: the scene and `applicationState` still say active during `willDeactivate` /
+  `willResignActive`; Android from `NshView`'s activity: resumed is `active`, paused or started again
+  `inactive`, stopped `background`, through one `ActivityLifecycleCallbacks` per application, registered by the first
+  view attached and kept, which remembers each activity's last state: a view attached again starts from it). The change reaches JS through the engine's thread, and iOS may suspend the
+  process seconds after `didEnterBackground` (Android's `onStop` is looser): `background` is for pausing work, and
+  the user-facing docs say to save as changes are made. `padding-bottom: env(keyboard-inset-height)` pads a view by the keyboard's height, animated with the keyboard
   natively, for content outside scroll views (message bars). Inputs inside a scroll view are kept clear of the keyboard natively (bottom inset + scroll to the
   focused input), with no JS involved.
   Both move as one with the keyboard: `LayoutCurve::Keyboard` (`type: "keyboard"`) is the system keyboard's own curve,
@@ -369,7 +382,7 @@ hint owns pointer and focus presentation, without app hover/focus listeners or c
 
 
 `<Overlay>` (`nsh`; Rust `overlay()`) shows its children on top of the root view it is in: the surface, or the
-dialog around it (`Modal`). It is the one mechanism popups are built on (`nsh/base`'s `Popover`, `Menu`,
+dialog around it (`Modal`). It is the one mechanism popups are built on (`nsh/base`'s `Popover`, `HoverCard`, `Menu`,
 `ContextMenu`, `Tooltip`, `Sheet`: `components.md`); it draws nothing and closes nothing itself.
 
 - **Where it stays and where it shows** (`core/overlay.rs`): the node stays its parent's child for everything but its
@@ -387,12 +400,24 @@ dialog around it (`Modal`). It is the one mechanism popups are built on (`nsh/ba
   frame (`nsh_core::overlay::place`): `placement` (`"top"`, `"bottom"` (default), `"left"`, `"right"`), on the other
   side when only that one has room, the side with more room when neither has; `align` along it (`"start"`,
   `"center"` (default), `"end"`; start and end follow the direction above and below); `offset` from the anchor; then
-  moved along the side to stay inside the root view's safe area less `margin`. The anchor's frame is
+  moved along the side to stay inside the root view's safe area less `margin`. Rust's `anchor_beside(row, menu)`
+  (`OverlayAnchor::Beside`, a submenu's) lines it up with the row along its side and places it outside the menu
+  around the row across it, so `offset` is a gap from the menu's edge, not from the row inside its padding. Rust's
+  `anchor_content(r)` (`OverlayAnchor::Content`, `Popover`'s, `HoverCard`'s and a desktop `Menu`'s) places it against
+  what the view draws: the box around its children with its padding and border, along an axis its style leaves `auto`
+  (a wrapper its parent stretches); the element that takes a component's slot goes by its own box, whether a TSX or a
+  Rust app passed it (`Core::content_anchor`: the slot's holder is that wrapper). The anchor's frame is
   `Core::measure`'s (scroll offsets and zoom applied, transforms not), so the overlay follows it as it scrolls and moves:
   `place_overlays` places anchored overlays again at the end of every commit (after the lists and the scroll offsets
   the platform reported). `onPosition` reports where it went (`placement`, the frame as `bounds`, `available`:
   the room on that side, what a menu may grow to). A view inside an overlay measures in the root
   view's coordinates.
+- **Covering the anchor** (`OverlayConfig::cover`, `OverlayProp::Cover`; Rust `overlay().cover(&element_ref, shown)`;
+  no JS prop): instead of on a side, the overlay starts where the anchor does, with a view inside it centered on the
+  anchor vertically (a select's selected row over its trigger, title on title: shadcn/ui's `item-aligned`), then moved
+  to stay inside the safe area less `margin`. The view's frame in the overlay is kept while the overlay keeps its size
+  and the view its place in its parent (`Core::covering`, `OverlayState::covered`), so the overlay stays put while
+  its rows scroll; without the view (not rendered, nothing selected) the overlay is placed on its side as usual.
 - **Dismissal is reported, never decided**: `onPressOutside` (a finger or button went down outside the overlay, its
   anchor and the overlays inside it: while an overlay listens, the shown overlays, its anchor and root view listen to
   touches, and the core reads each touch's path, `overlay_touches`); `onCancel` (Escape, the Android back button or
@@ -413,8 +438,11 @@ dialog around it (`Modal`). It is the one mechanism popups are built on (`nsh/ba
 - **`tooltip`** (every element; `Prop::Tooltip`, `TooltipContent`; Rust `Interactive::tooltip`): the core makes a hint
   overlay inside the element itself (`Core::set_tooltip`, odd ids, inserted directly so a component host's children
   placement never moves it), placed on top with a 4 pt gap, holding the element JS made (retained by the node, moved
-  into the overlay, detached again when the prop changes). The prop takes elements only: the core draws no bubble, the
-  look is the app's. An element that is a hint overlay itself (`nsh/base`'s `Tooltip`, once its view
+  into the overlay, detached again when the prop changes). The core takes elements only: it draws no bubble, the look
+  is the app's. A function given as the prop (in a development bundle an app's component is its hot proxy's memo) is
+  followed by each renderer with a binding of its own (`followed` in nsh-js' `dom.rs`, `prop` in the browser runtime's
+  `browser/dom.js`), so the core gets the element it gives, again whenever that changes. An element that is a hint
+  overlay itself (`nsh/base`'s `Tooltip`, once its view
   made its root one) replaces the core's overlay, with its own placement, delay, look and events
   (`adopt_hint_tooltips`, each commit before the overlays are shown). Released with the element. It counts for nothing else: text skips overlays, and
   positional classes (`first:`, `last:`) skip a tooltip's overlay. Rust's element tooltips are an overlay child of the

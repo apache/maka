@@ -79,7 +79,7 @@ Rust 组件（`nsh/base` 的以及应用自己 crate 中的组件）在 TSX 中�
 | `active:` | 视图被按下 | `.active(\|s\| ..)` |
 | `hover:` | 指针悬停在视图上（iPad 和 Mac 的指针） | `.hover(\|s\| ..)` |
 | `focus:`、`focus-visible:` | 输入框获得焦点 | `.focus(\|s\| ..)` |
-| `focus-within:` | 视图或其后代获得焦点 | |
+| `focus-within:` | 视图或其后代获得焦点（`Overlay` 的内容是它所在视图的后代） | `.focus_within(..)` |
 | `disabled:`、`enabled:` | 元素的 `disabled` 属性为 true / false | `.disabled_style(\|s\| ..)` |
 | `selected:` | 元素处于选中状态（`Button` 的 `selected`、`accessibilityState.selected`） | `.selected_style(..)` |
 | `checked:` | 元素处于勾选状态（`accessibilityState.checked` 为 `true`；`"mixed"` 不算） | `.checked_style(..)` |
@@ -87,7 +87,8 @@ Rust 组件（`nsh/base` 的以及应用自己 crate 中的组件）在 TSX 中�
 | `aria-expanded:` | 元素处于展开状态（`accessibilityState.expanded` 为 `true`）：弹出层打开时 `Popover`、`Menu` 的触发器 | `.expanded_style(..)` |
 | `aria-pressed:` | 元素是处于开启状态的切换按钮（`accessibilityState.pressed` 为 `true`；`"mixed"` 不算按下）。不同于 `active:`（正在按压） | `.aria_pressed(..)`、`.pressed_style(..)` |
 | `aria-busy:`、`aria-checked:`、`aria-selected:` | `accessibilityState.busy`、`checked`（`true`，不含 `"mixed"`）或 `selected` 为 `true`，与 Tailwind 的 `aria-*` 变体一致：排在伪类之后，按名称排序 | |
-| `group-active:`、`group-hover:`、`group-focus:`、`group-focus-within:`、`group-disabled:`、`group-selected:`、`group-checked:`、`group-indeterminate:`、`group-aria-expanded:`、`group-aria-pressed:`、`group-aria-busy:`、`group-aria-checked:`、`group-aria-selected:` | 最近的带 `group` 类的祖先处于该状态 | 祖先上 `.group()`；内部 `.group_active(..)`、`.group_hover(..)`、`.group_focus_within(..)` |
+| `data-<name>:` | 元素带有名为 `name` 的 `data-*` 属性，与 Tailwind 的布尔 `data-*` 变体一致（`&[data-range-start]`）：组件的部件在状态之外显示的信息，比如日历中区间起点的那一天（`data-range-start:`）。排在 `aria-*` 变体之后，按名称排序 | 组件的部件上用 `Interactive::project_data(name, ..)` 设置 |
+| `group-active:`、`group-hover:`、`group-focus:`、`group-focus-within:`、`group-disabled:`、`group-selected:`、`group-checked:`、`group-indeterminate:`、`group-aria-expanded:`、`group-aria-pressed:`、`group-aria-busy:`、`group-aria-checked:`、`group-aria-selected:`、`group-data-<name>:` | 最近的带 `group` 类的祖先处于该状态，或带有该 `data-*` 属性 | 祖先上 `.group()`；内部 `.group_active(..)`、`.group_hover(..)`、`.group_focus_within(..)` |
 | `group-active/name:` ... | 同上，针对标记为 `group/name` 的祖先 | `.group_named("name")`；`.group_active_named("name", ..)` 等 |
 | `first:`、`last:`、`odd:`、`even:`、`only:` | 元素自身在兄弟节点中的位置。要按行的位置给行内标签上色，把 `last:text-*` 写在行上，标签会继承它 | 根据行的索引用普通 Rust 判断（`at.is_first()`、`at.is_last()`、`at.index() % 2`） |
 | `placeholder:` | 设置输入框占位文字的样式（`placeholder:text-zinc-400`） | `.placeholder_color(..)` |

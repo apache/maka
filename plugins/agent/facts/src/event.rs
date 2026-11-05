@@ -93,6 +93,9 @@ pub enum ToolOutcome {
         /// Unavailable borrowed media does not change the effect outcome.
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         artifacts: Vec<crate::artifact::ArtifactEvidence>,
+        /// The effect completed, but its result reports failure, like MCP `isError`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        is_error: bool,
     },
     Failed {
         message: String,
@@ -123,7 +126,7 @@ pub enum Fact {
         output: crate::executor::Output,
     },
     ExecutorCompleted {
-        text: String,
+        message_id: Option<String>,
     },
     InvocationOpened {
         input: InvocationInput,

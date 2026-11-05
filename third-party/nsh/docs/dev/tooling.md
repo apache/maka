@@ -335,7 +335,8 @@ report it:
   (until quiet for a while).
 
 A step first applies the batches that came since the last one (they belong to it), then waits until the app is quiet
-for 100 ms and no native animation runs that ends by itself (2 s at most). Native animations that loop forever (a
+for 100 ms and no native animation runs that ends by itself (2 s at most); on a manual clock it asks instead of
+waiting (below). Native animations that loop forever (a
 spinner: a loop without `iterations`, `Graph::is_finishing`) run in the background: their values move with the app's
 time, and no step or wait waits for them, as a browser's test runner does not wait for an infinite CSS animation. It fails, with the texts on screen, when it cannot be taken, and when the app threw meanwhile
 (`MountSink::report`: an exception that escaped a callback, a bundle that did not load, a stopped VM; an asset's
@@ -350,13 +351,18 @@ sleeping thread, and while it is set or a native animation that ends by itself r
 a long press's hold and scroll frames move the clock by their time; `run_for` / `fast_forward` / `set_system_time` are
 the test's (`app.clock`); a loop that never ends takes no frames of its own (it would move the clock for as long as
 a step or `waitFor` waits), its values move as the clock does; the settle limit is also 2 s of the clock's time; `StubNetwork::with_clock` holds delayed
-responses back as the clock's alarms. A wait for the screen (`wait_until`, so `waitFor`) moves the clock too, a frame
-at a time (`Headless::wait_frame`: the frame, the batches it brought, then `FRAME_LOOK`, 1 ms of real time, for what
-the clock does not bring, a route's JS function), looking after each frame, by its timeout at most: a timer's result
-shows as the test waits for it, in a moment of real time. It fails once the clock moved by the timeout and as much
-real time passed (then it waits as on the system's clock, `pump`), so what comes from outside the app keeps the time
-it had. Quiet detection stays real time.
-`Headless::set_viewport` and
+responses back as the clock's alarms. A step settles without waiting for quiet (`Headless::idle_on_manual_clock`):
+`EngineControl::flush` has the engine run what was sent to it and what is due at the clock's time, again while that
+queues more (a task's wake, a response answered at once), then answer, after the batches of what ran, whether it is
+idle (nothing left queued or due now, no request in flight); the step returns once that answer is idle, the batches
+applied brought none, and no frame is wanted. While a request is in flight (its answer comes from another thread: a
+handler, the test's JS) or work keeps coming, it waits for 100 ms of quiet as on the system's clock. Work the app hands
+to other threads that has not woken the engine yet (file I/O, a task awaiting a thread) is not waited for: `waitFor`
+waits for what it shows. A wait for the screen (`wait_until`, so `waitFor`) moves the clock a frame at a time
+(`Headless::wait_frame`), looking after each frame, by its timeout at most; `FRAME_LOOK` gives work the clock does not
+bring (such as a route's JS function) 1 ms of real time to arrive. Once the clock has moved by the timeout, it waits
+for the rest of that real-time deadline for work from outside the app. The 2 s settle limits stay, `waitFor` timeouts
+remain real time, and quiet detection stays real time. `Headless::set_viewport` and
 `set_environment` change the window and the environment while the app runs, as a rotation or a system setting does.
 
 Headless runs play the platform's part NSH's protocol defines, and refuse what only a real platform does
@@ -376,6 +382,10 @@ Headless runs play the platform's part NSH's protocol defines, and refuse what o
   (`Headless::on_pick`, `app.onPick`; given as they are, nothing scaled), else cancelled (no files); `nsh/test`'s `App`
   answers them after each step and its dialogs (`answer_picks_myself`), and `app.picks()` lists what was asked; a real
   platform shows its own picker, which the driver does not answer;
+- speech sessions run on a fake recognizer (`headless/speech.rs`, unless the test's `EngineConfig::speech` is set): a
+  session starts at once, `Headless::hear` (`app.hear(text)`) reports `text` as the transcript so far, `stop` and
+  `Headless::end_speech` (`app.endSpeech(error?)`) end it with the last transcript as final (`no-speech` when nothing
+  was heard), and `app.speechRequests()` lists what was asked (`lang`, `interim`);
 - the clipboard holds text (`SetClipboard`, `ReadClipboard` answered with `onClipboard`), modals get `onShow` when
   inserted;
 - with `TestRun::page_host` (`nsh test`'s `--web-host`, else `nsh.json` `web.host`; `TestRequest::page_host` for an
@@ -527,9 +537,13 @@ The host's side is `nsh_testing::agent` (feature `agent`: no QuickJS, no network
 `Model` keeps the headless driver's `Screen`, fed every batch the surface applied and every error the app reported,
 so selectors resolve the same everywhere; the `Agent` takes each step on a thread of its own: it resolves the
 selector on the model, scrolls the view into view when it is not (the innermost scroll view around it that hides it,
-a gesture at a time; between gestures it waits only for the view to stop moving, `Agent::stopped`, and once it is in
-view for the app to settle, so a page that is never quiet, a ticking timer, costs one settling per step rather than
-one per gesture), asks the platform where it is (`Native::bounds`; a span of a text (`Scene::span`) is pressed on its
+a gesture at a time; on a touch screen the finger lands clear of the views inside that take a drag themselves,
+`Scene::drag_takers`: responders and pans, whose app would answer, a moment later, whether the scroll view keeps
+the gesture; it lands at the scroll view's middle, and after a gesture that moved nothing (what is there scrolls by
+itself, a text area, or the gesture was undone) a quarter of the way from the edge the finger moves away from, where
+it has the most room, then a quarter of the way from the other; between gestures it waits only for the view to stop
+moving, `Agent::stopped`, and once it is in view for the app to settle, so a page that is never quiet, a ticking
+timer, costs one settling per step rather than one per gesture), asks the platform where it is (`Native::bounds`; a span of a text (`Scene::span`) is pressed on its
 characters' first line, `Native::text_bounds`, the rectangles each platform highlights a selection with, and the
 platform's own hit testing gives the press to the span; a press of a view inside the one that takes it, a cell's
 text in a row, lands on the match's middle, `Scene::match_inside`, as headless) and acts there with synthesized input
@@ -662,7 +676,11 @@ them), `history.back()` for back, `Emulation.*` for the viewport and the color s
 Headless Chromium finds no input device and reports `pointer: none` / `hover: none`, which `nsh.js`'s `measureIdiom`
 reads as a touch screen; `cdp.rs` launches it with `--blink-settings` giving it a fine, hovering pointer (as
 Playwright does), so the page measures as a browser with a mouse: the desktop idiom at least 600 wide, a phone below
-(`open`'s `width`).
+(`open`'s `width`). A desktop's `platform` (`macos`, `windows`, `linux`) skips the measuring: `run.rs`'s
+`launch_idiom` puts `TestIdiom::Desktop` in the setup (`TestEnvironment::idiom`), and the page starts the apps it runs
+in the desktop idiom at any width (`nsh.js`'s `testSetup`, before the `idiom` option's fallback to `measureIdiom`), as
+every other target runs them as desktops; `platform.os` stays `web`. Without a `platform`, or with `web`, the page
+measures as a real browser does.
 
 ## New apps (`nsh init --template`)
 
@@ -757,6 +775,18 @@ program that describes them, builds the hosts and runners with them, and does ev
     with Rust components"). `gpui-host` (`nsh_platform_gpui::set_ui_sets`, under `cfg(any(target_os = "linux",
     target_os = "macos", windows))`) is a workspace of its own in `.nsh/rust/gpui` (excluded from the main one), written
     only when the GPUI host is built (`RustApp::gpui_workspace`), so builds for the other targets never resolve GPUI's crates.
+    The hosts and runners of Windows, macOS, Linux and iOS (`<platform>-host`, `<platform>-app`, `rust-<platform>`;
+    `components_platform`) also register each crate's native components: `#[native_components(<platform>)]`
+    (`nsh-macros` `native_components.rs`) on a `fn(&nsh_platform_<platform>::Components)` at the crate's root makes,
+    under the platform's `cfg`, a hidden entry `__nsh_native_components_<platform>`, which the generated
+    `app_components()` calls for each listed crate (a glob of the crate in a block over NSH's stand-in
+    `no_native_components`, which registers nothing: most crates have none; its parameter is `__nsh_components`, since
+    the glob would shadow a `components` with a value of that name the crate exports) and `main` passes to the platform's
+    `set_components` before the host starts; each `AppView` the backend makes calls it on its own registry (its
+    `components`), as an embedding app registers. The entry's parameter is hygienic (`Span::mixed_site`), so the app's
+    function may share its name. Root checks and a second entry fail as `#[native_module]`'s do. Android's components
+    are Java, which a Rust function cannot register, and the web has none; `gpui-host` registers none either, since a
+    crate depending on `nsh-platform-gpui` under the desktops' `cfg` would build GPUI for every desktop target.
 
   They take nsh's crates where the app's crates do (`rust_app::Nsh::of`, from each crate's dependencies through `cargo
   metadata`): from crates.io at the version of the running `nsh` (`=0.1.1` for nsh 0.1.1: the code it

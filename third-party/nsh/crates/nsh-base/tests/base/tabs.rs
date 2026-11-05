@@ -1,6 +1,7 @@
 //! `Tabs`: one stop of the keyboard focus, at the selected tab; the arrow
 //! keys, Home and End move between the tabs past disabled ones, around the
-//! ends, and select the tab they reach (automatic activation). On macOS,
+//! ends, and select the tab they reach (automatic activation); in a
+//! right-to-left layout Left and Right trade places. On macOS,
 //! where Tab stops at views that take presses.
 //!
 //! Its indicator: on the selected tab along the list, placed by the core
@@ -23,11 +24,16 @@ use nsh_testing::Headless;
 const NAMES: [&str; 5] = ["One", "Two", "Three", "Four", "Five"];
 
 fn start<C: Component<Props = ()>>() -> Headless {
+    start_in::<C>(false)
+}
+
+fn start_in<C: Component<Props = ()>>(rtl: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         ..EngineConfig::new(Root::of::<C>())
     };
     config.environment.os = Os::MacOs;
+    config.environment.rtl = rtl;
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
     app
@@ -125,6 +131,30 @@ fn arrows_move_and_select_wrapping_and_skipping_disabled_tabs() {
     // The focus moved with the selection: Return presses Three.
     app.press_key("enter").unwrap();
     app.wait_for("text:presses:8").unwrap();
+    app.wait_for("text:selected:Three").unwrap();
+}
+
+#[test]
+fn right_to_left_trades_left_and_right_and_keeps_up_and_down() {
+    let mut app = start_in::<TabsScreen>(true);
+    app.press_key("tab").unwrap();
+    app.press_key("tab").unwrap();
+    // The row runs from the right: Left is the next tab.
+    app.press_key("left").unwrap();
+    app.wait_for("text:selected:Three").unwrap();
+    app.press_key("left").unwrap();
+    app.wait_for("text:selected:Five").unwrap();
+    app.press_key("right").unwrap();
+    app.wait_for("text:selected:Three").unwrap();
+    app.press_key("down").unwrap();
+    app.wait_for("text:selected:Five").unwrap();
+    app.press_key("up").unwrap();
+    app.wait_for("text:selected:Three").unwrap();
+    // The direction changes while the list has the focus: the keys follow.
+    app.set_environment("ltr", |env| env.rtl = false).unwrap();
+    app.press_key("right").unwrap();
+    app.wait_for("text:selected:Five").unwrap();
+    app.press_key("left").unwrap();
     app.wait_for("text:selected:Three").unwrap();
 }
 

@@ -25,6 +25,12 @@ pub struct ButtonProps {
     /// What it is for screen readers (default `"button"`: a link, a tab, a
     /// menu item, ...).
     pub role: Prop<Option<AccessibilityRole>>,
+    /// How far outside its bounds presses still count, as a view's
+    /// `hitSlop`: one number for every side, or the sides named (each left
+    /// out 0). A small target (an icon) takes presses a finger lands near
+    /// it, with no change to its layout or look.
+    #[prop(default)]
+    pub hit_slop: Prop<EdgeInsets>,
     /// The content.
     pub children: Prop<Children>,
 }
@@ -46,6 +52,7 @@ pub enum ButtonEvent {
 /// style it, its states with `active:`, `hover:`, `focus:`, `selected:` and
 /// `disabled:` classes or `activeStyle`, `hoverStyle`, `focusStyle`,
 /// `selectedStyle` and `disabledStyle`, and its children are its content.
+/// `hitSlop` widens where presses count past its bounds, as a view's does.
 /// In a `Toolbar` (or a `ToggleGroup`), it is one of the toolbar's items:
 /// a stop of the keyboard focus only while it is the item Tab enters the
 /// toolbar at, disabled with the toolbar too.
@@ -60,6 +67,7 @@ pub fn Button(props: ButtonProps, cx: Scope<ButtonEvent>) -> impl IntoElement {
             ..AccessibilityState::default()
         })
         .selected_style(props.selected_style)
+        .hit_slop(props.hit_slop)
         .on_press(cx.forward(ButtonEvent::Press))
         .on_press_down(cx.forward(ButtonEvent::PressDown))
         .on_press_up(cx.forward(ButtonEvent::PressUp))

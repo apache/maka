@@ -68,7 +68,7 @@ The Rust column names the functions of `nsh_core::element::desktop`.
 | `orderFront()` | `order_front()` | Brings the window to the front of its level and focuses it (the app activates; macOS deminiaturizes, Windows restores minimized windows and sets foreground, GTK presents). The window keeps its level. On macOS, desktop-level surfaces stay behind other windows. GPUI activates its window; the window manager controls foreground requests on Linux. |
 | `close()` | `close_window()` | Closes the window; the app ends with it. |
 
-Window sizing is supported on macOS, Windows and Linux; positioning and levels on macOS and Windows. Linux's window manager controls placement and stacking. GPUI's host configures window bounds and level when opening the window.
+Window sizing is supported on macOS, Windows and Linux; positioning and levels on macOS and Windows. Linux's window manager controls placement and stacking. In GPUI apps, `setFrame` sets the window's size and the platform places it; GPUI's host chooses its position and level when opening the window.
 
 Terminal surfaces send `setTitle` through the host's title transport, and `close` closes the app. Their menus use
 terminal overlays: F10 opens the application menu, arrows navigate, Enter or Space selects, and Escape closes it.

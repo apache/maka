@@ -4,7 +4,16 @@
 //! It is `Select`'s sibling: the same list (`listbox.rs`: rows, sections,
 //! search, the highlight, typeahead, the popup or sheet), the same open
 //! state (`OpenState`, `onOpenChange` with its reason, `onOpen` / `onClose`
-//! / `onCancel`) and the same trigger, the app's. What differs:
+//! / `onCancel`). What differs:
+//!
+//! - **The trigger is an input** (shadcn/ui's `ComboboxInput`): a text
+//!   field in the root's row, between the app's `prefix` (chips, an icon)
+//!   and `suffix`, with the clear button and the app's `triggerButton` (a
+//!   chevron) after it. Typing opens the list and filters it, Down and Up
+//!   open it, a press on the trigger button opens and closes it, a tap on
+//!   the input opens it on touch screens. With one value the input shows
+//!   its title, selected while it gets the focus, so typing replaces it.
+//!   The list is as wide as the root.
 //!
 //! - **The value is a list** (`value: string[]`). With `multiple`, a
 //!   choice toggles the item in it and the list stays open; without, it
@@ -17,18 +26,17 @@
 //!   `onQueryChange({ query })` (`gpui-component`'s `query` / `set_query`);
 //!   each opening starts from `defaultQuery`, else empty.
 //! - **A footer** (`footer`) shows below the rows.
-//! - The trigger takes no typeahead while closed: its keys open the list.
 
 use std::rc::Rc;
 
 use nsh_core::{
-    element::{InputPartStyle, Style, TextPartStyle},
+    element::{InputPartStyle, Style, TextPartStyle, input},
     keymap::When,
     prelude::*,
 };
 
 use crate::{
-    SelectGroup, SelectItem, SelectItemState,
+    SelectEntry, SelectGroup, SelectItem,
     listbox::{self, Footer, Hooks, Listbox, Move, Parts, Query, Shown},
     popup::{DropdownFrame, OpenChangeReason, OpenState},
 };
@@ -55,14 +63,12 @@ pub struct ComboboxProps {
     /// Open at first, while `open` is not set.
     #[prop(default)]
     pub default_open: Prop<bool>,
-    /// A search field above the items filters them by title (ignoring
-    /// case); `empty` shows while none matches.
-    #[prop(default)]
-    pub searchable: Prop<bool>,
-    /// The search field's placeholder.
-    pub search_placeholder: Prop<Option<SharedString>>,
-    /// The query (controlled): the app owns it and sets the one
-    /// `onQueryChange` reports. Without it the search field keeps its own.
+    /// What the input shows while it is empty.
+    pub placeholder: Prop<Option<SharedString>>,
+    /// The query (controlled): what the user typed in the input, which
+    /// filters the items by title (ignoring case; `empty` shows while none
+    /// matches). The app owns it and sets the one `onQueryChange` reports.
+    /// Without it the input keeps its own.
     pub query: Prop<Option<SharedString>>,
     /// The query each opening starts with, while `query` is not set.
     pub default_query: Prop<Option<SharedString>>,
@@ -110,7 +116,8 @@ pub struct ComboboxProps {
     pub list_style: Prop<Style>,
     /// The classes of each item's row: `focus:` while highlighted (the keys
     /// or the pointer are on it), `selected:` while selected, `disabled:`
-    /// while it cannot be.
+    /// while it cannot be; with `group`, its content follows them
+    /// (`group-focus:`, `group-selected:`, `group-disabled:`).
     pub item_class: Prop<Option<SharedString>>,
     /// The inline style of each item's row, over its classes: its text
     /// styles too (`color`, `fontSize`), which its title inherits.
@@ -121,20 +128,20 @@ pub struct ComboboxProps {
     /// The inline style of each section's header, over its classes.
     #[prop(default)]
     pub group_style: Prop<Style>,
-    /// The classes of the search field.
-    pub search_class: Prop<Option<SharedString>>,
-    /// The inline style of the search field, over its classes: its text
-    /// styles too (`color`, `fontSize`, `placeholderColor`).
+    /// The classes of the input, the text field typing filters the items
+    /// with: `focus:` while it edits, `disabled:` with the combobox.
+    pub input_class: Prop<Option<SharedString>>,
+    /// The inline style of the input, over its classes: its text styles
+    /// too (`color`, `fontSize`, `placeholderColor`).
     #[prop(default)]
-    pub search_style: Prop<InputPartStyle>,
+    pub input_style: Prop<InputPartStyle>,
     /// The classes of the footer, below the rows.
     pub footer_class: Prop<Option<SharedString>>,
     /// The inline style of the footer, over its classes.
     #[prop(default)]
     pub footer_style: Prop<Style>,
     /// The classes of the clear button (with `cleanable`, while an item is
-    /// selected); `disabled:` with the combobox. It comes after the
-    /// trigger, which it is not part of: the app places it.
+    /// selected), after the input; `disabled:` with the combobox.
     pub clear_button_class: Prop<Option<SharedString>>,
     /// The inline style of the clear button, over its classes.
     #[prop(default)]
@@ -143,18 +150,26 @@ pub struct ComboboxProps {
     pub clear_button: Prop<Option<Slot>>,
     /// What screen readers call the clear button (the app's words).
     pub clear_button_accessibility_label: Prop<Option<SharedString>>,
-    /// What opens the list when pressed: the app's element, which the
-    /// list is placed against.
-    pub trigger: Prop<Option<Slot>>,
+    /// The trigger button, after the input and the clear button: the
+    /// app's element (a chevron), which a press makes open and close the
+    /// list (shadcn/ui's `ComboboxTrigger`); its `active:` and `disabled:`
+    /// classes follow. Without it typing and the arrow keys open the list.
+    pub trigger_button: Prop<Option<Slot>>,
+    /// Content before the input: the chosen items as chips (with
+    /// `multiple`), an icon (`gpui-component`'s `prefix`).
+    pub prefix: Prop<Option<Slot>>,
+    /// Content after the trigger button (`gpui-component`'s `suffix`).
+    pub suffix: Prop<Option<Slot>>,
     /// What the list shows while no item does (a search that matches
     /// nothing, no items).
     pub empty: Prop<Option<Slot>>,
     /// What shows below the rows (`gpui-component`'s `footer`): an action,
     /// a count.
     pub footer: Prop<Option<Slot>>,
-    /// An item's row drawn by the app, for the rows in view; without it
-    /// a row shows the item's title.
-    pub render_item: Prop<Option<Renderer<SelectItemState>>>,
+    /// An item's row drawn by the app from what the item is, never its
+    /// state (the row's classes are), once per item in view; without it a
+    /// row shows the item's title.
+    pub render_item: Prop<Option<Renderer<SelectEntry>>>,
     /// A section's header drawn by the app; without it a header shows its
     /// title.
     pub render_group: Prop<Option<Renderer<SelectGroup>>>,
@@ -171,7 +186,7 @@ pub enum ComboboxEvent {
     /// then, once per opening.
     #[args(value)]
     Confirm(Vec<SharedString>),
-    /// The user typed in the search field: the query. Set `query` to
+    /// The user typed in the input: the query. Set `query` to
     /// follow it.
     #[args(query)]
     QueryChange(SharedString),
@@ -238,15 +253,14 @@ enum Opening {
 }
 
 /// One value or several chosen from a list of items (`items`: a value and
-/// a title each, optionally disabled or in a section): the app's `trigger`
-/// opens the list, as a popup at the trigger on the desktops and as a sheet
-/// at the bottom on phones and tablets. The keys move the highlight (Up,
-/// Down, Home, End, Page Up and Down; letters and digits by typeahead
-/// without a search field), Return, Space or a press choose (with
+/// a title each, optionally disabled or in a section), typed into an input
+/// that filters them: typing, Down or Up, or a press on `triggerButton`
+/// opens the list, as a popup under the field and as wide as it on the
+/// desktops and as a sheet at the bottom on phones and tablets. The keys move the highlight (Up,
+/// Down, Home, End, Page Up and Down), Return or a press choose (with
 /// `multiple`, toggle and stay open), Cmd+Return confirms and closes,
-/// Escape, back and a press outside close it; with `searchable` a field
-/// above the items filters them, with `cleanable` a button after the
-/// trigger clears the value, and `footer` shows below the rows. The value
+/// Escape, back and a press outside close it; with `cleanable` a button
+/// after the input clears the value, and `footer` shows below the rows. The value
 /// is `value` and `onChange` (or the combobox's own, from `defaultValue`),
 /// `onConfirm` tells it as the list closes. It looks like nothing: the app
 /// styles every part or draws the rows (`renderItem`, `renderGroup`).
@@ -264,17 +278,28 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         let now = current.get();
         latest.replace(now);
     });
+    // The input is the search field: the keys work while it edits.
     let lb = Listbox::new(
         props.items,
-        props.searchable,
+        Prop::new(true),
         Query {
             controlled: props.query,
             default: props.default_query,
         },
     );
-    // The app's element in the slot: the combobox, what takes the
-    // keyboard, and what the list is placed against.
+    // The combobox's box, which the list is placed against and as wide as;
+    // the input in it takes the keyboard.
     let anchor = element_ref();
+    let field = element_ref();
+    // Something was typed since the list opened: the input shows the
+    // query, else (one value) the chosen item's title.
+    let typed = signal(false);
+    // What was typed while the list was closed, for it once it opens.
+    let pending = stored(None::<String>);
+    // The chosen title the first typed characters followed: while the
+    // input still holds it (its value not written back yet), it is not
+    // part of the query.
+    let replaced = stored(None::<String>);
     let width = signal(None::<Points>);
     let focused = signal(false);
     let opening = stored(Opening::Press);
@@ -351,6 +376,8 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         untracked(|| {
             if !now {
                 lb.closed();
+                typed.set(false);
+                replaced.replace(None);
                 cx.emit(ComboboxEvent::Confirm(latest.with(|l| l.clone())));
                 return;
             }
@@ -366,6 +393,12 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                     Opening::Up => shown.step(None, Move::Last),
                 })
             });
+            // Typing opened it: the query is what was typed.
+            typed.set(false);
+            if let Some(text) = pending.replace(None) {
+                typed.set(true);
+                lb.edited(&text);
+            }
         });
     });
     lb.bind_keys(move || open.get(), choose.clone());
@@ -393,26 +426,21 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         });
     }
 
-    // The trigger's keys while it has the keyboard focus and the list is
-    // closed: they open it.
+    // The input's arrows while the list is closed: they open it (Return
+    // and Space are the input's).
     {
         let change = change.clone();
         effect(move || {
             if !focused.get() || open.get() || props.disabled.get() {
                 return;
             }
-            let keys = [
-                ("down", Opening::Down),
-                ("up", Opening::Up),
-                ("enter", Opening::Down),
-                ("space", Opening::Down),
-            ];
+            let keys = [("down", Opening::Down), ("up", Opening::Up)];
             for (key, how) in keys {
                 let change = change.clone();
                 on_key_with(
                     key,
                     KeyOptions {
-                        when: When::NotEditing,
+                        when: When::Always,
                         repeat: false,
                     },
                     move |_| {
@@ -439,7 +467,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
             }
             cx.emit(ComboboxEvent::Close);
             if is_desktop() && closed_by.replace(None) != Some(OpenChangeReason::PressOutside) {
-                anchor.focus();
+                field.focus();
             }
         }),
     };
@@ -460,9 +488,7 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
         item_style: props.item_style,
         group_class: props.group_class,
         group_style: props.group_style,
-        search_class: props.search_class,
-        search_style: props.search_style,
-        search_placeholder: props.search_placeholder,
+        search: None,
         render_item: props.render_item,
         render_group: props.render_group,
         empty: props.empty,
@@ -471,39 +497,108 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
             class: props.footer_class,
             style: props.footer_style,
         }),
+        cover: None,
     };
-    let toggle = change;
-    // Bound on the slot: in a TSX app they go to the app's element in it,
-    // so its own `active:`, `focus:` and `disabled:` classes follow.
-    let trigger = props.trigger.place(move |t| {
-        let toggle = toggle.clone();
-        t.element_ref(&anchor)
-            .role(AccessibilityRole::Combobox)
-            .optional_label(props.accessibility_label)
-            .disabled(props.disabled)
-            .focusable(move || !props.disabled.get())
-            .accessibility_state(move || AccessibilityState {
-                expanded: Some(open.get()),
-                disabled: props.disabled.get(),
-                ..AccessibilityState::default()
+    // The input: the chosen item's title (one value) until the user types,
+    // then the query, which filters the items.
+    let chosen_title = move || {
+        current.with(|v| {
+            props.items.with(|items| {
+                v.first()
+                    .and_then(|v| items.iter().find(|i| i.value == *v))
+                    .map(|i| i.title.to_string())
+                    .unwrap_or_default()
             })
-            .accessibility_value(move || {
-                current.with(|v| {
-                    props
-                        .items
-                        .with(|items| listbox::selected_titles(items, v.as_slice()))
-                })
+        })
+    };
+    let shown_text = move || {
+        if typed.get() || props.multiple.get() {
+            lb.query()
+        } else {
+            chosen_title()
+        }
+    };
+    let input_change = change.clone();
+    let focus_change = change.clone();
+    let text_field = input()
+        .element_ref(&field)
+        .value(shown_text)
+        .placeholder(move || {
+            props
+                .placeholder
+                .get()
+                .map(|p| p.to_string())
+                .unwrap_or_default()
+        })
+        .auto_correct(false)
+        .readonly(move || props.disabled.get())
+        .disabled(props.disabled)
+        .role(AccessibilityRole::Combobox)
+        .optional_label(props.accessibility_label)
+        .accessibility_state(move || AccessibilityState {
+            expanded: Some(open.get()),
+            disabled: props.disabled.get(),
+            ..AccessibilityState::default()
+        })
+        .accessibility_value(move || {
+            current.with(|v| {
+                props
+                    .items
+                    .with(|items| listbox::selected_titles(items, v.as_slice()))
             })
-            .on_layout(move |frame: &Bounds<Points>| width.set(Some(frame.size.width)))
-            .on_focus(move || focused.set(true))
-            .on_blur(move || focused.set(false))
-            .on_press(move || {
+        })
+        .on_focus(move || {
+            focused.set(true);
+            // A tap on the input opens the list on a touch screen (Base UI's
+            // `openOnInputClick`); with a keyboard, focus alone (Tab) does
+            // not, and typing or the arrow keys do.
+            if !is_desktop() && !open.get_untracked() && !props.disabled.get_untracked() {
                 opening.replace(Opening::Press);
-                toggle(!open.get_untracked(), OpenChangeReason::TriggerPress);
-            })
-    });
-    // A sibling of the trigger, so a press on it never opens the list; not
-    // a stop of Tab (`gpui-component`'s `tab_stop(false)`).
+                focus_change(true, OpenChangeReason::TriggerPress);
+            }
+            // The chosen title, selected: typing replaces it.
+            if !props.multiple.get_untracked() && !typed.get_untracked() {
+                let title = untracked(chosen_title);
+                if !title.is_empty() {
+                    field.set_selection(0, title.chars().count() as u32);
+                }
+            }
+        })
+        .on_blur(move || focused.set(false))
+        .on_change(move |text: &str| {
+            // Typed after the chosen title (the caret at its end): the
+            // characters typed replace it, as they would the selection.
+            let title = if props.multiple.get_untracked() {
+                String::new()
+            } else if typed.get_untracked() {
+                replaced.with(|r| r.clone()).unwrap_or_default()
+            } else {
+                untracked(chosen_title)
+            };
+            let text = match text.strip_prefix(title.as_str()) {
+                Some(rest) if !title.is_empty() && !rest.is_empty() => {
+                    replaced.replace(Some(title.clone()));
+                    rest
+                }
+                _ => {
+                    replaced.replace(None);
+                    text
+                }
+            };
+            typed.set(true);
+            if open.get_untracked() {
+                lb.edited(text);
+            } else {
+                pending.replace(Some(text.to_owned()));
+                opening.replace(Opening::Press);
+                input_change(true, OpenChangeReason::InputChange);
+            }
+            cx.emit(ComboboxEvent::QueryChange(text.to_owned().into()));
+        })
+        .app_class(props.input_class)
+        .inline_style(move || props.input_style.get());
+    // Not a stop of Tab (`gpui-component`'s `tab_stop(false)`): the input
+    // keeps the keyboard.
     let clear = when(
         move || props.cleanable.get() && current.with(|v| !v.is_empty()),
         move || {
@@ -512,14 +607,40 @@ pub fn Combobox(props: ComboboxProps, cx: Scope<ComboboxEvent>) -> impl IntoElem
                 .optional_label(props.clear_button_accessibility_label)
                 .focusable(false)
                 .disabled(props.disabled)
-                .on_press(move || report(Vec::new()))
+                .on_press(move || {
+                    report(Vec::new());
+                    field.focus();
+                })
                 .app_class(props.clear_button_class)
                 .inline_style(props.clear_button_style)
                 .child(props.clear_button.place(|c| c))
         },
     );
+    // The input says whether the list is open: the button is hidden from
+    // screen readers, and leaves the keyboard on the input.
+    let toggle = change;
+    let trigger_button = props.trigger_button.place(move |t| {
+        let toggle = toggle.clone();
+        t.role(AccessibilityRole::Button)
+            .focusable(false)
+            .accessibility_elements_hidden(true)
+            .disabled(props.disabled)
+            .on_press(move || {
+                opening.replace(Opening::Press);
+                toggle(!open.get_untracked(), OpenChangeReason::TriggerPress);
+                if is_desktop() {
+                    field.focus();
+                }
+            })
+    });
     view()
-        .child(trigger)
+        .element_ref(&anchor)
+        .flex_row()
+        .on_layout(move |frame: &Bounds<Points>| width.set(Some(frame.size.width)))
+        .child(props.prefix.place(|p| p))
+        .child(text_field)
         .child(clear)
+        .child(trigger_button)
+        .child(props.suffix.place(|s| s))
         .child(listbox::present(lb, anchor, width, parts, hooks))
 }

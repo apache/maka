@@ -142,9 +142,9 @@ impl Engine {
                             }
                         }
                     };
-                    let committed = output.finish(&settlement.result, &outcome).await;
+                    let committed = output.finish(&settlement.result, outcome).await;
                     drop(settlement); // the terminal fact owns the lease through its commit
-                    committed?;
+                    let outcome = committed?;
                     match outcome {
                         InvocationOutcome::Completed => {
                             Ok(crate::ActivationExit::Terminal(invocation))

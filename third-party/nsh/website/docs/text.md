@@ -146,12 +146,14 @@ text("Made with ")
 </Text>
 ```
 
-Inline elements cut off by `numberOfLines` or an ellipsis are hidden; copying the text leaves them out.
+Inline elements cut off by `numberOfLines` or an ellipsis are hidden; copying the text leaves them out. Text inside an
+inline element takes the color of the text around it, as CSS's `color` reaches an inline block, unless it sets its own
+(the `LIVE` badge above does); its font and line height stay its own.
 
 The style key `verticalAlign` places an inline element in its line, as CSS's `vertical-align` places an image:
 `"baseline"` (the default) stands its bottom on the baseline, `"text-top"` and `"text-bottom"` put its top or bottom
 at the top or bottom of the text's font, and `"middle"` centers it half the font's x height above the baseline. The
-line grows to hold the element wherever it reaches past the font. An icon at the start of a paragraph that should
+line grows to hold the element wherever it reaches past the font, also with a fixed `lineHeight`. An icon at the start of a paragraph that should
 line up with the text's bottom, as Android's `ImageSpan` draws it, takes `"text-bottom"`. The classes are
 `align-baseline`, `align-text-top`, `align-text-bottom` and `align-middle`; in Rust `.align_text_bottom()` and the
 others of the same names.
@@ -169,7 +171,7 @@ others of the same names.
 | `color` | A [color](./styling.md#colors). Default black | `.text_color(..)` |
 | `fontSize` | Points. Default 14 | `.text_size(px(..))`, `.text_sm()`, `.text_lg()`, ... |
 | `fontWeight` | `"normal"` (400), `"bold"` (700), or `100`–`900` (number or string) | `.font_weight(FontWeight::BOLD)` |
-| `fontStyle` | `"normal"`, `"italic"` | `.italic()` |
+| `fontStyle` | `"normal"`, `"italic"`: color emoji stay upright | `.italic()` |
 | `fontFamily` | A system family, a generic family, or an [imported font](./fonts.md) | `.font_family(..)` |
 | `lineHeight` | Points | `.line_height(px(..))` |
 | `letterSpacing` | Points | `.letter_spacing(px(..))` |

@@ -163,8 +163,9 @@ async fn additions(
     const FILTER: &str = "
         e.sequence > ?1 AND (e.event_header IS NOT NULL AND e.event_session=?2)
         AND e.kind IN ('invocation_opened','message_steered','model_requested',
-            'model_observed','executor_completed','tool_settled','tool_rejected','tool_notified',
+            'model_observed','executor_observed','executor_completed','tool_settled','tool_rejected','tool_notified',
             'context_checkpoint_recorded','tool_result_archived')
+        AND (e.kind!='executor_observed' OR json_extract(e.event_header,'$.fact.output.type')='message_end')
         AND (e.kind NOT IN ('tool_settled','tool_rejected') OR
             json_extract(e.event_header,'$.fact.call.origin.kind')='provider' OR
             EXISTS(SELECT 1 FROM runtime_events d WHERE d.invocation_id=e.invocation_id
@@ -291,7 +292,10 @@ fn increment(fact: &Fact, basis: &AcceptedMainContext) -> Option<u64> {
                     .as_deref()
                     .map_or(0, text_units)
         }
-        Fact::ExecutorCompleted { .. } => return None,
+        Fact::ExecutorCompleted { .. }
+        | Fact::ExecutorObserved {
+            output: maka_agent_facts::executor::Output::MessageEnd { .. },
+        } => return None,
         _ => 0,
     })
 }
@@ -411,12 +415,7 @@ mod tests {
             "a different model cannot inherit the old count"
         );
         assert_eq!(
-            increment(
-                &Fact::ExecutorCompleted {
-                    text: "opaque executor".into()
-                },
-                &basis
-            ),
+            increment(&Fact::ExecutorCompleted { message_id: None }, &basis),
             None
         );
     }

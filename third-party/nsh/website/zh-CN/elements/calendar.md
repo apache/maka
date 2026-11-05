@@ -12,7 +12,7 @@ demo: el-date-picker
 日历负责行为：值（应用的，或它自己的）、显示的月份、视图、不能选的日期、键盘，以及屏幕阅读器听到的内容。外观由应用决定：应用为头部、主体、每个月、每一行和每个条目设置样式，并绘制条目的内容（月份和星期的名称、今天的标记、范围的色带）。日历的网格像表格的列一样填满给它的宽度：几个月平分它，一行里的条目平分这一行，所以手机底部面板里的日历横跨整个屏幕，而按内容定宽的弹出层里的日历保持条目自身的宽度（在 `itemClass` 或 `monthClass` 里写 `flex-none` 可让条目或月份保持自身宽度）。
 
 ```rust tabs
-use nsh_base::{CalendarItemKind, CalendarItemState, Date, Matcher, calendar, theme};
+use nsh_base::{CalendarEntry, CalendarItemKind, Date, Matcher, calendar};
 use nsh_core::prelude::*;
 
 const MONTHS: [&str; 12] = [
@@ -29,7 +29,8 @@ fn due_date() -> impl IntoElement {
         .disabled_matcher(Matcher::DayOfWeek(vec![0, 6]))
         .previous_accessibility_label("Previous month")
         .next_accessibility_label("Next month")
-        .render_item(|item: &CalendarItemState| {
+        .item_class("rounded-md selected:bg-primary selected:text-primary-foreground disabled:opacity-50")
+        .render_item(|item: &CalendarEntry| {
             let label = match item.kind {
                 CalendarItemKind::Previous => "‹".to_string(),
                 CalendarItemKind::Next => "›".to_string(),
@@ -44,8 +45,6 @@ fn due_date() -> impl IntoElement {
                 .h_8()
                 .items_center()
                 .justify_center()
-                .rounded_md()
-                .when(item.active, |v| v.bg(move || theme().primary))
                 .child(text(label).text_sm())
         })
 }
@@ -70,7 +69,7 @@ function App() {
       class="w-72 gap-2 rounded-lg border border-border p-3"
       headerClass="flex-row items-center justify-between"
       rowClass="flex-row justify-between"
-      itemClass="h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground disabled:opacity-50"
+      itemClass="group h-8 min-w-8 items-center justify-center rounded-md text-sm focus:ring-2 focus:ring-ring selected:bg-primary selected:text-primary-foreground data-range-middle:rounded-none data-range-middle:bg-accent data-range-middle:text-accent-foreground data-outside:text-muted-foreground disabled:opacity-50"
       renderItem={(item) => (
         <Text class={item.today ? "font-semibold" : ""}>
           {item.kind === "weekday"
@@ -102,7 +101,7 @@ mount(App);
 `onChange` 只报告完整的值，与 `gpui-base` 的 `Selected` 相同：按下的一天，或范围的结束日。
 
 - 不设 `range` 时，按下某一天就选中它。
-- 在 `range` 时，第一次按压开始范围，第二次结束范围，两者之间的日期都在范围内（每一天的 `inRange`，包括两端）。第二次按在更早的一天上会从那一天重新开始范围，范围完整之后再按也一样。半个范围会一直显示，直到完整时才被报告。
+- 在 `range` 时，第一次按压开始范围，第二次结束范围，两者之间的日期都在范围内（每一天都是 `selected`，包括两端，见[条目](#items)）。第二次按在更早的一天上会从那一天重新开始范围，范围完整之后再按也一样。半个范围会一直显示，直到完整时才被报告。
 
 日历打开时显示值所在的月份（范围的开始日），没有值则显示今天所在的月份。
 
@@ -114,7 +113,7 @@ mount(App);
 
 头部包含"上一个"、两个切换按钮和"下一个"：
 
-- 日视图显示各月的日期，每个月是一列，包含星期行和各周；前后月份的日期补满各周，并为 `muted`。
+- 日视图显示各月的日期，每个月是一列，包含星期行和各周；前后月份的日期补满各周（`outside`、`data-outside`）。
 - 月份切换按钮（`monthToggle`）打开月份视图：十二个月，每行三个。选中一个会在日视图中显示它。
 - 年份切换按钮（`yearToggle`）打开年份视图：一页 20 年，每行五个，"上一个"和"下一个"翻页。选中一个会在日视图中显示那一年。`yearRange` 是翻页经过的年份，`[start, end)`（默认：今年之前 50 年到之后 50 年）。
 
@@ -133,28 +132,43 @@ mount(App);
 | `{ from, to }` | 从 `from` 到 `to` 的日期，包括两端（省略的一端不限）。 |
 | `(date) => boolean` | 函数返回 `true` 的日期，传入每个显示日期的 ISO 日期。 |
 
-函数对每个显示的日期调用一次，在下一个 JS 轮次中调用，已回答过的日期不再询问：翻月只询问新出现的日期，所以它的结果应只取决于日期。传入另一个函数会重新询问。被禁用的日期为 `disabled` 和 `muted`，不接受按压，Return 和 Space 也不会选中它。
+函数对每个显示的日期调用一次，在下一个 JS 轮次中调用，已回答过的日期不再询问：翻月只询问新出现的日期，所以它的结果应只取决于日期。传入另一个函数会重新询问。被禁用的日期应用 `disabled:`，不接受按压，Return 和 Space 也不会选中它。
 
 <a id="items"></a>
 
 ## 条目
 
-日历中每个可按压的目标和标签都是一个条目："上一个"、切换按钮、"下一个"、星期、日期、月份和年份。每个条目绘制在一个由 `itemClass` 和 `itemStyle` 设置样式的部件中，其变体跟随状态：选中时应用 `selected:`（日期或范围的一端、显示的月份或年份、已打开视图的切换按钮），不接受按压时应用 `disabled:`，键盘在它上面时应用 `focus:`。
+日历中每个可按压的目标和标签都是一个条目："上一个"、切换按钮、"下一个"、星期、日期、月份和年份。每个条目绘制在一个由 `itemClass` 和 `itemStyle` 设置样式的部件中，其变体跟随状态：
 
-`renderItem` 根据条目的 `CalendarItemState` 绘制其内容：
+| 变体 | 条目 |
+|---|---|
+| `selected:` | 已选：选中的日期、完整范围中的每一天（包括两端，与 React Aria 的范围日历一致）、半个范围的开始日、显示的月份或年份、已打开视图的切换按钮。屏幕阅读器读到它为已选。 |
+| `disabled:` | 不接受按压：被禁用的日期、星期、各月标题、月份视图中或年份两端的"上一个"和"下一个"。 |
+| `focus:` | 键盘在它上面。 |
+| `data-range-start:`、`data-range-end:` | 是完整范围的第一天或最后一天（只有一天的范围两者都是）。 |
+| `data-range-middle:` | 是完整范围内、不在两端的一天。 |
+| `data-today:` | 是今天。 |
+| `data-outside:` | 是补满各周的前后月份的日期。 |
+
+`data-*` 变体是 Tailwind 的（`data-range-start:` 匹配 `[data-range-start]`），与 shadcn 的日历为日期设置样式的方式相同；在 `itemClass` 里加上 `group`，内容就用 `group-selected:`、`group-data-range-middle:` 等跟随它们。`selected:` 指范围中的每一天，所以范围两端用自己的样式覆盖它（后面的变体胜出：`data-*` 排在 `selected:` 之后），中间的日期也一样：
+
+```tsx
+<Calendar
+  range
+  itemClass="group rounded-md selected:bg-primary selected:text-primary-foreground data-range-middle:rounded-none data-range-middle:bg-accent data-range-middle:text-accent-foreground data-range-start:rounded-r-none data-range-end:rounded-l-none data-range-start:data-range-end:rounded-md"
+/>
+```
+
+`renderItem` 根据条目本身（`CalendarEntry`）绘制其内容，从不根据它的状态：绘制只做一次，条目被选中、获得焦点或进入范围时都保留，所以按键、选择和焦点进出都不再绘制，翻月时只为新出现的日期各绘制一次（一天的绘制按它的月份和日期保留：显示多个月时，仍在显示的月份保留它们的绘制）。
 
 | 字段 | 含义 |
 |---|---|
 | `kind` | `"previous"`、`"monthToggle"`、`"yearToggle"`、`"next"`、`"weekday"`、`"day"`、`"month"` 或 `"year"`。 |
 | `value` | 它的数字：一个月中的第几天、月份（1 到 12）、年份、星期几（`0` 为星期日到 `6`）；"上一个"和"下一个"为 `0`。 |
 | `date` | 某一天的 ISO 日期。 |
-| `year`、`month` | 它所属的年份和月份，否则为显示的年月。 |
-| `active` | 它被选中。 |
-| `inRange` | 完整范围内的一天，包括两端。 |
-| `muted` | 星期、前后月份的日期、被禁用的日期。 |
-| `disabled` | 它不接受按压。 |
+| `year`、`month` | 它所属的年份和月份：日期的（显示它的那个月）、月份切换按钮或标题的、月份视图中月份的；年份切换按钮和年份是它自己的年份。"上一个"、"下一个"和星期为 `0`（年份切换按钮和年份的 `month` 也为 `0`）。 |
 | `today` | 这一天是今天。 |
-| `focused` | 键盘在这一天上。 |
+| `outside` | 这一天属于前后的月份。 |
 
 不设 `renderItem` 时，条目显示它的数字，"上一个"和"下一个"显示 `‹` 和 `›`，与 `gpui-base` 的相同；星期也显示它的数字 `0` 到 `6`，因为月份和星期的名称是应用用自己的语言说的话。
 
@@ -177,8 +191,8 @@ mount(App);
 | `bodyClass`、`bodyStyle` | `.body_class(..)`、`.body_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 主体：并排的各月，或月份、年份视图的行。 |
 | `monthClass`、`monthStyle` | `.month_class(..)`、`.month_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 日视图中的每个月。 |
 | `rowClass`、`rowStyle` | `.row_class(..)`、`.row_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每一行：星期、一周、一行月份或年份。 |
-| `itemClass`、`itemStyle` | `.item_class(..)`、`.item_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个条目：`selected:`、`disabled:`、`focus:`。 |
-| `renderItem` | `.render_item(..)` | `(item: CalendarItemState) => JSX.Element` | 无 | 由应用绘制的条目内容；否则显示其数字。 |
+| `itemClass`、`itemStyle` | `.item_class(..)`、`.item_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个条目：`selected:`、`disabled:`、`focus:`；日期的 `data-range-start:`、`data-range-end:`、`data-range-middle:`、`data-today:`、`data-outside:`（[条目](#items)）。 |
+| `renderItem` | `.render_item(..)` | `(item: CalendarEntry) => JSX.Element` | 无 | 由应用根据条目本身绘制的内容；否则显示其数字。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 日历：头部在主体之上。 |
 
 <a id="events"></a>
@@ -200,7 +214,7 @@ mount(App);
 | 主体 | 日历中，头部之后 | `bodyClass`、`bodyStyle` |
 | 月 | 主体中（日视图） | `monthClass`、`monthStyle` |
 | 行 | 月中，或主体中（月份和年份视图） | `rowClass`、`rowStyle` |
-| 条目 | 头部和各行中 | `itemClass`、`itemStyle`、`renderItem` |
+| 条目 | 头部和各行中 | `itemClass`、`itemStyle`、`renderItem`（其中用 `group-selected:`、`group-data-range-middle:` 等，`itemClass` 里加 `group`） |
 
 <a id="keyboard"></a>
 
@@ -217,13 +231,13 @@ mount(App);
 | Shift+Page Up / Shift+Page Down | 一年前或一年后的同一天。 |
 | Return、Space | 选中这一天。 |
 
-移出显示的月份时会翻月。"上一个"、切换按钮、"下一个"、月份和年份接受按压。`gpui-base` 的日期只接受按压；这些按键是 NSH 的，参照 WAI-ARIA 的日期选择对话框。
+在从右到左的布局里，每周从右边开始，Left 是后一天，Right 是前一天；Up 和 Down 仍按周移动。移出显示的月份时会翻月。"上一个"、切换按钮、"下一个"、月份和年份接受按压。`gpui-base` 的日期只接受按压；这些按键是 NSH 的，参照 WAI-ARIA 的日期选择对话框。
 
 <a id="accessibility"></a>
 
 ## 无障碍
 
-- 每一天是一个按钮，以其 ISO 日期命名；它是选中的日期或范围的一端时为已选状态，被禁用时显示为不可用。
+- 每一天是一个按钮，以其 ISO 日期命名；它是选中的日期或范围中的一天时（包括两端，与 React Aria 的范围日历一致）为已选状态，被禁用时显示为不可用。
 - "上一个"和"下一个"是按钮，名称来自 `previousAccessibilityLabel` 和 `nextAccessibilityLabel`；切换按钮、月份和年份是按钮，以其显示的内容命名。
 
 关于标签、角色和播报的一般说明，见[无障碍](../docs/accessibility.md)。

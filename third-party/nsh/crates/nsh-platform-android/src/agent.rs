@@ -23,7 +23,10 @@ use crate::{host::Host, java::with_env};
 const TAP: Duration = Duration::from_millis(60);
 /// A finger's moves, a display frame apart.
 const FRAME: Duration = Duration::from_millis(16);
-/// How far a finger moves in one frame at most, in points.
+/// How many times a frame a touchscreen reports a moving finger, as the
+/// agent's drags and swipes report it.
+const SAMPLES: u32 = 4;
+/// How far a swiping finger moves in a frame on average, in points.
 const MOVE_STEP: f32 = 20.0;
 /// How long a finger rests before it lifts at the end of a scroll, so the
 /// scroll view keeps no velocity (no fling after it).
@@ -88,36 +91,38 @@ impl AndroidNative {
         self.finger(UP, x, y);
     }
 
-    /// A finger down at `from`, moving to `to` a frame at a time easing out
-    /// (a finger that stops slows down first), resting there (still
-    /// reporting where it is), then lifting (a scroll, a swipe).
+    /// A finger down at `from`, moving to `to` easing in and out (a finger
+    /// starts from rest, and slows down before it stops), reported
+    /// [`SAMPLES`] times a frame, resting there (still reporting where it
+    /// is), then lifting (a scroll, a swipe). Its first moves stay within
+    /// the touch slop: a scroll view that takes the gesture from a view
+    /// under the finger (a field, a button) scrolls from the move past the
+    /// slop, and what the finger moved before it is lost.
     fn swipe(&self, from: (f32, f32), to: (f32, f32), rest: Duration) {
         let (dx, dy) = (to.0 - from.0, to.1 - from.1);
-        let n = ((dx.abs().max(dy.abs()) / MOVE_STEP).ceil() as u32).max(1);
+        let frames = ((dx.abs().max(dy.abs()) / MOVE_STEP).ceil() as u32).max(1);
+        let n = frames * SAMPLES;
         let mut xs = vec![self.px(from.0)];
         let mut ys = vec![self.px(from.1)];
         for i in 1..=n {
-            let t = 1.0 - (1.0 - i as f32 / n as f32).powi(3);
+            let s = i as f32 / n as f32;
+            let t = s * s * (3.0 - 2.0 * s);
             xs.push(self.px(from.0 + dx * t));
             ys.push(self.px(from.1 + dy * t));
         }
-        let frame = FRAME.as_millis() as u32;
-        for _ in 0..(rest.as_millis() as u32).div_ceil(frame) + 1 {
+        let every = FRAME.as_millis() as u32 / SAMPLES;
+        for _ in 0..(rest.as_millis() as u32).div_ceil(every) + 1 {
             xs.push(self.px(to.0));
             ys.push(self.px(to.1));
         }
-        self.path(&xs, &ys);
+        self.path(&xs, &ys, every);
     }
 
     /// A finger along (`xs`, `ys`), in pixels: down at the first point, a
-    /// move to each next one a frame apart, up at the last; one call that
-    /// the UI thread paces, as the display paces a real finger's events.
-    fn path(&self, xs: &[f32], ys: &[f32]) {
-        self.path_every(xs, ys, FRAME.as_millis() as u32);
-    }
-
-    /// [`Self::path`] with the points `ms` milliseconds apart.
-    fn path_every(&self, xs: &[f32], ys: &[f32], frame: u32) {
+    /// move to each next one `every` milliseconds apart, up at the last;
+    /// one call that the UI thread paces, as the display paces a real
+    /// finger's events.
+    fn path(&self, xs: &[f32], ys: &[f32], every: u32) {
         self.call(|env, class, view| {
             let jx = env.new_float_array(xs.len() as i32)?;
             env.set_float_array_region(&jx, 0, xs)?;
@@ -131,7 +136,7 @@ impl AndroidNative {
                     JValue::Object(view),
                     JValue::Object(&jx),
                     JValue::Object(&jy),
-                    JValue::Int(frame as i32),
+                    JValue::Int(every as i32),
                 ],
             )
             .map(drop)
@@ -222,7 +227,6 @@ impl Native for AndroidNative {
         // A touchscreen samples a finger several times a frame: its first
         // moves stay within the touch slop, so the views under it decide
         // who takes the drag as they do for a real one.
-        const SAMPLES: u32 = 4;
         let frame = FRAME.as_millis() as u32;
         let (mut xs, mut ys) = (vec![self.px(from.x.0)], vec![self.px(from.y.0)]);
         // Resting where it landed, still reported.
@@ -243,7 +247,7 @@ impl Native for AndroidNative {
         // The last move reaches the end, and the finger lifts there.
         xs.push(self.px(to.x.0));
         ys.push(self.px(to.y.0));
-        self.path_every(&xs, &ys, frame / SAMPLES);
+        self.path(&xs, &ys, frame / SAMPLES);
     }
 
     fn type_text(&self, text: &str) {

@@ -1,7 +1,8 @@
 //! A UI set of the tests' own (`test/ui`): small components that exercise
 //! the machinery of Rust components (slots and how their content lays out, children placed one by one,
 //! virtualized `items`, `#[prop(lazy)]` children, `#[methods]` refs, events,
-//! inputs) as an app's crate would, with no UI set of nsh's.
+//! waiting for the app's answer to them, inputs) as an app's crate would,
+//! with no UI set of nsh's.
 
 use std::{rc::Rc, time::Duration};
 
@@ -21,6 +22,7 @@ pub(crate) fn registry() -> Registry {
         .register::<Field>()
         .register::<Group>()
         .register::<ListView>()
+        .register::<Pick>()
         .register::<Stepper>()
         .register::<TextField>()
         .register::<Sheet>()
@@ -448,6 +450,58 @@ pub(crate) fn TextField(props: TextFieldProps, cx: Scope<TextFieldEvent>) -> imp
                     .child(text("×"))
             },
         ))
+}
+
+// --- Pick: a value of its own until the app answers ------------------------
+
+/// A value of the app's.
+#[derive(Debug, Clone, PartialEq, Props)]
+pub(crate) struct PickProps {
+    /// The value.
+    #[prop(default)]
+    pub(crate) value: Prop<u32>,
+}
+
+/// The events of a [`Pick`].
+#[derive(Debug, Clone, PartialEq, Event)]
+pub(crate) enum PickEvent {
+    /// A press asks for one more (the value asked for).
+    Change(u32),
+}
+
+/// Shows `value` (`pick <value>`); a press asks for one more, which shows
+/// at once until the app has answered ([`after_answer`]), as a slider shows
+/// a drag's value; then the app's, and `answered <value>`, the `value` the
+/// closure saw.
+#[component]
+pub(crate) fn Pick(props: PickProps, cx: Scope<PickEvent>) -> impl IntoElement {
+    let pending = signal(None::<u32>);
+    let answered = signal(None::<u32>);
+    view()
+        .role(AccessibilityRole::Button)
+        .on_press(move |_: &()| {
+            let next = pending
+                .get_untracked()
+                .unwrap_or_else(|| props.value.get_untracked())
+                + 1;
+            pending.set(Some(next));
+            cx.emit(PickEvent::Change(next));
+            after_answer(move || {
+                answered.set(Some(props.value.get_untracked()));
+                pending.set(None);
+            });
+        })
+        .child(text(move || {
+            format!(
+                "pick {}",
+                pending.get().unwrap_or_else(|| props.value.get())
+            )
+        }))
+        .child(text(move || {
+            answered
+                .get()
+                .map_or_else(String::new, |v| format!("answered {v}"))
+        }))
 }
 
 // --- Shortcut: a binding of the view's own ---------------------------------

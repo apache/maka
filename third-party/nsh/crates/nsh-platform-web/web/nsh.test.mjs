@@ -140,6 +140,61 @@ test("events sent after the app stopped wait for the next app", () => {
   assert.deepEqual(events(sent), ["running", "stopped"]);
 });
 
+const trap = () => {
+  throw new WebAssembly.RuntimeError("unreachable");
+};
+
+test("an engine that trapped takes no more calls, nor the ones it deferred", () => {
+  const { player } = fakePlayer();
+  const reached = [];
+  assert.throws(
+    () =>
+      player.call(() => {
+        player.call(() => reached.push("deferred"));
+        trap();
+      }),
+    WebAssembly.RuntimeError,
+  );
+  player.call(() => reached.push("later"));
+  assert.deepEqual(reached, []);
+});
+
+test("an error that is not a trap leaves the engine taking calls", () => {
+  const { player } = fakePlayer();
+  const reached = [];
+  assert.throws(() => player.call(failing));
+  player.call(() => {
+    reached.push("later");
+    return -1;
+  });
+  assert.deepEqual(reached, ["later"]);
+});
+
+test("the overlay keeps the first panic, whichever entry the next one comes from", () => {
+  const { player } = fakePlayer();
+  const shown = [];
+  const box = { replaceChildren: (_copy, message) => shown.push(message) };
+  player.root = { querySelector: () => box, append() {} };
+  const document = globalThis.document;
+  globalThis.document = { createElement: () => ({ addEventListener() {} }) };
+  const error = console.error;
+  console.error = () => {};
+  try {
+    player.reportPanic("nsh panicked: the real one");
+    // The engine is left borrowed: an app's own timer calling into it in
+    // the browser runtime panics again, and the engine reports an error.
+    player.reportPanic("nsh panicked: RefCell already borrowed");
+    player.showError("a later error");
+  } finally {
+    globalThis.document = document;
+    console.error = error;
+  }
+  assert.deepEqual(shown, ["nsh panicked: the real one"]);
+  const reached = [];
+  player.call(() => reached.push("later"));
+  assert.deepEqual(reached, []);
+});
+
 async function reply(host) {
   const { player, sent } = fakePlayer(host === undefined ? {} : { host });
   player.app = 1;
@@ -629,7 +684,7 @@ function withShaderDom(run) {
       children: [],
       style: {},
       className: "",
-      classList: { add() {}, toggle() {} },
+      classList: { add() {}, remove() {}, contains() { return false; }, toggle() {} },
       addEventListener() {},
       get firstChild() {
         return this.children[0] ?? null;
@@ -738,12 +793,14 @@ test("deleting a shader releases its canvas and observer before an ID is reused"
         removals: [],
         disappearing: [],
         changedStacks: new Set(),
+        shaderGl: () => ({ isContextLost: () => false }),
+        shaderProgram: () => ({}),
         layoutAnimation: deferred ? { delete: { duration: 100 } } : null,
       });
       const mount = () => {
         player.op_c(["c", 2, "view"]);
         player.op_i(["i", 1, 2, null]);
-        player.op_sh(["sh", 2, { key: "test", words: [], slots: [], paused: true, animated: false }]);
+        player.op_sh(["sh", 2, { role: 0, key: "test", words: [], slots: [], pictures: [], progress: 0, paused: true, animated: false }]);
         return player.view(2);
       };
       const old = mount();
@@ -792,6 +849,8 @@ test("stop and reset cancel owned shader frames and release old observers across
       removals: [],
       disappearing: [],
       changedStacks: new Set(),
+      shaderGl: () => ({ isContextLost: () => false }),
+      shaderProgram: () => ({}),
       fileOperations: new Map(),
       requests: new Map(),
       websockets: new Map(),
@@ -799,7 +858,7 @@ test("stop and reset cancel owned shader frames and release old observers across
     const mount = () => {
       player.op_c(["c", 2, "view"]);
       player.op_i(["i", 1, 2, null]);
-      player.op_sh(["sh", 2, { key: "test", words: [], slots: [], paused: false, animated: true }]);
+      player.op_sh(["sh", 2, { role: 0, key: "test", words: [], slots: [], pictures: [], progress: 0, paused: false, animated: true }]);
       return player.view(2);
     };
     for (const action of ["stop", "reset", "reset"]) {
@@ -833,4 +892,602 @@ test("stop and reset cancel owned shader frames and release old observers across
       }
     }
   });
+});
+
+test("a plain Shader uploads the whole built-ins block, progress and overflow at 0", () => {
+  const { player } = fakePlayer();
+  const uploads = [];
+  const gl = new Proxy(
+    {
+      UNIFORM_BUFFER: "uniform",
+      canvas: { width: 0, height: 0, transferToImageBitmap: () => "bitmap" },
+      bufferData: (target, data) => uploads.push([target, Array.from(data)]),
+    },
+    { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
+  );
+  Object.assign(player, {
+    shaderGl: () => gl,
+    shaderProgram: () => ({ program: {}, builtins: {}, uniforms: null, vao: {}, samplers: [] }),
+    zoomOf: () => 1,
+  });
+  const el = {
+    _frame: [0, 0, 100, 50],
+    _shader: { layer: { role: 0, overflow: 0 }, words: new Uint32Array(0), kept: 1500, since: null, progress: 0 },
+    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ transferFromImageBitmap() {} }) },
+  };
+  const saved = globalThis.devicePixelRatio;
+  globalThis.devicePixelRatio = 2;
+  try {
+    player.renderShader(el, 0);
+  } finally {
+    globalThis.devicePixelRatio = saved;
+  }
+  // `struct Nsh`, 32 bytes as core's `shader::builtins` lays it out: size,
+  // time, scale, progress, overflow and padding.
+  assert.deepEqual(uploads, [["uniform", [100, 50, 1.5, 2, 0, 0, 0, 0]]]);
+});
+
+/** A player whose shaders draw with `gl` and `program(layer)` (`null`: none), and the view they go on. */
+function shaderPlayer({ gl = { isContextLost: () => false }, program = () => ({}) } = {}) {
+  const { player } = fakePlayer();
+  const classes = () => {
+    const names = new Set();
+    return {
+      add: (name) => names.add(name),
+      remove: (name) => names.delete(name),
+      contains: (name) => names.has(name),
+      toggle: (name, on) => (on ? names.add(name) : names.delete(name)),
+    };
+  };
+  const el = { _frame: [0, 0, 100, 50], classList: classes(), append() {}, insertBefore() {}, getBoundingClientRect() {} };
+  Object.assign(player, {
+    root: { classList: classes(), append() {} },
+    shaderViews: new Set(),
+    view: () => el,
+    watchInputs() {},
+    shaderDirty() {},
+    pictureCanvas: () => ({ canvas: {}, cx: {} }),
+    paintHost() {},
+    zoomOf: () => 1,
+    shaderGl: () => gl,
+    shaderProgram: (_gl, layer) => program(layer),
+  });
+  return { player, el };
+}
+
+const shaderLayer = (role, key = 1) => ({ role, key, words: [], slots: [], pictures: [["content", 0]], progress: 0 });
+
+/** Runs `f` with a `document` whose canvases have been drawn on. */
+function withCanvases(f) {
+  const document = globalThis.document;
+  globalThis.document = { createElement: () => ({ width: 300, height: 150 }) };
+  try {
+    return f();
+  } finally {
+    globalThis.document = document;
+  }
+}
+
+test("an effect hides its children under its canvas once its shader draws", () => {
+  const { player, el } = shaderPlayer();
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1)]));
+  assert.ok(el.classList.contains("nsh-fx"));
+});
+
+test("an effect without WebGL 2 shows its children as they are", () => {
+  const { player, el } = shaderPlayer({ gl: null });
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1)]));
+  assert.ok(!el.classList.contains("nsh-fx"));
+});
+
+test("an effect whose program the driver refuses shows its children, without the last picture", () => {
+  const { player, el } = shaderPlayer({ program: (layer) => (layer.key === 1 ? {} : null) });
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1)]));
+  assert.ok(el.classList.contains("nsh-fx"));
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1, 2)]));
+  assert.ok(!el.classList.contains("nsh-fx"));
+  assert.equal(el._shaderCanvas.width, 0);
+});
+
+test("a screen effect that cannot draw leaves the surface showing", () => {
+  const { player } = shaderPlayer({ program: () => null });
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(3)]));
+  assert.ok(!player.root.classList.contains("nsh-fx"));
+  assert.equal(player.screenShader ?? null, null);
+});
+
+test("a transition that cannot draw starts no run and hides nothing", () => {
+  const { player, el } = shaderPlayer({ program: () => null });
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(2)]));
+  player.op_sht(["sht", 2, 300]);
+  assert.equal(el._shader.running, null);
+  assert.ok(!el.classList.contains("nsh-fx"));
+});
+
+test("a page shader that cannot draw leaves the change to the page's own transition", () => {
+  const { player } = shaderPlayer({ program: () => null });
+  const stack = { getBoundingClientRect: () => ({ width: 390, height: 844 }) };
+  assert.equal(player.shaderNav(stack, {}, { layer: shaderLayer(2), ms: 350 }, false, () => {}), false);
+});
+
+/**
+ * Runs `f` with the player's real `shaderGl` on a context `f` can lose
+ * (`context.lost`) and the listeners its canvas got, warnings kept apart.
+ */
+function withLosableContext(player, f) {
+  const context = { lost: false, listeners: {} };
+  const gl = new Proxy({ isContextLost: () => context.lost }, { get: (gl, name) => (name in gl ? gl[name] : () => {}) });
+  const saved = [globalThis.OffscreenCanvas, console.warn];
+  globalThis.OffscreenCanvas = class {
+    getContext = () => gl;
+    addEventListener = (type, listener) => (context.listeners[type] = listener);
+  };
+  console.warn = () => {};
+  delete player.shaderGl;
+  try {
+    f(context);
+  } finally {
+    [globalThis.OffscreenCanvas, console.warn] = saved;
+  }
+}
+
+test("a lost WebGL context shows the views' children until it is back", () => {
+  const { player, el } = shaderPlayer();
+  el.isConnected = true;
+  withLosableContext(player, (context) => {
+    withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1)]));
+    assert.ok(el.classList.contains("nsh-fx"));
+    const ended = [];
+    const overlay = { _shader: { nav: true, running: { done: () => ended.push("page") }, textures: [null, null, null, null] } };
+    player.shaderViews.add(overlay);
+    context.lost = true;
+    let asked = false;
+    context.listeners.webglcontextlost({ preventDefault: () => (asked = true) });
+    assert.ok(asked, "asked back");
+    assert.ok(!el.classList.contains("nsh-fx"), "children shown");
+    assert.equal(el._shaderCanvas.width, 0, "without the last frame over them");
+    assert.deepEqual(ended, ["page"], "a running change ends, reported");
+    assert.equal(player.shaderDraws(shaderLayer(1)), false);
+    context.lost = false;
+    context.listeners.webglcontextrestored();
+    assert.ok(el.classList.contains("nsh-fx"), "drawn through its shader again");
+    assert.equal(player.shaderDraws(shaderLayer(1)), true);
+  });
+});
+
+test("a lost WebGL context is noticed on the next shader frame without its event", () => {
+  const { player, el } = shaderPlayer();
+  withLosableContext(player, (context) => {
+    withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1)]));
+    context.lost = true;
+    player.shaderFrame(0);
+    assert.ok(!el.classList.contains("nsh-fx"));
+  });
+});
+
+/** A screen of a stack, with a page's `animation` and maybe a shader. */
+function screenOf(stack, id, animation, navShader = null) {
+  const screen = { _id: id, _kind: "screen", _screen: { animation }, _navShader: navShader, style: {}, classList: { remove() {}, add() {} }, parentNode: stack };
+  stack.children.push(screen);
+  return screen;
+}
+
+/** A stack and a player whose page shaders are recorded (`calls`), running or not (`runs`). */
+function stackPlayer(runs) {
+  const { player, sent } = fakePlayer();
+  const calls = [];
+  const stack = { children: [] };
+  Object.assign(player, {
+    shaderNav: (host, upper, nav, reverse, done) => {
+      calls.push({ host, upper, reverse, done });
+      return runs;
+    },
+    syncHistorySoon() {},
+  });
+  return { player, sent, stack, calls };
+}
+
+test("going back with animation \"none\" goes through the page's shader", () => {
+  const { player, stack, calls } = stackPlayer(true);
+  const below = screenOf(stack, 2, "default");
+  const top = screenOf(stack, 4, "none", { layer: shaderLayer(2), ms: 350 });
+  player.goBack(top);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].upper, top);
+  assert.equal(calls[0].reverse, true, "a pop runs backwards");
+  assert.notEqual(top.style.visibility, "hidden", "it shows under the shader until it ends");
+  assert.equal(below.style.transform, "");
+});
+
+test("going back with animation \"none\" and no shader that runs leaves at once", () => {
+  const { player, sent, stack } = stackPlayer(false);
+  screenOf(stack, 2, "default");
+  const top = screenOf(stack, 4, "none", { layer: shaderLayer(2), ms: 350 });
+  player.goBack(top);
+  assert.equal(top.style.visibility, "hidden");
+  assert.ok(sent.some(([name]) => name === "onDismiss"), "dismissed at once");
+});
+
+test("pages and dialogs take their own motion when the user asks for less motion", () => {
+  const { player } = shaderPlayer();
+  player.reducedMotion = { matches: true };
+  let asked = false;
+  player.shaderDraws = () => (asked = true);
+  const stack = { getBoundingClientRect: () => ({ width: 390, height: 844 }) };
+  assert.equal(player.shaderNav(stack, {}, { layer: shaderLayer(2), ms: 350 }, false, () => {}), false);
+  assert.equal(asked, false, "not even tried");
+});
+
+test("a change of a stack whose page shader still runs ends that one first", () => {
+  const { player, stack } = stackPlayer(false);
+  const order = [];
+  const overlay = { _shader: { nav: true, running: { done: () => order.push("ended") }, textures: [null, null, null, null] } };
+  stack._navOverlay = overlay;
+  player.shaderViews = new Set([overlay]);
+  const old = screenOf(stack, 2, "none");
+  const top = screenOf(stack, 4, "none");
+  player.moveScreens(old, top, true, () => order.push("pushed"));
+  assert.deepEqual(order, ["ended", "pushed"]);
+  assert.equal(overlay._shader.running, null);
+  assert.ok(!player.shaderViews.has(overlay));
+});
+
+test("a dialog shown or closed while another's shader runs ends that one first", () => {
+  const { player } = fakePlayer();
+  const order = [];
+  const overlay = { _shader: { nav: true, running: { done: () => order.push("ended") }, textures: [null, null, null, null] } };
+  player.root = { _navOverlay: overlay };
+  player.shaderViews = new Set([overlay]);
+  player.endNavShader(player.root);
+  assert.deepEqual(order, ["ended"]);
+  // Ended already: nothing more.
+  player.endNavShader(player.root);
+  assert.deepEqual(order, ["ended"]);
+});
+
+test("a page's or a dialog's shader deletes its pictures' textures when its change ends", () => {
+  const { player } = fakePlayer();
+  const deleted = [];
+  player._shaderGl = { deleteTexture: (t) => deleted.push(t) };
+  player.shaderViews = new Set();
+  const overlay = { _shader: { nav: true, running: { done() {} }, textures: [null, null, "from", "to"] } };
+  player.shaderViews.add(overlay);
+  player.endTransition(overlay);
+  assert.deepEqual(deleted, ["from", "to"]);
+  assert.deepEqual(overlay._shader.textures, [null, null, null, null]);
+});
+
+test("a transition deletes its from and to textures when it ends, and keeps its others", () => {
+  const { player, el } = shaderPlayer();
+  const deleted = [];
+  player._shaderGl = { deleteTexture: (t) => deleted.push(t) };
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(2)]));
+  el._shader.textures = ["content", null, "from", "to"];
+  player.endTransition(el);
+  assert.deepEqual(deleted, ["from", "to"]);
+  assert.deepEqual(el._shader.textures, ["content", null, null, null]);
+});
+
+test("a dialog closed through its shader stops being watched for the window's size", () => {
+  const { player } = fakePlayer();
+  const unobserved = [];
+  let finish;
+  const el = { _id: 6, _navShader: { layer: shaderLayer(2), ms: 350 }, style: {}, remove() {} };
+  Object.assign(player, {
+    root: {},
+    viewportObserver: { unobserve: (target) => unobserved.push(target) },
+    shaderNav: (_host, _upper, _nav, _reverse, done) => {
+      finish = done;
+      return true;
+    },
+    scopeFocus() {},
+    syncHistorySoon() {},
+    releaseFrame() {},
+    dropLeftWith() {},
+    topModal: () => null,
+  });
+  player.dismiss(el, true);
+  assert.deepEqual(unobserved, [], "it shows under the shader until it ends");
+  finish();
+  assert.deepEqual(unobserved, [el]);
+});
+
+/**
+ * Runs `f` with a page whose animation frames and timers run when `f`
+ * says (`frame()`, `timers()`), and a player presenting dialogs over its
+ * container; `names()` are the events it sent.
+ */
+function presenting(f) {
+  const { player, sent } = fakePlayer();
+  Object.assign(player, {
+    root: { append() {}, contains: () => false },
+    size: [320, 240],
+    scopeFocus() {},
+    syncHistorySoon() {},
+    releaseFrame() {},
+    dropLeftWith() {},
+    placeModal() {},
+    topModal: () => null,
+  });
+  let frames = [];
+  const pending = new Map();
+  let next = 1;
+  const saved = [globalThis.document, globalThis.requestAnimationFrame, globalThis.setTimeout, globalThis.clearTimeout];
+  Object.assign(globalThis, {
+    document: { activeElement: null, body: {} },
+    requestAnimationFrame: (callback) => frames.push(callback),
+    setTimeout: (callback) => (pending.set(next, callback), next++),
+    clearTimeout: (id) => pending.delete(id),
+  });
+  const frame = () => {
+    const now = frames;
+    frames = [];
+    for (const callback of now) callback();
+  };
+  const timers = () => {
+    for (const [id, callback] of [...pending]) {
+      pending.delete(id);
+      callback();
+    }
+  };
+  const dialog = { _id: 6, _modal: { animation: "slide" }, style: {}, setAttribute() {}, remove() {} };
+  try {
+    f({ player, dialog, frame, timers, names: () => sent.map(([name]) => name) });
+  } finally {
+    [globalThis.document, globalThis.requestAnimationFrame, globalThis.setTimeout, globalThis.clearTimeout] = saved;
+  }
+}
+
+test("a dialog dismissed before it came in reports it shown, then dismissed", () => {
+  presenting(({ player, dialog, frame, timers, names }) => {
+    player.present(dialog);
+    player.dismiss(dialog);
+    frame();
+    frame();
+    timers();
+    assert.deepEqual(names(), ["onShow", "onDismiss"]);
+    assert.notEqual(dialog.style.transform, "", "it stays out of sight as it leaves");
+  });
+});
+
+test("a dialog dismissed while it slides in reports it shown at once, then dismissed", () => {
+  presenting(({ player, dialog, frame, timers, names }) => {
+    player.present(dialog);
+    frame();
+    frame();
+    assert.deepEqual(names(), [], "shown once its slide ends");
+    player.dismiss(dialog);
+    assert.deepEqual(names(), ["onShow"]);
+    timers();
+    assert.deepEqual(names(), ["onShow", "onDismiss"]);
+  });
+});
+
+test("a picture of an unchanged size draws into its canvas again without reallocating it", () => {
+  const { player } = fakePlayer();
+  const sizes = [];
+  const drawn = [];
+  const canvas = {
+    _w: 0,
+    _h: 0,
+    get width() { return this._w; },
+    set width(v) { sizes.push(["width", v]); this._w = v; },
+    get height() { return this._h; },
+    set height(v) { sizes.push(["height", v]); this._h = v; },
+    getContext: () => ({ setTransform: () => {}, clearRect: (...r) => drawn.push(r) }),
+  };
+  const el = { _shader: { pictures: [canvas, null, null, null], fresh: [false, false, false, false] } };
+  const saved = globalThis.devicePixelRatio;
+  globalThis.devicePixelRatio = 2;
+  try {
+    player.pictureCanvas(el, 0, [100, 50, 0]);
+    assert.deepEqual(sizes, [["width", 200], ["height", 100]]);
+    assert.deepEqual(drawn, []);
+    player.pictureCanvas(el, 0, [100, 50, 0]);
+    assert.equal(sizes.length, 2, "kept");
+    assert.deepEqual(drawn, [[0, 0, 200, 100]], "cleared instead");
+    player.pictureCanvas(el, 0, [120, 50, 0]);
+    assert.deepEqual(sizes.slice(2), [["width", 240], ["height", 100]]);
+  } finally {
+    globalThis.devicePixelRatio = saved;
+  }
+});
+
+test("a shader's frames upload the built-ins from one buffer", () => {
+  const { player } = fakePlayer();
+  const uploads = [];
+  const gl = new Proxy(
+    {
+      UNIFORM_BUFFER: "uniform",
+      canvas: { width: 0, height: 0, transferToImageBitmap: () => "bitmap" },
+      bufferData: (_target, data) => uploads.push(data),
+    },
+    { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
+  );
+  Object.assign(player, {
+    shaderGl: () => gl,
+    shaderProgram: () => ({ program: {}, builtins: {}, uniforms: null, vao: {}, samplers: [] }),
+    zoomOf: () => 1,
+  });
+  const el = {
+    _frame: [0, 0, 100, 50],
+    _shader: { layer: { role: 0, overflow: 0 }, words: new Uint32Array(0), kept: 0, since: null, progress: 0 },
+    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ transferFromImageBitmap() {} }) },
+  };
+  player.renderShader(el, 0);
+  player.renderShader(el, 16);
+  assert.equal(uploads.length, 2);
+  assert.equal(uploads[0], uploads[1]);
+});
+
+test("a picture taken again reads the styles of what changed only", () => {
+  const { player } = fakePlayer();
+  const read = [];
+  const node = (name, children = []) => ({
+    name,
+    children,
+    classList: { contains: () => false },
+    contains: () => false,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
+  });
+  const leaf = node("leaf");
+  const inner = node("inner", [leaf]);
+  const other = node("other");
+  const host = node("host", [inner, other]);
+  const cx = new Proxy({}, { get: () => () => {} });
+  const saved = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = (el) => {
+    read.push(el.name);
+    return { display: "block", opacity: "1", visibility: "visible", backgroundColor: "transparent", borderTopWidth: "0px" };
+  };
+  player.paintGen = 0;
+  player.paintReset = 0;
+  try {
+    player.paintTree(cx, host, { left: 0, top: 0 }, 1, null, null, 0);
+    assert.deepEqual(read, ["inner", "leaf", "other"]);
+    read.length = 0;
+    player.paintTree(cx, host, { left: 0, top: 0 }, 1, null, null, 0);
+    assert.deepEqual(read, [], "kept");
+    player.touchAll([{ type: "attributes", target: inner }]);
+    player.paintTree(cx, host, { left: 0, top: 0 }, 1, null, null, 0);
+    assert.deepEqual(read, ["inner", "leaf"], "it and what it holds");
+    read.length = 0;
+    player.paintReset = ++player.paintGen;
+    player.paintTree(cx, host, { left: 0, top: 0 }, 1, null, null, 0);
+    assert.deepEqual(read, ["inner", "leaf", "other"], "a new color scheme: all");
+  } finally {
+    globalThis.getComputedStyle = saved;
+  }
+});
+
+test("a canvas that drew a cross-origin image is left out of shaders' pictures", () => {
+  const { player } = fakePlayer();
+  const image = (src, crossOrigin = null) => [src, { img: { src, currentSrc: src, crossOrigin }, ready: true, waiting: new Set() }];
+  const cx = new Proxy({}, { get: () => () => {} });
+  const canvasOf = (src) => ({
+    _frame: [0, 0, 10, 10],
+    _slots: [],
+    _ops: [["drawImage", src, null, 0, 0, 10, 10]],
+    _canvas: { width: 0, height: 0, getContext: () => cx },
+  });
+  Object.assign(player, {
+    asset: (uri) => uri,
+    zoomOf: () => 1,
+    images: new Map([
+      image("https://cdn.example/a.png"),
+      image("https://cdn.example/cors.png", "anonymous"),
+      image("https://app.example/b.png"),
+      image("data:image/png;base64,AAAA"),
+    ]),
+  });
+  const saved = [globalThis.location, globalThis.devicePixelRatio];
+  globalThis.location = { href: "https://app.example/", origin: "https://app.example" };
+  globalThis.devicePixelRatio = 1;
+  try {
+    const foreign = canvasOf("https://cdn.example/a.png");
+    const cors = canvasOf("https://cdn.example/cors.png");
+    const own = canvasOf("https://app.example/b.png");
+    const inline = canvasOf("data:image/png;base64,AAAA");
+    for (const el of [foreign, cors, own, inline]) player.draw(el);
+    assert.equal(foreign._canvas._tainted, true);
+    assert.ok(!cors._canvas._tainted);
+    assert.ok(!own._canvas._tainted);
+    assert.ok(!inline._canvas._tainted);
+  } finally {
+    [globalThis.location, globalThis.devicePixelRatio] = saved;
+  }
+  const drawn = [];
+  const picture = new Proxy({}, { get: (_, name) => (name === "drawImage" ? (c) => drawn.push(c.name) : () => {}) });
+  const canvas = (name, tainted) => ({
+    name,
+    tagName: "CANVAS",
+    width: 10,
+    height: 10,
+    _tainted: tainted,
+    children: [],
+    classList: { contains: () => false },
+    contains: () => false,
+    getBoundingClientRect: () => ({ left: 0, top: 0, width: 10, height: 10 }),
+  });
+  const host = { children: [canvas("tainted", true), canvas("clean", false)] };
+  const savedStyle = globalThis.getComputedStyle;
+  globalThis.getComputedStyle = () => ({ display: "block", opacity: "1", visibility: "visible", backgroundColor: "transparent", borderTopWidth: "0px" });
+  player.paintGen = player.paintReset = 0;
+  try {
+    player.paintTree(picture, host, { left: 0, top: 0 }, 1, null, null, 0);
+  } finally {
+    globalThis.getComputedStyle = savedStyle;
+  }
+  assert.deepEqual(drawn, ["clean"]);
+});
+
+test("a frame the browser refuses shows the view's children, and the frame goes on with the others", () => {
+  const refuse = () => {
+    throw new Error("SecurityError: the canvas has been tainted by cross-origin data");
+  };
+  const gl = new Proxy(
+    { isContextLost: () => false, canvas: { width: 0, height: 0 }, texImage2D: refuse },
+    { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
+  );
+  const { player, el } = shaderPlayer({ gl, program: (layer) => ({ samplers: layer.key === 1 ? [["content", 0]] : [] }) });
+  withCanvases(() => player.op_sh(["sh", 2, shaderLayer(1)]));
+  assert.ok(el.classList.contains("nsh-fx"));
+  el.isConnected = true;
+  el._shader.pictures[0] = {};
+  const other = {
+    isConnected: true,
+    _frame: [0, 0, 10, 10],
+    _shaderVisible: true,
+    _shader: { layer: shaderLayer(0, 2), words: new Uint32Array(0), kept: 0, since: null, progress: 0, dirty: true, stale: 0, pictures: [], textures: [] },
+    _shaderCanvas: { width: 0, height: 0, getContext: () => ({ clearRect() {}, drawImage() {} }) },
+  };
+  player.shaderViews.add(other);
+  const drawn = [];
+  const render = player.renderShader;
+  player.renderShader = (view, t) => {
+    const ok = render.call(player, view, t);
+    drawn.push([view === el ? "effect" : "other", ok]);
+    return ok;
+  };
+  const saved = [console.warn, globalThis.devicePixelRatio];
+  console.warn = () => {};
+  globalThis.devicePixelRatio = 1;
+  try {
+    player.shaderFrame(0);
+    assert.deepEqual(drawn, [["effect", false], ["other", true]]);
+    assert.ok(!el.classList.contains("nsh-fx"), "children shown");
+    assert.equal(el._shaderCanvas.width, 0, "without a frame over them");
+    drawn.length = 0;
+    el._shader.dirty = other._shader.dirty = true;
+    player.shaderFrame(0);
+    assert.deepEqual(drawn, [["other", true]], "not tried again for this layer");
+  } finally {
+    [console.warn, globalThis.devicePixelRatio] = saved;
+  }
+});
+
+test("a page's shader whose first frame the browser refuses leaves the change to its own motion", () => {
+  const gl = new Proxy(
+    { isContextLost: () => false, canvas: { width: 0, height: 0 }, texImage2D: () => { throw new Error("SecurityError"); } },
+    { get: (gl, name) => (name in gl ? gl[name] : () => {}) },
+  );
+  const { player } = shaderPlayer({ gl, program: () => ({ samplers: [["from", 2], ["to", 3]] }) });
+  player.pictureCanvas = (view, input) => {
+    view._shader.pictures[input] = {};
+    return { canvas: {}, cx: {} };
+  };
+  const stack = { getBoundingClientRect: () => ({ width: 390, height: 844 }), append(o) { o.removed = false; } };
+  const saved = [globalThis.document, console.warn, globalThis.devicePixelRatio];
+  globalThis.document = { createElement: () => ({ style: {}, append() {}, remove() { this.removed = true; } }) };
+  console.warn = () => {};
+  globalThis.devicePixelRatio = 1;
+  let ended = false;
+  try {
+    assert.equal(player.shaderNav(stack, {}, { layer: shaderLayer(2), ms: 350 }, false, () => (ended = true)), false);
+  } finally {
+    [globalThis.document, console.warn, globalThis.devicePixelRatio] = saved;
+  }
+  assert.equal(stack._navOverlay ?? null, null);
+  assert.equal(player.shaderViews.size, 0);
+  assert.equal(ended, false, "the caller's own motion calls it");
 });

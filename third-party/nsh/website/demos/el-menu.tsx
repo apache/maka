@@ -46,7 +46,7 @@ function Item(props: { label: string; onSelect?: () => void; checked?: boolean; 
       <If when={props.inset}>
         <View style={{ width: 16 }} />
       </If>
-      <Text style={{ flex: 1, fontSize: 14, color: props.danger ? ui().down : ui().text }}>{props.label}</Text>
+      <Text style={{ numberOfLines: 1, flexGrow: 1, flexShrink: 0, fontSize: 14, color: props.danger ? ui().down : ui().text }}>{props.label}</Text>
     </MenuItem>
   );
 }
@@ -58,9 +58,10 @@ function Separator() {
 function Share(props: { onSelect: (what: string) => void }) {
   return (
     <Submenu
+      offset={4}
       trigger={
         <View hoverStyle={{ backgroundColor: tint(ui().accent, 0.08), borderColor: tint(ui().accent, 0.24) }} activeStyle={{ backgroundColor: tint(ui().accent, 0.14), borderColor: tint(ui().accent, 0.34) }} style={{ ...row(), borderWidth: 1, borderColor: "transparent" }}>
-          <Text style={{ flex: 1, fontSize: 14, color: ui().text }}>Share</Text>
+          <Text style={{ numberOfLines: 1, flexGrow: 1, flexShrink: 0, fontSize: 14, color: ui().text }}>Share</Text>
           <Text style={{ fontSize: 14, color: ui().faint }}>›</Text>
         </View>
       }

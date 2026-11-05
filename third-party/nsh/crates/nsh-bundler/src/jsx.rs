@@ -71,6 +71,18 @@ pub(crate) const PRIMITIVES: &[(&str, &str, Compiled)] = &[
     ("nsh", "Scroll", Compiled::Host("scroll")),
     ("nsh", "Overlay", Compiled::Host("overlay")),
     ("nsh", "Shader", Compiled::Host("shader")),
+    ("nsh", "ShaderEffect", Compiled::Host("shadereffect")),
+    (
+        "nsh",
+        "ShaderTransition",
+        Compiled::Host("shadertransition"),
+    ),
+    ("nsh", "ScreenEffect", Compiled::Host("screeneffect")),
+    (
+        "nsh",
+        "ScreenTransition",
+        Compiled::Host("screentransition"),
+    ),
     ("nsh", "Image", Compiled::Host("image")),
     ("nsh", "WebView", Compiled::Host("webview")),
     ("nsh", "Video", Compiled::Host("video")),

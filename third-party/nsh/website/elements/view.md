@@ -181,7 +181,7 @@ Touch and responder events: see [common props](./index.md#raw-touches-and-the-re
 
 ## Desktop file drops
 
-On AppKit, GTK and Win32, a view with `onFileDrop` receives local files and directories dragged from another
+On AppKit, GTK, Win32 and GPUI, a view with `onFileDrop` receives local files and directories dragged from another
 application. `onFileDragEnter` and `onFileDragLeave` track the active destination; `onFileDrop` receives
 `{ uris: string[] }` in the native file-list order. Each entry is an absolute `file:` URL with escaped spaces and
 non-ASCII characters. Parse the URL to obtain a filesystem path rather than removing the prefix by hand.

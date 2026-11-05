@@ -148,3 +148,112 @@ fn the_link_role_its_label_and_the_current_page_reach_screen_readers() {
         None
     );
 }
+
+/// `hitSlop` widens where presses count past its bounds, as a view's
+/// does: the platforms get it on the link's pressable view, it follows a
+/// binding, and a link without one gets none.
+mod hit_slop {
+    use std::sync::{Arc, Mutex};
+
+    use nsh_base::{LinkOpenWith, link};
+    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    /// Every batch's items.
+    type Seen = Arc<Mutex<Vec<MountItem>>>;
+
+    fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
+        let config = EngineConfig {
+            viewport: Size::new(px(390.0), px(844.0)),
+            ..EngineConfig::new(Root::of::<C>())
+        };
+        let mut app = Headless::start(config).unwrap();
+        let seen = Seen::default();
+        let log = seen.clone();
+        app.observe(move |_: &str, batch: &MountBatch| {
+            log.lock().unwrap().extend(batch.items.iter().cloned());
+        });
+        app.first_render().unwrap();
+        (app, seen)
+    }
+
+    /// The hit slop the platforms last got for view `id` (none: zero).
+    fn hit_slop(seen: &Seen, id: NodeId) -> EdgeInsets {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|item| match item {
+                MountItem::ViewProps { id: of, props } if *of == id => Some(props.hit_slop),
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or_default()
+    }
+
+    fn target(app: &Headless, selector: &str) -> NodeId {
+        app.screen()
+            .press_target(selector)
+            .unwrap()
+            .unwrap_or_else(|| panic!("no pressable {selector}"))
+    }
+
+    /// A small link with a slop on every side, a link whose slop the app
+    /// widens, and a link with none.
+    #[component]
+    fn SmallLinks() -> impl IntoElement {
+        let opened = signal(0u32);
+        let wide = signal(false);
+        view()
+            .child(
+                link()
+                    .href("/help")
+                    .open_with(LinkOpenWith::App)
+                    .hit_slop(EdgeInsets::all(px(12.0)))
+                    .accessibility_label("Help")
+                    .on_open(move |_: &SharedString| opened.update(|n| *n += 1))
+                    .child(text("?")),
+            )
+            .child(
+                link()
+                    .hit_slop(Prop::bind(move || match wide.get() {
+                        true => EdgeInsets {
+                            top: px(4.0),
+                            left: px(2.0),
+                            ..EdgeInsets::default()
+                        },
+                        false => EdgeInsets::default(),
+                    }))
+                    .child(text("Grows")),
+            )
+            .child(link().on_press(move || wide.set(true)).child(text("Widen")))
+            .child(text(move || format!("opened:{}", opened.get())))
+    }
+
+    #[test]
+    fn hit_slop_reaches_the_pressable_view() {
+        let (mut app, seen) = start::<SmallLinks>();
+        let small = target(&app, "label:Help");
+        assert_eq!(hit_slop(&seen, small), EdgeInsets::all(px(12.0)));
+        // The slop changes nothing of what a press does.
+        app.press("label:Help").unwrap();
+        app.wait_for("text:opened:1").unwrap();
+    }
+
+    #[test]
+    fn hit_slop_follows_a_binding_and_is_none_by_default() {
+        let (mut app, seen) = start::<SmallLinks>();
+        let grows = target(&app, "text:Grows");
+        let widen = target(&app, "text:Widen");
+        assert_eq!(hit_slop(&seen, grows), EdgeInsets::default());
+        app.press("text:Widen").unwrap();
+        let expected = EdgeInsets {
+            top: px(4.0),
+            left: px(2.0),
+            ..EdgeInsets::default()
+        };
+        assert_eq!(hit_slop(&seen, grows), expected);
+        // A link without `hitSlop` never gets one.
+        assert_eq!(hit_slop(&seen, widen), EdgeInsets::default());
+    }
+}

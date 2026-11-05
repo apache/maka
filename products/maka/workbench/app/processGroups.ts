@@ -17,7 +17,7 @@
  * under the License.
  */
 
-import type { Row } from './history';
+import { senderSession, type Row } from './history.ts';
 import type { ToolActivity } from './toolActivity';
 
 /** Source identity, ordering and failure text; streamed answer text does not regroup rows. */
@@ -28,6 +28,7 @@ export type ProcessRow = Pick<
   | 'role'
   | 'text'
   | 'position'
+  | 'order'
   | 'tool'
   | 'turnId'
   | 'timing'
@@ -88,8 +89,8 @@ export function stableRowId(row: ProcessRow): string {
     : `${row.messageId}/${row.field}`;
 }
 
-export function sourceSequence(row: ProcessRow): number | undefined {
-  return row.position?.sourceSequence ?? row.startSequence ?? row.sequence;
+export function orderSequence(row: ProcessRow): number | undefined {
+  return row.order?.sourceSequence ?? row.startSequence ?? row.sequence;
 }
 
 /** Canonical step seats take precedence over preview anchors; parts retain provider order. */
@@ -97,7 +98,7 @@ export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] 
   const seats = new Map<string, number>();
   const anchors = new Map<string, number>();
   for (const row of rows) {
-    const sequence = sourceSequence(row);
+    const sequence = orderSequence(row);
     if (row.modelPart && sequence !== undefined) {
       const target = row.preview ? anchors : seats;
       target.set(
@@ -113,8 +114,7 @@ export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] 
         left.modelPart.ordinal - right.modelPart.ordinal ||
         Number(left.field === 'body') - Number(right.field === 'body')
       );
-    const seat = (row: T) =>
-      row.modelPart ? seats.get(row.modelPart.stepId) : sourceSequence(row);
+    const seat = (row: T) => (row.modelPart ? seats.get(row.modelPart.stepId) : orderSequence(row));
     const leftSeat = seat(left);
     const rightSeat = seat(right);
     if (leftSeat !== rightSeat) return (leftSeat ?? Infinity) - (rightSeat ?? Infinity);
@@ -124,7 +124,7 @@ export function orderProcessRows<T extends ProcessRow>(rows: readonly T[]): T[] 
         left.preview.ordinal - right.preview.ordinal
       );
     return (
-      (left.position?.itemIndex ?? 0) - (right.position?.itemIndex ?? 0) ||
+      (left.order?.itemIndex ?? 0) - (right.order?.itemIndex ?? 0) ||
       Number(left.field === 'body') - Number(right.field === 'body')
     );
   });
@@ -142,15 +142,16 @@ export function sameProcessRows(
       return (
         stableRowId(row) === stableRowId(next) &&
         row.role === next.role &&
+        row.origin?.kind === next.origin?.kind &&
         (row.role !== 'failure' || row.text === next.text) &&
         row.field === next.field &&
         row.turnId === next.turnId &&
-        sourceSequence(row) === sourceSequence(next) &&
+        orderSequence(row) === orderSequence(next) &&
         row.modelPart?.stepId === next.modelPart?.stepId &&
         row.modelPart?.ordinal === next.modelPart?.ordinal &&
         row.preview?.stepOrder === next.preview?.stepOrder &&
         row.preview?.ordinal === next.preview?.ordinal &&
-        (row.position?.itemIndex ?? 0) === (next.position?.itemIndex ?? 0) &&
+        (row.order?.itemIndex ?? 0) === (next.order?.itemIndex ?? 0) &&
         Boolean(row.tool) === Boolean(next.tool) &&
         row.tool?.toolUseId === next.tool?.toolUseId &&
         Boolean(row.tool?.call) === Boolean(next.tool?.call) &&
@@ -226,7 +227,7 @@ export function projectProcessGroups(input: {
     if (!rowsById.has(rowId))
       positions.push({
         rowId,
-        sequence: sourceSequence(row),
+        sequence: orderSequence(row),
       });
     // A paired result refreshes the original call's seat, not a second row.
     if (!rowsById.has(rowId) || !row.tool?.call || row.tool.result) rowsById.set(rowId, row);
@@ -277,14 +278,27 @@ export function projectProcessGroups(input: {
     if (!current) return;
     const presentation = turn(current.turnId);
     const { turnId, members } = current;
+    // A script is shown as the tools it ran, and as itself only when it fails.
+    const callers = new Set(
+      members.flatMap((member) => {
+        const call = member.kind === 'row' ? rowsById.get(member.rowId)!.tool?.call : undefined;
+        return call?.origin === 'code_mode' ? call.ancestorToolUseIds : [];
+      }),
+    );
+    const shown = members.filter(
+      (member) =>
+        !member.toolUseId ||
+        !callers.has(member.toolUseId) ||
+        (member.kind === 'row' && rowsById.get(member.rowId)!.tool?.result?.isError),
+    );
     entries.push({
       kind: 'process',
       key: groupKey(turnId, members),
       turnId,
       members,
-      rowIds: members.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
+      rowIds: shown.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
       toolIds: [
-        ...new Set(members.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
+        ...new Set(shown.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
       ],
       closed:
         closed || Boolean(presentation.timing?.finished) || presentation.finalOutputIds.length > 0,
@@ -327,7 +341,10 @@ export function projectProcessGroups(input: {
     if (current && current.turnId !== row.turnId) flush(true);
     const body = row.role === 'assistant' && row.field === 'body';
     const outside =
-      body || row.role === 'user' || row.role === 'failure' || row.role === 'compaction';
+      body ||
+      (row.role === 'user' && senderSession(row.origin) === null) ||
+      row.role === 'failure' ||
+      row.role === 'compaction';
     if (!row.turnId || outside) {
       flush(true);
       // A provider that keeps refusing (a rate limit, an overload) fails each retry

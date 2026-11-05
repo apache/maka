@@ -32,7 +32,15 @@
 //!   it);
 //! - the pixel ratio: the window's DPI over 96;
 //! - the OS version: `RtlGetVersion`'s major and minor version (10.0 on
-//!   Windows 10 and 11 alike: Windows 11 kept the version number).
+//!   Windows 10 and 11 alike: Windows 11 kept the version number);
+//! - the app's state, followed on `WM_ACTIVATEAPP` and the window's
+//!   `WM_WINDOWPOSCHANGED` ([`app_activated`], [`lifecycle_changed`]); an
+//!   embedded surface hears its root window's, whose procedure is
+//!   subclassed to pass them on (`window::observe_root`): background while
+//!   the window (an embedded surface's root window) is minimized or hidden,
+//!   active while the app is the active one (its windows get
+//!   `WM_ACTIVATEAPP`; before the first, the foreground window is the
+//!   process's), inactive otherwise.
 //!
 //! Safe area and keyboard height are zero: desktop windows have neither.
 //!
@@ -55,7 +63,7 @@ use nsh_core::{
     geometry::px,
     platform::{Appearance, clipboard},
 };
-use nsh_engine::{ColorScheme, Edges, Environment, Locale};
+use nsh_engine::{ColorScheme, Edges, Environment, Lifecycle, Locale};
 use windows::{
     Win32::{
         Foundation::{LPARAM, WPARAM},
@@ -78,13 +86,15 @@ use windows::{
                 HKEY, HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RRF_RT_REG_DWORD, RegGetValueW,
             },
             SystemInformation::OSVERSIONINFOW,
+            Threading::GetCurrentProcessId,
         },
         UI::{
             Shell::{SetCurrentProcessExplicitAppUserModelID, ShellExecuteW},
             WindowsAndMessaging::{
-                GA_ROOT, GetAncestor, PostMessageW, SPI_GETCLIENTAREAANIMATION,
-                SPI_GETSCREENREADER, SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_ACTION,
-                SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW, WM_CLOSE,
+                GA_ROOT, GetAncestor, GetForegroundWindow, GetWindowThreadProcessId, IsIconic,
+                IsWindowVisible, PostMessageW, SPI_GETCLIENTAREAANIMATION, SPI_GETSCREENREADER,
+                SW_SHOWNORMAL, SYSTEM_PARAMETERS_INFO_ACTION, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+                SystemParametersInfoW, WM_CLOSE,
             },
         },
     },
@@ -122,6 +132,9 @@ thread_local! {
     static ACCENT: Cell<Option<(Color, Color)>> = const { Cell::new(None) };
     /// Numbers overlays, to find them again from deferred calls.
     static NEXT_SERIAL: Cell<u64> = const { Cell::new(1) };
+    /// Whether this thread's windows are the active app's, from the last
+    /// `WM_ACTIVATEAPP` (sent per thread); unknown before the first.
+    static ACTIVE: Cell<Option<bool>> = const { Cell::new(None) };
 }
 
 // ---------------------------------------------------------------------------
@@ -232,6 +245,53 @@ fn settings() -> Settings {
     }
 }
 
+/// `WM_ACTIVATEAPP`: this thread's windows became the active app's
+/// (`active`), or another app's window was activated.
+pub(crate) fn app_activated(surface: &Surface, active: bool) {
+    ACTIVE.with(|a| a.set(Some(active)));
+    lifecycle_changed(surface);
+}
+
+/// The app may have changed state: activated, or its window shown, hidden,
+/// minimized or restored (`WM_WINDOWPOSCHANGED`).
+pub(crate) fn lifecycle_changed(surface: &Surface) {
+    let mut env: Environment = surface.environment.get();
+    env.lifecycle = lifecycle(surface, env.lifecycle);
+    surface.set_environment(env);
+}
+
+/// The app's state as `surface` sees it; `current` before its window
+/// exists.
+fn lifecycle(surface: &Surface, current: Lifecycle) -> Lifecycle {
+    let hwnd = surface.hwnd();
+    if hwnd.is_invalid() {
+        return current;
+    }
+    // SAFETY: plain calls on a window handle.
+    let root = unsafe { GetAncestor(hwnd, GA_ROOT) };
+    // SAFETY: as above.
+    let shown = unsafe { IsWindowVisible(root).as_bool() && !IsIconic(root).as_bool() };
+    if !shown {
+        Lifecycle::Background
+    } else if ACTIVE.with(Cell::get).unwrap_or_else(foreground_is_ours) {
+        Lifecycle::Active
+    } else {
+        Lifecycle::Inactive
+    }
+}
+
+/// Whether the foreground window is one of this process's.
+fn foreground_is_ours() -> bool {
+    let mut process = 0u32;
+    // SAFETY: plain calls; `process` is an out value.
+    unsafe {
+        let window = GetForegroundWindow();
+        !window.is_invalid()
+            && GetWindowThreadProcessId(window, Some(&mut process as *mut u32)) != 0
+            && process == GetCurrentProcessId()
+    }
+}
+
 /// The embedding app set its locale or text size
 /// ([`crate::AppView::set_locale`]): the system's settings are read again,
 /// with the host's over them.
@@ -259,6 +319,7 @@ fn update(surface: &Surface, settings: Settings) {
     env.os_version = os_version();
     env.safe_area = Edges::default();
     env.keyboard_height = px(0.0);
+    env.lifecycle = lifecycle(surface, env.lifecycle);
     surface.set_environment(env);
 }
 

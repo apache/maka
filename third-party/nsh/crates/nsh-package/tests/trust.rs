@@ -1,7 +1,9 @@
 //! Packages through the trust model: certificates, signatures, hashes,
 //! revocation, rollback and persistence.
 
-use nsh_package::{App, Contents, Error, PublicKey, SecretKey, TrustStore, build, certify, revoke};
+use nsh_package::{
+    App, Contents, Error, PublicKey, SecretKey, TrustStore, build, certify, resign, revoke,
+};
 
 const BYTECODE: &str = "bc-1";
 
@@ -185,6 +187,99 @@ fn release_keys_rotate_under_the_same_root() {
     let new = build(&contents("a.b", 2), &next, &next_cert).unwrap();
     assert!(store.verify(&old, BYTECODE).is_ok());
     assert!(store.verify(&new, BYTECODE).is_ok());
+}
+
+/// A package CI signed with its own keys, signed again with a platform's
+/// key: devices that trust only the platform's root run it, unchanged.
+#[test]
+fn a_resigned_package_runs_under_the_new_root_only() {
+    let ci = keys(&["*"]);
+    let platform = keys(&["com.longbridge.*"]);
+    let original = build(&contents("com.longbridge.demo", 3), &ci.release, &ci.cert).unwrap();
+    let bytes = resign(&original, &platform.release, &platform.cert).unwrap();
+
+    let package = store(&[platform.root.public()])
+        .verify(&bytes, BYTECODE)
+        .unwrap();
+    assert_eq!(package.key_id, platform.release.public().id());
+    assert_eq!(
+        package.app,
+        App {
+            id: "com.longbridge.demo".into(),
+            name: "Demo".into(),
+            version: "1.0.0".into(),
+            build: 3,
+        }
+    );
+    assert_eq!(
+        package.capabilities,
+        Some(serde_json::json!({ "network": { "hosts": ["api.example.com"] } }))
+    );
+    assert_eq!(package.source, "console.log('hi')");
+    assert_eq!(package.bytecode(), Some(&[1u8, 2, 3][..]));
+    assert_eq!(package.source_map.as_deref(), Some("{}"));
+    assert_eq!(package.assets, [("img/logo.png".to_owned(), vec![9; 100])]);
+    // CI's root no longer vouches for it.
+    assert!(matches!(
+        store(&[ci.root.public()]).verify(&bytes, BYTECODE),
+        Err(Error::UntrustedKey(_))
+    ));
+}
+
+/// The minimum runtime is the one the package was built for, not the
+/// version of the tool that signs it again.
+#[test]
+fn resigning_keeps_the_minimum_runtime() {
+    let ci = keys(&["*"]);
+    let platform = keys(&["*"]);
+    let older = Contents {
+        min_runtime: Some("0.0.1".into()),
+        ..contents("a.b", 1)
+    };
+    let original = build(&older, &ci.release, &ci.cert).unwrap();
+    let bytes = resign(&original, &platform.release, &platform.cert).unwrap();
+    let header = nsh_package::verify_signature(&bytes).unwrap();
+    assert_eq!(header.min_runtime(), "0.0.1");
+}
+
+/// The new key may only sign what devices trusting it would accept.
+#[test]
+fn resigning_checks_the_new_certificate() {
+    let ci = keys(&["*"]);
+    let original = build(&contents("com.longbridge.demo", 1), &ci.release, &ci.cert).unwrap();
+    let other_apps = keys(&["com.other.*"]);
+    assert!(matches!(
+        resign(&original, &other_apps.release, &other_apps.cert),
+        Err(Error::Certificate(m)) if m.contains("com.longbridge.demo")
+    ));
+    let expired_root = SecretKey::generate().unwrap();
+    let expired_key = SecretKey::generate().unwrap();
+    let expired = certify(&expired_root, &expired_key.public(), &["*".into()], 0, 1);
+    assert!(matches!(
+        resign(&original, &expired_key, &expired),
+        Err(Error::Certificate(_))
+    ));
+    let thief = SecretKey::generate().unwrap();
+    assert!(matches!(
+        resign(&original, &thief, &other_apps.cert),
+        Err(Error::Certificate(_))
+    ));
+}
+
+/// What changed after CI signed it is not signed again.
+#[test]
+fn resigning_refuses_a_changed_package() {
+    let ci = keys(&["*"]);
+    let platform = keys(&["*"]);
+    let bytes = build(&contents("a.b", 1), &ci.release, &ci.cert).unwrap();
+    // A byte of the assets, near the end of the data.
+    let mut tampered = bytes.clone();
+    let i = bytes.len() - 70;
+    tampered[i] ^= 1;
+    assert!(matches!(
+        resign(&tampered, &platform.release, &platform.cert),
+        Err(Error::BadSignature)
+    ));
 }
 
 #[test]

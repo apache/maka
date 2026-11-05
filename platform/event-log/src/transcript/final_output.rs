@@ -46,7 +46,8 @@ WHERE e.operation_id = ?3 AND e.kind = 'model_completed' AND e.invocation_id = ?
   AND e.sequence <= ?4 AND json_extract(e.event_header, '$.fact.step_id') = ?3
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence)))";
-const EXECUTOR: &str = "SELECT e.sequence FROM runtime_events e
+const EXECUTOR: &str =
+    "SELECT json_extract(e.event_header, '$.fact.message_id') FROM runtime_events e
 WHERE e.invocation_id = ?2 AND e.kind = 'executor_completed' AND e.sequence <= ?3
   AND (e.event_session = ?1 OR EXISTS(
     SELECT 1 FROM session_history_members h WHERE h.session_id = ?1 AND h.sequence = e.sequence))
@@ -85,11 +86,14 @@ pub(super) async fn resolve_on_worker(
         // An interrupted/latest request must never fall back to an earlier answer.
         return Ok(completed.then_some(Producer::Model { invocation, step }));
     }
-    let executor: Option<i64> = sqlx::query_scalar(EXECUTOR)
+    let executor: Option<Option<String>> = sqlx::query_scalar(EXECUTOR)
         .bind(session)
         .bind(&invocation)
         .bind(terminal)
         .fetch_optional(&mut *tx)
         .await?;
-    Ok(executor.map(|_| Producer::Executor { invocation }))
+    Ok(executor.flatten().map(|message_id| Producer::Executor {
+        invocation,
+        message_id,
+    }))
 }

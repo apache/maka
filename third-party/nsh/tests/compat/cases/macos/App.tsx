@@ -8,6 +8,7 @@ import ModAccessDenied from "./mod-access-denied";
 import DesktopProps from "./desktop-props";
 import ModStandardSystem from "./mod-standard-system";
 import ModStandardFiles from "./mod-standard-files";
+import WebSendInput from "./web-send-input";
 
 const cases: Record<string, () => JSX.Element> = {
   "base-dock": BaseDock,
@@ -15,6 +16,7 @@ const cases: Record<string, () => JSX.Element> = {
   "mod-standard-system": ModStandardSystem,
   "mod-standard-files": ModStandardFiles,
   "mod-access-denied": ModAccessDenied,
+  "web-send-input": WebSendInput,
 };
 const shown = signal("");
 

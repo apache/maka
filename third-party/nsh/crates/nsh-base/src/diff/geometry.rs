@@ -7,7 +7,7 @@ use std::ops::Range;
 
 use nsh_core::prelude::*;
 
-use super::controller::Span;
+use super::controller::{Span, char_columns};
 
 /// The rows' tops and their texts' heights.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -93,17 +93,18 @@ pub(crate) fn wrap_starts(text: &str, columns: usize) -> Vec<usize> {
     let mut break_at: Option<usize> = None;
     for (at, c) in text.char_indices() {
         let blank = c.is_whitespace();
-        if count >= columns && !blank {
+        let width = char_columns(c);
+        if count > 0 && count + width > columns && !blank {
             let line_start = *starts.last().unwrap_or(&0);
             let start = match break_at {
                 Some(b) if b > line_start => b,
                 _ => at,
             };
             starts.push(start);
-            count = text[start..at].chars().count();
+            count = text[start..at].chars().map(char_columns).sum();
             break_at = None;
         }
-        count += 1;
+        count += width;
         if blank {
             break_at = Some(at + c.len_utf8());
         }
@@ -184,6 +185,15 @@ mod tests {
         assert_eq!(wrapped_lines("éééé", 3), 2);
         // Zero columns wrap at every character rather than looping.
         assert_eq!(wrapped_lines("ab", 0), 2);
+    }
+
+    #[test]
+    fn wide_characters_take_two_columns() {
+        // Each ideograph is two columns: three of them fill six.
+        assert_eq!(pieces("中文字中文", 6), vec!["中文字", "中文"]);
+        // One that would end past the edge starts the next line.
+        assert_eq!(pieces("a中文", 4), vec!["a中", "文"]);
+        assert_eq!(wrapped_lines("中文中文", 4), 2);
     }
 
     #[test]

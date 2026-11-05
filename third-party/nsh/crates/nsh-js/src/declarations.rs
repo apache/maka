@@ -57,6 +57,9 @@ export interface StateStyleProps<S = ViewStyle> {
   hoverStyle?: StyleProp<S>;
   /** While it has focus (`focus:`). */
   focusStyle?: StyleProp<S>;
+  /** While it or an element inside it has focus (`focus-within:`); the
+   * content of an `Overlay` counts as inside the element it is in. */
+  focusWithinStyle?: StyleProp<S>;
   /** While `disabled` (`disabled:`). */
   disabledStyle?: StyleProp<S>;
   /** While `accessibilityState.selected` is `true` (`selected:`): a
@@ -124,6 +127,43 @@ export interface ShaderProps extends CommonProps, ViewHostProps, ShaderHostProps
   style?: StyleProp<ViewStyle>;
 }
 
+/** `<ShaderEffect>`: a view whose children draw through a WGSL shader,
+ * which reads what they draw with `sample_content(uv)`. */
+export interface ShaderEffectProps
+  extends CommonProps, ViewHostProps, ShaderHostProps, ShaderEffectHostProps {
+  /** The WGSL defining `fn shade(uv: vec2f) -> vec4f`; without it the
+   * children draw as they are. */
+  source?: string;
+  style?: StyleProp<ViewStyle>;
+}
+
+/** `<ShaderTransition>`: a view whose children change through a WGSL
+ * shader when its `value` changes: `sample_from(uv)` is a picture of what
+ * they drew, `sample_to(uv)` what they draw now, `nsh.progress` 0 to 1. */
+export interface ShaderTransitionProps
+  extends CommonProps, ViewHostProps, ShaderHostProps, ShaderTransitionHostProps {
+  /** The WGSL defining `fn shade(uv: vec2f) -> vec4f`; without it the
+   * transition runs its `fallback` (a cross-fade). */
+  source?: string;
+  style?: StyleProp<ViewStyle>;
+}
+
+/** `<ScreenEffect>`: the whole surface drawn through a WGSL shader, which
+ * reads it with `sample_content(uv)`. It takes no space and has no
+ * children. */
+export interface ScreenEffectProps extends ShaderHostProps, ShaderEffectHostProps {
+  /** The WGSL defining `fn shade(uv: vec2f) -> vec4f`. */
+  source?: string;
+}
+
+/** `<ScreenTransition>`: the whole surface changing through a WGSL shader
+ * when its `value` changes, as `ShaderTransition` does for its children. */
+export interface ScreenTransitionProps extends ShaderHostProps, ShaderTransitionHostProps {
+  /** The WGSL defining `fn shade(uv: vec2f) -> vec4f`; without it the
+   * transition runs its `fallback`. */
+  source?: string;
+}
+
 /** `<Scroll>` */
 export interface ScrollProps extends CommonProps<ViewStyle, ScrollRef>, ScrollingHostProps, ScrollHostProps {
   style?: StyleProp<ViewStyle>;
@@ -148,7 +188,7 @@ export interface OverlayProps extends CommonProps, OverlayHostProps {
 /** What JS sets on a Rust component's host itself: the app's classes
  * (appended to the component's own), its inline and state styles, its test id, keyboard focus eligibility, its
  * tooltip, layout events and the ref (`ref.command(name, args)`). */
-export type ComponentHostProps = { [K in "class" | "classList" | "style" | "activeStyle" | "hoverStyle" | "focusStyle" | "disabledStyle" | "testID" | "focusable" | "tooltip" | "onLayout" | "ref"]?: ViewProps[K] };
+export type ComponentHostProps = { [K in "class" | "classList" | "style" | "activeStyle" | "hoverStyle" | "focusStyle" | "focusWithinStyle" | "disabledStyle" | "testID" | "focusable" | "tooltip" | "onLayout" | "ref"]?: ViewProps[K] };
 
 /** An operating system (`platform.os`). */
 export type OS = "ios" | "android" | "macos" | "windows" | "linux" | "web";
@@ -256,6 +296,7 @@ pub(crate) const REFS: &[(&str, Option<&str>, &str, &[&str])] = &[
             "stopLoading",
             "injectJavaScript",
             "postMessage",
+            "sendInput",
         ],
     ),
     ("VideoRef", Some("ViewRef"), "A `<Video>`'s ref.", &["seek"]),

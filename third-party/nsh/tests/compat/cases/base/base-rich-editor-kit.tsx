@@ -80,7 +80,7 @@ function App() {
     });
     step("Extension", () => {
       const bold: RichExtension = Bold.configure({});
-      return `${bold.name} ${bold.type} ${bold.priority}`;
+      return `${bold.name} ${bold.type} ${bold.priority} ${bold instanceof RichExtension}`;
     });
     step("Extend", () => {
       const underline = Underline.extend({

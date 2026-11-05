@@ -5,8 +5,9 @@
 //! own, with its props held in signals: a prop from JS (or a parent's
 //! binding) updates what read it. A region that makes the element again
 //! makes a new instance, as TSX does. The core mounts
-//! the view with its bindings and never asks for it again; releasing the
-//! host disposes the owner, and with it everything the component made.
+//! the view with its bindings and never asks for it again. The creating
+//! Rust render run's cleanup or releasing the host disposes the owner,
+//! and with it everything the component made.
 
 use std::{any::Any, marker::PhantomData, rc::Rc};
 
@@ -73,8 +74,10 @@ pub(crate) struct OnceInstance<C: Component> {
     initial: Option<Owner>,
     /// The component's owner, once its view is made.
     owner: Option<Owner>,
-    /// Where it was made (its context comes from there).
+    /// Its placement context, adopted when another component receives it.
     parent: Owner,
+    /// The run that created it; detached for externally managed JS hosts.
+    lifetime: Owner,
     host: NodeId,
     _component: PhantomData<fn() -> C>,
 }
@@ -87,6 +90,7 @@ impl<C: Component> OnceInstance<C> {
             initial: Some(initial),
             owner: None,
             parent: Owner::detached(),
+            lifetime: Owner::detached(),
             host: 0,
             _component: PhantomData,
         }
@@ -158,6 +162,9 @@ impl<C: Component> super::component::AnyInstance for OnceInstance<C> {
                 C::view(held, scope).into_element().0
             })
         });
+        // Placement can adopt another context, but the creating run owns its lifetime.
+        self.lifetime
+            .run(|| super::cleanup(move || owner.dispose()));
         self.owner = Some(owner);
         node
     }
@@ -198,6 +205,7 @@ impl<C: Component> super::component::AnyInstance for OnceInstance<C> {
     fn place(&mut self, host: NodeId, parent: Owner) {
         self.host = host;
         self.parent = parent;
+        self.lifetime = parent;
     }
 }
 

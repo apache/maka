@@ -100,6 +100,13 @@ pub struct Bundle {
     /// What the app's code uses of them, by export, and whether it may read
     /// the global `crypto`: what a runtime built for it must serve.
     pub native_use: crate::NativeUse,
+    /// What the entry chunk's own code uses of them: with
+    /// [`Bundle::chunk_native_use`], what a packager splitting the runtime
+    /// by chunk loads first (`native_use` is the union of all of them).
+    pub entry_native_use: crate::NativeUse,
+    /// What each chunk's own code uses of them, by chunk id
+    /// ([`Chunk::id`]); its static imports' are under their own ids.
+    pub chunk_native_use: std::collections::BTreeMap<String, crate::NativeUse>,
     /// What the app declares it may reach (`nsh.json` `capabilities`);
     /// `None` without a declaration.
     pub capabilities: Option<nsh_core::access::Capabilities>,
@@ -503,9 +510,16 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
     if let Some(warning) = ungranted_host(codes(), capabilities.as_ref()) {
         log::warn!(target: "nsh::build", "{warning}");
     }
-    let mut native_use = crate::NativeUse::default();
-    for code in codes() {
-        native_use.add(code, |specifier| natives.contains(specifier));
+    let is_native = |specifier: &str| natives.contains(specifier);
+    let mut entry_native_use = crate::NativeUse::default();
+    entry_native_use.add(&code, is_native);
+    let mut native_use = entry_native_use.clone();
+    let mut chunk_native_use = std::collections::BTreeMap::new();
+    for chunk in &chunks {
+        let mut uses = crate::NativeUse::default();
+        uses.add(&chunk.code, is_native);
+        native_use.merge(&uses);
+        chunk_native_use.insert(chunk.id.clone(), uses);
     }
     Ok(Bundle {
         code,
@@ -516,6 +530,8 @@ pub async fn bundle_async(options: &BundleOptions) -> Result<Bundle, BundleError
         watch_files,
         natives: natives.into_iter().collect(),
         native_use,
+        entry_native_use,
+        chunk_native_use,
         capabilities,
         elapsed_ms: start.elapsed().as_secs_f64() * 1000.0,
     })
@@ -570,39 +586,51 @@ fn imported_assets(
     (assets, files)
 }
 
-/// The warning for an app that imports `host` from `nsh` (in the bundle's
+/// The warning for an app that calls the host's functions (`host.call` /
+/// `host.post` on the `host` it imports from `nsh`, in the bundle's
 /// `codes`, where native imports stay imports) and grants itself none of
-/// the host's functions (`capabilities.host`): each of its calls is
-/// refused, as the host's functions are never granted by default.
+/// them (`capabilities.host`): each call is refused, as the host's
+/// functions are never granted by default. An app that only reads
+/// `host.params` or listens with `host.on` needs no grant.
 fn ungranted_host<'a>(
     codes: impl IntoIterator<Item = &'a str>,
     capabilities: Option<&nsh_core::access::Capabilities>,
 ) -> Option<String> {
-    let imports = codes.into_iter().any(imports_host);
+    let imports = codes.into_iter().any(calls_host);
     let granted = capabilities.is_some_and(|c| !c.host.is_empty());
     (imports && !granted).then(|| {
-        "the app imports `host` from nsh and nsh.json declares no `capabilities.host`: every `host.call` is refused \
+        "the app calls `host.call` or `host.post` and nsh.json declares no `capabilities.host`: every call is refused \
          (list the host's functions it calls, prefixes ending in `*`, or `true`)"
             .to_owned()
     })
 }
 
 /// Whether `code` imports `host` from `nsh` (`import { host } from "nsh"`,
-/// renamed or not).
-fn imports_host(code: &str) -> bool {
+/// renamed or not) and calls its `call` or `post` by the name it imports
+/// it as.
+fn calls_host(code: &str) -> bool {
     code.match_indices("from \"nsh\"").any(|(at, _)| {
         let head = &code[..at];
         let Some(open) = head.rfind('{') else {
             return false;
         };
-        head[open + 1..]
-            .trim_end()
-            .strip_suffix('}')
-            .is_some_and(|names| {
-                names
-                    .split(',')
-                    .any(|n| n.split_whitespace().next() == Some("host"))
-            })
+        let Some(names) = head[open + 1..].trim_end().strip_suffix('}') else {
+            return false;
+        };
+        names.split(',').any(|n| {
+            let mut words = n.split_whitespace();
+            if words.next() != Some("host") {
+                return false;
+            }
+            // `host as h` binds `h`.
+            let local = match (words.next(), words.next()) {
+                (Some("as"), Some(local)) => local,
+                _ => "host",
+            };
+            [".call(", ".post("]
+                .iter()
+                .any(|m| code.contains(&format!("{local}{m}")))
+        })
     })
 }
 
@@ -944,7 +972,7 @@ mod tests {
     fn apps_calling_the_host_without_a_grant_are_warned() {
         use nsh_core::access::Capabilities;
         let caps = |json| Capabilities::from_json(&serde_json::from_str(json).unwrap()).unwrap();
-        let host = ["import { View, host as h } from \"nsh\";"];
+        let host = ["import { View, host as h } from \"nsh\"; h.call(\"save\", 1);"];
         assert!(
             super::ungranted_host(host, None)
                 .unwrap()
@@ -955,6 +983,11 @@ mod tests {
         assert!(super::ungranted_host(host, Some(&caps(r#"{"host": ["a"]}"#))).is_none());
         assert!(super::ungranted_host(host, Some(&caps(r#"{"host": true}"#))).is_none());
         assert!(super::ungranted_host(["import { View } from \"nsh\";"], None).is_none());
+        // Reading its parameters or listening calls none of its functions.
+        let reads = ["import { host } from \"nsh\"; host.params.demo; host.on(\"open\", f);"];
+        assert!(super::ungranted_host(reads, None).is_none());
+        let posts = ["import { host } from \"nsh\"; host.post(\"ready\");"];
+        assert!(super::ungranted_host(posts, None).is_some());
     }
 
     use super::*;

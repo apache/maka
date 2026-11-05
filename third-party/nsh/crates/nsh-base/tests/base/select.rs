@@ -11,7 +11,7 @@ use std::{
     time::Duration,
 };
 
-use nsh_base::{SelectEvent, SelectItem, SelectItemState, select};
+use nsh_base::{SelectEntry, SelectEvent, SelectItem, select};
 use nsh_core::{
     AccessibilityRole, Bounds, Command, MountItem, NodeId, Size, ViewProps,
     element::Root,
@@ -19,7 +19,7 @@ use nsh_core::{
     prelude::*,
 };
 use nsh_engine::EngineConfig;
-use nsh_testing::Headless;
+use nsh_testing::{Headless, Screen};
 
 #[derive(Clone, PartialEq, Props)]
 struct HarnessProps {
@@ -76,9 +76,9 @@ fn props(items: Vec<SelectItem>) -> HarnessProps {
 }
 
 /// A select of `props`' items under a 160 × 30 trigger, rows drawn as
-/// `>` (highlighted), the title and ` ✓` (chosen); what the app heard as
-/// `Log: …`, its value as `Value: …`; F5 replaces the items with Celery and
-/// Kiwi.
+/// their titles (`renderItem`) and at half opacity while highlighted
+/// (`focus:`); what the app heard as `Log: …`, its value as `Value: …`; F5
+/// replaces the items with Celery and Kiwi.
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let value = signal(props.value.clone().map(SharedString::from));
@@ -99,6 +99,7 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .disabled(props.disabled)
         .default_open(props.default_open)
         .search_placeholder("Search")
+        .search_accessibility_label("Search food")
         .accessibility_label("Food")
         .trigger(
             view()
@@ -111,14 +112,8 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .cleanable(props.cleanable)
         .clear_button(text("Clear"))
         .clear_button_accessibility_label("Clear food")
-        .render_item(|s: &SelectItemState| {
-            text(format!(
-                "{}{}{}",
-                if s.highlighted { ">" } else { "" },
-                s.title,
-                if s.selected { " ✓" } else { "" }
-            ))
-        })
+        .item_class("focus:opacity-50")
+        .render_item(|e: &SelectEntry| text(e.title.clone()))
         .on_change(move |v: &Option<SharedString>| {
             push(format!("change:{}", v.as_deref().unwrap_or("none")));
             if follow {
@@ -170,6 +165,8 @@ struct Seen {
     parents: HashMap<NodeId, NodeId>,
     /// The views inserted into the root view, in order.
     roots: Vec<NodeId>,
+    /// The rows mounted.
+    options: Options,
     /// Options updated since the observer was reset.
     updated_options: HashSet<NodeId>,
 }
@@ -204,10 +201,16 @@ impl App {
 
     /// The highlighted row's title, if one shows.
     fn highlighted(&self) -> Option<String> {
-        self.app.screen().texts().into_iter().find_map(|t| {
-            t.strip_prefix('>')
-                .map(|t| t.trim_end_matches(" ✓").to_owned())
-        })
+        let rows = self.seen.lock().unwrap().options.rows(self.app.screen());
+        rows.into_iter().find(|r| r.highlighted).map(|r| r.title)
+    }
+
+    /// Waits until the rows show `row` ([`see_row`]).
+    fn see_row(&mut self, row: &str) {
+        let seen = self.seen.clone();
+        see_row(&mut self.app, row, move |s| {
+            seen.lock().unwrap().options.rows(s)
+        });
     }
 
     fn see(&mut self, text: &str) {
@@ -303,6 +306,7 @@ fn start_on(props: HarnessProps, os: Os, idiom: Idiom, screen_reader: bool) -> A
     app.observe(move |_, batch| {
         let mut seen = into.lock().unwrap();
         for item in &batch.items {
+            seen.options.apply(item);
             match item {
                 MountItem::ViewProps { id, props } => {
                     if props.accessibility.role == AccessibilityRole::Option {
@@ -337,6 +341,91 @@ fn start_on(props: HarnessProps, os: Os, idiom: Idiom, screen_reader: bool) -> A
     app.first_render().unwrap();
     app.wait_for("text:Pick").unwrap();
     App { app, seen }
+}
+
+/// A row on screen: its item's title, and whether it is highlighted and
+/// chosen.
+#[derive(Debug)]
+pub(super) struct Row {
+    pub(super) title: String,
+    pub(super) highlighted: bool,
+    pub(super) chosen: bool,
+}
+
+/// The rows a list mounted: their titles (labels) and their opacities, a
+/// highlighted row at 0.5 (`focus:opacity-50` in `itemClass`), as the
+/// batches set them. `renderItem` draws what an item is, never its state,
+/// so the states are seen on the rows.
+#[derive(Default)]
+pub(super) struct Options {
+    labels: HashMap<NodeId, String>,
+    opacities: HashMap<NodeId, f32>,
+}
+
+impl Options {
+    pub(super) fn apply(&mut self, item: &MountItem) {
+        match item {
+            MountItem::ViewProps { id, props } => {
+                if props.accessibility.role == AccessibilityRole::Option {
+                    let label = props.accessibility.label.as_deref().unwrap_or_default();
+                    self.labels.insert(*id, label.to_owned());
+                } else {
+                    self.labels.remove(id);
+                }
+            }
+            MountItem::AccessibilityLabel { id, label } => {
+                if let Some(l) = self.labels.get_mut(id) {
+                    *l = label.as_deref().unwrap_or_default().to_owned();
+                }
+            }
+            MountItem::ViewStyle { id, style } => {
+                self.opacities.insert(*id, style.opacity);
+            }
+            _ => {}
+        }
+    }
+
+    /// The rows on screen: the options a press on their title reaches.
+    pub(super) fn rows(&self, screen: &Screen) -> Vec<Row> {
+        let mut rows: Vec<Row> = self
+            .labels
+            .iter()
+            .filter_map(|(id, title)| {
+                let selector = format!("role:option[{title}]");
+                // Shown, and this view (rows are reused for other items).
+                let shown = matches!(screen.count(&selector), Ok(1))
+                    && screen
+                        .press_target(&selector)
+                        .ok()
+                        .flatten()
+                        .is_none_or(|target| target == *id);
+                shown.then(|| Row {
+                    title: title.clone(),
+                    highlighted: self.opacities.get(id).is_some_and(|o| *o < 1.0),
+                    chosen: screen.selected(&selector).unwrap_or(false),
+                })
+            })
+            .collect();
+        rows.sort_by(|a, b| a.title.cmp(&b.title));
+        rows
+    }
+}
+
+/// Waits until `rows` show `row`: an item's title, with `>` before it while
+/// it is highlighted (`focus:`) and ` ✓` after it while it is chosen
+/// (selected for screen readers), else neither.
+pub(super) fn see_row(app: &mut Headless, row: &str, rows: impl Fn(&Screen) -> Vec<Row>) {
+    let highlighted = row.starts_with('>');
+    let chosen = row.ends_with(" ✓");
+    let title = row.trim_start_matches('>').trim_end_matches(" ✓");
+    let found = app.wait_until(&format!("the row `{row}`"), Duration::from_secs(5), |s| {
+        rows(s)
+            .iter()
+            .any(|r| r.title == title && r.highlighted == highlighted && r.chosen == chosen)
+    });
+    if let Err(e) = found {
+        panic!("{e}; the rows: {:?}", rows(app.screen()));
+    }
 }
 
 /// On a Mac: Tab stops at pressables, a pointer hovers.
@@ -463,24 +552,24 @@ fn opening_highlights_the_chosen_item_else_as_the_key_says() {
     // nothing.
     let mut app = focused(props(fruits()));
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     let mut app = focused(props(fruits()));
     app.key("up");
-    app.see(">Rice");
+    app.see_row(">Rice");
     let mut app = desktop(props(fruits()));
     app.open_list();
     app.see("Apple");
     assert_eq!(app.highlighted(), None);
     // A key moves it from nothing.
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     // The chosen item, however it opens.
     let mut app = desktop(HarnessProps {
         value: Some("celery".into()),
         ..props(fruits())
     });
     app.open_list();
-    app.see(">Celery ✓");
+    app.see_row(">Celery ✓");
 }
 
 // 3. Keys while open.
@@ -489,24 +578,24 @@ fn opening_highlights_the_chosen_item_else_as_the_key_says() {
 fn arrows_skip_disabled_items_and_wrap_around_the_ends() {
     let mut app = focused(props(fruits()));
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     // Banana is disabled.
     app.key("down");
-    app.see(">Blueberry");
+    app.see_row(">Blueberry");
     app.key("up");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("up");
-    app.see(">Rice");
+    app.see_row(">Rice");
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("end");
-    app.see(">Rice");
+    app.see_row(">Rice");
     app.key("home");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("pagedown");
-    app.see(">Rice");
+    app.see_row(">Rice");
     app.key("pageup");
-    app.see(">Apple");
+    app.see_row(">Apple");
 }
 
 #[test]
@@ -514,14 +603,14 @@ fn return_and_space_choose_the_highlighted_item_and_close() {
     let mut app = focused(props(fruits()));
     app.key("down");
     app.key("down");
-    app.see(">Blueberry");
+    app.see_row(">Blueberry");
     app.key("enter");
     app.gone("role:listbox");
     app.see("Value: blueberry");
     app.log_ends("change:blueberry openChange:false:Select close");
     // Space too; the chosen item again closes without a change.
     app.key("down");
-    app.see(">Blueberry ✓");
+    app.see_row(">Blueberry ✓");
     app.key("space");
     app.gone("role:listbox");
     app.log_ends("openChange:true:TriggerPress open openChange:false:Select close");
@@ -545,7 +634,7 @@ fn escape_cancels_and_gives_the_trigger_the_keyboard_back() {
     let mut app = focused(props(fruits()));
     let trigger = app.id("role:combobox");
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("escape");
     app.gone("role:listbox");
     app.log_ends("cancel openChange:false:Cancel close");
@@ -607,10 +696,10 @@ fn the_pointer_highlights_only_when_it_moves_and_a_press_chooses() {
     let mut app = desktop(props(fruits()));
     app.open_list();
     app.hover("role:option[Celery]").unwrap();
-    app.see(">Celery");
+    app.see_row(">Celery");
     // A key moves on; the pointer, still where it was, keeps nothing.
     app.key("down");
-    app.see(">Rice");
+    app.see_row(">Rice");
     app.hover("role:option[Celery]").unwrap();
     app.wait(Duration::from_millis(50)).unwrap();
     assert_eq!(app.highlighted().as_deref(), Some("Rice"));
@@ -635,7 +724,7 @@ fn search_filters_the_items_and_their_sections() {
     app.type_text("Search", "ER").unwrap();
     // Case-insensitive; sections keep their matches; the first match is
     // highlighted.
-    app.see(">Blueberry");
+    app.see_row(">Blueberry");
     app.see("Celery");
     app.see("Fruits");
     app.see("Vegetables");
@@ -643,7 +732,7 @@ fn search_filters_the_items_and_their_sections() {
     assert!(!app.shows("Rice"));
     // The keys move in the matches while the field edits.
     app.key("down");
-    app.see(">Celery");
+    app.see_row(">Celery");
     app.type_text("text:ER", "zz").unwrap();
     app.see("No match");
     assert!(!app.shows("Fruits"));
@@ -655,10 +744,23 @@ fn search_filters_the_items_and_their_sections() {
     app.see("Rice");
     assert!(!app.shows("No match"));
     app.type_text("Search", "ric").unwrap();
-    app.see(">Rice");
+    app.see_row(">Rice");
     app.key("enter");
     app.gone("role:listbox");
     app.see("Value: rice");
+}
+
+#[test]
+fn screen_readers_hear_the_search_field_by_its_label() {
+    let mut app = desktop(HarnessProps {
+        searchable: true,
+        ..props(fruits())
+    });
+    app.open_list();
+    // The app's words name the field, not its placeholder.
+    assert_eq!(app.screen().count("label:Search food"), Ok(1));
+    app.type_text("label:Search food", "cel").unwrap();
+    app.see_row(">Celery");
 }
 
 #[test]
@@ -671,11 +773,11 @@ fn a_search_keystroke_in_a_long_list_sends_only_the_rows_in_view() {
         app.open_list();
         app.see("Item 0");
         app.type_text("Search", "4").unwrap();
-        app.see(">Item 4");
+        app.see_row(">Item 4");
         app.idle(Duration::from_millis(50)).unwrap();
         app.seen.lock().unwrap().updated_options.clear();
         app.type_text("text:4", "2").unwrap();
-        app.see(">Item 42");
+        app.see_row(">Item 42");
         app.idle(Duration::from_millis(50)).unwrap();
         let seen = app.seen.lock().unwrap();
         seen.updated_options.len()
@@ -693,11 +795,11 @@ fn a_search_keystroke_in_a_long_list_sends_only_the_rows_in_view() {
 fn typeahead_jumps_to_the_next_title_starting_with_what_was_typed() {
     let mut app = focused(props(fruits()));
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("c");
-    app.see(">Carrot");
+    app.see_row(">Carrot");
     app.key("c");
-    app.see(">Celery");
+    app.see_row(">Celery");
     // Typed on, `ccr` matches nothing: the highlight stays.
     app.key("r");
     app.wait(Duration::from_millis(50)).unwrap();
@@ -705,10 +807,10 @@ fn typeahead_jumps_to_the_next_title_starting_with_what_was_typed() {
     // A pause starts again; Banana is disabled.
     app.wait(Duration::from_millis(1100)).unwrap();
     app.key("b");
-    app.see(">Blueberry");
+    app.see_row(">Blueberry");
     app.wait(Duration::from_millis(1100)).unwrap();
     app.key("r");
-    app.see(">Rice");
+    app.see_row(">Rice");
 }
 
 #[test]
@@ -731,18 +833,18 @@ fn typeahead_on_the_closed_trigger_chooses() {
 fn the_highlighted_row_is_revealed_once_when_it_is_not_in_view() {
     let mut app = focused(props(many(200)));
     app.key("down");
-    app.see(">Item 0");
+    app.see_row(">Item 0");
     let before = app.scrolls();
     app.key("end");
-    app.see(">Item 199");
+    app.see_row(">Item 199");
     let after = app.scrolls();
     assert!(after > before, "End scrolled to the last row");
     // Up stays in view: no scroll.
     app.key("up");
-    app.see(">Item 198");
+    app.see_row(">Item 198");
     assert_eq!(app.scrolls(), after);
     app.key("home");
-    app.see(">Item 0");
+    app.see_row(">Item 0");
     assert!(app.scrolls() > after);
     // A page is the rows in view.
     app.key("pagedown");
@@ -760,7 +862,7 @@ fn opening_reveals_the_chosen_item() {
         ..props(many(200))
     });
     app.open_list();
-    app.see(">Item 150 ✓");
+    app.see_row(">Item 150 ✓");
 }
 
 #[test]
@@ -821,7 +923,7 @@ fn screen_readers_hear_a_combobox_a_listbox_and_its_options() {
         Some("Carrot")
     );
     app.open_list();
-    app.see(">Carrot ✓");
+    app.see_row(">Carrot ✓");
     assert_eq!(app.trigger().accessibility.state.expanded, Some(true));
     assert!(app.screen().matches("role:listbox").unwrap());
     assert!(app.screen().selected("role:option[Carrot]").unwrap());
@@ -836,9 +938,9 @@ fn a_keys_highlight_takes_the_screen_readers_focus() {
     let mut app = start_on(props(fruits()), Os::MacOs, Idiom::Desktop, true);
     app.key("tab");
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("down");
-    app.see(">Blueberry");
+    app.see_row(">Blueberry");
     let row = app.id("role:option[Blueberry]");
     app.wait_until("the focus", Duration::from_secs(5), |s| {
         s.commands()
@@ -861,7 +963,7 @@ fn while_searching_the_highlight_is_announced() {
     );
     app.open_list();
     app.type_text("Search", "cel").unwrap();
-    app.see(">Celery");
+    app.see_row(">Celery");
     app.wait_until("the announcement", Duration::from_secs(5), |s| {
         s.commands()
             .iter()
@@ -889,14 +991,14 @@ fn a_controlled_value_is_the_apps() {
         ..props(fruits())
     });
     app.key("down");
-    app.see(">Rice ✓");
+    app.see_row(">Rice ✓");
     app.key("home");
     app.key("enter");
     app.gone("role:listbox");
     app.log_ends("change:apple openChange:false:Select close");
     app.see("Value: rice");
     app.key("down");
-    app.see(">Rice ✓");
+    app.see_row(">Rice ✓");
     // `null`: nothing is chosen.
     let mut app = desktop(HarnessProps {
         controlled: true,
@@ -906,7 +1008,11 @@ fn a_controlled_value_is_the_apps() {
     assert!(app.trigger().accessibility.value.is_none());
     app.open_list();
     app.see("Apple");
-    assert!(!app.screen().texts().iter().any(|t| t.ends_with('✓')));
+    let rows = app.seen.lock().unwrap().options.rows(app.screen());
+    assert!(
+        rows.iter().all(|r| !r.chosen),
+        "nothing is chosen: {rows:?}"
+    );
 }
 
 #[test]
@@ -918,11 +1024,11 @@ fn an_uncontrolled_value_starts_at_the_default_and_follows_choices() {
         ..props(fruits())
     });
     app.open_list();
-    app.see(">Apple ✓");
+    app.see_row(">Apple ✓");
     app.press("role:option[Rice]").unwrap();
     app.gone("role:listbox");
     app.open_list();
-    app.see(">Rice ✓");
+    app.see_row(">Rice ✓");
 }
 
 #[test]
@@ -957,15 +1063,160 @@ fn the_highlight_follows_its_item_when_the_items_change() {
     app.key("down");
     app.key("c");
     app.key("c");
-    app.see(">Celery");
+    app.see_row(">Celery");
     // Celery is second now: still highlighted.
     app.key("f5");
     app.see("Kiwi");
-    app.see(">Celery");
+    app.see_row(">Celery");
     // Gone: the first enabled item.
     let mut app = focused(props(fruits()));
     app.key("down");
-    app.see(">Apple");
+    app.see_row(">Apple");
     app.key("f5");
-    app.see(">Kiwi");
+    app.see_row(">Kiwi");
+}
+
+// 13. What a move of the highlight costs.
+
+/// The `renderItem` calls of each app (by its `run`): tests run side by
+/// side, each app on an engine thread of its own.
+static RENDERS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// A new run's id, its count at zero.
+fn new_run() -> u32 {
+    let mut renders = RENDERS.lock().unwrap();
+    renders.push(0);
+    (renders.len() - 1) as u32
+}
+
+fn renders_of(run: u32) -> usize {
+    RENDERS.lock().unwrap()[run as usize]
+}
+
+#[derive(Clone, PartialEq, Props)]
+struct LongProps {
+    items: usize,
+    /// Where its `renderItem` calls count ([`RENDERS`]).
+    run: u32,
+}
+
+/// A select of `items` items (`Item 0`, ...) whose rows a counting
+/// `renderItem` draws, its value `Item 3`, the highlight's as
+/// `highlight:…` (an `onChange` of the app's would close it: the chosen
+/// title is the trigger's).
+#[component]
+fn Long(props: LongProps) -> impl IntoElement {
+    let run = props.run as usize;
+    select()
+        .items(many(props.items))
+        .default_value(SharedString::from("item3"))
+        .item_class("focus:opacity-50")
+        .trigger(
+            view()
+                .test_id("trigger")
+                .w(px(160.0))
+                .h(px(30.0))
+                .child(text("Pick")),
+        )
+        .render_item(move |e: &SelectEntry| {
+            RENDERS.lock().unwrap()[run] += 1;
+            text(e.title.clone())
+        })
+        .w(px(200.0))
+}
+
+/// What a step sent: mount items, views made, views deleted, and calls of
+/// `renderItem`.
+#[derive(Debug, Default, Clone, Copy, PartialEq)]
+struct Cost {
+    items: usize,
+    made: usize,
+    deleted: usize,
+    renders: usize,
+}
+
+/// What `steps` cost in a select of `items` items opened on the desktop
+/// and highlighting its value.
+fn cost_of(items: usize, steps: &dyn Fn(&mut Headless)) -> Cost {
+    let run = new_run();
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::new::<Long>(move || LongProps { items, run }))
+    };
+    config.environment.os = Os::MacOs;
+    let mut app = Headless::start(config).unwrap();
+    app.first_render().unwrap();
+    app.wait_for("text:Pick").unwrap();
+    app.press("role:combobox").unwrap();
+    app.wait_for("role:option[Item 3]").unwrap();
+    app.idle(Duration::from_millis(50)).unwrap();
+    let counts = Arc::new(Mutex::new(Cost::default()));
+    let into = counts.clone();
+    app.observe(move |_, batch| {
+        let mut c = into.lock().unwrap();
+        c.items += batch.items.len();
+        for item in &batch.items {
+            match item {
+                MountItem::Create { .. } => c.made += 1,
+                MountItem::Delete { .. } => c.deleted += 1,
+                _ => {}
+            }
+        }
+    });
+    let before = renders_of(run);
+    steps(&mut app);
+    app.idle(Duration::from_millis(50)).unwrap();
+    Cost {
+        renders: renders_of(run) - before,
+        ..*counts.lock().unwrap()
+    }
+}
+
+/// Down from the value (`Item 3`) to `Item 4`.
+fn cost_of_a_key(items: usize) -> Cost {
+    cost_of(items, &|app| {
+        app.press_key("down").unwrap();
+        app.idle(Duration::from_millis(50)).unwrap();
+    })
+}
+
+/// The pointer moving onto `Item 5`.
+fn cost_of_a_hover(items: usize) -> Cost {
+    cost_of(items, &|app| {
+        app.hover("role:option[Item 5]").unwrap();
+        app.idle(Duration::from_millis(50)).unwrap();
+    })
+}
+
+/// The most mount items one move of the highlight sends: the projected
+/// state of the row left and of the row reached, no other row's.
+const MOVE_ITEMS: usize = 4;
+
+#[test]
+fn a_key_press_restyles_the_rows_it_concerns_and_draws_nothing() {
+    let few = cost_of_a_key(20);
+    let many = cost_of_a_key(5000);
+    assert_eq!(
+        few, many,
+        "the cost of a key press does not grow with the items"
+    );
+    assert_eq!(
+        (few.made, few.deleted),
+        (0, 0),
+        "a key press makes and deletes no view"
+    );
+    assert_eq!(few.renders, 0, "a key press calls no `renderItem`");
+    assert!(few.items <= MOVE_ITEMS, "{} mount items", few.items);
+}
+
+#[test]
+fn the_pointer_moving_the_highlight_draws_nothing() {
+    let few = cost_of_a_hover(20);
+    let many = cost_of_a_hover(5000);
+    assert_eq!(
+        few, many,
+        "the cost of a hover does not grow with the items"
+    );
+    assert_eq!((few.made, few.deleted, few.renders), (0, 0, 0));
+    assert!(few.items <= MOVE_ITEMS, "{} mount items", few.items);
 }

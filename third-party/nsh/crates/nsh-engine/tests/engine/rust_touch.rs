@@ -144,6 +144,7 @@ fn a_rust_element_claims_touches_in_a_scroll_view() {
         clipboard: None,
         host: Default::default(),
         picker: None,
+        speech: None,
     };
     let engine = Engine::start(config, || ApproxTextEngine, ChannelSink(tx)).unwrap();
     let first = rx.recv_timeout(Duration::from_secs(5)).unwrap();

@@ -1,7 +1,9 @@
 name: Website
 
 # Builds the documentation site with its live demos (the WebAssembly runtime,
-# `cargo xtask web`) and publishes it to GitHub Pages at nsh.dev
+# `cargo xtask web`) and publishes it to GitHub Pages at nsh.dev, every
+# version of it (`website/scripts/versions.js`): the latest release at /, main
+# at /versions/main, earlier releases at /versions/<tag>
 # (`website/public/CNAME`). App Stories (/apps) come from the reviewed
 # catalog in longbridge/nsh-showcases, whose own workflow dispatches this one
 # after each merge and its weekly star refresh.
@@ -26,6 +28,11 @@ on:
       - ".github/workflows/website.yml"
   merge_group:
     types: [checks_requested]
+  # A release puts its documentation at the root. (The release the Release
+  # workflow publishes with GITHUB_TOKEN starts no workflow itself.)
+  workflow_run:
+    workflows: [Release]
+    types: [completed]
   workflow_dispatch:
 
 permissions:
@@ -49,9 +56,13 @@ env:
 
 jobs:
   build:
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The releases' tags and content (`website/scripts/versions.js`).
+          fetch-depth: 0
 
       # The web runtime's C code (zstd): clang compiles it for wasm32 (llvm-ar
       # archives it); bindgen needs libclang for the host build of the nsh CLI.
@@ -81,6 +92,11 @@ jobs:
 
       - name: Test viewport dialogs across iframe boundaries
         run: node --test crates/nsh-platform-web/web/viewport-browser.test.mjs
+
+      # Only the emoji test for now: summed tabular digits measure wider than
+      # Chrome on Linux draws them (the file's first test).
+      - name: Test emoji measurement against what Chrome draws
+        run: node --test --test-name-pattern emoji crates/nsh-platform-web/web/text-browser.test.mjs
 
       - name: Test browser JavaScript bindings against Wasm
         env:
@@ -132,19 +148,48 @@ jobs:
           SHOWCASES_DIR: ${{ github.workspace }}/.showcases
         run: bun run test
 
+      # Each release's pages and player are built once and kept here, again
+      # when the site itself changes (the script's digest of it).
+      - name: Restore the releases' builds
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        uses: actions/cache/restore@v4
+        with:
+          path: website/.versions
+          key: website-versions-${{ github.run_id }}
+          restore-keys: website-versions-
+
+      # The published site, after the tests of main's own build: main again
+      # at /versions/main, the releases from their tags (whose pages are as
+      # they were released, links included).
+      - name: Build every version
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        working-directory: website
+        env:
+          NSH_REQUIRE_SHOWCASES: "1"
+          SHOWCASES_DIR: ${{ github.workspace }}/.showcases
+          AR_wasm32_unknown_unknown: llvm-ar
+        run: bun scripts/versions.js
+
+      - name: Save the releases' builds
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+        uses: actions/cache/save@v4
+        with:
+          path: website/.versions
+          key: website-versions-${{ github.run_id }}
+
       - name: Check standalone Gallery code size
         run: node crates/nsh-platform-web/web/browser/package-size.mjs website/public/play/gallery --require-browser --brotli-budget=4000000
 
       - uses: actions/configure-pages@v5
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
 
       - uses: actions/upload-pages-artifact@v3
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         with:
           path: website/dist
 
   deploy:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
     needs: build
     runs-on: ubuntu-latest
     environment:

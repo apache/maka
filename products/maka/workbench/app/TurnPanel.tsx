@@ -25,11 +25,18 @@ import { cleanup, computed, effect, inputAction, signal, Text, View, List } from
 import type { ListRef, Signal, ViewRef } from 'nsh';
 import type { AnimatedValue } from 'nsh';
 import { platform, windowSize } from 'nsh';
-import type { Row } from './history';
+import { senderSession, type Row } from './history';
 import { MessageRow, type MessageViewState } from './MessageRow';
 import type { MessageSenders } from './messageSenders';
 import type { ProcessGroup, TurnPresentation } from './processGroups';
-import { C, captionTextStyle, controlStyle, Disclosure, disclosureTitleStyle } from './ui';
+import {
+  C,
+  captionTextStyle,
+  controlStyle,
+  Disclosure,
+  disclosureContentInset,
+  disclosureTitleStyle,
+} from './ui';
 import { ToolImageStrip, type ImagePreview, type ToolImageRef } from './ToolImage';
 import { toolActivitySummary, type ToolActivity } from './toolActivity';
 
@@ -277,7 +284,7 @@ function ActivityLog(props: {
         if (alive) error.set(errorText(reason));
       });
   return (
-    <View style={{ height: bodyHeight() }}>
+    <View style={{ height: bodyHeight(), paddingLeft: disclosureContentInset(0) }}>
       <If when={initial()}>
         <List
           accessibilityLabel={tr('Turn activity')}
@@ -481,12 +488,21 @@ export function TurnPanel(props: {
       .group()
       .rowIds.filter((id) => props.row(id)?.field === 'thinking').length;
     const tools = props.group().toolIds.length;
+    const messages = props.group().rowIds.filter((id) => {
+      const row = props.row(id);
+      return row?.role === 'user' && senderSession(row.origin) !== null;
+    }).length;
     return (
       [
         thoughts
           ? tr(thoughts === 1 ? '{count} thought' : '{count} thoughts', { count: thoughts })
           : '',
         tools ? tr(tools === 1 ? '{count} tool' : '{count} tools', { count: tools }) : '',
+        messages
+          ? tr(messages === 1 ? '{count} agent message' : '{count} agent messages', {
+              count: messages,
+            })
+          : '',
       ]
         .filter(Boolean)
         .join(' · ') || tr('Process')

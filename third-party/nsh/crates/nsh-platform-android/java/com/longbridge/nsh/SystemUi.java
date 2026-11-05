@@ -4,7 +4,10 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.ContextWrapper;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
+import android.text.SpannableString;
+import android.text.style.ForegroundColorSpan;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowInsets;
@@ -66,7 +69,8 @@ final class SystemUi {
      * {@link Native#DIALOG}: the button index, or -1 when dismissed.
      * Alerts map buttons as React Native does: the last is positive, the
      * one before negative, the one before that neutral (three at most).
-     * styles: 0 default, 1 cancel, 2 destructive.
+     * styles: 0 default, 1 cancel, 2 destructive. Drawn in the app's colors
+     * ({@link Mounter#dialogColors}) where it has them.
      */
     static void dialog(Mounter mounter, int dialogId, String title, String message, boolean cancelable, boolean sheet,
             String[] texts, int[] styles) {
@@ -80,7 +84,11 @@ final class SystemUi {
         AlertDialog.Builder b = new AlertDialog.Builder(activity, mounter.night()
                 ? android.R.style.Theme_DeviceDefault_Dialog_Alert
                 : android.R.style.Theme_DeviceDefault_Light_Dialog_Alert);
-        if (title != null && !title.isEmpty()) b.setTitle(title);
+        int[] colors = mounter.dialogColors;
+        int at = mounter.night() ? 1 : 0;
+        int surface = colors[at], titleColor = colors[2 + at], messageColor = colors[4 + at];
+        int buttonColor = colors[6 + at], destructive = colors[8 + at];
+        if (title != null && !title.isEmpty()) b.setTitle(colored(title, titleColor));
         b.setCancelable(cancelable);
         if (sheet) {
             // The cancel option is the dismissal (a tap outside / back).
@@ -90,18 +98,18 @@ final class SystemUi {
             int[] indices = new int[count];
             for (int i = 0, j = 0; i < texts.length; i++) {
                 if (styles[i] == 1) continue;
-                items[j] = texts[i];
+                items[j] = colored(texts[i], styles[i] == 2 && destructive != 0 ? destructive : titleColor);
                 indices[j++] = i;
             }
             // A list dialog shows no message.
-            if ((title == null || title.isEmpty()) && message != null) b.setTitle(message);
+            if ((title == null || title.isEmpty()) && message != null) b.setTitle(colored(message, titleColor));
             b.setItems(items, (d, which) -> {
                 answered[0] = true;
                 answer(mounter, dialogId, indices[which]);
             });
             b.setCancelable(true);
         } else {
-            if (message != null) b.setMessage(message);
+            if (message != null) b.setMessage(colored(message, messageColor));
             int n = texts.length;
             if (n >= 1) {
                 b.setPositiveButton(texts[n - 1], (d, w) -> {
@@ -129,7 +137,30 @@ final class SystemUi {
                 answer(mounter, dialogId, -1);
             }
         });
-        TestAgent.shownDialog = b.show();
+        AlertDialog shown = b.show();
+        TestAgent.shownDialog = shown;
+        if (surface != 0 && shown.getWindow() != null) {
+            // The theme's shape (corners, insets), filled with the app's color.
+            Drawable background = shown.getWindow().getDecorView().getBackground();
+            if (background != null) background.mutate().setTint(surface);
+        }
+        if (!sheet) {
+            // Positive is the last button, negative the one before, neutral the one before that.
+            int[] which = {AlertDialog.BUTTON_POSITIVE, AlertDialog.BUTTON_NEGATIVE, AlertDialog.BUTTON_NEUTRAL};
+            for (int k = 0; k < Math.min(texts.length, 3); k++) {
+                android.widget.Button button = shown.getButton(which[k]);
+                int color = styles[texts.length - 1 - k] == 2 && destructive != 0 ? destructive : buttonColor;
+                if (button != null && color != 0) button.setTextColor(color);
+            }
+        }
+    }
+
+    /** {@code text} in {@code color} (0: the theme's). */
+    private static CharSequence colored(String text, int color) {
+        if (color == 0) return text;
+        SpannableString s = new SpannableString(text);
+        s.setSpan(new ForegroundColorSpan(color), 0, s.length(), 0);
+        return s;
     }
 
     private static void answer(Mounter mounter, int dialogId, int index) {

@@ -22,6 +22,9 @@
 //!
 //! - `#[native_module("gallery/native")]` on a function of an app's crate:
 //!   the UI set it registers, which nsh's generated workspace links.
+//! - `#[native_components(windows)]` on a function of an app's crate: the
+//!   native components it registers on that platform, which the hosts and
+//!   runners nsh generates register on every view.
 //!
 //! Doc comments become the TypeScript declarations' up to their first
 //! heading: a `# Rust` section (or `# Panics`, `# Examples`) is for Rust
@@ -34,6 +37,7 @@ mod assets;
 mod class;
 mod host_props;
 mod js_ops;
+mod native_components;
 mod native_module;
 
 use proc_macro::TokenStream;
@@ -2901,4 +2905,45 @@ mod tests {
             "A list: ``` # use x; ``` #[ignore] and #1."
         );
     }
+}
+
+/// `#[native_components(windows)]` on `fn components(components:
+/// &nsh_platform_windows::Components)` at the root of an app's crate
+/// (`nsh.json` `"rust"`): the native components (`native(name)` in Rust,
+/// `nativeComponent(name, …)` in TSX) the crate registers on that
+/// platform. The development host and the release runners nsh generates
+/// for the app call it on every view they make (the platform's
+/// `set_components`), so `nsh run`, `nsh test --target` and `nsh package`
+/// show them as an app embedding nsh does:
+///
+/// ```ignore
+/// #[native_components(windows)]
+/// fn components(components: &nsh_platform_windows::Components) {
+///     components.register("vision.image", Rc::new(|cx| Box::new(ImageView::new(cx))));
+/// }
+/// ```
+///
+/// The platform is `windows`, `macos`, `linux` or `ios`; the function and what it
+/// makes compile only there (`#[cfg(target_os = "…")]`), so the crate
+/// depends on the platform's crate under the same `cfg` (with
+/// `default-features = false`). A crate has at most one per platform, at
+/// its root: a second fails as the entry defined twice, one in a module as
+/// not at the root. A crate without one registers nothing.
+#[proc_macro_attribute]
+pub fn native_components(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let platform = match syn::parse::<syn::Ident>(attr) {
+        Ok(platform) => platform,
+        Err(_) => {
+            return syn::Error::new(
+                Span::call_site(),
+                "`#[native_components]` takes the platform the components are for: `#[native_components(windows)]`",
+            )
+            .into_compile_error()
+            .into();
+        }
+    };
+    let item = parse_macro_input!(item as ItemFn);
+    native_components::expand(platform, item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }

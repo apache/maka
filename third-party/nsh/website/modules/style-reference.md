@@ -417,7 +417,7 @@ For animations driven by values, gestures or springs, use [`nsh`'s animation API
 
 | Key | Type | Rust | Description |
 |---|---|---|---|
-| `cursor` | `"auto" \| "default" \| "pointer" \| "text" \| "grab" \| "grabbing" \| "not-allowed" \| ...` (every CSS cursor keyword, and `"none"`) | `.cursor(Cursor)`, `.cursor_pointer()` | The pointer shape over the view, for pointers (iPad trackpads, Mac Catalyst, desktops). |
+| `cursor` | `"auto" \| "default" \| "pointer" \| "text" \| "grab" \| "grabbing" \| "not-allowed" \| ...` (every CSS cursor keyword, and `"none"`) | `.cursor(Cursor)`, `.cursor_pointer()` | The pointer shape over the view, for pointers (iPad trackpads, Mac Catalyst, desktops). Diagonal resize keywords keep their axis: `nwse-resize` / `nw-resize` / `se-resize` (`Cursor::NwseResize`) and `nesw-resize` / `ne-resize` / `sw-resize` (`Cursor::NeswResize`). Windows, Linux, Android, the web and GPUI show diagonal cursors; AppKit uses them on macOS 15+, with an open hand on macOS 14. UIKit uses pointer effects on iPad and Mac Catalyst. |
 | `pointerEvents` | `"auto" \| "none" \| "box-none" \| "box-only"` | `.pointer_events(PointerEvents::BoxNone)` | Which touches the view and the views in it take (`pointer-events-none`, `pointer-events-auto`). `"none"`: none, for the views in it too unless one sets `"auto"`, inherited as in CSS. `"box-none"`: none on the view itself, the views in it take theirs; `"box-only"`: the view itself takes them, the views in it none (both React Native's, for the view only). Default `"auto"`. See [touch and gestures](../docs/touch-and-gestures.md#pointerevents). |
 | `userSelect` | `"auto" \| "none" \| "text"` | `.select_text()`, `.select_none()` | Whether a `<Text>` can be selected and copied (`"text"`, `select-text`) or not (`"none"`, `select-none`); a view's reaches the texts in it that set none. `"auto"` (`select-auto`), the default, leaves it to the view around it, else to the platform. See [text](../elements/text.md). |
 
@@ -444,7 +444,7 @@ Text styles apply to `<Text>` and `<Input>`. They are also inherited, as in CSS:
 | `color` | `ColorValue \| AnimatedNode` | `.text_color(c)`, `.bind_color(&node)` | Text color. Takes a native animated color. Also the color of borders and outlines that set none. |
 | `fontSize` | `number` | `.text_size(s)`, `.text_sm()`, `.text_lg()`, ... | Size in points. |
 | `fontWeight` | `"normal" \| "bold" \| number \| "${number}"` | `.font_weight(FontWeight::SEMIBOLD)` | `"normal"` (400), `"bold"` (700) or 100–900. |
-| `fontFamily` | `string` | `.font_family(name)` | A system family, or the name an imported font evaluates to (`import Inter from "./Inter.ttf"`). See [Fonts](../docs/fonts.md). |
+| `fontFamily` | `string` | `.font_family(name)` | A system family, or the name an imported font evaluates to (`import Inter from "./Inter.ttf"`), or a list of them, most preferred first (`"Brand, 'Noto Sans SC', sans-serif"`). See [Fonts](../docs/fonts.md#fallback-lists). |
 | `fontStyle` | `"normal" \| "italic"` | `.italic()` | Italic. |
 | `fontVariant` | `FontVariantName[] \| string` | `.small_caps()`, `.oldstyle_nums()`, `.lining_nums()`, `.tabular_nums()`, `.proportional_nums()` | OpenType number and letter forms, a list (`["tabular-nums"]`) or CSS's names separated by spaces (`"tabular-nums small-caps"`). `tabular-nums` keeps digits the same width, useful for counters and timers. |
 

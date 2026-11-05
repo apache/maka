@@ -155,6 +155,13 @@ impl EventWrite {
             Fact::ExecutorObserved { output } => output
                 .validate()
                 .map_err(|reason| CommitError::Rejected(reason.into()))?,
+            Fact::ExecutorCompleted {
+                message_id: Some(id),
+            } if id.is_empty() || id.chars().any(char::is_control) => {
+                return Err(CommitError::Rejected(
+                    "invalid final executor message identity".into(),
+                ));
+            }
             _ => {}
         }
         let operation = match &event.fact {
@@ -288,6 +295,7 @@ impl EventWrite {
         operation_id: String,
         success: ToolSuccess,
     ) -> Result<(Self, ToolOutput), CommitError> {
+        let is_error = success.is_error;
         let success = success
             .normalize(&id, recorded_at, &invocation)
             .map_err(|message| CommitError::Rejected(message.into()))?;
@@ -317,6 +325,7 @@ impl EventWrite {
                                 .iter()
                                 .map(ProjectionArtifactWrite::evidence)
                                 .collect(),
+                            is_error,
                         },
                     },
                 }),

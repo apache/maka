@@ -130,17 +130,16 @@ mod tests {
         assert!(sheet.contains(".nsh-dark popover.menu modelbutton:hover"));
         assert!(sheet.contains("background-color: rgba(0, 0, 255, 1)"));
         assert!(sheet.contains("background-color: #ffffff; color: #0a0a0a"));
-        if gtk::init().is_err() {
-            return;
-        }
-        let provider = gtk::CssProvider::new();
-        let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let seen = errors.clone();
-        provider.connect_parsing_error(move |_, section, error| {
-            seen.borrow_mut()
-                .push(format!("{}: {error}", section.to_str()));
+        crate::gtk_test::run(move || {
+            let provider = gtk::CssProvider::new();
+            let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let seen = errors.clone();
+            provider.connect_parsing_error(move |_, section, error| {
+                seen.borrow_mut()
+                    .push(format!("{}: {error}", section.to_str()));
+            });
+            provider.load_from_string(&sheet);
+            assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
         });
-        provider.load_from_string(&sheet);
-        assert!(errors.borrow().is_empty(), "{:?}", errors.borrow());
     }
 }

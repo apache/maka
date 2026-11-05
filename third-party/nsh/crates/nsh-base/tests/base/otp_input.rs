@@ -1,16 +1,18 @@
 //! `OtpInput`: typing, Backspace, paste and the length on the native field
 //! over its cells, digits only, the code the app owns or its own, the
-//! events, masked cells and the disabled state.
+//! events, masked cells, the disabled state and the filled cells'
+//! `data-filled`.
 
 use std::{
+    collections::HashMap,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
 use nsh_base::{OtpInputCompleteEvent, input, otp_input};
 use nsh_core::{
-    AutoFill, Command, EventKind, EventPayload, MountItem, NodeId, PasteEvent, PayloadValue, Size,
-    element::Root, prelude::*,
+    AutoFill, Color, Command, EventKind, EventPayload, MountItem, NodeId, PasteEvent, PayloadValue,
+    Size, element::Root, prelude::*,
 };
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
@@ -199,6 +201,67 @@ fn States() -> impl IntoElement {
                     .accessibility_label("Disabled"),
             ),
         )
+}
+
+/// The color [`Filled`]'s `data-filled:` class gives a cell.
+const FILLED: Color = Color(0x0101_01ff);
+
+/// Codes whose filled cells take a background from `data-filled:`, one
+/// masked.
+#[component]
+fn Filled() -> impl IntoElement {
+    view()
+        .child(
+            view().test_id("otp").child(
+                sized(otp_input())
+                    .length(4u32)
+                    .groups(2u32)
+                    .default_value("1")
+                    .cell_class("data-filled:bg-[#010101]")
+                    .accessibility_label("Code"),
+            ),
+        )
+        .child(
+            view().test_id("masked").child(
+                sized(otp_input())
+                    .length(3u32)
+                    .masked(true)
+                    .default_value("12")
+                    .cell_class("data-filled:bg-[#010101]")
+                    .accessibility_label("Masked"),
+            ),
+        )
+}
+
+/// [`Filled`], and how many cells the latest styles fill.
+fn start_filled() -> (Headless, Arc<Mutex<HashMap<NodeId, bool>>>) {
+    let mut app = Headless::start(EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::of::<Filled>())
+    })
+    .unwrap();
+    let styles = Arc::new(Mutex::new(HashMap::new()));
+    let seen = styles.clone();
+    app.observe(move |_, batch| {
+        let mut seen = seen.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::ViewStyle { id, style } => {
+                    seen.insert(*id, style.background_color == FILLED);
+                }
+                MountItem::Delete { id } => {
+                    seen.remove(id);
+                }
+                _ => {}
+            }
+        }
+    });
+    app.first_render().unwrap();
+    (app, styles)
+}
+
+fn filled_cells(styles: &Mutex<HashMap<NodeId, bool>>) -> usize {
+    styles.lock().unwrap().values().filter(|f| **f).count()
 }
 
 fn see(app: &mut Headless, text: &str) {
@@ -426,4 +489,21 @@ fn the_caret_blinks_without_mount_items() {
         0,
         "mount items while the caret blinks"
     );
+}
+
+#[test]
+fn filled_cells_take_their_data_filled_classes() {
+    let (mut app, styles) = start_filled();
+    // The code's first digit and the masked code's two (bullets, filled
+    // all the same).
+    assert_eq!(filled_cells(&styles), 3);
+    app.type_text("id:otp", "23").unwrap();
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(field(&mut app, "id:otp"), "123");
+    assert_eq!(filled_cells(&styles), 5);
+    // Backspace empties the last cell, which loses the class.
+    app.press_key("backspace").unwrap();
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert_eq!(field(&mut app, "id:otp"), "12");
+    assert_eq!(filled_cells(&styles), 4);
 }

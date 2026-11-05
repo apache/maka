@@ -15,8 +15,9 @@ NSH 本身就用系统原生视图渲染，所以原生组件只是同一视图�
 一样被裁剪、随内容滚动并接收触摸。
 
 > [!NOTE]
-> 只有在嵌入 NSH 的应用中（[iOS](./ios.md)、[Android](./android.md)、[macOS](./macos.md#嵌入-mac-应用)、[Linux](./linux.md#嵌入-gtk-应用)、[Windows](./windows.md#嵌入-win32-应用)）才有原生组件。
-> 打包出的独立应用（`nsh package`）和开发宿主不会注册任何组件，因此在那里该元素会渲染成一个空视图（并记录一次“未知名称”日志）。
+> 原生组件由嵌入 NSH 的应用注册（[iOS](./ios.md)、[Android](./android.md)、[macOS](./macos.md#嵌入-mac-应用)、[Linux](./linux.md#嵌入-gtk-应用)、[Windows](./windows.md#嵌入-win32-应用)）；
+> 在 Windows、macOS、Linux 和 iOS 上也可以由应用自己的 Rust crate 注册，开发宿主和打包出的应用（`nsh package`）会注册这些组件（见[从应用的 crate 注册](#从应用的-crate-注册)）。
+> 没有任何地方注册的名称会渲染成一个空视图（并记录一次“未知名称”日志）。
 
 ## 整体流程
 
@@ -582,6 +583,67 @@ fn register(app: &AppView) {
 自己接收输入，并位于 NSH 绘制的所有内容之上（绘制在它上方的 NSH 内容会被遮住，和 Web 视图一样）。`ComponentContext::emit`、
 `set_size`（单位为点）和 `redraw` 可以在任意线程调用。请在 `AppView::load` 之前注册；注册表属于一个 `AppView`（以及用同一个
 `AppOptions` 创建的视图）。
+
+组件还可以通过 `wheel` 接收落在它上面的鼠标滚轮和触控板滚动（比如图片查看器用它来缩放）。它收到的 `Wheel` 包含指针位置
+（`x`、`y`，组件自身坐标，单位为点）、以点为单位的距离（`dx`、`dy`，向右、向下为正，和滚动视图移动内容的方向一致）、以滚轮刻度
+为单位的距离（`notches_x`、`notches_y`，精确触控板和高分辨率滚轮会给出小数）、是否为细粒度滚动（`precise`），以及按下的修饰键
+（`shift`、`ctrl`、`alt`）。接收了这次滚动就返回 `true`；其余的滚动交给外层的滚动视图，默认全部交给它们。滚动视图已经开始的
+一次滚动会一直留在那个视图上。Ctrl + 滚轮也是精确触控板的捏合手势，Shift + 滚轮按滚轮原本发送的方向到达（`dy`，`shift` 为真）：
+
+```rust
+use nsh_platform_windows::Wheel;
+
+impl NativeComponent for ImageView {
+    // draw、set_prop……
+
+    fn wheel(&mut self, event: &Wheel) -> bool {
+        if !event.ctrl {
+            return false; // 交给外层的滚动视图
+        }
+        // 每个刻度缩放 √2 倍，以指针为中心。
+        let factor = 2f32.powf(-event.notches_y / 2.0);
+        self.zoom_about(event.x, event.y, factor);
+        self.context.redraw();
+        true
+    }
+}
+```
+
+## 从应用的 crate 注册
+
+带有自己 Rust crate 的应用（`nsh.json` 的 `"rust"`，见 [Rust](./rust.md)）可以在这个 crate 里注册原生组件，NSH 为应用构建的宿主都会用到它们：
+`nsh run` 和 `nsh test --target` 的开发宿主，以及 `nsh package` 打包出的应用。在 crate 根（`lib.rs`）放一个带
+`#[native_components(<platform>)]` 的函数，把组件注册到该平台的 `Components` 上；宿主创建每个视图时都会调用它，就像嵌入应用在自己的 `AppView` 上注册一样：
+
+```rust
+use std::rc::Rc;
+use nsh_core::prelude::*;
+
+#[native_components(windows)]
+fn components(components: &nsh_platform_windows::Components) {
+    use nsh_platform_windows::{ComponentContext, NativeComponent};
+    components.register(
+        "embed.badge",
+        Rc::new(|context: ComponentContext| -> Box<dyn NativeComponent> {
+            Box::new(Badge { on: false, context })
+        }),
+    );
+}
+```
+
+平台可以是 `windows`、`macos`、`linux` 或 `ios`，对应的组件分别来自 `nsh_platform_windows`、`nsh_platform_macos`、
+`nsh_platform_linux` 和 `nsh_platform_ios`（见上面各节）。这个函数只在它的平台上编译，所以 crate 为支持的每个平台各写一个，注册相同的名称，
+并且只在对应平台上依赖该平台的 crate，版本和来源与它的其他 NSH crate（`nsh-core` 等）相同（CLI 会检查它们是否一致）：
+
+```toml
+[target.'cfg(windows)'.dependencies]
+nsh-platform-windows = { version = "0.3", default-features = false }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nsh-platform-macos = { version = "0.3", default-features = false }
+```
+
+宿主在创建每个视图时注册 crate 的组件，早于持有该视图的代码自己的注册：之后在视图上注册的同名组件（`AppView::register_component`）会替换 crate 的。
 
 ## 规则与限制
 

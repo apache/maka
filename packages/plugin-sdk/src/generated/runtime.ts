@@ -1040,7 +1040,10 @@ export type Access = 'read' | 'write' | 'deny';
 export type ExecutorOutcome =
   | {
       status: 'completed';
-      text: string;
+      /**
+       * Final completed assistant message, or no answer for a tool-only turn.
+       */
+      message_id?: string | null;
     }
   | {
       status: 'cancelled';
@@ -1057,12 +1060,22 @@ export type ExecutorOutcome =
  */
 export type ExecutorOutput =
   | {
+      type: 'message_start';
+      messageId: string;
+    }
+  | {
       type: 'output_delta';
+      messageId: string;
       text: string;
     }
   | {
       type: 'thinking_delta';
+      messageId: string;
       text: string;
+    }
+  | {
+      type: 'message_end';
+      messageId: string;
     }
   | {
       type: 'tool_start';
@@ -4013,6 +4026,9 @@ export type AgentDeliveryFact =
     }
   | {
       kind: 'executor_started';
+    }
+  | {
+      kind: 'executor_message_started';
       messageId: string;
     }
   | {
@@ -4199,7 +4215,7 @@ export type TitleFailureCause =
     };
 /**
  * Row reveals an exact field; Before/After continue at byte boundaries and
- * Event addresses the raw event log. Returned chunks retain ascending source
+ * Event addresses the raw event log. Returned chunks retain ascending presentation
  * order, including a reverse window.
  */
 export type HistoryPosition =
@@ -4378,6 +4394,11 @@ export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
  * Tool body JSON contributes string values, never its keys.
  */
 export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call' | 'tool_result';
+/**
+ * Who made a call: a model step, a script the model wrote, a tool's own work
+ * through the Host SDK, or a foreign record.
+ */
+export type HistoryToolCallOrigin = 'provider' | 'code_mode' | 'host_sdk' | 'imported';
 export type AgentHistoryPage = {
   kind: 'ready';
   through: number;
@@ -8814,6 +8835,10 @@ export interface AgentHistoryChunk {
   turnId: string;
   timestamp: number;
   role: Role;
+  /**
+   * Stable display order; position remains the canonical source read address.
+   */
+  order: HistoryRowPosition;
   position: HistoryRowPosition;
   offset: number;
   totalBytes: number;
@@ -8863,6 +8888,7 @@ export interface HistoryToolCall {
    * Recorded ancestors in this Turn, nearest first; display references only.
    */
   ancestorToolUseIds: string[];
+  origin: HistoryToolCallOrigin;
   /**
    * Opaque display contract captured at dispatch; no execution authority.
    */
@@ -8883,7 +8909,7 @@ export interface HistoryToolResult {
   settlement: ToolSettlement | null;
   position: HistoryRowPosition;
   /**
-   * Does not distinguish failed from unknown effects.
+   * A failed or unknown effect, or a returned result that reports failure.
    */
   isError: boolean;
   /**

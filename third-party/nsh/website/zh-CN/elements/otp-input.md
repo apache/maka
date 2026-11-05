@@ -35,8 +35,8 @@ fn verification(verify: impl Fn(&str) + 'static) -> impl IntoElement {
                 .border_color(move || theme().input)
                 .text_xl()
         })
-        // 输入框获得焦点时，接收下一位数字的格子。
-        .cell_class("focus:border-ring")
+        // 输入框获得焦点时，接收下一位数字的格子；以及已填入数字的格子。
+        .cell_class("focus:border-ring data-filled:bg-muted")
         .caret_style(|s| s.w(px(2.0)).h(px(24.0)).bg(move || theme().foreground))
 }
 ```
@@ -58,7 +58,7 @@ function App() {
       accessibilityLabel="验证码，6 位数字"
       class="flex-row gap-3"
       groupClass="flex-row gap-2"
-      cellClass="w-10 h-12 items-center justify-center rounded-lg border border-input text-xl focus:border-ring"
+      cellClass="w-10 h-12 items-center justify-center rounded-lg border border-input text-xl focus:border-ring data-filled:bg-muted"
       caretClass="w-0.5 h-6 bg-foreground"
     />
   );
@@ -97,7 +97,7 @@ mount(App);
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不能获得焦点，不能编辑；`disabled:` 样式作用于输入框和它的部件，屏幕阅读器读出它不可用。 |
 | `groups` | `.groups(..)` | `number` | `1` | 格子尽量平均地分成几组（六位分两组是 3 + 3）；至少一组，最多每个格子一组。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器为输入框读出的内容：验证码的用途和位数。 |
-| `cellClass`、`cellStyle` | `.cell_class(..)`、`.cell_style(\|s\| ..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个格子：尺寸、边框和文字（`color`、`fontSize`，由格子里的数字继承）。 |
+| `cellClass`、`cellStyle` | `.cell_class(..)`、`.cell_style(\|s\| ..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个格子：尺寸、边框和文字（`color`、`fontSize`，由格子里的数字继承）；`focus:` 和 `data-filled:` 为它的状态设置样式（见“部件”）。 |
 | `groupClass`、`groupStyle` | `.group_class(..)`、`.group_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 每组格子（`flex-row gap-2`）。 |
 | `caretClass`、`caretStyle` | `.caret_class(..)`、`.caret_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 光标：宽度、高度和颜色。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 输入框本身：包住各组的行（或列）。 |
@@ -122,11 +122,13 @@ mount(App);
 |---|---|---|
 | 输入框 | | `class`、`style` |
 | 组 | 输入框内，每组一个 | `groupClass`、`groupStyle`；`disabled:` 跟随输入框 |
-| 格子 | 所在的组内，每位数字一个 | `cellClass`、`cellStyle`；输入框有焦点时，接收下一位数字的格子带 `focus:`，`disabled:` 跟随输入框 |
+| 格子 | 所在的组内，每位数字一个 | `cellClass`、`cellStyle`；输入框有焦点时，接收下一位数字的格子带 `focus:`，每个已填入数字的格子带 `data-filled:`，`disabled:` 跟随输入框 |
 | 数字 | 已填的格子内 | 格子的文字样式（`text-xl`、`font-semibold`）；`masked` 时为 `•` |
 | 光标 | 输入框有焦点时，接收下一位数字的空格子内 | `caretClass`、`caretStyle` |
 
 接收下一位数字的格子是最后一位数字之后的格子，验证码填满后是最后一个格子。光标像文本框的光标一样闪烁（亮半秒、灭半秒，每次编辑后保持亮一会儿），由原生动画改变它的不透明度，它在布局中的位置不变；偏好减少动态效果时保持不动。按下输入框的任何位置都会让它获得焦点：输入框覆盖在格子之上。
+
+已填入数字的格子（无论是否 `masked`）带属性 `data-filled`，因此 `data-filled:` 类可以为用户已填的格子设置样式（更深的边框、填充色：`data-filled:border-foreground data-filled:bg-muted`），与 shadcn/ui 书写状态的方式相同。`cellClass` 里写上 `group` 后，`group-data-filled:` 类为已填格子里的内容（它的数字）设置样式。格子只改变类，不改变内容，所以每次按键只重新设置一个格子的样式，不会重新绘制任何内容。
 
 ## 无障碍
 

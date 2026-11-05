@@ -11,7 +11,7 @@
 //! UAX #14, enough for app text.
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     ops::Range,
     sync::{Arc, OnceLock},
 };
@@ -23,7 +23,10 @@ use nsh_core::{
 use rustc_hash::FxHashMap;
 
 pub(crate) use self::css::{css_font, font_variant_numeric};
-use self::{css::measured_by_char, hit::Stop};
+use self::{
+    css::{emoji_excess, figure_width, measured_by_char},
+    hit::Stop,
+};
 use crate::ffi;
 
 mod css;
@@ -40,6 +43,12 @@ type WidthKey = (Arc<str>, Option<Arc<str>>, String);
 pub(crate) struct WebTextEngine {
     /// Width of `(font, font-variant-numeric, text)`.
     widths: RefCell<FxHashMap<WidthKey, f32>>,
+    /// How much wider the DOM draws an emoji cluster in a font than canvas
+    /// measures it.
+    emoji: RefCell<FxHashMap<(Arc<str>, String), f32>>,
+    /// Whether a width since the caches were cleared has an emoji's excess:
+    /// those are stale once the pixel ratio changes.
+    emoji_measured: Cell<bool>,
     /// Ascent and descent of a font.
     metrics: RefCell<FxHashMap<Arc<str>, (f32, f32)>>,
     /// The x height of a font (attachments in the middle of a line).
@@ -51,6 +60,8 @@ impl WebTextEngine {
     /// measured with a fallback font is stale.
     pub(crate) fn clear_caches(&self) {
         self.widths.borrow_mut().clear();
+        self.emoji.borrow_mut().clear();
+        self.emoji_measured.set(false);
         self.metrics.borrow_mut().clear();
         self.x_heights.borrow_mut().clear();
     }
@@ -73,16 +84,17 @@ impl WebTextEngine {
         if text.is_empty() {
             return 0.0;
         }
-        // A figure is the sum of its characters, each measured once: a live
-        // value lays the page out for no new one, and its strings, new on
-        // every update, stay out of the cache.
+        // A figure is measured by its characters and pairs, each once: a
+        // live value lays the page out for no new one, and its strings, new
+        // on every update, stay out of the cache.
         if numeric.is_some() && text.chars().nth(1).is_some() && measured_by_char(text) {
-            let mut buf = [0u8; 4];
-            return text
-                .chars()
-                .map(|c| self.width(font, numeric, c.encode_utf8(&mut buf)))
-                .sum();
+            return figure_width(text, |part| self.measured(font, numeric, part));
         }
+        self.measured(font, numeric, text)
+    }
+
+    /// The width of `text` measured whole, cached.
+    fn measured(&self, font: &Arc<str>, numeric: Option<&Arc<str>>, text: &str) -> f32 {
         let key = (font.clone(), numeric.cloned(), text.to_owned());
         if let Some(&w) = self.widths.borrow().get(&key) {
             return w;
@@ -91,7 +103,10 @@ impl WebTextEngine {
             // Canvas cannot measure numeric variants: tabular digits are
             // wider than the proportional ones it measures.
             Some(numeric) => ffi::measure_numeric_text(font, numeric, text),
-            None => ffi::measure_text(font, text),
+            None => {
+                ffi::measure_text(font, text)
+                    + emoji_excess(text, |cluster| self.cluster_excess(font, cluster))
+            }
         };
         let mut widths = self.widths.borrow_mut();
         // Bounded: a long-running app measures many distinct strings.
@@ -100,6 +115,31 @@ impl WebTextEngine {
         }
         widths.insert(key, w);
         w
+    }
+
+    /// Whether a width measured since the caches were cleared has an
+    /// emoji's excess ([`emoji_excess`]).
+    pub(crate) fn emoji_measured(&self) -> bool {
+        self.emoji_measured.get()
+    }
+
+    /// How much wider the DOM draws emoji `cluster` than canvas measures
+    /// it: measured in the DOM once per font, so a line being typed is
+    /// still measured on canvas.
+    fn cluster_excess(&self, font: &Arc<str>, cluster: &str) -> f32 {
+        self.emoji_measured.set(true);
+        let key = (font.clone(), cluster.to_owned());
+        if let Some(&e) = self.emoji.borrow().get(&key) {
+            return e;
+        }
+        let e =
+            ffi::measure_numeric_text(font, "normal", cluster) - ffi::measure_text(font, cluster);
+        let mut emoji = self.emoji.borrow_mut();
+        if emoji.len() > 20_000 {
+            emoji.clear();
+        }
+        emoji.insert(key, e);
+        e
     }
 
     fn run_width(&self, run: &RunStyle, text: &str) -> f32 {
@@ -469,10 +509,13 @@ impl WebTextEngine {
                 let mut height = 0.0f32;
                 let mut above = 0.0f32;
                 // Below the baseline, and whether an attachment reaches below
-                // it (the line is then as tall as its extents; lines of
-                // attachments on the baseline keep their height).
+                // it or above the text (the line is then as tall as its
+                // extents, as a replaced inline box grows a CSS line; lines
+                // of attachments on the baseline that fit keep their height).
                 let mut below = 0.0f32;
                 let mut reaches_below = false;
+                let mut text_above = 0.0f32;
+                let mut attachment_above = 0.0f32;
                 let range = if line.start < end {
                     line.start..end
                 } else {
@@ -483,15 +526,17 @@ impl WebTextEngine {
                     let (h, lead) = s.line();
                     height = height.max(h);
                     above = above.max(lead + s.ascent);
+                    text_above = text_above.max(lead + s.ascent);
                     below = below.max(h - lead - s.ascent);
                     if let AtomKind::Attachment(_, _, up, down) = atom.kind {
                         above = above.max(up);
+                        attachment_above = attachment_above.max(up);
                         height = height.max(up + down);
                         below = below.max(down);
                         reaches_below |= down > 0.0;
                     }
                 }
-                if reaches_below {
+                if reaches_below || attachment_above > text_above {
                     height = height.max(above + below);
                 }
                 if height == 0.0 && !p.styles.is_empty() {

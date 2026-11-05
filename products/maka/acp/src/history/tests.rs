@@ -33,10 +33,10 @@ fn position(sequence: u64) -> RowPosition {
 fn chunk(sequence: u64, role: &str, tool: &str, offset: u64, text: &str) -> HistoryChunk {
     serde_json::from_value(json!({
         "field":"body", "messageId":if role == "tool_call" { tool.to_owned() } else { format!("result-{sequence}") }, "turnId":"turn", "timestamp":1,
-        "role":role, "position":position(sequence), "offset":offset, "totalBytes":6, "text":text,
+        "role":role, "order":position(sequence), "position":position(sequence), "offset":offset, "totalBytes":6, "text":text,
         "tool":{"toolUseId":tool,
             "call":{"position":position(if role == "tool_call" { sequence } else { sequence - 1 }),"name":"Read",
-                "ancestorToolUseIds":[],"title":null,"pending":role == "tool_call","dispatched":role == "tool_result"},
+                "ancestorToolUseIds":[],"origin":"provider","title":null,"pending":role == "tool_call","dispatched":role == "tool_result"},
             "result":if role == "tool_result" { json!({"position":position(sequence),"settlement":"returned",
                 "isError":false,"image":false,"images":0}) } else { Value::Null }
         }

@@ -79,7 +79,7 @@ Rust components (`nsh/base`'s and those of an app's own crate) accept `class` an
 | `active:` | The view is pressed | `.active(\|s\| ..)` |
 | `hover:` | A pointer is over the view (iPad and Mac pointers) | `.hover(\|s\| ..)` |
 | `focus:`, `focus-visible:` | An input has focus | `.focus(\|s\| ..)` |
-| `focus-within:` | The view or a descendant has focus | |
+| `focus-within:` | The view or a descendant has focus (the content of an `Overlay` is a descendant of the view it is in) | `.focus_within(..)` |
 | `disabled:`, `enabled:` | The element's `disabled` prop is true / false | `.disabled_style(\|s\| ..)` |
 | `selected:` | The element is selected (a `Button`'s `selected`, `accessibilityState.selected`) | `.selected_style(..)` |
 | `checked:` | The element is checked (`accessibilityState.checked` is `true`; `"mixed"` is not checked) | `.checked_style(..)` |
@@ -87,7 +87,8 @@ Rust components (`nsh/base`'s and those of an app's own crate) accept `class` an
 | `aria-expanded:` | The element is expanded (`accessibilityState.expanded` is `true`): a `Popover`'s or `Menu`'s trigger while its popup is open | `.expanded_style(..)` |
 | `aria-pressed:` | The element is a toggle button that is on (`accessibilityState.pressed` is `true`; `"mixed"` is not pressed). Not `active:`, a press in progress | `.aria_pressed(..)`, `.pressed_style(..)` |
 | `aria-busy:`, `aria-checked:`, `aria-selected:` | `accessibilityState.busy`, `checked` (`true`, not `"mixed"`) or `selected` is `true`, as Tailwind's `aria-*` variants: after the pseudo-classes, in the order of their names | |
-| `group-active:`, `group-hover:`, `group-focus:`, `group-focus-within:`, `group-disabled:`, `group-selected:`, `group-checked:`, `group-indeterminate:`, `group-aria-expanded:`, `group-aria-pressed:`, `group-aria-busy:`, `group-aria-checked:`, `group-aria-selected:` | The nearest ancestor with the `group` class is in that state | `.group()` on the ancestor; `.group_active(..)`, `.group_hover(..)`, `.group_focus_within(..)` inside |
+| `data-<name>:` | The element has the `data-*` attribute `name`, as Tailwind's boolean `data-*` variants (`&[data-range-start]`): what a component's part shows beyond its states, a calendar's day at the start of a range (`data-range-start:`). After the `aria-*` variants, in the order of their names | `Interactive::project_data(name, ..)` sets one on a component's part |
+| `group-active:`, `group-hover:`, `group-focus:`, `group-focus-within:`, `group-disabled:`, `group-selected:`, `group-checked:`, `group-indeterminate:`, `group-aria-expanded:`, `group-aria-pressed:`, `group-aria-busy:`, `group-aria-checked:`, `group-aria-selected:`, `group-data-<name>:` | The nearest ancestor with the `group` class is in that state, or has that `data-*` attribute | `.group()` on the ancestor; `.group_active(..)`, `.group_hover(..)`, `.group_focus_within(..)` inside |
 | `group-active/name:` ... | The same, for an ancestor marked `group/name` | `.group_named("name")`; `.group_active_named("name", ..)`, ... |
 | `first:`, `last:`, `odd:`, `even:`, `only:` | The element's own position among its siblings. To color a row's label by the row's position, put `last:text-*` on the row: the label inherits it | Plain Rust from the row's index (`at.is_first()`, `at.is_last()`, `at.index() % 2`) |
 | `placeholder:` | Styles an input's placeholder (`placeholder:text-zinc-400`) | `.placeholder_color(..)` |

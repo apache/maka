@@ -1,9 +1,11 @@
 // A case of the API's test suite (docs/dev/compatibility.md): `Headers`,
 // `Request`, `Response` (Fetch Standard: bodies, cloning, statics) and
-// `fetch` of what needs no network: `data:` and `blob:` URLs, aborts and
-// refused URLs. Each check is a line `<name>=<result>` its script expects.
+// `fetch` of what needs no network: `data:`, `blob:` and `asset:` URLs
+// (a file the app ships), aborts and refused URLs. Each check is a line
+// `<name>=<result>` its script expects.
 //
 import { Text, View, signal } from "nsh";
+import flag from "./images/flag.png";
 
 const out: string[] = [];
 const lines = signal<string[]>([]);
@@ -191,6 +193,16 @@ async function run() {
     );
     return `${url.startsWith("blob:")}|${x.headers.get("content-type")}|${text}|${after}`;
   });
+  await check("fetch.asset", async () => {
+    const x = await fetch(flag.url);
+    const bytes = await x.bytes();
+    return [flag.url, x.status, x.ok, x.headers.get("content-length"), bytes.length, bytes.slice(1, 4)];
+  });
+  await check("fetch.assetHead", async () => {
+    const x = await fetch(flag.url);
+    return [x.headers.get("content-type"), x.url === flag.url];
+  });
+  await check("fetch.assetMissing", () => fetch("asset:/images/missing.png"));
   await check("fetch.badScheme", () => fetch("ftp://h.test/x"));
   await check("fetch.badUrl", () => fetch("http://"));
   await check("fetch.badDataUrl", () => fetch("data:no-comma"));

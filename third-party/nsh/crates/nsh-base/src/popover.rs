@@ -8,7 +8,7 @@ use nsh_core::{
 
 use crate::{
     popup::{OpenChangeReason, OpenState, PopupPresence, StateLooks, lifecycle},
-    roving::{bar, bar_trigger, leave_bar},
+    roving::{bar_trigger, leave_bar, popup_bar},
 };
 
 /// The props of [`Popover`].
@@ -145,7 +145,7 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
     let anchor = element_ref();
     let desktop = is_desktop();
     // In a toolbar, the trigger is one of its items.
-    let around = bar();
+    let around = popup_bar();
     view()
         .child(props.trigger.place(move |trigger| {
             let trigger = trigger
@@ -164,28 +164,25 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
             move || {
                 // The trigger may be a toolbar's item; the content is not.
                 leave_bar();
-                let mut views = Vec::new();
-                if !desktop {
-                    // Keep the outside press below the popup for its whole opening.
-                    views.push(
-                        overlay()
-                            .inset_0()
-                            .focusable(false)
-                            .pointer_events(move || {
-                                if open.get() && props.close_on_press_outside.get() {
-                                    PointerEvents::Auto
-                                } else {
-                                    PointerEvents::None
-                                }
-                            })
-                            .on_press(move || {
-                                if props.close_on_press_outside.get_untracked() {
-                                    cancel(OpenChangeReason::PressOutside, true);
-                                }
-                            })
-                            .into_element(),
-                    );
-                }
+                // Touch screens: the press outside is the popover's (not
+                // while it goes). Made with the popup and before it, as
+                // overlays shown together stack in the order they were made:
+                // one made later, in a region of its own, would cover the
+                // popup and take the presses on it.
+                let backdrop = (!desktop).then(|| {
+                    overlay()
+                        .inset_0()
+                        .focusable(false)
+                        .pointer_events(move || {
+                            if open.get() && props.close_on_press_outside.get() {
+                                PointerEvents::Auto
+                            } else {
+                                PointerEvents::None
+                            }
+                        })
+                        .on_press(move || cancel(OpenChangeReason::PressOutside, true))
+                        .into_element()
+                });
                 let popup = overlay()
                     .focus_return(true)
                     .anchor_target(move || {
@@ -221,8 +218,10 @@ pub fn Popover(props: PopoverProps, cx: Scope<PopoverEvent>) -> impl IntoElement
                         )
                     })
                     .child(props.children);
-                views.push(popup.into_element());
-                views
+                backdrop
+                    .into_iter()
+                    .chain([popup.into_element()])
+                    .collect::<Vec<_>>()
             },
         ))
 }

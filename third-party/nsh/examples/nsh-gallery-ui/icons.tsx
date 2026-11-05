@@ -84,7 +84,11 @@ export type IconName =
   | "tooltip"
   | "sheet"
   | "button"
-  | "external";
+  | "external"
+  | "folder"
+  | "folder-open"
+  | "file"
+  | "tree";
 
 type Draw = (cx: CanvasRenderingContext2D) => void;
 
@@ -140,6 +144,28 @@ const glyphs: Record<IconName, Draw> = {
     line(c, [9, 4, 4, 4, 4, 16, 16, 16, 16, 11]);
     line(c, [11.5, 3.5, 16.5, 3.5, 16.5, 8.5]);
     line(c, [16.5, 3.5, 9.5, 10.5]);
+  },
+  folder: (c) => {
+    // A tab on the left of the back.
+    line(c, [2.5, 6, 2.5, 15, 3.5, 16, 16.5, 16, 17.5, 15, 17.5, 7.5, 16.5, 6.5, 9.5, 6.5, 8, 4.5, 3.5, 4.5, 2.5, 6]);
+  },
+  "folder-open": (c) => {
+    // The back, and its front tipped open.
+    line(c, [2.5, 15, 2.5, 6, 3.5, 4.5, 8, 4.5, 9.5, 6.5, 15.5, 6.5, 16.5, 7.5, 16.5, 9]);
+    line(c, [2.5, 15, 5, 9.5, 18, 9.5, 15.5, 16, 3.5, 16, 2.5, 15]);
+  },
+  file: (c) => {
+    // A sheet with its corner folded.
+    line(c, [5, 2.5, 11.5, 2.5, 15.5, 6.5, 15.5, 17.5, 5, 17.5, 5, 2.5]);
+    line(c, [11.5, 2.5, 11.5, 6.5, 15.5, 6.5]);
+  },
+  tree: (c) => {
+    // A root, two branches off its stem.
+    rect(c, 3, 3, 5, 4, 1);
+    rect(c, 11, 8.5, 6, 3.5, 1);
+    rect(c, 11, 14, 6, 3.5, 1);
+    line(c, [5.5, 7, 5.5, 15.75, 11, 15.75]);
+    line(c, [5.5, 10.25, 11, 10.25]);
   },
   checkbox: (c) => {
     rect(c, 3.5, 3.5, 13, 13, 3);

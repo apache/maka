@@ -58,7 +58,10 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
       </If>
       <Popover
         open={open()}
-        onOpenChange={({ open: value }) => open.set(value)}
+        onOpenChange={({ open: value }) => {
+          if (value) owner.query.set('');
+          open.set(value);
+        }}
         placement="bottom"
         align="start"
         offset={8}
@@ -79,12 +82,6 @@ export function RootUiSettings(props: { owner: RootUiSettingsOwner }) {
           <Button
             accessibilityLabel={tr('Choose interface')}
             disabled={owner.disabled()}
-            onPress={() => {
-              if (!owner.disabled()) {
-                owner.query.set('');
-                open.set(!open());
-              }
-            }}
             style={{
               ...controlStyle,
               minHeight: 40,

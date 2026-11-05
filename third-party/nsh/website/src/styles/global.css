@@ -373,6 +373,27 @@ html[lang^="zh"] :is(h1, h2, h3, h4) { letter-spacing: -0.01em; }
 .site-nav__projects-menu a span { color: var(--muted-foreground); font-size: 0.75rem; }
 .site-nav__projects-menu a:hover, .site-nav__projects-menu a.is-current { background: var(--nav-hover); }
 
+.site-nav__versions { position: relative; flex-shrink: 0; }
+.site-nav__versions summary {
+  display: inline-flex; align-items: center; gap: 0.25rem; height: 2rem; padding: 0 0.5rem; border-radius: 6px;
+  cursor: pointer; list-style: none; color: var(--muted-foreground); font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+.site-nav__versions summary::-webkit-details-marker { display: none; }
+.site-nav__versions summary:hover, .site-nav__versions[open] summary { background: var(--nav-hover); color: var(--foreground); }
+.site-nav__versions summary svg { width: 0.875rem; height: 0.875rem; }
+.site-nav__versions-menu {
+  position: absolute; top: calc(100% + 0.5rem); right: 0; z-index: 50; min-width: 9rem; padding: 0.35rem;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--background);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
+}
+.site-nav__versions-menu a {
+  display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; padding: 0.4rem 0.6rem;
+  border-radius: 6px; color: var(--foreground); text-decoration: none; font-size: 0.8125rem;
+}
+.site-nav__versions-menu a span { color: var(--muted-foreground); font-size: 0.75rem; }
+.site-nav__versions-menu a:hover, .site-nav__versions-menu a.is-current { background: var(--nav-hover); }
+
 .site-nav__logo { width: 1.5rem; height: 1.5rem; }
 
 .site-nav__links { display: flex; align-items: center; gap: 0.15rem; }

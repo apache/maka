@@ -77,6 +77,7 @@ mount(App);
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器读出的文字：子元素没有说明它打开什么的文字时设置。 |
 | `trackClass`、`trackStyle` | `.track_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 轨道，滑块沿着它移动。 |
 | `thumbClass`、`thumbStyle` | `.thumb_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 滑块，在轨道里面。 |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 轨道之后的内容：一个标签，屏幕阅读器会读出。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 开关自身：包住轨道和标签的那一行。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 开关按下、悬停、获得焦点或禁用时的样式，与对应的 `<state>:` 类相同。 |
@@ -121,6 +122,23 @@ mount(App);
 >
   <Text>Sync over cellular</Text>
 </Switch>
+```
+
+<a id="a-small-target-with-hitslop"></a>
+
+## 用 hitSlop 扩大小目标
+
+旁边没有标签的开关可能比手指还小。`hitSlop` 让落在它附近的按压也算数，单位为超出每一边的点数，不改变它的布局和外观：一个数字表示每一边，或分别指定各边（`{ top: 8, bottom: 8 }`），与[视图的 `hitSlop`](./index.md#按压与反馈) 取值相同。
+
+```tsx
+<Switch
+  checked={on()}
+  hitSlop={{ top: 8, bottom: 8 }}
+  accessibilityLabel="Notifications"
+  onChange={({ checked }) => on.set(checked)}
+  trackClass="w-9 rounded-full bg-muted p-0.5 checked:bg-primary"
+  thumbClass="size-4 rounded-full bg-background checked:translate-x-4"
+/>
 ```
 
 <a id="accessibility"></a>

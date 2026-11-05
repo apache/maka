@@ -138,6 +138,9 @@ and is never matched or styled as a committed token.
 | `caret` | `.caret(..)` | `boolean` | The caret is drawn (default `true`; `false` hides it). |
 | `selectedRange` | `.selected_range((start, end))` | `{ start: number; end?: number }` | The controlled selection, in UTF-16 units; `end` defaults to `start` (a caret). |
 
+The caret blinks while its window is shown and active. In GPUI windows on Linux it stays shown after ten seconds
+without typing or moving it, as in GTK apps, so a focused field left alone costs no frames.
+
 ### Colors
 
 The colors of the placeholder, the caret and the selection highlight are style keys, with their Tailwind classes, and

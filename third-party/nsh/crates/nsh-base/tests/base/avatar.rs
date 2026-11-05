@@ -1,6 +1,8 @@
 //! `Avatar` and `AvatarGroup`: the fallback shows while the image loads
-//! (after its delay), the image once it has loaded and the fallback again
-//! when it fails, all from the image's own events; screen readers hear the
+//! (after its delay; never with one of `Infinity`), the image once it has
+//! loaded and the fallback again when it fails, all from the image's own
+//! events; a new `src` loads from the start, the old image's late events
+//! changing nothing; screen readers hear the
 //! person's name; a group makes only the avatars it shows and its overflow
 //! while more are in it. Headless runs load no images: the tests play the
 //! platform's part with the image's load events.
@@ -12,7 +14,8 @@ use std::{
 
 use nsh_base::{AvatarStatus, avatar, avatar_group};
 use nsh_core::{
-    EventKind, EventPayload, MountBatch, MountItem, NodeId, Size, ViewKind, element::Root,
+    EventKind, EventPayload, MountBatch, MountItem, NodeId, Size, ViewKind,
+    element::{ImageSrc, Root},
     prelude::*,
 };
 use nsh_engine::EngineConfig;
@@ -80,6 +83,101 @@ fn report(app: &mut Headless, seen: &Mutex<Seen>, url: &str, kind: EventKind) {
 const ADA: &str = "https://example.com/ada.png";
 const GRACE: &str = "https://example.com/grace.png";
 const ALAN: &str = "https://example.com/alan.png";
+
+/// Ada's avatar, whose `src` a press on "Next" changes to Grace's picture
+/// (her name stays, so the initials are AL throughout), its fallback
+/// waiting `delay`. A text says the statuses it reported, in order.
+fn switching_screen(delay: f64) -> impl IntoElement {
+    let src = signal(ADA);
+    let statuses = signal(Vec::<String>::new());
+    view()
+        .child(
+            avatar()
+                .size(px(40.0))
+                .src(move || Some(ImageSrc::from(src.get())))
+                .name("Ada Lovelace")
+                .fallback_delay(delay)
+                .on_status_change(move |s: &AvatarStatus| {
+                    statuses.update(|l| l.push(format!("{s:?}")))
+                }),
+        )
+        .child(view().on_press(move || src.set(GRACE)).child(text("Next")))
+        .child(text(move || format!("status {}", statuses.get().join(" "))))
+}
+
+#[component]
+fn Switching() -> impl IntoElement {
+    switching_screen(0.0)
+}
+
+#[component]
+fn SwitchingEndless() -> impl IntoElement {
+    switching_screen(f64::INFINITY)
+}
+
+#[test]
+fn a_new_src_loads_from_the_start_and_the_old_images_events_change_nothing() {
+    let (mut app, seen) = start::<Switching>();
+    app.wait_for("status Loading").unwrap();
+    report(&mut app, &seen, ADA, EventKind::Load);
+    app.wait_for("status Loading Loaded").unwrap();
+    app.wait_for_gone("text:AL", Duration::from_secs(1))
+        .unwrap();
+    let ada = image_of(&seen, ADA);
+
+    // Grace's picture: loading, with the fallback until it has loaded.
+    app.press("text:Next").unwrap();
+    app.wait_for("status Loading Loaded Loading").unwrap();
+    app.wait_for("text:AL").unwrap();
+    assert_ne!(image_of(&seen, GRACE), ada, "an image of its own");
+
+    // Ada's image, gone, reports late: nothing changes.
+    let late = |app: &mut Headless, kind: EventKind| {
+        let payload = match kind {
+            EventKind::Load => EventPayload::Image(Size::new(DevicePixels(96), DevicePixels(96))),
+            _ => EventPayload::Error {
+                message: "not found".into(),
+            },
+        };
+        app.engine().control().dispatch_event(ada, kind, payload);
+    };
+    late(&mut app, EventKind::Load);
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert!(app.shows("status Loading Loaded Loading"));
+    assert!(app.shows("AL"), "the fallback stays while Grace's loads");
+
+    report(&mut app, &seen, GRACE, EventKind::Load);
+    app.wait_for("status Loading Loaded Loading Loaded")
+        .unwrap();
+    app.wait_for_gone("text:AL", Duration::from_secs(1))
+        .unwrap();
+    late(&mut app, EventKind::Error);
+    app.wait(Duration::from_millis(50)).unwrap();
+    assert!(app.shows("status Loading Loaded Loading Loaded"));
+    assert!(!app.shows("AL"), "Grace's picture stays");
+
+    // And a failure of the new one brings the fallback back.
+    report(&mut app, &seen, GRACE, EventKind::Error);
+    app.wait_for("status Loading Loaded Loading Loaded Error")
+        .unwrap();
+    app.wait_for("text:AL").unwrap();
+}
+
+#[test]
+fn a_fallback_delay_of_infinity_shows_no_fallback_while_the_image_loads() {
+    let (mut app, seen) = start::<SwitchingEndless>();
+    app.wait_for("status Loading").unwrap();
+    app.wait(Duration::from_millis(300)).unwrap();
+    assert!(!app.shows("AL"), "not while it loads");
+    // A new source loads without it too.
+    app.press("text:Next").unwrap();
+    app.wait(Duration::from_millis(300)).unwrap();
+    assert!(!app.shows("AL"));
+    // A failure shows it at once.
+    report(&mut app, &seen, GRACE, EventKind::Error);
+    app.wait_for("status Loading Error").unwrap();
+    app.wait_for("text:AL").unwrap();
+}
 
 /// Avatars have their size, as an app gives them (`size-10`). Ada's
 /// avatar, an image with a name; Grace's, whose fallback waits

@@ -53,6 +53,7 @@ fn config() -> EngineConfig {
         clipboard: None,
         host: Default::default(),
         picker: None,
+        speech: None,
     }
 }
 

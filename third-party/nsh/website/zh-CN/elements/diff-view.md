@@ -234,6 +234,9 @@ function Proposal(props: { file: string; current: string; proposed: string; onAp
 | `collapseFile(path)` | 只显示路径为 `path` 的文件的标题。 |
 | `expandFile(path)` | 重新显示路径为 `path` 的文件的行。 |
 | `toggleFile(path)` | 折叠路径为 `path` 的文件，已折叠时则展开它。 |
+| `hunkBounds()` | `Promise<DiffHunkBounds[]>`：每处改动在行中的位置，按顺序（见[概览标尺](#an-overview-ruler)）。 |
+| `scrollOffset()` | `Promise<Point>`：行滚动了多远（`x` 为 0）。 |
+| `setScrollOffset(offset)` | 立即把行滚动到 `offset.y`（最多滚到行的末尾），就像拖动的滑块跟随指针那样。 |
 
 视图停在上次跳转到的改动时，`nextHunk()` 和 `previousHunk()` 从那处改动继续，否则从视图顶部算起，所以靠近末尾、无法滚动到顶部的改动也会被数到。上一处和下一处改动的按钮，以及来自 `onStatsChange` 的统计数字：
 
@@ -250,6 +253,143 @@ const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
 </View>
 <DiffView ref={diff} oldValue={before()} newValue={after()} onStatsChange={(e) => stats.set(e.stats)} class="flex-1" />
 ```
+
+<a id="an-overview-ruler"></a>
+
+## 概览标尺
+
+`onScroll({ offset, contentSize, size })` 报告行所在的位置，键与[`Scroll`](./scroll.md) 的相同：`offset.y` 是行滚动了多远（行纵向滚动，与视图同宽，两侧各自横向滚动，所以 `offset.x` 为 0），`contentSize` 是所有行合起来的尺寸，`size` 是视口的尺寸。视图完成布局时触发一次，之后其中任何一项变化时再触发：行滚动时、视图改变大小时，以及行的高度变化时（换了文本、`layout` 或 `softWrap`，展开或折叠了一个文件或分隔行，一条批注完成了布局）。`hunkBounds()` 给出每处改动在行中的位置（`DiffHunkBounds`：`{ index, bounds }`，`bounds` 从它第一行的顶部到最后一行的底部，包括其下的批注，横跨整个视图），只包括显示出来的改动：折叠的文件中的改动没有行。`onHunkBoundsChange({ hunkBounds })` 在视图完成布局时给出同一个列表，之后每当某处改动移动了位置或改变了大小时再给出，即使行的总高度没有变化（例如一处改动从一行换到了另一行）：标尺应当根据它绘制标记，而不是在 `onScroll` 中重新读取。`scrollOffset()` 读出行滚动到的位置，`setScrollOffset({ x, y })` 立即把行滚动到 `y`，让拖动的滑块在同一帧里跟随指针。
+
+把它们合起来，就能在视图旁边做一个代码编辑器里那样的概览标尺：每处改动一个标记，一个滑块盖住视野中的行，点击或拖动即可滚动到那里。下面的标尺与视图等高：
+
+```rust tabs
+use nsh_base::{DiffHunkBounds, DiffView, DiffViewApi, DiffViewEvent, diff_view, theme};
+use nsh_core::prelude::*;
+
+fn review(old: SharedString, new: SharedString) -> impl IntoElement {
+    let diff = component_ref::<DiffView>();
+    let ruler = element_ref();
+    let ruler_top = stored(px(0.0));
+    // How far the rows are scrolled, their height and the viewport's.
+    let rows = signal((px(0.0), px(0.0), px(0.0)));
+    let marks = signal(Vec::<DiffHunkBounds>::new());
+    // Points of the rows per point of the ruler.
+    let scale = move || {
+        let (_, height, view) = rows.get();
+        height.max(px(1.0)) / view.max(px(1.0))
+    };
+    // The thumb's middle at the pointer.
+    let follow = move |page_y: Points| {
+        let view = rows.get_untracked().2;
+        let y = (page_y - ruler_top.get()) * scale() - view / 2.0;
+        if let Some(api) = diff.api::<DiffViewApi>() {
+            api.set_scroll_offset(point(px(0.0), y));
+        }
+    };
+    view()
+        .flex_1()
+        .flex_row()
+        .child(
+            diff_view()
+                .old_value(old)
+                .new_value(new)
+                .on_scroll(move |e: &DiffViewEvent| {
+                    if let DiffViewEvent::Scroll(offset, content, size) = e {
+                        rows.set((offset.y, content.height, size.height));
+                    }
+                })
+                .on_hunk_bounds_change(move |list: &Vec<DiffHunkBounds>| marks.set(list.clone()))
+                .component_ref(&diff)
+                .flex_1(),
+        )
+        .child(
+            view()
+                .element_ref(&ruler)
+                .w(px(12.0))
+                .bg(move || theme().muted)
+                .claim_touches(TouchClaim::on_start())
+                .on_responder_grant(move |e: &ResponderEvent| {
+                    let y = e.page.y;
+                    spawn(async move {
+                        ruler_top.replace(ruler.measure().await.map_or(px(0.0), |m| m.page.y));
+                        follow(y);
+                    });
+                })
+                .on_responder_move(move |e: &ResponderEvent| follow(e.page.y))
+                .child(each(
+                    marks,
+                    |mark: &DiffHunkBounds| mark.index,
+                    move |mark, _| {
+                        view()
+                            .absolute()
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            .bg(rgb(0xf59e0b))
+                            .top(move || mark.get().bounds.origin.y / scale())
+                            .h(move || (mark.get().bounds.size.height / scale()).max(px(2.0)))
+                    },
+                ))
+                .child(
+                    view()
+                        .absolute()
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bg(move || theme().foreground.opacity(0.2))
+                        .top(move || rows.get().0 / scale())
+                        .h(move || rows.get().2 / scale()),
+                ),
+        )
+}
+```
+
+```tsx tabs
+import { Each, signal, View, type ViewRef } from "nsh";
+import { DiffView, type DiffHunkBounds, type DiffViewRef } from "nsh/base";
+
+let diff!: DiffViewRef;
+let ruler!: ViewRef;
+let rulerTop = 0;
+const rows = signal({ y: 0, height: 0, view: 0 });
+const marks = signal<DiffHunkBounds[]>([]);
+// Points of the rows per point of the ruler.
+const scale = () => Math.max(rows().height, 1) / Math.max(rows().view, 1);
+// The thumb's middle at the pointer.
+const follow = (pageY: number) => diff.setScrollOffset({ x: 0, y: (pageY - rulerTop) * scale() - rows().view / 2 });
+
+<View class="flex-1 flex-row">
+  <DiffView
+    ref={diff}
+    oldValue={before()}
+    newValue={after()}
+    onScroll={({ offset, contentSize, size }) => rows.set({ y: offset.y, height: contentSize.height, view: size.height })}
+    onHunkBoundsChange={({ hunkBounds }) => marks.set(hunkBounds)}
+    class="flex-1"
+  />
+  <View
+    ref={ruler}
+    class="w-3 bg-muted"
+    onStartShouldSetResponder={() => true}
+    onResponderGrant={async (e) => {
+      const y = e.pageY;
+      rulerTop = (await ruler.measure())?.pagePosition.y ?? 0;
+      follow(y);
+    }}
+    onResponderMove={(e) => follow(e.pageY)}
+  >
+    <Each of={marks()}>
+      {(mark) => (
+        <View
+          class="absolute inset-x-0 bg-amber-500"
+          style={{ top: mark().bounds.origin.y / scale(), height: Math.max(mark().bounds.size.height / scale(), 2) }}
+        />
+      )}
+    </Each>
+    <View class="absolute inset-x-0 bg-foreground/20" style={{ top: rows().y / scale(), height: rows().view / scale() }} />
+  </View>
+</View>
+```
+
+标记的 `index` 就是该改动在 `hunks()` 中的序号，它的 `oldLines` 和 `newLines` 可以区分新增的改动（没有旧行）和删除的改动（没有新行），用来给标记上色。
 
 <a id="review-comments"></a>
 
@@ -371,6 +511,8 @@ const drafting = signal<DiffLineRange | null>(null);
 | `onLineSelectionChange` | `.on_line_selection_change(\|range: &Option<DiffLineRange>\| ..)` | 选中的行变了：`{ range }`，一个 `{ side, start, end }` 或 `null`。 |
 | `onStatsChange` | `.on_stats_change(\|stats: &DiffStats\| ..)` | 统计数字变了：`{ stats }`，一个 `{ added, deleted, hunks }`。视图创建时触发一次，之后每次比较文本得到不同的数字时再触发，用于显示“+8 −8 · 5 处改动”这样的一行。 |
 | `onFileToggle` | `.on_file_toggle(\|file: &DiffFile\| ..)` | 补丁中的一个文件被折叠或展开（通过它的标题或 ref）：`{ file }`，现在的 `DiffFile`。 |
+| `onScroll` | `.on_scroll(\|e: &DiffViewEvent\| ..)` | 行滚动了，或者行或视口的尺寸变了：`{ offset, contentSize, size }`，与 `Scroll` 的相同（Rust 中为 `DiffViewEvent::Scroll(offset, content_size, size)`）。视图完成布局时触发一次，之后其中任何一项变化时再触发。 |
+| `onHunkBoundsChange` | `.on_hunk_bounds_change(\|bounds: &Vec<DiffHunkBounds>\| ..)` | 改动在行中的位置变了：`{ hunkBounds }`，即 `hunkBounds()` 给出的列表。视图完成布局时触发一次，之后每当某处改动移动或改变大小时再触发，无论行的总高度是否变化，用于概览标尺的标记。 |
 
 <a id="related"></a>
 

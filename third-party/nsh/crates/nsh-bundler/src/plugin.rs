@@ -70,7 +70,7 @@ pub(crate) struct ThemeSetup {
 pub(crate) const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"];
 
 /// File types imported as fonts.
-pub(crate) const FONT_EXTENSIONS: &[&str] = &["ttf", "otf"];
+pub(crate) const FONT_EXTENSIONS: &[&str] = &["ttf", "otf", "woff", "woff2"];
 
 fn has_extension(path: &Path, extensions: &[&str]) -> bool {
     path.extension()
@@ -79,9 +79,11 @@ fn has_extension(path: &Path, extensions: &[&str]) -> bool {
 }
 
 /// The family name a font registers under: the typographic family (name
-/// 16) when present, else the legacy family (name 1).
+/// 16) when present, else the legacy family (name 1). A WOFF or WOFF2 font
+/// is read from what it holds.
 fn font_family(data: &[u8]) -> Result<String, String> {
-    let face = ttf_parser::Face::parse(data, 0).map_err(|e| e.to_string())?;
+    let data = nsh_core::font_data(data)?;
+    let face = ttf_parser::Face::parse(&data, 0).map_err(|e| e.to_string())?;
     let name = |id| {
         face.names()
             .into_iter()
@@ -882,5 +884,20 @@ mod tests {
         let bundle = bundled(&dir);
         assert!(!bundle.code.contains("scales"), "{}", bundle.code);
         assert_eq!(assets(&bundle), ["mark.svg"]);
+    }
+
+    #[test]
+    fn a_font_import_names_its_family_from_truetype_woff_and_woff2() {
+        for data in [
+            &include_bytes!("../../../tests/compat/cases/layout/fonts/Pacifico-Regular.ttf")[..],
+            &include_bytes!("../../../tests/compat/cases/layout/fonts/Pacifico-Regular.woff")[..],
+            &include_bytes!("../../../tests/compat/cases/layout/fonts/Pacifico-Regular.woff2")[..],
+        ] {
+            assert_eq!(font_family(data).as_deref(), Ok("Pacifico"));
+        }
+        assert!(has_extension(
+            Path::new("fonts/Inter.WOFF2"),
+            FONT_EXTENSIONS
+        ));
     }
 }

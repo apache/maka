@@ -281,7 +281,7 @@ import Inter from "./assets/Inter.ttf";     // "Inter"
 |---|---|
 | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic` | 一个 `ImageAsset`：`{ url, size, scales? }`，单位为点。文件名带 `@2x` / `@3x` 后缀时，像素尺寸除以 2 / 3。不带后缀的文件还会发布它的 `@1.5x`–`@4x` 同名文件（列在 `scales` 中），并加载适合屏幕的变体（[像素密度](./images-and-assets.md#像素密度)）。 |
 | `.svg` | 一个 `ImageAsset`，尺寸取自 SVG 的 `width` 和 `height`（或 `viewBox`），单位为点。 |
-| `.ttf`, `.otf` | 字体的族名，一个字符串。字体会在第一帧之前注册。 |
+| `.ttf`, `.otf`, `.woff`, `.woff2` | 字体的族名，一个字符串。字体会在第一帧之前注册。 |
 | `.json` | 解析后的 JSON |
 
 参见 [图片与资源](./images-and-assets.md) 和 [字体](./fonts.md)。

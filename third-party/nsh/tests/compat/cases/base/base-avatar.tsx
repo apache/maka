@@ -10,7 +10,8 @@
 // reaches the image (`below:`). A group shows its first `limit` avatars
 // and its `overflow` while more people are in it (`total`), styled by
 // `overflowClass` / `overflowStyle`, which its script sees in its frame,
-// and read by screen readers as `overflowAccessibilityLabel` says.
+// and read by screen readers as `overflowAccessibilityLabel` says. Grace
+// comes last, on a press, so the script sees her fallback still waiting.
 import { Text, View, signal } from "nsh";
 import { Avatar, AvatarGroup } from "nsh/base";
 
@@ -18,6 +19,7 @@ const size = "w-[40px] h-[40px]";
 
 function App() {
   const status = signal("idle");
+  const grace = signal(false);
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Avatar
@@ -32,9 +34,6 @@ function App() {
         onStatusChange={(e) => status.set(e.status)}
       >
         <View testID="ada-dot" style={{ position: "absolute", right: 0, bottom: 0, width: 10, height: 10 }} />
-      </Avatar>
-      <Avatar testID="grace" src="https://example.com/grace.png" name="Grace Hopper" fallbackDelay={300} class={size}>
-        <View testID="grace-dot" style={{ position: "absolute", right: 0, bottom: 0, width: 10, height: 10 }} />
       </Avatar>
       <Avatar
         testID="edsger"
@@ -62,6 +61,12 @@ function App() {
         <Avatar name="Frances Allen" class={size} />
       </AvatarGroup>
       <Text>{`Ada: ${status()}`}</Text>
+      <View testID="show-grace" style={{ height: 10 }} onPress={() => grace.set(true)} />
+      <If when={grace()}>
+        <Avatar testID="grace" src="https://example.com/grace.png" name="Grace Hopper" fallbackDelay={2000} class={size}>
+          <View testID="grace-dot" style={{ position: "absolute", right: 0, bottom: 0, width: 10, height: 10 }} />
+        </Avatar>
+      </If>
     </View>
   );
 }

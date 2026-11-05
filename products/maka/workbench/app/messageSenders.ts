@@ -18,7 +18,7 @@
  */
 
 import { cleanup, effect, signal } from 'nsh';
-import type { AgentSessionPage, MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
+import type { AgentSessionPage } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
 import { isObservationCancelled } from './text';
 
@@ -27,12 +27,6 @@ export type MessageSenders = {
   session(id: string): SenderSession | null;
   openBeside?(id: string): void;
 };
-
-export function senderSession(origin: MessageOrigin | null | undefined): string | null {
-  if (origin?.kind === 'session') return origin.invocation.session_id;
-  // A Bot Turn started because a worker finished names that worker.
-  return origin?.kind === 'bot_worker' ? origin.sessionId : null;
-}
 
 /** One mounted history window owns only its currently referenced, unknown sources. */
 export function createMessageSenders(

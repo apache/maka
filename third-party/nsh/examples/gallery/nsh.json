@@ -32,7 +32,10 @@
         "claude",
         "codex"
       ],
-      "env": []
+      "env": [
+        "NSH_GALLERY_DEMO",
+        "NSH_GALLERY_SECTION"
+      ]
     },
     "webview": {
       "hosts": [
@@ -46,6 +49,7 @@
         "https"
       ]
     },
-    "picker": true
+    "picker": true,
+    "speech": true
   }
 }

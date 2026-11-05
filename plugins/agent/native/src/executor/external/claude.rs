@@ -452,7 +452,10 @@ struct BootstrapOutput<'a>(&'a dyn OutputSink);
 impl OutputSink for BootstrapOutput<'_> {
     fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
         match output {
-            Output::OutputDelta { .. } | Output::ThinkingDelta { .. } => Box::pin(async { Ok(()) }),
+            Output::MessageStart { .. }
+            | Output::MessageEnd { .. }
+            | Output::OutputDelta { .. }
+            | Output::ThinkingDelta { .. } => Box::pin(async { Ok(()) }),
             output => self.0.emit(output),
         }
     }
@@ -481,8 +484,10 @@ async fn observe(
         admitted: false,
         pending: Default::default(),
         assistant: false,
-        text: String::new(),
-        message_ids: std::collections::BTreeSet::new(),
+        open_message: None,
+        final_message_id: None,
+        closed_message_ids: Default::default(),
+        row_ids: Default::default(),
         host_tool_calls: Default::default(),
         api_failure: None,
     };
@@ -600,12 +605,33 @@ struct LiveTurn<'a> {
     admitted: bool,
     pending: std::collections::VecDeque<SubmittedInput>,
     assistant: bool,
-    text: String,
-    message_ids: std::collections::BTreeSet<String>,
+    open_message: Option<AssistantMessage>,
+    final_message_id: Option<String>,
+    closed_message_ids: std::collections::BTreeSet<String>,
+    row_ids: std::collections::BTreeSet<String>,
     host_tool_calls: std::collections::BTreeSet<String>,
     api_failure: Option<String>,
 }
+struct AssistantMessage {
+    id: String,
+    has_body: bool,
+    has_thinking: bool,
+}
 impl LiveTurn<'_> {
+    async fn end_message(&mut self, output: &dyn OutputSink) -> Result<(), Error> {
+        if let Some(message) = self.open_message.take() {
+            output
+                .emit(Output::MessageEnd {
+                    message_id: message.id.clone(),
+                })
+                .await?;
+            self.closed_message_ids.insert(message.id.clone());
+            if message.has_body {
+                self.final_message_id = Some(message.id);
+            }
+        }
+        Ok(())
+    }
     async fn row(&mut self, row: Value, output: &dyn OutputSink) -> Result<Option<Outcome>, Error> {
         if row
             .get("sessionId")
@@ -646,6 +672,7 @@ impl LiveTurn<'_> {
                     "Claude steering missing native session identity".into(),
                 ));
             }
+            self.end_message(output).await?;
             self.pending.pop_front();
             // A previous assistant cannot prove that this additional input was answered.
             self.assistant = false;
@@ -662,11 +689,58 @@ impl LiveTurn<'_> {
                 self.assistant = true;
                 return Ok(None);
             }
-            self.assistant = true;
             let content = &row["message"]["content"];
+            let row_id = runtime::string(&row, "/uuid")?;
+            if !self.row_ids.insert(row_id.into()) {
+                return Ok(None);
+            }
+            self.assistant = true;
+            let id = runtime::string(&row, "/message/id")?;
+            if self
+                .open_message
+                .as_ref()
+                .map(|message| message.id.as_str())
+                != Some(id)
+            {
+                self.end_message(output).await?;
+                if self.closed_message_ids.contains(id) {
+                    return Err(Error::Invalid(
+                        "Claude emitted a closed API message again".into(),
+                    ));
+                }
+                output
+                    .emit(Output::MessageStart {
+                        message_id: id.into(),
+                    })
+                    .await?;
+                self.open_message = Some(AssistantMessage {
+                    id: id.into(),
+                    has_body: false,
+                    has_thinking: false,
+                });
+            }
             if let Some(blocks) = content.as_array() {
                 for block in blocks {
                     match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            let text = runtime::string(block, "/text")?;
+                            if !text.is_empty() {
+                                let message =
+                                    self.open_message.as_mut().expect("started API message");
+                                let emitted = if message.has_body {
+                                    format!("\n\n{text}")
+                                } else {
+                                    text.into()
+                                };
+                                message.has_body = true;
+                                output
+                                    .emit(Output::OutputDelta {
+                                        message_id: id.into(),
+                                        text: emitted,
+                                    })
+                                    .await?;
+                            }
+                        }
                         Some("tool_use") => {
                             let name = runtime::string(block, "/name")?;
                             if matches!(name, "AskUserQuestion" | "EnterPlanMode" | "ExitPlanMode")
@@ -687,24 +761,44 @@ impl LiveTurn<'_> {
                             }
                         }
                         Some("thinking") => {
-                            if let Some(text) = block.get("thinking").and_then(Value::as_str) {
+                            if let Some(text) = block.get("thinking").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                let message =
+                                    self.open_message.as_mut().expect("started API message");
+                                let emitted = if message.has_thinking {
+                                    format!("\n\n{text}")
+                                } else {
+                                    text.into()
+                                };
+                                message.has_thinking = true;
                                 output
-                                    .emit(Output::ThinkingDelta { text: text.into() })
+                                    .emit(Output::ThinkingDelta {
+                                        message_id: id.into(),
+                                        text: emitted,
+                                    })
                                     .await?;
                             }
                         }
                         _ => {}
                     }
                 }
-            }
-            let text = content_text(content);
-            if !text.is_empty() {
-                // Claude can write multiple assistant records for one API message. UUID is the row identity.
-                let id = runtime::string(&row, "/uuid")?;
-                if self.message_ids.insert(id.into()) {
-                    self.text.push_str(&text);
-                    output.emit(Output::OutputDelta { text }).await?;
-                }
+            } else if let Some(text) = content.as_str()
+                && !text.is_empty()
+            {
+                let message = self.open_message.as_mut().expect("started API message");
+                let emitted = if message.has_body {
+                    format!("\n\n{text}")
+                } else {
+                    text.into()
+                };
+                message.has_body = true;
+                output
+                    .emit(Output::OutputDelta {
+                        message_id: id.into(),
+                        text: emitted,
+                    })
+                    .await?;
             }
         } else if kind == "user" {
             if let Some(blocks) = row.pointer("/message/content").and_then(Value::as_array) {
@@ -735,6 +829,9 @@ impl LiveTurn<'_> {
                     "Claude terminal lacks native session identity".into(),
                 ));
             }
+            if self.api_failure.is_none() {
+                self.end_message(output).await?;
+            }
             // The old native turn can finish after the next input was journaled.
             // Neither an unconsumed input nor one without its own assistant may settle.
             if !self.pending.is_empty() || !self.assistant {
@@ -747,7 +844,7 @@ impl LiveTurn<'_> {
                     recoverable: false,
                 },
                 None => Outcome::Completed {
-                    text: std::mem::take(&mut self.text),
+                    message_id: self.final_message_id.clone(),
                 },
             }));
         }
@@ -808,6 +905,85 @@ mod tests {
             Box::pin(async { Ok(()) })
         }
     }
+    struct Collect(std::sync::Mutex<Vec<Output>>);
+    impl OutputSink for Collect {
+        fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            })
+        }
+    }
+    #[tokio::test]
+    async fn api_message_id_groups_rows_joins_blocks_and_survives_interleaved_tool_results() {
+        let sink = Collect(Default::default());
+        let mut turn = turn();
+        let first = serde_json::json!({"type":"assistant","uuid":"row-1","message":{"id":"api-1","content":[{"type":"thinking","thinking":"first thought"},{"type":"text","text":"before"}]}});
+        for row in [
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
+            first.clone(),
+            first,
+            serde_json::json!({"type":"assistant","uuid":"row-2","message":{"id":"api-1","content":[{"type":"thinking","thinking":"second thought"},{"type":"text","text":"tool"},{"type":"tool_use","id":"call-1","name":"Read","input":{"path":"a"}}]}}),
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-1","content":"ok-1"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"row-2b","message":{"id":"api-1","content":[{"type":"tool_use","id":"call-2","name":"Read","input":{"path":"b"}}]}}),
+        ] {
+            assert!(turn.row(row, &sink).await.unwrap().is_none());
+        }
+        // Interleaved tool_result rows within one API message must not close it prematurely.
+        assert!(
+            !sink
+                .0
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, Output::MessageEnd { .. }))
+        );
+        for row in [
+            serde_json::json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"call-2","content":"ok-2"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"row-3","message":{"id":"api-2","content":[{"type":"text","text":"after tool"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"row-4","message":{"id":"api-thinking","content":[{"type":"thinking","thinking":"not the answer"}]}}),
+        ] {
+            assert!(turn.row(row, &sink).await.unwrap().is_none());
+        }
+        assert!(
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { message_id: Some(id) }) if id == "api-2")
+        );
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start","messageId":"api-1"},
+                {"type":"thinking_delta","messageId":"api-1","text":"first thought"},
+                {"type":"output_delta","messageId":"api-1","text":"before"},
+                {"type":"thinking_delta","messageId":"api-1","text":"\n\nsecond thought"},
+                {"type":"output_delta","messageId":"api-1","text":"\n\ntool"},
+                {"type":"tool_start","toolCallId":"call-1","name":"Read","input":{"path":"a"}},
+                {"type":"tool_result","toolCallId":"call-1","text":"ok-1","isError":false},
+                {"type":"tool_start","toolCallId":"call-2","name":"Read","input":{"path":"b"}},
+                {"type":"tool_result","toolCallId":"call-2","text":"ok-2","isError":false},
+                {"type":"message_end","messageId":"api-1"},
+                {"type":"message_start","messageId":"api-2"},
+                {"type":"output_delta","messageId":"api-2","text":"after tool"},
+                {"type":"message_end","messageId":"api-2"},
+                {"type":"message_start","messageId":"api-thinking"},
+                {"type":"thinking_delta","messageId":"api-thinking","text":"not the answer"},
+                {"type":"message_end","messageId":"api-thinking"}
+            ])
+        );
+    }
+    #[tokio::test]
+    async fn bootstrap_suppresses_message_lifecycle_and_requires_native_api_identity() {
+        let sink = Collect(Default::default());
+        let mut turn = turn();
+        for row in [
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
+            serde_json::json!({"type":"assistant","uuid":"row","message":{"id":"setup","content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"hidden"}]}}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
+        ] {
+            turn.row(row, &BootstrapOutput(&sink)).await.unwrap();
+        }
+        assert!(sink.0.lock().unwrap().is_empty());
+        assert!(turn.row(serde_json::json!({"type":"assistant","uuid":"row-without-api-id","message":{"content":"must not use row uuid"}}), &sink).await.is_err());
+    }
     fn turn() -> LiveTurn<'static> {
         LiveTurn {
             session: "session",
@@ -816,8 +992,10 @@ mod tests {
             admitted: false,
             pending: Default::default(),
             assistant: false,
-            text: String::new(),
-            message_ids: Default::default(),
+            open_message: None,
+            final_message_id: None,
+            closed_message_ids: Default::default(),
+            row_ids: Default::default(),
             host_tool_calls: Default::default(),
             api_failure: None,
         }
@@ -956,15 +1134,15 @@ mod tests {
         for row in [
             serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            serde_json::json!({"type":"assistant","uuid":"a1","sessionId":"session","message":{"content":[{"type":"text","text":"first"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"a1","sessionId":"session","message":{"id":"msg-a1","content":[{"type":"text","text":"first"}]}}),
             serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session","preventedContinuation":false,"hasOutput":true,"hookErrors":["continue once"]}),
-            serde_json::json!({"type":"assistant","uuid":"a2","sessionId":"session","message":{"content":[{"type":"text","text":"then final"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"a2","sessionId":"session","message":{"id":"msg-a2","content":[{"type":"text","text":"then final"}]}}),
             serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session"}),
         ] {
             assert!(turn.row(row, &sink).await.unwrap().is_none());
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{text}) if text=="firstthen final")
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="msg-a2")
         );
         assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"different"}),&sink).await.is_err());
     }
@@ -997,19 +1175,19 @@ mod tests {
             images: 1,
         });
         for row in [
-            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"content":"first"}}),
+            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"id":"msg-old","content":"first"}}),
             serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
-            serde_json::json!({"type":"assistant","uuid":"next","sessionId":"session","message":{"content":"second"}}),
+            serde_json::json!({"type":"assistant","uuid":"next","sessionId":"session","message":{"id":"msg-next","content":"second"}}),
             serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"text","text":"[Image #7]last"},{"type":"image"}]}}),
-            serde_json::json!({"type":"assistant","uuid":"last","sessionId":"session","message":{"content":"third"}}),
+            serde_json::json!({"type":"assistant","uuid":"last","sessionId":"session","message":{"id":"msg-last","content":"third"}}),
             serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session"}),
         ] {
             assert!(turn.row(row, &sink).await.unwrap().is_none());
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { text }) if text == "firstsecondthird")
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { message_id:Some(id) }) if id == "msg-last")
         );
     }
     #[tokio::test]
@@ -1022,7 +1200,7 @@ mod tests {
             images: 0,
         });
         for row in [
-            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"content":"old"}}),
+            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"id":"msg-old","content":"old"}}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"text","text":"next"},{"type":"tool_result","tool_use_id":"native","content":"result"}]}}),
             serde_json::json!({"type":"user","sessionId":"session","isSidechain":true,"message":{"content":"next"}}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"different"}}),
@@ -1037,10 +1215,11 @@ mod tests {
         .await
         .unwrap();
         assert!(turn.pending.is_empty());
+        turn.row(serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"id":"msg-old","content":"old"}}), &sink).await.unwrap();
         assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap().is_none());
-        turn.row(serde_json::json!({"type":"assistant","uuid":"new","sessionId":"session","message":{"content":"new"}}), &sink).await.unwrap();
+        turn.row(serde_json::json!({"type":"assistant","uuid":"new","sessionId":"session","message":{"id":"msg-new","content":"new"}}), &sink).await.unwrap();
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { text }) if text == "oldnew")
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { message_id:Some(id) }) if id == "msg-new")
         );
     }
     #[tokio::test]
@@ -1053,10 +1232,10 @@ mod tests {
             images: 0,
         });
         for row in [
-            serde_json::json!({"type":"assistant","uuid":"error","sessionId":"session","isApiErrorMessage":true,"message":{"content":"failed"}}),
+            serde_json::json!({"type":"assistant","uuid":"error","sessionId":"session","isApiErrorMessage":true,"message":{"id":"msg-error","content":"failed"}}),
             serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
-            serde_json::json!({"type":"assistant","uuid":"answer","sessionId":"session","message":{"content":"later"}}),
+            serde_json::json!({"type":"assistant","uuid":"answer","sessionId":"session","message":{"id":"msg-answer","content":"later"}}),
         ] {
             assert!(turn.row(row, &sink).await.unwrap().is_none());
         }
@@ -1066,42 +1245,48 @@ mod tests {
     }
     #[tokio::test]
     async fn host_mcp_results_are_not_orphan_native_tool_activities() {
-        struct Collect(std::sync::Mutex<Vec<Output>>);
-        impl OutputSink for Collect {
-            fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
-                Box::pin(async move {
-                    self.0.lock().unwrap().push(event);
-                    Ok(())
-                })
-            }
-        }
         let mut turn = turn();
         let sink = Collect(Default::default());
         for row in [
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
-            serde_json::json!({"type":"assistant","uuid":"host-call","sessionId":"session","message":{"content":[{"type":"tool_use","id":"mcp-call","name":"mcp__maka__SessionRead","input":{"sessionId":"maka-session"}}]}}),
+            serde_json::json!({"type":"assistant","uuid":"host-call","sessionId":"session","message":{"id":"msg-host-call","content":[{"type":"tool_use","id":"mcp-call","name":"mcp__maka__SessionRead","input":{"sessionId":"maka-session"}}]}}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"mcp-call","content":"Host owns this receipt"}]}}),
         ] {
             turn.row(row, &sink).await.unwrap();
         }
-        assert!(sink.0.lock().unwrap().is_empty());
+        assert!(
+            matches!(&sink.0.lock().unwrap()[..], [Output::MessageStart { message_id: start }] if start == "msg-host-call")
+        );
+        sink.0.lock().unwrap().clear();
         for row in [
-            serde_json::json!({"type":"assistant","uuid":"native-call","sessionId":"session","message":{"content":[{"type":"tool_use","id":"native-call","name":"Bash","input":{"command":"true"}}]}}),
+            serde_json::json!({"type":"assistant","uuid":"native-call","sessionId":"session","message":{"id":"msg-native-call","content":[{"type":"tool_use","id":"native-call","name":"Bash","input":{"command":"true"}}]}}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","content":"done"}]}}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
         ] {
             turn.row(row, &sink).await.unwrap();
         }
         let events = sink.0.lock().unwrap();
-        assert!(
-            matches!(&events[..], [Output::ToolStart{tool_call_id:start,..},Output::ToolResult{tool_call_id:end,..}] if start=="native-call" && end==start)
-        );
+        assert!(matches!(
+            &events[..],
+            [
+                Output::MessageEnd { message_id: closed_host },
+                Output::MessageStart { message_id: opened_native },
+                Output::ToolStart { tool_call_id: start, .. },
+                Output::ToolResult { tool_call_id: end, .. },
+                Output::MessageEnd { message_id: closed_native },
+            ] if closed_host == "msg-host-call"
+                && opened_native == "msg-native-call"
+                && closed_native == "msg-native-call"
+                && start == "native-call"
+                && end == start
+        ));
     }
     #[tokio::test]
     async fn api_failure_is_not_success_even_when_claude_also_writes_turn_duration() {
         let mut turn = turn();
         let sink = Sink;
         turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
-        assert!(turn.row(serde_json::json!({"type":"assistant","sessionId":"session","uuid":"api-error","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"API Error: 400 PTY_ERROR_SENTINEL"}]}}), &sink).await.unwrap().is_none());
+        assert!(turn.row(serde_json::json!({"type":"assistant","sessionId":"session","uuid":"api-error","isApiErrorMessage":true,"message":{"id":"msg-api-error","content":[{"type":"text","text":"API Error: 400 PTY_ERROR_SENTINEL"}]}}), &sink).await.unwrap().is_none());
         assert!(
             matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Failed{message,..}) if message=="Claude API request failed: API Error: 400 PTY_ERROR_SENTINEL")
         );
@@ -1113,12 +1298,12 @@ mod tests {
         for row in [
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}),
             serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"tool_result","tool_use_id":"native-call","is_error":true,"content":"file missing"}]}}),
-            serde_json::json!({"type":"assistant","sessionId":"session","uuid":"answer","message":{"content":[{"type":"text","text":"Explained the missing file"}]}}),
+            serde_json::json!({"type":"assistant","sessionId":"session","uuid":"answer","message":{"id":"msg-answer","content":[{"type":"text","text":"Explained the missing file"}]}}),
         ] {
             turn.row(row, &sink).await.unwrap();
         }
         assert!(
-            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{text}) if text=="Explained the missing file")
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{message_id:Some(id)}) if id=="msg-answer")
         );
     }
     #[tokio::test]

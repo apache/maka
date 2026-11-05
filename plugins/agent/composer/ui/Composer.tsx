@@ -587,7 +587,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             backgroundColor: C.raised,
             borderRadius: cardRadius(),
             borderWidth: 1,
-            borderColor: fileDragging() ? C.accent : C.line,
+            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.raised,
             ...(platform.isTerminal
               ? {
                   paddingHorizontal: 16,
@@ -899,7 +899,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
           >
             <Popover
               open={pending() !== null && pendingAdd()}
-              onOpenChange={({ open }) => pendingAdd.set(open)}
+              onOpenChange={({ open }) => pendingAdd.set(open && pending() !== null)}
               placement="top"
               align="start"
               offset={8}
@@ -915,7 +915,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                   ref={completion.addButton}
                   onPress={
                     pending()
-                      ? inputAction(() => pendingAdd.set(!pendingAdd()), null)
+                      ? undefined
                       : inputAction(completion.toggleAdd, {
                           sessionId: props.session()?.sessionId ?? null,
                         })

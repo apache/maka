@@ -25,9 +25,14 @@ use crate::{android, term};
 #[derive(Args)]
 pub(crate) struct RunArgs {
     /// The app: its directory (whose `App.tsx` is the entry) or its entry
-    /// module.
+    /// module; else a demo of the gallery, by its name (any case), which
+    /// the gallery opens at (`cargo run -- accordion`, as GPUI Kit's story).
     #[arg(default_value = "examples/gallery")]
     entry: String,
+    /// With a demo of the gallery: show only its section with this title
+    /// (`--section settings`, any case).
+    #[arg(long)]
+    section: Option<String>,
     /// Where to run: `macos` (the AppKit host), `catalyst`, `ios` (a
     /// simulator), `android`, `linux`, `windows`, `gpui` (the GPUI host),
     /// or `tui` (this terminal);
@@ -149,7 +154,18 @@ struct App {
 fn launch(root: &Path, args: &RunArgs) -> anyhow::Result<App> {
     let nsh = format!("target/debug/nsh{}", std::env::consts::EXE_SUFFIX);
     let mut cmd = Command::new(root.join(&nsh));
-    cmd.arg("run").arg(&args.entry).current_dir(root);
+    // Not an app: a demo of the gallery, which reads where to open from
+    // the environment its host inherits (`examples/gallery/App.tsx`).
+    let entry = if root.join(&args.entry).exists() {
+        args.entry.as_str()
+    } else {
+        cmd.env("NSH_GALLERY_DEMO", &args.entry);
+        "examples/gallery"
+    };
+    if let Some(section) = &args.section {
+        cmd.env("NSH_GALLERY_SECTION", section);
+    }
+    cmd.arg("run").arg(entry).current_dir(root);
     let default = if cfg!(target_os = "macos") {
         "macos"
     } else if cfg!(target_os = "linux") {

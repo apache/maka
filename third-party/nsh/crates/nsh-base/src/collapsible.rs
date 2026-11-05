@@ -24,7 +24,7 @@ const REVEAL_MS: f32 = 265.0;
 /// that commit (a list updating elsewhere) changes at once. Views inserted
 /// and removed in it are not animated: the content shows at once, clipped
 /// by the region growing around it.
-const REVEAL: LayoutTransition =
+pub(crate) const REVEAL: LayoutTransition =
     LayoutTransition::new(LayoutCurve::Spring { damping: 1.0 }, REVEAL_MS);
 
 /// The props of [`Collapsible`].

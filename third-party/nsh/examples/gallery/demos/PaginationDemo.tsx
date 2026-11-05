@@ -108,14 +108,19 @@ export function PaginationDemo() {
           <Pagination
             page={page()}
             totalPages={pages}
-            visiblePages={pointer ? 7 : 5}
+            visiblePages={7}
+            compact={!pointer}
             accessibilityLabel="Search results pages"
             previousAccessibilityLabel="Previous"
             nextAccessibilityLabel="Next"
-            class="gap-1 flex-wrap"
-            itemClass={itemClass}
+            class={pointer ? "gap-1 flex-wrap" : "items-center justify-between self-stretch"}
+            itemClass={pointer ? itemClass : `${itemClass} px-3 h-10 border border-border`}
             onChange={({ page: next }) => page.set(next)}
-          />
+          >
+          <If when={!pointer}>
+            <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${page()} / ${pages}`}</Text>
+          </If>
+          </Pagination>
           {/* Full width: the caption's label grows, which a centered column would squeeze to nothing. */}
           <View style={{ alignSelf: "stretch" }}>
             <Caption label={`Showing ${first()}–${last()} of ${total}`} note={`page ${page()} of ${pages}`} />
@@ -169,10 +174,15 @@ export function PaginationDemo() {
             accessibilityLabel="Orders pages"
             previousAccessibilityLabel="Newer"
             nextAccessibilityLabel="Older"
-            class="gap-1"
-            itemClass={itemClass}
+            compact={!pointer}
+            class={pointer ? "gap-1" : "items-center justify-between self-stretch"}
+            itemClass={pointer ? itemClass : `${itemClass} px-3 h-10 border border-border`}
             onChange={({ page: next }) => page.set(next)}
-          />
+          >
+          <If when={!pointer}>
+            <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${page()} / ${pages()}`}</Text>
+          </If>
+          </Pagination>
         </View>
         <Caption label={`Rows ${grouped(first())}–${grouped(last())} of ${grouped(orders)}`} note={`${pages()} pages`} />
       </Card>
@@ -234,10 +244,12 @@ export function PaginationDemo() {
         subtitle="An ellipsis opens the pages it hides; the same few items however many pages"
         right={<Toggle value={offline()} onChange={(v) => offline.set(v)} label="Offline" />}
       >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text style={{ fontSize: 12, color: colors.muted }}>Pages shown</Text>
-          <Segmented size="small" options={(["5", "7", "9"] as const).map((v) => ({ value: v, label: v }))} value={visible()} onChange={(v) => visible.set(v)} />
-        </View>
+        <If when={pointer}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+            <Text style={{ fontSize: 12, color: colors.muted }}>Pages shown</Text>
+            <Segmented size="small" options={(["5", "7", "9"] as const).map((v) => ({ value: v, label: v }))} value={visible()} onChange={(v) => visible.set(v)} />
+          </View>
+        </If>
         <Pagination
           page={page()}
           totalPages={pages}
@@ -246,11 +258,16 @@ export function PaginationDemo() {
           accessibilityLabel="Archive pages"
           previousAccessibilityLabel="Previous archive page"
           nextAccessibilityLabel="Next archive page"
-          class="gap-1 flex-wrap"
-          itemClass={itemClass}
+          compact={!pointer}
+          class={pointer ? "gap-1 flex-wrap" : "items-center justify-between self-stretch"}
+          itemClass={pointer ? itemClass : `${itemClass} px-3 h-10 border border-border`}
           renderItem={draw}
           onChange={({ page: next }) => go(next)}
-        />
+        >
+        <If when={!pointer}>
+          <Text style={{ fontSize: density.body, color: colors.muted, fontVariant: ["tabular-nums"] }}>{`${grouped(page())} / ${grouped(pages)}`}</Text>
+        </If>
+        </Pagination>
         <View style={{ flexDirection: "row", gap: 8 }}>
           <Button label="First page" variant="ghost" size="small" disabled={offline() || page() === 1} onPress={() => go(1)} />
           <Button label="Last page" variant="ghost" size="small" disabled={offline() || page() === pages} onPress={() => go(pages)} />

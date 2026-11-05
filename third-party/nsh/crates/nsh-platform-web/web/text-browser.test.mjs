@@ -35,9 +35,9 @@ test('tabular digits are measured as wide as the DOM draws them', { skip: !chrom
       try {
         const font = '400 20px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
         // A run as the mounter draws it: its class's font, then the variant.
-        const drawn = (text) => {
+        const drawn = (text, family = font) => {
           const run = document.createElement('span');
-          run.style.cssText = 'position:absolute;white-space:pre;font:' + font + ';font-variant-numeric:tabular-nums';
+          run.style.cssText = 'position:absolute;white-space:pre;font:' + family + ';font-variant-numeric:tabular-nums';
           run.textContent = text;
           document.body.append(run);
           const width = run.getBoundingClientRect().width;
@@ -49,10 +49,16 @@ test('tabular digits are measured as wide as the DOM draws them', { skip: !chrom
           if (Math.abs(measured - drawn(text)) > 0.01) throw Error(text + ': measured ' + measured + ', drawn ' + drawn(text));
         }
         // Figures are measured character by character (the engine's
-        // \`measured_by_char\`): the sum is what the run draws.
-        for (const text of ['530.92', '1,234.56', '-0.5%', '$1,111.11', '12:30']) {
-          const sum = [...text].reduce((w, c) => w + measureNumericText(font, 'tabular-nums', c), 0);
-          if (Math.abs(sum - drawn(text)) > 0.05) throw Error(text + ': summed ' + sum + ', drawn ' + drawn(text));
+        // \`measured_by_char\` and \`figure_width\`): the characters'
+        // sum with each adjacent pair's kerning is what the run draws. Arial
+        // (Liberation Sans on Linux) has no \`tnum\` and kerns \`11\`.
+        for (const family of [font, '400 20px Arial']) {
+          const width = (text) => measureNumericText(family, 'tabular-nums', text);
+          for (const text of ['530.92', '1,234.56', '-0.5%', '$1,111.11', '12:30']) {
+            const chars = [...text];
+            const sum = chars.reduce((w, c, i) => w + (i ? width(chars[i - 1] + c) - width(chars[i - 1]) : width(c)), 0);
+            if (Math.abs(sum - drawn(text, family)) > 0.05) throw Error(family + ' ' + text + ': summed ' + sum + ', drawn ' + drawn(text, family));
+          }
         }
         document.body.dataset.result = 'passed';
       } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
@@ -65,6 +71,50 @@ test('tabular digits are measured as wide as the DOM draws them', { skip: !chrom
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
+
+// On a 2x screen Chrome draws color emoji narrower than canvas measures
+// them (14 against 18 px at 14px): the engine adds each emoji cluster's
+// difference, measured in the DOM, to the canvas width (`emoji_excess`).
+test('emoji are measured as wide as the DOM draws them on a 2x screen', { skip: !chromium }, async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'nsh-text-emoji-'));
+  try {
+    const source = await readFile(new URL('./nsh.js', import.meta.url), 'utf8');
+    const module = 'data:text/javascript;base64,' + Buffer.from(source + '\nexport { measureNumericText };').toString('base64');
+    await writeFile(join(dir, 'index.html'), `<!doctype html><meta charset="utf-8"><body><script type="module">
+      import { measureNumericText } from '${module}';
+      try {
+        const font = '400 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif';
+        const canvas = new OffscreenCanvas(1, 1).getContext('2d');
+        canvas.font = font;
+        const drawn = (text) => {
+          const run = document.createElement('span');
+          run.style.cssText = 'position:absolute;white-space:pre;font:' + font;
+          run.textContent = text;
+          document.body.append(run);
+          const width = run.getBoundingClientRect().width;
+          run.remove();
+          return width;
+        };
+        const clusters = (text) => [...new Intl.Segmenter().segment(text)].map((s) => s.segment);
+        // The engine's css::is_emoji.
+        const emoji = (cluster) => [...cluster].some((c) => c.codePointAt(0) > 0x7f && (/\\p{Emoji}/u.test(c) || c === '\\u{FE0F}' || c === '\\u{20E3}'));
+        for (const text of ['🤩'.repeat(22), 'abc🤩def', '👍🏻 1️⃣ ⌚ 🇨🇳 ⭐ ok', 'a👨‍👩‍👧‍👦b ❤️ ☝✌✍⛹ 中文 ไทย']) {
+          const measured = canvas.measureText(text).width + clusters(text)
+            .filter(emoji)
+            .reduce((w, c) => w + measureNumericText(font, 'normal', c) - canvas.measureText(c).width, 0);
+          if (Math.abs(measured - drawn(text)) > 0.05) throw Error(text + ': measured ' + measured + ', drawn ' + drawn(text));
+        }
+        document.body.dataset.result = 'passed';
+      } catch (e) { document.body.dataset.result = 'failed: ' + e.message; }
+    </script>`);
+    const html = execFileSync(chromium, ['--headless', '--no-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--virtual-time-budget=1000',
+      '--force-device-scale-factor=2',
+      '--user-data-dir=' + join(dir, 'profile'), '--dump-dom', pathToFileURL(join(dir, 'index.html')).href],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, maxBuffer: 1024 * 1024 });
+    assert.equal(html.match(/data-result="([^"]*)"/)?.[1], 'passed');
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
 
 test('cluster boxes follow bidi reordering and preserve measurement styles', { skip: !chromium }, async () => {
   const dir = await mkdtemp(join(tmpdir(), 'nsh-text-bidi-'));

@@ -6,7 +6,7 @@ order: 2
 
 # nsh
 
-`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
+`nsh` 是核心模块：响应式 API（signal、computed、effect、context）、`mount`、`token`、宿主元素 `View`、`Text`、`Scroll` 和 `Overlay`，[可选择的视图](#selectable-views)、[安全区域与键盘](#safe-area-and-keyboard)，[动画](#animation)、[设备与环境](#device)、[`PanResponder`](#panresponder)、[剪贴板](#clipboard)、[照片选择器](#picker)、[语音识别](#speech)、[存储](#storage)、[宿主通道](#host)、[键盘快捷键](#keymap)、[原生组件与模块](#nativecomponent-and-nativemodule)、[无障碍](#accessibility)，以及元素、样式和事件的 TypeScript 类型。响应式图本身以 Rust 原生运行；读取一个 signal 是一次对运行时的调用，只需几纳秒，只有你自己写的闭包会在 JavaScript 解释器中执行。
 
 ```ts
 import { batch, cleanup, computed, context, effect, ErrorBoundary, mount, Overlay, Scroll, signal, split, Text, token, untracked, View } from "nsh";
@@ -888,17 +888,17 @@ const toggle = () => {
 
 ## Device
 
-设备 API 向应用提供设备及其环境的信息。Rust 代码调用 `nsh_core::prelude` 中的函数（`window()`、`dark()`、`font_scale()`、`locale()`、`os()`、`idiom()`、`pixel_ratio()`、`set_color_scheme()` 等）；TSX 导入 `nsh`。窗口尺寸、配色方案、字体缩放、像素密度和区域设置是响应式的：在绑定（Rust 中传给元素的闭包，TSX 中的 JSX）、`computed` 或 `effect` 中读取它们，平台报告变化（旋转、窗口缩放、切换深色模式、修改文字大小或语言、移到另一种像素密度的屏幕）时，读取它们的地方会随之更新。
+设备 API 向应用提供设备及其环境的信息。Rust 代码调用 `nsh_core::prelude` 中的函数（`window()`、`dark()`、`font_scale()`、`locale()`、`lifecycle()`、`os()`、`idiom()`、`pixel_ratio()`、`set_color_scheme()` 等）；TSX 从 `nsh` 导入它们。窗口尺寸、配色方案、字体缩放、像素密度、区域设置和应用状态是响应式的：在绑定（Rust 中传给元素的闭包，TSX 中的 JSX）、`computed` 或 `effect` 中读取它们，平台报告变化（旋转、窗口缩放、切换深色模式、修改文字大小或语言、移到另一种像素密度的屏幕、离开应用再回来）时，读取它们的地方会随之更新。
 
 ```rust tabs
 use nsh_core::{
-    platform::{Appearance, Idiom, Os},
-    prelude::*, // window、dark、font_scale、locale、os、idiom、pixel_ratio、set_color_scheme……
+    platform::{Appearance, Idiom, Lifecycle, Os},
+    prelude::*, // window、dark、font_scale、locale、lifecycle、os、idiom、pixel_ratio、set_color_scheme……
 };
 ```
 
 ```tsx tabs
-import { colorScheme, fontScale, locale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
+import { colorScheme, fontScale, lifecycle, locale, openUrl, pixelRatio, platform, setColorScheme, windowSize } from "nsh";
 ```
 
 教程见[设备与环境](../docs/device-and-environment.md)。
@@ -956,6 +956,33 @@ const locale: Accessor<string>;
 ```
 
 用户的区域设置，BCP 47 标签（`"en-US"`、`"zh-Hans-CN"`），或嵌入它的应用设置的区域设置。响应式。Rust：`locale() -> Locale`（`locale().as_str()` 即标签）。`Intl` 默认按它格式化；读取它来选择你自己的翻译文案（[设备与环境](../docs/device-and-environment.md#语言和地区)）。
+
+### lifecycle
+
+```ts
+const lifecycle: Accessor<"active" | "inactive" | "background">;
+```
+
+应用是否正在使用，与 React Native 的 `AppState` 含义相同：`"active"` 表示在前台并接收输入；`"inactive"` 表示仍可见但没有焦点（焦点在另一个应用或窗口上，或系统在它上面显示了内容，例如应用切换器或来电）；`"background"` 表示不可见（在后台、已最小化、浏览器中隐藏的标签页）。显示在原生应用中的应用跟随该应用的状态。响应式。Rust：`lifecycle() -> Lifecycle`（`Lifecycle::Active`、`Inactive`、`Background`）。
+
+在 effect 中读取它，即可暂停无人可见的工作，并在应用回来时恢复：
+
+```rust tabs
+effect(move || {
+    if lifecycle() == Lifecycle::Background {
+        feed.pause();
+    } else {
+        feed.resume();
+    }
+});
+```
+
+```tsx tabs
+effect(() => {
+  if (lifecycle() === "background") feed.pause();
+  else feed.resume();
+});
+```
 
 ### setColorScheme
 
@@ -1742,6 +1769,145 @@ photos.set([...photos(), ...images.map((image) => URL.createObjectURL(image.file
 > 应用在 `nsh.json` 中声明了 `capabilities` 时，需要用 `"picker": true` 授予选择器。没有授予时 `pickImages` 什么也不显示，
 > 并以一个 `Error` reject，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"picker"`，`resource` 为 `""`。在 Rust
 > 中，`pick_images` 回答没有文件，拒绝会记录在日志中。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
+
+## Speech
+
+语音 API 把用户说的话变成文字（听写）：应用开始一个会话，平台监听麦克风，转写文本随说话逐步到达。macOS 和 iOS 使用系统的
+Speech 框架识别；系统会向用户请求一次麦克风和语音识别的权限。在其他平台上，会话会立即以错误 `"unavailable"` 结束，所以
+显示麦克风按钮前先检查 `Speech.available()`。Rust 代码调用 `nsh_core::prelude` 的 `recognize_speech`；TSX 从 `nsh` 导入
+`Speech`。
+
+```rust tabs
+use nsh_core::speech::{SpeechEvent, SpeechRequest};
+```
+
+```tsx tabs
+import { Speech, type SpeechSession } from "nsh";
+```
+
+```ts
+const Speech: {
+  available(): Promise<boolean>;
+  start(options?: SpeechOptions): SpeechSession;
+};
+
+interface SpeechOptions {
+  /** The language spoken, a BCP 47 tag ("en-US", "zh-CN"); the user's when left out. */
+  lang?: string;
+  /** Results while the user speaks (true, the default), or only the final one. */
+  interim?: boolean;
+}
+
+interface SpeechSession {
+  on(event: "start", listener: () => void): () => void;
+  on(event: "result", listener: (result: SpeechResult) => void): () => void;
+  on(event: "end", listener: (end: SpeechEnd) => void): () => void;
+  /** The whole transcript so far. */
+  readonly text: string;
+  readonly ended: boolean;
+  stop(): void;
+  abort(): void;
+}
+
+interface SpeechResult { text: string; isFinal: boolean }
+interface SpeechEnd { text: string; error?: SpeechErrorCode }
+
+type SpeechErrorCode =
+  | "not-allowed" | "no-speech" | "audio-capture" | "network"
+  | "language-not-supported" | "unavailable" | "failed";
+```
+
+| TSX | Rust |
+|---|---|
+| `await Speech.available()` | `speech_available().await -> bool` |
+| `Speech.start(options)` | `recognize_speech(request) -> SpeechRecognition` |
+| `session.on("result", ...)` | `recognition.next().await -> Option<SpeechEvent>` |
+| `session.stop()` / `abort()` | `recognition.stop()` / `abort()` （drop 它即中止） |
+
+### Speech.start
+
+开始一个会话并立即返回它。会话依次报告：麦克风打开、识别器开始监听时的 `start`；每次转写变化时的 `result`（`text` 始终是
+到目前为止的完整转写，应用照原样显示即可）；以及一次 `end`，之后不再有任何事件。`stop()` 停止监听，让识别器把听到的内容
+识别完：最后一个 `isFinal: true` 的结果，然后是 `end`。`abort()` 立即结束会话，不带错误，并丢弃尚未报告的内容。同一时间只运行
+一个会话：开始另一个会中止正在运行的会话。
+
+`end` 带有最后的转写，会话失败时还带有 `error`，名称与 Web Speech API 一致：
+
+| `error` | 何时 |
+|---|---|
+| `"not-allowed"` | 用户或系统不允许使用麦克风或语音识别。 |
+| `"no-speech"` | 没有听到说话。 |
+| `"audio-capture"` | 无法使用麦克风。 |
+| `"network"` | 识别器需要网络但无法连接。 |
+| `"language-not-supported"` | 识别器不认识 `lang`。 |
+| `"unavailable"` | 这个平台不识别语音，或此刻不能识别。 |
+| `"failed"` | 识别器因其他原因失败。 |
+
+选项类型不对时 `start` 抛出 `TypeError`，`lang` 不是语言标签时抛出 `RangeError`。
+
+```tsx
+import { signal, Speech, type SpeechSession } from "nsh";
+
+const transcript = signal("");
+let session: SpeechSession | null = null;
+
+function toggle() {
+  if (session && !session.ended) {
+    session.stop();
+    return;
+  }
+  session = Speech.start({ lang: "en-US" });
+  session.on("result", ({ text }) => transcript.set(text));
+  session.on("end", ({ text, error }) => {
+    if (error) console.warn("dictation ended:", error);
+    else transcript.set(text);
+  });
+}
+```
+
+```rust
+use nsh_core::prelude::*;
+use nsh_core::speech::{SpeechEvent, SpeechRequest};
+
+async fn dictate() -> String {
+    let mut recognition = recognize_speech(SpeechRequest::default());
+    let mut text = String::new();
+    while let Some(event) = recognition.next().await {
+        match event {
+            SpeechEvent::Result { text: heard, .. } => text = heard,
+            SpeechEvent::End { .. } => break,
+            _ => {}
+        }
+    }
+    text
+}
+```
+
+### Speech.available
+
+在可以运行会话的地方 resolve 为 `true`：macOS 和 iOS，以及嵌入应用自己识别语音的地方。
+
+### Info.plist
+
+在 macOS 和 iOS 上，系统会显示应用为什么需要麦克风和语音识别。应用可能使用语音时（它的 `capabilities` 授予了 `speech`，
+或者没有声明 capabilities），`nsh package` 和 `nsh run` 会把 `NSMicrophoneUsageDescription` 和
+`NSSpeechRecognitionUsageDescription` 写入应用的 Info.plist。
+
+### 嵌入 NSH 的应用
+
+嵌入 NSH、并且用自己的方式识别语音（自己的引擎或服务）的应用可以自己回答会话：在 Rust 中，把 `SpeechBackend`
+（`nsh_core::speech`）交给引擎（`EngineConfig::speech`），它会收到每个会话的 `SpeechRequest` 和一个可以从任意线程报告事件的
+`SpeechSink`，并返回 core 用来停止和中止会话的 `SpeechControl`。这时不使用平台的识别器。
+
+### 测试
+
+`nsh test` 在无界面运行时用一个模拟识别器运行会话：会话立即开始，`app.hear(text)` 把 `text` 报告为到目前为止的转写，
+`app.endSpeech(error?)` 结束会话，`app.speechRequests()` 列出应用开始的会话。见[测试](../docs/testing-and-trace.md)。
+
+> [!NOTE]
+> 应用在 `nsh.json` 中声明了 `capabilities` 时，需要用 `"speech": true` 授予语音。没有授予时 `Speech.start` 抛出一个
+> `Error`，其 `code` 为 `"ERR_ACCESS_DENIED"`，`permission` 为 `"speech"`，`resource` 为 `""`。在 Rust 中，会话以
+> `not-allowed` 结束，拒绝会记录在日志中。见[沙箱与能力](../docs/sandbox-and-capabilities.md)。
 
 ## Storage
 

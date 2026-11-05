@@ -115,10 +115,12 @@ button reports `onPress`, and the app keeps the state. In Rust, `toolbar()`, `to
 The items of a toolbar are the `Button`s, `Toggle`s and `Link`s inside it, in its groups and in a
 [`ToggleGroup`](./toggle.md) inside it too. A [`Menu`](./menu.md)'s or a [`Popover`](./popover.md)'s trigger is an
 item as well: the view in its `trigger` slot, which the popup gives its presses, its focus and its `expanded` state. A
+tool the app draws itself is a `Button` with the app's classes: a `Button` has no look of its own, so it looks as the
+app styles it and is an item (a `View` with `onPress` stays a stop of its own, outside the arrow keys). A
 `ToggleGroup` inside a toolbar is one of its groups: its toggles are the toolbar's items, screen readers hear a group,
 and its `disabled` still disables its own toggles. Other controls (an `Input`, a `Select`, a `Slider`) stay stops of
 their own and keep their arrow keys; place them at the end of the bar. What a popup an item opens shows (a popover's
-fields and buttons, a menu's items) is no part of the toolbar. The arrow keys go through the items in the order the
+fields and buttons, a menu's items, a hover card's links) is no part of the toolbar. The arrow keys go through the items in the order the
 bar lays them out, however deep each one sits, and an item the app shows later takes its place among them.
 
 ## Parts
@@ -193,7 +195,9 @@ On macOS and the web, where Tab reaches the views that take presses, a `Toolbar`
 | Space, Return | Presses the focused item. |
 
 The arrow keys skip disabled items and press nothing: a toggle changes only when it is pressed. The other pair of
-arrows is left to the items (a menu's trigger opens its menu with Down).
+arrows is left to the items (a menu's trigger opens its menu with Down). In a right-to-left layout a horizontal
+toolbar runs from the right, so Left moves to the next item and Right to the previous; a vertical one keeps Down and
+Up.
 
 ## Platform notes
 

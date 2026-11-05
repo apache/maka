@@ -150,6 +150,11 @@ event id:web onLoad url=https://example.com/a title="Page A" loading=false canGo
 event id:web onMessage data="hello there"
 event id:web onError message="offline"
 expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline
+# It downloads a file, and another download fails.
+event id:web onDownload state=started id=d1 url=https://example.com/r.pdf filename=r.pdf path=/data/downloads/d1/r.pdf
+event id:web onDownload state=finished id=d1 url=https://example.com/r.pdf filename=r.pdf path=/data/downloads/d1/r.pdf bytes=2048
+event id:web onDownload state=failed id=d2 url=https://example.com/x.csv filename=x.csv path=/data/downloads/d2/x.csv message="network lost"
+expect Web: start https://example.com/ "" loading true back false forward false | nav https://example.com/a "Page A" loading false back true forward false | load https://example.com/a "Page A" loading false back true forward false | message hello there | error offline | download started r.pdf - - | download finished r.pdf 2048 - | download failed x.csv - network lost
 covers [nsh] Image
 covers [nsh] Video
 covers [nsh] WebView
@@ -162,6 +167,7 @@ covers [events] onBuffer
 covers [events] onEnd
 covers [events] onMessage
 covers [events] onNavigationStateChange
+covers [events] onDownload
 # events-pointer
 tap id:case-events-pointer
 expect Press: none

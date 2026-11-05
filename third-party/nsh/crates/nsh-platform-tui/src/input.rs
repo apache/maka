@@ -3063,17 +3063,17 @@ impl Surface {
         affected.sort_unstable();
         affected.dedup();
         for id in affected {
-            let tracked = self.node(id).map_or(0, |n| n.tracked);
+            let reported = nsh_core::input::reported_states(self.node(id).map_or(0, |n| n.tracked));
             let before =
                 Self::interaction_states(id, old_focus, &old_chain, old_pressed, old_hover)
-                    & tracked;
+                    & reported;
             let after = Self::interaction_states(
                 id,
                 self.focus,
                 &new_chain,
                 self.pressed,
                 &self.hovered_path,
-            ) & tracked;
+            ) & reported;
             if before != after {
                 self.events.push(SurfaceEvent::States(id, after));
             }
@@ -3089,7 +3089,7 @@ impl Surface {
         if tracked != 0 {
             let states =
                 Self::interaction_states(id, self.focus, &chain, self.pressed, &self.hovered_path)
-                    & tracked;
+                    & nsh_core::input::reported_states(tracked);
             self.events.push(SurfaceEvent::States(id, states));
         }
     }
@@ -4524,6 +4524,29 @@ mod tests {
                 .iter()
                 .any(|event| matches!(event, SurfaceEvent::States(2, 0)))
         );
+    }
+
+    #[test]
+    fn focus_is_reported_for_views_that_track_no_state() {
+        use nsh_core::MountBatch;
+        let mut surface = Surface::new(40, 12, crate::CellMetrics::default());
+        let mut items = create(2, ViewKind::Input, ROOT_ID, 0.0);
+        items.extend(create(4, ViewKind::Input, ROOT_ID, 48.0));
+        surface.apply(MountBatch { items });
+        surface.set_focus(Some(2));
+        surface.events.clear();
+        surface.set_focus(Some(4));
+        assert_eq!(surface.focus, Some(4));
+        let states: Vec<_> = surface
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                SurfaceEvent::States(id, states) => Some((*id, *states)),
+                _ => None,
+            })
+            .collect();
+        assert!(states.contains(&(2, 0)), "{states:?}");
+        assert!(states.contains(&(4, state::FOCUSED)), "{states:?}");
     }
 
     fn parked_focus_scene() -> Surface {

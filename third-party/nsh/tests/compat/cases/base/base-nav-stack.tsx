@@ -7,8 +7,8 @@
 // render function running once per push, a page keeping its state while
 // covered and its cleanups running when its route leaves. A route that
 // renders no `NavPage` is wrapped in a page. The controls sit outside the
-// stack, whose pages all stay on screen headless. Its script checks
-// each.
+// stack, whose top page is on screen; a covered page's state is checked
+// once it is on top again. Its script checks each.
 import { type Accessor, Text, View, cleanup, signal } from "nsh";
 import { Button, NavPage, NavStack, createNavStack } from "nsh/base";
 
@@ -22,13 +22,13 @@ const renders = signal(0);
 const cleanups = signal<string[]>([]);
 let pushed = 0;
 
-function Page(props: { route: Route; index: Accessor<number> }) {
+function Page(props: { route: Route; at: Accessor<number> }) {
   const bumps = signal(0);
   cleanup(() => cleanups.set([...cleanups(), props.route.name]));
   return (
     <NavPage title={`Title ${props.route.name}`}>
       <View style={{ flex: 1 }}>
-        <Text>{`Page ${props.route.name} at ${props.index()}`}</Text>
+        <Text>{`Page ${props.route.name} at ${props.at()}`}</Text>
         <Text>{`Bumps of ${props.route.name}: ${bumps()}`}</Text>
         <Button onPress={() => bumps.set(bumps() + 1)}>
           <Text>{`Bump ${props.route.name}`}</Text>
@@ -71,7 +71,7 @@ function App() {
           if (route.name === "plain") {
             return <Text>{`Plain page at ${index()}`}</Text>;
           }
-          return <Page route={route} index={index} />;
+          return <Page route={route} at={index} />;
         }}
       </NavStack>
     </View>

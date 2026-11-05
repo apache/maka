@@ -1,6 +1,6 @@
 ---
 title: Combobox
-description: "The Combobox component: one value or several chosen from a searchable list of items, a popup at its trigger on desktops and a sheet on phones, styled by the app."
+description: "The Combobox component: one value or several chosen from a list of items filtered by typing into its input, a popup under the field on desktops and a sheet on phones, styled by the app."
 group: base
 demo: el-combobox
 ---
@@ -8,20 +8,20 @@ demo: el-combobox
 # Combobox
 
 A combobox chooses values from a list of items, one or, with `multiple`, several: the tags of a post, the members of
-a channel, the languages of a document. It is [Select](./select.md)'s sibling and shares its list, presented as each
-device expects:
+a channel, the languages of a document. Its trigger is an input: typing opens the list and filters it, as shadcn/ui's
+combobox does. It is [Select](./select.md)'s sibling and shares its list, presented as each device expects:
 
-- On the desktops and in desktop browsers, a popup at the trigger, at least as wide as the trigger and as tall as its
-  rows up to the room beside it.
+- On the desktops and in desktop browsers, a popup under the field, as wide as the field (the app's `popupStyle` / `popupClass` width sets another) and as tall as its rows up
+  to the room beside it.
 - On phones and tablets, a sheet at the bottom of the screen over a backdrop.
 
 The combobox owns the behavior: the value (the app's, or its own), the open state, the keyboard, search, sections,
 the highlighted row and what screen readers hear. With `multiple`, a choice toggles the item in the value and the
-list stays open, so several are picked in one go. The look is the app's: it styles the trigger, the popup, the list,
-the rows, the sections' headers, the search field and the footer, or draws the rows itself.
+list stays open, so several are picked in one go. The look is the app's: it styles the field, the popup, the list,
+the rows, the sections' headers, the input and the footer, or draws the rows itself.
 
 ```rust tabs
-use nsh_base::{SelectItem, SelectItemState, combobox, theme};
+use nsh_base::{SelectEntry, SelectItem, combobox, theme};
 use nsh_core::prelude::*;
 
 const TAGS: [(&str, &str); 5] = [
@@ -45,8 +45,7 @@ fn tag_picker() -> impl IntoElement {
                 .collect::<Vec<_>>(),
         )
         .multiple(true)
-        .searchable(true)
-        .search_placeholder("Find a tag")
+        .placeholder(title)
         .value(move || Some(tags.get()))
         .on_change(move |next: &Vec<SharedString>| tags.set(next.clone()))
         .accessibility_label("Tags")
@@ -59,27 +58,18 @@ fn tag_picker() -> impl IntoElement {
                 .bg(move || theme().popover)
                 .shadow_md()
         })
-        .trigger(
-            view()
-                .h_9()
-                .w_48()
-                .px_3()
-                .justify_center()
-                .rounded_md()
-                .border_1()
-                .border_color(move || theme().input)
-                .child(text(title)),
-        )
-        .render_item(|item: &SelectItemState| {
-            view()
-                .flex_row()
-                .justify_between()
-                .px_2()
-                .py_1p5()
-                .when(item.highlighted, |v| v.bg(move || theme().accent))
-                .child(text(item.title.clone()).text_sm())
-                .when(item.selected, |v| v.child(text("✓").text_sm()))
-        })
+        .h_9()
+        .w_48()
+        .px_3()
+        .flex_row()
+        .items_center()
+        .rounded_md()
+        .border_1()
+        .border_color(move || theme().input)
+        .input_style(|s| s.flex_1().text_sm())
+        .trigger_button(text("⌄"))
+        .item_class("rounded-md focus:bg-accent selected:font-medium disabled:opacity-50")
+        .render_item(|item: &SelectEntry| view().px_2().py_1p5().child(text(item.title.clone()).text_sm()))
 }
 ```
 
@@ -101,25 +91,21 @@ function App() {
     <Combobox
       items={TAGS}
       multiple
-      searchable
-      searchPlaceholder="Find a tag"
+      placeholder={tags().length ? `${tags().length} tags` : "Add tags"}
       value={tags()}
       onChange={({ value }) => tags.set(value)}
       accessibilityLabel="Tags"
       offset={4}
       popupClass="rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-md"
       backdropClass="bg-black/40"
-      searchClass="mb-1 h-8 rounded-md border border-input px-2 text-sm placeholder:text-muted-foreground"
-      itemClass="rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground"
-      trigger={
-        <View class="h-9 w-48 justify-center rounded-md border border-input px-3 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
-          <Text>{tags().length ? `${tags().length} tags` : "Add tags"}</Text>
-        </View>
-      }
+      class="h-9 w-48 flex-row items-center rounded-md border border-input px-3"
+      inputClass="flex-1 text-sm placeholder:text-muted-foreground"
+      itemClass="group rounded-md px-2 py-1.5 text-sm focus:bg-accent focus:text-accent-foreground"
+      triggerButton={<Text class="px-1 text-muted-foreground">⌄</Text>}
       renderItem={(item) => (
         <View class="flex-row justify-between">
           <Text>{item.title}</Text>
-          <Text>{item.selected ? "✓" : ""}</Text>
+          <Text class="opacity-0 group-selected:opacity-100">✓</Text>
         </View>
       )}
     />
@@ -146,19 +132,28 @@ Left out, the combobox keeps its own value, from `defaultValue` at first.
   closes it.
 
 `onConfirm({ value })` tells the value as the list closes: once per opening, however it closes (a choice, Escape, a
-press outside, the trigger), with the value as the user left it. Cmd+Return on a Mac (Ctrl+Return elsewhere) closes
+press outside, the trigger button), with the value as the user left it. Cmd+Return on a Mac (Ctrl+Return elsewhere) closes
 the list and confirms.
 
 `cleanable` adds a clear button while an item is selected: a press empties the value (`onChange({ value: [] })`).
-The button comes after the trigger, not inside it, so a press on it never opens the list; the app places it and fills
-it, as a [select's clear button](./select.md#value).
+The button comes after the input, before the trigger button; a press on it never opens the list. The app fills it, as
+a [select's clear button](./select.md#value).
 
-## Search
+## Input
 
-`searchable` puts a search field above the items, as a select's: typing filters them by title, ignoring case, and
-`empty` shows while nothing matches. The query is the field's own, starting each opening from `defaultQuery` (else
-empty), or the app's with `query`: `onQueryChange({ query })` reports what is typed, and the app sets `query` to
-follow it, to filter its own way or to suggest a starting point.
+The trigger is a text input in the combobox's row (its `class` and `style`: the field's border and fill), with the
+app's `prefix` before it (the chosen items as chips, an icon) and, after it, the clear button, the app's
+`triggerButton` (a chevron) and `suffix`.
+
+- Typing opens the list and filters the items by title, ignoring case; `empty` shows while nothing matches. Down and
+  Up open it too, a press on the trigger button opens and closes it, and on touch screens a tap on the input opens it.
+- With one value, the input shows the chosen item's title (`placeholder` while there is none). It is selected when
+  the input gets the focus, so what is typed replaces it.
+- With `multiple`, the input shows the query; the app shows the chosen items, in `prefix` or beside the combobox.
+
+The query is the combobox's own, starting each opening from `defaultQuery` (else empty), or the app's with `query`:
+`onQueryChange({ query })` reports what is typed, and the app sets `query` to follow it, to filter its own way or to
+suggest a starting point.
 
 ## Footer
 
@@ -174,30 +169,31 @@ a count, a hint. It stays in place while the rows scroll.
 | `value` | `.value(..)` | `string[]` | none | The selected items' values, owned by the app. |
 | `defaultValue` | `.default_value(..)` | `string[]` | `[]` | The value at first, without `value`. |
 | `open`, `defaultOpen` | `.open(..)`, `.default_open(..)` | `boolean` | `false` | The open state, the app's or the combobox's own. |
-| `searchable` | `.searchable(..)` | `boolean` | `false` | A search field above the items filters them by title. |
-| `searchPlaceholder` | `.search_placeholder(..)` | `string` | none | The search field's placeholder. |
+| `placeholder` | `.placeholder(..)` | `string` | none | The input's placeholder, while it is empty. |
 | `query` | `.query(..)` | `string` | none | The query, owned by the app. |
 | `defaultQuery` | `.default_query(..)` | `string` | none | The query each opening starts with, without `query`. |
 | `cleanable` | `.cleanable(..)` | `boolean` | `false` | A clear button while an item is selected; a press empties the value. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | It stays closed and takes no presses or keyboard focus. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What the choice is about, for screen readers. |
-| `placement`, `align`, `offset`, `margin` | `.placement(..)`, ... | as `Select`'s | `"bottom"`, `"start"`, 0, 0 | Desktops: where the popup goes against the trigger. |
+| `placement`, `align`, `offset`, `margin` | `.placement(..)`, ... | as `Select`'s | `"bottom"`, `"start"`, 0, 0 | Desktops: where the popup goes against the field. |
 | `popupClass`, `popupStyle` | `.popup_class(..)`, `.popup_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The popup (desktops) or the sheet (touch screens). |
 | `backdropClass`, `backdropStyle` | `.backdrop_class(..)`, `.backdrop_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The backdrop behind the sheet. |
 | `listClass`, `listStyle` | `.list_class(..)`, `.list_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The list, the scroll view of the rows. |
 | `itemClass`, `itemStyle` | `.item_class(..)`, `.item_style(..)` | `string`, `StyleProp<TextStyle>` | none | Each item's row: `focus:` while highlighted, `selected:` while selected, `disabled:` while it cannot be. |
 | `groupClass`, `groupStyle` | `.group_class(..)`, `.group_style(..)` | `string`, `StyleProp<ViewStyle>` | none | Each section's header. |
-| `searchClass`, `searchStyle` | `.search_class(..)`, `.search_style(..)` | `string`, `StyleProp<InputStyle>` | none | The search field. |
+| `inputClass`, `inputStyle` | `.input_class(..)`, `.input_style(..)` | `string`, `StyleProp<InputStyle>` | none | The input: `focus:` while it edits, `disabled:` with the combobox. |
 | `footerClass`, `footerStyle` | `.footer_class(..)`, `.footer_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The footer, below the rows. |
 | `clearButtonClass`, `clearButtonStyle` | `.clear_button_class(..)`, `.clear_button_style(..)` | `string`, `StyleProp<ViewStyle>` | none | The clear button (`cleanable`). |
 | `clearButton` | `.clear_button(..)` | `JSX.Element` | none | The content of the clear button. |
 | `clearButtonAccessibilityLabel` | `.clear_button_accessibility_label(..)` | `string` | none | What screen readers call the clear button. |
-| `trigger` | `.trigger(..)` | `JSX.Element` | none | What opens the list when pressed; the list is placed against it. |
+| `triggerButton` | `.trigger_button(..)` | `JSX.Element` | none | A button after the input (a chevron): a press opens and closes the list. |
+| `prefix` | `.prefix(..)` | `JSX.Element` | none | Content before the input: chips, an icon. |
+| `suffix` | `.suffix(..)` | `JSX.Element` | none | Content after the trigger button. |
 | `empty` | `.empty(..)` | `JSX.Element` | none | What the list shows while no item does. |
 | `footer` | `.footer(..)` | `JSX.Element` | none | What shows below the rows. |
-| `renderItem` | `.render_item(..)` | `(item: SelectItemState) => JSX.Element` | none | An item's row, drawn by the app; the item's title otherwise. |
+| `renderItem` | `.render_item(..)` | `(item: SelectEntry) => JSX.Element` | none | An item's row, drawn by the app from what the item is, never its state: the content follows the row's `group-focus:`, `group-selected:` and `group-disabled:` (`group` in `itemClass`), so a move of the highlight or a toggle draws nothing again; the item's title otherwise. |
 | `renderGroup` | `.render_group(..)` | `(group: SelectGroup) => JSX.Element` | none | A section's header, drawn by the app; its title otherwise. |
-| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The view around the trigger. |
+| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The field: the row of the prefix, the input, the buttons and the suffix; the list is as wide as it. |
 
 ## Events
 
@@ -205,7 +201,7 @@ a count, a hint. It stays in place while the rows scroll.
 |---|---|---|
 | `onChange` | `.on_change(\|value\| ..)` | The value changed (a choice, a toggle, the clear button): `{ value }`, the selected items' values. Set `value` to follow it. |
 | `onConfirm` | `.on_confirm(\|value\| ..)` | The list closed: `{ value }` as it is then, once per opening. |
-| `onQueryChange` | `.on_query_change(\|query\| ..)` | The user typed in the search field: `{ query }`. Set `query` to follow it. |
+| `onQueryChange` | `.on_query_change(\|query\| ..)` | The user typed in the input: `{ query }`. Set `query` to follow it. |
 | `onOpenChange` | `.on_open_change(\|e\| ..)` | The list opened or closed, with why (`{ open, reason }`). Set `open` to follow it. |
 | `onOpen`, `onClose` | `.on_open(..)`, `.on_close(..)` | The list is shown, or gone. |
 | `onCancel` | `.on_cancel(..)` | The user closed the list without a choice that closes it (Escape or back, a press outside or on the backdrop). |
@@ -217,29 +213,34 @@ They come in this order: `onChange` for a choice, or `onCancel` for a close with
 
 | Part | Where | Styled with |
 |---|---|---|
-| The trigger | the combobox's view | the app's own element (`trigger`) |
-| The clear button | the combobox's view, after the trigger (`cleanable`, while an item is selected) | `clearButtonClass`, `clearButtonStyle`; its content `clearButton` |
-| The popup or sheet | over everything, at the trigger (desktops) or at the bottom (touch screens) | `popupClass`, `popupStyle` |
+| The field | the combobox's view, a row | `class`, `style` |
+| The prefix | the field, first | the app's own element (`prefix`) |
+| The input | the field, after the prefix | `inputClass`, `inputStyle`, `placeholder` |
+| The clear button | the field, after the input (`cleanable`, while an item is selected) | `clearButtonClass`, `clearButtonStyle`; its content `clearButton` |
+| The trigger button | the field, after the clear button | the app's own element (`triggerButton`) |
+| The suffix | the field, last | the app's own element (`suffix`) |
+| The popup or sheet | over everything, under the field (desktops) or at the bottom (touch screens) | `popupClass`, `popupStyle` |
 | The backdrop | behind the sheet (touch screens) | `backdropClass`, `backdropStyle` |
-| The search field | the popup, first (`searchable`) | `searchClass`, `searchStyle`, `searchPlaceholder` |
-| The list | the popup, after the search field | `listClass`, `listStyle` |
+| The list | the popup | `listClass`, `listStyle` |
 | A section's header | the list, before its items | `groupClass`, `groupStyle`, `renderGroup` |
-| An item's row | the list | `itemClass`, `itemStyle`, `renderItem` |
+| An item's row | the list | `itemClass`, `itemStyle`, `renderItem` (`group-focus:`, `group-selected:`, `group-disabled:` inside, under `group` in `itemClass`) |
 | The empty state | the popup, while no item shows | its own element (`empty`) |
 | The footer | the popup, last | `footerClass`, `footerStyle`; its content `footer` |
 
 ## Keyboard
 
-The keys are a select's (see [Keyboard](./select.md#keyboard)), with these differences: Return and Space toggle the
-highlighted item with `multiple` and keep the list open; Cmd+Return on a Mac (Ctrl+Return elsewhere) closes it and
-confirms; and the closed trigger takes no typeahead (its keys only open the list).
+The keys are a select's (see [Keyboard](./select.md#keyboard)) while the input keeps the focus, with these
+differences: letters and digits are typed into the input, which filters the list, rather than typeahead; Down and Up
+open the closed list; Return toggles the highlighted item with `multiple` and keeps the list open; Cmd+Return on a
+Mac (Ctrl+Return elsewhere) closes it and confirms. When the list closes on the desktops, the input keeps the focus.
 
 ## Accessibility
 
-- The trigger is a combobox for screen readers: its label is `accessibilityLabel`, its value the selected items'
+- The input is a combobox for screen readers: its label is `accessibilityLabel`, its value the selected items'
   titles, joined with commas, and it says whether the list is expanded. `disabled` dims it.
 - The list is a listbox and each row an option, named by its title; the selected options are selected and a disabled
   one dimmed. Sections' headers are headers.
-- The clear button is a button named by `clearButtonAccessibilityLabel`; it is no stop of Tab.
+- The clear button is a button named by `clearButtonAccessibilityLabel`; it is no stop of Tab. The trigger button
+  is hidden from screen readers, as the input says whether the list is open, and is no stop of Tab either.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.

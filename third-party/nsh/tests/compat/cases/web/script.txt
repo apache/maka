@@ -257,6 +257,9 @@ expect fetch.dataDefaultType=text/plain;charset=US-ASCII
 expect fetch.request=via request
 expect fetch.url=via url
 expect fetch.blob=true|text/x-a|from blob|TypeError
+expect fetch.asset=[asset:/images/flag.png,200,true,73,73,[80,78,71]]
+expect fetch.assetHead=[image/png,true]
+expect fetch.assetMissing=threw TypeError
 expect fetch.badScheme=threw TypeError
 expect fetch.badUrl=threw TypeError
 expect fetch.badDataUrl=threw TypeError

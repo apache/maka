@@ -34,8 +34,8 @@ pub(super) enum Side {
 pub(crate) struct TouchState {
     /// The components' listening nodes around each finger down, innermost
     /// first. Empty paths still count while a responder owns all contacts.
-    paths: Vec<(u32, Vec<NodeId>)>,
-    responder: Option<NodeId>,
+    paths: Vec<(u32, Vec<(NodeId, NodeId)>)>,
+    responder: Option<(NodeId, NodeId)>,
     /// The responder whose `active:` styles hold until its touches end,
     /// wherever they go, as CSS's `:active` holds until the button is
     /// released ([`Core::hold_pressed`]).
@@ -63,7 +63,7 @@ impl<M: TextEngine> Core<M> {
     /// Querying this bookkeeping does not call an application listener.
     pub fn invalid_touch_contacts(&self, contacts: &mut Vec<u32>) {
         for (contact, path) in &self.components.touch.paths {
-            if path.iter().any(|&id| !self.accepts_native_input(id)) {
+            if path.iter().any(|&(id, _)| !self.accepts_native_input(id)) {
                 contacts.push(*contact);
             }
         }
@@ -92,11 +92,17 @@ impl<M: TextEngine> Core<M> {
         let lifted = matches!(phase, TouchPhase::End | TouchPhase::Cancel);
         if phase == TouchPhase::Start {
             for p in touch.points.iter().filter(|p| p.changed) {
-                let path: Vec<NodeId> = p
+                let path: Vec<(NodeId, NodeId)> = p
                     .path
                     .iter()
                     .copied()
-                    .filter(|&id| self.hears_touches(id))
+                    .flat_map(|id| {
+                        self.touch_hosts(id)
+                            .into_iter()
+                            .flatten()
+                            .map(move |host| (id, host))
+                    })
+                    .filter(|&(id, host)| self.hears_touches(id, host))
                     .collect();
                 let paths = &mut self.components.touch.paths;
                 paths.retain(|(finger, _)| *finger != p.id);
@@ -128,28 +134,27 @@ impl<M: TextEngine> Core<M> {
             self.forget_lifted(touch);
             return;
         }
-        for &id in &path {
-            if let Some(host) = self.touch_host(id) {
-                let mut from = 0;
-                while let Some((at, listener)) = self.next_handler(host, id, EventKind::Touch, from)
-                {
-                    from = at + 1;
-                    if !self.run_listener(host, &listener, payload) {
-                        break;
-                    }
+        for &(id, host) in &path {
+            let mut from = 0;
+            while let Some((at, listener)) = self.next_handler(host, id, EventKind::Touch, from) {
+                from = at + 1;
+                if !self.run_listener(host, &listener, payload) {
+                    break;
                 }
             }
         }
         // A pan the platform activated: its element claims the touches.
-        if let Some(id) = touch.activated
-            && self.hears_touches(id)
-        {
+        if let Some(id) = touch.activated {
             let responder = self.live_responder();
             let event = self.responder_event_now(about, touch);
-            if responder != Some(id)
-                && let Some(block) = self.claims(id, ClaimPhase::Pan, false, event)
-            {
-                self.take_over(id, block, responder, about, touch);
+            for host in self.touch_hosts(id).into_iter().flatten() {
+                let target = (id, host);
+                if responder != Some(target)
+                    && let Some(block) = self.claims(target, ClaimPhase::Pan, false, event)
+                {
+                    self.take_over(target, block, responder, about, touch);
+                    break;
+                }
             }
         }
         match phase {
@@ -190,21 +195,26 @@ impl<M: TextEngine> Core<M> {
         }
     }
 
-    /// The component whose handlers node `id` has: the one whose view has
-    /// it, or the one it is a slot of (a trigger the app passed).
-    fn touch_host(&self, id: NodeId) -> Option<NodeId> {
-        self.host_of(id)
-            .or_else(|| self.components.slot_hosts.get(&id).copied())
-            .or_else(|| self.adopted_host(id))
+    /// The component's own root is inside the slot's listeners, even
+    /// though both occupy the same platform node.
+    fn touch_hosts(&self, id: NodeId) -> [Option<NodeId>; 2] {
+        if self.is_host(id) {
+            let own = self.base_of(id);
+            let slot = self.adopted_host(id).filter(|&host| host != own);
+            [Some(own), slot]
+        } else {
+            [
+                self.host_of(id)
+                    .or_else(|| self.components.slot_hosts.get(&id).copied())
+                    .or_else(|| self.adopted_host(id)),
+                None,
+            ]
+        }
     }
 
-    /// Whether a component's node `id` has a touch handler or takes part in
-    /// the negotiation.
-    fn hears_touches(&self, id: NodeId) -> bool {
-        self.touch_host(id).is_some_and(|host| {
-            self.next_handler(host, id, EventKind::Touch, 0).is_some()
-                || self.responder_el(host, id).is_some()
-        })
+    fn hears_touches(&self, id: NodeId, host: NodeId) -> bool {
+        self.next_handler(host, id, EventKind::Touch, 0).is_some()
+            || self.responder_el(host, id).is_some()
     }
 
     fn responder_event_now(&self, about: &TouchPoint, touch: &TouchEvent) -> ResponderEvent {
@@ -217,22 +227,22 @@ impl<M: TextEngine> Core<M> {
     fn negotiate(
         &mut self,
         phase: ClaimPhase,
-        path: &[NodeId],
+        path: &[(NodeId, NodeId)],
         about: &TouchPoint,
         touch: &TouchEvent,
     ) {
         let responder = self.live_responder();
         let mut from = 0;
         if let Some(r) = responder {
-            let around = |id: NodeId| match (self.key(id), self.key(r)) {
+            let around = |(id, _): (NodeId, NodeId)| match (self.key(id), self.key(r.0)) {
                 (Ok(a), Ok(k)) => self.is_ancestor(a, k),
                 _ => false,
             };
             while from < path.len() && !around(path[from]) {
                 from += 1;
             }
-            if path.get(from) == Some(&r) {
-                from += 1;
+            if let Some(at) = path[from..].iter().position(|&target| target == r) {
+                from += at + 1;
             }
         }
         let asked = &path[from.min(path.len())..];
@@ -262,29 +272,25 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// The responder, if its node still exists.
-    fn live_responder(&self) -> Option<NodeId> {
-        self.components
-            .touch
-            .responder
-            .filter(|&r| self.key(r).is_ok())
+    fn live_responder(&self) -> Option<(NodeId, NodeId)> {
+        self.components.touch.responder.filter(|&(id, host)| {
+            self.key(id).is_ok() && self.components.instances.contains_key(&host)
+        })
     }
 
     /// Node `wanting` claimed the touches from `responder`: it becomes the
     /// responder unless the responder keeps them.
     fn take_over(
         &mut self,
-        wanting: NodeId,
+        wanting: (NodeId, NodeId),
         block: bool,
-        responder: Option<NodeId>,
+        responder: Option<(NodeId, NodeId)>,
         about: &TouchPoint,
         touch: &TouchEvent,
     ) {
         let event = self.responder_event_now(about, touch);
         if let Some(r) = responder {
-            let keeps = self
-                .touch_host(r)
-                .and_then(|host| self.responder_el(host, r))
-                .is_some_and(|el| el.keep);
+            let keeps = self.responder_el(r.1, r.0).is_some_and(|el| el.keep);
             if keeps {
                 self.responder_event(wanting, |el| el.reject.as_ref(), event);
                 return;
@@ -300,12 +306,11 @@ impl<M: TextEngine> Core<M> {
     /// claims when the platform activates it.
     fn claims(
         &mut self,
-        id: NodeId,
+        (id, host): (NodeId, NodeId),
         phase: ClaimPhase,
         capture: bool,
         event: ResponderEvent,
     ) -> Option<bool> {
-        let host = self.touch_host(id)?;
         let el = self.responder_el(host, id)?;
         let gated = el.claims.iter().any(|c| c.phase == ClaimPhase::Pan);
         if gated != (phase == ClaimPhase::Pan) {
@@ -331,13 +336,20 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// Node `id` becomes the responder; the gesture starts again here.
-    fn grant(&mut self, id: NodeId, block: bool, about: &TouchPoint, touch: &TouchEvent) {
+    fn grant(
+        &mut self,
+        target: (NodeId, NodeId),
+        block: bool,
+        about: &TouchPoint,
+        touch: &TouchEvent,
+    ) {
+        let id = target.0;
         let state = &mut self.components.touch;
-        state.responder = Some(id);
+        state.responder = Some(target);
         state.gesture = PanGesture::begin(touch);
         self.hold_pressed(Some(id));
         let event = self.responder_event_now(about, touch);
-        self.responder_event(id, |el| el.grant.as_ref(), event);
+        self.responder_event(target, |el| el.grant.as_ref(), event);
         self.block_native(Side::Rust, block.then_some(id));
     }
 
@@ -348,10 +360,7 @@ impl<M: TextEngine> Core<M> {
     }
 
     /// Runs the listener `pick` chooses of node `id`'s responder part.
-    fn responder_event(&mut self, id: NodeId, pick: Pick, event: ResponderEvent) {
-        let Some(host) = self.touch_host(id) else {
-            return;
-        };
+    fn responder_event(&mut self, (id, host): (NodeId, NodeId), pick: Pick, event: ResponderEvent) {
         let Some(el) = self.responder_el(host, id) else {
             return;
         };

@@ -270,6 +270,30 @@ const range = (line: number, start: number, end: number) => ({ start: { line, co
 />
 ```
 
+<a id="gutter-and-overview-ruler-marks"></a>
+
+### 行号槽与概览标尺标记
+
+装饰的 `gutter` 在行号前的一条窄带中，为其范围覆盖的每一行放一个标记：版本控制差异中新增或修改的行，或断点（空范围覆盖它所在的行，与 `lineClass` 相同）。设置 `placement: "before"` 时，它是在范围起点之前的行间边界处横跨窄带的一条线，即删除行的位置。这条窄带宽 `gutterDecorationsWidth` 点（默认 3），只要有装饰带行号槽标记就一直保留，标记出现或消失时文本位置不变。折叠中的范围标记在折叠所在的那一行。
+
+装饰的 `overviewRuler` 在概览标尺上放一个标记。概览标尺是编辑器右侧边缘宽 14 点（与滚动条相同；`overviewRuler` 部件可设置其他宽度）的窄带，按其高度映射整个文本，与 Monaco 的相同。标记至少 6 点高，占标尺的一条 `lane`：`left`、`center`（默认）、`right` 或 `full`。有装饰带标尺标记时显示标尺。
+
+每个标记采用应用的 `class` 和 `style`，没有时以前景色绘制。两者都像装饰的范围一样跟随编辑；删除带标记的范围后，原处留下一个空范围。
+
+```tsx
+<Editor
+  value={source()}
+  onChange={({ value }) => source.set(value)}
+  language="ts"
+  decorations={[
+    { range: range(2, 0, 0), gutter: { class: "bg-yellow-500" }, overviewRuler: { lane: "left", class: "bg-yellow-500" } },
+    { range: { start: { line: 3, column: 0 }, end: { line: 5, column: 0 } }, gutter: { class: "bg-green-500" } },
+    { range: range(6, 0, 0), gutter: { class: "bg-red-500", placement: "before" }, overviewRuler: { lane: "left", class: "bg-red-500" } },
+  ]}
+  class="flex-1"
+/>
+```
+
 <a id="your-own-highlighting"></a>
 
 ### 应用自己的高亮
@@ -578,6 +602,7 @@ let editor!: EditorRef;
 | `lineNumber` | 每个行号 | 右对齐，`muted-foreground` |
 | `activeLineNumber` | 有光标的行的行号，在 `lineNumber` 之后应用 | `foreground` |
 | `foldMarker` | 折叠开始处那一行的标记 | `⌄`，折叠后为 `›`，`muted-foreground` |
+| `overviewRuler` | 右侧边缘的概览标尺，在有装饰带标记时显示 | 无 |
 | `content` | 行号栏旁边的文本区域 | 文本前 4pt |
 | `line` | 每一行文本 | |
 | `activeLine` | 有光标的行的背后，位于滚动指示条下方 | `muted`，很淡 |
@@ -640,6 +665,7 @@ let editor!: EditorRef;
 | `search` | `.search(..)` | `EditorSearch` | | 要查找的内容（[查找与替换](#find-and-replace)）。 |
 | `diagnostics` | `.diagnostics(..)` | `EditorDiagnostic[]` | `[]` | 要标记的问题（[诊断](#diagnostics)）。 |
 | `decorations` | `.decorations(..)` | `EditorDecoration[]` | `[]` | 应用设置样式的范围（[装饰](#decorations)）。 |
+| `gutterDecorationsWidth` | `.gutter_decorations_width(..)` | `number` | `3` | 行号槽中装饰标记条的宽度，单位为点。 |
 | `classes` | `.classes(..)` | `EditorClasses` | `{}` | 按部件的 Tailwind 类。 |
 | `styles` | `.styles(..)` | `EditorStyles` | `{}` | 按部件的内联样式，优先于类。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | | 读屏软件对编辑器的称呼。 |

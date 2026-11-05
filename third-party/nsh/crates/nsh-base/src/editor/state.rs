@@ -10,7 +10,8 @@ use nsh_core::geometry::{Bounds, Point as Pt, Points, Size, px};
 
 use super::{
     EditorDecoration, EditorDiagnostic, EditorDiagnosticSeverity, EditorDiagnosticTag,
-    EditorPosition, EditorSearch, EditorSearchResult, EditorSelection, app_highlight,
+    EditorGutterPlacement, EditorPosition, EditorSearch, EditorSearchResult, EditorSelection,
+    app_highlight,
     buffer::{Buffer, Change},
     commands::{EditOptions, Editing},
     diagnostics::{self, Mark},
@@ -134,6 +135,34 @@ pub(crate) struct GutterRow {
     pub(crate) fold: Option<bool>,
     /// The most serious diagnostic on the line.
     pub(crate) severity: Option<EditorDiagnosticSeverity>,
+}
+
+/// Where a decoration's gutter mark is on a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum GutterPlace {
+    /// Beside the whole row: a line the range covers.
+    Row,
+    /// Across the row's top: an empty range at its line's start.
+    Top,
+    /// Across the row's bottom: an empty range further in its line.
+    Bottom,
+}
+
+/// A decoration's gutter mark on a row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GutterMark {
+    /// The decoration (its index in the editor's decorations).
+    pub(crate) item: usize,
+    pub(crate) place: GutterPlace,
+}
+
+/// A decoration's mark on the overview ruler.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RulerMark {
+    /// The decoration (its index in the editor's decorations).
+    pub(crate) item: usize,
+    /// The display rows it covers.
+    pub(crate) rows: Range<usize>,
 }
 
 /// A rectangle to draw, in the coordinates of the rows' box.
@@ -904,6 +933,118 @@ impl State {
         }
     }
 
+    /// Whether a decoration has a gutter mark: the strip of marks is
+    /// reserved while one has, so the text does not move as they come.
+    pub(crate) fn has_gutter_marks(&self) -> bool {
+        self.decoration_items.iter().any(|d| d.gutter.is_some())
+    }
+
+    /// Whether a decoration has a mark on the overview ruler.
+    pub(crate) fn has_overview_ruler_marks(&self) -> bool {
+        self.decoration_items
+            .iter()
+            .any(|d| d.overview_ruler.is_some())
+    }
+
+    /// The last line a non-empty range covers: a range ending at a line's
+    /// start (after the line break before it) does not cover that line.
+    fn last_line_of(&self, range: &Range<usize>) -> usize {
+        let first = self.buffer.line_of(range.start);
+        let last = self.buffer.line_of(range.end);
+        if last > first && range.end == self.buffer.line_start(last) {
+            last - 1
+        } else {
+            last
+        }
+    }
+
+    /// The gutter marks on display row `row`, by decoration. Only the
+    /// decorations that can reach the row are looked at.
+    pub(crate) fn gutter_marks(&self, row: usize) -> Vec<GutterMark> {
+        let count = self.display.row_count();
+        if row >= count || self.decorations.is_empty() {
+            return Vec::new();
+        }
+        let info = self.display.row(row);
+        let (line, first) = (info.line, info.first);
+        let last_of_line = self.row_is_last_of_line(row);
+        // The lines the row shows: a folded row's are its fold's.
+        let end_line = if !last_of_line {
+            line + 1
+        } else if row + 1 < count {
+            self.display.row(row + 1).line
+        } else {
+            self.buffer.line_count()
+        }
+        .max(line + 1);
+        let low = self.buffer.line_start(line);
+        let high = self.buffer.line_end(end_line - 1);
+        app_highlight::near(&self.decorations, self.decoration_reach, low, high)
+            .map(|(_, m)| m)
+            .filter_map(|m| {
+                let gutter = self.decoration_items[m.item].gutter.as_ref()?;
+                let place = if gutter.placement == EditorGutterPlacement::Before {
+                    let at = self.buffer.line_of(m.range.start);
+                    if at < line || at >= end_line {
+                        return None;
+                    }
+                    if at > line {
+                        // A boundary inside a fold: the folded row is marked.
+                        GutterPlace::Row
+                    } else if m.range.start == low {
+                        if !first {
+                            return None;
+                        }
+                        GutterPlace::Top
+                    } else if last_of_line {
+                        GutterPlace::Bottom
+                    } else {
+                        return None;
+                    }
+                } else {
+                    let from = self.buffer.line_of(m.range.start);
+                    let to = self.last_line_of(&m.range);
+                    if to < line || from >= end_line {
+                        return None;
+                    }
+                    GutterPlace::Row
+                };
+                Some(GutterMark {
+                    item: m.item,
+                    place,
+                })
+            })
+            .collect()
+    }
+
+    /// The overview ruler's marks: each decoration with one, its display
+    /// rows (`rows`, the first and past the last).
+    pub(crate) fn overview_ruler_marks(&self) -> Vec<RulerMark> {
+        let count = self.display.row_count();
+        self.decorations
+            .iter()
+            .filter(|m| self.decoration_items[m.item].overview_ruler.is_some())
+            .map(|m| {
+                let from = self.buffer.line_of(m.range.start);
+                let to = if m.range.is_empty() {
+                    from
+                } else {
+                    self.last_line_of(&m.range)
+                };
+                let start = self.display.line_row(from);
+                let end = if to + 1 < self.buffer.line_count() {
+                    self.display.line_row(to + 1)
+                } else {
+                    count
+                };
+                RulerMark {
+                    item: m.item,
+                    rows: start..end.max(start + 1),
+                }
+            })
+            .collect()
+    }
+
     /// The rectangles of `range` on rows `rows`, one per row it covers;
     /// `newline` adds a sliver after a row whose line break is selected.
     pub(crate) fn range_rects(
@@ -1662,6 +1803,116 @@ mod tests {
         // Edits keep the window right: a line inserted above shifts all.
         insert(&mut st, 0, "\n");
         assert_eq!(spans(&st, 1201)[0], ("line".to_owned(), None, 1));
+    }
+
+    fn marked(from: (u32, u32), to: (u32, u32)) -> EditorDecoration {
+        EditorDecoration {
+            range: crate::editor::EditorRange::new(
+                EditorPosition::new(from.0, from.1),
+                EditorPosition::new(to.0, to.1),
+            ),
+            gutter: Some(Default::default()),
+            overview_ruler: Some(Default::default()),
+            ..Default::default()
+        }
+    }
+
+    /// A boundary mark (`placement: "before"`) at `at`.
+    fn boundary(at: (u32, u32)) -> EditorDecoration {
+        let mut d = marked(at, at);
+        d.gutter = Some(crate::editor::EditorGutterMark {
+            placement: EditorGutterPlacement::Before,
+            ..Default::default()
+        });
+        d
+    }
+
+    fn gutter_places(st: &State, line: usize) -> Vec<(usize, GutterPlace)> {
+        st.gutter_marks(st.display.line_row(line))
+            .into_iter()
+            .map(|m| (m.item, m.place))
+            .collect()
+    }
+
+    #[test]
+    fn gutter_marks_cover_lines_and_boundaries() {
+        let mut st = state("a\nbb\ncc\ndd\ne");
+        assert!(!st.has_gutter_marks());
+        decorate(
+            &mut st,
+            vec![
+                // Lines 1 and 2: ending at line 3's start leaves it out.
+                marked((1, 0), (3, 0)),
+                // Deleted lines before line 3.
+                boundary((3, 0)),
+                // A boundary after the last line, which has no line break.
+                boundary((4, 1)),
+                // Decorations without a gutter mark are not the strip's.
+                decoration(0, 0, 1),
+                // An empty range covers its line, as `lineClass` does.
+                marked((0, 1), (0, 1)),
+            ],
+        );
+        assert!(st.has_gutter_marks());
+        assert_eq!(gutter_places(&st, 0), vec![(4, GutterPlace::Row)]);
+        assert_eq!(gutter_places(&st, 1), vec![(0, GutterPlace::Row)]);
+        assert_eq!(gutter_places(&st, 2), vec![(0, GutterPlace::Row)]);
+        assert_eq!(gutter_places(&st, 3), vec![(1, GutterPlace::Top)]);
+        assert_eq!(gutter_places(&st, 4), vec![(2, GutterPlace::Bottom)]);
+        // Text typed at a boundary goes after it.
+        let at = st.buffer.line_start(3);
+        insert(&mut st, at, "x\n");
+        assert_eq!(gutter_places(&st, 3), vec![(1, GutterPlace::Top)]);
+    }
+
+    #[test]
+    fn gutter_marks_in_a_fold_mark_its_row() {
+        let mut st = state("a\nb\nc\nd\ne\n");
+        decorate(
+            &mut st,
+            vec![
+                marked((2, 0), (2, 1)),
+                boundary((3, 0)),
+                marked((3, 0), (5, 0)),
+            ],
+        );
+        assert!(st.fold_lines(1, 3));
+        // Line 1's row shows lines 1 to 3: every mark starting there.
+        assert_eq!(
+            gutter_places(&st, 1),
+            vec![
+                (0, GutterPlace::Row),
+                (1, GutterPlace::Row),
+                (2, GutterPlace::Row)
+            ]
+        );
+        // The range running past the fold goes on after it.
+        assert_eq!(gutter_places(&st, 4), vec![(2, GutterPlace::Row)]);
+    }
+
+    #[test]
+    fn overview_ruler_marks_take_their_rows() {
+        let mut st = state("a\nb\nc\nd\ne\n");
+        assert!(!st.has_overview_ruler_marks());
+        decorate(
+            &mut st,
+            vec![marked((1, 0), (3, 0)), marked((4, 0), (4, 0))],
+        );
+        assert!(st.has_overview_ruler_marks());
+        let rows: Vec<_> = st
+            .overview_ruler_marks()
+            .into_iter()
+            .map(|m| m.rows)
+            .collect();
+        assert_eq!(rows, vec![1..3, 4..5]);
+        // Folded, a range takes its fold's row.
+        assert!(st.fold_lines(0, 2));
+        let rows: Vec<_> = st
+            .overview_ruler_marks()
+            .into_iter()
+            .map(|m| m.rows)
+            .collect();
+        assert_eq!(rows, vec![0..1, 2..3]);
     }
 
     fn diagnose(st: &mut State, items: Vec<EditorDiagnostic>) {

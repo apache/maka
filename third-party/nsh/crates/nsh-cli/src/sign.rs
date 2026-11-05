@@ -187,7 +187,7 @@ pub(crate) fn publish(options: PublishOptions<'_>) -> anyhow::Result<()> {
     let bytes = build(&contents, &key, &cert)?;
     let out = options
         .out
-        .unwrap_or_else(|| PathBuf::from(".nsh/out").join(format!("{id}-{build_number}.nshpkg")));
+        .unwrap_or_else(|| default_out(&id, build_number));
     write(&out, &bytes)?;
     if let Some(map) = &separate_map {
         let path = map_path(&out);
@@ -211,6 +211,47 @@ pub(crate) fn publish(options: PublishOptions<'_>) -> anyhow::Result<()> {
             .min_runtime
             .as_deref()
             .unwrap_or(nsh_package::RUNTIME_VERSION)
+    );
+    Ok(())
+}
+
+/// Whether `nsh publish` was given a package to sign again, not an app.
+pub(crate) fn is_package(entry: &Path) -> bool {
+    entry.extension().is_some_and(|e| e == "nshpkg")
+}
+
+/// Where `nsh publish` writes a package unless told otherwise.
+fn default_out(id: &str, build: impl std::fmt::Display) -> PathBuf {
+    PathBuf::from(".nsh/out").join(format!("{id}-{build}.nshpkg"))
+}
+
+/// `nsh publish <package>`: `package` signed again with another release key,
+/// its contents unchanged (`nsh_package::resign`).
+pub(crate) fn resign(
+    package: &Path,
+    key: &Path,
+    cert: &Path,
+    out: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let bytes = fs::read(package).with_context(|| format!("read {}", package.display()))?;
+    let key = read_secret(key)?;
+    let cert = Certificate::from_json(
+        &fs::read_to_string(cert).with_context(|| format!("read {}", cert.display()))?,
+    )?;
+    let signed = nsh_package::resign(&bytes, &key, &cert)
+        .with_context(|| format!("{}", package.display()))?;
+    let header = verify_signature(&signed)?;
+    let app = header.app();
+    let out = out.unwrap_or_else(|| default_out(&app.id, app.build));
+    write(&out, &signed)?;
+    println!(
+        "{}: {} {} (build {}), signed again by {}, for runtime {} or newer",
+        out.display(),
+        app.id,
+        app.version,
+        app.build,
+        key.public().id(),
+        header.min_runtime()
     );
     Ok(())
 }
@@ -343,4 +384,69 @@ pub(crate) fn revoke_list(
         packages.len()
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use nsh_package::{App, Contents, SecretKey, TrustStore, build, certify};
+
+    use super::*;
+
+    /// `<dir>/<name>.secret` and `<dir>/<name>.cert`: a release key
+    /// certified by a new root for any app. Returns the root and the key.
+    fn release_key(dir: &Path, name: &str) -> (SecretKey, SecretKey) {
+        let root = SecretKey::generate().unwrap();
+        let key = SecretKey::generate().unwrap();
+        let cert = certify(&root, &key.public(), &["*".into()], 0, u64::MAX);
+        write(
+            &dir.join(format!("{name}.secret")),
+            key.to_base64().as_bytes(),
+        )
+        .unwrap();
+        write(&dir.join(format!("{name}.cert")), cert.to_json().as_bytes()).unwrap();
+        (root, key)
+    }
+
+    #[test]
+    fn resign_writes_the_package_signed_by_the_new_key() {
+        let dir = std::env::temp_dir().join(format!("nsh-resign-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let (_, ci) = release_key(&dir, "ci");
+        let (platform_root, platform) = release_key(&dir, "platform");
+        let ci_cert =
+            Certificate::from_json(&fs::read_to_string(dir.join("ci.cert")).unwrap()).unwrap();
+        let contents = Contents {
+            app: App {
+                id: "com.example.demo".into(),
+                name: "Demo".into(),
+                version: "1.2.0".into(),
+                build: 7,
+            },
+            capabilities: None,
+            source: "1".into(),
+            bytecode: None,
+            source_map: None,
+            assets: Vec::new(),
+            min_runtime: None,
+        };
+        let input = dir.join("in.nshpkg");
+        write(&input, &build(&contents, &ci, &ci_cert).unwrap()).unwrap();
+        let out = dir.join("out/signed.nshpkg");
+
+        resign(
+            &input,
+            &dir.join("platform.secret"),
+            &dir.join("platform.cert"),
+            Some(out.clone()),
+        )
+        .unwrap();
+
+        let mut store = TrustStore::new();
+        store.add_root(platform_root.public());
+        let package = store.verify(&fs::read(&out).unwrap(), "v").unwrap();
+        assert_eq!(package.key_id, platform.public().id());
+        assert_eq!(package.app.build, 7);
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

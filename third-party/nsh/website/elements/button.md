@@ -68,6 +68,7 @@ the typed style methods (`.px_4()`, `.bg(..)`) for its look, the state methods (
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The style while `selected` and not disabled, as `selected:` classes. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say when the content is not enough, as for an icon. |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | What it is for screen readers when no `nsh/base` component is that control: `"link"` (it opens a URL), ... |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The content: text, an icon, any layout. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | Its look, all of it. |
 | `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle` | `.active(\|s\| ..)`, `.hover(..)`, `.focus(..)`, `.disabled_style(..)` | `StyleProp<ViewStyle>` | none | The style while pressed, hovered, focused or disabled, as the `<state>:` classes. Later states win; `disabled` wins over all. |
@@ -220,6 +221,31 @@ fn bold(on: Signal<bool>) -> impl IntoElement {
 ```
 
 A row of tabs is [`Tabs`](./tabs.md) and an on / off control is [`Switch`](./switch.md), from `nsh/base`: they own the role, the selected state and the keyboard of their kind, which a `Button` with `role="tab"` or `role="switch"` does not.
+
+## A small target with hitSlop
+
+An icon button can be smaller than a finger. `hitSlop` makes presses that land near it count, in points past each side,
+without changing its layout or its look: one number for every side, or the sides named (`{ top: 8, bottom: 8 }`), as
+a [view's `hitSlop`](./index.md#presses-and-feedback) takes them.
+
+```rust tabs
+fn close(open: Signal<bool>) -> impl IntoElement {
+    button()
+        .hit_slop(EdgeInsets::all(px(12.0)))
+        .accessibility_label("Close")
+        .on_press(move || open.set(false))
+        .size(px(20.0))
+        .items_center()
+        .justify_center()
+        .child(text("×"))
+}
+```
+
+```tsx tabs
+<Button hitSlop={12} accessibilityLabel="Close" onPress={() => open.set(false)} class="size-5 items-center justify-center">
+  <Text>×</Text>
+</Button>
+```
 
 ## Accessibility
 

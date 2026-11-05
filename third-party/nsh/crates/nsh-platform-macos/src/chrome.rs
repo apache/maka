@@ -164,6 +164,7 @@ fn full_screen(window: &NSWindow) -> bool {
 /// Tells the app the hidden title bar's area (after a style change, a
 /// resize, full screen).
 pub(crate) fn update_area(surface: &Surface) {
+    sync_toolbar_visibility(surface);
     let area = match window(surface) {
         Some(window)
             if surface.chrome.style.get() == TitleBarStyle::Hidden && !full_screen(&window) =>
@@ -179,8 +180,14 @@ pub(crate) fn update_area(surface: &Surface) {
             // A toolbar's native height is determined by AppKit, not the
             // requested height that selected its style. Include a host's
             // toolbar too, so the app reserves its actual obscured area.
+            // The title bar view that holds the window's buttons and the
+            // toolbar has that height whatever the window's: the content
+            // layout rectangle is only laid out for the new frame later,
+            // so read during a resize it gives the old one's.
             let height = if window.toolbar().is_some() {
-                toolbar_height(frame.size.height, window.contentLayoutRect(), natural)
+                title_bar_view_height(&window).unwrap_or_else(|| {
+                    toolbar_height(frame.size.height, window.contentLayoutRect(), natural)
+                })
             } else {
                 natural
             };
@@ -210,6 +217,31 @@ pub(crate) fn update_area(surface: &Surface) {
         env.title_bar = area;
         surface.set_environment(env);
     }
+}
+
+/// Hides our empty toolbar in full screen and shows it again outside it.
+/// Full screen keeps a visible toolbar on screen as an opaque strip over the
+/// app's content; without one, AppKit reveals the title bar on hover instead.
+fn sync_toolbar_visibility(surface: &Surface) {
+    let Some(window) = window(surface) else {
+        return;
+    };
+    let owned = surface.chrome.toolbar.borrow();
+    let Some(owned) = owned.as_ref().filter(|t| t.is_installed(&window)) else {
+        return;
+    };
+    let visible = !full_screen(&window);
+    if owned.toolbar.isVisible() != visible {
+        owned.toolbar.setVisible(visible);
+    }
+}
+
+/// The height of the title bar view around the window's buttons (with a
+/// toolbar, the toolbar's row too), when the window has one.
+fn title_bar_view_height(window: &NSWindow) -> Option<f32> {
+    let button = window.standardWindowButton(NSWindowButton::CloseButton)?;
+    let height = crate::view::superview(&button)?.frame().size.height;
+    (height.is_finite() && height > 0.0).then_some(height as f32)
 }
 
 /// The unobscured rectangle is in window coordinates, including its origin.

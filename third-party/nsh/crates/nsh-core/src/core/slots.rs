@@ -6,12 +6,19 @@
 //! box in the component's layout. Everything else the element gives (its
 //! accessibility, `disabled`, `focusable` and other host props, listeners,
 //! touch responder and element ref: [`split`]) goes to the app's element
-//! when the holder holds exactly one (any element but raw text, a
-//! component's host or a list: [`Core::slot_target_of`]), else to the
-//! holder. So the app's `active:`, `focus:` and `disabled:` classes and
-//! state styles on its own element follow the presses, focus and
-//! `disabled` the component gives it, and a ref the component anchors a
-//! popup to measures the app's element.
+//! when the holder holds exactly one (any element but raw text or a list:
+//! [`Core::slot_target_of`]), else to the holder. So the app's `active:`,
+//! `focus:` and `disabled:` classes and state styles on its own element
+//! follow the presses, focus and `disabled` the component gives it, and a
+//! ref the component anchors a popup to measures the app's element: its own
+//! box, also for what it draws ([`Core::content_anchor`]), as for a Rust
+//! app's element.
+//!
+//! The app's element may be a component's host (a `Button` as a popover's
+//! trigger): its props are then its view's root's, the side JS's are, and
+//! its events go to the slot's component first, then to its own. Left on
+//! the holder, the slot's presses would never come: the component's root
+//! takes them, as the innermost press target.
 //!
 //! On the app's element the two sides combine ([`merged`]): what the
 //! component sets wins and the app's props fill in the rest, field by
@@ -84,6 +91,7 @@ pub(super) fn split(attrs: &Attrs) -> (Attrs, Attrs) {
         element_ref: attrs.element_ref.clone(),
         bound: attrs.bound.clone(),
         projected_states: attrs.projected_states,
+        projected_data: attrs.projected_data.clone(),
         ..Attrs::default()
     };
     let holder = Attrs {
@@ -143,6 +151,13 @@ pub(super) fn merged(js: &Attrs, own: &Attrs) -> Attrs {
         element_ref: own.element_ref.clone(),
         bound: own.bound.clone(),
         projected_states: own.projected_states | js.projected_states,
+        projected_data: {
+            let mut data = own.projected_data.clone();
+            data.extend(&js.projected_data);
+            data.sort_unstable();
+            data.dedup();
+            data
+        },
         ..Attrs::default()
     }
 }
@@ -161,6 +176,7 @@ fn absorb(js: &mut Attrs, prop: &Prop) -> bool {
         Prop::Accessibility(A::Value(v)) => js.value = v.clone(),
         Prop::PointerEvents(v) => js.pointer_events = *v,
         Prop::ProjectedStates(v) => js.projected_states = *v,
+        Prop::ProjectedData(v) => js.projected_data = v.to_vec(),
         p if crate::element::host::reset(p).is_some() => {
             crate::element::host::set_in(&mut js.props, p.clone())
         }
@@ -170,9 +186,10 @@ fn absorb(js: &mut Attrs, prop: &Prop) -> bool {
 }
 
 impl<M: TextEngine> Core<M> {
-    /// The node slot holder `holder`'s props go to: its one element, else
-    /// itself (no child, several, raw text, a component's host, a slot or
-    /// a render's holder; a list's cells are its rows, never a target).
+    /// The node slot holder `holder`'s props go to: its one element (a
+    /// component's host by the id its view makes the node under), else
+    /// itself (no child, several, raw text, a slot or a render's holder; a
+    /// list's cells are its rows, never a target).
     pub(super) fn slot_target_of(&self, holder: NodeId) -> NodeId {
         let Ok(k) = self.key(holder) else {
             return holder;
@@ -186,28 +203,43 @@ impl<M: TextEngine> Core<M> {
         let node = &self.nodes[child as usize];
         let id = node.id;
         if matches!(node.kind, Kind::RawText | Kind::List)
-            || self.is_host(id)
             || self.components.slot_hosts.contains_key(&id)
             || self.components.fill_holders.contains(&id)
             || self.is_render_holder(id)
         {
             return holder;
         }
-        id
+        self.base_of(id)
     }
 
-    /// The component whose slot's props app element `id` has.
+    /// The component whose slot's props app element `id` has (a host's
+    /// by the id its view makes the node under).
     pub(super) fn adopted_host(&self, id: NodeId) -> Option<NodeId> {
-        let holder = self.components.adopted.get(&id)?;
+        if self.components.adopted.is_empty() {
+            return None;
+        }
+        let holder = self
+            .components
+            .adopted
+            .get(&id)
+            .or_else(|| self.components.adopted.get(&self.base_of(id)))?;
         self.components.slot_targets.get(holder).map(|t| t.host)
     }
 
     /// A view's own attributes `new` (its last ones `old`) on its node
-    /// `id`, when it takes the props of a slot it fills (it is the one
-    /// element in the node a view wraps the fill in): they are the side
-    /// JS's are on an app's element, combined with the component's. False
-    /// when it takes none (they apply as they are).
-    pub(super) fn apply_target_attrs(&mut self, id: NodeId, new: &Attrs, old: &Attrs) -> bool {
+    /// `id`, when it takes the props of a slot (it is the one element in
+    /// the node a view wraps the fill in, or the root of a component whose
+    /// host is the app's element in a slot): they are the side JS's are on
+    /// an app's element, combined with the component's. `app` is a host's
+    /// app style ([`Self::apply_attrs_over`]). False when it takes none
+    /// (they apply as they are).
+    pub(super) fn apply_target_attrs(
+        &mut self,
+        id: NodeId,
+        new: &Attrs,
+        old: &Attrs,
+        app: Option<&crate::StylePatch>,
+    ) -> bool {
         if self.components.adopted.is_empty() {
             return false;
         }
@@ -231,24 +263,23 @@ impl<M: TextEngine> Core<M> {
         };
         rest.element_ref = new.element_ref.clone();
         old_rest.element_ref = old.element_ref.clone();
-        self.apply_attrs(id, &rest, &old_rest);
+        self.apply_attrs_over(id, &rest, &old_rest, app);
         self.apply_attrs(id, &after, &before);
         true
     }
 
     /// The view an overlay anchored to what `id` draws
-    /// ([`crate::overlay::OverlayAnchor::Content`]) goes by: the node a
-    /// view wraps a fill in when `id` is the fill's element taking the
-    /// slot's ref, so the element's own box is what shows (the box around
-    /// its children would leave out its size and padding), else `id`.
+    /// ([`crate::overlay::OverlayAnchor::Content`]) goes by: the slot's
+    /// holder when `id` is the element taking a slot's props (JS's holder
+    /// of the app's element, or the node a view wraps a Rust fill in), so
+    /// the element's own box is what shows, whether a TSX or a Rust app
+    /// passed it (the box around its children would leave out what
+    /// stretches it or its minimum size), else `id`.
     pub(super) fn content_anchor(&self, id: NodeId) -> NodeId {
-        if self.components.fill_holders.is_empty() {
+        if self.components.adopted.is_empty() {
             return id;
         }
-        match self.components.adopted.get(&id) {
-            Some(&holder) if self.components.fill_holders.contains(&holder) => holder,
-            _ => id,
-        }
+        self.components.adopted.get(&id).copied().unwrap_or(id)
     }
 
     /// The events the component listens to on node `id` when it takes a
@@ -270,6 +301,21 @@ impl<M: TextEngine> Core<M> {
         target.events
     }
 
+    /// Whether the slot whose props component host `id` takes listens to
+    /// `event` there, its own view and JS listening (`others`) or not.
+    pub(super) fn target_listens(&mut self, id: NodeId, event: EventKind, others: bool) -> bool {
+        let Some(target) = self
+            .components
+            .adopted
+            .get(&id)
+            .and_then(|holder| self.components.slot_targets.get_mut(holder))
+        else {
+            return false;
+        };
+        target.js_events.set(event, others);
+        target.events.contains(event)
+    }
+
     /// JS's own props of app element `id` that combine with a component's,
     /// read from its node, and the events JS listens to on it.
     fn js_side(&self, id: NodeId) -> (Attrs, EventMask) {
@@ -280,6 +326,7 @@ impl<M: TextEngine> Core<M> {
         let mut js = Attrs {
             disabled: node.states & state::DISABLED != 0,
             projected_states: node.projected,
+            projected_data: node.data.to_vec(),
             ..Attrs::default()
         };
         if let Some(props) = &node.props {
@@ -544,33 +591,37 @@ impl<M: TextEngine> Core<M> {
                 })
             }
             Op::Release { id } => {
-                // The element goes: the holder takes the component's part
-                // (it has no element now).
-                if let Some(holder) = self.components.adopted.remove(&id)
-                    && let Some(target) = self.components.slot_targets.get_mut(&holder)
-                {
-                    target.node = holder;
-                    target.js = Attrs::default();
-                    target.js_events = EventMask::default();
-                    let (applied, events, host) = (target.own.clone(), target.events, target.host);
-                    self.apply_attrs(holder, &applied, &Attrs::default());
-                    self.listen_changes(holder, EventMask::default(), events, EventMask::default());
-                    if let Some(inst) = self.components.instances.get_mut(&host) {
-                        for (n, _, _) in &mut inst.handlers {
-                            if *n == id {
-                                *n = holder;
-                            }
-                        }
-                        for (n, _) in &mut inst.responders {
-                            if *n == id {
-                                *n = holder;
-                            }
-                        }
-                    }
-                }
+                self.target_released(id);
                 Some(Op::Release { id })
             }
             op => Some(op),
+        }
+    }
+
+    /// App element `id` goes (a component's host as its component does):
+    /// the holder takes the component's part (it has no element now).
+    pub(super) fn target_released(&mut self, id: NodeId) {
+        if let Some(holder) = self.components.adopted.remove(&id)
+            && let Some(target) = self.components.slot_targets.get_mut(&holder)
+        {
+            target.node = holder;
+            target.js = Attrs::default();
+            target.js_events = EventMask::default();
+            let (applied, events, host) = (target.own.clone(), target.events, target.host);
+            self.apply_attrs(holder, &applied, &Attrs::default());
+            self.listen_changes(holder, EventMask::default(), events, EventMask::default());
+            if let Some(inst) = self.components.instances.get_mut(&host) {
+                for (n, _, _) in &mut inst.handlers {
+                    if *n == id {
+                        *n = holder;
+                    }
+                }
+                for (n, _) in &mut inst.responders {
+                    if *n == id {
+                        *n = holder;
+                    }
+                }
+            }
         }
     }
 }

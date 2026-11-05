@@ -169,7 +169,7 @@ mount(App);
 
 | Prop | Rust | 类型 | 默认值 | 说明 |
 |---|---|---|---|---|
-| `panelClass`、`panelStyle` | `.panel_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 填满区域的面板：色相的颜色，饱和度从左到右、明度从下到上，按面板圆角裁剪。 |
+| `panelClass`、`panelStyle` | `.panel_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 填满区域的面板：色相的颜色，饱和度从左到右（从右到左的布局里从右到左）、明度从下到上，按面板圆角裁剪。 |
 | `thumbClass`、`thumbStyle` | `.thumb_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 以颜色为中心的滑块。 |
 | `fillThumb` | `.fill_thumb(..)` | `boolean` | `false` | 滑块背景为当前颜色。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不接受指针、键盘或屏幕阅读器的修改。 |
@@ -182,7 +182,7 @@ mount(App);
 |---|---|---|---|---|
 | `colorSpace` | `.color_space(..)` | `"rgb" \| "hsl" \| "hsb" \| "oklch"` | `"hsb"` | 通道所在的空间。 |
 | `channel` | `.channel(..)` | `ColorChannel` | `"hue"` | 修改的通道：该空间的通道之一，或 `"alpha"`。 |
-| `axis` | `.axis(..)` | `"horizontal" \| "vertical"` | `"horizontal"` | 轨道方向：最小值在左边，或在底部。创建滑块时读取。 |
+| `axis` | `.axis(..)` | `"horizontal" \| "vertical"` | `"horizontal"` | 轨道方向：最小值在起始端（左边；从右到左的布局里是右边），或在底部。创建滑块时读取。 |
 | `trackClass`、`trackStyle` | `.track_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 轨道：沿轨道绘制通道的颜色，按圆角裁剪；滑块放在轨道上。 |
 | `thumbClass`、`thumbStyle` | `.thumb_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 以数值为中心的滑块。 |
 | `fillThumb` | `.fill_thumb(..)` | `boolean` | `false` | 滑块背景为当前颜色（透明度滑块上带透明度）。 |
@@ -271,6 +271,8 @@ Rust 中 `ColorPickerEvent::Change(Hsla, SharedString)` 和 `ColorPickerEvent::C
 | Shift 加方向键 | 十步 | 十步 |
 | Page Up、Page Down | 十步 | 明度十步 |
 | Home、End | 通道的两端 | |
+
+在从右到左的布局里，横向滑块和区域从右边开始，最小值（饱和度最低处）在右端：Left 增加一步，Right 减少一步，点按或拖动按绘制出的位置取指针下的值。垂直滑块仍是 Right、Up 增加一步；区域上的 Up、Down 仍调节明度。
 
 色板接受 Space 和 Return。每次按键先报告 `onChange`，再报告 `onChangeEnd`；按住方向键会重复。
 

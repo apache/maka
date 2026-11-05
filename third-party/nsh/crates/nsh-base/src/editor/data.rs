@@ -262,6 +262,81 @@ pub struct EditorDecoration {
     /// `class` and `style` apply over the token's colors.
     #[prop(skip_none)]
     pub token: Option<EditorToken>,
+    /// A mark in the strip before the line numbers, beside the lines the
+    /// range covers (a version-control diff's added or modified lines). An
+    /// empty range marks the boundary between two lines (deleted lines).
+    #[prop(skip_none)]
+    pub gutter: Option<EditorGutterMark>,
+    /// A mark on the overview ruler, the strip along the editor's right
+    /// edge that maps the whole text to its height (Monaco's).
+    #[prop(skip_none)]
+    pub overview_ruler: Option<EditorOverviewRulerMark>,
+}
+
+/// A decoration's mark in the gutter's strip of marks
+/// ([`EditorDecoration::gutter`]): a bar the strip's width beside each line
+/// of its range (an empty range's line, as `lineClass` styles it), or a
+/// line across the strip between two lines (`placement: "before"`). Its
+/// look is the app's; without any, it is the foreground color.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct EditorGutterMark {
+    /// Where it is drawn (default `lines`).
+    #[prop(default)]
+    pub placement: EditorGutterPlacement,
+    /// Tailwind classes of the mark (`bg-*`, `opacity-*`).
+    #[prop(skip_none)]
+    pub class: Option<SharedString>,
+    /// The inline style of the mark, over `class`.
+    #[prop(skip_none)]
+    pub style: Option<Style>,
+}
+
+/// Where a gutter mark is drawn ([`EditorGutterMark::placement`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PropEnum)]
+pub enum EditorGutterPlacement {
+    /// A bar beside every line the range covers; an empty range covers
+    /// its line (added or modified lines, a breakpoint).
+    #[default]
+    Lines,
+    /// A line across the strip at the boundary before the range's start:
+    /// at the top of its line when it starts a line, otherwise at the
+    /// bottom of its line (lines deleted there, at the end of a text with
+    /// no final line break too).
+    Before,
+}
+
+/// A decoration's mark on the overview ruler
+/// ([`EditorDecoration::overview_ruler`]): the range's rows, scaled to
+/// the ruler's height, at least 6 points tall, in one of its lanes. Its
+/// look is the app's; without any, it is the foreground color.
+#[derive(Debug, Clone, Default, PartialEq, JsObject)]
+#[non_exhaustive]
+pub struct EditorOverviewRulerMark {
+    /// The part of the ruler's width it takes (default `center`).
+    #[prop(default)]
+    pub lane: EditorOverviewRulerLane,
+    /// Tailwind classes of the mark (`bg-*`, `opacity-*`).
+    #[prop(skip_none)]
+    pub class: Option<SharedString>,
+    /// The inline style of the mark, over `class`.
+    #[prop(skip_none)]
+    pub style: Option<Style>,
+}
+
+/// The part of the overview ruler's width a mark takes, as Monaco's lanes:
+/// thirds, or the whole width.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, PropEnum)]
+pub enum EditorOverviewRulerLane {
+    /// The left third (version control's changes, by convention).
+    Left,
+    /// The middle third.
+    #[default]
+    Center,
+    /// The right third (diagnostics, by convention).
+    Right,
+    /// The whole width.
+    Full,
 }
 
 /// A kind of token of an editor's syntax highlighting, as the built-in

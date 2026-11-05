@@ -45,6 +45,7 @@ use windows::{
                 },
                 Pointer::{GetPointerInfo, POINTER_INFO},
             },
+            Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
             WindowsAndMessaging::*,
         },
     },
@@ -64,6 +65,9 @@ pub(crate) const WM_NSH_TICK: u32 = WM_APP + 2;
 const WM_NSH_CALL: u32 = WM_APP + 3;
 /// A context menu to show ([`crate::chrome::show_popup`]).
 pub(crate) const WM_NSH_MENU: u32 = WM_APP + 4;
+/// The embedding app's root window was shown, hidden, minimized or
+/// restored ([`observe_root`]).
+const WM_NSH_ROOT: u32 = WM_APP + 5;
 
 const CLASS: PCWSTR = w!("NshWindow");
 const DISPATCH_CLASS: PCWSTR = w!("NshDispatcher");
@@ -87,6 +91,9 @@ struct WindowData {
     sys_char: Cell<bool>,
     /// Where the window was before it went full screen.
     windowed: Cell<Option<WINDOWPLACEMENT>>,
+    /// The embedding app's root window an embedded surface's window
+    /// observes ([`observe_root`]); none for a top-level one.
+    root: Cell<Option<HWND>>,
 }
 
 thread_local! {
@@ -171,6 +178,7 @@ pub(crate) fn create(
         surrogate: Cell::new(0),
         sys_char: Cell::new(false),
         windowed: Cell::new(None),
+        root: Cell::new(None),
     });
     let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
     let (style, ex_style) = match parent {
@@ -196,6 +204,11 @@ pub(crate) fn create(
         )?
     };
     surface.set_hwnd(hwnd);
+    if parent.is_some()
+        && let Some(window) = self::data(hwnd)
+    {
+        window.root.set(observe_root(hwnd));
+    }
     if parent.is_none() {
         OPEN.with(|o| o.set(o.get() + 1));
         // Sized in points at the window's own DPI (known once it exists).
@@ -446,6 +459,66 @@ fn hi(l: isize) -> i32 {
     ((l >> 16) & 0xFFFF) as i16 as i32
 }
 
+/// Has the embedding app's root window tell `child`, an embedded surface's
+/// window, what the app's state follows: `WM_ACTIVATEAPP`, which only
+/// top-level windows get, and [`WM_NSH_ROOT`] when the root is shown,
+/// hidden, minimized or restored, which `child`'s own messages do not say.
+/// Returns the root it observes (`None` when `child` has none, or the root
+/// is another thread's, which cannot be subclassed).
+fn observe_root(child: HWND) -> Option<HWND> {
+    // SAFETY: plain calls on live windows; the subclass is removed when
+    // `child` is destroyed ([`unobserve_root`]) or the root is.
+    unsafe {
+        let root = GetAncestor(child, GA_ROOT);
+        if root.is_invalid() || root == child {
+            return None;
+        }
+        SetWindowSubclass(root, Some(root_proc), child.0 as usize, child.0 as usize)
+            .as_bool()
+            .then_some(root)
+    }
+}
+
+/// `child` stops observing `root` ([`observe_root`]).
+fn unobserve_root(root: HWND, child: HWND) {
+    // SAFETY: removes the subclass `observe_root` installed, if the root
+    // still has it.
+    unsafe {
+        let _ = RemoveWindowSubclass(root, Some(root_proc), child.0 as usize);
+    }
+}
+
+/// The root window's messages, for the embedded window `child`
+/// ([`observe_root`]), after the root's own handling.
+unsafe extern "system" fn root_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    id: usize,
+    child: usize,
+) -> LRESULT {
+    // SAFETY: the root's own handling, then sends to `child`, which lives
+    // until it removes this subclass.
+    unsafe {
+        let result = DefSubclassProc(hwnd, msg, wparam, lparam);
+        let child = HWND(child as *mut _);
+        match msg {
+            WM_ACTIVATEAPP => {
+                SendMessageW(child, WM_ACTIVATEAPP, Some(wparam), Some(lparam));
+            }
+            WM_WINDOWPOSCHANGED => {
+                SendMessageW(child, WM_NSH_ROOT, None, None);
+            }
+            WM_NCDESTROY => {
+                let _ = RemoveWindowSubclass(hwnd, Some(root_proc), id);
+            }
+            _ => {}
+        }
+        result
+    }
+}
+
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
     msg: u32,
@@ -477,6 +550,11 @@ unsafe extern "system" fn window_proc(
         && let Some(result) = handle(&surface, data, hwnd, msg, wparam, lparam)
     {
         return result;
+    }
+    if msg == WM_DESTROY
+        && let Some(root) = data.root.take()
+    {
+        unobserve_root(root, hwnd);
     }
     if msg == WM_DESTROY && data.top_level {
         let left = OPEN.with(|o| {
@@ -735,14 +813,7 @@ fn handle(
             return Some(LRESULT(0));
         }
         WM_SETCURSOR if lo(lparam.0) == HTCLIENT as i32 => {
-            let mut p = POINT::default();
-            // SAFETY: plain calls with local out values.
-            unsafe {
-                let _ = GetCursorPos(&mut p);
-                let _ = ScreenToClient(hwnd, &mut p);
-            }
-            let cursor = crate::input::cursor(surface, p.x as f32 / scale, p.y as f32 / scale);
-            set_cursor(cursor);
+            update_cursor(surface, hwnd);
             return Some(LRESULT(1));
         }
         WM_KEYDOWN | WM_SYSKEYDOWN | WM_KEYUP | WM_SYSKEYUP => {
@@ -792,6 +863,12 @@ fn handle(
         WM_SETTINGCHANGE | WM_THEMECHANGED | WM_SYSCOLORCHANGE | WM_DWMCOLORIZATIONCOLORCHANGED => {
             crate::system::settings_changed(surface);
         }
+        WM_ACTIVATEAPP => crate::system::app_activated(surface, wparam.0 != 0),
+        // Shown, hidden, minimized or restored (before default handling
+        // sends `WM_SIZE`).
+        WM_WINDOWPOSCHANGED if data.top_level => crate::system::lifecycle_changed(surface),
+        // An embedded surface's: its root window's ([`observe_root`]).
+        WM_NSH_ROOT => crate::system::lifecycle_changed(surface),
         WM_DESTROY => {
             surface.activation_changed(false);
             surface.stop();
@@ -911,6 +988,46 @@ pub(crate) fn lines_per_notch() -> f32 {
     l
 }
 
+/// Sets the cursor of what is under the mouse in the client area.
+fn update_cursor(surface: &Rc<Surface>, hwnd: HWND) {
+    let mut p = POINT::default();
+    // SAFETY: plain calls with local out values.
+    unsafe {
+        let _ = GetCursorPos(&mut p);
+        let _ = ScreenToClient(hwnd, &mut p);
+    }
+    let scale = surface.scale();
+    set_cursor(crate::input::cursor(
+        surface,
+        p.x as f32 / scale,
+        p.y as f32 / scale,
+    ));
+}
+
+/// A style batch does not trigger `WM_SETCURSOR`: apply its cursor at the
+/// resting mouse, keeping other windows and non-client cursors intact.
+pub(crate) fn refresh_cursor(surface: &Rc<Surface>) {
+    let hwnd = surface.hwnd();
+    let mut p = POINT::default();
+    // SAFETY: plain calls with a local value; the hit test is the window's
+    // own (a custom title bar's caption is not the client area).
+    let over = unsafe {
+        GetCursorPos(&mut p).is_ok()
+            && WindowFromPoint(p) == hwnd
+            && SendMessageW(
+                hwnd,
+                WM_NCHITTEST,
+                None,
+                Some(LPARAM(((p.y as u16 as isize) << 16) | p.x as u16 as isize)),
+            )
+            .0 as u32
+                == HTCLIENT
+    };
+    if over {
+        update_cursor(surface, hwnd);
+    }
+}
+
 /// Sets the cursor shown over the window.
 pub(crate) fn set_cursor(cursor: crate::input::Cursor) {
     use crate::input::Cursor;
@@ -934,6 +1051,8 @@ pub(crate) fn set_cursor(cursor: crate::input::Cursor) {
         Cursor::NotAllowed => IDC_NO,
         Cursor::ResizeEw => IDC_SIZEWE,
         Cursor::ResizeNs => IDC_SIZENS,
+        Cursor::ResizeNwse => IDC_SIZENWSE,
+        Cursor::ResizeNesw => IDC_SIZENESW,
         Cursor::Wait => IDC_WAIT,
         Cursor::Progress => IDC_APPSTARTING,
         Cursor::Help => IDC_HELP,
@@ -1091,6 +1210,108 @@ fn minimum_track_size(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    thread_local! {
+        /// What the test's windows heard: window, message, `wparam` and
+        /// `lparam` (the root's own procedure records too).
+        static HEARD: RefCell<Vec<(isize, u32, usize, isize)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "system" fn recording_proc(
+        hwnd: HWND,
+        msg: u32,
+        wparam: WPARAM,
+        lparam: LPARAM,
+    ) -> LRESULT {
+        if matches!(msg, WM_ACTIVATEAPP | WM_NSH_ROOT) {
+            HEARD.with(|h| {
+                h.borrow_mut()
+                    .push((hwnd.0 as isize, msg, wparam.0, lparam.0))
+            });
+        }
+        // SAFETY: default handling.
+        unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) }
+    }
+
+    #[test]
+    fn an_embedded_window_hears_its_root_window() {
+        // SAFETY: a class registered and two windows made on this thread,
+        // never shown, destroyed at the end.
+        unsafe {
+            let class = WNDCLASSEXW {
+                cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
+                lpfnWndProc: Some(recording_proc),
+                hInstance: instance(),
+                lpszClassName: w!("NshTestEmbedding"),
+                ..Default::default()
+            };
+            RegisterClassExW(&class);
+            let make = |style, parent| {
+                CreateWindowExW(
+                    WINDOW_EX_STYLE(0),
+                    w!("NshTestEmbedding"),
+                    w!(""),
+                    style,
+                    0,
+                    0,
+                    100,
+                    100,
+                    parent,
+                    None,
+                    Some(instance()),
+                    None,
+                )
+                .unwrap()
+            };
+            let root = make(WS_OVERLAPPEDWINDOW, None);
+            let child = make(WS_CHILD, Some(root));
+            assert_eq!(observe_root(child), Some(root));
+            // What the child heard. The desktop may send activations of its
+            // own: the test's carry a thread no app has (`WM_ACTIVATEAPP`'s
+            // `lparam`).
+            const MARK: isize = 0x004E_5348;
+            let id = child.0 as isize;
+            let ours = |heard: &[(isize, u32, usize, isize)]| -> Vec<usize> {
+                heard
+                    .iter()
+                    .filter(|h| h.0 == id && h.1 == WM_ACTIVATEAPP && h.3 == MARK)
+                    .map(|h| h.2)
+                    .collect()
+            };
+            let moved = |heard: &[(isize, u32, usize, isize)]| {
+                heard.iter().any(|h| h.0 == id && h.1 == WM_NSH_ROOT)
+            };
+            let resize = |width, height| {
+                SetWindowPos(
+                    root,
+                    None,
+                    0,
+                    0,
+                    width,
+                    height,
+                    SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE,
+                )
+                .unwrap()
+            };
+            // The app activated, then another app.
+            SendMessageW(root, WM_ACTIVATEAPP, Some(WPARAM(1)), Some(LPARAM(MARK)));
+            SendMessageW(root, WM_ACTIVATEAPP, Some(WPARAM(0)), Some(LPARAM(MARK)));
+            let heard = HEARD.with(|h| h.take());
+            assert_eq!(ours(&heard), [1, 0], "{heard:?}");
+            // Its position changed, as when it is minimized, hidden or
+            // restored.
+            resize(200, 150);
+            let heard = HEARD.with(|h| h.take());
+            assert!(moved(&heard), "{heard:?}");
+            // Once it stops observing, neither reaches it.
+            unobserve_root(root, child);
+            SendMessageW(root, WM_ACTIVATEAPP, Some(WPARAM(1)), Some(LPARAM(MARK)));
+            resize(300, 200);
+            let heard = HEARD.with(|h| h.take());
+            assert!(ours(&heard).is_empty() && !moved(&heard), "{heard:?}");
+            DestroyWindow(root).unwrap();
+        }
+    }
 
     #[test]
     fn minimized_activation_does_not_report_foreground() {

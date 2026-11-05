@@ -4,15 +4,19 @@
 //! and reverts or keeps a change, reporting the texts; a patch's lines are
 //! numbered as in its file; a long text makes only the rows in view; line
 //! numbers select lines, which the ref reads and sets; the ref moves from
-//! change to change; the app's annotations show under their lines; and
-//! several files show each under a header that collapses it.
+//! change to change; the app's annotations show under their lines;
+//! several files show each under a header that collapses it; and the view
+//! reports where its rows are scrolled, gives where each change is and
+//! scrolls to an offset, as an overview ruler needs.
+
+use std::sync::{Arc, Mutex};
 
 use nsh_base::{
-    DiffAnnotation, DiffChange, DiffExpand, DiffFile, DiffHunk, DiffLayout, DiffLineRange,
-    DiffSide, DiffView, DiffViewApi, diff_view,
+    DiffAnnotation, DiffChange, DiffExpand, DiffFile, DiffHunk, DiffHunkBounds, DiffLayout,
+    DiffLineRange, DiffSide, DiffView, DiffViewApi, DiffViewEvent, diff_view,
 };
 use nsh_core::{
-    Size,
+    MountItem, Size,
     element::Root,
     platform::{Idiom, Os},
     prelude::*,
@@ -34,6 +38,8 @@ struct HarnessProps {
     annotations: Vec<DiffAnnotation>,
     /// The view's `softWrap`.
     soft_wrap: bool,
+    /// Use the app-provided file header.
+    custom_header: bool,
 }
 
 fn texts(old: &str, new: &str) -> HarnessProps {
@@ -44,6 +50,7 @@ fn texts(old: &str, new: &str) -> HarnessProps {
         layout: DiffLayout::Split,
         annotations: Vec::new(),
         soft_wrap: false,
+        custom_header: false,
     }
 }
 
@@ -99,6 +106,13 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     let pressed = signal(String::from("-"));
     let files = signal(String::from("-"));
     let toggled = signal(String::from("-"));
+    let scrolled = signal(String::from("-"));
+    let scrolls = signal(0u32);
+    let marks = signal(String::from("-"));
+    let moved = signal(String::from("-"));
+    let moves = signal(0u32);
+    let offset = signal(String::from("-"));
+    let height = signal(px(400.0));
     let dv = component_ref::<DiffView>();
     let api = move |f: &dyn Fn(&DiffViewApi)| {
         if let Some(api) = dv.api::<DiffViewApi>() {
@@ -127,8 +141,24 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .annotations(props.annotations.clone())
         .render_annotation(|a: &DiffAnnotation| text(format!("Note {}", a.id)))
         .on_file_toggle(move |f: &DiffFile| toggled.set(format!("{} {}", f.index, f.collapsed)))
+        .on_scroll(move |e: &DiffViewEvent| {
+            if let DiffViewEvent::Scroll(offset, content, size) = e {
+                scrolled.set(format!(
+                    "{} {} {} {} {}",
+                    offset.x.0, offset.y.0, content.width.0, content.height.0, size.height.0
+                ));
+                scrolls.update(|n| *n += 1);
+            }
+        })
+        .on_hunk_bounds_change(move |list: &Vec<DiffHunkBounds>| {
+            moved.set(marks_text(list));
+            moves.update(|n| *n += 1);
+        })
         .component_ref(&dv)
         .size_full();
+    if props.custom_header {
+        el = el.render_file_header(|file: &DiffFile| text(file.path.clone()));
+    }
     el = match props.patch.clone() {
         Some(patch) => el.patch(patch),
         None => el
@@ -144,7 +174,13 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         }
     };
     view()
-        .child(view().test_id("diff").w(px(800.0)).h(px(400.0)).child(el))
+        .child(
+            view()
+                .test_id("diff")
+                .w(px(800.0))
+                .h(move || Length::from(height.get()))
+                .child(el),
+        )
         .child(text(move || format!("Old {}", shown(old.get()))))
         .child(text(move || format!("New {}", shown(new.get()))))
         .child(text(move || format!("Changes {}", changes.get())))
@@ -156,6 +192,12 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .child(text(move || format!("Pressed {}", pressed.get())))
         .child(text(move || format!("Files {}", files.get())))
         .child(text(move || format!("Toggled {}", toggled.get())))
+        .child(text(move || format!("Scrolled {}", scrolled.get())))
+        .child(text(move || format!("Offset {}", offset.get())))
+        .child(text(move || format!("Scrolls {}", scrolls.get())))
+        .child(text(move || format!("Marks {}", marks.get())))
+        .child(text(move || format!("Moved {}", moved.get())))
+        .child(text(move || format!("Moves {}", moves.get())))
         .child(
             view()
                 .flex_row()
@@ -215,7 +257,38 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
                 .child(button(
                     "toggle-a",
                     Box::new(|a| a.toggle_file("a.rs".into())),
-                )),
+                ))
+                .child(button(
+                    "marks",
+                    Box::new(move |a| marks.set(marks_text(&a.hunk_bounds()))),
+                ))
+                // The change moves from the first line to the last: the
+                // rows keep their height.
+                .child(button(
+                    "relocate",
+                    Box::new(move |_| {
+                        batch(|| {
+                            old.set("a\nb\nc\nd".into());
+                            new.set("a\nb\nc\nD".into());
+                        })
+                    }),
+                ))
+                .child(button(
+                    "scroll-40",
+                    Box::new(|a| a.set_scroll_offset(point(px(500.0), px(40.0)))),
+                ))
+                .child(button(
+                    "read-offset",
+                    Box::new(move |a| {
+                        let o = a.scroll_offset();
+                        offset.set(format!("{} {}", o.x.0, o.y.0));
+                    }),
+                ))
+                .child(button(
+                    "scroll-far",
+                    Box::new(|a| a.set_scroll_offset(point(px(0.0), px(100_000.0)))),
+                ))
+                .child(button("shrink", Box::new(move |_| height.set(px(300.0))))),
         )
 }
 
@@ -596,4 +669,281 @@ diff --git a/b.rs b/b.rs
     app.press("id:toggle-a").unwrap();
     see(&mut app, "Toggled 0 false");
     see(&mut app, "new a");
+}
+
+/// Sixty lines, lines 10 and 50 changed: two hunks, 17 rows collapsed.
+fn two_far_changes() -> HarnessProps {
+    let old = numbered(60);
+    let mut new = old.clone();
+    new[9] = "line ten".into();
+    new[49] = "line fifty".into();
+    texts(&old.join("\n"), &new.join("\n"))
+}
+
+/// The changes' boxes as text: `index@x,y+widthxheight` each.
+fn marks_text(list: &[DiffHunkBounds]) -> String {
+    list.iter()
+        .map(|m| {
+            let b = m.bounds;
+            format!(
+                "{}@{},{}+{}x{}",
+                m.index, b.origin.x.0, b.origin.y.0, b.size.width.0, b.size.height.0
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// How many times the view reported its scrolling.
+fn scrolls(app: &Headless) -> u32 {
+    app.screen()
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Scrolls "))
+        .expect("the count shows")
+        .parse()
+        .unwrap()
+}
+
+/// The hunk bounds the harness read last: `(index, top, height, width)`.
+fn marks(app: &Headless) -> Vec<(u32, f32, f32, f32)> {
+    let texts = app.screen().texts().join("\n");
+    let line = texts
+        .lines()
+        .find_map(|l| l.trim().strip_prefix("Marks "))
+        .expect("the marks show")
+        .to_string();
+    line.split(' ')
+        .map(|m| {
+            let (index, rest) = m.split_once('@').unwrap();
+            let (origin, size) = rest.split_once('+').unwrap();
+            let (x, top) = origin.split_once(',').unwrap();
+            let (width, height) = size.split_once('x').unwrap();
+            assert_eq!(x, "0", "a change's box starts at the left");
+            (
+                index.parse().unwrap(),
+                top.parse().unwrap(),
+                height.parse().unwrap(),
+                width.parse().unwrap(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn the_view_reports_where_its_rows_are_scrolled() {
+    let mut app = start(two_far_changes());
+    see(&mut app, "line fifty");
+    // Once laid out: 17 rows of 20 in a viewport of 400 (`x` is 0 and the
+    // rows are as wide as the view).
+    see(&mut app, "Scrolled 0 0 800 340 400");
+    // Every line shown: the rows are taller.
+    app.press("id:expand-all").unwrap();
+    see(&mut app, "Scrolled 0 0 800 1200 400");
+    app.scroll("id:diff", px(100.0)).unwrap();
+    see(&mut app, "Scrolled 0 100 800 1200 400");
+    // A smaller viewport.
+    app.press("id:shrink").unwrap();
+    see(&mut app, "Scrolled 0 100 800 1200 300");
+    // Nothing moved: nothing more is reported.
+    let before = scrolls(&app);
+    app.press("id:read").unwrap();
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    assert_eq!(scrolls(&app), before);
+    // Collapsed again, the rows are short again (the scroll view clamps
+    // its offset to them).
+    app.press("id:collapse-all").unwrap();
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    let shown = app
+        .screen()
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Scrolled ").map(str::to_string))
+        .unwrap();
+    assert!(shown.ends_with(" 800 340 300"), "{shown}");
+}
+
+#[test]
+fn the_ref_scrolls_to_an_offset_at_once() {
+    let mut app = start(two_far_changes());
+    app.press("id:expand-all").unwrap();
+    see(&mut app, "Scrolled 0 0 800 1200 400");
+    // Its `y` (the horizontal offset is the sides'), in one step: the
+    // scroll view reporting it back reports nothing more.
+    let before = scrolls(&app);
+    app.press("id:scroll-40").unwrap();
+    see(&mut app, "Scrolled 0 40 800 1200 400");
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    assert_eq!(scrolls(&app), before + 1);
+    // The ref reads it back.
+    app.press("id:read-offset").unwrap();
+    see(&mut app, "Offset 0 40");
+    // As far as the rows go: their height less the viewport's.
+    app.press("id:scroll-far").unwrap();
+    see(&mut app, "Scrolled 0 800 800 1200 400");
+    see(&mut app, "line 60");
+}
+
+#[test]
+fn hunk_bounds_follow_wrapped_rows_and_skip_collapsed_files() {
+    let long = "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu nu xi omicron \
+                pi rho sigma tau upsilon phi chi psi omega alpha beta gamma delta epsilon zeta \
+                eta theta iota kappa lambda mu nu xi omicron pi rho sigma tau upsilon phi chi";
+    let patch = format!(
+        "\
+diff --git a/a.rs b/a.rs
+--- a/a.rs
++++ b/a.rs
+@@ -1,2 +1,2 @@
+ keep a
+-old a
++{long}
+diff --git a/b.rs b/b.rs
+--- a/b.rs
++++ b/b.rs
+@@ -5,1 +5,2 @@
+ keep b
++added b
+"
+    );
+    let mut app = start(HarnessProps {
+        patch: Some(patch),
+        soft_wrap: true,
+        ..texts("", "")
+    });
+    see(&mut app, "added b");
+    app.press("id:marks").unwrap();
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    let both = marks(&app);
+    assert_eq!(both.len(), 2, "{both:?}");
+    let (first, second) = (both[0], both[1]);
+    assert_eq!((first.0, second.0), (0, 1));
+    // The changed line wraps: its change is several rows tall, the other
+    // one row; each is as wide as the view.
+    assert!(first.2 > 20.0 && first.2 % 20.0 == 0.0, "{both:?}");
+    assert_eq!((second.2, first.3, second.3), (20.0, 800.0, 800.0));
+    assert!(second.1 >= first.1 + first.2, "{both:?}");
+    // File a collapsed: its change has no rows, the other moves up by
+    // them.
+    app.press("id:toggle-a").unwrap();
+    see(&mut app, "Toggled 0 true");
+    app.press("id:marks").unwrap();
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    let one = marks(&app);
+    assert_eq!(one.len(), 1, "{one:?}");
+    assert_eq!(one[0].0, 1);
+    assert!(one[0].1 <= second.1 - first.2, "{one:?} after {both:?}");
+}
+
+/// How many times the view reported where its changes are.
+fn moves(app: &Headless) -> u32 {
+    app.screen()
+        .texts()
+        .iter()
+        .find_map(|t| t.trim().strip_prefix("Moves "))
+        .expect("the count shows")
+        .parse()
+        .unwrap()
+}
+
+#[test]
+fn the_view_reports_a_change_moved_within_rows_of_the_same_height() {
+    let mut app = start(texts("A\nb\nc\nd", "a\nb\nc\nd"));
+    // Once laid out: the change is the first row, of the four (split:
+    // the changed line beside its old one).
+    see(&mut app, "Moved 0@0,0+800x20");
+    see(&mut app, "Scrolled 0 0 800 80 400");
+    let scrolls_before = scrolls(&app);
+    // The change moves to the last line: the rows keep their height, so
+    // `onScroll` has nothing to report, and the moved change is reported.
+    app.press("id:relocate").unwrap();
+    see(&mut app, "Moved 0@0,60+800x20");
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    assert_eq!(scrolls(&app), scrolls_before);
+    // What the ref gives agrees.
+    app.press("id:marks").unwrap();
+    see(&mut app, "Marks 0@0,60+800x20");
+    // Nothing moved: nothing more is reported, a new viewport height
+    // included.
+    let before = moves(&app);
+    app.press("id:shrink").unwrap();
+    see(&mut app, "Scrolled 0 0 800 80 300");
+    app.wait(std::time::Duration::from_millis(100)).unwrap();
+    assert_eq!(moves(&app), before);
+}
+
+/// Both header renderers must occupy the row immediately after the first
+/// file's change, including the extra visual rows introduced by wrapping.
+#[test]
+fn file_headers_follow_wrapped_rows() {
+    for layout in [DiffLayout::Unified, DiffLayout::Split] {
+        for custom_header in [false, true] {
+            for soft_wrap in [false, true] {
+                let long = "long text ".repeat(30);
+                let props = HarnessProps {
+                    patch: Some(format!(
+                        "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old a\n+{long}\ndiff --git a/b.rs b/b.rs\n--- a/b.rs\n+++ b/b.rs\n@@ -1 +1 @@\n-old b\n+new b\n"
+                    )),
+                    layout,
+                    soft_wrap,
+                    custom_header,
+                    ..texts("", "")
+                };
+                let mut app = Headless::start(EngineConfig {
+                    viewport: Size::new(px(900.0), px(900.0)),
+                    ..EngineConfig::new(Root::new::<Harness>(move || props.clone()))
+                })
+                .unwrap();
+                let items = Arc::new(Mutex::new(Vec::new()));
+                let into = items.clone();
+                app.observe(move |_, batch| into.lock().unwrap().extend(batch.items.clone()));
+                see(&mut app, "new b");
+                app.press("id:marks").unwrap();
+                app.wait(std::time::Duration::from_millis(100)).unwrap();
+                let bounds = marks(&app);
+                let first = bounds[0];
+                let unwrapped_height = if layout == DiffLayout::Unified {
+                    40.0
+                } else {
+                    20.0
+                };
+                if soft_wrap {
+                    assert!(first.2 > unwrapped_height, "{bounds:?}");
+                } else {
+                    assert_eq!(first.2, unwrapped_height);
+                }
+                let items = items.lock().unwrap();
+                let mut id = items
+                    .iter()
+                    .rev()
+                    .find_map(|item| match item {
+                        MountItem::Text { id, text, .. } if text.text == "b.rs" => Some(*id),
+                        _ => None,
+                    })
+                    .expect("second file title");
+                // Walk through the renderer's content to the full-width header.
+                let mut header = None;
+                while let Some(parent) = items.iter().rev().find_map(|item| match item {
+                    MountItem::Insert { parent, child, .. } if *child == id => Some(*parent),
+                    _ => None,
+                }) {
+                    id = parent;
+                    if let Some(frame) = items.iter().rev().find_map(|item| match item {
+                        MountItem::Frame { id: at, frame } if *at == id => Some(*frame),
+                        _ => None,
+                    }) && frame.size.width == px(800.0)
+                        && frame.size.height == px(20.0)
+                    {
+                        header = Some(frame);
+                    }
+                }
+                let header = header.expect("full-width header");
+                assert_eq!(
+                    header.origin.y.0,
+                    first.1 + first.2,
+                    "layout={layout:?}, custom={custom_header}, wrap={soft_wrap}"
+                );
+            }
+        }
+    }
 }

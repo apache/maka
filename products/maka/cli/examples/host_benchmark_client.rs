@@ -295,7 +295,11 @@ async fn send(client: &Client, args: &Value) -> Result<Value> {
                     let fact = &event["fact"];
                     match fact["kind"].as_str() {
                         Some("part_started") => { parts.insert((string(fact,"stepId")?.into(),string(fact,"partId")?.into()),fact["textKind"] == "text"); }
-                        Some("executor_started") => { parts.insert((invocation.clone(),"text".into()),true); parts.insert((invocation.clone(),"thinking".into()),false); }
+                        Some("executor_message_started") => {
+                            let step = string(fact, "messageId")?.to_owned();
+                            parts.insert((step.clone(), "text".into()), true);
+                            parts.insert((step, "thinking".into()), false);
+                        }
                         Some("delta") => {
                             let key = (string(fact,"stepId")?.to_owned(),string(fact,"partId")?.to_owned());
                             let visible = parts.get(&key).ok_or("stream delta missing original part")?;

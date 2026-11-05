@@ -1,12 +1,17 @@
 //! `Calendar`: a press picks a day (a range from two), the value the app's
 //! or the calendar's own; Previous / Next turn the month; the toggles show
 //! the months and years to pick from; disabled dates take no press; the
-//! days are one stop of Tab whose arrows move the keyboard; several months
-//! show side by side from the week's first day; a turn of the months and
-//! the keys' moves make no views and draw only the days they change. Today
-//! is 2026-10-28 (the engine's manual clock).
+//! days are one stop of Tab whose arrows move the keyboard (Left and Right
+//! traded in a right-to-left layout, where the weeks run from the right);
+//! several months show side by side from the week's first day; the items'
+//! states are their classes (`selected:`, `data-range-*:`, `focus:`), never
+//! `renderItem`'s: the keys, a pick and the focus draw nothing again, a
+//! turn of the months draws the days it brings once each and makes no
+//! views of the calendar's. Today is 2026-10-28 (the engine's manual
+//! clock).
 
 use std::{
+    collections::{BTreeSet, HashMap},
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -14,9 +19,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use chrono::NaiveDate;
-use nsh_base::{CalendarItemKind, CalendarItemState, Date, Matcher, calendar};
-use nsh_core::{MountItem, Size, element::Root, platform::Os, prelude::*, time::Clock};
+use chrono::{Datelike, Days, Months, NaiveDate};
+use nsh_base::{CalendarEntry, CalendarItemKind, Date, Matcher, calendar};
+use nsh_core::{
+    AccessibilityRole, MountItem, NodeId, Size, ViewStyle, element::Root, platform::Os, prelude::*,
+    time::Clock,
+};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
 
@@ -53,32 +61,31 @@ fn show(v: &Date) -> String {
     }
 }
 
-/// An item as text: what it is, its number, and marks for its state (`*`
-/// active, `~` in the range, `!` disabled, `@` today, `^` the keyboard's).
-fn item(s: &CalendarItemState) -> String {
-    let kind = match s.kind {
+/// An item as `renderItem` draws it here: what it is, its number, `@`
+/// today and `°` a day of the months around.
+fn item(e: &CalendarEntry) -> String {
+    let kind = match e.kind {
         CalendarItemKind::Previous => "prev".to_owned(),
         CalendarItemKind::Next => "next".to_owned(),
-        CalendarItemKind::MonthToggle => format!("M{}/{}", s.value, s.year),
-        CalendarItemKind::YearToggle => format!("Y{}", s.value),
-        CalendarItemKind::Weekday => format!("w{}", s.value),
-        CalendarItemKind::Day => format!("{}-{}", s.month, s.value),
-        CalendarItemKind::Month => format!("m{}", s.value),
-        CalendarItemKind::Year => format!("y{}", s.value),
+        CalendarItemKind::MonthToggle => format!("M{}/{}", e.value, e.year),
+        CalendarItemKind::YearToggle => format!("Y{}", e.value),
+        CalendarItemKind::Weekday => format!("w{}", e.value),
+        CalendarItemKind::Day => format!("{}-{}", e.month, e.value),
+        CalendarItemKind::Month => format!("m{}", e.value),
+        CalendarItemKind::Year => format!("y{}", e.value),
     };
-    let marks: String = [
-        (s.active, '*'),
-        (s.in_range, '~'),
-        (s.disabled && s.kind == CalendarItemKind::Day, '!'),
-        (s.today, '@'),
-        (s.focused, '^'),
-    ]
-    .iter()
-    .filter(|(on, _)| *on)
-    .map(|(_, c)| *c)
-    .collect();
-    format!("{kind}{marks}")
+    let today = if e.today { "@" } else { "" };
+    let outside = if e.outside { "°" } else { "" };
+    format!("{kind}{today}{outside}")
 }
+
+/// The classes the items show their states with, read back from their
+/// styles ([`marks`]): `focus:` at half opacity, the range's start, end
+/// and middle as a left, right and top border, today as a bottom one, a
+/// day of the months around in a background color.
+const ITEM_CLASS: &str = "focus:opacity-50 data-range-start:border-l data-range-end:border-r \
+                          data-range-middle:border-t data-today:border-b \
+                          data-outside:bg-[#010101]";
 
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
@@ -91,7 +98,8 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .first_day_of_week(props.first_day)
         .previous_accessibility_label("Previous month")
         .next_accessibility_label("Next month")
-        .render_item(|s: &CalendarItemState| text(item(s)))
+        .item_class(ITEM_CLASS)
+        .render_item(|e: &CalendarEntry| text(item(e)))
         .on_change(move |v: &Date| {
             log.update(|l| l.push(show(v)));
             if controlled {
@@ -111,25 +119,136 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .child(text(move || format!("Log: {}", log.get().join(" "))))
 }
 
+/// What the batches mounted: the texts, the views' parents, the items'
+/// accessibility (selected, disabled) and their styles.
+#[derive(Default)]
+struct Seen {
+    texts: HashMap<NodeId, String>,
+    parents: HashMap<NodeId, NodeId>,
+    /// The items (buttons): selected, disabled.
+    items: HashMap<NodeId, (bool, bool)>,
+    styles: HashMap<NodeId, ViewStyle>,
+}
+
+impl Seen {
+    fn apply(&mut self, item: &MountItem) {
+        match item {
+            MountItem::Text { id, text, .. } => {
+                self.texts.insert(*id, text.text.to_string());
+            }
+            MountItem::Insert { parent, child, .. } => {
+                self.parents.insert(*child, *parent);
+            }
+            MountItem::Delete { id } => {
+                self.texts.remove(id);
+            }
+            MountItem::ViewProps { id, props } => {
+                let a = &props.accessibility;
+                if a.role == AccessibilityRole::Button {
+                    self.items.insert(*id, (a.state.selected, a.state.disabled));
+                }
+            }
+            MountItem::ViewStyle { id, style } => {
+                self.styles.insert(*id, (**style).clone());
+            }
+            _ => {}
+        }
+    }
+
+    /// The state marks of each item showing `text` (by its drawing):
+    /// `*` selected, `[` a range's start, `]` its end, `~` its middle, `!`
+    /// disabled (a day), `^` the keyboard's.
+    fn marks(&self, text: &str) -> Vec<String> {
+        self.texts
+            .iter()
+            .filter(|(_, t)| *t == text)
+            .filter_map(|(id, _)| {
+                let mut at = *id;
+                while !self.items.contains_key(&at) {
+                    at = *self.parents.get(&at)?;
+                }
+                Some(at)
+            })
+            .map(|at| {
+                let (selected, disabled) = self.items[&at];
+                let style = self.styles.get(&at).cloned().unwrap_or_default();
+                let w = style.borders.widths;
+                [
+                    (selected, '*'),
+                    (w.left.0 > 0.0, '['),
+                    (w.right.0 > 0.0, ']'),
+                    (w.top.0 > 0.0, '~'),
+                    (disabled && text.contains('-'), '!'),
+                    (style.opacity < 1.0 && style.opacity > 0.0, '^'),
+                ]
+                .iter()
+                .filter(|(on, _)| *on)
+                .map(|(_, c)| *c)
+                .collect()
+            })
+            .collect()
+    }
+}
+
+/// The app and what its batches mounted.
+struct App {
+    app: Headless,
+    seen: Arc<Mutex<Seen>>,
+}
+
+impl std::ops::Deref for App {
+    type Target = Headless;
+    fn deref(&self) -> &Headless {
+        &self.app
+    }
+}
+
+impl std::ops::DerefMut for App {
+    fn deref_mut(&mut self) -> &mut Headless {
+        &mut self.app
+    }
+}
+
 /// On a Mac (a pointer, Tab stops at pressables), at noon UTC on
 /// 2026-10-28.
-fn start(props: HarnessProps) -> Headless {
+fn start(props: HarnessProps) -> App {
     let mut app = launch(Root::new::<Harness>(move || props.clone()));
     app.wait_for("text:prev").unwrap();
     app
 }
 
-/// `root` on a Mac at noon UTC on 2026-10-28, rendered.
-fn launch(root: Root) -> Headless {
+/// `root` on a Mac at noon UTC on 2026-10-28, rendered, what it mounts
+/// seen.
+fn launch(root: Root) -> App {
+    launch_in(root, false)
+}
+
+/// [`launch`] in a right-to-left layout with `rtl`.
+fn launch_in(root: Root, rtl: bool) -> App {
+    let mut app = launch_headless(root, rtl);
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let into = seen.clone();
+    app.observe(move |_, batch| {
+        let mut seen = into.lock().unwrap();
+        for item in &batch.items {
+            seen.apply(item);
+        }
+    });
+    app.first_render().unwrap();
+    App { app, seen }
+}
+
+/// `root` on a Mac at noon UTC on 2026-10-28, not rendered yet, in a
+/// right-to-left layout with `rtl`.
+fn launch_headless(root: Root, rtl: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(800.0), px(844.0)),
         ..EngineConfig::new(root)
     };
     config.environment.os = Os::MacOs;
+    config.environment.rtl = rtl;
     config.clock = Clock::manual(SystemTime::UNIX_EPOCH + Duration::from_secs(1_793_188_800));
-    let mut app = Headless::start(config).expect("the engine starts");
-    app.first_render().unwrap();
-    app
+    Headless::start(config).expect("the engine starts")
 }
 
 fn log(app: &Headless) -> String {
@@ -140,9 +259,23 @@ fn log(app: &Headless) -> String {
         .unwrap_or_default()
 }
 
-fn see(app: &mut Headless, text: &str) {
-    if let Err(e) = app.wait_for(&format!("text:{text}")) {
-        panic!("{e}; shown: {:?}", app.screen().texts());
+/// Waits until an item shows `spec`: its drawing ([`item`]), then the
+/// marks of its states ([`Seen::marks`]), those and no others.
+fn see(app: &mut App, spec: &str) {
+    let text = spec.trim_end_matches(['*', '[', ']', '~', '!', '^']);
+    let marks = &spec[text.len()..];
+    let seen = app.seen.clone();
+    let found = app.app.wait_until(
+        &format!("an item showing `{spec}`"),
+        Duration::from_secs(5),
+        |s| s.shows(text) && seen.lock().unwrap().marks(text).iter().any(|m| m == marks),
+    );
+    if let Err(e) = found {
+        let marks = app.seen.lock().unwrap().marks(text);
+        panic!(
+            "{e}; `{text}` marked {marks:?}; shown: {:?}",
+            app.screen().texts()
+        );
     }
 }
 
@@ -156,6 +289,8 @@ fn a_press_picks_a_day_and_the_header_turns_the_month() {
         // Today's month, today marked.
         see(&mut app, "M10/2026");
         see(&mut app, "10-28@");
+        // The days of the months around, marked.
+        see(&mut app, "10-27°");
         app.press("label:2026-10-14").unwrap();
         see(&mut app, "10-14*");
         assert_eq!(log(&app), "2026-10-14");
@@ -195,12 +330,16 @@ fn a_range_takes_two_presses_and_reports_once_complete() {
             ..props()
         });
         app.press("label:2026-10-20").unwrap();
+        // Half a range: its start, selected, no range marked yet.
         see(&mut app, "10-20*");
         assert_eq!(log(&app), "", "half a range is not reported");
         app.press("label:2026-10-23").unwrap();
-        see(&mut app, "10-23*~");
-        see(&mut app, "10-21~");
-        see(&mut app, "10-20*~");
+        // Every day of the range is selected (React Aria's), its ends and
+        // the days between marked (shadcn's `data-range-*`).
+        see(&mut app, "10-23*]");
+        see(&mut app, "10-21*~");
+        see(&mut app, "10-20*[");
+        see(&mut app, "10-19");
         assert_eq!(log(&app), "2026-10-20..2026-10-23");
         // A third press starts again.
         app.press("label:2026-10-05").unwrap();
@@ -273,6 +412,31 @@ fn the_days_are_one_stop_whose_arrows_move_the_keyboard() {
 }
 
 #[test]
+fn right_to_left_left_is_the_next_day_and_right_the_previous() {
+    let props = HarnessProps {
+        value: d(2026, 10, 30).into(),
+        ..props()
+    };
+    let mut app = launch_in(Root::new::<Harness>(move || props.clone()), true);
+    app.wait_for("text:prev").unwrap();
+    for _ in 0..5 {
+        app.press_key("tab").unwrap();
+    }
+    see(&mut app, "10-30*^");
+    app.press_key("left").unwrap();
+    see(&mut app, "10-31^");
+    app.press_key("left").unwrap();
+    see(&mut app, "M11/2026");
+    see(&mut app, "11-1^");
+    app.press_key("right").unwrap();
+    see(&mut app, "M10/2026");
+    see(&mut app, "10-31^");
+    // Up and Down keep the weeks.
+    app.press_key("up").unwrap();
+    see(&mut app, "10-24^");
+}
+
+#[test]
 fn several_months_show_side_by_side_from_the_first_day_of_the_week() {
     let mut app = start(HarnessProps {
         months: 2,
@@ -334,7 +498,10 @@ impl Cost {
 
 /// A plain calendar of `months` showing `value`, with its cost counted.
 fn start_plain(months: u32, value: Date) -> (Headless, Arc<Cost>) {
-    let mut app = launch(Root::new::<Plain>(move || PlainProps { months, value }));
+    let mut app = launch_headless(
+        Root::new::<Plain>(move || PlainProps { months, value }),
+        false,
+    );
     let cost = Arc::new(Cost::default());
     let seen = cost.clone();
     app.observe(move |_, batch| {
@@ -346,6 +513,7 @@ fn start_plain(months: u32, value: Date) -> (Headless, Arc<Cost>) {
         seen.made.fetch_add(made, Ordering::Relaxed);
         seen.items.fetch_add(batch.items.len(), Ordering::Relaxed);
     });
+    app.first_render().unwrap();
     app.wait_for("label:Next month").unwrap();
     (app, cost)
 }
@@ -403,50 +571,149 @@ fn held_page_keys_make_no_views() {
     assert_eq!(cost.made(), 0, "Page Down makes and drops no view");
 }
 
-/// The day states `renderItem` drew, since the test took them.
-static DRAWN: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// The entries each app's `renderItem` drew (by its `run`): tests run
+/// side by side, each app on an engine thread of its own.
+static DRAWN: Mutex<Vec<Vec<CalendarEntry>>> = Mutex::new(Vec::new());
 
-/// A calendar whose `renderItem` notes each day state it draws.
+#[derive(Clone, PartialEq, Props)]
+struct CountedProps {
+    /// Where its `renderItem` calls go ([`DRAWN`]).
+    run: u32,
+}
+
+/// A range calendar whose `renderItem` notes each entry it draws and whose
+/// items' classes read every state, the value as `Log: …`.
 #[component]
-fn Noting() -> impl IntoElement {
-    view().child(
-        calendar()
-            .default_value(d(2026, 10, 14))
-            .render_item(|s: &CalendarItemState| {
-                if s.kind == CalendarItemKind::Day {
-                    DRAWN.lock().unwrap().push(item(s));
-                }
-                text(item(s))
-            }),
-    )
+fn Counted(props: CountedProps) -> impl IntoElement {
+    let run = props.run as usize;
+    let log = signal(String::new());
+    view()
+        .child(
+            calendar()
+                .range(true)
+                .previous_accessibility_label("Previous month")
+                .next_accessibility_label("Next month")
+                .item_class(format!(
+                    "{ITEM_CLASS} selected:bg-[#000000] disabled:opacity-25"
+                ))
+                .on_change(move |v: &Date| log.set(show(v)))
+                .render_item(move |e: &CalendarEntry| {
+                    DRAWN.lock().unwrap()[run].push(e.clone());
+                    text(item(e))
+                }),
+        )
+        .child(text(move || format!("Log: {}", log.get())))
+}
+
+/// The days the weeks of `month` (its first day) show from Sunday.
+fn grid(month: NaiveDate) -> BTreeSet<String> {
+    let back = month.weekday().num_days_from_sunday();
+    let first = month - Days::new(back.into());
+    let next = month + Months::new(1);
+    let mut days = BTreeSet::new();
+    let mut day = first;
+    while day < next || day.weekday().num_days_from_sunday() != 0 {
+        days.insert(day.to_string());
+        day = day + Days::new(1);
+    }
+    days
 }
 
 #[test]
-fn an_arrow_draws_only_the_days_it_leaves_and_reaches() {
-    let mut app = launch(Root::of::<Noting>());
-    app.wait_for("text:prev").unwrap();
+fn states_draw_nothing_and_a_turn_draws_the_days_it_brings_once() {
+    let run = {
+        let mut drawn = DRAWN.lock().unwrap();
+        drawn.push(Vec::new());
+        drawn.len() - 1
+    };
+    let mut app = launch_headless(
+        Root::new::<Counted>(move || CountedProps { run: run as u32 }),
+        false,
+    );
+    let made = Arc::new(AtomicUsize::new(0));
+    let seen = made.clone();
+    app.observe(move |_, batch| {
+        let n = batch
+            .items
+            .iter()
+            .filter(|i| matches!(i, MountItem::Create { .. } | MountItem::Delete { .. }))
+            .count();
+        seen.fetch_add(n, Ordering::Relaxed);
+    });
+    app.first_render().unwrap();
+    app.wait_for("text:10-28@").unwrap();
+    app.idle(Duration::from_millis(50)).unwrap();
+    let take = || std::mem::take(&mut DRAWN.lock().unwrap()[run]);
+    let days = |drawn: &[CalendarEntry]| -> BTreeSet<String> {
+        drawn
+            .iter()
+            .filter(|e| e.kind == CalendarItemKind::Day)
+            .filter_map(|e| e.date.as_ref().map(|d| d.to_string()))
+            .collect()
+    };
+    let day_count = |drawn: &[CalendarEntry]| {
+        drawn
+            .iter()
+            .filter(|e| e.kind == CalendarItemKind::Day)
+            .count()
+    };
+    // October 2026 takes five weeks from Sunday: the sixth row is hidden
+    // and drawn by nobody.
+    let first = take();
+    assert_eq!(days(&first), grid(d(2026, 10, 1)));
+    assert_eq!(day_count(&first), 35, "each day drawn once");
+
+    // The focus coming (Tab: Previous, the toggles and Next, then today),
+    // the arrows, a range picked with Return, a press, the focus going.
+    made.store(0, Ordering::Relaxed);
     for _ in 0..5 {
         app.press_key("tab").unwrap();
     }
-    see(&mut app, "10-14*^");
-    app.press_key("right").unwrap();
-    see(&mut app, "10-15^");
+    app.press_key("enter").unwrap();
+    // Within October: 29, 30, 23, 30, 31.
+    for key in ["right", "right", "up", "down", "right"] {
+        app.press_key(key).unwrap();
+    }
+    app.press_key("enter").unwrap();
+    app.wait_for("text:Log: 2026-10-28..2026-10-31").unwrap();
+    app.press("label:2026-10-12").unwrap();
+    app.press("label:2026-10-16").unwrap();
+    app.wait_for("text:Log: 2026-10-12..2026-10-16").unwrap();
+    app.press_key("shift+tab").unwrap();
     app.idle(Duration::from_millis(50)).unwrap();
-    DRAWN.lock().unwrap().clear();
-    // The focus moves from the 15th to the 16th: the keys stay bound, and
-    // the selected day is not the stop on the way.
-    app.press_key("right").unwrap();
-    see(&mut app, "10-16^");
-    app.idle(Duration::from_millis(50)).unwrap();
-    let mut drawn = DRAWN.lock().unwrap().clone();
-    drawn.sort();
-    assert_eq!(drawn, ["10-15", "10-16^"]);
-    // Across a week, the same.
-    DRAWN.lock().unwrap().clear();
-    app.press_key("down").unwrap();
-    see(&mut app, "10-23^");
-    app.idle(Duration::from_millis(50)).unwrap();
-    let mut drawn = DRAWN.lock().unwrap().clone();
-    drawn.sort();
-    assert_eq!(drawn, ["10-16", "10-23^"]);
+    let states = take();
+    assert!(states.is_empty(), "states draw nothing: {states:?}");
+    assert_eq!(made.load(Ordering::Relaxed), 0, "nor make or drop views");
+
+    // Each turn draws the days it brings, each once, and the month
+    // toggle: November and December take five weeks, January 2027 six,
+    // February five again (its sixth row hidden, not drawn).
+    for (month, weeks) in [
+        (d(2026, 11, 1), 5),
+        (d(2026, 12, 1), 5),
+        (d(2027, 1, 1), 6),
+        (d(2027, 2, 1), 5),
+    ] {
+        app.press("label:Next month").unwrap();
+        let toggle = format!("text:M{}/{}", month.month(), month.year());
+        app.wait_for(&toggle).unwrap();
+        app.idle(Duration::from_millis(50)).unwrap();
+        let drawn = take();
+        assert_eq!(days(&drawn), grid(month), "{month}");
+        assert_eq!(day_count(&drawn), weeks * 7, "{month}: each day once");
+        let others: Vec<_> = drawn
+            .iter()
+            .filter(|e| e.kind != CalendarItemKind::Day)
+            .map(|e| e.kind)
+            .collect();
+        // The year toggle only when the year changes.
+        let toggles = if month.month() == 1 {
+            vec![CalendarItemKind::MonthToggle, CalendarItemKind::YearToggle]
+        } else {
+            vec![CalendarItemKind::MonthToggle]
+        };
+        let mut others = others;
+        others.sort_by_key(|k| *k as u8);
+        assert_eq!(others, toggles, "{month}");
+    }
 }

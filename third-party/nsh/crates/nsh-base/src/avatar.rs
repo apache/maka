@@ -45,7 +45,7 @@ pub struct AvatarProps {
     /// Milliseconds the fallback waits while the image loads (default 0):
     /// an image that loads within it shows without the fallback flashing
     /// first. Without an image, or once it fails, the fallback shows at
-    /// once.
+    /// once. `Infinity`: no fallback while the image loads.
     #[prop(default)]
     pub fallback_delay: Prop<f64>,
     /// The Tailwind classes of the image, over the avatar's box: its fit,
@@ -68,7 +68,10 @@ pub struct AvatarProps {
     /// `placeholder`).
     pub fallback: Prop<Option<Slot>>,
     /// What shows over the picture: a presence dot, a badge, placed by the
-    /// app (`absolute bottom-0 right-0`).
+    /// app (`absolute bottom-0 right-0`). The avatar is one element for
+    /// screen readers: they hear its label, not these (say a status in
+    /// `accessibilityLabel`), and on iOS nothing in them can be reached
+    /// (put what can be pressed beside the avatar).
     pub children: Prop<Children>,
 }
 
@@ -120,22 +123,25 @@ pub fn Avatar(props: AvatarProps, cx: Scope<AvatarEvent>) -> impl IntoElement {
     });
     // The delay holds the fallback back while the image loads. A timer
     // that a load, a failure or a new source overtook does nothing.
-    let waits = |status: AvatarStatus, delay: f64| status == AvatarStatus::Loading && delay > 0.0;
+    let waits = |status: AvatarStatus, delay: Option<Duration>| {
+        status == AvatarStatus::Loading && delay != Some(Duration::ZERO)
+    };
     let waited = signal(!waits(
         status.get_untracked(),
-        props.fallback_delay.get_untracked(),
+        fallback_delay(props.fallback_delay.get_untracked()),
     ));
     let generation = stored(0u64);
     effect(move || {
-        let delay = props.fallback_delay.get();
+        let delay = fallback_delay(props.fallback_delay.get());
         let waiting = waits(status.get(), delay);
         let current = generation.with(|g| {
             *g += 1;
             *g
         });
         untracked(|| waited.set(!waiting));
-        if waiting {
-            set_timeout(Duration::from_secs_f64(delay / 1000.0), move || {
+        // An endless delay: no timer, the fallback waits for the image.
+        if let (true, Some(delay)) = (waiting, delay) {
+            set_timeout(delay, move || {
                 if generation.get() == current {
                     waited.set(true);
                 }
@@ -144,6 +150,7 @@ pub fn Avatar(props: AvatarProps, cx: Scope<AvatarEvent>) -> impl IntoElement {
     });
     let loaded = computed(move || status.get() == AvatarStatus::Loaded);
     let shows_fallback = computed(move || !loaded.get() && waited.get());
+    let sources = stored(0u64);
     let label = computed(move || props.accessibility_label.get().or_else(|| props.name.get()));
     let decorative = computed(move || label.get().is_none_or(|l| l.is_empty()));
 
@@ -167,8 +174,16 @@ pub fn Avatar(props: AvatarProps, cx: Scope<AvatarEvent>) -> impl IntoElement {
                 ))
         }))
         .child(dynamic(move || {
+            // Each source an image node of its own (a key the region has
+            // not seen): a reused node would hear the old source's late
+            // load or error as the new one's.
+            let source = sources.with(|n| {
+                *n += 1;
+                *n
+            });
             src.get().map(|src| {
                 image(src)
+                    .key(format!("src:{source}"))
                     .absolute()
                     .inset_0()
                     // Laid out (it loads once it has a frame) and
@@ -183,6 +198,19 @@ pub fn Avatar(props: AvatarProps, cx: Scope<AvatarEvent>) -> impl IntoElement {
             })
         }))
         .child(props.children)
+}
+
+/// `fallbackDelay`'s `ms` milliseconds as a delay: zero for a negative or
+/// NaN one, none (it never ends) for `Infinity` or one longer than a timer
+/// waits (2^31 - 1 ms, about 24.8 days, as the web's `setTimeout`).
+fn fallback_delay(ms: f64) -> Option<Duration> {
+    if ms.is_nan() || ms <= 0.0 {
+        Some(Duration::ZERO)
+    } else if ms > f64::from(i32::MAX) {
+        None
+    } else {
+        Some(Duration::from_secs_f64(ms / 1000.0))
+    }
 }
 
 /// The initials of `name`, as `gpui-component`'s avatar takes them: the
@@ -230,7 +258,8 @@ pub struct AvatarGroupProps {
     /// What stands for the people not shown, the count of them ("+5"; in
     /// `gpui-component` a "⋯" avatar, `ellipsis`), after the avatars while
     /// more than they are in the group; the app writes it, as it knows the
-    /// count (`total - limit`).
+    /// count: `total` less the avatars shown, the fewer of its children and
+    /// `limit`.
     pub overflow: Prop<Option<Slot>>,
     /// The avatars, in order.
     pub children: Prop<Children>,

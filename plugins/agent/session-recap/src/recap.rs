@@ -536,6 +536,10 @@ mod tests {
                         timestamp: 1,
                         timing: None,
                         role: history::Role::Assistant,
+                        order: history::RowPosition {
+                            source_sequence: if second { 7 } else { 1 },
+                            item_index: 0,
+                        },
                         position: history::RowPosition {
                             source_sequence: if second { 7 } else { 1 },
                             item_index: 0,

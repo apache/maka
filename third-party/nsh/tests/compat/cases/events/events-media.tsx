@@ -64,6 +64,7 @@ function App() {
         onNavigationStateChange={(e) => add(web, `nav ${nav(e)}`)}
         onMessage={(e) => add(web, `message ${e.data}`)}
         onError={(e) => add(web, `error ${e.message}`)}
+        onDownload={(e) => add(web, `download ${e.state} ${e.filename} ${e.bytes ?? "-"} ${e.message ?? "-"}`)}
       />
       <Text>Web: {web().join(" | ")}</Text>
     </View>

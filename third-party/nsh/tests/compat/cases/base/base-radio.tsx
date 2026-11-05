@@ -6,9 +6,10 @@
 // checked radio that stays checked, `disabled`, the group as one stop of
 // the keyboard focus (only the checked radio is `focusable`), and the app's look of a
 // radio (`checkedStyle`) and of the dot it puts inside, whose
-// `group-checked:` and `group-disabled:` classes follow the radio. The
-// dot's widths move the label after it, which is how its script sees
-// them.
+// `group-checked:` and `group-disabled:` classes follow the radio, and
+// how far outside a radio presses count (`hitSlop`, a number for every
+// side or some sides). The dot's widths move the label after it, which is
+// how its script sees them.
 import { Text, View, signal } from "nsh";
 import { Radio, RadioGroup } from "nsh/base";
 
@@ -18,6 +19,7 @@ function App() {
   const plan = signal("basic");
   const changes = signal(0);
   const disabled = signal(true);
+  const wide = signal(false);
   const option = (value: string, label: string, locked = false) => (
     <Radio
       testID={value}
@@ -45,6 +47,9 @@ function App() {
       <Text>{`Plan: ${plan()}`}</Text>
       <Text>{`Changes: ${changes()}`}</Text>
       <View testID="enable" onPress={() => disabled.set(!disabled())} style={{ height: 20 }} />
+      <Radio testID="solo" checked={wide()} accessibilityLabel="Solo" hitSlop={wide() ? { top: 4, left: 2 } : 12} onChange={({ checked }) => wide.set(checked)}>
+        <Text>Solo</Text>
+      </Radio>
     </View>
   );
 }

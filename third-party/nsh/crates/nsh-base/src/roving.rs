@@ -15,7 +15,9 @@
 //! command in the same batch), then activates it: a tab reports a press, a
 //! radio asks to be checked, so the app selects it as focus moves, the
 //! pattern's automatic activation (a toolbar's items do nothing: the focus
-//! only moves). Disabled items are skipped, as they are no stops. The items
+//! only moves). In a right-to-left layout the row runs from the right, so
+//! Left and Right trade places (Left the next item), as the patterns say;
+//! Up and Down keep theirs. Disabled items are skipped, as they are no stops. The items
 //! are in the tree's order: components render in the order the core makes
 //! them (an item inside a toolbar's group, or a popover's trigger, renders
 //! after the toolbar's later children), so the group asks the core to put
@@ -37,7 +39,7 @@ use nsh_core::{
     prelude::*,
 };
 
-use crate::keys::bind_while;
+use crate::keys::bind_while_directed;
 
 /// What the arrow keys of a group do.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,7 +220,7 @@ impl Roving {
             Pattern::Toolbar(Axis::Vertical) => COLUMN_KEYS,
         };
         let moved = group.clone();
-        bind_while(move || focused.get(), keys, move |step| moved.step(step));
+        bind_while_directed(move || focused.get(), keys, move |step| moved.step(step));
         group
     }
 
@@ -374,7 +376,16 @@ pub(crate) struct Bar {
     /// The toolbar's axis (`None`: a toggle group on its own), which its
     /// groups lay out along.
     pub(crate) axis: Option<Axis>,
+    /// The bar's menu that is open, if any: with one open, the pointer
+    /// over another menu's trigger opens that one instead, as a menu bar
+    /// does.
+    pub(crate) open_menu: OpenMenu,
 }
+
+/// A bar's open menu: what opens or closes it.
+pub(crate) type OpenMenu = std::rc::Rc<
+    std::cell::RefCell<Option<std::rc::Rc<dyn Fn(bool, crate::popup::OpenChangeReason)>>>,
+>;
 
 /// What [`bar`] finds: a bar, or `None` below a popup a bar's item opens
 /// (its content is no part of the bar).
@@ -399,6 +410,16 @@ pub(crate) fn leave_bar() {
     if bar().is_some() {
         provide_context(BarContext(None));
     }
+}
+
+/// The bar around a popup being made, which its trigger joins
+/// ([`bar_trigger`]), left for what the popup makes from now on: a
+/// component the app puts in the trigger (a `Button`) is that one item,
+/// not another of its own.
+pub(crate) fn popup_bar() -> Option<Bar> {
+    let around = bar();
+    leave_bar();
+    around
 }
 
 /// A part of a bar that holds items (a [`ToggleGroup`] or a

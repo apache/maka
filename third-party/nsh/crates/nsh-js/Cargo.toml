@@ -45,6 +45,8 @@ rquickjs.workspace = true
 getrandom-stdlib.workspace = true
 
 [dev-dependencies]
+# The declarations tests read the specs' text (nsh-core `declarations`).
+nsh-core = { workspace = true, features = ["declarations"] }
 brotli.workspace = true
 flate2.workspace = true
 zstd.workspace = true

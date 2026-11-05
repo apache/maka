@@ -44,25 +44,8 @@ that every Gallery screen downloads at startup. Counter requests all its shipped
 
 ## What remains
 
-Production code/data sections are 9,086,303 / 3,167,393 raw bytes. A second link with names and an LLD map
-attributes the largest remaining groups below. Its code section is byte-identical to production. Its data
-section has the same length, differing only in 15 characters of a generated html5ever build-directory path.
-Build-directory hashes can also cause small compressed-size variance across clean builds.
-
-These are independently compressed groups, **not additive contributions to the whole-file compressed size
-and not guaranteed removable bytes**. LTO can merge/in-line functions; grouping by a surviving symbol or
-archive is attribution, not a proposed feature removal.
-
-| Group | Raw bytes | Independent Brotli bytes |
-|---|---:|---:|
-| `data:two_face` | 922,018 | 801,338 |
-| `code:nsh_core` | 2,067,437 | 396,132 |
-| `code:nsh_base` | 1,804,285 | 387,713 |
-| `data:brotli` | 550,833 | 210,690 |
-| `code:core` | 877,729 | 152,214 |
-| `code:naga` | 554,440 | 141,324 |
-| `code:alloc` | 737,621 | 105,549 |
-| `code:regex_automata` | 279,082 | 69,772 |
+The largest remaining parts of the runtime are syntax-highlighting data, the code of `nsh_core` and `nsh_base`, and
+compression, shader and regex support. Group sizes are attribution of a linked binary, not removable bytes.
 
 QuickJS is absent from the browser feature's normal dependency graph (`nsh-js`, `rquickjs` and
 `rquickjs-sys` are absent), and the artifact exports the browser bridge without `nsh_start_bytecode`.
@@ -70,11 +53,7 @@ Since then every web runtime (development host, website demos, playground) runs 
 The measured whole-runtime reduction includes replacing NSH's QuickJS bindings and standard-library
 integration; it must not be presented as the C interpreter's standalone size.
 
-Reaching below 1 MB while retaining all APIs needs another architectural step: load syntax data and
-expensive component/shader/compression implementations on demand, or specialize a runtime to an app's
-reachable component set. The current native registry keeps registered component code linked even when
-its JavaScript module is lazy. Ordinary JS chunk splitting cannot remove that native payload. Removing
-languages, components or synchronous compression APIs would be a product tradeoff and is not done here.
+Reaching below 1 MB while retaining all APIs needs further work on loading parts of the runtime on demand.
 
 ## Reproduction and validation
 
@@ -119,4 +98,3 @@ fails to compile against current upstream APIs (42 errors, including removed sty
 container, and the two text tests also time out on the pinned baseline. Playwright checks above pass.
 No macOS/iOS/Android device validation was performed. CI results are recorded on the PR at its exact head.
 
-Implemented with ChatGPT assistance and reviewed by a separate ChatGPT reviewer.

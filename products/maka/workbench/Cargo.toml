@@ -65,5 +65,7 @@ maka-ui-build.workspace = true
 [dev-dependencies]
 nsh-testing = { path = "../../../third-party/nsh/crates/nsh-testing", default-features = false }
 nsh-bundler = { workspace = true, features = ["bundle"] }
+# The ui_types example writes the specs' TypeScript, which only this feature keeps.
+nsh-core = { workspace = true, features = ["declarations"] }
 nsh-js.workspace = true
 tempfile.workspace = true

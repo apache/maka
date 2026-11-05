@@ -2,13 +2,21 @@
 // `Ledger` and the class `Account` all come from the app's crate
 // (`native/`, nsh.json "rust"), imported by its specifier. Their types are
 // generated from the Rust code into `.nsh/types/rust-exports/native.d.ts`.
-import { type JSX, mount, Scroll, signal, Text, View } from "nsh";
+// On the desktops the crate also registers a native component, `Meter`.
+import { type JSX, mount, nativeComponent, Scroll, signal, Text, View } from "nsh";
 import { Button as BaseButton } from "nsh/base";
 import { Account, Gauge, Ledger } from "rust-exports/native";
 
 // Each object owns an instance kept in Rust.
 const savings = new Account("Savings", 120);
 const checking = Account.parse("Checking: 40");
+
+/**
+ * The crate's native meter (`native/src/meter.rs`, `#[native_components]`): a bar filled to `value`, a
+ * fraction, by the platform's own progress bar (drawn with Direct2D on Windows). Where nothing registers it,
+ * it is an empty view.
+ */
+const Meter = nativeComponent<{ value: number }>("rust-exports.meter", { props: ["value"] });
 
 /** A statement of a throwaway account: `using` frees it at the end of the block. */
 function preview(): string {
@@ -147,6 +155,11 @@ function App() {
             <Line muted>{`${Ledger.format(spent())} of $100.00`}</Line>
           </Gauge>
           <Line muted>{`Pressed ${changes()}×, onChange gave ${spent()}`}</Line>
+        </Card>
+
+        <Card title="Meter · a native component">
+          <Meter value={spent() / 100} style={{ height: 8 }} />
+          <Line muted>{`${spent()}% of the budget spent`}</Line>
         </Card>
       </Scroll>
     </View>

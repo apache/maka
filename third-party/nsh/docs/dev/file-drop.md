@@ -3,9 +3,10 @@
 ## Scope
 
 Desktop views accept local files and directories dragged from another app.
-AppKit, GTK and Win32 use the same events and payload; Rust applications need
-no JavaScript runtime. Ordinary pointer drags and title-bar dragging retain
-their existing behavior. The application decides how to consume dropped files.
+AppKit, GTK, Win32 and the GPUI backend use the same events and payload; Rust
+applications need no JavaScript runtime. Ordinary pointer drags and title-bar
+dragging retain their existing behavior. The application decides how to consume
+dropped files.
 
 ## Contract
 
@@ -22,6 +23,9 @@ their existing behavior. The application decides how to consume dropped files.
 - Moving between targets emits leave/enter. Leaving the window, cancelling or
   completing the drop clears the active target. Removal/disablement rejects a
   subsequent drop and releases destination state.
+- On the GPUI backend the first enter comes with the platform's first move
+  report after the drag enters the window, not with the entry itself: the
+  layer that receives the drag appears with the drag's next frame.
 - The operation is Copy. Delivery means the user dropped the URI list, not that
   the application accepted or read the files. No transfer starts automatically.
 
@@ -64,3 +68,8 @@ on Windows. The Rust gallery includes a file-drop destination, and matching
 English/Chinese View reference pages show Rust and TSX callbacks. The new example
 has not been compiled or exercised. Complete workspace/platform checks, native
 drag exercises and trace comparison remain outstanding. This branch is not ready to merge or consume in Omasend.
+
+The GPUI backend passes its unit tests, including a simulated drag that moves
+between nested destinations, leaves the window and drops where nothing listens.
+A real Finder drag into a GPUI application was exercised on macOS; real drags
+into the GPUI backend on Linux and Windows have not been exercised.

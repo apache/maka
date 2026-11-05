@@ -80,6 +80,8 @@ final class Native {
     static final int PASTE = 68;
     static final int SCREEN_COLOR = 69;
     static final int FILE_REQUEST = 70;
+    static final int SPEECH = 71;
+    static final int DOWNLOAD = 72;
 
     /**
      * Draws the SVG {@code bytes} for a view {@code maxPx} pixels on its longer side, with its shorter side that long
@@ -271,6 +273,37 @@ final class Native {
 
     /** Shader view {@code id} is {@code width} × {@code height} px; whether frames should come. */
     static native boolean shaderSize(long handle, int id, int width, int height);
+
+    /**
+     * Shader view {@code id}'s picture of {@code input} (0 content, 1 backdrop,
+     * 2 from, 3 to): {@code height} rows of {@code width} premultiplied RGBA
+     * pixels {@code stride} bytes apart in a direct buffer (null: none);
+     * whether frames should come.
+     */
+    static native boolean shaderInput(long handle, int id, int input, java.nio.ByteBuffer pixels, int width,
+                                      int height, int stride);
+
+    /**
+     * Shader view {@code id}'s transition starts, {@code ms} long; whether it
+     * runs (not without a GPU: the children show as they are).
+     */
+    static native boolean shaderTransition(long handle, int id, float ms);
+
+    /**
+     * Page or dialog {@code page} comes or goes ({@code reverse}) through
+     * its shader over {@code key} (its stack, or the dialog), {@code width}
+     * × {@code height} px: {@code from} its lower side, {@code to} its upper
+     * side; whether it runs.
+     */
+    static native boolean navTransition(long handle, int key, int page, int width, int height,
+                                        java.nio.ByteBuffer from, int fromStride, java.nio.ByteBuffer to, int toStride,
+                                        boolean reverse);
+
+    /**
+     * The page or dialog transition over {@code key} ends at once (a change
+     * that starts while it runs ended it): no more frames come for it.
+     */
+    static native void navTransitionEnd(long handle, int key);
 
     /**
      * A scroll view's offset, after applying {@code applied} of the scrolls

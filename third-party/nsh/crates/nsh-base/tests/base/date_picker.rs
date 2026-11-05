@@ -16,8 +16,8 @@ use std::{
 
 use chrono::NaiveDate;
 use nsh_base::{
-    CalendarItemKind, CalendarItemState, DatePickerEvent, DateRangePreset, DateTime, PickedDate,
-    TimeFieldSegmentState, TimePrecision, date_picker,
+    CalendarEntry, CalendarItemKind, DatePickerEvent, DateRangePreset, DateTime, PickedDate,
+    TimeFieldSegmentEntry, TimePrecision, date_picker,
 };
 use nsh_core::{
     AccessibilityRole, MountItem, NodeId, Size, ViewKind, element::Root, platform::Os, prelude::*,
@@ -60,8 +60,9 @@ fn show(p: &PickedDate) -> String {
     }
 }
 
-/// A picker under a 160 × 30 trigger `Pick`, days drawn as `M-D` (`*`
-/// selected), segments as their label; what it heard as `Log: …`.
+/// A picker under a 160 × 30 trigger `Pick`, days drawn as `M-D` and at
+/// half opacity with the keyboard on them (`focus:`), segments as their
+/// label; what it heard as `Log: …`.
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let value = signal(DateTime::Single(None));
@@ -76,24 +77,17 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .clear_button_accessibility_label("Clear the date")
         .time_label(text("Time"))
         .time_accessibility_label("Due time")
-        .render_item(|s: &CalendarItemState| {
-            text(match s.kind {
-                CalendarItemKind::Day => {
-                    format!(
-                        "{}-{}{}{}",
-                        s.month,
-                        s.value,
-                        if s.active { "*" } else { "" },
-                        if s.focused { "^" } else { "" }
-                    )
-                }
-                CalendarItemKind::MonthToggle => format!("M{}", s.value),
+        .item_class("focus:opacity-50")
+        .render_item(|e: &CalendarEntry| {
+            text(match e.kind {
+                CalendarItemKind::Day => format!("{}-{}", e.month, e.value),
+                CalendarItemKind::MonthToggle => format!("M{}", e.value),
                 CalendarItemKind::Previous => "prev".into(),
                 CalendarItemKind::Next => "next".into(),
-                _ => s.value.to_string(),
+                _ => e.value.to_string(),
             })
         })
-        .render_segment(|s: &TimeFieldSegmentState| text(format!("seg{}", s.label)))
+        .render_segment(|s: &TimeFieldSegmentEntry| text(format!("seg{}", s.label)))
         .trigger(
             view()
                 .test_id("trigger")
@@ -139,8 +133,13 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .child(text(move || format!("Log: {}", log.get().join(" "))))
 }
 
-/// The app, and what screen readers last heard as the picker's value.
-struct App(Headless, Arc<Mutex<Option<String>>>);
+/// The app, what screen readers last heard as the picker's value, and each
+/// view's opacity as its styles set it (the day with the keyboard at 0.5).
+struct App(
+    Headless,
+    Arc<Mutex<Option<String>>>,
+    Arc<Mutex<HashMap<NodeId, f32>>>,
+);
 
 impl std::ops::Deref for App {
     type Target = Headless;
@@ -165,8 +164,33 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// Waits until `text` shows; a day of October 2026 (`10-14`) with
+    /// the marks of its states after it, those and no others: `*`
+    /// selected, `^` the keyboard's.
     fn see(&mut self, text: &str) {
-        if let Err(e) = self.0.wait_for(&format!("text:{text}")) {
+        let day = text.trim_end_matches(['*', '^']);
+        let marks = &text[day.len()..];
+        let label = day
+            .strip_prefix("10-")
+            .and_then(|d| d.parse::<u32>().ok())
+            .map(|d| format!("label:2026-10-{d:02}"));
+        let opacities = self.2.clone();
+        let found =
+            self.0
+                .wait_until(&format!("`{text}` shown"), Duration::from_secs(5), |s| {
+                    if !s.shows(day) {
+                        return false;
+                    }
+                    let Some(label) = &label else {
+                        return marks.is_empty();
+                    };
+                    let selected = s.selected(label).unwrap_or(false);
+                    let focused = s.press_target(label).ok().flatten().is_some_and(|id| {
+                        opacities.lock().unwrap().get(&id).is_some_and(|o| *o < 1.0)
+                    });
+                    selected == marks.contains('*') && focused == marks.contains('^')
+                });
+        if let Err(e) = found {
             panic!("{e}; shown: {:?}", self.0.screen().texts());
         }
     }
@@ -197,8 +221,13 @@ fn start_on(os: Os, props: HarnessProps) -> App {
     let mut app = Headless::start(config).expect("the engine starts");
     let heard = Arc::new(Mutex::new(None));
     let into = heard.clone();
+    let opacities = Arc::new(Mutex::new(HashMap::new()));
+    let styles = opacities.clone();
     app.observe(move |_, batch| {
         for item in &batch.items {
+            if let MountItem::ViewStyle { id, style } = item {
+                styles.lock().unwrap().insert(*id, style.opacity);
+            }
             if let MountItem::ViewProps { props, .. } = item
                 && props.accessibility.role == AccessibilityRole::Combobox
             {
@@ -212,7 +241,7 @@ fn start_on(os: Os, props: HarnessProps) -> App {
     });
     app.first_render().unwrap();
     app.wait_for("text:Pick").unwrap();
-    App(app, heard)
+    App(app, heard, opacities)
 }
 
 fn start(props: HarnessProps) -> App {

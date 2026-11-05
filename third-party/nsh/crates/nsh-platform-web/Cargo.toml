@@ -47,7 +47,7 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 nsh-core = { workspace = true, features = ["glsl"] }
 nsh-engine.workspace = true
-nsh-base = { workspace = true, features = ["highlight"] }
+nsh-base = { workspace = true, features = ["highlight", "math"] }
 nsh-bundler = { workspace = true, optional = true }
 serde_json.workspace = true
 serde.workspace = true
@@ -67,9 +67,13 @@ log.workspace = true
 rustc-hash.workspace = true
 ttf-parser.workspace = true
 unicode-bidi.workspace = true
+unicode-properties.workspace = true
 
-# The text rules (`src/text/css.rs`, `src/text/wrap.rs`) depend on nothing
-# of the browser: `tests/text` builds them on the host and tests them there.
+# The text rules (`src/text/css.rs`, `src/text/wrap.rs`) and the event
+# payloads (`src/event.rs`) depend on nothing of the browser: `tests/text`
+# builds them on the host and tests them there.
 [dev-dependencies]
 nsh-core.workspace = true
+serde_json.workspace = true
 unicode-bidi.workspace = true
+unicode-properties.workspace = true

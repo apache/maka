@@ -79,9 +79,11 @@ import {
 } from '../../../../products/maka/workbench/app/ui';
 import {
   acceptedSend,
+  historyFollowPosition,
   mergeChunks,
   openingUserMessage,
   replayStartCursor,
+  senderSession,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
@@ -131,10 +133,7 @@ import {
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
 import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
-import {
-  createMessageSenders,
-  senderSession,
-} from '../../../../products/maka/workbench/app/messageSenders';
+import { createMessageSenders } from '../../../../products/maka/workbench/app/messageSenders';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
@@ -824,7 +823,7 @@ export function Conversation(props: ConversationProps) {
   let transcriptTask: Promise<void> | null = null;
   let wakeReconnect: (() => void) | null = null;
   let readFailure: { stream: Subscription; reason: unknown } | null = null;
-  let refreshFrom: { position: Position; field: string } | null = null;
+  let refreshFrom: { position: Position; order: Position; field: string } | null = null;
   let latestKnown = 0;
   let watchLast = 0;
   let runThrough = 0;
@@ -871,11 +870,17 @@ export function Conversation(props: ConversationProps) {
   const report = (reason: unknown) => {
     if (alive) error.set(errorText(reason));
   };
-  const publishHistory = (chunks: any[], through: number, older = false) => {
+  const publishHistory = (
+    chunks: any[],
+    through: number,
+    older = false,
+    coveredFrom?: number,
+    windowStart?: number,
+  ) => {
     batch(() => {
       rows.set(mergeChunks(rows(), chunks, older, through));
       const canonical = canonicalRows().byMessage;
-      overlay.history(canonical, atHistoryTail() ? through : null);
+      overlay.history(canonical, atHistoryTail() ? through : null, coveredFrom, windowStart);
       publishOverlay();
       const currentPending = pendingMessages();
       const nextPending = currentPending.filter(
@@ -885,13 +890,11 @@ export function Conversation(props: ConversationProps) {
     });
     hydrateAttachmentMetadata();
   };
-  const requestMetadata = (row: { position?: Position; field: string } | undefined) => {
+  const requestMetadata = (row: Pick<Row, 'position' | 'order' | 'field'> | undefined) => {
     if (!row?.position) return;
-    const next = { position: row.position, field: row.field };
+    const next = { position: row.position, order: row.order!, field: row.field };
     const order = (a: typeof next, b: typeof next) =>
-      a.position.sourceSequence - b.position.sourceSequence ||
-      a.position.itemIndex - b.position.itemIndex ||
-      Number(a.field === 'body') - Number(b.field === 'body');
+      comparePosition(a.order, b.order) || Number(a.field === 'body') - Number(b.field === 'body');
     if (refreshFrom === null || order(next, refreshFrom) < 0) refreshFrom = next;
     followAgain = true;
   };
@@ -968,7 +971,12 @@ export function Conversation(props: ConversationProps) {
           before: page.before,
           after: page.after,
         });
-        publishHistory(page.chunks, page.through);
+        publishHistory(
+          page.chunks,
+          page.through,
+          false,
+          page.after === null && page.before === null ? 0 : undefined,
+        );
         ready.set(true);
         awayFromLatest.set(position.kind !== 'tail');
         innerReader.set(null);
@@ -1095,8 +1103,10 @@ export function Conversation(props: ConversationProps) {
     permissions.observe(observed.session);
     backend.set(observed.session.backend ?? observed.rememberedBackend ?? null);
     if (observed.through >= runThrough) {
-      overlay.observe(observed);
-      publishOverlay();
+      if (subscription === null) {
+        overlay.observe(observed);
+        publishOverlay();
+      }
       const completedTurn = observed.lastCompletedTurnId;
       const trigger = predictionTrigger({
         completedTurnId: completedTurn,
@@ -1134,18 +1144,19 @@ export function Conversation(props: ConversationProps) {
       do {
         followAgain = false;
         const fence = latestKnown;
-        if (historyWindow()?.after === null) {
-          const last = rows().at(-1);
-          let position: HistoryPosition = last
-            ? {
-                kind: 'after',
-                cursor: {
-                  position: last.position!,
-                  field: last.field as 'body' | 'thinking',
-                  offset: last.fragments!.at(-1)!.offset,
-                },
-              }
-            : { kind: 'start' };
+        const currentWindow = historyWindow();
+        if (currentWindow?.after === null) {
+          const windowStart = currentWindow.before ? rows()[0]?.order?.sourceSequence : undefined;
+          const snap = overlay.snapshot();
+          const initial = historyFollowPosition(
+            rows().at(-1),
+            snap.rows,
+            snap.closedStarts,
+            windowStart,
+          );
+          const coveredFrom =
+            initial.kind === 'start' ? 0 : initial.kind === 'event' ? initial.sequence : undefined;
+          let position = initial;
           const chunks: AgentHistoryChunk[] = [];
           for (;;) {
             const page = await history(fence, position);
@@ -1154,7 +1165,7 @@ export function Conversation(props: ConversationProps) {
             if (page.after === null) break;
             position = { kind: 'after', cursor: page.after };
           }
-          publishHistory(chunks, fence);
+          publishHistory(chunks, fence, false, coveredFrom, windowStart);
           const current = historyWindow()!;
           historyWindow.set({ ...current, through: fence, after: null });
         }
@@ -1177,7 +1188,7 @@ export function Conversation(props: ConversationProps) {
               if (
                 page.after === null ||
                 page.chunks.some((chunk) => {
-                  const order = comparePosition(chunk.position, last.position!);
+                  const order = comparePosition(chunk.order, last.order!);
                   return (
                     order > 0 ||
                     (order === 0 && (chunk.field === 'body' || last.field === 'thinking'))
@@ -1252,9 +1263,6 @@ export function Conversation(props: ConversationProps) {
             void observe().catch(report);
             runThrough = event.sequence;
           }
-          changed = true;
-          break;
-        case 'executor_started':
           changed = true;
           break;
         case 'delta':
@@ -1523,20 +1531,23 @@ export function Conversation(props: ConversationProps) {
     const entry = display().find((item) =>
       item.kind === 'row'
         ? item.rowId === id
-        : item.kind === 'process' && item.group.rowIds.includes(id),
+        : item.kind === 'process' &&
+          item.group.members.some((member) => member.kind === 'row' && member.rowId === id),
     );
     if (!entry) throw new UiError('The original message is not available in this conversation.');
     if (entry.kind === 'process') {
+      // A hidden script opens its group from the top.
+      const index = Math.max(0, entry.group.rowIds.indexOf(id));
       const state = groupState(entry.key);
       state.following.set(false);
       state.opening = undefined;
-      state.revealRow = id;
+      state.revealRow = entry.group.rowIds[index];
       state.open.set(true);
       state.requestFocus = true;
       innerReader.set(entry.key);
       if (state.list) {
         state.list.scrollToIndex({
-          index: entry.group.rowIds.indexOf(id),
+          index,
           viewPosition: 0,
           animated: false,
         });

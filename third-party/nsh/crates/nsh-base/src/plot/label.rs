@@ -3,7 +3,7 @@
 
 use nsh_core::{element::TextPartStyle, prelude::*};
 
-use super::{PlotContext, layer};
+use super::{PlotContext, ValueScale, layer};
 
 /// Where a [`PlotText`] sits along the x axis from its point (`gpui-base`'s
 /// `TextAlign`, as its `PlotLabel` paints a line): the text starts at the
@@ -88,6 +88,10 @@ pub struct PlotLabelProps {
     /// its own point: `{ text, x, y, align?, class?, style? }`.
     #[prop(default)]
     pub texts: Prop<Vec<PlotText>>,
+    /// The y scale its texts' `y` are values of: `"y"` (the default, the
+    /// plot's `yScale`) or `"y2"` (its second one, `y2Scale`).
+    #[prop(default)]
+    pub scale: Prop<ValueScale>,
 }
 
 /// Texts at points of a [`Plot`](super::Plot) (`gpui-base`'s
@@ -107,15 +111,24 @@ pub fn PlotLabel(props: PlotLabelProps, _cx: Scope<NoEvent>) -> impl IntoElement
     let Some(plot) = PlotContext::of("PlotLabel") else {
         return label;
     };
-    let texts = props.texts;
+    let (texts, scale) = (props.texts, props.scale);
     // Where text `i`'s point is on the plot, and how it sits there.
     let place = move |i: usize| {
         let (x, y, align) = texts.with(|t| t.get(i).map(|t| (t.x, t.y, t.align)))?;
         let x = plot.x_map.get().tick(x).filter(|x| x.is_finite())?;
-        let y = plot.y_map.get().tick(y).filter(|y| y.is_finite())?;
+        let y = plot
+            .y_map_of(scale.get())
+            .tick(y)
+            .filter(|y| y.is_finite())?;
         Some((x, y, align))
     };
-    let indices = move || (0..texts.with(|t| t.len())).collect::<Vec<usize>>();
+    // Keyed by the scale too: a text glides with its scale's domain.
+    let indices = move || {
+        let scale = scale.get();
+        (0..texts.with(|t| t.len()))
+            .map(|i| (i, scale))
+            .collect::<Vec<_>>()
+    };
 
     label.child(when(
         move || plot.is_sized(),
@@ -123,15 +136,16 @@ pub fn PlotLabel(props: PlotLabelProps, _cx: Scope<NoEvent>) -> impl IntoElement
             each(
                 indices,
                 |i| *i,
-                move |i, _| {
-                    let i = i.get_untracked();
+                move |item, _| {
+                    let (i, scale) = item.get_untracked();
+                    let y_tween = plot.y_tween_of(scale);
                     // While a domain glides (`motion.update`), the text moves
                     // from where the layout puts it (its place on the new
                     // scales) to where the domains shown put it, as the axes'
                     // ticks do.
                     let (x, y) = (animated_value(0.0), animated_value(0.0));
                     effect(move || {
-                        let along = (plot.x_tween.moving.get(), plot.y_tween.moving.get());
+                        let along = (plot.x_tween.moving.get(), y_tween.moving.get());
                         if let Some((at_x, at_y, _)) = place(i).filter(|_| along.0 || along.1) {
                             x.set(at_x);
                             y.set(at_y);
@@ -153,7 +167,7 @@ pub fn PlotLabel(props: PlotLabelProps, _cx: Scope<NoEvent>) -> impl IntoElement
                         .items_start()
                         .pointer_events(PointerEvents::None)
                         .bind_translate_x(&plot.x_tween.moved(&x))
-                        .bind_translate_y(&plot.y_tween.moved(&y))
+                        .bind_translate_y(&y_tween.moved(&y))
                         .bind_opacity(&shown)
                         .style_with(move |s| {
                             let Some((x, y, align)) = place(i) else {

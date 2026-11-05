@@ -151,7 +151,7 @@ pub struct Cursor {
 }
 
 /// Row reveals an exact field; Before/After continue at byte boundaries and
-/// Event addresses the raw event log. Returned chunks retain ascending source
+/// Event addresses the raw event log. Returned chunks retain ascending presentation
 /// order, including a reverse window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -261,6 +261,7 @@ pub struct Tool {
 pub struct ToolCall {
     /// Recorded ancestors in this Turn, nearest first; display references only.
     pub ancestor_tool_use_ids: Vec<String>,
+    pub origin: ToolCallOrigin,
     /// Opaque display contract captured at dispatch; no execution authority.
     #[serde(default)]
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
@@ -276,6 +277,17 @@ pub struct ToolCall {
     /// A unique original Host dispatch is recorded at this fence; not liveness.
     pub dispatched: bool,
 }
+/// Who made a call: a model step, a script the model wrote, a tool's own work
+/// through the Host SDK, or a foreign record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "HistoryToolCallOrigin")]
+pub enum ToolCallOrigin {
+    Provider,
+    CodeMode,
+    HostSdk,
+    Imported,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "HistoryToolResult")]
@@ -285,7 +297,7 @@ pub struct ToolResult {
     )]
     pub settlement: Option<maka_agent_facts::tool_call::ToolSettlement>,
     pub position: RowPosition,
-    /// Does not distinguish failed from unknown effects.
+    /// A failed or unknown effect, or a returned result that reports failure.
     pub is_error: bool,
     /// Canonical content is an image; this does not grant artifact reads.
     pub image: bool,
@@ -408,6 +420,8 @@ pub struct ModelPartIdentity {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Chunk {
+    /// Chronological display anchor; position remains the source/read address.
+    pub order: RowPosition,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_part: Option<ModelPartIdentity>,
     /// The original user input has quotes, directory references or inline references.

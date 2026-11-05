@@ -732,6 +732,7 @@ fn requested_path(sys: &System, path: &str, data: &Path) -> Result<PathBuf, JsEr
 
 /// Intersects manifest and host grants inside the app's private data root.
 #[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(all(test, windows), allow(dead_code))]
 fn virtual_relative(sys: &System, path: &str, write: bool) -> Result<Option<String>, JsError> {
     let Some(data) = &sys.data_dir else {
         return Ok(None);
@@ -1555,7 +1556,10 @@ mod tests {
         });
     }
 
+    // It models the web's rooted data directory (`/app-data/...`), absolute on
+    // wasm32 but not on Windows, where `virtual_relative` never runs.
     #[test]
+    #[cfg(not(windows))]
     fn virtual_paths_intersect_grants_and_remain_app_private() {
         use std::{path::PathBuf, sync::Arc};
 

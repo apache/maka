@@ -413,6 +413,13 @@ pub trait Scene: Send + Sync {
     /// The scroll views around `id`, innermost first, and whether each
     /// scrolls horizontally.
     fn scroll_ancestors(&self, id: NodeId) -> Result<Vec<(NodeId, bool)>, String>;
+    /// The views inside scroll view `id` that take a finger's drag
+    /// themselves (responders, pans): a finger scrolling it lands
+    /// elsewhere. None where the scene cannot tell.
+    fn drag_takers(&self, id: NodeId) -> Result<Vec<NodeId>, String> {
+        let _ = id;
+        Ok(Vec::new())
+    }
     /// `id`'s long press delay in milliseconds, if it says.
     fn long_press_delay(&self, id: NodeId) -> Result<Option<f32>, String>;
     /// Whether scroll view `id` scrolls horizontally.
@@ -517,6 +524,9 @@ impl Scene for Model {
     }
     fn scroll_ancestors(&self, id: NodeId) -> Result<Vec<(NodeId, bool)>, String> {
         Ok(self.lock().screen.scroll_ancestors(id))
+    }
+    fn drag_takers(&self, id: NodeId) -> Result<Vec<NodeId>, String> {
+        Ok(self.lock().screen.drag_takers(id))
     }
     fn long_press_delay(&self, id: NodeId) -> Result<Option<f32>, String> {
         Ok(self.lock().screen.long_press_delay(id))
@@ -733,6 +743,7 @@ pub fn answer(model: &Model, step: &TestStep) -> Option<Result<serde_json::Value
             SceneQuery::ScrollAncestors { id } => {
                 model.scroll_ancestors(*id).and_then(|a| json(to_value(a)))
             }
+            SceneQuery::DragTakers { id } => model.drag_takers(*id).map(Value::from),
             SceneQuery::LongPressDelay { id } => model.long_press_delay(*id).map(Value::from),
             SceneQuery::Horizontal { id } => model.horizontal(*id).map(Value::from),
             SceneQuery::InputId { selector } => model.input_id(selector).map(Value::from),
@@ -842,6 +853,9 @@ impl Scene for RemoteScene {
     }
     fn scroll_ancestors(&self, id: NodeId) -> Result<Vec<(NodeId, bool)>, String> {
         self.query(SceneQuery::ScrollAncestors { id })
+    }
+    fn drag_takers(&self, id: NodeId) -> Result<Vec<NodeId>, String> {
+        self.query(SceneQuery::DragTakers { id })
     }
     fn long_press_delay(&self, id: NodeId) -> Result<Option<f32>, String> {
         self.query(SceneQuery::LongPressDelay { id })
@@ -1246,6 +1260,51 @@ fn well_inside(bounds: &Bounds<Points>, at: Point<Points>, horizontal: bool) -> 
     (x0..=x1).contains(&at.x.0) && (y0..=y1).contains(&at.y.0)
 }
 
+/// The spot of a scroll view `extent` points long from `start` (along the
+/// axis it scrolls) nearest `along` (a fraction of its length) that no
+/// span of `covered` (in points along it) holds, a finger's margin clear of
+/// each, within the middle 70% of it (where a gesture has room); as a
+/// fraction of its length, `None` when no spot is clear.
+fn clear_spot(start: f32, extent: f32, along: f32, covered: &[(f32, f32)]) -> Option<f32> {
+    const MARGIN: f32 = 8.0;
+    if extent <= 0.0 {
+        return None;
+    }
+    let (lo, hi) = (start + extent * 0.15, start + extent * 0.85);
+    let clear = |p: f32| {
+        (lo..=hi).contains(&p)
+            && covered
+                .iter()
+                .all(|&(from, to)| p <= from - MARGIN || p >= to + MARGIN)
+    };
+    let want = start + extent * along;
+    // The nearest clear spot is `along` itself, an end of the range or
+    // one just past a span.
+    std::iter::once(want)
+        .chain([lo, hi])
+        .chain(
+            covered
+                .iter()
+                .flat_map(|&(from, to)| [from - MARGIN, to + MARGIN]),
+        )
+        .filter(|&p| clear(p))
+        .min_by(|a, b| (a - want).abs().total_cmp(&(b - want).abs()))
+        .map(|p| (p - start) / extent)
+}
+
+/// Where along a scroll view a finger lands to scroll it, as a fraction of
+/// its length, after `misses` gestures that moved nothing (`None`: every
+/// spot was tried): its middle, then off the middle, for what scrolls by
+/// itself there (a text area), as a user moves the finger: first a quarter
+/// of the way from the edge the finger moves away from (the end when it
+/// moves `to_start`), where it has the most room, so a gesture undone (a
+/// fling back) costs the next ones no reach, then a quarter of the way
+/// from the other.
+fn anchor(misses: usize, to_start: bool) -> Option<f32> {
+    let (roomy, other) = if to_start { (0.75, 0.25) } else { (0.25, 0.75) };
+    [0.5, roomy, other].get(misses).copied()
+}
+
 /// Takes test steps on a host's app ([`Model`], [`Native`]).
 pub struct Agent {
     scene: std::sync::Arc<dyn Scene>,
@@ -1439,6 +1498,7 @@ impl Agent {
             SceneQuery::ScrollAncestors { id } => {
                 scene.scroll_ancestors(id).and_then(|a| json(to_value(a)))
             }
+            SceneQuery::DragTakers { id } => scene.drag_takers(id).map(Value::from),
             SceneQuery::LongPressDelay { id } => scene.long_press_delay(id).map(Value::from),
             SceneQuery::Horizontal { id } => scene.horizontal(id).map(Value::from),
             SceneQuery::InputId { selector } => scene.input_id(&selector).map(Value::from),
@@ -1617,10 +1677,9 @@ impl Agent {
         };
         let scrollers = self.scene.scroll_ancestors(id)?;
         let mut before: Option<Point<Points>> = None;
-        // Where in the scroll view the gestures start, along its length: its
-        // middle, else (when what is there scrolls by itself, a text area)
-        // elsewhere, as a user moves the finger.
-        let mut anchors = [0.5f32, 0.25, 0.75].into_iter().peekable();
+        // The gestures that moved nothing: each moves the finger elsewhere
+        // ([`anchor`]).
+        let mut misses = 0;
         for _ in 0..SCROLLS_INTO_VIEW {
             let bounds = self.native.bounds(id).ok_or_else(not_on_screen)?;
             let at = local.map_or(bounds.center(), |p| bounds.origin + p);
@@ -1630,16 +1689,7 @@ impl Agent {
                 && (b.x.0 - at.x.0).abs() < 1.0
                 && (b.y.0 - at.y.0).abs() < 1.0
             {
-                anchors.next();
-                // No gesture moves it any more (its scroll view's end): it
-                // is pressed where it is when it shows.
-                if anchors.peek().is_none() {
-                    return if window.contains(&at) {
-                        Ok((at, before.is_some()))
-                    } else {
-                        Err(not_on_screen())
-                    };
-                }
+                misses += 1;
             }
             // The innermost scroll view whose bounds leave the middle out,
             // or near their edge (where a finger does not press and bars,
@@ -1654,13 +1704,29 @@ impl Agent {
                 (!well_inside(&window, at, h)).then_some(())?;
                 Some((s, h, self.native.bounds(s)?))
             });
-            let Some((_, horizontal, scroller)) = hiding else {
+            let Some((scroll, horizontal, scroller)) = hiding else {
                 if window.contains(&at) {
                     return Ok((at, before.is_some()));
                 }
                 return Err(not_on_screen());
             };
-            let along = anchors.peek().copied().unwrap_or(0.5);
+            // The finger moves towards the start when the content moves
+            // towards its end.
+            let to_start = if horizontal {
+                at.x.0 > scroller.center().x.0
+            } else {
+                at.y.0 > scroller.center().y.0
+            };
+            let Some(along) = anchor(misses, to_start) else {
+                // No gesture moves it any more (its scroll view's end): it
+                // is pressed where it is when it shows.
+                return if window.contains(&at) {
+                    Ok((at, before.is_some()))
+                } else {
+                    Err(not_on_screen())
+                };
+            };
+            let along = self.landing(scroll, &scroller, horizontal, along)?;
             let middle = if horizontal {
                 point(
                     scroller.origin.x + scroller.size.width * along,
@@ -1677,9 +1743,11 @@ impl Agent {
             } else {
                 (at.y.0 - middle.y.0, scroller.size.height.0)
             };
-            // A finger dragging it stays inside it: as far as the nearer
-            // edge less a tenth.
-            let room = extent * (along.min(1.0 - along) - 0.1).max(0.1);
+            // A finger dragging it stays inside it: as far as the edge it
+            // moves towards (the start when the content moves towards its
+            // end) less a tenth, a tenth at least.
+            let toward = if distance > 0.0 { along } else { 1.0 - along };
+            let room = extent * (toward - 0.1).max(0.1);
             let step = distance.clamp(-room, room);
             let delta = if horizontal {
                 Point::new(Points(step), Points(0.0))
@@ -1694,6 +1762,61 @@ impl Agent {
             "`{selector}` did not come into view; {}",
             self.on_screen()
         ))
+    }
+
+    /// Where along scroll view `id` (at `bounds`) a finger lands to scroll
+    /// it, as a fraction of its length, nearest `along`: on a spot clear of
+    /// the views inside that take a drag themselves
+    /// ([`Scene::drag_takers`]), as a user puts the finger on the page and
+    /// not on a slider or a drawing area. On one of those the app's
+    /// responder decides, a moment later, whether the scroll view keeps the
+    /// gesture: it may scroll, stop half way or not move at all. `along`
+    /// where no spot is clear, and on a platform with a mouse
+    /// ([`Native::mouse`]), whose wheel scrolls the scroll view wherever it
+    /// is.
+    fn landing(
+        &self,
+        id: NodeId,
+        bounds: &Bounds<Points>,
+        horizontal: bool,
+        along: f32,
+    ) -> Result<f32, String> {
+        if self.native.mouse() {
+            return Ok(along);
+        }
+        let takers = self.scene.drag_takers(id)?;
+        if takers.is_empty() {
+            return Ok(along);
+        }
+        // Along the scroll view's length, and across it, where the finger
+        // moves: its middle.
+        let axes = |b: &Bounds<Points>| {
+            if horizontal {
+                (
+                    (b.origin.x.0, b.size.width.0),
+                    (b.origin.y.0, b.size.height.0),
+                )
+            } else {
+                (
+                    (b.origin.y.0, b.size.height.0),
+                    (b.origin.x.0, b.size.width.0),
+                )
+            }
+        };
+        let ((start, extent), (across, across_extent)) = axes(bounds);
+        let line = across + across_extent / 2.0;
+        // What the takers cover of the finger's line.
+        let covered: Vec<(f32, f32)> = takers
+            .into_iter()
+            .filter_map(|taker| self.native.bounds(taker))
+            .filter_map(|b| {
+                let ((from, length), (side, width)) = axes(&b);
+                (side..=side + width)
+                    .contains(&line)
+                    .then_some((from, from + length))
+            })
+            .collect();
+        Ok(clear_spot(start, extent, along, &covered).unwrap_or(along))
     }
 
     fn press(&self, selector: &str) -> Result<(), String> {
@@ -2080,6 +2203,162 @@ mod tests {
             Ok(())
         }
         fn quit(&self) {}
+    }
+
+    #[test]
+    fn a_scrolling_finger_lands_clear_of_the_views_that_take_drags() {
+        // A scroll view from 100 to 700: nothing covers its middle.
+        assert_eq!(clear_spot(100.0, 600.0, 0.5, &[]), Some(0.5));
+        assert_eq!(clear_spot(100.0, 600.0, 0.5, &[(500.0, 650.0)]), Some(0.5));
+        // A drawing area over the middle: just past its nearer end.
+        assert_eq!(
+            clear_spot(100.0, 600.0, 0.5, &[(380.0, 560.0)]),
+            Some((372.0 - 100.0) / 600.0)
+        );
+        // Two of them a gap apart, too narrow for a finger's margins.
+        assert_eq!(
+            clear_spot(100.0, 600.0, 0.5, &[(300.0, 395.0), (405.0, 600.0)]),
+            Some((292.0 - 100.0) / 600.0)
+        );
+        // Covered from end to end.
+        assert_eq!(clear_spot(100.0, 600.0, 0.5, &[(0.0, 800.0)]), None);
+        assert_eq!(clear_spot(0.0, 0.0, 0.5, &[]), None);
+    }
+
+    /// A page a finger scrolls: scroll view 2, 560 points tall at the
+    /// window's top, over 3000 points of content holding view 4 (40 points
+    /// tall) at `target`; each gesture moves it as far as the finger moves,
+    /// but the ones `undone` names (counted from 1), which a fling undoes.
+    struct Page {
+        offset: Mutex<f32>,
+        target: f32,
+        undone: Vec<usize>,
+        /// Where each gesture's finger landed, along the scroll view.
+        landed: Arc<Mutex<Vec<f32>>>,
+    }
+
+    impl Page {
+        const LENGTH: f32 = 560.0;
+        const CONTENT: f32 = 3000.0;
+    }
+
+    impl Native for Page {
+        fn bounds(&self, id: NodeId) -> Option<Bounds<Points>> {
+            let y = match id {
+                2 => 0.0,
+                4 => self.target - *self.offset.lock().unwrap(),
+                _ => return None,
+            };
+            let height = if id == 2 { Page::LENGTH } else { 40.0 };
+            Some(Bounds::new(
+                point(px(0.0), px(y)),
+                size(px(320.0), px(height)),
+            ))
+        }
+        fn viewport(&self) -> Size<Points> {
+            size(px(320.0), px(640.0))
+        }
+        fn press(&self, _: Point<Points>) {}
+        fn long_press(&self, _: Point<Points>, _: Duration) {}
+        fn scroll(&self, at: Point<Points>, delta: Point<Points>) {
+            let mut landed = self.landed.lock().unwrap();
+            landed.push(at.y.0);
+            if !self.undone.contains(&landed.len()) {
+                let mut offset = self.offset.lock().unwrap();
+                *offset = (*offset + delta.y.0).clamp(0.0, Page::CONTENT - Page::LENGTH);
+            }
+        }
+        fn drag(&self, _: Point<Points>, _: Point<Points>) {}
+        fn type_text(&self, _: &str) {}
+        fn key(&self, _: Key) {}
+        fn input_text(&self, _: NodeId) -> Option<String> {
+            None
+        }
+        fn back(&self) -> Result<(), String> {
+            Ok(())
+        }
+        fn answer_dialog(&self, _: Option<&str>) -> Result<(), String> {
+            Ok(())
+        }
+        fn animating(&self) -> bool {
+            false
+        }
+        fn screenshot(&self) -> Result<Vec<u8>, String> {
+            Ok(Vec::new())
+        }
+        fn resize(&self, _: Points, _: Points) -> Result<(), String> {
+            Ok(())
+        }
+        fn set_dark(&self, _: bool) -> Result<(), String> {
+            Ok(())
+        }
+        fn quit(&self) {}
+    }
+
+    #[test]
+    fn a_gesture_that_moves_nothing_costs_the_next_ones_no_reach() {
+        use nsh_core::{MountItem, ViewKind};
+        // Where the finger lands to bring view 4 at `target` into view
+        // from `offset`, the gestures `undone` undone.
+        let landings = |target: f32, offset: f32, undone: Vec<usize>| {
+            let model = Arc::new(Model::default());
+            model.apply(&MountBatch {
+                items: vec![
+                    MountItem::Create {
+                        id: 2,
+                        kind: ViewKind::Scroll,
+                    },
+                    MountItem::Create {
+                        id: 4,
+                        kind: ViewKind::View,
+                    },
+                    MountItem::Insert {
+                        parent: 1,
+                        child: 2,
+                        before: None,
+                    },
+                    MountItem::Insert {
+                        parent: 2,
+                        child: 4,
+                        before: None,
+                    },
+                ],
+            });
+            let landed = Arc::new(Mutex::new(Vec::new()));
+            let page = Page {
+                offset: Mutex::new(offset),
+                target,
+                undone,
+                landed: landed.clone(),
+            };
+            let agent = Agent::new(model, Box::new(page));
+            let (at, scrolled) = agent.bring_into_view(4, "id:far", None).unwrap();
+            assert!(scrolled);
+            assert!((48.0..=512.0).contains(&at.y.0), "{at:?}");
+            landed.lock().unwrap().clone()
+        };
+        // Where the finger lands: the middle, a quarter of the way from the
+        // top, a quarter of the way from the bottom.
+        let (middle, top, bottom) = (Page::LENGTH / 2.0, Page::LENGTH / 4.0, Page::LENGTH * 0.75);
+        // Far down the page, the second gesture undone (a fling back): the
+        // finger moves up from the bottom quarter, where it has the most
+        // room, and the view comes into view in time (from the top quarter
+        // each gesture reached 84 points, and the view needed 23).
+        let down = landings(2400.0, 0.0, vec![2]);
+        assert_eq!(down[..2], [middle, middle]);
+        assert!(down[2..].iter().all(|&y| y == bottom), "{down:?}");
+        // Far up: it moves down from the top quarter.
+        let up = landings(100.0, Page::CONTENT - Page::LENGTH, vec![2]);
+        assert_eq!(up[..2], [middle, middle]);
+        assert!(up[2..].iter().all(|&y| y == top), "{up:?}");
+        // Where nothing moves either (what is there scrolls by itself), the
+        // finger moves to the other quarter.
+        let near = landings(900.0, 0.0, vec![2, 3]);
+        assert_eq!(near[..2], [middle, middle]);
+        assert!(
+            near[2] == bottom && near[3..].iter().all(|&y| y == top),
+            "{near:?}"
+        );
     }
 
     #[test]

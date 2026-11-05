@@ -108,6 +108,7 @@ mod tests {
         let assets = super::assets();
         assert!(assets.contains("declare module \"*.png\""));
         assert!(assets.contains("declare module \"*.ttf\""));
+        assert!(assets.contains("declare module \"*.woff2\""));
     }
 
     #[test]

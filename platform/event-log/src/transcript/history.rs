@@ -261,36 +261,52 @@ async fn read_page(
             )
         }
     };
-    let query = match (reverse, boundary.is_some(), inclusive) {
+    let boundary_order = if let Some(boundary) = boundary {
+        let pair: Option<(i64, i64)> = if let Position::Event { sequence } = position {
+            sqlx::query_as("SELECT order_sequence,order_item FROM transcript_directory WHERE session_id=?1 AND source_sequence=?2 ORDER BY order_sequence,order_item LIMIT 1")
+                .bind(session).bind(sql_number(sequence)?).fetch_optional(&mut *tx).await?
+        } else {
+            sqlx::query_as(super::read::ORDER)
+                .bind(session)
+                .bind(sql_position(boundary)?.0)
+                .bind(sql_position(boundary)?.1)
+                .fetch_optional(&mut *tx)
+                .await?
+        };
+        Some(match pair {
+            Some(pair) => pair,
+            None if matches!(position, Position::Event { .. }) => sql_position(boundary)?,
+            None => return Err(invalid("history cursor was not found")),
+        })
+    } else {
+        None
+    };
+    let query = match (reverse, boundary_order.is_some(), inclusive) {
         (true, false, _) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence DESC,item_index DESC LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, false, _) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 ORDER BY source_sequence,item_index LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (true, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<=(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<=(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (true, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND (source_sequence,item_index)<(?3,?4) ORDER BY source_sequence DESC,item_index DESC LIMIT ?2"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?4,?5) ORDER BY order_sequence DESC,order_item DESC LIMIT ?3"
         }
         (false, true, true) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>=(?4,?5) ORDER BY source_sequence,item_index LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>=(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
         (false, true, false) => {
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id=?1 AND source_sequence<=?2 AND (source_sequence,item_index)>(?4,?5) ORDER BY source_sequence,item_index LIMIT ?3"
+            "SELECT source_sequence,item_index FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?4,?5) ORDER BY order_sequence,order_item LIMIT ?3"
         }
     };
-    let mut query = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(query)).bind(session);
-    // A validated reverse anchor already implies the raw fence. Keep the
-    // cursor pair as the sole upper bound so SQLite seeks directly to it.
-    if !(reverse && boundary.is_some()) {
-        query = query.bind(through_sql);
-    }
-    query = query.bind((max_chunks + 1) as i64);
-    if let Some(boundary) = boundary {
-        let (source, item) = sql_position(boundary)?;
-        query = query.bind(source).bind(item);
+    let mut query = sqlx::query_as::<_, (i64, i64)>(sqlx::AssertSqlSafe(query))
+        .bind(session)
+        .bind(through_sql)
+        .bind((max_chunks + 1) as i64);
+    if let Some((sequence, item)) = boundary_order {
+        query = query.bind(sequence).bind(item);
     }
     let rows = query.fetch_all(&mut *tx).await?;
     let mut chunks = Vec::new();
@@ -505,7 +521,14 @@ async fn read_page(
                         })
                     })
                     .transpose()?;
+                let (order_sequence, order_item): (i64, i64) = sqlx::query_as(super::read::ORDER)
+                    .bind(session)
+                    .bind(sql_position(locator)?.0)
+                    .bind(sql_position(locator)?.1)
+                    .fetch_one(&mut *tx)
+                    .await?;
                 let chunk = Chunk {
+                    order: row_position(order_sequence, order_item)?,
                     model_part,
                     has_references,
                     field,
@@ -576,7 +599,7 @@ async fn read_page(
             right = Some((cursor, row.total));
         } else if matches!(position, Position::Event { .. }) {
             let last: Option<(i64,i64)> = sqlx::query_as(
-            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 ORDER BY source_sequence DESC,item_index DESC LIMIT 1"
+            "SELECT source_sequence,item_index FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 AND order_sequence <= ?2 ORDER BY order_sequence DESC,order_item DESC LIMIT 1"
         ).bind(session).bind(through_sql).fetch_optional(&mut *tx).await?;
             if let Some(locator) = last {
                 let locator = row_position(locator.0, locator.1)?;
@@ -788,20 +811,22 @@ async fn neighbor(
             }
         }
     }
-    // A predecessor of a validated cursor is already within its fence. Keep
-    // the pair as the sole upper bound, as in reverse anchored pagination.
-    let query = if before {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory WHERE session_id = ?1 AND (source_sequence,item_index) < (?2,?3))"
-    } else {
-        "SELECT EXISTS(SELECT 1 FROM transcript_directory WHERE session_id = ?1 AND source_sequence <= ?2 AND (source_sequence,item_index) > (?3,?4))"
-    };
-    let mut query = sqlx::query_scalar(sqlx::AssertSqlSafe(query)).bind(session);
-    if !before {
-        query = query.bind(through);
-    }
-    Ok(query
+    let (sequence, item): (i64, i64) = sqlx::query_as(super::read::ORDER)
+        .bind(session)
         .bind(sql_position(cursor.position)?.0)
         .bind(sql_position(cursor.position)?.1)
+        .fetch_one(&mut *tx)
+        .await?;
+    let query = if before {
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND (order_sequence,order_item)<(?3,?4))"
+    } else {
+        "SELECT EXISTS(SELECT 1 FROM transcript_directory INDEXED BY directory_order WHERE session_id=?1 AND source_sequence<=?2 AND order_sequence<=?2 AND (order_sequence,order_item)>(?3,?4))"
+    };
+    Ok(sqlx::query_scalar(sqlx::AssertSqlSafe(query))
+        .bind(session)
+        .bind(through)
+        .bind(sequence)
+        .bind(item)
         .fetch_one(tx)
         .await?)
 }
@@ -931,7 +956,7 @@ mod tests {
         ];
         for (i, mut value) in rows.into_iter().enumerate() {
             value["ts"] = json!(1);
-            sqlx::query("INSERT INTO transcript_directory (session_id,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result')")
+            sqlx::query("INSERT INTO transcript_directory (session_id,source_sequence,item_index,message_id,turn_id,timestamp,role,has_thinking,tool_origin,tool_name,tool_use_id,is_error,context_eligible,order_sequence,order_item) SELECT 'a',?1,0,?2,'turn',1,json_extract(?3,'$.type'),0,json_extract(?3,'$.origin'),json_extract(?3,'$.toolName'),json_extract(?3,'$.toolUseId'),json_extract(?3,'$.isError'),json_extract(?3,'$.type') IN ('tool_call','tool_result'),?1,0")
                 .bind((i+1) as i64).bind((i+1).to_string()).bind(serde_json::to_vec(&value).unwrap())
                 .execute(&mut db)
                 .await
@@ -1026,7 +1051,7 @@ mod tests {
         for (first, last) in [(1_i64, 64_i64), (65, 4096)] {
             // Use the production directory schema/indexes. Setup is outside the
             // handler; count only the real neighbor function, not a SQL copy.
-            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1 FROM n")
+            sqlx::query("WITH RECURSIVE n(value) AS (SELECT ?1 UNION ALL SELECT value+1 FROM n WHERE value<?2) INSERT INTO transcript_directory(session_id,source_sequence,item_index,turn_id,message_id,timestamp,role,has_thinking,context_eligible,order_sequence,order_item) SELECT 'a',value,0,'turn',CAST(value AS TEXT),1,'user',0,1,value,0 FROM n")
                 .bind(first)
                 .bind(last)
                 .execute(&mut db)

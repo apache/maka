@@ -415,6 +415,7 @@ test('Mermaid dependency patches, UI fixtures and outline font inputs reach thei
   const plan = fixture();
   for (const input of [
     'patches/pele+1.13.0.patch',
+    'products/maka/workbench/tests/fixtures/composer-completion.tsx',
     'products/maka/workbench/tests/fixtures/mermaid-view.tsx',
   ]) {
     const selected = plan([input]);

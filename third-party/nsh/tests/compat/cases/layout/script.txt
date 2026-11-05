@@ -2,6 +2,8 @@
 # core-theme
 tap id:case-core-theme
 expect Family: Pacifico
+expect WOFF family: Pacifico
+expect WOFF2 family: Pacifico
 frame id:spaced 0 81 80 40
 covers [nsh:rt] font
 covers [nsh:rt] setup

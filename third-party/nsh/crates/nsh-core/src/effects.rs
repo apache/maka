@@ -766,6 +766,10 @@ pub enum Cursor {
     ColResize,
     RowResize,
     None,
+    /// Resize along the northwest–southeast diagonal (`nwse-resize`).
+    NwseResize,
+    /// Resize along the northeast–southwest diagonal (`nesw-resize`).
+    NeswResize,
 }
 
 impl Cursor {
@@ -789,11 +793,12 @@ impl Cursor {
             Cursor::ColResize => "col-resize",
             Cursor::RowResize => "row-resize",
             Cursor::None => "none",
+            Cursor::NwseResize => "nwse-resize",
+            Cursor::NeswResize => "nesw-resize",
         }
     }
 
-    /// Parses a CSS cursor name (unknown resize directions map to their
-    /// axis).
+    /// Parses a CSS cursor name (resize directions map to their axis).
     pub fn parse(s: &str) -> Option<Cursor> {
         Some(match s {
             "auto" => Cursor::Auto,
@@ -812,8 +817,8 @@ impl Cursor {
             "zoom-out" => Cursor::ZoomOut,
             "col-resize" | "e-resize" | "w-resize" | "ew-resize" => Cursor::ColResize,
             "row-resize" | "n-resize" | "s-resize" | "ns-resize" => Cursor::RowResize,
-            "ne-resize" | "nw-resize" | "se-resize" | "sw-resize" | "nesw-resize"
-            | "nwse-resize" => Cursor::Move,
+            "nw-resize" | "se-resize" | "nwse-resize" => Cursor::NwseResize,
+            "ne-resize" | "sw-resize" | "nesw-resize" => Cursor::NeswResize,
             "none" => Cursor::None,
             _ => return None,
         })

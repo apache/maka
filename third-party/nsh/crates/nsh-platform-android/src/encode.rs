@@ -70,6 +70,9 @@ const RETIRE_LIST_CELL: i32 = 34;
 const PROJECT_ROOT: i32 = 35;
 const COMPONENT_PROP_SLOTS: i32 = 36;
 const SHADER: i32 = 37;
+const SHADER_TRANSITION: i32 = 38;
+const SHADER_INPUT: i32 = 39;
+const NAV_SHADER: i32 = 40;
 
 /// An entry of the object table.
 pub(crate) enum Obj {
@@ -356,12 +359,39 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                 canvas(&mut e, &drawing);
             }
             MountItem::Shader { id, layer } => {
-                // Java learns only whether the view shows a shader; the
+                // Java learns what the view shows (whether a shader, its
+                // role, how far it overflows, which pictures it reads); the
                 // layer goes to the UI-thread renderer (`crate::shader`).
                 e.int(SHADER);
                 e.int(id as i32);
                 e.bool(layer.is_some());
+                let l = layer.as_deref();
+                e.int(l.map_or(0, |l| l.role as i32));
+                e.float(l.map_or(0.0, |l| l.overflow.0));
+                e.int(l.map_or(0, |l| {
+                    l.shader
+                        .inputs()
+                        .iter()
+                        .fold(0, |bits, i| bits | 1 << i.index())
+                }));
                 e.animation.push(MountItem::Shader { id, layer });
+            }
+            MountItem::ShaderTransition { id, duration } => {
+                e.int(SHADER_TRANSITION);
+                e.int(id as i32);
+                e.float(duration.as_secs_f32() * 1000.0);
+            }
+            MountItem::ShaderInput { id } => {
+                e.int(SHADER_INPUT);
+                e.int(id as i32);
+            }
+            MountItem::NavShader { id, shader } => {
+                // Java learns whether the page or dialog has one; the layer
+                // waits in the renderer until it comes or goes.
+                e.int(NAV_SHADER);
+                e.int(id as i32);
+                e.bool(shader.is_some());
+                e.animation.push(MountItem::NavShader { id, shader });
             }
             MountItem::Overflow { id, extent } => {
                 e.int(OVERFLOW);
@@ -681,14 +711,42 @@ pub(crate) fn encode(batch: MountBatch) -> Encoded {
                     // No file dialogs (`Environment::file_requests`): the
                     // core answers first.
                     | Command::FileRequest { .. }
-                    // No menus of the platform's own to color.
-                    | Command::Tokens(_) => e.int(-1),
+                    // No speech recognizer (`Environment::speech`): the core
+                    // ends the sessions first.
+                    | Command::Speech(_)
+                    // Trusted web view input is macOS's for now.
+                    | Command::SendInput(_) => e.int(-1),
+                    // `SystemUi.dialog` draws alerts and action sheets in
+                    // them: each of `DIALOG_TOKENS`, light then dark (0: the
+                    // system's). An app without a theme of its own (its
+                    // tokens the default theme's) keeps the system's colors.
+                    Command::Tokens(tokens) => {
+                        e.int(27);
+                        let themed = nsh_base::tokens_of(None).is_ok_and(|d| *tokens != d);
+                        for name in DIALOG_TOKENS {
+                            let color = tokens.color(name).filter(|_| themed);
+                            for c in [color.map(|c| c.light), color.map(|c| c.dark)] {
+                                e.int(c.map_or(0, |c| argb(c.into())));
+                            }
+                        }
+                    }
                 }
             }
         }
     }
     e
 }
+
+/// The tokens alerts and action sheets are drawn in (`SystemUi.java`'s
+/// order): the dialog, its title, its message, its buttons and a
+/// destructive action.
+const DIALOG_TOKENS: [&str; 5] = [
+    "popover",
+    "popover-foreground",
+    "muted-foreground",
+    "primary",
+    "destructive",
+];
 
 /// The event kind with index `index` (`EventKind as u8`, the order of the
 /// constants in `Native.java`).
@@ -908,6 +966,8 @@ fn effects(e: &mut Encoded, s: &ViewStyle) {
         Cursor::ColResize => 14,
         Cursor::RowResize => 15,
         Cursor::None => 16,
+        Cursor::NwseResize => 17,
+        Cursor::NeswResize => 18,
     });
     match s.transition.filter(|t| t.duration > 0.0) {
         Some(t) => {

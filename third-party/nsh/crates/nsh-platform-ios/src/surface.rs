@@ -9,7 +9,7 @@ use block2::RcBlock;
 use dispatch2::{DispatchQueue, MainThreadBound};
 use nsh_core::{MountBatch, Points, Size};
 use nsh_engine::{
-    App, ColorScheme, Edges, Engine, EngineConfig, Environment, Idiom, MountSink, Policy,
+    App, ColorScheme, Edges, Engine, EngineConfig, Environment, Idiom, Lifecycle, MountSink, Policy,
 };
 use objc2::{
     DefinedClass, MainThreadMarker, MainThreadOnly, Message, define_class, msg_send,
@@ -22,11 +22,15 @@ use objc2_foundation::{
     NSValue,
 };
 use objc2_ui_kit::{
-    NSValueUIGeometryExtensions, UIDevice, UIFont, UIFontTextStyleBody,
-    UIKeyboardAnimationCurveUserInfoKey, UIKeyboardAnimationDurationUserInfoKey,
-    UIKeyboardFrameEndUserInfoKey, UIKeyboardWillChangeFrameNotification,
-    UIKeyboardWillHideNotification, UIResponder, UITraitCollection, UITraitEnvironment,
-    UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView,
+    NSValueUIGeometryExtensions, UIApplication, UIApplicationDidBecomeActiveNotification,
+    UIApplicationDidEnterBackgroundNotification, UIApplicationState,
+    UIApplicationWillEnterForegroundNotification, UIApplicationWillResignActiveNotification,
+    UIDevice, UIFont, UIFontTextStyleBody, UIKeyboardAnimationCurveUserInfoKey,
+    UIKeyboardAnimationDurationUserInfoKey, UIKeyboardFrameEndUserInfoKey,
+    UIKeyboardWillChangeFrameNotification, UIKeyboardWillHideNotification, UIResponder,
+    UISceneActivationState, UISceneDidActivateNotification, UISceneDidEnterBackgroundNotification,
+    UISceneWillDeactivateNotification, UISceneWillEnterForegroundNotification, UITraitCollection,
+    UITraitEnvironment, UIUserInterfaceIdiom, UIUserInterfaceStyle, UIView, UIWindowScene,
 };
 
 use crate::{
@@ -121,6 +125,10 @@ pub(crate) struct RootViewIvars {
     on_hot_failed: SharedHandler,
     /// Keyboard height over the view and its animation duration.
     keyboard: Cell<(f32, f32)>,
+    /// Whether the app is in use where the surface shows, as the
+    /// notifications of its window's scene said last (the application's
+    /// while it has none: [`RootView::observe_lifecycle`]).
+    lifecycle: Cell<Lifecycle>,
     /// Last environment sent to the engine.
     environment: Cell<Option<Environment>>,
     /// The embedding app's locale and text size over the system's
@@ -185,6 +193,31 @@ define_class!(
             });
             // SAFETY: calling the superclass implementation.
             taken || unsafe { msg_send![super(self), accessibilityPerformEscape] }
+        }
+
+        #[unsafe(method(didMoveToWindow))]
+        fn did_move_to_window(&self) {
+            // SAFETY: calling the superclass implementation.
+            let _: () = unsafe { msg_send![super(self), didMoveToWindow] };
+            // Another window may be another scene, in another state.
+            self.ivars().lifecycle.set(self.scene_state());
+            self.publish_environment();
+            let Some(mounter) = self
+                .ivars()
+                .running
+                .borrow()
+                .as_ref()
+                .map(|r| r.mounter.clone())
+            else {
+                return;
+            };
+            // On the next turn: a batch being applied may hold the mounter.
+            DispatchQueue::main().exec_async(move || {
+                let mtm = MainThreadMarker::new().expect("main queue");
+                if let Some(m) = mounter.get(mtm).borrow_mut().as_mut() {
+                    m.window_changed();
+                }
+            });
         }
 
         #[unsafe(method(safeAreaInsetsDidChange))]
@@ -270,6 +303,7 @@ impl RootView {
             on_error: Arc::new(MainThreadBound::new(RefCell::new(None), mtm)),
             on_hot_failed: Arc::new(MainThreadBound::new(RefCell::new(None), mtm)),
             keyboard: Cell::new((0.0, 250.0)),
+            lifecycle: Cell::new(lifecycle(mtm)),
             environment: Cell::new(None),
             host: Cell::default(),
             host_tokens: RefCell::new(None),
@@ -342,6 +376,7 @@ impl RootView {
                 _ => Idiom::Phone,
             },
             locale: current_locale(),
+            lifecycle: self.ivars().lifecycle.get(),
             // Only read for the web: iOS keys are always Apple's.
             apple_keyboard: true,
             terminal_keyboard: false,
@@ -350,6 +385,8 @@ impl RootView {
             host: false,
             // UIKit has no screen color sampler.
             screen_color: false,
+            // The Speech framework fed by the microphone.
+            speech: true,
             // No file dialogs, file manager or trash (Catalyst included):
             // the default, so the core answers those requests.
             ..Environment::default()
@@ -369,6 +406,104 @@ impl RootView {
         if self.ivars().environment.get() != Some(env) {
             self.ivars().environment.set(Some(env));
             running.engine.control().set_environment(env);
+        }
+    }
+
+    /// Tracks whether the app is in use where the surface shows
+    /// (`lifecycle()`): the notifications of its window's scene, so that on
+    /// an iPad with several windows, and on Catalyst, a surface follows its
+    /// own window as the desktop backends do; the application's while the
+    /// surface is in no window with a scene. An embedded surface follows
+    /// the embedding app's window. The state is the notification's: during
+    /// `willResignActive` / `willDeactivate`, the app and the scene still
+    /// say active.
+    fn observe_lifecycle(this: &Retained<Self>) {
+        let center = NSNotificationCenter::defaultCenter();
+        let weak = Weak::from_retained(this);
+        let block = RcBlock::new(move |note: NonNull<NSNotification>| {
+            let Some(view) = weak.load() else { return };
+            // SAFETY: a valid notification for the duration of the call.
+            let note = unsafe { note.as_ref() };
+            let name = note.name();
+            // SAFETY: immutable UIKit constants.
+            let (of_scene, state) = unsafe {
+                if *name == *UISceneDidActivateNotification {
+                    (true, Lifecycle::Active)
+                } else if *name == *UISceneDidEnterBackgroundNotification {
+                    (true, Lifecycle::Background)
+                } else if *name == *UISceneWillDeactivateNotification
+                    || *name == *UISceneWillEnterForegroundNotification
+                {
+                    (true, Lifecycle::Inactive)
+                } else if *name == *UIApplicationDidBecomeActiveNotification {
+                    (false, Lifecycle::Active)
+                } else if *name == *UIApplicationDidEnterBackgroundNotification {
+                    (false, Lifecycle::Background)
+                } else {
+                    // Resigning active, or coming back to the foreground
+                    // before it is active again.
+                    (false, Lifecycle::Inactive)
+                }
+            };
+            let scene = view.scene();
+            let ours = match (&scene, note.object()) {
+                (Some(scene), Some(object)) if of_scene => {
+                    std::ptr::addr_eq(Retained::as_ptr(scene), Retained::as_ptr(&object))
+                }
+                // Another scene's, or the application's while the surface
+                // follows a scene.
+                (Some(_), _) => false,
+                (None, _) => !of_scene,
+            };
+            if ours {
+                view.ivars().lifecycle.set(state);
+                view.publish_environment();
+            }
+        });
+        // SAFETY: immutable UIKit constants.
+        let names = unsafe {
+            [
+                UISceneDidActivateNotification,
+                UISceneWillDeactivateNotification,
+                UISceneDidEnterBackgroundNotification,
+                UISceneWillEnterForegroundNotification,
+                UIApplicationDidBecomeActiveNotification,
+                UIApplicationWillResignActiveNotification,
+                UIApplicationDidEnterBackgroundNotification,
+                UIApplicationWillEnterForegroundNotification,
+            ]
+        };
+        let mut observers = this.ivars().observers.borrow_mut();
+        for name in names {
+            // SAFETY: as in `observe_keyboard`; the block only touches the
+            // view on the main queue it is delivered on.
+            observers.push(unsafe {
+                center.addObserverForName_object_queue_usingBlock(
+                    Some(name),
+                    None,
+                    Some(&NSOperationQueue::mainQueue()),
+                    &block,
+                )
+            });
+        }
+    }
+
+    /// The scene of the window the surface is in, if any.
+    fn scene(&self) -> Option<Retained<UIWindowScene>> {
+        self.window()?.windowScene()
+    }
+
+    /// The state of the surface's scene now, before its notifications say
+    /// more (the application's without one). An unattached scene shows
+    /// nothing, as one in the background.
+    fn scene_state(&self) -> Lifecycle {
+        let Some(scene) = self.scene() else {
+            return lifecycle(self.mtm());
+        };
+        match scene.activationState() {
+            UISceneActivationState::ForegroundActive => Lifecycle::Active,
+            UISceneActivationState::ForegroundInactive => Lifecycle::Inactive,
+            _ => Lifecycle::Background,
         }
     }
 
@@ -534,12 +669,32 @@ impl RootView {
             }
             Err(_) => true,
         };
+        let settled = mounter.clone();
         if busy {
             DispatchQueue::main().exec_async(move || {
                 let mtm = MainThreadMarker::new().expect("main queue");
                 if let Some(m) = mounter.get(mtm).borrow_mut().as_mut() {
                     m.keyboard_changed(height, motion);
                 }
+            });
+        }
+        // Once the engine handled the change, and the batch the app
+        // answered with (if any) is applied (batches reach the main queue
+        // first): what the app did not move clear of the keyboard moves.
+        let control = self
+            .ivars()
+            .running
+            .borrow()
+            .as_ref()
+            .map(|r| r.engine.control());
+        if let Some(control) = control {
+            control.flush(move |_| {
+                DispatchQueue::main().exec_async(move || {
+                    let mtm = MainThreadMarker::new().expect("main queue");
+                    if let Some(m) = settled.get(mtm).borrow_mut().as_mut() {
+                        m.keyboard_settled();
+                    }
+                });
             });
         }
     }
@@ -586,6 +741,7 @@ impl RootView {
             clipboard: None,
             host: self.ivars().options.host.clone(),
             picker: None,
+            speech: None,
         };
         // A test session's app: the test's storage, network and trace.
         #[cfg(feature = "dev")]
@@ -772,6 +928,7 @@ impl Surface {
             .spawn(crate::text::prewarm)?;
         let view = RootView::new(mtm, frame, app.into(), options);
         RootView::observe_keyboard(&view);
+        RootView::observe_lifecycle(&view);
         Ok(Surface { view })
     }
 
@@ -900,6 +1057,16 @@ fn current_locale() -> nsh_engine::Locale {
         .localeIdentifier()
         .to_string();
     nsh_engine::Locale::parse(&identifier).unwrap_or_default()
+}
+
+/// The app's state as UIApplication reports it now, before its
+/// notifications say more.
+fn lifecycle(mtm: MainThreadMarker) -> Lifecycle {
+    match UIApplication::sharedApplication(mtm).applicationState() {
+        UIApplicationState::Active => Lifecycle::Active,
+        UIApplicationState::Background => Lifecycle::Background,
+        _ => Lifecycle::Inactive,
+    }
 }
 
 /// The iOS version (`UIDevice.systemVersion`, the iOS version Catalyst

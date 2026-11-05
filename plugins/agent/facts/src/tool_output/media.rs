@@ -29,7 +29,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 /// Effect output awaiting T2 normalization. This is intentionally not serializable:
 /// pending image bytes must become an immutable Session ref before delivery.
 #[derive(Debug)]
-pub struct ToolSuccess(ToolSuccessValue);
+pub struct ToolSuccess {
+    value: ToolSuccessValue,
+    pub(crate) is_error: bool,
+}
 
 #[derive(Debug)]
 enum ToolSuccessValue {
@@ -65,9 +68,17 @@ pub(crate) struct NormalizedToolSuccess {
     pub artifacts: Vec<ProjectionArtifactWrite>,
 }
 
+impl From<ToolSuccessValue> for ToolSuccess {
+    fn from(value: ToolSuccessValue) -> Self {
+        Self {
+            value,
+            is_error: false,
+        }
+    }
+}
 impl From<ToolOutput> for ToolSuccess {
     fn from(output: ToolOutput) -> Self {
-        Self(ToolSuccessValue::Output(output))
+        ToolSuccessValue::Output(output).into()
     }
 }
 impl From<Value> for ToolSuccess {
@@ -78,19 +89,23 @@ impl From<Value> for ToolSuccess {
 
 impl ToolSuccess {
     pub fn content(output: ToolOutput, parts: Vec<ToolContent>) -> Self {
-        Self(ToolSuccessValue::Content { output, parts })
+        ToolSuccessValue::Content { output, parts }.into()
     }
     /// Freeze an executor-owned model view alongside the unmodified raw result.
     /// Invalid projections become projection failures, not failed tool effects.
     pub fn projected(output: ToolOutput, projection: DurableToolProjection) -> Self {
-        Self(ToolSuccessValue::Projected { output, projection })
+        ToolSuccessValue::Projected { output, projection }.into()
+    }
+
+    pub fn reporting_error(self, is_error: bool) -> Self {
+        Self { is_error, ..self }
     }
 
     /// The executor owns authorization and image-header/dimension validation.
     /// Core normalizes the MIME before accepting pending media.
     pub fn image(bytes: Vec<u8>, mime_type: String) -> Result<Self, &'static str> {
         let mime_type = normalize_mime(&mime_type).ok_or("unsafe tool image MIME")?;
-        Ok(Self(ToolSuccessValue::Image { bytes, mime_type }))
+        Ok(ToolSuccessValue::Image { bytes, mime_type }.into())
     }
 
     pub(crate) fn normalize(
@@ -99,7 +114,7 @@ impl ToolSuccess {
         time: SystemTime,
         invocation: &Invocation,
     ) -> Result<NormalizedToolSuccess, &'static str> {
-        let (output, pending_image) = match self.0 {
+        let (output, pending_image) = match self.value {
             ToolSuccessValue::Content { output, parts } => {
                 let mut projection = Vec::new();
                 let mut artifacts = Vec::new();

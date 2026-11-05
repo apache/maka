@@ -175,6 +175,33 @@ impl Idiom {
     }
 }
 
+/// Whether the app is in use (`lifecycle()`), in React Native's `AppState`
+/// terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Lifecycle {
+    /// In the foreground and taking input.
+    #[default]
+    Active,
+    /// Still visible, but not taking input: another app or window has the
+    /// focus, or the system shows something over it (the app switcher, an
+    /// incoming call, Control Center).
+    Inactive,
+    /// Not visible: in the background, minimized or hidden. The system may
+    /// suspend it there.
+    Background,
+}
+
+impl Lifecycle {
+    /// Its `lifecycle()` name: `"active"`, `"inactive"` or `"background"`.
+    pub fn name(self) -> &'static str {
+        match self {
+            Lifecycle::Active => "active",
+            Lifecycle::Inactive => "inactive",
+            Lifecycle::Background => "background",
+        }
+    }
+}
+
 /// What the platform knows about the surface.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Environment {
@@ -233,6 +260,10 @@ pub struct Environment {
     /// The app embedding NSH answers `nsh/host`'s calls
     /// ([`crate::Command::HostCall`]); without it, they reject at once.
     pub host: bool,
+    /// Whether the app is in use: in the foreground, visible without the
+    /// focus, or in the background. For an embedded surface, the embedding
+    /// app's.
+    pub lifecycle: Lifecycle,
     /// The platform picks a color from the screen
     /// ([`crate::Command::PickScreenColor`]); without it, a pick answers
     /// no color at once.
@@ -242,6 +273,14 @@ pub struct Environment {
     /// the desktops); without it, those requests answer at once with an
     /// error.
     pub file_requests: bool,
+    /// The platform recognizes speech ([`crate::Command::Speech`],
+    /// [`crate::speech`]); without it, a session ends at once
+    /// (`unavailable`) unless the core has a [`crate::speech::SpeechBackend`].
+    pub speech: bool,
+    /// The platform gives web views trusted input
+    /// ([`crate::Command::SendInput`], macOS); without it, the command
+    /// does nothing.
+    pub web_input: bool,
 }
 
 impl Environment {
@@ -293,8 +332,11 @@ impl Default for Environment {
             terminal_keyboard: false,
             locale: Locale::EN_US,
             host: false,
+            lifecycle: Lifecycle::Active,
             screen_color: false,
             file_requests: false,
+            speech: false,
+            web_input: false,
         }
     }
 }

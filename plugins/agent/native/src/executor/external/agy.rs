@@ -331,6 +331,7 @@ async fn observe(
     let mut user = None;
     let mut user_done = false;
     let mut tools = std::collections::BTreeSet::new();
+    let mut messages = AgentMessages::default();
     let mut admission = Some(tokio::time::Instant::now() + runtime::SETUP_TIMEOUT);
     loop {
         let event = if let Some(deadline) = admission {
@@ -373,13 +374,8 @@ async fn observe(
                         .highest_step
                         .map_or(index, |previous| previous.max(index)),
                 );
-                if show_text
-                    && kind == "agent_response"
-                    && let Some(delta) = step.get("text_delta").and_then(Value::as_str)
-                {
-                    output
-                        .emit(Output::OutputDelta { text: delta.into() })
-                        .await?;
+                if kind == "agent_response" {
+                    messages.step(step, index, state, output, show_text).await?;
                 }
                 if kind == "tool" {
                     emit_tool(step, session, index, state, &mut tools, output).await?;
@@ -392,13 +388,87 @@ async fn observe(
                         "agy terminal did not correlate to this user input".into(),
                     ));
                 }
-                return terminal(result);
+                let outcome = terminal(result, messages.final_message_id.clone())?;
+                if matches!(outcome, Outcome::Completed { .. })
+                    && messages.steps.values().any(|message| !message.ended)
+                {
+                    return Err(Error::Invalid(
+                        "agy succeeded with an unfinished assistant message".into(),
+                    ));
+                }
+                return Ok(outcome);
             }
             _ => return Err(Error::Invalid("Unsupported agy stream event".into())),
         }
     }
 }
-fn terminal(result: &Value) -> Result<Outcome, Error> {
+#[derive(Default)]
+struct AgentMessages {
+    steps: std::collections::BTreeMap<u64, AgentMessage>,
+    final_message_id: Option<String>,
+}
+#[derive(Default)]
+struct AgentMessage {
+    ended: bool,
+    has_body: bool,
+}
+impl AgentMessages {
+    async fn step(
+        &mut self,
+        step: &Value,
+        index: u64,
+        state: &str,
+        output: &dyn OutputSink,
+        show_text: bool,
+    ) -> Result<(), Error> {
+        let id = index.to_string();
+        match self.steps.entry(index) {
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                entry.insert(AgentMessage::default());
+                if show_text {
+                    output
+                        .emit(Output::MessageStart {
+                            message_id: id.clone(),
+                        })
+                        .await?;
+                }
+            }
+            std::collections::btree_map::Entry::Occupied(entry) if entry.get().ended => {
+                return Err(Error::Invalid(
+                    "agy emitted an already completed assistant step".into(),
+                ));
+            }
+            _ => {}
+        }
+        let message = self.steps.get_mut(&index).expect("started native step");
+        if let Some(text) = step.get("text_delta").and_then(Value::as_str) {
+            message.has_body |= !text.is_empty();
+            if show_text {
+                output
+                    .emit(Output::OutputDelta {
+                        message_id: id.clone(),
+                        text: text.into(),
+                    })
+                    .await?;
+            }
+        }
+        if state == "DONE" {
+            if show_text {
+                output
+                    .emit(Output::MessageEnd {
+                        message_id: id.clone(),
+                    })
+                    .await?;
+            }
+            message.ended = true;
+            if message.has_body {
+                self.final_message_id = Some(id);
+            }
+        }
+        Ok(())
+    }
+}
+fn terminal(result: &Value, message_id: Option<String>) -> Result<Outcome, Error> {
     let status = string(result, "/status").map_err(|_| Error::Unknown)?;
     let reason = match result.get("finished_reason") {
         None => None,
@@ -415,7 +485,12 @@ fn terminal(result: &Value) -> Result<Outcome, Error> {
                 .get("response")
                 .and_then(Value::as_str)
                 .ok_or(Error::Unknown)?;
-            Ok(Outcome::Completed { text: text.into() })
+            if !text.is_empty() && message_id.is_none() {
+                return Err(Error::Invalid(
+                    "agy terminal response has no native assistant step identity".into(),
+                ));
+            }
+            Ok(Outcome::Completed { message_id })
         }
         ("ERROR", Some("interrupted")) | ("CANCELED" | "INTERRUPTED", _) => {
             Ok(Outcome::Cancelled {
@@ -612,6 +687,145 @@ fn parse_models(bytes: &[u8]) -> Result<Vec<Value>, Error> {
 mod tests {
     use super::*;
 
+    struct Collect(std::sync::Mutex<Vec<Output>>);
+    impl OutputSink for Collect {
+        fn emit(&self, event: Output) -> BoxFuture<'_, Result<(), Error>> {
+            Box::pin(async move {
+                self.0.lock().unwrap().push(event);
+                Ok(())
+            })
+        }
+    }
+    #[tokio::test]
+    async fn native_steps_keep_message_boundaries_chunks_and_tool_order() {
+        let sink = Collect(Default::default());
+        let mut messages = AgentMessages::default();
+        messages
+            .step(
+                &serde_json::json!({"text_delta":"before "}),
+                10,
+                "ACTIVE",
+                &sink,
+                true,
+            )
+            .await
+            .unwrap();
+        messages
+            .step(
+                &serde_json::json!({"text_delta":"tool"}),
+                10,
+                "DONE",
+                &sink,
+                true,
+            )
+            .await
+            .unwrap();
+        let mut tools = Default::default();
+        emit_tool(
+            &serde_json::json!({"tool_name":"read","tool_info":{"parameters":{"path":"a"}}}),
+            "session",
+            11,
+            "RUNNING",
+            &mut tools,
+            &sink,
+        )
+        .await
+        .unwrap();
+        emit_tool(
+            &serde_json::json!({"tool_name":"read","tool_info":{}}),
+            "session",
+            11,
+            "DONE",
+            &mut tools,
+            &sink,
+        )
+        .await
+        .unwrap();
+        messages
+            .step(
+                &serde_json::json!({"text_delta":"after tool"}),
+                12,
+                "DONE",
+                &sink,
+                true,
+            )
+            .await
+            .unwrap();
+        messages
+            .step(&serde_json::json!({}), 13, "DONE", &sink, true)
+            .await
+            .unwrap();
+        assert!(
+            matches!(terminal(&serde_json::json!({"status":"SUCCESS","response":"before toolafter tool"}), messages.final_message_id).unwrap(), Outcome::Completed { message_id:Some(id) } if id == "12")
+        );
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start","messageId":"10"},
+                {"type":"output_delta","messageId":"10","text":"before "},
+                {"type":"output_delta","messageId":"10","text":"tool"},
+                {"type":"message_end","messageId":"10"},
+                {"type":"tool_start","toolCallId":"session:11","name":"read","input":{"path":"a"}},
+                {"type":"tool_result","toolCallId":"session:11","text":"{}","isError":false},
+                {"type":"message_start","messageId":"12"},
+                {"type":"output_delta","messageId":"12","text":"after tool"},
+                {"type":"message_end","messageId":"12"},
+                {"type":"message_start","messageId":"13"},
+                {"type":"message_end","messageId":"13"}
+            ])
+        );
+    }
+    #[tokio::test]
+    async fn bootstrap_is_suppressed_and_interrupted_step_is_not_successfully_ended() {
+        let sink = Collect(Default::default());
+        AgentMessages::default()
+            .step(
+                &serde_json::json!({"text_delta":"setup"}),
+                1,
+                "DONE",
+                &sink,
+                false,
+            )
+            .await
+            .unwrap();
+        let mut messages = AgentMessages::default();
+        messages
+            .step(
+                &serde_json::json!({"text_delta":"partial"}),
+                2,
+                "ACTIVE",
+                &sink,
+                true,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            terminal(
+                &serde_json::json!({"status":"ERROR","finished_reason":"interrupted"}),
+                messages.final_message_id
+            )
+            .unwrap(),
+            Outcome::Cancelled { .. }
+        ));
+        assert_eq!(
+            serde_json::to_value(&*sink.0.lock().unwrap()).unwrap(),
+            serde_json::json!([
+                {"type":"message_start","messageId":"2"},
+                {"type":"output_delta","messageId":"2","text":"partial"}
+            ])
+        );
+        assert!(
+            terminal(
+                &serde_json::json!({"status":"SUCCESS","response":"unidentified answer"}),
+                None
+            )
+            .is_err()
+        );
+        assert!(matches!(
+            terminal(&serde_json::json!({"status":"SUCCESS","response":""}), None).unwrap(),
+            Outcome::Completed { message_id: None }
+        ));
+    }
     #[test]
     fn image_paths_remain_ordered_and_losslessly_escaped_in_native_user_context() {
         let images = serde_json::json!([
@@ -651,14 +865,17 @@ mod tests {
 
     #[test]
     fn early_native_results_are_not_successful_answers() {
-        let completed =
-            terminal(&serde_json::json!({"status":"SUCCESS","response":"完整回复"})).unwrap();
-        assert!(matches!(completed, Outcome::Completed { text } if text == "完整回复"));
+        let completed = terminal(
+            &serde_json::json!({"status":"SUCCESS","response":"完整回复"}),
+            Some("2".into()),
+        )
+        .unwrap();
+        assert!(matches!(completed, Outcome::Completed { message_id:Some(id) } if id == "2"));
         for reason in ["print_timeout", "interrupted", "error"] {
-            let result = terminal(&serde_json::json!({"status":"SUCCESS","response":"partial","finished_reason":reason})).unwrap();
+            let result = terminal(&serde_json::json!({"status":"SUCCESS","response":"partial","finished_reason":reason}), None).unwrap();
             assert!(matches!(result, Outcome::Failed { .. }));
         }
-        assert!(terminal(&serde_json::json!({"status":"SUCCESS"})).is_err());
+        assert!(terminal(&serde_json::json!({"status":"SUCCESS"}), None).is_err());
     }
 
     #[test]

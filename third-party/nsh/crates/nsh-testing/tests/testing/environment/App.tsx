@@ -1,6 +1,6 @@
 import { mount, signal, Text, View } from "nsh";
 import { reduceMotion } from "nsh";
-import { colorScheme, locale, platform, windowSize } from "nsh";
+import { colorScheme, lifecycle, locale, platform, windowSize } from "nsh";
 
 function App() {
   const result = signal("none");
@@ -24,6 +24,7 @@ function App() {
       <Text>{`Motion: ${reduceMotion() ? "reduced" : "full"}`}</Text>
       <Text>{`OS: ${platform.os}`}</Text>
       <Text>{`Size: ${windowSize().width}x${windowSize().height}`}</Text>
+      <Text>{`App: ${lifecycle()}`}</Text>
       {button("Echo", "echo")}
       {button("Item", "items/7")}
       {button("Down", "down")}

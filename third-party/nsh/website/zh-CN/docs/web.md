@@ -157,7 +157,9 @@ nsh package App.tsx --target web --run
 | `index.html` | 应用的页面：以应用名作为标题，带图标、按 `appearance` 设定的颜色、加载指示，以及应用无法加载或启动时的提示 |
 | `manifest.webmanifest` | 浏览器安装应用时使用的名称、id、图标和颜色 |
 | `nsh.<digest>.js` | DOM 运行时，已压缩（79 KB，brotli 后 22.5 KB） |
-| `nsh.<digest>.wasm` | Rust 引擎、布局和组件，以及 Rust 应用自己的 crate。TSX 应用使用浏览器 JS；打包时只链接应用导入的组件和标准模块。 |
+| `nsh.<digest>.wasm` | Rust 引擎、布局和组件，以及 Rust 应用自己的 crate。TSX 应用使用浏览器 JS；打包时只链接应用首屏导入的组件和标准模块。 |
+| `nsh-<name>.<digest>.wasm` | 应用在首屏之外用到的组件、标准模块和着色器：首屏显示后在后台下载 |
+| `<file>.br`、`<file>.gz` | 每个文件预先压缩的副本，供能直接发送预压缩文件的托管服务使用 |
 | `nsh-syntaxes.<digest>.bin` | 代码高亮用的语法定义（bat 的语法集：0.92 MB，brotli 后 0.8 MB），代码块、`Editor` 或 `DiffView` 第一次显示某种语言的代码时下载 |
 | `nsh-bindgen.<digest>.js` | 应用的 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 时所需的 wasm-bindgen 胶水代码，已压缩 |
 | `snippets.<digest>/<crate>-<hash>/…` | 胶水代码导入的这些 crate 的 JS（`inline_js`、`module = "/js/…"`），保留 wasm-bindgen 给它们的路径 |
@@ -171,14 +173,12 @@ nsh package App.tsx --target web --run
 
 ### 运行时大小
 
-打包时为每个应用链接一个专属的 `nsh.<digest>.wasm`：其中包含引擎，以及应用导入的 `nsh/base` 组件、标准模块和着色器，没有用到的不会打包进去。以下数据由 `nsh package --target web` 实测（MB 按 10^6 字节计，gzip 压缩级别 9）：
+打包时为每个应用链接一个专属的 `nsh.<digest>.wasm`：其中包含引擎，以及应用首屏导入的 `nsh/base` 组件、标准模块和着色器。应用其他页面导入的部分在首屏显示后于后台下载。应用的 crate [在 Rust 中调用浏览器 API](#在-rust-中使用浏览器-api) 时，它的 `nsh.<digest>.wasm` 包含整个运行时以及它自己的 crate。以下数据由 `nsh package --target web` 实测（MB 按 10^6 字节计）：
 
-| 应用 | 用到的功能 | `nsh.<digest>.wasm` | gzip |
-|---|---|---|---|
-| `examples/counter` | 基础组件 | 3.40 MB | 1.12 MB |
-| 一个 `Shader` 视图 | 基础组件和着色器 | 4.34 MB | 1.42 MB |
-| `Editor`、`Plot` 和 `zlib` | 基础组件、`nsh/base` 的另外两部分和 `zlib` | 7.02 MB | 2.32 MB |
-| `examples/gallery` | 全部组件、`zlib` 和着色器 | 11.22 MB | 3.56 MB |
+| 应用 | 用到的功能 | `nsh.<digest>.wasm` | gzip | Brotli |
+|---|---|---|---|---|
+| `examples/counter` | 基础组件 | 3.96 MB | 1.32 MB | 0.97 MB |
+| `examples/gallery` | 全部组件、`zlib` 和着色器 | 4.13 MB | 1.36 MB | 1.01 MB |
 
 ### 部署
 
@@ -189,7 +189,7 @@ nsh package App.tsx --target web --run
 | `index.html`、`manifest.webmanifest` | `no-cache`（每次加载都重新验证，新版本立即生效） |
 | 其余所有文件 | `public, max-age=31536000, immutable` |
 
-以 `application/wasm` 类型提供 `.wasm`（浏览器会边下载边编译），并让托管服务或 CDN 压缩文本和 WebAssembly（gzip 或 brotli）。`nsh package --target web --run` 就按这种方式在 `http://127.0.0.1:4173/` 上提供站点。
+以 `application/wasm` 类型提供 `.wasm`（浏览器会边下载边编译），并把预压缩的副本发给支持它的浏览器：nginx 用 `brotli_static on; gzip_static on;`，Caddy 用 `file_server { precompressed br gzip }`，或使用支持 Brotli 的 CDN。用 Brotli 时运行时比 gzip 小约四分之一。`nsh package --target web --run` 就按这种方式在 `http://127.0.0.1:4173/` 上提供站点。
 
 发布到 Web 的应用与打包的原生应用运行方式相同：以发布模式运行，具有其 `nsh.json` 声明的能力（[沙箱与能力](./sandbox-and-capabilities.md)），TSX 应用由浏览器的 JavaScript 引擎执行。当能力限制了 `network` 时，页面还会带上 Content-Security-Policy `connect-src`，其中列出声明的主机（以及页面自身的源），由浏览器自己拒绝发往其他主机的请求和重定向。导致应用无法启动的错误会显示在页面上；之后的错误输出到浏览器控制台。
 

@@ -7,8 +7,9 @@
 // `indeterminateStyle`) and of its indicator (`indicatorClass`,
 // `indicatorStyle`) with the app's mark inside it (`indicator`), whose
 // `checked:`, `indeterminate:` and `disabled:` classes follow the
-// checkbox. The indicator's widths move the label after it, which is how
-// its script sees them.
+// checkbox, and how far outside it presses count (`hitSlop`, a number
+// for every side or some sides). The indicator's widths move the label
+// after it, which is how its script sees them.
 import { Text, View, signal } from "nsh";
 import { Checkbox } from "nsh/base";
 
@@ -24,6 +25,7 @@ function App() {
   const changes = signal(0);
   const asked = signal("");
   const disabled = signal(true);
+  const wide = signal(false);
   return (
     <View style={{ flex: 1, paddingTop: 20, gap: 4 }}>
       <Checkbox
@@ -57,6 +59,7 @@ function App() {
         <Text>Locked</Text>
       </Checkbox>
       <View testID="enable" onPress={() => disabled.set(!disabled())} style={{ height: 20 }} />
+      <Checkbox testID="agree" checked={wide()} accessibilityLabel="Agree" hitSlop={wide() ? { top: 4, left: 2 } : 12} onChange={({ checked }) => wide.set(checked)} />
     </View>
   );
 }

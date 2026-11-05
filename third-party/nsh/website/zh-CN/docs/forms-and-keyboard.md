@@ -594,7 +594,9 @@ scroll()
 
 ### 滚动视图之外的内容
 
-固定在页面底部的消息栏不在滚动视图中，没有东西会移动它。用 CSS 的 `env(keyboard-inset-height)` 为页面底部加内边距（`paddingBottom: "env(keyboard-inset-height)"`、Tailwind `pb-[env(keyboard-inset-height)]`、Rust `.pb_keyboard()`）：它会在底部让出与键盘等高的空间，并与键盘原生同步动画。
+在 iOS 上，如果键盘会盖住一个不在滚动视图中的已聚焦输入框，NSH 会沿键盘的曲线把它所在页面（或对话框）的内容上移，直到输入框刚好在键盘上方；键盘收起或输入框失去焦点时再移回，与 SwiftUI 的做法一致（在 Android 上，`adjustPan` 模式的窗口由系统平移）。它只处理应用自己的布局之后仍被盖住的部分：像下面这样自己让出空间的应用不会再被额外移动。
+
+这样会移动整个页面。固定在页面底部的消息栏应该跟着键盘上移，而它上方的内容随之变矮：用 CSS 的 `env(keyboard-inset-height)` 为页面底部加内边距（`paddingBottom: "env(keyboard-inset-height)"`、Tailwind `pb-[env(keyboard-inset-height)]`、Rust `.pb_keyboard()`）：它会在底部让出与键盘等高的空间，并与键盘原生同步动画。
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -682,7 +684,7 @@ function ChatScreen() {
 
 ### 键盘访问器
 
-Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（毫秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。随它们变化的布局在键盘的曲线上做动画时，就与键盘一起移动：`LayoutAnimation.configureNext({ duration: keyboardFrame().duration, update: { type: "keyboard" } })`（Rust：`LayoutCurve::Keyboard`），`env(keyboard-inset-height)` 就是这样做的。
+Rust 中的 `keyboard_height()` 和 `keyboard_duration()`，以及 TSX 中 `nsh` 的 `keyboardFrame()`（一个 `{ height, duration }`），都是响应式的：键盘伸入 surface 的高度（隐藏时为 0，包含被它盖住的底部安全区域）以及它的动画时长（毫秒）。需要自定义行为时读取它们，例如输入时隐藏浮动按钮，或调整面板尺寸。键盘开始移动时那次更新中随它们变化的内容，会沿键盘的曲线、从键盘开始移动的时刻起与键盘一起移动（`LayoutCurve::Keyboard`），和 `env(keyboard-inset-height)` 一样；应用为这次更新自己设置的动画（`LayoutAnimation.configureNext`）优先。
 
 ```rust tabs
 view().child(when(

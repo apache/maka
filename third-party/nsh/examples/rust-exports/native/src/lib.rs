@@ -3,11 +3,15 @@
 //! ([`Account`]). `App.tsx` imports all three from `rust-exports/native`,
 //! the specifier of the set below (`nsh.json` `"rust": "native"`), and
 //! their TypeScript declarations are generated from these types into
-//! `.nsh/types/rust-exports/native.d.ts`.
+//! `.nsh/types/rust-exports/native.d.ts`. On the desktops the crate also
+//! registers a native component (`meter.rs`), which `App.tsx` declares with
+//! `nativeComponent`.
 
 mod account;
 mod gauge;
 mod ledger;
+#[cfg(any(windows, target_os = "macos", target_os = "linux"))]
+mod meter;
 
 use nsh_core::prelude::*;
 
@@ -24,4 +28,23 @@ fn native(registry: &mut Registry) {
         .register::<Gauge>()
         .module::<Ledger>()
         .class::<Account>();
+}
+
+/// The crate's native components on Windows, which the hosts nsh builds for
+/// the app register on every view.
+#[native_components(windows)]
+fn components(components: &nsh_platform_windows::Components) {
+    meter::register(components);
+}
+
+/// The crate's native components on macOS.
+#[native_components(macos)]
+fn components(components: &nsh_platform_macos::Components) {
+    meter::register(components);
+}
+
+/// The crate's native components on Linux.
+#[native_components(linux)]
+fn components(components: &nsh_platform_linux::Components) {
+    meter::register(components);
 }

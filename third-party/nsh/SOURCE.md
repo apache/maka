@@ -24,8 +24,8 @@ This directory initially imported the complete tracked source of
 at `de176695240d550f2b303643b8019146c7989e7f`. The maintained upstream is
 [`longbridge/nsh`](https://github.com/longbridge/nsh).
 
-The complete upstream tree is synchronized through main revision
-`a5036af48ddc193b5023ece9b9196c76b8f8d3f5`. Earlier selective imports are
+The complete upstream tree is synchronized through release `v0.4.0`
+(`e626a8dd8f8d8b277b9507cfd5ac74d0e67020f3`). Earlier selective imports are
 consolidated into this baseline; the terminal backend and other local
 adaptations remain in this tree.
 
@@ -70,7 +70,13 @@ local source-publication fence, `ProjectRoot` projection and `RetireListCell`
 ownership model. The existing model already preserves keyed row owners when
 indices change, covering upstream #740 without a second item-memo mechanism.
 Built-in List scrollbars remain independent decoration roots and stay above
-projected rows across rebinds and theme replacement.
+projected rows across rebinds and theme replacement. Automatic lists track the
+platform's reported `focus-within` with hover. A parent-viewport scroll to an
+offset and a scroll back in the same commit end on their sum: the scroll to
+goes last, and an animated one follows the scroll back so that it starts from
+the compensated offset. Platforms report focus whatever a view tracks, the
+Maka-local GPUI state refresh and terminal reports included, and a flush
+counts module loads still in flight.
 
 ## Retained local capabilities
 
@@ -104,10 +110,10 @@ policy and custom binding precedence remain local contracts.
 The AppKit `AppView::load_with_config`, `run_app_with_config`,
 `with_running_view`, `AppView::choose_directory`, `AppOptions::min_size` and
 `AppOptions::frame_autosave_name` let Maka's desktop shell run its own
-`EngineConfig`, its default on macOS. An accessibility press and scoped and
-fallback key bindings complete that path; AppKit input has no `tokens`. The
-standalone runner handles the quit Apple Event itself, ending its loop without
-the cancel that would veto a logout, restart or shutdown.
+`EngineConfig`, its default on macOS. Scoped and fallback key bindings complete
+that path; AppKit input has no `tokens`. The standalone runner handles the quit
+Apple Event itself, ending its loop without the cancel that would veto a
+logout, restart or shutdown.
 
 The Windows `AppSource::Config` and `AppView::load_with_config` run Maka's
 Host-provided engine configuration. `run_app` takes an activation observer;
@@ -119,8 +125,8 @@ including cancellation on focus loss and window deactivation.
 Host-provided GPUI paste and terminal bracketed paste follow the focused
 editor's existing `onPaste` and `pasteBehavior` policy. A complete pasted path
 list becomes files only for inputs listening for file drops, and is delivered
-once without inserting path text. GPUI external file dragging remains a local
-adaptation submitted as upstream #591; paused input installs no drop layer.
+once without inserting path text. Paused input installs no GPUI file drop
+layer, and stopping an app clears its drag destination.
 `AppView::pressable_bounds` lets Maka's real-Host tests locate accessible
 pressable views through the production window tree.
 
@@ -130,6 +136,8 @@ retention handle remains a prop change even when numeric columns match.
 `nativeModule` within one VM. Layout observation uses allocation lifetimes
 independent of reusable slab indices. RichEditor geometry remains owned by
 its thread and retires its subscription before dropping the payload.
+Component events raised by native input reach JS before the next queued input,
+so a drag's last move is answered before its release is handled.
 
 Workbench modules use `importModule` and `EngineConfig.chunk_loader` through
 the existing chunk runtime. `ChunkSource` provides the module asset directory
@@ -142,7 +150,9 @@ loading use the same mapping. Windows UNC adaptation proves native file
 identity before changing Rolldown entry spelling.
 
 Android preserves local mount opcodes 34 (retire), 35 (project), 36 (component
-slots) and 37 (Shader), separately from accessibility role indices. Maka keeps
+slots) and 37 (Shader), followed by upstream's shader transition, shader input
+and navigation shader at 38–40, separately from accessibility role indices. The
+local `ScrollIntent` event shifts the later Android event codes by one. Maka keeps
 its version-30 GPU dependencies and GPUI patches for input admission and
 cancellation. The vendored GPUI owning workspaces reuse those containing-Maka
 patches. Live code blocks retain their language header and actions; shared

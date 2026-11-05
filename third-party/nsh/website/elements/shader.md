@@ -193,6 +193,93 @@ the view's box the way a background does, inside its rounded corners (`borderRad
 
 Give the shader a size through its styles (width / height, `flex`, an aspect ratio) or let its children size it.
 
+## Effects, transitions and the screen
+
+A shader can also draw what other views draw. Its WGSL then reads pictures through four functions, each taking a
+point `uv` of its box and returning a straight sRGB color with alpha, transparent outside the picture:
+
+| Function | Reads |
+|---|---|
+| `sample_content(uv)` | an effect's children, or the whole surface for a screen effect |
+| `sample_backdrop(uv)` | what is behind the view (any shader may read it) |
+| `sample_from(uv)` | a transition's side it leaves |
+| `sample_to(uv)` | a transition's side it comes to |
+
+`nsh.progress` is an effect's `progress` or how far a transition is (0 to 1), and `nsh.overflow` how far beyond the
+box the shader draws, in points.
+
+**`ShaderEffect`** draws its children through the shader: they keep their presses, focus and accessibility, and what
+shows is the shader's result. `progress` is a number or an animated value, which moves the effect natively.
+`maxSampleOffset` lets the shader draw that many points beyond the box (a glow, a blur's edge); its `uv` then goes
+below 0 and above 1. Without `source` the children draw as they are.
+
+```tsx
+import { createAnimatedValue, ShaderEffect, Text } from "nsh";
+
+const WIPE_OUT = `
+fn shade(uv: vec2f) -> vec4f {
+  let c = sample_content(uv);
+  let edge = smoothstep(nsh.progress - 0.05, nsh.progress + 0.05, uv.x);
+  return vec4f(c.rgb, c.a * edge);
+}`;
+
+const gone = createAnimatedValue(0);
+
+<ShaderEffect source={WIPE_OUT} progress={gone} style={{ padding: 16 }}>
+  <Text>Wiped away as `gone` goes to 1</Text>
+</ShaderEffect>
+```
+
+**`ShaderTransition`** changes its children through the shader when `value` (a string, number or boolean) changes,
+not for its first value: `sample_from` is a picture of what they drew before, `sample_to` what they draw now, and
+`nsh.progress` goes from 0 to 1 over `duration` milliseconds (300). Without `source` it runs `fallback`: `"fade"` (a
+cross-fade, the default) or `"none"`.
+
+```tsx
+<ShaderTransition source={WIPE} value={card()} duration={450}>
+  <Card name={card()} />
+</ShaderTransition>
+```
+
+**`ScreenEffect`** and **`ScreenTransition`** do the same for the whole surface (its pages, dialogs and overlays). They
+take no space and have no children; put them anywhere in the app. The last screen effect mounted with a `source`
+draws.
+
+Pages and dialogs come and go through a shader with **`transitionShader`**: `{ source, uniforms, duration }` on a
+`NavPage` or a `Dialog` (Rust: `.transition_shader(TransitionShader::new(program))` on `nav_page()` or `dialog()`).
+When the page is pushed or popped, or the dialog shown or closed, the lower side (the page under it, the app without
+the dialog) is `sample_from` and the upper `sample_to`; `nsh.progress` goes from 0 to 1 as the page or the dialog
+comes and from 1 to 0 as it goes, so one shader draws both ways.
+
+```rust tabs
+use std::time::Duration;
+
+use nsh_base::nav_page;
+use nsh_core::{prelude::*, shader::{Shader, TransitionShader}};
+
+fn details() -> impl IntoElement {
+    let ripple = Shader::compile(RIPPLE).expect("a valid shader");
+    nav_page()
+        .title("Details")
+        .transition_shader(TransitionShader::new(ripple).duration(Duration::from_millis(500)))
+        .child(text("…"))
+}
+```
+
+```tsx tabs
+<NavPage title="Details" transitionShader={{ source: RIPPLE, duration: 500 }}>…</NavPage>
+```
+
+The shader takes the place of the page's or the dialog's `animation`, whatever it is (`"none"` too). The `animation`
+runs on a device without a GPU, when the user asks for less motion (Reduce Motion, Remove animations), and for a
+source that does not compile; with `"none"` the change then shows at once. A push, pop, show or close that starts
+while one runs completes that one first: its page or dialog arrives or leaves, its `onShow` or `onDismiss` fires, and
+the new change starts from there.
+
+The platforms take the pictures when what they show changes, at most once per display frame. A picture is drawn by
+the platform's own renderer, so what it cannot draw into a picture (a video, a web page, another app's view) shows
+transparent in it.
+
 ## Props
 
 A shader takes the props of a [view](./view.md) plus:
@@ -202,6 +289,27 @@ A shader takes the props of a [view](./view.md) plus:
 | `source` | `.source(program)` | `string` | The WGSL source defining `fn shade(uv: vec2f) -> vec4f`. Rust compiles it with `Shader::compile(source)`. |
 | `uniforms` | `.uniform(name, value)` | `Record<string, ShaderUniform>` | The values of the members of `struct Uniforms`, by name: numbers, colors, animated values and lists of them. |
 | `paused` | `.paused(bool)` | `boolean` | Stops the clock of `nsh.time`. Default `false`. |
+
+`ShaderEffect` and `ScreenEffect` take those (`source` optional) plus:
+
+| Prop | Rust | Type | Description |
+|---|---|---|---|
+| `progress` | `.progress(n)`, `.animated_progress(&value)` | `number \| AnimatedNode` | `nsh.progress`. Default 0. |
+| `maxSampleOffset` | `.max_sample_offset(px(n))` | `number` | How far beyond the box, in points, the shader draws and its pictures reach (`ShaderEffect` and `ShaderTransition`). Default 0. |
+
+`ShaderTransition` and `ScreenTransition` take `source`, `uniforms` and `paused` plus:
+
+| Prop | Rust | Type | Description |
+|---|---|---|---|
+| `value` | `.value(key)` | `string \| number \| boolean` | When it changes, the transition runs (not for the first value). |
+| `duration` | `.duration(Duration)` | `number` | How long it runs, in milliseconds. Default 300. |
+| `fallback` | `.fallback(TransitionFallback)` | `"fade" \| "none"` | What runs without a `source`. Default `"fade"`. |
+
+`NavPage` and `Dialog` take:
+
+| Prop | Rust | Type | Description |
+|---|---|---|---|
+| `transitionShader` | `.transition_shader(TransitionShader::new(program))`, `.uniform(name, value)`, `.duration(Duration)` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | The shader the page or dialog comes and goes through in place of its `animation`. `duration` in milliseconds, 350 by default. |
 
 ## Errors
 
@@ -250,4 +358,5 @@ share it: it is cheap to clone. The program may be bound, `.source(move || …)`
 | `.uniform(name, value)` | Sets a member of `struct Uniforms`: a number, a `Color` or `Hsla`, `[f32; 2]` / `[f32; 3]` / `[f32; 4]`, or a `Vec<UniformValue>`. A bound value (`move \|\| …`) sets it again when it changes; an animated value (`&wave`: a number, or colors for a `vec3f` / `vec4f`) moves it on every frame, natively. |
 | `.paused(bool)` | Stops the clock of `nsh.time`; bindable. |
 
-Children are added with `.child(..)`, styles with the usual typed methods.
+Children are added with `.child(..)`, styles with the usual typed methods. `shader_effect()`, `shader_transition()`,
+`screen_effect()` and `screen_transition()` make the other elements, with the methods in the tables above.

@@ -3,7 +3,7 @@
 import type { JSX, ScrollProps } from "nsh";
 import { computed, Image, Scroll, signal, Text, View } from "nsh";
 import { platform, setColorScheme, windowSize } from "nsh";
-import { alpha, Appear, colors, hovered, Icon, type IconName, isDark, Press, radius, Tip } from "../nsh-gallery-ui";
+import { alpha, Appear, colors, focusedSection, hovered, Icon, type IconName, isDark, Press, radius, Tip } from "../nsh-gallery-ui";
 import { nav, shownDemo } from "./nav";
 import logoDark from "./logo-dark.svg";
 import logoLight from "./logo-light.svg";
@@ -193,7 +193,8 @@ export function DemoPage(props: {
     );
   const wide = desktop();
   // Read in the layout below: it is rebuilt only when the count changes.
-  const columns = computed(() => columnsFor(360, props.columns ?? 2));
+  // One section shown (`focusedSection`) takes the pane's width.
+  const columns = computed(() => (focusedSection() == null ? columnsFor(360, props.columns ?? 2) : 1));
   return (
     <Scroll
       style={{ flex: 1, backgroundColor: colors.background }}

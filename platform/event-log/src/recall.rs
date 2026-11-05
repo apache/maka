@@ -531,12 +531,12 @@ fn context_on_handle(
     let exclusion = exclude.as_ref();
     let exclusion_through = exclusion.map(|x| number(x.covered_through)).transpose()?;
     let query = format!(
-        "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d
+        "SELECT d.order_sequence,d.order_item,d.source_sequence,d.item_index,d.message_id FROM transcript_directory d
          CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
-         AND d.session_id=?3 AND d.message_id=?4 AND d.source_sequence<=?5
+         AND d.session_id=?3 AND d.message_id=?4 AND d.source_sequence<=?5 AND d.order_sequence<=?5
          AND NOT(d.session_id=COALESCE(?6,'') AND d.turn_id=COALESCE(?7,'') AND d.source_sequence>COALESCE(?8,0))"
     );
-    let anchor: (i64, i64, String) = db
+    let anchor: (i64, i64, i64, i64, String) = db
         .prepare_cached(&query)?
         .query_row(
             params![
@@ -549,24 +549,33 @@ fn context_on_handle(
                 exclusion.map(|x| x.turn_id.as_str()),
                 exclusion_through,
             ],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
         )
         .optional()?
         .ok_or_else(|| invalid("history context anchor is unavailable"))?;
-    let mut selected = BTreeMap::from([((anchor.0, anchor.1), anchor.2)]);
+    let anchor_order = (anchor.0, anchor.1);
+    let mut selected = BTreeMap::from([((anchor.2, anchor.3), (anchor_order, anchor.4))]);
     let mut more = [false, false];
     for (side, count) in [before, after].into_iter().enumerate() {
         check(cancellation)?;
         let order = if side == 0 { "DESC" } else { "ASC" };
         let comparison = if side == 0 { "<" } else { ">" };
         let mut query = format!(
-            "SELECT d.source_sequence,d.item_index,d.message_id FROM transcript_directory d INDEXED BY transcript_context_eligible
+            "SELECT d.order_sequence,d.order_item,d.source_sequence,d.item_index,d.message_id FROM transcript_directory d INDEXED BY transcript_context_eligible
              CROSS JOIN session_control s ON s.id=d.session_id {VISIBLE}
-             AND d.session_id=?3 AND d.source_sequence<=?4
-             AND (d.source_sequence,d.item_index){comparison}(?5,?6)
+             AND d.session_id=?3 AND d.source_sequence<=?4 AND d.order_sequence<=?4
+             AND (d.order_sequence,d.order_item){comparison}(?5,?6)
              AND NOT(d.session_id=COALESCE(?7,'') AND d.turn_id=COALESCE(?8,'') AND d.source_sequence>COALESCE(?9,0))
              AND d.context_eligible=1
-             ORDER BY d.source_sequence {order},d.item_index {order}"
+             ORDER BY d.order_sequence {order},d.order_item {order}"
         );
         // Select eligible positions, including one lookahead, before rendering bodies.
         write!(
@@ -581,8 +590,8 @@ fn context_on_handle(
             prefix,
             session,
             through_sql,
-            anchor.0,
-            anchor.1,
+            anchor_order.0,
+            anchor_order.1,
             exclusion.map(|x| x.session_id.as_str()),
             exclusion.map(|x| x.turn_id.as_str()),
             exclusion_through,
@@ -595,8 +604,11 @@ fn context_on_handle(
                 break;
             }
             selected.insert(
-                (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?),
-                row.get::<_, String>(2)?,
+                (row.get::<_, i64>(2)?, row.get::<_, i64>(3)?),
+                (
+                    (row.get::<_, i64>(0)?, row.get::<_, i64>(1)?),
+                    row.get::<_, String>(4)?,
+                ),
             );
             seen += 1;
         }
@@ -614,7 +626,7 @@ fn context_on_handle(
                 number(row.position.source_sequence)?,
                 number(row.position.item_index)?,
             );
-            let Some(message_id) = selected.get(&key) else {
+            let Some((order_key, message_id)) = selected.get(&key) else {
                 continue;
             };
             if message_id != &row.message.id {
@@ -625,14 +637,14 @@ fn context_on_handle(
             let mut statement = db.prepare_cached(&document_query)?;
             let mut rows = statement.query(params![session, key.0, key.1])?;
             let found = rows.next()?.ok_or(StoreError::TranscriptConflict)?;
-            rendered.insert(key, hit(found, body, attachments, through)?);
+            rendered.insert(*order_key, hit(found, body, attachments, through)?);
         }
     }
     if rendered.len() != selected.len() {
         return Err(StoreError::TranscriptConflict);
     }
     let anchor = rendered
-        .remove(&(anchor.0, anchor.1))
+        .remove(&anchor_order)
         .ok_or(StoreError::TranscriptConflict)?;
     check(cancellation)?;
     Ok(SearchContext {

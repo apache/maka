@@ -50,7 +50,10 @@ test('internal links reach a built page and anchor', () => {
   for (const page of pages) {
     const html = readFileSync(page, 'utf8');
     const from = page.slice(dist.length);
-    for (const [, raw] of html.matchAll(/<a\s[^>]*?href="([^"]*)"/g)) {
+    for (const [tag, raw] of html.matchAll(/<a\s[^>]*?href="([^"]*)"[^>]*>/g)) {
+      // The version menu's links may name a page another version lacks:
+      // the menu falls back to that version's home (`Nav.astro`).
+      if (tag.includes('data-version-link')) continue;
       const href = decode(raw);
       if (/^[a-z][a-z\d+.-]*:/i.test(href) || href.startsWith('//')) continue;
       if (href.startsWith('#')) {

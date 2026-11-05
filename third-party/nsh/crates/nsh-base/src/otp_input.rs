@@ -26,7 +26,9 @@
 //! - **The cells**: the one that takes the next digit (`min(len, length -
 //!   1)`) is `focus:` while the field has the focus, with a blinking caret
 //!   while it is empty (`gpui-base`'s `BlinkCursor`: 500 ms, held for 300 ms
-//!   after an edit; steady with reduced motion).
+//!   after an edit; steady with reduced motion). A cell that holds a digit
+//!   has the attribute `data-filled` (`data-filled:` classes, and
+//!   `group-data-filled:` inside a `group` cell), masked or not.
 
 use std::time::Duration;
 
@@ -78,7 +80,8 @@ pub struct OtpInputProps {
     pub accessibility_label: Prop<Option<SharedString>>,
     /// The Tailwind classes of each cell: its size, border and text.
     /// `focus:` styles the cell that takes the next digit while the input
-    /// has the focus, `disabled:` follows the input.
+    /// has the focus, `data-filled:` the cells that hold a digit (masked or
+    /// not), `disabled:` follows the input.
     pub cell_class: Prop<Option<SharedString>>,
     /// The style of each cell, over `cellClass`: its text styles too
     /// (`color`, `fontSize`), which its digit inherits.
@@ -238,8 +241,9 @@ impl Blink {
 /// (`value` and `onChange`) or its own (`defaultValue`); `onComplete` tells
 /// when the user filled it. Its parts are the cells (`cellClass` /
 /// `cellStyle`, `focus:` on the one that takes the next digit while
-/// focused), the groups they are split into (`groups`, `groupClass` /
-/// `groupStyle`) and the caret (`caretClass` / `caretStyle`); the app's
+/// focused, `data-filled:` on those that hold a digit), the groups they
+/// are split into (`groups`, `groupClass` / `groupStyle`) and the caret
+/// (`caretClass` / `caretStyle`); the app's
 /// `class` and `style` lay out and style the input (`flex-row gap-4` for
 /// its groups in a row). A press anywhere on it focuses it.
 #[component(methods = OtpInputApi)]
@@ -439,9 +443,9 @@ impl Cells {
             .min(length.saturating_sub(1))
     }
 
-    /// Cell `ix`: its digit (a bullet while masked), or the caret while it
-    /// is the empty cell that takes the next digit and the input has the
-    /// focus.
+    /// Cell `ix`: its digit (a bullet while masked) and `data-filled`, or
+    /// the caret while it is the empty cell that takes the next digit and
+    /// the input has the focus.
     fn cell(self, ix: usize) -> AnyElement {
         let digit = move || self.code.get().chars().nth(ix);
         view()
@@ -449,6 +453,7 @@ impl Cells {
                 self.focused.get() && !self.disabled.get() && self.active() == ix
             })
             .project_disabled(self.disabled)
+            .project_data("filled", move || digit().is_some())
             .app_class(self.class)
             .inline_style(move || self.style.get())
             .child(

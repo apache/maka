@@ -97,6 +97,7 @@ typed style methods and `.child(..)` for their content.
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No presses and no press feedback; `disabled:` styles apply, and screen readers say it is dimmed. |
 | `checkedStyle` | `.checked_style(\|s\| ..)` | `StyleProp<ViewStyle>` | none | The radio's style while checked and not disabled, as `checked:` classes. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | none | What screen readers say: the option, when its children have no text that says it. |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | none | How far outside its bounds presses still count, in points: one number for every side, or the sides named. As a view's `hitSlop`. |
 | `children` | `.child(..)` | `JSX.Element` | none | The app's indicator and label, which screen readers say. |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The radio itself: the row around the indicator and the label. |
 | `activeStyle`, `hoverStyle`, `focusStyle`, `disabledStyle` | `.active(\|s\| ..)`, `.hover(..)`, `.focus(..)`, `.disabled_style(..)` | `StyleProp<ViewStyle>` | none | The radio's style while pressed, hovered, focused or disabled, as the `<state>:` classes. |
@@ -147,6 +148,24 @@ A disabled radio takes no presses, and screen readers announce it as dimmed. Its
 </Radio>
 ```
 
+## A small target with hitSlop
+
+A radio with no label beside it (a dot in a table's row) can be smaller than a finger. `hitSlop` makes presses that land
+near it count, in points past each side, without changing its layout or its look: one number for every side, or the
+sides named (`{ top: 8, bottom: 8 }`), as a [view's `hitSlop`](./index.md#presses-and-feedback) takes them.
+
+```tsx
+<Radio
+  checked={plan() === "team"}
+  hitSlop={12}
+  accessibilityLabel="Team"
+  onChange={() => plan.set("team")}
+  class="group size-5 items-center justify-center rounded-full border-2 border-border group-checked:border-primary"
+>
+  <View class="size-2.5 rounded-full group-checked:bg-primary" />
+</Radio>
+```
+
 ## Accessibility
 
 - A radio is one element for screen readers, with the role `"radio"` and its state: checked or not, and selected while
@@ -174,7 +193,8 @@ On macOS and the web, where Tab reaches the views that take presses, a `RadioGro
 | Space | Checks the focused radio. |
 
 The arrow keys skip disabled radios; the radio they move to asks to be checked with `onChange`, and the app checks it.
-`focus:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
+In a right-to-left layout Left and Right trade places: Left moves to the next radio and Right to the previous; Up and
+Down keep theirs. `focus:` styles show where the focus is. A `Radio` outside a `RadioGroup` is a stop of its own, which Tab reaches
 and Space and Return check.
 
 ## Platform notes

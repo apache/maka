@@ -30,7 +30,7 @@
 //! bundles and hot updates.
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs,
     net::SocketAddr,
@@ -49,7 +49,9 @@ use crate::{
     ui,
 };
 
+mod compress;
 mod prune;
+mod split;
 
 /// The packaged page; `{{…}}` are filled in by [`page`].
 const PAGE: &str = include_str!("web/index.html");
@@ -101,6 +103,7 @@ pub(crate) fn package(
         fs::remove_dir_all(&dir).with_context(|| format!("remove {}", dir.display()))?;
     }
     let site = Site::new(&dir)?;
+    let chunk_sides;
     let js = fs::read_to_string(&runtime.js)
         .with_context(|| format!("read {}", runtime.js.display()))?;
     let browser_path =
@@ -113,23 +116,50 @@ pub(crate) fn package(
     // shows (the app's code is minified as it is bundled).
     let js = nsh_bundler::minify_module("nsh.js", &js).map_err(anyhow::Error::msg)?;
     let js = site.add("nsh.js", js.as_bytes())?;
-    // Linked for the app: the parts of `nsh/base` and the standard
-    // modules it does not use are left out. An app with Rust components of
-    // its own has a runtime built for it.
+    // Linked for the app: the parts of `nsh/base`, the standard modules
+    // and the app's own UI sets it does not use are left out.
     let linkable =
         fs::read(&runtime.wasm).with_context(|| format!("read {}", runtime.wasm.display()))?;
-    let linked = match crate::rust_app::current() {
-        Some(_) => linkable,
-        None => {
-            let gates = linked_gates(built.native_use.as_ref());
-            let exports = prune::exports(&linkable)?;
-            let keep: Vec<&str> = exports
-                .iter()
-                .map(String::as_str)
-                .filter(|name| !is_gate(name) || gates.iter().any(|g| g == name))
-                .collect();
-            prune::prune(&linkable, &keep)?
+    // The gates the entry needs are linked into `nsh.wasm`; each other one
+    // an app's chunks use is a side module of its own, which the page
+    // loads before the first chunk that needs it runs (`chunkSides`), after
+    // the side modules of the code it shares with other gates (`sides`).
+    let mut sides = serde_json::Map::new();
+    let mut published = BTreeSet::new();
+    // An app with Rust components of its own has a runtime built for it,
+    // linkable as nsh's own, with a gate per UI set (`nsh_ui_set_*`).
+    let (linked, has_math) = {
+        let plan = GatePlan::of(built);
+        let exports = prune::exports(&linkable)?;
+        let keep: Vec<&str> = exports
+            .iter()
+            .map(String::as_str)
+            .filter(|name| !is_gate(name) || plan.main.iter().any(|g| g == name))
+            .collect();
+        let lazy: Vec<&str> = plan
+            .lazy()
+            .into_iter()
+            .filter(|gate| exports.iter().any(|e| e == gate))
+            .collect();
+        let split = link(&linkable, runtime.glue.is_some(), &keep, &lazy)?;
+        for side in &split.sides {
+            let file = side_file_name(&side.gates);
+            let url = site.add(&format!("{file}.wasm"), &side.bytes)?;
+            let mut entry = serde_json::json!({ "url": url, "needs": side.needs });
+            if let Some(gate) = &side.gate {
+                entry["gate"] = gate.as_str().into();
+                if gate == MATH_GATE {
+                    entry["onDemand"] = true.into();
+                }
+                published.insert(gate.clone());
+            }
+            sides.insert(side.name.clone(), entry);
         }
+        chunk_sides = plan.chunk_sides(&published);
+        // A runtime published whole has the typesetter in its main module.
+        let has_math = published.contains(MATH_GATE)
+            || (split.sides.is_empty() && exports.iter().any(|e| e == MATH_GATE));
+        (split.main, has_math)
     };
     let wasm = site.add("nsh.wasm", &linked)?;
     // What the runtime fetches when it first needs it: the syntaxes it
@@ -140,6 +170,12 @@ pub(crate) fn package(
         data.insert(
             "syntaxes".into(),
             site.add(runtime::SYNTAXES, &bytes)?.into(),
+        );
+    }
+    if has_math {
+        data.insert(
+            "math".into(),
+            site.add(MATH_FONTS_FILE, nsh_base::MATH_FONTS)?.into(),
         );
     }
     // The wasm-bindgen glue of a runtime whose crates call JS through
@@ -205,6 +241,9 @@ pub(crate) fn package(
         "fonts": fonts,
         "chunkFonts": chunk_fonts,
         "chunks": chunks,
+        "sides": sides,
+        "chunkSides": chunk_sides,
+        "nativeExports": native_exports(built.native_use.as_ref()),
         "entryChunks": built.entry_imports,
         "host": host,
     });
@@ -231,6 +270,8 @@ pub(crate) fn package(
         .as_deref(),
     });
     fs::write(dir.join("index.html"), html)?;
+    // What static hosts send browsers that accept it (`.br`, `.gz`).
+    compress::precompress(&dir)?;
     step.done(format!(
         "packaged {}{}",
         ui::path(&dir),
@@ -242,23 +283,193 @@ pub(crate) fn package(
     Ok(())
 }
 
+const TEXT_VIEW_GATE: &str = "nsh_part_text_view";
+/// The gate of `TextView`'s formula typesetter; no chunk names it.
+const MATH_GATE: &str = "nsh_feature_math";
+/// The KaTeX fonts of the typesetter, which the page fetches with its code.
+const MATH_FONTS_FILE: &str = "nsh-math.bin";
+
+/// The modules published for an app from its linkable runtime: the main
+/// module with `keep` and side modules for `lazy` ([`split::split`]). A
+/// runtime wasm-bindgen ran on (`bindgen`) is published whole, every gate
+/// in it: wasm-bindgen rewrites the module and keeps the `linking` and
+/// `reloc.*` sections of the one it read, which no longer describe it.
+pub(crate) fn link(
+    linkable: &[u8],
+    bindgen: bool,
+    keep: &[&str],
+    lazy: &[&str],
+) -> anyhow::Result<prune::split::Split> {
+    if bindgen {
+        return Ok(prune::split::Split {
+            main: prune::unlinked(linkable)?,
+            sides: Vec::new(),
+        });
+    }
+    split::split(linkable, keep, lazy)
+}
+
 /// Whether `name` is the export of a part of `nsh/base`, of a standard
-/// module or of a feature (shaders), which a runtime linked for an app
-/// keeps only when it uses them.
+/// module, of a feature (shaders) or of one of the app's own UI sets
+/// ([`ui_set_gate`]), which a runtime linked for an app keeps only when it
+/// uses them.
 fn is_gate(name: &str) -> bool {
-    ["nsh_part_", "nsh_std_", "nsh_feature_"]
+    ["nsh_part_", "nsh_std_", "nsh_feature_", UI_SET_GATE]
         .iter()
         .any(|prefix| name.starts_with(prefix))
+}
+
+/// What the app imports by name from each native module: the browser host
+/// declares these names at start (`nativeExports`), so a chunk importing a
+/// name a side module registers later still links. More than the app
+/// gets is harmless: a name nothing registers stays `undefined`.
+fn native_exports(uses: Option<&nsh_bundler::NativeUse>) -> serde_json::Value {
+    let mut out = serde_json::Map::new();
+    for (module, imported) in uses.map(|u| &u.imports).into_iter().flatten() {
+        if let nsh_bundler::Imported::Names(names) = imported
+            && !names.is_empty()
+        {
+            out.insert(module.clone(), names.iter().cloned().collect());
+        }
+    }
+    out.into()
+}
+
+/// Which gates ([`is_gate`]) a runtime published for an app links into its
+/// main module and which each chunk loads as side modules.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct GatePlan {
+    /// Those of the entry and the chunks it imports statically: called
+    /// before the app starts.
+    main: Vec<String>,
+    /// By chunk id, the gates its own code needs that `main` lacks (a
+    /// chunk's static imports list theirs: the page prepares them too).
+    chunks: BTreeMap<String, Vec<String>>,
+}
+
+impl GatePlan {
+    /// The plan for `built`: by what each chunk uses of the native
+    /// modules; everything in the main module when that is not known for
+    /// every chunk (a development or Rust app's build).
+    fn of(built: &Built) -> Self {
+        let per_chunk = built.entry_native_use.as_ref().and_then(|entry| {
+            let chunks: Option<Vec<(&str, &nsh_bundler::NativeUse)>> = built
+                .chunks
+                .iter()
+                .map(|c| c.native_use.as_ref().map(|u| (c.id.as_str(), u)))
+                .collect();
+            Some((entry, chunks?))
+        });
+        let Some((entry, chunks)) = per_chunk else {
+            return Self {
+                main: linked_gates(built.native_use.as_ref()),
+                chunks: BTreeMap::new(),
+            };
+        };
+        let mut first = entry.clone();
+        for (id, uses) in &chunks {
+            if built.entry_imports.iter().any(|e| e == id) {
+                first.merge(uses);
+            }
+        }
+        let main = linked_gates(Some(&first));
+        let mut plan = BTreeMap::new();
+        for (id, uses) in chunks {
+            if built.entry_imports.iter().any(|e| e == id) {
+                continue;
+            }
+            let gates: Vec<String> = linked_gates(Some(uses))
+                .into_iter()
+                .filter(|g| !main.contains(g))
+                .collect();
+            if !gates.is_empty() {
+                plan.insert(id.to_owned(), gates);
+            }
+        }
+        Self { main, chunks: plan }
+    }
+
+    /// Every gate some chunk loads later, each once, sorted.
+    fn lazy(&self) -> Vec<&str> {
+        let mut set: BTreeSet<&str> = self.chunks.values().flatten().map(String::as_str).collect();
+        // `TextView`'s formulas: asked for by the first one, wherever the
+        // view is.
+        if set.contains(TEXT_VIEW_GATE) || self.main.iter().any(|g| g == TEXT_VIEW_GATE) {
+            set.insert(MATH_GATE);
+        }
+        set.into_iter().collect()
+    }
+
+    /// The page's map, chunk id -> the side modules (named by their gates)
+    /// it loads, of those `published`; a gate without a side module (the
+    /// main module has it) is left out.
+    fn chunk_sides(
+        &self,
+        published: &BTreeSet<String>,
+    ) -> serde_json::Map<String, serde_json::Value> {
+        let mut map = serde_json::Map::new();
+        for (id, gates) in &self.chunks {
+            let list: Vec<serde_json::Value> = gates
+                .iter()
+                .filter(|gate| published.contains(*gate))
+                .map(|gate| gate.as_str().into())
+                .collect();
+            if !list.is_empty() {
+                map.insert(id.clone(), list.into());
+            }
+        }
+        map
+    }
 }
 
 /// The gates ([`is_gate`]) a runtime linked for an app that uses `uses` of
 /// the native modules keeps: `nsh/base`'s core, the part of each other
 /// name it imports from `nsh/base` (`nsh/base/plot` is the plot part's),
 /// `zlib`'s operations when it imports `zlib`, and shaders when it may
-/// make a shader view (`NativeUse::shader`, or an import of `Shader`). What the bundler cannot
-/// tell apart (no analysis, `import * as`, an `import()` of a computed
-/// specifier) keeps everything, so a runtime never lacks what an app needs.
+/// make a shader view (`NativeUse::shader`, or an import of one of
+/// [`SHADER_EXPORTS`]). What the bundler cannot tell apart (no analysis,
+/// `import * as`, an `import()` of a computed specifier) keeps everything,
+/// so a runtime never lacks what an app needs.
+/// An app's own UI sets (`nsh.json` `"rust"`) keep the gate of each one it
+/// imports ([`ui_set_gate`]).
 pub(crate) fn linked_gates(uses: Option<&nsh_bundler::NativeUse>) -> Vec<String> {
+    linked_gates_of(uses, &app_set_specifiers())
+}
+
+/// The prefix of the gates of an app's own UI sets ([`ui_set_gate`]).
+/// Not `nsh_set_`: the runtime's `nsh_set_base_url` and `nsh_set_dark`
+/// would read as gates.
+const UI_SET_GATE: &str = "nsh_ui_set_";
+
+/// The export of the app's web runtime that registers the UI set imported
+/// as `specifier` (`#[native_module("app/charts")]`): `nsh_ui_set_app_charts`,
+/// every character but ASCII letters and digits written `_`. The generated
+/// runtime exports it (`rust_app.rs`, `nsh_platform_web::ui_set!`).
+pub(crate) fn ui_set_gate(specifier: &str) -> String {
+    let name: String = specifier
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    format!("{UI_SET_GATE}{name}")
+}
+
+/// The specifiers of the app's own UI sets: those the command serves
+/// beyond nsh's own.
+fn app_set_specifiers() -> Vec<String> {
+    let own: Vec<&str> = crate::own_sets()
+        .iter()
+        .filter_map(|r| r.specifier())
+        .collect();
+    crate::ui_sets()
+        .iter()
+        .map(|set| set.specifier.clone())
+        .filter(|s| !own.contains(&s.as_str()) && !s.starts_with("nsh/"))
+        .collect()
+}
+
+/// [`linked_gates`] for an app whose own UI sets are `app_sets`: each one
+/// it imports keeps its gate, and keeping everything keeps all of them.
+fn linked_gates_of(uses: Option<&nsh_bundler::NativeUse>, app_sets: &[String]) -> Vec<String> {
     let all = || {
         let mut gates: Vec<String> = nsh_base::parts::ALL
             .iter()
@@ -266,6 +477,7 @@ pub(crate) fn linked_gates(uses: Option<&nsh_bundler::NativeUse>) -> Vec<String>
             .collect();
         gates.push("nsh_std_zlib".into());
         gates.push("nsh_feature_shader".into());
+        gates.extend(app_sets.iter().map(|s| ui_set_gate(s)));
         gates
     };
     let Some(uses) = uses else { return all() };
@@ -284,11 +496,11 @@ pub(crate) fn linked_gates(uses: Option<&nsh_bundler::NativeUse>) -> Vec<String>
     for (module, imported) in &uses.imports {
         match module.as_str() {
             "zlib" => add("nsh_std_zlib".into()),
-            // Shaders are `nsh`'s `Shader` element.
+            // Shaders are `nsh`'s shader elements.
             "nsh" => match imported {
                 nsh_bundler::Imported::All => add("nsh_feature_shader".into()),
                 nsh_bundler::Imported::Names(names) => {
-                    if names.iter().any(|n| n == "Shader") {
+                    if names.iter().any(|n| SHADER_EXPORTS.contains(&n.as_str())) {
                         add("nsh_feature_shader".into());
                     }
                 }
@@ -304,11 +516,22 @@ pub(crate) fn linked_gates(uses: Option<&nsh_bundler::NativeUse>) -> Vec<String>
                     }
                 }
             },
+            module if app_sets.iter().any(|s| s == module) => add(ui_set_gate(module)),
             _ => {}
         }
     }
     gates
 }
+
+/// `nsh`'s exports whose views a shader draws: an import of one keeps the
+/// shader compiler.
+const SHADER_EXPORTS: &[&str] = &[
+    "Shader",
+    "ShaderEffect",
+    "ShaderTransition",
+    "ScreenEffect",
+    "ScreenTransition",
+];
 
 /// The part of `nsh/base` beyond its core that exports `name`.
 fn part_of(name: &str) -> Option<&'static str> {
@@ -559,6 +782,7 @@ pub(crate) fn dev_host(runtime: &WebRuntime, rust: bool) -> anyhow::Result<(Stri
     if let Some(syntaxes) = syntaxes {
         files.push((runtime::SYNTAXES.to_owned(), syntaxes));
     }
+    files.push((MATH_FONTS_FILE.to_owned(), nsh_base::MATH_FONTS.to_vec()));
     Ok((page, files))
 }
 
@@ -718,7 +942,10 @@ fn font_loads(
 /// page fetches them first.
 fn is_font(path: &str) -> bool {
     let ext = path.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase());
-    matches!(ext.as_deref(), Some("ttf" | "otf" | "ttc"))
+    matches!(
+        ext.as_deref(),
+        Some("ttf" | "otf" | "ttc" | "woff" | "woff2")
+    )
 }
 
 /// The app's icon at the sizes browsers use, by URL.
@@ -987,9 +1214,32 @@ fn dir_size(dir: &Path) -> usize {
         .flatten()
         .map(|entry| match entry.file_type() {
             Ok(t) if t.is_dir() => dir_size(&entry.path()),
+            _ if compress::is_copy(&entry.path()) => 0,
             _ => entry.metadata().map_or(0, |m| m.len() as usize),
         })
         .sum()
+}
+
+/// The file name (without extension) of a side module holding the code of
+/// `gates`: what it is for, in kebab case, without the gates' kind
+/// (`nsh_part_rich_editor` -> `nsh-rich-editor`); a module several gates
+/// share names them with `~` (`nsh-editor~text-view`, unreserved in URLs), the first three and
+/// how many more. An app's UI set keeps `app-`, so it never meets NSH's.
+fn side_file_name(gates: &[String]) -> String {
+    fn short(gate: &str) -> String {
+        let name = ["nsh_part_", "nsh_std_", "nsh_feature_"]
+            .iter()
+            .find_map(|p| gate.strip_prefix(p))
+            .map(str::to_owned)
+            .or_else(|| gate.strip_prefix("nsh_ui_set_").map(|s| format!("app_{s}")))
+            .unwrap_or_else(|| gate.strip_prefix("nsh_").unwrap_or(gate).to_owned());
+        name.replace('_', "-")
+    }
+    let mut parts: Vec<String> = gates.iter().take(3).map(|g| short(g)).collect();
+    if gates.len() > 3 {
+        parts.push(format!("{}-more", gates.len() - 3));
+    }
+    format!("nsh-{}", parts.join("~"))
 }
 
 #[cfg(test)]
@@ -1057,6 +1307,39 @@ mod tests {
     }
 
     #[test]
+    fn an_app_set_gate_is_named_by_its_specifier() {
+        assert_eq!(ui_set_gate("app/charts"), "nsh_ui_set_app_charts");
+        assert_eq!(ui_set_gate("@acme/ui-kit"), "nsh_ui_set__acme_ui_kit");
+        assert!(is_gate(&ui_set_gate("app/charts")));
+        // The runtime's own setters are not gates.
+        assert!(!is_gate("nsh_set_base_url"));
+        assert!(!is_gate("nsh_set_dark"));
+    }
+
+    #[test]
+    fn a_linked_runtime_keeps_the_app_sets_the_app_imports() {
+        let sets = ["app/charts".to_owned(), "app/storage".to_owned()];
+        let gates = linked_gates_of(
+            Some(&uses(&[
+                ("app/charts", Some(&["Chart"])),
+                ("nsh", Some(&["View"])),
+            ])),
+            &sets,
+        );
+        assert!(gates.contains(&"nsh_ui_set_app_charts".to_owned()));
+        assert!(!gates.contains(&"nsh_ui_set_app_storage".to_owned()));
+        // Not known: every set.
+        let all = linked_gates_of(None, &sets);
+        assert!(all.contains(&"nsh_ui_set_app_charts".to_owned()));
+        assert!(all.contains(&"nsh_ui_set_app_storage".to_owned()));
+        let mut computed = nsh_bundler::NativeUse::default();
+        computed.computed_import = true;
+        assert!(
+            linked_gates_of(Some(&computed), &sets).contains(&"nsh_ui_set_app_storage".to_owned())
+        );
+    }
+
+    #[test]
     fn a_linked_runtime_keeps_the_parts_and_modules_the_app_uses() {
         let gates = |imports: &[(&str, Option<&[&str]>)]| {
             let mut gates = linked_gates(Some(&uses(imports)));
@@ -1102,6 +1385,104 @@ mod tests {
         computed.computed_import = true;
         assert_eq!(linked_gates(Some(&computed)).len(), every);
         assert_eq!(linked_gates(None).len(), every);
+    }
+
+    #[test]
+    fn a_runtime_wasm_bindgen_ran_on_is_published_whole() {
+        // `run`, a function `() -> ()` that returns at once.
+        let mut module = b"\0asm\x01\0\0\0".to_vec();
+        module.extend([1, 4, 1, 0x60, 0, 0]);
+        module.extend([3, 2, 1, 0]);
+        module.extend([7, 7, 1, 3, b'r', b'u', b'n', 0, 0]);
+        module.extend([10, 4, 1, 2, 0, 0x0b]);
+        // The linker's sections of the module wasm-bindgen read, which it
+        // keeps: their symbol names function 7, which it removed.
+        let mut runtime = module.clone();
+        runtime.extend([0, 19, 7]);
+        runtime.extend(b"linking");
+        runtime.extend([2, 8, 8, 1, 0, 0, 7, 3, b'r', b'u', b'n']);
+        runtime.extend([0, 13, 10]);
+        runtime.extend(b"reloc.CODE");
+        runtime.extend([3, 0]);
+        let error = link(&runtime, false, &["run"], &[]).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "a symbol names function 7, which the web runtime does not have"
+        );
+        let published = link(&runtime, true, &["run"], &[]).unwrap();
+        assert_eq!(published.main, module);
+        assert!(published.sides.is_empty());
+    }
+
+    #[test]
+    fn chunks_load_the_gates_the_entry_lacks_as_side_modules() {
+        let chunk = |id: &str, uses: Option<nsh_bundler::NativeUse>| crate::build::BuiltChunk {
+            id: id.to_owned(),
+            code: String::new(),
+            bytecode: Vec::new(),
+            source_map: None,
+            native_use: uses,
+        };
+        let mut built = crate::build::rust_root();
+        built.rust_root = false;
+        built.entry_native_use = Some(uses(&[("nsh/base", Some(&["Button"]))]));
+        built.entry_imports = vec!["shared.js".into()];
+        built.chunks = vec![
+            chunk("shared.js", Some(uses(&[("zlib", Some(&["gzipSync"]))]))),
+            chunk(
+                "Editor.js",
+                Some(uses(&[("nsh/base", Some(&["Editor", "Button"]))])),
+            ),
+            chunk(
+                "Docs.js",
+                Some(uses(&[
+                    ("nsh/base", Some(&["Editor", "TextView"])),
+                    ("zlib", None),
+                ])),
+            ),
+            chunk("Plain.js", Some(uses(&[("nsh", Some(&["View"]))]))),
+        ];
+        let mut all = uses(&[]);
+        for c in &built.chunks {
+            all.merge(c.native_use.as_ref().unwrap());
+        }
+        built.native_use = Some(all);
+        let plan = GatePlan::of(&built);
+        assert_eq!(plan.main, ["nsh_part_core", "nsh_std_zlib"]);
+        assert_eq!(
+            plan.chunks,
+            BTreeMap::from([
+                ("Editor.js".to_owned(), vec!["nsh_part_editor".to_owned()]),
+                (
+                    "Docs.js".to_owned(),
+                    vec![
+                        "nsh_part_editor".to_owned(),
+                        "nsh_part_text_view".to_owned()
+                    ]
+                ),
+            ])
+        );
+        assert_eq!(
+            plan.lazy(),
+            ["nsh_feature_math", "nsh_part_editor", "nsh_part_text_view"]
+        );
+        // The page's map: only gates with a published side module.
+        let published = BTreeSet::from(["nsh_part_editor".to_owned()]);
+        assert_eq!(
+            serde_json::Value::Object(plan.chunk_sides(&published)),
+            serde_json::json!({
+                "Docs.js": ["nsh_part_editor"],
+                "Editor.js": ["nsh_part_editor"],
+            })
+        );
+
+        // A chunk whose use is unknown: everything is the entry's.
+        built.chunks.push(chunk("Unknown.js", None));
+        let plan = GatePlan::of(&built);
+        assert!(plan.chunks.is_empty());
+        assert_eq!(plan.main, linked_gates(built.native_use.as_ref()));
+        built.entry_native_use = None;
+        assert!(GatePlan::of(&built).chunks.is_empty());
     }
 
     #[test]
@@ -1199,7 +1580,10 @@ mod tests {
         let (plain, plain_files) = dev_host(&runtime, false).unwrap();
         assert!(plain.contains("const GLUE = null;"), "{plain}");
         let names = |files: &Files| files.iter().map(|(p, _)| p.clone()).collect::<Vec<_>>();
-        assert_eq!(names(&plain_files), ["nsh.js", "nsh.wasm", "nsh.version"]);
+        assert_eq!(
+            names(&plain_files),
+            ["nsh.js", "nsh.wasm", "nsh.version", MATH_FONTS_FILE]
+        );
         let glue = dir.join("nsh-dev-bindgen.js");
         fs::write(&glue, "export {};").unwrap();
         let snippet = crate::bindgen::output_dir(&glue).join("snippets/app-1/inline0.js");
@@ -1220,7 +1604,8 @@ mod tests {
                 "nsh.wasm",
                 "nsh.version",
                 "nsh-bindgen.js",
-                "snippets/app-1/inline0.js"
+                "snippets/app-1/inline0.js",
+                MATH_FONTS_FILE
             ]
         );
         // Another glue is another runtime: an open page loads again.
@@ -1458,6 +1843,7 @@ mod tests {
             code: code.to_owned(),
             bytecode: Vec::new(),
             source_map: None,
+            native_use: None,
         };
         let fonts = ["a.ttf", "b.ttf", "@ui/c.ttf"].map(String::from);
         let chunks = [

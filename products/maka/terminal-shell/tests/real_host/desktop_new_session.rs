@@ -1022,6 +1022,42 @@ async fn desktop_retries_a_failed_turn_in_place() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
+    let mut fixture = Fixture::configured(Options {
+        code_mode: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Check the goal").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("exec", json!({"code":"text(await tools.GetGoal({}));"}))
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    desktop.press("Process group").await;
+    let group = desktop.control("Process group").await;
+    let nested = desktop.control("Toggle tool GetGoal").await;
+    assert_eq!(nested.left() - group.left(), px(32.));
+    assert!(desktop.controls("Toggle tool exec").is_empty());
+    desktop.artifact("script-tools");
+    answer.finish().await;
+    let sessions = desktop.sessions().await;
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    fixture.idle(&desktop.client, session).await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(
@@ -1983,11 +2019,12 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     })
     .await;
     let parent = fixture.session.clone();
+    let (_, appearance, _, width, height) = visual_case();
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
         size(gpui::DevicePixels(1280), gpui::DevicePixels(900)),
-        nsh_core::platform::Appearance::Dark,
+        appearance,
     )
     .await;
     let backend = json!({
@@ -2167,8 +2204,28 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     desktop.press("Actions for NSH real Agent").await;
     desktop.press("Child conversations").await;
     desktop.press("Open Verify sandbox delegation").await;
-    desktop.control("From NSH real Agent").await;
-    desktop.press("From NSH real Agent").await;
+    assert!(
+        desktop
+            .controls("Open source conversation beside this one")
+            .is_empty()
+    );
+    desktop.press("Turn work details").await;
+    let group = desktop.control("Process group").await;
+    desktop.press("Process group").await;
+    let message = desktop.control("Agent message").await;
+    assert_eq!(message.left() - group.left(), px(32.0));
+    assert!(
+        desktop
+            .controls("Open source conversation beside this one")
+            .is_empty()
+    );
+    desktop.press("Agent message").await;
+    desktop
+        .control("Open source conversation beside this one")
+        .await;
+    desktop
+        .press("Open source conversation beside this one")
+        .await;
     desktop.control("Close side pane").await;
     desktop
         .until(
@@ -2177,6 +2234,31 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         )
         .await;
     desktop.artifact("source-conversation-beside");
+    desktop.press("Close side pane").await;
+    desktop
+        .platform
+        .set_viewport(
+            size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+            1.0,
+        )
+        .unwrap();
+    desktop
+        .until("activity indentation did not settle after resize", || {
+            let groups = desktop.controls("Process group");
+            let messages = desktop.controls("Agent message");
+            let ([group], [message]) = (groups.as_slice(), messages.as_slice()) else {
+                return None;
+            };
+            (message.right() <= px(width as f32) && message.left() - group.left() == px(32.0))
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("agent-message-expanded");
+    desktop.press("Agent message").await;
+    desktop.artifact("agent-message-collapsed");
+    desktop.press("Process group").await;
+    desktop.press("Turn work details").await;
+    desktop.artifact("agent-message-default");
     desktop.close().await;
     fixture.finish().await;
 }

@@ -24,7 +24,7 @@ use super::source::{
     CanonicalModelPartSpan, CanonicalToolProjectionSpan, SemanticPayloadSource, locate_model_parts,
 };
 use crate::StoreError;
-use futures_util::FutureExt;
+use futures_util::{FutureExt, TryStreamExt};
 use maka_agent_facts::{
     event::{Fact, StoredEvent},
     history::{
@@ -605,13 +605,56 @@ pub(crate) async fn record(
         _ => None,
     };
     let hidden = reopen_notifications(db, stored, &mut frontier).await?;
-    let transition = match semantic::reduce(&mut frontier, stored) {
+    let mut transition = match semantic::reduce(&mut frontier, stored) {
         Ok(transition) => transition,
         Err(reason) => {
             unavailable(db, owner, sequence, reason).await?;
             return Ok(());
         }
     };
+    if let Fact::ExecutorObserved {
+        output: maka_agent_facts::executor::Output::MessageEnd { message_id },
+    } = &stored.event.fact
+    {
+        let start: Option<i64> = sqlx::query_scalar(
+            "SELECT sequence FROM event_log INDEXED BY executor_output_kinds
+             WHERE kind='executor_observed' AND invocation_id=?1
+               AND json_extract(event_header,'$.fact.output.type')='message_start'
+               AND json_extract(event_header,'$.fact.output.messageId')=?2
+               AND sequence<=?3
+             ORDER BY sequence LIMIT 1",
+        )
+        .bind(&stored.event.invocation.invocation_id)
+        .bind(message_id)
+        .bind(sequence)
+        .fetch_optional(&mut *db)
+        .await?;
+        let start = crate::sequence_number(
+            start.ok_or_else(|| invalid("executor message lacks canonical start"))?,
+        )?;
+        let mut text = String::new();
+        let mut observations = sqlx::query_scalar::<_, Option<String>>(
+            "SELECT json_extract(event_header,'$.fact.output.text')
+             FROM event_log INDEXED BY executor_output_kinds
+             WHERE kind='executor_observed' AND invocation_id=?1
+               AND json_extract(event_header,'$.fact.output.type')='output_delta'
+               AND json_extract(event_header,'$.fact.output.messageId')=?2
+               AND sequence<=?3
+             ORDER BY sequence",
+        )
+        .bind(&stored.event.invocation.invocation_id)
+        .bind(message_id)
+        .bind(sequence)
+        .fetch(&mut *db);
+        while let Some(delta) = observations.try_next().await? {
+            text.push_str(
+                delta
+                    .as_deref()
+                    .ok_or_else(|| invalid("executor body delta lacks text"))?,
+            );
+        }
+        semantic::append_executor_message(&mut transition, stored, start, text);
+    }
     let canonical_projection = match &stored.event.fact {
         Fact::ToolSettled {
             outcome:

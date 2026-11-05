@@ -34,6 +34,24 @@
 //! [`crate::animation::AnimationProp::CanvasArg`]s: the platform writes
 //! their values into the uniforms ([`ShaderLayer::write_slot`]) and draws
 //! again on its own, without JS.
+//!
+//! # Pictures, effects and transitions
+//!
+//! Besides drawing a view's box under its children ([`ShaderRole::Fill`]),
+//! a shader can draw what other views draw: `sample_content(uv)` (the
+//! children of an effect, [`ShaderRole::Effect`], or the whole surface,
+//! [`ShaderRole::Screen`]), `sample_backdrop(uv)` (what is behind the view)
+//! and `sample_from(uv)` / `sample_to(uv)` (a transition's two sides,
+//! [`ShaderRole::Transition`] and [`ShaderRole::ScreenTransition`], and a
+//! page's or dialog's). Each returns straight sRGB with alpha, like
+//! `shade`, at the point `uv` of the box; outside its picture it is
+//! transparent. `nsh.progress` is an effect's `progress` or how far a
+//! transition is (0 to 1); `nsh.overflow` is how far beyond the box the
+//! shader draws and its pictures reach, in points (`maxSampleOffset`): the
+//! frame then covers `uv` from `-overflow / size` to `1 + overflow / size`.
+//! The platforms take the pictures ([`Shader::inputs`] says which) and the
+//! renderers bind them at `@binding(2)` (a sampler) and `@binding(3)` to
+//! `@binding(6)`; [`crossfade`] is the transitions' default.
 
 use std::{
     fmt,
@@ -49,7 +67,7 @@ use naga::{
 use crate::{
     Color,
     animation::{AnimationValue, NodeId},
-    geometry::{Points, Size},
+    geometry::{Percentage, Points, Size},
 };
 
 /// The longest source a shader may have, in bytes.
@@ -65,13 +83,58 @@ const SHADE: &str = "shade";
 /// points (WGSL declarations may come in any order, so the app's source
 /// goes first and its lines keep their numbers).
 const BUILTINS: &str = r#"
+// 32 bytes, as `builtins` writes them: wgpu's GL backend refuses a uniform
+// struct whose size is no multiple of 16 where the device lacks
+// `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED`, so `overflow` pads it.
 struct Nsh {
     size: vec2f,
     time: f32,
     scale: f32,
+    progress: f32,
+    @size(12) overflow: f32,
 }
 
 @group(0) @binding(0) var<uniform> nsh: Nsh;
+
+@group(0) @binding(2) var nsh_sampler: sampler;
+@group(0) @binding(3) var nsh_content: texture_2d<f32>;
+@group(0) @binding(4) var nsh_backdrop: texture_2d<f32>;
+@group(0) @binding(5) var nsh_from: texture_2d<f32>;
+@group(0) @binding(6) var nsh_to: texture_2d<f32>;
+
+// A point of the box in the pictures, which cover it and `overflow` points
+// beyond each side.
+fn nsh_picture(uv: vec2f) -> vec2f {
+    return (uv * nsh.size + nsh.overflow) / max(nsh.size + 2.0 * nsh.overflow, vec2f(1e-6));
+}
+
+// A premultiplied texel as straight color; transparent outside the picture.
+fn nsh_straight(c: vec4f, p: vec2f) -> vec4f {
+    if (any(p < vec2f(0.0)) || any(p > vec2f(1.0)) || c.a <= 0.0) {
+        return vec4f(0.0);
+    }
+    return vec4f(c.rgb / c.a, c.a);
+}
+
+fn sample_content(uv: vec2f) -> vec4f {
+    let p = nsh_picture(uv);
+    return nsh_straight(textureSampleLevel(nsh_content, nsh_sampler, p, 0.0), p);
+}
+
+fn sample_backdrop(uv: vec2f) -> vec4f {
+    let p = nsh_picture(uv);
+    return nsh_straight(textureSampleLevel(nsh_backdrop, nsh_sampler, p, 0.0), p);
+}
+
+fn sample_from(uv: vec2f) -> vec4f {
+    let p = nsh_picture(uv);
+    return nsh_straight(textureSampleLevel(nsh_from, nsh_sampler, p, 0.0), p);
+}
+
+fn sample_to(uv: vec2f) -> vec4f {
+    let p = nsh_picture(uv);
+    return nsh_straight(textureSampleLevel(nsh_to, nsh_sampler, p, 0.0), p);
+}
 "#;
 
 const UNIFORMS: &str = "\n@group(0) @binding(1) var<uniform> uniforms: Uniforms;\n";
@@ -84,11 +147,13 @@ struct NshVarying {
 
 @vertex
 fn nsh_vertex(@builtin(vertex_index) index: u32) -> NshVarying {
-    // One triangle covering the target: uv 0..1 over the box, y down.
-    let uv = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+    // One triangle covering the target: uv 0..1 over the box, y down, and
+    // past it by `overflow` points on each side.
+    let corner = vec2f(f32((index << 1u) & 2u), f32(index & 2u));
+    let grow = nsh.overflow / max(nsh.size, vec2f(1e-6));
     var out: NshVarying;
-    out.position = vec4f(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 0.0, 1.0);
-    out.uv = uv;
+    out.position = vec4f(corner.x * 2.0 - 1.0, 1.0 - corner.y * 2.0, 0.0, 1.0);
+    out.uv = corner * (1.0 + 2.0 * grow) - grow;
     return out;
 }
 
@@ -103,15 +168,264 @@ fn nsh_fragment(in: NshVarying) -> @location(0) vec4f {
 const TIME_MEMBER: u32 = 1;
 
 /// The words of the built-ins (`struct Nsh`): the box's size in points,
-/// the seconds since the shader appeared and the pixels per point, as the
-/// renderers upload them to `@binding(0)`.
-pub fn builtins(size: Size<Points>, time: f32, scale: f32) -> [u32; 4] {
+/// the seconds since the shader appeared, the pixels per point, the
+/// progress (0 to 1) and the overflow in points, as the renderers upload
+/// them to `@binding(0)` (32 bytes).
+pub fn builtins(
+    size: Size<Points>,
+    time: f32,
+    scale: f32,
+    progress: Percentage,
+    overflow: Points,
+) -> [u32; 8] {
     [
         size.width.0.to_bits(),
         size.height.0.to_bits(),
         time.to_bits(),
         scale.to_bits(),
+        progress.0.to_bits(),
+        overflow.0.to_bits(),
+        0,
+        0,
     ]
+}
+
+/// The pictures a shader can read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ShaderInput {
+    /// `sample_content`: an effect's children, a screen effect's surface.
+    Content,
+    /// `sample_backdrop`: what is behind the view.
+    Backdrop,
+    /// `sample_from`: a transition's side it leaves.
+    From,
+    /// `sample_to`: a transition's side it comes to.
+    To,
+}
+
+impl ShaderInput {
+    /// Every input, in their bindings' order (`@binding(3)` to `@binding(6)`).
+    pub const ALL: [ShaderInput; 4] = [
+        ShaderInput::Content,
+        ShaderInput::Backdrop,
+        ShaderInput::From,
+        ShaderInput::To,
+    ];
+
+    /// Its index (0 to 3; the binding is 3 more).
+    pub fn index(self) -> usize {
+        self as usize
+    }
+
+    /// The function the app calls to read it.
+    pub fn function(self) -> &'static str {
+        match self {
+            ShaderInput::Content => "sample_content",
+            ShaderInput::Backdrop => "sample_backdrop",
+            ShaderInput::From => "sample_from",
+            ShaderInput::To => "sample_to",
+        }
+    }
+
+    /// The texture's global in the module.
+    pub fn texture(self) -> &'static str {
+        match self {
+            ShaderInput::Content => "nsh_content",
+            ShaderInput::Backdrop => "nsh_backdrop",
+            ShaderInput::From => "nsh_from",
+            ShaderInput::To => "nsh_to",
+        }
+    }
+}
+
+/// The set of [`ShaderInput`]s a shader reads.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub struct ShaderInputs(u8);
+
+impl ShaderInputs {
+    /// Whether it reads `input`.
+    pub fn contains(self, input: ShaderInput) -> bool {
+        self.0 & (1 << input.index()) != 0
+    }
+
+    /// Whether it reads none.
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    /// It with `input`.
+    pub fn with(self, input: ShaderInput) -> Self {
+        ShaderInputs(self.0 | 1 << input.index())
+    }
+
+    /// The inputs it reads.
+    pub fn iter(self) -> impl Iterator<Item = ShaderInput> {
+        ShaderInput::ALL
+            .into_iter()
+            .filter(move |i| self.contains(*i))
+    }
+}
+
+/// What a layer draws, which decides where the platform shows it and which
+/// pictures it takes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ShaderRole {
+    /// A shader view: the box under its children (upstream's `Shader`).
+    #[default]
+    Fill,
+    /// An effect: its children draw through it, their picture is the
+    /// content; the result shows where they are.
+    Effect,
+    /// A transition: while one runs (`MountItem::ShaderTransition`), its
+    /// children change through it, their picture before as `from`, their
+    /// drawing now as `to`; otherwise they show as they are.
+    Transition,
+    /// A screen effect: the whole surface draws through it, its picture the
+    /// content.
+    Screen,
+    /// A screen transition: the whole surface changes through it.
+    ScreenTransition,
+}
+
+/// `progress`: `nsh.progress` as a number, or moved natively by an
+/// animated value.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShaderProgress {
+    /// A fraction (0 to 1, by convention; a spring may overshoot it).
+    Number(Percentage),
+    /// The animated value of this node.
+    Animated(NodeId),
+}
+
+impl Default for ShaderProgress {
+    fn default() -> Self {
+        ShaderProgress::Number(Percentage(0.0))
+    }
+}
+
+/// A transition's `value`: when it changes, the transition runs.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum TransitionKey {
+    /// A string.
+    String(Arc<str>),
+    /// A number (its bits; made by [`TransitionKey::number`]).
+    Number(u64),
+    /// A boolean.
+    Bool(bool),
+}
+
+impl From<&str> for TransitionKey {
+    fn from(s: &str) -> Self {
+        TransitionKey::String(s.into())
+    }
+}
+
+impl TransitionKey {
+    /// A number as a key: equal numbers are equal keys, as JS compares
+    /// them (`0` and `-0` are one key; every NaN is one key).
+    pub fn number(n: f64) -> Self {
+        let n = if n == 0.0 {
+            0.0
+        } else if n.is_nan() {
+            f64::NAN
+        } else {
+            n
+        };
+        TransitionKey::Number(n.to_bits())
+    }
+}
+
+impl From<f64> for TransitionKey {
+    fn from(n: f64) -> Self {
+        TransitionKey::number(n)
+    }
+}
+
+impl From<bool> for TransitionKey {
+    fn from(b: bool) -> Self {
+        TransitionKey::Bool(b)
+    }
+}
+
+/// A page's or a dialog's `transitionShader`: the program it comes and
+/// goes through, its uniforms and how long that takes.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct NavShaderSpec {
+    /// The WGSL defining `shade`, which reads the lower side as
+    /// `sample_from` and the upper as `sample_to`.
+    pub source: Arc<str>,
+    /// Its uniforms.
+    pub uniforms: ShaderUniforms,
+    /// How long it runs in milliseconds; 350 when absent, about as long as
+    /// the platforms' own push (an element's `ShaderTransition` takes 300).
+    pub duration: Option<f32>,
+}
+
+/// A page's or a dialog's transition program, built in Rust
+/// (`Screen::transition_shader`,
+/// `Modal::transition_shader`;
+/// TS: `transitionShader`): a compiled [`Shader`] defining `shade`, which
+/// reads the lower side as `sample_from` and the upper as `sample_to`.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct TransitionShader(NavShaderSpec);
+
+impl TransitionShader {
+    /// Runs `shader`, with no uniforms, for 350 ms.
+    pub fn new(shader: Shader) -> Self {
+        Self(NavShaderSpec {
+            source: shader.source().into(),
+            uniforms: ShaderUniforms::default(),
+            duration: None,
+        })
+    }
+
+    /// Sets the member `name` of the shader's `struct Uniforms` to `value`:
+    /// a number, a color or a list (a vector, an array of `vec4f`).
+    pub fn uniform(mut self, name: &str, value: impl Into<UniformValue>) -> Self {
+        let value = value.into();
+        match self.0.uniforms.0.iter_mut().find(|(n, _)| &**n == name) {
+            Some(entry) => entry.1 = value,
+            None => self.0.uniforms.0.push((name.into(), value)),
+        }
+        self
+    }
+
+    /// How long it runs (350 ms by default).
+    pub fn duration(mut self, duration: std::time::Duration) -> Self {
+        self.0.duration = Some(duration.as_secs_f32() * 1000.0);
+        self
+    }
+}
+
+impl From<TransitionShader> for NavShaderSpec {
+    fn from(shader: TransitionShader) -> Self {
+        shader.0
+    }
+}
+
+/// The word a progress slot writes ([`ShaderLayer::slots`]): not one of the
+/// uniforms, the built-in `nsh.progress`.
+pub const PROGRESS_WORD: u32 = u32::MAX;
+
+/// The transitions' default program: a cross-fade from `sample_from` to
+/// `sample_to` over `nsh.progress`. `None` only in a web runtime linked
+/// without shaders ([`set_compile`]), which has no transition to run it
+/// on: compiled with this module's compiler, so the cross-fade does not
+/// link naga into every web runtime.
+pub fn crossfade() -> Option<Shader> {
+    static CROSSFADE: std::sync::OnceLock<Option<Shader>> = std::sync::OnceLock::new();
+    CROSSFADE
+        .get_or_init(|| {
+            compile_source(
+                "fn shade(uv: vec2f) -> vec4f {\n    return mix(sample_from(uv), sample_to(uv), nsh.progress);\n}\n",
+            )
+            .map_err(|e| log::warn!(target: "js", "the cross-fade: {e}"))
+            .ok()
+        })
+        .clone()
 }
 
 /// Why a shader did not compile: what is wrong and where in the app's
@@ -223,6 +537,8 @@ pub struct GlslProgram {
     /// The name of the uniform block of `struct Uniforms`, when it reads it
     /// (bind it to 1).
     pub uniforms_block: Option<String>,
+    /// The sampler uniforms of the pictures it reads, by input.
+    pub pictures: Vec<(String, ShaderInput)>,
 }
 
 /// A compiled shader: the app's source checked and wrapped into a module
@@ -242,6 +558,7 @@ struct Program {
     uniforms: Vec<UniformField>,
     uniform_size: u32,
     animated: bool,
+    inputs: ShaderInputs,
     #[cfg(feature = "glsl")]
     glsl: std::sync::OnceLock<Result<GlslProgram, ShaderError>>,
 }
@@ -352,6 +669,7 @@ impl Shader {
             (Vec::new(), 0)
         };
         let animated = reads_time(&module);
+        let inputs = reads_inputs(&module, &info);
         Ok(Shader(Arc::new(Program {
             source: source.into(),
             hash: source_hash(source),
@@ -361,6 +679,7 @@ impl Shader {
             uniforms,
             uniform_size,
             animated,
+            inputs,
             #[cfg(feature = "glsl")]
             glsl: std::sync::OnceLock::new(),
         })))
@@ -398,6 +717,12 @@ impl Shader {
     /// in sight and not paused.
     pub fn animated(&self) -> bool {
         self.0.animated
+    }
+
+    /// The pictures it reads (`sample_content`, …): the platform takes
+    /// them for it.
+    pub fn inputs(&self) -> ShaderInputs {
+        self.0.inputs
     }
 
     /// The program as GLSL ES 3.00 for WebGL 2 (translated once, on first
@@ -498,7 +823,9 @@ fn check(module: &Module, source: &str, has_uniforms: bool) -> Result<(), Shader
     }
     for (handle, global) in module.global_variables.iter() {
         let name = global.name.as_deref().unwrap_or("");
-        let ours = matches!(name, "nsh" | "uniforms") && global.binding.is_some();
+        let ours = (matches!(name, "nsh" | "uniforms" | "nsh_sampler")
+            || ShaderInput::ALL.iter().any(|i| i.texture() == name))
+            && global.binding.is_some();
         if ours || global.space == AddressSpace::Private {
             continue;
         }
@@ -621,6 +948,28 @@ fn uniform_type(module: &Module, ty: Handle<naga::Type>) -> Option<UniformType> 
     })
 }
 
+/// The pictures the fragment stage reads: the textures `nsh_fragment` uses,
+/// through `shade` and whatever it calls (naga's analysis follows calls).
+fn reads_inputs(module: &Module, info: &ModuleInfo) -> ShaderInputs {
+    let Some(entry) = module
+        .entry_points
+        .iter()
+        .position(|e| e.name == "nsh_fragment")
+    else {
+        return ShaderInputs::default();
+    };
+    let uses = info.get_entry_point(entry);
+    module
+        .global_variables
+        .iter()
+        .filter(|&(handle, _)| !uses[handle].is_empty())
+        .filter_map(|(_, global)| {
+            let name = global.name.as_deref()?;
+            ShaderInput::ALL.into_iter().find(|i| i.texture() == name)
+        })
+        .fold(ShaderInputs::default(), ShaderInputs::with)
+}
+
 /// Whether any function reads `nsh.time`.
 fn reads_time(module: &Module) -> bool {
     let Some(nsh) = module
@@ -682,9 +1031,21 @@ fn glsl_es(module: &Module, info: &ModuleInfo) -> Result<GlslProgram, ShaderErro
             (module.global_variables[*handle].name.as_deref() == Some(name)).then(|| block.clone())
         })
     };
+    let pictures = reflection
+        .texture_mapping
+        .iter()
+        .filter_map(|(name, mapping)| {
+            let global = module.global_variables[mapping.texture].name.as_deref()?;
+            let input = ShaderInput::ALL
+                .into_iter()
+                .find(|i| i.texture() == global)?;
+            Some((name.clone(), input))
+        })
+        .collect();
     Ok(GlslProgram {
         builtins_block: block("nsh"),
         uniforms_block: block("uniforms"),
+        pictures,
         vertex,
         fragment,
     })
@@ -789,6 +1150,14 @@ pub struct ShaderLayer {
     pub nodes: Vec<NodeId>,
     /// Its clock stands still (`nsh.time` keeps its value).
     pub paused: bool,
+    /// What it draws ([`ShaderRole`]).
+    pub role: ShaderRole,
+    /// How far beyond the box it draws and its pictures reach, in points
+    /// (`nsh.overflow`, `maxSampleOffset`).
+    pub overflow: Points,
+    /// `nsh.progress`, unless an animated value moves it (a slot whose
+    /// word is [`PROGRESS_WORD`]) or a transition runs it.
+    pub progress: Percentage,
 }
 
 impl ShaderLayer {
@@ -830,7 +1199,50 @@ impl ShaderLayer {
             slots,
             nodes,
             paused: false,
+            role: ShaderRole::Fill,
+            overflow: Points::ZERO,
+            progress: Percentage(0.0),
         }
+    }
+
+    /// The same layer drawing as `role`.
+    pub fn with_role(mut self, role: ShaderRole) -> Self {
+        self.role = role;
+        self
+    }
+
+    /// The same layer drawing `overflow` points beyond the box.
+    pub fn with_overflow(mut self, overflow: Points) -> Self {
+        self.overflow = overflow.max(Points::ZERO);
+        self
+    }
+
+    /// The same layer with its clock stopped or running.
+    pub fn with_paused(mut self, paused: bool) -> Self {
+        self.paused = paused;
+        self
+    }
+
+    /// The same layer with `nsh.progress` at `progress`, or moved by the
+    /// animated value of node `animated` (one more slot).
+    pub fn with_progress(mut self, progress: Percentage, animated: Option<NodeId>) -> Self {
+        self.progress = progress;
+        if let Some(node) = animated {
+            self.slots.push(UniformSlot {
+                word: PROGRESS_WORD,
+                kind: SlotKind::F32,
+            });
+            self.nodes.push(node);
+        }
+        self
+    }
+
+    /// The slot that moves `nsh.progress`, if an animated value does.
+    pub fn progress_slot(&self) -> Option<u16> {
+        self.slots
+            .iter()
+            .position(|s| s.word == PROGRESS_WORD)
+            .map(|i| i as u16)
     }
 
     /// Writes slot `slot`'s animated `value` into `words` (a copy of
@@ -1017,6 +1429,78 @@ fn shade(uv: vec2f) -> vec4f {
         // Comments do not declare uniforms.
         let commented = "// struct Uniforms { a: f32 }\n/* struct Uniforms */ fn shade(uv: vec2f) -> vec4f { return vec4f(1.0); }";
         assert!(Shader::compile(commented).unwrap().uniforms().is_empty());
+    }
+
+    #[test]
+    fn the_built_ins_take_the_bytes_the_renderers_upload() {
+        let shader = Shader::compile(GRADIENT).unwrap();
+        let module = naga::front::wgsl::parse_str(shader.wgsl()).unwrap();
+        let span = module
+            .types
+            .iter()
+            .find_map(|(_, ty)| match ty.inner {
+                TypeInner::Struct { span, .. } if ty.name.as_deref() == Some("Nsh") => Some(span),
+                _ => None,
+            })
+            .expect("struct Nsh");
+        let words = builtins(
+            Size::default(),
+            0.0,
+            1.0,
+            Percentage(0.0),
+            Points::default(),
+        );
+        assert_eq!(span as usize, size_of_val(&words));
+        // GLES without `BUFFER_BINDINGS_NOT_16_BYTE_ALIGNED` takes no other.
+        assert_eq!(span % 16, 0);
+    }
+
+    #[test]
+    fn an_app_binds_no_globals_of_its_own_under_nsh_names() {
+        let error = Shader::compile(
+            "@group(0) @binding(7) var nsh_extra: texture_2d<f32>;\n\
+             fn shade(uv: vec2f) -> vec4f { return textureLoad(nsh_extra, vec2i(0), 0); }",
+        )
+        .unwrap_err();
+        assert!(error.message.contains("nsh_extra"), "{error:?}");
+        // The pictures' own globals are NSH's.
+        assert!(
+            Shader::compile(
+                "fn shade(uv: vec2f) -> vec4f { return textureSampleLevel(nsh_content, nsh_sampler, uv, 0.0); }"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn equal_numbers_are_one_transition_key() {
+        assert_eq!(TransitionKey::from(0.0), TransitionKey::from(-0.0));
+        assert_eq!(
+            TransitionKey::from(f64::NAN),
+            TransitionKey::from(-f64::NAN)
+        );
+        assert_ne!(TransitionKey::from(1.0), TransitionKey::from(2.0));
+    }
+
+    #[test]
+    fn inputs_are_the_pictures_shade_reaches() {
+        let inputs = |source: &str| Shader::compile(source).unwrap().inputs();
+        assert!(inputs("fn shade(uv: vec2f) -> vec4f { return vec4f(1.0); }").is_empty());
+        // Through a helper, whatever its name.
+        let helper = inputs(
+            "fn sample_custom(uv: vec2f) -> vec4f { return sample_content(uv) * 0.5; }\n\
+             fn shade(uv: vec2f) -> vec4f { return sample_custom(uv) + sample_to(uv); }",
+        );
+        assert_eq!(
+            helper.iter().collect::<Vec<_>>(),
+            [ShaderInput::Content, ShaderInput::To]
+        );
+        // A helper `shade` never calls reads nothing.
+        let unused = inputs(
+            "fn unused(uv: vec2f) -> vec4f { return sample_backdrop(uv); }\n\
+             fn shade(uv: vec2f) -> vec4f { return sample_from(uv); }",
+        );
+        assert_eq!(unused.iter().collect::<Vec<_>>(), [ShaderInput::From]);
     }
 
     #[test]

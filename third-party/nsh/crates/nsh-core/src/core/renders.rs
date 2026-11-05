@@ -48,6 +48,11 @@ impl Renders {
     pub(super) fn is_empty(&self) -> bool {
         self.places.is_empty()
     }
+
+    /// Whether view `id` is a placeholder.
+    pub(super) fn is_place(&self, id: NodeId) -> bool {
+        !self.places.is_empty() && self.places.contains_key(&id)
+    }
 }
 
 /// A (prop, key) of a component's host.

@@ -90,6 +90,7 @@ mount(App);
 | `.active(\|s\| ..)` | `activeStyle` | `active:` | 按下时。 |
 | `.hover(\|s\| ..)` | `hoverStyle` | `hover:` | 指针悬停在上面时（桌面、iPad 指针、浏览器）。 |
 | `.focus(\|s\| ..)` | `focusStyle` | `focus:` | 获得焦点时。 |
+| `.focus_within(\|s\| ..)` | `focusWithinStyle` | `focus-within:` | 自身或内部的视图获得焦点时：包住正在编辑的输入框的外框。 |
 | `.disabled_style(\|s\| ..)` | `disabledStyle` | `disabled:` | 禁用时。 |
 | `.ripple(Ripple { .. })` | `android={{ ripple }}` | | Android 的 Material 水波纹（`color`、`borderless`、`radius`、`foreground`），叠加在这些样式之上。 |
 
