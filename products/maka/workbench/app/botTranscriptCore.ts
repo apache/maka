@@ -247,8 +247,6 @@ export function reportedWorker(
   return undefined;
 }
 
-/** The most pages read for one window, so a Bot with a very long history cannot loop the read. */
-const MAX_PAGES = 16;
 type Session = { id: string };
 type Page<S extends Session = Session> = { revision: string; after?: string | null; sessions: S[] };
 
@@ -263,8 +261,10 @@ export async function assembleChildren<S extends Session, P extends Page<S>>(
   next: (page: P) => Promise<P>,
 ): Promise<S[]> {
   const rows = new Map(first.sessions.map((session) => [session.id, session]));
+  const seen = new Set<string>();
   let tail = first;
-  for (let pages = 1; tail.after && pages < MAX_PAGES; pages += 1) {
+  while (tail.after && !seen.has(tail.after)) {
+    seen.add(tail.after);
     const page = await next(tail);
     if (page.revision !== first.revision) throw new Error('agent_catalog_changed');
     if (page.after === tail.after) break;

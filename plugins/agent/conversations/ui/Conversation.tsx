@@ -597,16 +597,16 @@ export function Conversation(props: ConversationProps) {
     },
     { equals: (left, right) => left.size === right.size && [...left].every((id) => right.has(id)) },
   );
+  // A worker or sender opens beside this conversation when a side pane fits, otherwise in
+  // this pane (the Bot stays pinned in the sidebar to switch back).
+  const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
+  const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const senders = createMessageSenders(
     host,
     senderIds,
     (id) => props.knownSession?.(id),
-    () => props.openSessionBeside,
+    () => (canOpenWorker() ? openWorker : undefined),
   );
-  // A worker opens beside the Bot when a side pane fits, otherwise in this pane (the Bot
-  // stays pinned in the sidebar to switch back).
-  const canOpenWorker = () => !!(props.openSessionBeside ?? props.openSessionHere);
-  const openWorker = (id: string) => (props.openSessionBeside ?? props.openSessionHere)?.(id);
   const canFoldTurn = (turn: TurnPresentation) =>
     turnOutcome(turn) === 'completed' && !turn.active && !turn.interleavedInput;
   const turnExpanded = (turn: TurnPresentation) => {
@@ -756,7 +756,7 @@ export function Conversation(props: ConversationProps) {
       if (active.length > 0)
         result.push({
           kind: 'botWaiting',
-          key: `bot/waiting/${active.map((worker) => `${worker.id}:${worker.activity}`).join(',')}`,
+          key: 'bot/waiting',
           workers: active,
         });
     }
@@ -3137,21 +3137,41 @@ export function Conversation(props: ConversationProps) {
                       if (initial.kind === 'botWaiting')
                         return (
                           <BotWaiting
-                            workers={() => initial.workers}
+                            workers={() => {
+                              const latest = entry();
+                              return latest.kind === 'botWaiting'
+                                ? latest.workers
+                                : initial.workers;
+                            }}
                             open={canOpenWorker() ? openWorker : undefined}
                           />
                         );
                       if (initial.kind === 'botNote')
                         return <BotNote text={() => tr('The Bot did not reply this time')} />;
-                      if (initial.kind === 'bot')
+                      if (initial.kind === 'bot') {
+                        const worker = () => {
+                          const latest = entry();
+                          return latest.kind === 'bot' ? latest.worker : initial.worker;
+                        };
                         return (
                           <BotReply
                             worker={
-                              initial.worker !== undefined && canOpenWorker()
+                              worker() !== undefined && canOpenWorker()
                                 ? {
-                                    title: () => senders.session(initial.worker!)?.title ?? '',
-                                    exists: () => senders.session(initial.worker!) !== null,
-                                    open: () => openWorker(initial.worker!),
+                                    title: () => {
+                                      const id = worker();
+                                      return id !== undefined
+                                        ? (senders.session(id)?.title ?? '')
+                                        : '';
+                                    },
+                                    exists: () => {
+                                      const id = worker();
+                                      return id !== undefined && senders.session(id) !== null;
+                                    },
+                                    open: () => {
+                                      const id = worker();
+                                      if (id !== undefined) openWorker(id);
+                                    },
                                   }
                                 : undefined
                             }
@@ -3160,6 +3180,7 @@ export function Conversation(props: ConversationProps) {
                             userScroll={() => cancelNavigation()}
                           />
                         );
+                      }
                       const first = currentRow(initial.rowId);
                       if (!first) return <View />;
                       const row = () => currentRow(initial.rowId) ?? first;

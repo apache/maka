@@ -34,6 +34,12 @@ export function BotReply(props: {
   /** The worker whose finished run this reply reports, when the Turn was started by one. */
   worker?: { title: () => string; exists: () => boolean; open(): void };
 }) {
+  const recordLabel = () => {
+    const title = props.worker?.title().trim() ?? '';
+    return title
+      ? tr('View the record of {title}', { title })
+      : tr('View the record of the worker');
+  };
   return (
     <View selectable style={{ width: '100%', paddingVertical: 8, gap: 16 }}>
       <Each of={props.messages()} key={(message) => String(message.sequence)}>
@@ -59,7 +65,7 @@ export function BotReply(props: {
       </Each>
       <If when={props.worker?.exists()}>
         <Button
-          accessibilityLabel={tr('Open the conversation beside this one')}
+          accessibilityLabel={recordLabel()}
           style={{
             flexDirection: 'row',
             alignItems: 'center',
@@ -73,9 +79,7 @@ export function BotReply(props: {
           <Text
             style={[{ ...captionTextStyle, color: C.accent, flexShrink: 1 }, { numberOfLines: 1 }]}
           >
-            {props.worker!.title().trim()
-              ? tr('View the record of {title}', { title: props.worker!.title() })
-              : tr('View the record of the worker')}
+            {recordLabel()}
           </Text>
         </Button>
       </If>
@@ -91,29 +95,39 @@ export function BotWaiting(props: {
   return (
     <View style={{ width: '100%', paddingVertical: 8, gap: 8 }}>
       <Each of={props.workers()} key={(worker) => worker.id}>
-        {(worker) => (
-          <Button
-            disabled={!props.open}
-            accessibilityLabel={tr('Open the conversation beside this one')}
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              gap: 8,
-              alignSelf: 'flex-start',
-              maxWidth: '100%',
-            }}
-            onPress={() => props.open?.(worker().id)}
-          >
-            <Icon name="activity" color={worker().activity === 'waiting' ? C.warning : C.accent} />
-            <Text
-              style={[{ ...captionTextStyle, color: C.text, flexShrink: 1 }, { numberOfLines: 1 }]}
+        {(worker) => {
+          const label = () =>
+            worker().activity === 'waiting'
+              ? tr('{title} is waiting for your reply. Open it.', { title: worker().title })
+              : tr('{title} is working. See its progress.', { title: worker().title });
+          return (
+            <Button
+              disabled={!props.open}
+              accessibilityLabel={label()}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: 8,
+                alignSelf: 'flex-start',
+                maxWidth: '100%',
+              }}
+              onPress={() => props.open?.(worker().id)}
             >
-              {worker().activity === 'waiting'
-                ? tr('{title} is waiting for your reply. Open it.', { title: worker().title })
-                : tr('{title} is working. See its progress.', { title: worker().title })}
-            </Text>
-          </Button>
-        )}
+              <Icon
+                name="activity"
+                color={worker().activity === 'waiting' ? C.warning : C.accent}
+              />
+              <Text
+                style={[
+                  { ...captionTextStyle, color: C.text, flexShrink: 1 },
+                  { numberOfLines: 1 },
+                ]}
+              >
+                {label()}
+              </Text>
+            </Button>
+          );
+        }}
       </Each>
     </View>
   );

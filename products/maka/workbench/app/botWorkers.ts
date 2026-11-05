@@ -21,6 +21,7 @@ import { cleanup, effect, signal } from 'nsh';
 import type { AgentSession, AgentSessionPage } from '../../../../packages/plugin-sdk/src/index.js';
 import type { Host } from './host';
 import { assembleChildren } from './botTranscriptCore';
+import { isObservationCancelled } from './text';
 
 /**
  * The conversations a Bot created, kept current by the Host's catalog stream. The stream
@@ -40,33 +41,65 @@ export function createBotWorkers(
     let stopped = false;
     let stream: { next(): Promise<AgentSessionPage | null>; close(): Promise<void> } | null = null;
     void (async () => {
-      const opened = await host.subscribe('agent', 'catalog', {
-        filter: 'all',
-        includeArchived: false,
-        scope,
-        position: { kind: 'start' },
-      });
-      if (stopped) {
-        await opened.close();
-        return;
-      }
-      stream = opened;
-      while (!stopped) {
-        const page = await opened.next();
-        if (page === null) return;
+      for (let reconnects = 0; !stopped; ) {
         try {
-          const rows = await assembleChildren<AgentSession, AgentSessionPage>(page, (previous) =>
-            host.query('agent', 'list', {
-              filter: 'all',
-              includeArchived: false,
-              scope,
-              position: { kind: 'after', revision: previous.revision, cursor: previous.after! },
-            }),
-          );
-          if (!stopped) children.set(rows);
-        } catch {
-          // The catalog moved or a read failed: keep the last list. A moved catalog pushes
-          // its next window, and any later change pushes again.
+          const opened = await host.subscribe('agent', 'catalog', {
+            filter: 'all',
+            includeArchived: false,
+            scope,
+            position: { kind: 'start' },
+          });
+          if (stopped) {
+            await opened.close();
+            return;
+          }
+          stream = opened;
+          let lastRevision: string | null = null;
+          try {
+            while (!stopped) {
+              const page = await opened.next();
+              if (stopped || page === null) return;
+              reconnects = 0;
+              if (page.revision === lastRevision) continue;
+              try {
+                const rows = await assembleChildren<AgentSession, AgentSessionPage>(
+                  page,
+                  (previous) =>
+                    host.query('agent', 'list', {
+                      filter: 'all',
+                      includeArchived: false,
+                      scope,
+                      position: {
+                        kind: 'after',
+                        revision: previous.revision,
+                        cursor: previous.after!,
+                      },
+                    }),
+                );
+                if (!stopped) {
+                  lastRevision = page.revision;
+                  children.set(rows);
+                }
+              } catch {
+                // The catalog moved or a read failed: keep the last list. A moved catalog pushes
+                // its next window, and any later change pushes again.
+              }
+            }
+          } finally {
+            if (stream === opened) {
+              stream = null;
+              await opened.close().catch(() => {});
+            }
+          }
+        } catch (reason) {
+          if (stopped) return;
+          if (isObservationCancelled(reason) && reconnects < 3) {
+            reconnects += 1;
+            if (reconnects > 1)
+              await new Promise((resolve) => setTimeout(resolve, 250 * reconnects));
+            continue;
+          }
+          throw reason;
         }
       }
     })().catch(() => {

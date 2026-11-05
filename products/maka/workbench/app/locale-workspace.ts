@@ -62,11 +62,6 @@ export const workspaceMessages = {
     '「{title}」在等你的回复，点这里处理。',
     '「{title}」在等你的回覆，點這裡處理。',
   ],
-  'Open the conversation beside this one': [
-    'Open the conversation beside this one',
-    '在旁边打开这个会话',
-    '在旁邊開啟這個會話',
-  ],
   '{title} is working. See its progress.': [
     '{title} is working. See its progress.',
     '「{title}」正在处理，点这里查看进度。',

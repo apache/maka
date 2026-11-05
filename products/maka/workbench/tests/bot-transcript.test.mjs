@@ -18,6 +18,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { registerHooks } from 'node:module';
 import test from 'node:test';
 import {
   botTurnEnding,
@@ -26,6 +27,42 @@ import {
   activeWorkers,
   assembleChildren,
 } from '../app/botTranscriptCore.ts';
+
+const appRoot = new URL('../app/', import.meta.url);
+let currentCleanup = () => {};
+const native = {
+  nsh: `export const signal = initial => {
+      let value = initial;
+      const read = () => value;
+      read.set = next => { value = next; };
+      return read;
+    };
+    export const effect = fn => { fn(); };
+    export const cleanup = fn => { globalThis.__botWorkersCleanup?.(fn); };`,
+  locale: `export const tr = key => key;`,
+};
+globalThis.__botWorkersCleanup = (fn) => {
+  currentCleanup = fn;
+};
+const hooks = registerHooks({
+  resolve(specifier, context, next) {
+    const key =
+      context.parentURL?.startsWith(appRoot.href) && specifier === './locale'
+        ? 'locale'
+        : specifier;
+    if (key in native)
+      return { url: `data:text/javascript,${encodeURIComponent(native[key])}`, shortCircuit: true };
+    if (
+      context.parentURL?.startsWith(appRoot.href) &&
+      specifier.startsWith('.') &&
+      !/\.\w+$/.test(specifier)
+    )
+      return next(`${specifier}.ts`, context);
+    return next(specifier, context);
+  },
+});
+const { createBotWorkers } = await import(new URL('botWorkers.ts', appRoot));
+hooks.deregister();
 
 const SESSION = 'bot-session';
 const message = (sequence, turnId, text = `m${sequence}`) => ({
@@ -413,25 +450,30 @@ test('the Bot’s running and waiting conversations are listed, waiting first', 
   assert.deepEqual(activeWorkers(sessions, undefined), []);
 });
 
-test('a worker behind a full first page of idle ones is still found by following the cursor', async () => {
+test('a worker behind many pages of idle ones is still found without an arbitrary page cap', async () => {
   const idle = (n) =>
     Array.from({ length: 32 }, (_, i) => ({ id: `idle-${n}-${i}`, activity: 'idle' }));
-  const pages = [
-    { revision: 'r1', after: 'c1', sessions: idle(1) },
-    { revision: 'r1', after: 'c2', sessions: idle(2) },
-    { revision: 'r1', after: null, sessions: [{ id: 'old-waiting', activity: 'waiting' }] },
-  ];
+  const pages = Array.from({ length: 20 }, (_, i) => ({
+    revision: 'r1',
+    after: `c${i + 1}`,
+    sessions: idle(i + 1),
+  }));
+  pages.push({
+    revision: 'r1',
+    after: null,
+    sessions: [{ id: 'old-waiting', activity: 'waiting' }],
+  });
   const reads = [];
   const all = await assembleChildren(pages[0], async (previous) => {
     reads.push(previous.after);
     return pages[reads.length];
   });
-  assert.deepEqual(reads, ['c1', 'c2']);
-  assert.equal(all.length, 65);
+  assert.equal(reads.length, 20);
+  assert.equal(all.length, 20 * 32 + 1);
   assert.ok(all.some((session) => session.id === 'old-waiting'));
 });
 
-test('a catalog that moves while its pages are read is refused, and a stuck cursor ends the read', async () => {
+test('a catalog that moves while its pages are read is refused, and a stuck or cyclic cursor ends the read', async () => {
   const first = { revision: 'r1', after: 'c1', sessions: [{ id: 'a' }] };
   await assert.rejects(
     assembleChildren(first, async () => ({ revision: 'r2', after: null, sessions: [] })),
@@ -447,4 +489,105 @@ test('a catalog that moves while its pages are read is refused, and a stuck curs
     ['a'],
     'a page that does not advance is not added and ends the read',
   );
+  const cyclic = await assembleChildren(first, async (previous) =>
+    previous.after === 'c1'
+      ? { revision: 'r1', after: 'c2', sessions: [{ id: 'b' }] }
+      : { revision: 'r1', after: 'c1', sessions: [{ id: 'c' }] },
+  );
+  assert.deepEqual(
+    cyclic.map((session) => session.id),
+    ['a', 'b', 'c'],
+  );
+});
+
+test('worker catalog observation cancellation rebinds without clearing current workers', async () => {
+  const streams = [];
+  let listCalls = 0;
+  const workerHost = {
+    subscribe: async (endpoint, method) => {
+      assert.equal(endpoint, 'agent');
+      assert.equal(method, 'catalog');
+      let pending = null;
+      const queued = [];
+      const stream = {
+        closed: false,
+        push(page) {
+          if (pending) {
+            const { resolve } = pending;
+            pending = null;
+            resolve(page);
+          } else {
+            queued.push({ ok: page });
+          }
+        },
+        fail(reason) {
+          if (pending) {
+            const { reject } = pending;
+            pending = null;
+            reject(reason);
+          } else {
+            queued.push({ err: reason });
+          }
+        },
+        next: () => {
+          if (queued.length) {
+            const item = queued.shift();
+            return 'err' in item ? Promise.reject(item.err) : Promise.resolve(item.ok);
+          }
+          return new Promise((resolve, reject) => {
+            pending = { resolve, reject };
+          });
+        },
+        close: async () => {
+          stream.closed = true;
+        },
+      };
+      streams.push(stream);
+      return stream;
+    },
+    query: async () => {
+      listCalls += 1;
+      return { revision: 'r1', after: null, sessions: [{ id: 'w2', activity: 'working' }] };
+    },
+  };
+  currentCleanup = () => {};
+  const workers = createBotWorkers(
+    workerHost,
+    () => SESSION,
+    () => true,
+  );
+  await settle();
+  assert.equal(streams.length, 1);
+
+  streams[0].push({ revision: 'r1', after: 'c1', sessions: [{ id: 'w1', activity: 'waiting' }] });
+  await settle();
+  assert.deepEqual(
+    workers.sessions().map((entry) => entry.id),
+    ['w1', 'w2'],
+  );
+  assert.equal(listCalls, 1);
+
+  streams[0].push({ revision: 'r1', after: 'c1', sessions: [{ id: 'w1', activity: 'waiting' }] });
+  await settle();
+  assert.equal(listCalls, 1, 'unchanged revision does not re-read continuation pages');
+
+  streams[0].fail(new Error('agent_observation_cancelled'));
+  await settle();
+  assert.equal(streams.length, 2, 'cancelled observation re-subscribes');
+  assert.equal(streams[0].closed, true);
+  assert.deepEqual(
+    workers.sessions().map((entry) => entry.id),
+    ['w1', 'w2'],
+  );
+
+  streams[1].push({ revision: 'r2', after: null, sessions: [{ id: 'w3', activity: 'working' }] });
+  await settle();
+  assert.deepEqual(
+    workers.sessions().map((entry) => entry.id),
+    ['w3'],
+  );
+
+  currentCleanup();
+  await settle();
+  assert.equal(streams[1].closed, true);
 });
