@@ -42,11 +42,15 @@ Codex 复用原生 managed app-server daemon：先调用幂等的 `codex app-ser
 
 内置 `external` executor 通过 `maka_process` 直接接入 `agy acp`、Codex 共享 app-server daemon 或真正的 Claude Code 交互式 PTY。在 `external.runtimes` 中逐项启用，并选择必填的原生 ID：`antigravity`、`codex`、`claude`。`external.commands` 可覆盖普通可执行文件、参数和环境设置；Codex 已有 daemon 保留它启动时的环境，覆盖不会改写运行中的共享服务。请通过原生 CLI 安装及登录；发现接口不安装软件，也不编造认证或模型能力。Claude 仅提供原生默认模型选项，不启动 print 模式辅助进程。
 
-每次 invocation 只有一个 journal 和 Host bridge 所有者；agy/Claude 拥有本轮进程，Codex 只拥有本轮代理连接。agy 每次 new/load 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 在 PTY 中使用 `--dangerously-skip-permissions`、提前持久化的 UUID 和位置参数交互提示。请预先完成原生初始化和绕过权限警告确认；不支持的初始化、提问或计划 UI 会显式失败。当前不支持 Claude 图片提交。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
+每次 invocation 只有一个 journal 和 Host bridge 所有者；agy/Claude 拥有本轮进程，Codex 只拥有本轮代理连接。agy 每次 new/load 都使用 `--dangerously-skip-permissions`；Codex 每次 open/resume 都必须确认 `never` 审批和 `dangerFullAccess`，每轮也传入相同策略。Claude 使用提前持久化的 UUID 和 `--dangerously-skip-permissions`，先启动真正的空白读屏 PTY。Maka 自动处理原生主题、安全说明和绕过权限确认；仅当信任对话框明确指向本轮已获授权工作区的精确 canonical 路径时才确认信任，由 Claude 自己保存决定，不直接改写全局信任记录。登录仍由用户完成。交互提示和本轮 Host MCP 工具目录均就绪后，逐张粘贴 PNG/JPEG/GIF/WebP 上传的不可变临时文件路径，等待原生图片编号确认，再粘贴文字并只发送一次 Enter。JSONL 接纳必须匹配正文、原生图片标签及完整 image block 数量。终端控制字符转为可见形式，CRLF 归一化；instructions 通过私有临时文件传入，不受 argv 容量限制。原生提问／计划回调仍须使用已捕获的 Host 对应工具；未识别的对话框显式失败，不猜测用户答案。当前提示游标之后的完整 JSONL `turn_duration` 记录仅证明轮次结束，还必须排除 `isApiErrorMessage` API 错误才能判成功；Stop hook、终端重绘、静默和进程退出均不能证明完成。
+
+原生协议帧、Claude JSONL 行及经过认证的 Host MCP 请求共用 256 MiB 内存防护边界，不另外限制上传大小或图片张数。20 张各 5 MiB 的图片编码为同一行 base64 就已约 134 MiB。ACK 前事件不再按条数截断，保留预算同样为 256 MiB，每条至少按 1 KiB 计入对象开销。启动和 RPC 确认允许五分钟，Claude 文字确认和 JSONL 接纳还按每 32 KiB 增加一秒。这不是整轮执行时限；用户仍可取消，清理超时和不确定副作用栅栏独立保留。
+
+历史交接按索引反向读取，最多汇聚 8 MiB 可读正文／64 MiB 编码源数据，不再按片段条数限制；分页本身不会在同一字段内插入截断标记，真正省略的历史仍明确提示。这是上下文与内存预算，不保证每个模型都能接受这么大的输入。Codex 发现会先遍历原生 `nextCursor`，再由 Host/UI 分页；允许原生 `--config`、`--enable`、`--disable` 配置，但每轮 full-access／never-approval 策略不变；已有 daemon 保持自身原生启动配置。
 
 原生身份、历史水位和 CAS fence 有意保留历史物理 namespace `maka.agent.oar`、deployment/instance 前缀及 conversation/runtime 键哈希。已有 running 记录继续按 unknown 阻断。旧公开 executor `oar` 不再可用，队列中的旧准入不能被解释为新的 external 调用。
 
-有界 opt-in 测试 `native_external_real_runtime_host_tool_and_exact_resume` 验证真实 Host 工具回执及同一原生会话的两轮执行。通过 `MAKA_NATIVE_REAL_RUNTIME=antigravity|codex|claude` 选择运行时；`MAKA_NATIVE_REAL_COMMAND` 可传私有 `NativeCommand` JSON 启动配置，`MAKA_NATIVE_REAL_MODEL`、`MAKA_NATIVE_REAL_EFFORT` 和 `MAKA_NATIVE_REAL_CWD` 可指定模型、推理强度和工作目录。使用 `cargo test -p maka-agent-native --lib native_external_real_runtime_host_tool_and_exact_resume -- --ignored` 运行。
+有界 opt-in 测试 `native_external_real_runtime_host_tool_and_exact_resume` 验证真实 Host 工具回执及同一原生会话的两轮执行。通过 `MAKA_NATIVE_REAL_RUNTIME=antigravity|codex|claude` 选择运行时；`MAKA_NATIVE_REAL_COMMAND` 可传私有 `NativeCommand` JSON 启动配置，`MAKA_NATIVE_REAL_MODEL`、`MAKA_NATIVE_REAL_EFFORT` 和 `MAKA_NATIVE_REAL_CWD` 可指定模型、推理强度和工作目录。使用 `cargo test -p maka-agent-native --lib native_external_real_runtime_host_tool_and_exact_resume -- --ignored` 运行。 视觉验收可通过 `MAKA_NATIVE_REAL_IMAGES` 传入 PNG 路径 JSON 数组，并通过 `MAKA_NATIVE_REAL_IMAGE_ANSWER` 指定预期可见四位数字（空格分隔）；预期答案不会进入提示词，第二轮不重新附图。
 
 外部运行时只获得已捕获的安全 Host catalog：Skills、结构化提问、支持的 Session 编排、插件管理及符合条件的 Recall 工具。调用保留实时 Maka 身份、授权、审批、ToolJournal 和原操作回执。取消时先关闭准入、请求取消并等待全部已准入副作用结算，再结算原生进程和输出流。Session 工具列表只约束这一 Host catalog；CLI 保留原生工具和完整权限模式。
 

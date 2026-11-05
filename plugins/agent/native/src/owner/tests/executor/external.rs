@@ -313,12 +313,30 @@ async fn native_external_real_runtime_host_tool_and_exact_resume() {
         create["tools"]=json!(["SessionRead"]);
         let created=f.mutation(2,"create",create,Uuid::new_v4()).await.unwrap();
         let session=created["session"]["id"].as_str().unwrap();
-        let marker=format!("NATIVE-{}",Uuid::new_v4());let mut original=None;
+        let images=std::env::var("MAKA_NATIVE_REAL_IMAGES").ok().map(|v|serde_json::from_str::<Vec<String>>(&v).expect("image path list")).unwrap_or_default();
+        let marker=if images.is_empty() {format!("NATIVE-{}",Uuid::new_v4())}
+            else {std::env::var("MAKA_NATIVE_REAL_IMAGE_ANSWER").expect("expected visible image answer")};
+        let mut attachment_ids=Vec::new();
+        for (index,path) in images.iter().enumerate() {
+            let bytes=tokio::fs::read(path).await.unwrap();
+            let uploaded=super::super::attachments::upload(&f,session,&format!("image-{index}.png"),&bytes,Uuid::new_v4()).await.unwrap();
+            attachment_ids.push(uploaded["attachment"]["id"].clone());
+        }
+        let mut original=None;
         let mut settings=json!({"runtime":runtime.as_str()});
         if let Ok(model)=std::env::var("MAKA_NATIVE_REAL_MODEL") {settings["model"]=model.into();}
         if let Ok(effort)=std::env::var("MAKA_NATIVE_REAL_EFFORT") {settings["thinkingLevel"]=effort.into();}
-        for (turn,message) in [format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session}. Remember verification marker {marker} for our next turn. After the tool returns, reply with exactly that marker. Do not use other tools."),format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session} again. Then recall the verification marker from our previous turn and reply with exactly that marker. Do not use other tools.")].into_iter().enumerate() {
-            let accepted=f.mutation(2,"send",json!({"sessionId":session,"message":message,"backend":{"kind":"executor","selection":{"executor":"external","settings":settings}}}),Uuid::new_v4()).await.unwrap();
+        let messages=if images.is_empty() {
+            [format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session}. Remember verification marker {marker} for our next turn. After the tool returns, reply with exactly that marker. Do not use other tools."),
+             format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session} again. Then recall the verification marker from our previous turn and reply with exactly that marker. Do not use other tools.")]
+        } else {
+            [format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session}. Inspect all attached images in attachment order. Reply with only their visible four-digit numbers separated by a single space. Remember that answer for the next turn. Do not use other tools."),
+             format!("Use the Maka SessionRead MCP tool exactly once with sessionId {session} again. Recall the numbers visible in our previous turn's images, in the same image order. Reply with only those numbers separated by a single space. Do not use other tools.")]
+        };
+        for (turn,message) in messages.into_iter().enumerate() {
+            let mut input=json!({"sessionId":session,"message":message,"backend":{"kind":"executor","selection":{"executor":"external","settings":settings}}});
+            if turn==0 && !attachment_ids.is_empty() {input["attachments"]=json!(attachment_ids);}
+            let accepted=f.mutation(2,"send",input,Uuid::new_v4()).await.unwrap();
             assert_eq!(accepted["kind"],"started");f.drained().await;
             let observed=work(&f,session,&accepted).await;
             if observed["execution"]["state"]!="completed" {
@@ -339,4 +357,55 @@ async fn native_external_real_runtime_host_tool_and_exact_resume() {
         }
         f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
     }).await.unwrap();
+}
+
+#[tokio::test]
+async fn native_external_codex_preserves_more_than_128_preack_deltas() {
+    use super::external_support::configured;
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings
+                .external
+                .as_mut()
+                .unwrap()
+                .commands
+                .codex
+                .as_mut()
+                .unwrap()
+                .env
+                .insert("MAKA_NATIVE_FIXTURE_EARLY_EVENTS".into(), "1".into());
+        })
+        .await;
+        let session = f.create("Native early events").await;
+        let accepted = f
+            .mutation(
+                2,
+                "send",
+                input(&session, "early event burst"),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+        let mut control = BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut control, "opened").await;
+        release(&mut control).await;
+        packet(&mut control, "output").await;
+        release(&mut control).await;
+        packet(&mut control, "terminal").await;
+        release(&mut control).await;
+        f.drained().await;
+        let result = work(&f, &session, &accepted).await;
+        assert_eq!(result["execution"]["state"], "completed");
+        assert_eq!(
+            result["answer"]["text"],
+            format!(
+                "{}committed output",
+                (0..257).map(|i| format!("{i},")).collect::<String>()
+            )
+        );
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
 }

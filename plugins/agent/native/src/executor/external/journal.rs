@@ -100,8 +100,8 @@ impl Journal {
         next.native_session = Some(id);
         self.save(storage, next).await
     }
-    // Caller proved this invocation allocated the UUID and never established native custody.
-    pub async fn revoke_unspawned(&mut self, storage: &Storage) -> Result<(), Error> {
+    // Caller proved this invocation allocated the UUID, submitted no prompt, and settled native cleanup.
+    pub async fn revoke_unsubmitted(&mut self, storage: &Storage) -> Result<(), Error> {
         let mut next = self.record.clone();
         next.native_session = None;
         self.save(storage, next).await

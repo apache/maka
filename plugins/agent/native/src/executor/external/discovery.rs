@@ -105,13 +105,36 @@ async fn probe(io: &mut Pipe, runtime: NativeRuntime, cwd: &str) -> Result<Value
     if runtime == NativeRuntime::Codex {
         let (init, _) = io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
         io.notify("initialized", serde_json::json!({})).await?;
-        let (models, _) = io
-            .request("model/list", serde_json::json!({"includeHidden":false}))
-            .await?;
-        let models = models.get("data").and_then(Value::as_array).ok_or_else(|| Error::Invalid("Codex model/list missing data".into()))?.iter().map(|model| {
-            let levels: Vec<_> = model.get("supportedReasoningEfforts").and_then(Value::as_array).into_iter().flatten().filter_map(|e| e.get("reasoningEffort")).cloned().collect();
-            serde_json::json!({"id":model["id"],"displayName":model["displayName"],"effortLevels":levels,"defaultEffort":model["defaultReasoningEffort"]})
-        }).collect::<Vec<_>>();
+        let mut cursor = None;
+        let mut seen = std::collections::BTreeSet::new();
+        let mut models = Vec::new();
+        loop {
+            let (page, _) = io
+                .request(
+                    "model/list",
+                    serde_json::json!({"includeHidden":false,"cursor":cursor}),
+                )
+                .await?;
+            let data = page
+                .get("data")
+                .and_then(Value::as_array)
+                .ok_or_else(|| Error::Invalid("Codex model/list missing data".into()))?;
+            models.extend(data.iter().map(|model| {
+                let levels:Vec<_>=model.get("supportedReasoningEfforts").and_then(Value::as_array).into_iter().flatten().filter_map(|e|e.get("reasoningEffort")).cloned().collect();
+                serde_json::json!({"id":model["id"],"displayName":model["displayName"],"effortLevels":levels,"defaultEffort":model["defaultReasoningEffort"]})
+            }));
+            match page.get("nextCursor") {
+                None | Some(Value::Null) => break,
+                Some(Value::String(next)) if seen.insert(next.clone()) => {
+                    cursor = Some(next.clone())
+                }
+                _ => {
+                    return Err(Error::Invalid(
+                        "Codex model/list returned an invalid or repeated cursor".into(),
+                    ));
+                }
+            }
+        }
         let authentication = match io
             .request("account/read", serde_json::json!({"refreshToken":false}))
             .await

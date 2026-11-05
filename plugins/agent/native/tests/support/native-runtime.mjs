@@ -21,10 +21,18 @@
 import { connect } from 'node:net';
 import { createInterface } from 'node:readline';
 import { spawn } from 'node:child_process';
-import { mkdirSync, appendFileSync, writeFileSync, realpathSync } from 'node:fs';
+import {
+  mkdirSync,
+  appendFileSync,
+  writeFileSync,
+  realpathSync,
+  existsSync,
+  readFileSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
+import { StringDecoder } from 'node:string_decoder';
 
 // The managed daemon's control socket uses WebSocket, including through its stdio proxy.
 function websocket() {
@@ -77,7 +85,7 @@ function websocket() {
         length = Number(bytes.readBigUInt64BE(2));
         offset = 10;
       }
-      if (length > 8 * 1024 * 1024) throw Error('oversized fixture frame');
+      if (length > 256 * 1024 * 1024) throw Error('oversized fixture frame');
       if (bytes.length < offset + (masked ? 4 : 0) + length) return;
       const mask = masked ? bytes.subarray(offset, offset + 4) : null;
       offset += masked ? 4 : 0;
@@ -134,6 +142,14 @@ async function connectControl() {
   });
   gates = createInterface({ input: control });
   gate = gates[Symbol.asyncIterator]();
+}
+async function pauseInput(stage, extra = {}) {
+  const marker = join(process.env.CLAUDE_CONFIG_DIR, 'fixture-input-paused');
+  if (process.env.MAKA_NATIVE_FIXTURE_PAUSE_INPUT !== stage || existsSync(marker)) return;
+  writeFileSync(marker, stage);
+  await connectControl();
+  trace(stage, extra);
+  await gate.next();
 }
 async function mcp(method, params = {}, id = 1, signal) {
   const response = await fetch(server.url, {
@@ -220,7 +236,7 @@ async function prompt() {
     clientInfo: { name: 'native-fixture', version: '1' },
   });
   request.tools = (await mcp('tools/list')).tools ?? [];
-  trace('opened');
+  trace('opened', { cwd: process.cwd() });
   let first = (await gate.next()).value,
     plan;
   try {
@@ -335,17 +351,93 @@ if (claude) {
     (await import('node:fs')).readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'),
   ).mcpServers.maka;
   server.authorization = server.headers.Authorization;
-  request = {
-    message: args.at(-1),
-    images: [],
-    ...(args.includes('--resume') ? { resume: thread } : {}),
-  };
-  append({ type: 'user', uuid: crypto.randomUUID(), message: { content: request.message } });
+  request = { message: '', images: [], ...(args.includes('--resume') ? { resume: thread } : {}) };
   process.stdin.setRawMode(true);
-  process.stdin.on('data', (bytes) => {
-    if (bytes.includes(27)) void cancel();
+  await mcp('initialize', {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 'native-fixture', version: '1' },
   });
-  void prompt();
+  await mcp('tools/list');
+  await pauseInput('startup', { cwd });
+  const decoder = new StringDecoder('utf8');
+  let pending = '',
+    composing = '',
+    trusted = !process.env.MAKA_NATIVE_FIXTURE_TRUST;
+  const ready = () => process.stdout.write('Claude Code native fixture\r\n$');
+  if (!trusted)
+    process.stdout.write(
+      'Permission Required: Accessing workspace:\r\n' +
+        cwd +
+        '\r\ny. Yes, I trust this folder\r\nn. No, exit\r\nEnter y/n:\r\nEnter to confirm',
+    );
+  else ready();
+  process.stdin.on('data', async (bytes) => {
+    pending += decoder.write(bytes);
+    if (!trusted) {
+      if (!pending.includes('y\r')) return;
+      pending = pending.slice(pending.indexOf('y\r') + 2);
+      trusted = true;
+      writeFileSync(join(process.env.CLAUDE_CONFIG_DIR, 'fixture-trusted-workspace'), cwd);
+      ready();
+    }
+    while (pending.length) {
+      if (pending.startsWith('\x1b[200~')) {
+        const end = pending.indexOf('\x1b[201~');
+        if (end < 0) return;
+        const pasted = pending.slice(6, end);
+        pending = pending.slice(end + 6);
+        if (/\.(png|jpg|gif|webp)$/.test(pasted) && existsSync(pasted)) {
+          const extension = pasted.split('.').at(-1);
+          const mediaType = {
+            png: 'image/png',
+            jpg: 'image/jpeg',
+            gif: 'image/gif',
+            webp: 'image/webp',
+          }[extension];
+          request.images.push({ path: pasted, mediaType });
+          await pauseInput('image', { path: pasted });
+          process.stdout.write('[Image #' + request.images.length + ']');
+        } else {
+          composing += pasted;
+          await pauseInput('text');
+          process.stdout.write(
+            pasted.length > 4096 ? '[Pasted text #1]' : pasted.replace(/(.{1,100})\s+/g, '$1\r\n'),
+          );
+        }
+      } else if ('\x1b[200~'.startsWith(pending)) return;
+      else if (pending.startsWith('\r')) {
+        pending = pending.slice(1);
+        request.message = composing;
+        append({
+          type: 'user',
+          uuid: crypto.randomUUID(),
+          message: {
+            content: [
+              ...request.images.map((image) => ({
+                type: 'image',
+                source: {
+                  type: 'base64',
+                  media_type: image.mediaType,
+                  data: readFileSync(image.path).toString('base64'),
+                },
+              })),
+              {
+                type: 'text',
+                text:
+                  request.images.map((_, i) => '[Image #' + (i + 1) + ']').join(' ') +
+                  request.message,
+              },
+            ],
+          },
+        });
+        void prompt();
+      } else if (pending.startsWith('\x1b')) {
+        pending = pending.slice(1);
+        void cancel();
+      } else pending = pending.slice(1);
+    }
+  });
 } else {
   const wire = agy ? { input: process.stdin, write } : websocket();
   write = wire.write;
@@ -373,12 +465,16 @@ if (claude) {
     } else if (m === 'initialized') {
     } else if (m === 'model/list') {
       reply(id, {
-        data: Array.from({ length: 20 }, (_, i) => ({
-          id: `external-${i}`,
-          displayName: `External ${i}`,
-          supportedReasoningEfforts: [{ reasoningEffort: 'vendor-deep' }],
-          defaultReasoningEffort: 'vendor-deep',
-        })),
+        nextCursor: p.cursor ? null : 'second-page',
+        data: Array.from({ length: 10 }, (_, offset) => {
+          const i = offset + (p.cursor ? 10 : 0);
+          return {
+            id: `external-${i}`,
+            displayName: `External ${i}`,
+            supportedReasoningEfforts: [{ reasoningEffort: 'vendor-deep' }],
+            defaultReasoningEffort: 'vendor-deep',
+          };
+        }),
       });
     } else if (m === 'account/read') {
       reply(id, { account: { type: 'apiKey' } });
@@ -474,6 +570,15 @@ if (claude) {
               .map((v) => ({ path: v.path, mediaType: 'image/png' })),
         ...(opened.threadId || opened.sessionId ? { resume: thread } : {}),
       };
+      if (!agy && process.env.MAKA_NATIVE_FIXTURE_EARLY_EVENTS) {
+        for (let i = 0; i < 257; i++)
+          event('item/agentMessage/delta', {
+            threadId: thread,
+            turnId: turn,
+            itemId: 'early',
+            delta: i + ',',
+          });
+      }
       if (!agy) reply(id, { turn: { id: turn, status: 'inProgress' } });
       void prompt();
     } else if (m === 'turn/interrupt' || m === 'session/cancel') {

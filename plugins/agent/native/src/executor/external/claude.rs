@@ -19,6 +19,14 @@
 
 //! The interactive PTY owns execution; append-only JSONL supplies correlated observations.
 use super::*;
+mod input;
+
+#[derive(Clone, Copy)]
+enum Start {
+    Unspawned,
+    Interactive,
+    Submitted,
+}
 use maka_agent_facts::executor::Output;
 use std::{path::Path, time::Duration};
 use tokio::io::{AsyncReadExt, AsyncSeekExt};
@@ -38,7 +46,7 @@ pub(super) async fn execute(
     cancellation: CancellationToken,
 ) -> Result<Outcome, Error> {
     let provisional = journal.native_session().is_none();
-    let mut spawned = false;
+    let mut start = Start::Unspawned;
     let result = prepare(
         config,
         cwd,
@@ -48,7 +56,7 @@ pub(super) async fn execute(
         output,
         bridge.clone(),
         cancellation,
-        &mut spawned,
+        &mut start,
     )
     .await;
     // Preparation can fail before a PTY exists; credentials are still revoked.
@@ -57,22 +65,24 @@ pub(super) async fn execute(
         return result;
     }
     closed?;
-    settle_preparation(storage, journal, provisional, spawned, result).await
+    settle_preparation(storage, journal, provisional, start, result).await
 }
 async fn settle_preparation(
     storage: &Storage,
     journal: &mut journal::Journal,
     provisional: bool,
-    spawned: bool,
+    start: Start,
     result: Result<Outcome, Error>,
 ) -> Result<Outcome, Error> {
-    if !spawned && let Err(error) = &result {
+    if !matches!(start, Start::Submitted)
+        && let Err(error) = &result
+    {
         match error {
             Error::Unknown | Error::CleanupUnconfirmed | Error::Persistence(_) => return result,
             _ => {}
         }
         if provisional {
-            journal.revoke_unspawned(storage).await?;
+            journal.revoke_unsubmitted(storage).await?;
         }
         if !matches!(error, Error::Cancelled) {
             return Ok(Outcome::Failed {
@@ -97,17 +107,13 @@ async fn prepare(
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
-    spawned: &mut bool,
+    start: &mut Start,
 ) -> Result<Outcome, Error> {
-    if request
+    let images = request
         .get("images")
         .and_then(Value::as_array)
-        .is_some_and(|images| !images.is_empty())
-    {
-        return Err(Error::Invalid(
-            "Claude interactive image attachment submission is unsupported".into(),
-        ));
-    }
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let resume = journal.native_session().map(str::to_owned);
     let session = resume.clone().unwrap_or_else(|| Uuid::new_v4().to_string());
     Uuid::parse_str(&session)
@@ -117,7 +123,7 @@ async fn prepare(
         .map_err(|e| Error::Provider(e.to_string()))?;
     let transcript = transcript(config, &cwd, &session)?;
     let mut cursor = Cursor::fence(transcript, resume.is_some()).await?;
-    // Claude accepts a caller-selected UUID. Commit it before the positional prompt can cause effects.
+    // Commit the caller-selected UUID before native startup and any interactive submission.
     journal.opened(storage, session.clone()).await?;
     if cancellation.is_cancelled() {
         return Err(Error::Cancelled);
@@ -140,6 +146,7 @@ async fn prepare(
     )
     .await?;
     plan.arg("--dangerously-skip-permissions")
+        .arg("--ax-screen-reader")
         .arg(if resume.is_some() {
             "--resume"
         } else {
@@ -159,18 +166,20 @@ async fn prepare(
         plan.arg("--effort").arg(effort);
     }
     if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
-        plan.arg("--append-system-prompt").arg(instructions);
+        let path = directory.path().join("instructions.txt");
+        tokio::fs::write(&path, instructions)
+            .await
+            .map_err(|e| Error::Provider(e.to_string()))?;
+        plan.arg("--append-system-prompt-file").arg(path);
     }
-    let prompt = runtime::string(request, "/message")?;
-    plan.arg("--").arg(prompt);
-    bridge.admit()?;
+    let prompt = input::text(runtime::string(request, "/message")?);
     let (mut child, io) = maka_process::pty::spawn(
         plan,
         maka_agent_facts::terminal::TerminalSize::new(120, 40).expect("fixed native terminal size"),
     )
     .await
     .map_err(runtime::process_error)?;
-    *spawned = true;
+    *start = Start::Interactive;
     let exited = CancellationToken::new();
     let settle = CancellationToken::new();
     let lifecycle = async {
@@ -186,50 +195,64 @@ async fn prepare(
         exited.cancel();
         result
     };
-    let terminal_stop = CancellationToken::new();
     let terminal_done = CancellationToken::new();
+    let (screen_send, mut screen) = tokio::sync::watch::channel(input::Screen::default());
     let terminal = async {
         let result = async {
-        let mut buffer = [0u8; 8192];
-        let mut startup = Vec::new();
-        loop {
-            let read = tokio::select! {
-                biased;
-                () = exited.cancelled() => {
-                    return tokio::time::timeout(Duration::from_secs(1), async {
-                        loop { if io.read(&mut buffer).await.map_err(|_| Error::CleanupUnconfirmed)? == 0 { return Ok::<(), Error>(()); } }
-                    }).await.map_err(|_| Error::CleanupUnconfirmed)?;
-                }
-                read = io.read(&mut buffer) => read.map_err(|_| Error::CleanupUnconfirmed)?,
-            };
-            if read == 0 {
-                return Ok(());
+            let mut buffer = [0u8;8192];
+            let mut decoder=input::Decoder::default();
+            loop {
+                let read=tokio::select! {
+                    biased;
+                    ()=exited.cancelled() => {
+                        return tokio::time::timeout(Duration::from_secs(1),async {
+                            loop {if io.read(&mut buffer).await.map_err(|_|Error::CleanupUnconfirmed)?==0 {return Ok::<(),Error>(());}}
+                        }).await.map_err(|_|Error::CleanupUnconfirmed)?;
+                    }
+                    read=io.read(&mut buffer)=>read.map_err(|_|Error::CleanupUnconfirmed)?,
+                };
+                if read==0 {return Ok(());}
+                screen_send.send_modify(|s|decoder.push(s,&buffer[..read]));
             }
-            // Bounded detection only: terminal text never proves prompt admission or completion.
-            startup.extend_from_slice(&buffer[..read]);
-            if startup.len() > 32 * 1024 {
-                startup.drain(..startup.len() - 32 * 1024);
-            }
-            let text = String::from_utf8_lossy(&startup).to_lowercase();
-            if text.contains("bypass permissions mode") && text.contains("yes, i accept")
-                || text.contains("choose the text style")
-                || text.contains("do you trust the files in this folder")
-                || text.contains("select login method")
-            {
-                terminal_stop.cancel();
-            }
-        }
         }.await;
         terminal_done.cancel();
         result
     };
     let business = async {
-        let work = observe(&mut cursor, &session, prompt, output.as_ref());
+        let work = async {
+            input::submit(
+                &io,
+                &mut screen,
+                cwd.to_str().expect("validated UTF-8 cwd"),
+                &prompt,
+                images,
+                &bridge,
+                start,
+            )
+            .await?;
+            drop(screen);
+            let native_prompt = if images.is_empty() {
+                prompt.clone()
+            } else {
+                let labels = (1..=images.len())
+                    .map(|n| format!("[Image #{n}]"))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                format!("{labels}{prompt}")
+            };
+            observe(
+                &mut cursor,
+                &session,
+                &native_prompt,
+                images.len(),
+                output.as_ref(),
+            )
+            .await
+        };
         tokio::pin!(work);
         let result = tokio::select! { biased;
             () = cancellation.cancelled() => Err(Error::Cancelled),
             () = bridge.failed.cancelled() => Err(Error::Unknown),
-            () = terminal_stop.cancelled() => Err(Error::Invalid("Claude interactive setup is required; initialize and accept bypass permissions in the native CLI first".into())),
             result = &mut work => result,
             () = exited.cancelled() => Err(Error::Unknown),
             () = terminal_done.cancelled() => Err(Error::Unknown),
@@ -371,9 +394,9 @@ impl Cursor {
                 let end = self.scanned + relative;
                 self.scanned = 0;
                 let line = self.pending.drain(..=end).collect::<Vec<_>>();
-                return serde_json::from_slice(&line)
-                    .map(Some)
-                    .map_err(|_| Error::Invalid("Malformed complete Claude JSONL line".into()));
+                return runtime::parse_json(line, "complete Claude JSONL line")
+                    .await
+                    .map(Some);
             }
             self.scanned = self.pending.len();
             let mut bytes = [0u8; 8192];
@@ -389,9 +412,9 @@ impl Cursor {
             }
             self.offset += count as u64;
             self.pending.extend_from_slice(&bytes[..count]);
-            if self.pending.len() > 8 * 1024 * 1024 {
+            if self.pending.len() > runtime::MAX_MESSAGE_BYTES {
                 return Err(Error::Invalid(
-                    "Claude live JSONL line exceeds 8 MiB".into(),
+                    "Claude live JSONL line exceeds 256 MiB".into(),
                 ));
             }
         }
@@ -401,12 +424,16 @@ async fn observe(
     cursor: &mut Cursor,
     session: &str,
     prompt: &str,
+    images: usize,
     output: &dyn OutputSink,
 ) -> Result<Outcome, Error> {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+    let deadline = tokio::time::Instant::now()
+        + runtime::SETUP_TIMEOUT
+        + Duration::from_secs(prompt.len() as u64 / (32 * 1024));
     let mut turn = LiveTurn {
         session,
         prompt,
+        images,
         admitted: false,
         assistant: false,
         text: String::new(),
@@ -424,7 +451,7 @@ async fn observe(
             None => {
                 if !turn.admitted && tokio::time::Instant::now() >= deadline {
                     return Err(Error::Invalid(
-                        "Claude interactive setup or prompt admission was not confirmed".into(),
+                        "Claude native JSONL did not confirm prompt admission within the input budget".into(),
                     ));
                 }
                 tokio::time::sleep(Duration::from_millis(50)).await;
@@ -435,6 +462,7 @@ async fn observe(
 struct LiveTurn<'a> {
     session: &'a str,
     prompt: &'a str,
+    images: usize,
     admitted: bool,
     assistant: bool,
     text: String,
@@ -459,9 +487,13 @@ impl LiveTurn<'_> {
         }
         if !self.admitted {
             if kind == "user"
-                && row
-                    .pointer("/message/content")
-                    .is_some_and(|v| content_text(v) == self.prompt)
+                && row.pointer("/message/content").is_some_and(|v| {
+                    content_text(v) == self.prompt
+                        && v.as_array()
+                            .map(|blocks| blocks.iter().filter(|b| b["type"] == "image").count())
+                            .unwrap_or_default()
+                            == self.images
+                })
             {
                 if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                     return Err(Error::Invalid(
@@ -598,6 +630,7 @@ mod tests {
         LiveTurn {
             session: "session",
             prompt: "current prompt",
+            images: 0,
             admitted: false,
             assistant: false,
             text: String::new(),
@@ -607,7 +640,7 @@ mod tests {
         }
     }
     #[tokio::test]
-    async fn cancellation_before_spawn_revokes_only_an_unspawned_new_uuid() {
+    async fn cancellation_before_submission_revokes_only_a_new_uuid() {
         let directory = tempfile::tempdir().unwrap();
         let root = maka_event_log::root::RootOwner::create(
             &directory.path().join("root"),
@@ -654,7 +687,14 @@ mod tests {
         assert!(cancellation.is_cancelled());
         assert_eq!(journal.native_session(), Some(allocated.as_str()));
         assert!(matches!(
-            settle_preparation(&storage, &mut journal, true, false, Err(Error::Cancelled)).await,
+            settle_preparation(
+                &storage,
+                &mut journal,
+                true,
+                Start::Unspawned,
+                Err(Error::Cancelled)
+            )
+            .await,
             Err(Error::Cancelled)
         ));
         journal.ready(&storage).await.unwrap();
@@ -667,7 +707,14 @@ mod tests {
         journal.start(&storage, "followup").await.unwrap();
         journal.opened(&storage, established.clone()).await.unwrap();
         assert!(matches!(
-            settle_preparation(&storage, &mut journal, false, false, Err(Error::Cancelled)).await,
+            settle_preparation(
+                &storage,
+                &mut journal,
+                false,
+                Start::Unspawned,
+                Err(Error::Cancelled)
+            )
+            .await,
             Err(Error::Cancelled)
         ));
         journal.ready(&storage).await.unwrap();
@@ -683,7 +730,7 @@ mod tests {
                 &storage,
                 &mut journal,
                 false,
-                true,
+                Start::Submitted,
                 Err(Error::Provider("post-prompt uncertainty".into()))
             )
             .await,
@@ -707,7 +754,7 @@ mod tests {
             journal.start(&storage, "uncertain").await.unwrap();
             journal.opened(&storage, allocated.clone()).await.unwrap();
             assert!(
-                settle_preparation(&storage, &mut journal, true, false, Err(error))
+                settle_preparation(&storage, &mut journal, true, Start::Unspawned, Err(error))
                     .await
                     .is_err()
             );
@@ -737,6 +784,21 @@ mod tests {
             matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),&sink).await.unwrap(),Some(Outcome::Completed{text}) if text=="firstthen final")
         );
         assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"different"}),&sink).await.is_err());
+    }
+    #[tokio::test]
+    async fn native_image_placeholders_alone_do_not_admit_missing_image_blocks() {
+        let mut turn = turn();
+        turn.prompt = "[Image #1] [Image #2]current prompt";
+        turn.images = 2;
+        let sink = Sink;
+        for count in [0, 1, 2] {
+            let mut blocks = vec![serde_json::json!({"type":"text","text":turn.prompt})];
+            blocks.extend((0..count).map(
+                |_| serde_json::json!({"type":"image","source":{"type":"base64","data":"fixture"}}),
+            ));
+            turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":blocks}}),&sink).await.unwrap();
+            assert_eq!(turn.admitted, count == 2);
+        }
     }
     #[tokio::test]
     async fn host_mcp_results_are_not_orphan_native_tool_activities() {

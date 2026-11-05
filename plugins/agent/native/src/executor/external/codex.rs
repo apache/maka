@@ -29,7 +29,10 @@ pub(super) async fn proxy(
     let mut start = runtime::command(config, cwd).await?;
     start.args(["app-server", "daemon", "start"]);
     let mut observed = start
-        .observe(Some(30_000), cancellation.clone())
+        .observe(
+            Some(runtime::SETUP_TIMEOUT.as_secs() * 1000),
+            cancellation.clone(),
+        )
         .map_err(runtime::process_error)?;
     let drain = async { while observed.events.recv().await.is_some() {} };
     let (captured, ()) = tokio::join!(observed.completion, drain);

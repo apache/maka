@@ -241,3 +241,211 @@ async fn native_external_attachments_reject_unsupported_media_and_non_upload_sou
         f.config.shutdown().await.unwrap();
     }).await.unwrap();
 }
+
+#[tokio::test]
+async fn native_external_claude_trust_and_multiple_images_use_native_input_on_send_and_resume() {
+    use super::external_support::{configured, input_runtime, record_runtime};
+    tokio::time::timeout(Duration::from_secs(60), async {
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            settings
+                .external
+                .as_mut()
+                .unwrap()
+                .commands
+                .claude
+                .as_mut()
+                .unwrap()
+                .env
+                .insert("MAKA_NATIVE_FIXTURE_TRUST".into(), "1".into());
+        })
+        .await;
+        let session = f.create("Claude native multi-image input").await;
+
+        let mut noisy = image::RgbImage::new(1536, 1536);
+        let mut state = 0x9179_3375u32;
+        for byte in noisy.as_flat_samples_mut().samples {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            *byte = state as u8;
+        }
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(noisy)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let one = encoded.into_inner();
+        assert!(
+            one.len() * 4 / 3 > 8 * 1024 * 1024,
+            "native base64 JSONL must exceed the old limit"
+        );
+        let mut second = image::RgbImage::new(3, 2);
+        second.fill(123);
+        let mut two = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(second)
+            .write_to(&mut two, image::ImageFormat::Png)
+            .unwrap();
+        let two = two.into_inner();
+        let first = upload(&f, &session, "first.png", &one, Uuid::new_v4())
+            .await
+            .unwrap();
+        let second = upload(&f, &session, "second.png", &two, Uuid::new_v4())
+            .await
+            .unwrap();
+        let text = "current attachment context 中文\n".repeat(4096);
+        let note = upload(&f, &session, "context.txt", text.as_bytes(), Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut original = None;
+        for turn in 0..2 {
+            let mut input = input_runtime(&session, "claude", "inspect both images");
+            input["attachments"] = if turn == 0 {
+                json!([
+                    first["attachment"]["id"],
+                    second["attachment"]["id"],
+                    note["attachment"]["id"]
+                ])
+            } else {
+                json!([second["attachment"]["id"], first["attachment"]["id"]])
+            };
+            let accepted = f.mutation(2, "send", input, Uuid::new_v4()).await.unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let opened = packet(&mut control, "opened").await;
+            let cwd = opened["cwd"].as_str().unwrap();
+            assert_eq!(
+                std::fs::read_to_string(
+                    std::path::Path::new(cwd).join(".fixture-claude/fixture-trusted-workspace")
+                )
+                .unwrap(),
+                cwd
+            );
+            let images = opened["request"]["images"].as_array().unwrap();
+            assert_eq!(images.len(), 2);
+            let expected = if turn == 0 {
+                [&one, &two]
+            } else {
+                [&two, &one]
+            };
+            for (image, bytes) in images.iter().zip(expected) {
+                assert_eq!(image["mediaType"], "image/png");
+                assert_eq!(
+                    std::fs::read(image["path"].as_str().unwrap()).unwrap(),
+                    *bytes
+                );
+            }
+            let message = opened["request"]["message"].as_str().unwrap();
+            assert!(message.starts_with("inspect both images"));
+            if turn == 0 {
+                assert!(message.contains(&text));
+            } else {
+                assert_eq!(message, "inspect both images");
+            }
+            let journal = record_runtime(&f, &session, "claude").await;
+            let id = journal["nativeSession"].clone();
+            if let Some(original) = &original {
+                assert_eq!(&id, original);
+                assert_eq!(&opened["request"]["resume"], original);
+            } else {
+                original = Some(id);
+            }
+            release(&mut control).await;
+            packet(&mut control, "output").await;
+            release(&mut control).await;
+            packet(&mut control, "terminal").await;
+            for image in images {
+                assert!(std::path::Path::new(image["path"].as_str().unwrap()).exists());
+            }
+            release(&mut control).await;
+            f.drained().await;
+            assert_eq!(
+                work(&f, &session, &accepted).await["execution"]["state"],
+                "completed"
+            );
+            for image in images {
+                assert!(!std::path::Path::new(image["path"].as_str().unwrap()).exists());
+            }
+        }
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[tokio::test]
+async fn native_external_claude_cancel_before_enter_retires_images_and_allocates_a_new_native_id() {
+    use super::external_support::{configured, input_runtime, record_runtime};
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for stage in ["startup", "image", "text"] {
+            let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+                settings
+                    .external
+                    .as_mut()
+                    .unwrap()
+                    .commands
+                    .claude
+                    .as_mut()
+                    .unwrap()
+                    .env
+                    .insert("MAKA_NATIVE_FIXTURE_PAUSE_INPUT".into(), stage.into());
+            })
+            .await;
+            let session = f.create("Claude pre-submission cancellation").await;
+            let uploaded = upload(&f, &session, "held.png", &png(), Uuid::new_v4())
+                .await
+                .unwrap();
+            let mut input = input_runtime(&session, "claude", "an image still being composed");
+            input["attachments"] = json!([uploaded["attachment"]["id"]]);
+            let accepted = f
+                .mutation(2, "send", input.clone(), Uuid::new_v4())
+                .await
+                .unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let checkpoint = packet(&mut control, stage).await;
+            let original = record_runtime(&f, &session, "claude").await["nativeSession"].clone();
+            assert!(original.is_string());
+            let image = checkpoint.get("path").and_then(Value::as_str);
+            if let Some(path) = image {
+                assert!(std::path::Path::new(path).exists());
+            }
+            f.mutation(
+                2,
+                "stop",
+                json!({"sessionId":session,"invocationId":accepted["invocationId"]}),
+                Uuid::new_v4(),
+            )
+            .await
+            .unwrap();
+            f.drained().await;
+            assert_eq!(
+                work(&f, &session, &accepted).await["execution"]["state"],
+                "cancelled"
+            );
+            assert!(record_runtime(&f, &session, "claude").await["nativeSession"].is_null());
+            if let Some(path) = image {
+                assert!(!std::path::Path::new(path).exists());
+            }
+            let accepted = f.mutation(2, "send", input, Uuid::new_v4()).await.unwrap();
+            let mut control = BufReader::new(listener.accept().await.unwrap().0);
+            let opened = packet(&mut control, "opened").await;
+            assert!(opened["request"].get("resume").is_none());
+            assert_ne!(
+                record_runtime(&f, &session, "claude").await["nativeSession"],
+                original
+            );
+            release(&mut control).await;
+            packet(&mut control, "output").await;
+            release(&mut control).await;
+            packet(&mut control, "terminal").await;
+            release(&mut control).await;
+            f.drained().await;
+            assert_eq!(
+                work(&f, &session, &accepted).await["execution"]["state"],
+                "completed"
+            );
+            f.app.shutdown().await.unwrap();
+            f.config.shutdown().await.unwrap();
+        }
+    })
+    .await
+    .unwrap();
+}

@@ -54,6 +54,7 @@ pub(super) struct Bridge {
     changed: Notify,
     pub cancelled: CancellationToken,
     pub failed: CancellationToken,
+    pub listed: CancellationToken,
     pub url: String,
     token: String,
     server_stop: CancellationToken,
@@ -78,6 +79,7 @@ impl Bridge {
             changed: Notify::new(),
             cancelled: CancellationToken::new(),
             failed: CancellationToken::new(),
+            listed: CancellationToken::new(),
             url: format!("http://{address}/mcp"),
             token: format!("{}{}", Uuid::new_v4().simple(), Uuid::new_v4().simple()),
             server_stop: CancellationToken::new(),
@@ -88,6 +90,7 @@ impl Bridge {
         let mut config = StreamableHttpServerConfig::default();
         config.legacy_session_mode = false;
         config.json_response = true;
+        config.max_request_body_bytes = runtime::MAX_MESSAGE_BYTES;
         config.cancellation_token = bridge.sessions_stop.clone();
         let service = StreamableHttpService::new(
             move || Ok(Handler(factory.clone())),
@@ -273,8 +276,13 @@ impl ServerHandler for Handler {
         _: Option<PaginatedRequestParams>,
         _: RequestContext<RoleServer>,
     ) -> Result<ListToolsResult, rmcp::ErrorData> {
-        serde_json::from_value(serde_json::json!({"tools":self.0.tools.definitions()}))
-            .map_err(|_| rmcp::ErrorData::internal_error("Invalid Host catalog", None))
+        let result =
+            serde_json::from_value(serde_json::json!({"tools":self.0.tools.definitions()}))
+                .map_err(|_| rmcp::ErrorData::internal_error("Invalid Host catalog", None));
+        if result.is_ok() {
+            self.0.listed.cancel();
+        }
+        result
     }
     async fn call_tool(
         &self,

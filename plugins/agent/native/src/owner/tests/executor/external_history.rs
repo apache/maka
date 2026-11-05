@@ -204,27 +204,19 @@ async fn native_external_history_handoff_marks_bounded_tail_and_partial_utf8_fra
         let session = f.create("Bounded history").await;
         let answer = format!(
             "OMITTED_HISTORY_START{}RECENT_HISTORY_END",
-            "中文字".repeat(16000)
+            "中文字".repeat(1_000_000)
         );
-        native_turn(
-            &f,
-            &native,
-            &session,
-            "old-native-question",
-            &answer,
-            Vec::new(),
-        )
-        .await;
+        // Seed a large canonical UTF-8 field, then switch native runtimes.
+        external_turn(&f, &oar, &session, "antigravity", &answer).await;
         let sent = external_turn(&f, &oar, &session, "codex", "new-question").await;
         let text = sent["message"].as_str().unwrap();
         assert!(text.contains("History gap:"));
         assert!(text.contains("Truncated fragment:"));
         assert!(text.contains("RECENT_HISTORY_END"));
         assert!(!text.contains("OMITTED_HISTORY_START"));
-        assert!(!text.contains("PRIVATE_NATIVE_REASONING"));
         assert!(
-            text.len() < 70 * 1024,
-            "64 KiB readable payload plus bounded framing: {}",
+            text.len() > 7 * 1024 * 1024 && text.len() < 9 * 1024 * 1024,
+            "8 MiB readable payload plus bounded framing: {}",
             text.len()
         );
         assert_eq!(text.matches("new-question").count(), 1);

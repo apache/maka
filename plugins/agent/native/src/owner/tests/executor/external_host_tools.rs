@@ -512,3 +512,34 @@ async fn native_external_host_mcp_calls_commit_without_following_native_output()
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn native_external_host_large_mcp_message_is_accepted_and_delivered_intact() {
+    tokio::time::timeout(Duration::from_secs(45),async {
+        let tooling=service_tools::Setup::javascript().with_host_tools(vec![host_tool("send","SessionSend")]);
+        let (f,listener)=with_tools("http://127.0.0.1:9/v1",Some(tooling),|_|{}).await;
+        let session=f.create("Large MCP input").await;
+        let accepted=f.mutation(2,"send",input(&session,"queue a large follow-up"),Uuid::new_v4()).await.unwrap();
+        let mut control=BufReader::new(listener.accept().await.unwrap().0);
+        packet(&mut control,"opened").await;
+        let message="Full UTF-8 follow-up 中文\n".repeat(200_000);
+        assert!(message.len()>4*1024*1024);
+        plan(&mut control,json!([{"callId":1,"name":"SessionSend","input":{
+            "sessionId":session,"message":message,"delivery":"queue","backend":super::external_support::backend("codex")
+        }}])).await;
+        let results=replies(&mut control,1).await;
+        assert_ne!(results[&1]["isError"],true,"valid large Host request must be admitted");
+        let queued=business(&results[&1]);
+        assert_eq!(queued["kind"],"queued");
+        packet(&mut control,"output").await;release(&mut control).await;
+        packet(&mut control,"terminal").await;release(&mut control).await;
+        let mut followup=BufReader::new(listener.accept().await.unwrap().0);
+        let delivered=packet(&mut followup,"opened").await;
+        assert!(delivered["request"]["message"].as_str().unwrap().ends_with(&message));
+        release(&mut followup).await;finish(&f,&mut followup).await;
+        assert_eq!(work(&f,&session,&accepted).await["execution"]["state"],"completed");
+        let completed=f.query("work",json!({"sessionId":session,"target":{"kind":"message","messageId":queued["messageId"]}})).await.unwrap();
+        assert_eq!(completed["execution"]["state"],"completed");
+        f.app.shutdown().await.unwrap();f.config.shutdown().await.unwrap();
+    }).await.unwrap();
+}

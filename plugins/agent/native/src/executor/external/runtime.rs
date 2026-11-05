@@ -26,7 +26,21 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::WebSocketConfig},
 };
 
-const MAX_LINE: usize = 8 * 1024 * 1024;
+// Twenty 5-MiB images already occupy ~134 MiB as base64 in one native message.
+// Keep a finite buffer for malformed/unterminated native output, with room beyond that workload.
+pub(super) const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
+pub(super) const SETUP_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) async fn parse_json(bytes: Vec<u8>, source: &'static str) -> Result<Value, Error> {
+    // Large image-bearing rows must not monopolize an async executor thread.
+    let parsed = if bytes.len() >= 1024 * 1024 {
+        tokio::task::spawn_blocking(move || serde_json::from_slice(&bytes))
+            .await
+            .map_err(|_| Error::Provider("Native JSON parser task failed".into()))?
+    } else {
+        serde_json::from_slice(&bytes)
+    };
+    parsed.map_err(|_| Error::Invalid(format!("Malformed {source}")))
+}
 pub(super) fn validate_command(
     runtime: NativeRuntime,
     command: &NativeCommand,
@@ -74,18 +88,12 @@ pub(super) fn validate_command(
                         | "-a"
                         | "--full-auto"
                         | "--dangerously-bypass-approvals-and-sandbox"
-                        | "--config"
-                        | "-c"
-                        | "--enable"
-                        | "--disable"
                         | "--listen"
                         | "exec"
                         | "resume"
                         | "app-server"
                 ) || (!key.starts_with("--")
-                    && ["-c", "-a", "-s"]
-                        .iter()
-                        .any(|prefix| key.starts_with(prefix)))
+                    && ["-a", "-s"].iter().any(|prefix| key.starts_with(prefix)))
             }
             NativeRuntime::Antigravity => matches!(
                 key,
@@ -297,10 +305,10 @@ impl Wire {
             }),
             Transport::WebSocket => {
                 let config = WebSocketConfig::default()
-                    .max_message_size(Some(MAX_LINE))
-                    .max_frame_size(Some(MAX_LINE));
+                    .max_message_size(Some(MAX_MESSAGE_BYTES))
+                    .max_frame_size(Some(MAX_MESSAGE_BYTES));
                 let (socket, _) = tokio::time::timeout(
-                    Duration::from_secs(15),
+                    SETUP_TIMEOUT,
                     tokio_tungstenite::client_async_with_config(
                         "ws://localhost/",
                         tokio::io::join(output, input),
@@ -345,28 +353,30 @@ impl Wire {
                     .position(|b| *b == b'\n')
                     .map(|i| i + 1)
                     .unwrap_or(available.len());
-                if buffer.len() + count > MAX_LINE {
-                    return Err(Error::Invalid("Native protocol line exceeds 8 MiB".into()));
+                if buffer.len() + count > MAX_MESSAGE_BYTES {
+                    return Err(Error::Invalid(
+                        "Native protocol line exceeds 256 MiB".into(),
+                    ));
                 }
                 let complete = available[count - 1] == b'\n';
                 buffer.extend_from_slice(&available[..count]);
                 reader.consume(count);
                 if complete {
                     let size = buffer.len();
-                    let parsed = serde_json::from_slice(buffer)
-                        .map_err(|_| Error::Invalid("Malformed native JSON-RPC line".into()));
-                    buffer.clear();
+                    let parsed = parse_json(std::mem::take(buffer), "native JSON-RPC line").await;
                     return parsed.map(|value| (value, size));
                 }
             },
             Self::WebSocket(socket) => loop {
                 match socket.next().await {
                     Some(Ok(Message::Text(text))) => {
-                        return serde_json::from_str(&text)
-                            .map(|value| (value, text.len()))
-                            .map_err(|_| {
-                                Error::Invalid("Malformed Codex daemon JSON-RPC message".into())
-                            });
+                        let size = text.len();
+                        return parse_json(
+                            text.as_bytes().to_vec(),
+                            "Codex daemon JSON-RPC message",
+                        )
+                        .await
+                        .map(|v| (v, size));
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                     _ => return Err(Error::Unknown),
@@ -480,7 +490,7 @@ impl Pipe {
         let id = self.begin(method, params).await?;
         let mut events = Vec::new();
         let mut buffered_bytes = 0;
-        let deadline = tokio::time::sleep(Duration::from_secs(30));
+        let deadline = tokio::time::sleep(SETUP_TIMEOUT);
         tokio::pin!(deadline);
         loop {
             let value = tokio::select! { biased; value = self.next() => value?, () = &mut deadline => return Err(Error::Provider(format!("Native {method} timed out"))) };
@@ -506,10 +516,12 @@ impl Pipe {
             if method != "turn/start" {
                 continue;
             }
-            buffered_bytes += self.line_bytes;
-            if events.len() == 128 || buffered_bytes > MAX_LINE {
+            // Charge small notifications for retained JSON/Vec overhead too; no event-count cap.
+            buffered_bytes += self.line_bytes.max(1024);
+            if buffered_bytes > MAX_MESSAGE_BYTES {
                 return Err(Error::Invalid(
-                    "Too many native events before RPC acknowledgement".into(),
+                    "Native events before RPC acknowledgement exceed the 256 MiB retention budget"
+                        .into(),
                 ));
             }
             events.push(value);
@@ -640,15 +652,30 @@ mod tests {
     use super::*;
     #[test]
     fn launch_overrides_cannot_change_permission_or_interactive_protocol() {
+        let configured = NativeCommand {
+            executable: "fixture".into(),
+            args: [
+                "-c",
+                "approval_policy=on-request",
+                "--config",
+                "model=custom",
+                "--enable",
+                "custom_feature",
+                "--disable",
+                "another_feature",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            env: BTreeMap::new(),
+        };
+        assert!(validate_command(NativeRuntime::Codex, &configured).is_ok());
         for (runtime, args) in [
             (NativeRuntime::Claude, vec!["--print"]),
             (NativeRuntime::Claude, vec!["-phello"]),
             (NativeRuntime::Claude, vec!["--permission-mode=default"]),
             (NativeRuntime::Codex, vec!["--sandbox=read-only"]),
-            (
-                NativeRuntime::Codex,
-                vec!["-c", "approval_policy=on-request"],
-            ),
+            (NativeRuntime::Codex, vec!["--listen=stdio://"]),
             (NativeRuntime::Antigravity, vec!["--mode=default"]),
         ] {
             let config = NativeCommand {
