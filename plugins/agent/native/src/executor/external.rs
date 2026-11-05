@@ -37,6 +37,7 @@ mod history;
 mod journal;
 mod mcp;
 mod runtime;
+mod steering;
 mod tools;
 pub(crate) use tools::HostTools;
 
@@ -339,7 +340,13 @@ impl Call {
             cancellation.clone(),
         )
         .await?;
-        let mut materials = attachments::prepare(&store, &self.request, &cancellation).await?;
+        let mut materials = attachments::prepare(
+            &store,
+            &self.request.invocation.session_id,
+            &self.request.content,
+            &cancellation,
+        )
+        .await?;
         let mut journal = journal::Journal::load(&self.owner.storage, &self.request).await?;
         if let Some(mut context) =
             history::context(&store, &self.request, journal.last_delivered_run()).await?
@@ -351,6 +358,8 @@ impl Call {
         if cancellation.is_cancelled() {
             return Err(Error::Cancelled);
         }
+        let mut steering =
+            steering::Steering::new(store.clone(), &self.request, cancellation.clone())?;
         let lease = self
             .owner
             .root
@@ -403,10 +412,12 @@ impl Call {
             output,
             host_tools,
             cancellation,
+            &mut steering,
         )
         .await;
         if !matches!(result, Err(Error::CleanupUnconfirmed)) {
             lease.finish();
+            steering.cleanup().await?;
             if let Some(directory) = directory {
                 tokio::fs::remove_dir_all(directory).await.map_err(|e| {
                     Error::Provider(format!("External agent attachment cleanup failed: {e}"))

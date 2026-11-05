@@ -449,3 +449,58 @@ async fn native_external_claude_cancel_before_enter_retires_images_and_allocates
     .await
     .unwrap();
 }
+
+#[tokio::test]
+async fn native_external_agy_image_paths_preserve_upload_order_until_physical_settlement() {
+    use super::external_support::input_runtime;
+    tokio::time::timeout(Duration::from_secs(40), async {
+        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let session = f.create("agy image paths").await;
+        let one = png();
+        let mut second = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgba8(1, 2)
+            .write_to(&mut second, image::ImageFormat::Png)
+            .unwrap();
+        let two = second.into_inner();
+        let first = upload(&f, &session, "first.png", &one, Uuid::new_v4())
+            .await
+            .unwrap();
+        let second = upload(&f, &session, "second.png", &two, Uuid::new_v4())
+            .await
+            .unwrap();
+        let mut input = input_runtime(&session, "antigravity", "比较图片");
+        input["attachments"] = json!([first["attachment"]["id"], second["attachment"]["id"]]);
+        let accepted = f.mutation(2, "send", input, Uuid::new_v4()).await.unwrap();
+        let mut control = BufReader::new(listener.accept().await.unwrap().0);
+        let opened = packet(&mut control, "opened").await;
+        assert_eq!(opened["request"]["message"], "比较图片");
+        let images = opened["request"]["images"].as_array().unwrap();
+        assert_eq!(images.len(), 2);
+        let paths: Vec<_> = images
+            .iter()
+            .map(|image| {
+                assert_eq!(image["mediaType"], "image/png");
+                PathBuf::from(image["path"].as_str().unwrap())
+            })
+            .collect();
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), one);
+        assert_eq!(std::fs::read(&paths[1]).unwrap(), two);
+        release(&mut control).await;
+        packet(&mut control, "output").await;
+        release(&mut control).await;
+        packet(&mut control, "terminal").await;
+        assert_eq!(std::fs::read(&paths[0]).unwrap(), one);
+        assert_eq!(std::fs::read(&paths[1]).unwrap(), two);
+        release(&mut control).await;
+        f.drained().await;
+        assert_eq!(
+            work(&f, &session, &accepted).await["execution"]["state"],
+            "completed"
+        );
+        assert!(paths.iter().all(|path| !path.exists()));
+        f.app.shutdown().await.unwrap();
+        f.config.shutdown().await.unwrap();
+    })
+    .await
+    .unwrap();
+}

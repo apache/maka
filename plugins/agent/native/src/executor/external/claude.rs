@@ -44,6 +44,7 @@ pub(super) async fn execute(
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
+    steering: &mut steering::Steering,
 ) -> Result<Outcome, Error> {
     let provisional = journal.native_session().is_none();
     let mut start = Start::Unspawned;
@@ -56,6 +57,7 @@ pub(super) async fn execute(
         output,
         bridge.clone(),
         cancellation,
+        steering,
         &mut start,
     )
     .await;
@@ -107,6 +109,7 @@ async fn prepare(
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
     cancellation: CancellationToken,
+    steering: &mut steering::Steering,
     start: &mut Start,
 ) -> Result<Outcome, Error> {
     let images = request
@@ -165,13 +168,6 @@ async fn prepare(
     if let Some(effort) = request.get("effort").and_then(Value::as_str) {
         plan.arg("--effort").arg(effort);
     }
-    if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
-        let path = directory.path().join("instructions.txt");
-        tokio::fs::write(&path, instructions)
-            .await
-            .map_err(|e| Error::Provider(e.to_string()))?;
-        plan.arg("--append-system-prompt-file").arg(path);
-    }
     let prompt = input::text(runtime::string(request, "/message")?);
     let (mut child, io) = maka_process::pty::spawn(
         plan,
@@ -220,32 +216,58 @@ async fn prepare(
     };
     let business = async {
         let work = async {
-            input::submit(
-                &io,
-                &mut screen,
-                cwd.to_str().expect("validated UTF-8 cwd"),
-                &prompt,
-                images,
-                &bridge,
-                start,
-            )
-            .await?;
-            drop(screen);
-            let native_prompt = if images.is_empty() {
-                prompt.clone()
-            } else {
-                let labels = (1..=images.len())
-                    .map(|n| format!("[Image #{n}]"))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                format!("{labels}{prompt}")
-            };
+            let native_prompt =
+                if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
+                    let instructions = input::text(&runtime::instruction_message(instructions));
+                    let native_instructions = input::submit(
+                        &io,
+                        &mut screen,
+                        cwd.to_str().expect("validated UTF-8 cwd"),
+                        &instructions,
+                        &[],
+                        &bridge,
+                        start,
+                    )
+                    .await?;
+                    let bootstrap_output = BootstrapOutput(output.as_ref());
+                    let outcome = observe(
+                        &mut cursor,
+                        &session,
+                        &native_instructions,
+                        0,
+                        &bootstrap_output,
+                        &io,
+                        &mut screen,
+                        start,
+                        None,
+                    )
+                    .await?;
+                    if !matches!(outcome, Outcome::Completed { .. }) {
+                        return Ok(outcome);
+                    }
+                    input::send(&io, &mut screen, &prompt, images, start).await?
+                } else {
+                    input::submit(
+                        &io,
+                        &mut screen,
+                        cwd.to_str().expect("validated UTF-8 cwd"),
+                        &prompt,
+                        images,
+                        &bridge,
+                        start,
+                    )
+                    .await?
+                };
             observe(
                 &mut cursor,
                 &session,
                 &native_prompt,
                 images.len(),
                 output.as_ref(),
+                &io,
+                &mut screen,
+                start,
+                Some(steering),
             )
             .await
         };
@@ -420,21 +442,38 @@ impl Cursor {
         }
     }
 }
+struct BootstrapOutput<'a>(&'a dyn OutputSink);
+impl OutputSink for BootstrapOutput<'_> {
+    fn emit(&self, output: Output) -> BoxFuture<'_, Result<(), Error>> {
+        match output {
+            Output::OutputDelta { .. } | Output::ThinkingDelta { .. } => Box::pin(async { Ok(()) }),
+            output => self.0.emit(output),
+        }
+    }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "observations and additional input share the original PTY and invocation"
+)]
 async fn observe(
     cursor: &mut Cursor,
     session: &str,
     prompt: &str,
     images: usize,
     output: &dyn OutputSink,
+    io: &maka_process::pty::PtyIo,
+    screen: &mut tokio::sync::watch::Receiver<input::Screen>,
+    start: &mut Start,
+    mut steering: Option<&mut steering::Steering>,
 ) -> Result<Outcome, Error> {
-    let deadline = tokio::time::Instant::now()
-        + runtime::SETUP_TIMEOUT
-        + Duration::from_secs(prompt.len() as u64 / (32 * 1024));
+    let mut deadline = Some(input_deadline(prompt));
     let mut turn = LiveTurn {
         session,
         prompt,
         images,
         admitted: false,
+        pending: Default::default(),
         assistant: false,
         text: String::new(),
         message_ids: std::collections::BTreeSet::new(),
@@ -442,28 +481,118 @@ async fn observe(
         api_failure: None,
     };
     loop {
-        match cursor.next().await? {
-            Some(row) => {
-                if let Some(outcome) = turn.row(row, output).await? {
-                    return Ok(outcome);
+        // Keep this future across ready/take/paste. Dropping Cursor::next after it
+        // drained a large row would also discard its in-flight blocking JSON parse.
+        let next = async {
+            loop {
+                if let Some(row) = cursor.next().await? {
+                    return Ok::<_, Error>(row);
                 }
+                tokio::time::sleep(Duration::from_millis(50)).await;
             }
-            None => {
-                if !turn.admitted && tokio::time::Instant::now() >= deadline {
+        };
+        tokio::pin!(next);
+        let row = loop {
+            tokio::select! {
+                biased;
+                row = &mut next => break row?,
+                ready = async {
+                    match steering.as_deref_mut() {
+                        Some(steering) => steering.ready().await,
+                        None => std::future::pending().await,
+                    }
+                }, if turn.admitted => {
+                    ready?;
+                }
+                () = async {
+                    match deadline {
+                        Some(at) => tokio::time::sleep_until(at).await,
+                        None => std::future::pending().await,
+                    }
+                } => {
                     return Err(Error::Invalid(
                         "Claude native JSONL did not confirm prompt admission within the input budget".into(),
                     ));
                 }
-                tokio::time::sleep(Duration::from_millis(50)).await;
             }
+            // Commit only outside select: cancellation of ready cannot consume input.
+            if let Some(steering) = steering.as_deref_mut()
+                && let Some(request) = steering.take().await?
+            {
+                let images = request["images"]
+                    .as_array()
+                    .expect("canonical steering images");
+                let prompt = input::text(runtime::string(&request, "/message")?);
+                let prompt = input::send(io, screen, &prompt, images, start).await?;
+                turn.pending.push_back(SubmittedInput {
+                    prompt,
+                    images: images.len(),
+                });
+            }
+        };
+        let terminal = row["type"] == "system"
+            && row["subtype"] == "turn_duration"
+            && row.get("isSidechain").and_then(Value::as_bool) != Some(true);
+        // A ready batch at the final native boundary still belongs to this PTY.
+        // Take it before row() can settle; an empty take does not create a new turn.
+        if terminal
+            && turn.admitted
+            && row.get("sessionId").and_then(Value::as_str) == Some(session)
+            && turn.pending.is_empty()
+            && let Some(steering) = steering.as_deref_mut()
+            && let Some(request) = steering.take().await?
+        {
+            let images = request["images"]
+                .as_array()
+                .expect("canonical steering images");
+            let prompt = input::text(runtime::string(&request, "/message")?);
+            let prompt = input::send(io, screen, &prompt, images, start).await?;
+            turn.pending.push_back(SubmittedInput {
+                prompt,
+                images: images.len(),
+            });
+        }
+        let pending = turn.pending.len();
+        let admitted = turn.admitted;
+        if let Some(outcome) = turn.row(row, output).await? {
+            return Ok(outcome);
+        }
+        if (!admitted && turn.admitted) || turn.pending.len() < pending {
+            // A native busy queue can wait on arbitrarily long running tools.
+            deadline = None;
+        }
+        if terminal
+            && turn.admitted
+            && deadline.is_none()
+            && let Some(input) = turn.pending.front()
+        {
+            // Once a native turn ends, the queued input must be admitted, not lost.
+            deadline = Some(input_deadline(&input.prompt));
         }
     }
+}
+fn input_deadline(prompt: &str) -> tokio::time::Instant {
+    tokio::time::Instant::now()
+        + runtime::SETUP_TIMEOUT
+        + Duration::from_secs(prompt.len() as u64 / (32 * 1024))
+}
+struct SubmittedInput {
+    prompt: String,
+    images: usize,
+}
+fn matches_input(content: &Value, prompt: &str, images: usize) -> bool {
+    content_text(content) == prompt
+        && content.as_array().map_or(images == 0, |blocks| {
+            !blocks.iter().any(|b| b["type"] == "tool_result")
+                && blocks.iter().filter(|b| b["type"] == "image").count() == images
+        })
 }
 struct LiveTurn<'a> {
     session: &'a str,
     prompt: &'a str,
     images: usize,
     admitted: bool,
+    pending: std::collections::VecDeque<SubmittedInput>,
     assistant: bool,
     text: String,
     message_ids: std::collections::BTreeSet<String>,
@@ -487,13 +616,9 @@ impl LiveTurn<'_> {
         }
         if !self.admitted {
             if kind == "user"
-                && row.pointer("/message/content").is_some_and(|v| {
-                    content_text(v) == self.prompt
-                        && v.as_array()
-                            .map(|blocks| blocks.iter().filter(|b| b["type"] == "image").count())
-                            .unwrap_or_default()
-                            == self.images
-                })
+                && row
+                    .pointer("/message/content")
+                    .is_some_and(|v| matches_input(v, self.prompt, self.images))
             {
                 if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                     return Err(Error::Invalid(
@@ -502,6 +627,22 @@ impl LiveTurn<'_> {
                 }
                 self.admitted = true;
             }
+            return Ok(None);
+        }
+        if kind == "user"
+            && let Some(input) = self.pending.front()
+            && row
+                .pointer("/message/content")
+                .is_some_and(|v| matches_input(v, &input.prompt, input.images))
+        {
+            if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
+                return Err(Error::Invalid(
+                    "Claude steering missing native session identity".into(),
+                ));
+            }
+            self.pending.pop_front();
+            // A previous assistant cannot prove that this additional input was answered.
+            self.assistant = false;
             return Ok(None);
         }
         if kind == "assistant" {
@@ -583,11 +724,15 @@ impl LiveTurn<'_> {
         } else if kind == "system"
             && row.get("subtype").and_then(Value::as_str) == Some("turn_duration")
         {
-            if !self.assistant || row.get("sessionId").and_then(Value::as_str) != Some(self.session)
-            {
+            if row.get("sessionId").and_then(Value::as_str) != Some(self.session) {
                 return Err(Error::Invalid(
-                    "Claude terminal lacks current assistant/session correlation".into(),
+                    "Claude terminal lacks native session identity".into(),
                 ));
+            }
+            // The old native turn can finish after the next input was journaled.
+            // Neither an unconsumed input nor one without its own assistant may settle.
+            if !self.pending.is_empty() || !self.assistant {
+                return Ok(None);
             }
             return Ok(Some(match self.api_failure.take() {
                 Some(message) => Outcome::Failed {
@@ -632,6 +777,7 @@ mod tests {
             prompt: "current prompt",
             images: 0,
             admitted: false,
+            pending: Default::default(),
             assistant: false,
             text: String::new(),
             message_ids: Default::default(),
@@ -799,6 +945,87 @@ mod tests {
             turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":blocks}}),&sink).await.unwrap();
             assert_eq!(turn.admitted, count == 2);
         }
+    }
+    #[tokio::test]
+    async fn queued_steering_survives_intermediate_native_turn_completion() {
+        let mut turn = turn();
+        let sink = Sink;
+        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
+        turn.pending.push_back(SubmittedInput {
+            prompt: "next".into(),
+            images: 0,
+        });
+        turn.pending.push_back(SubmittedInput {
+            prompt: "[Image #7]last".into(),
+            images: 1,
+        });
+        for row in [
+            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"content":"first"}}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
+            serde_json::json!({"type":"assistant","uuid":"next","sessionId":"session","message":{"content":"second"}}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"text","text":"[Image #7]last"},{"type":"image"}]}}),
+            serde_json::json!({"type":"assistant","uuid":"last","sessionId":"session","message":{"content":"third"}}),
+            serde_json::json!({"type":"system","subtype":"stop_hook_summary","sessionId":"session"}),
+        ] {
+            assert!(turn.row(row, &sink).await.unwrap().is_none());
+        }
+        assert!(
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { text }) if text == "firstsecondthird")
+        );
+    }
+    #[tokio::test]
+    async fn steering_needs_exact_input_not_tool_results_and_a_new_assistant() {
+        let mut turn = turn();
+        let sink = Sink;
+        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
+        turn.pending.push_back(SubmittedInput {
+            prompt: "next".into(),
+            images: 0,
+        });
+        for row in [
+            serde_json::json!({"type":"assistant","uuid":"old","sessionId":"session","message":{"content":"old"}}),
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":[{"type":"text","text":"next"},{"type":"tool_result","tool_use_id":"native","content":"result"}]}}),
+            serde_json::json!({"type":"user","sessionId":"session","isSidechain":true,"message":{"content":"next"}}),
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"different"}}),
+        ] {
+            assert!(turn.row(row, &sink).await.unwrap().is_none());
+        }
+        assert_eq!(turn.pending.len(), 1);
+        turn.row(
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
+            &sink,
+        )
+        .await
+        .unwrap();
+        assert!(turn.pending.is_empty());
+        assert!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap().is_none());
+        turn.row(serde_json::json!({"type":"assistant","uuid":"new","sessionId":"session","message":{"content":"new"}}), &sink).await.unwrap();
+        assert!(
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Completed { text }) if text == "oldnew")
+        );
+    }
+    #[tokio::test]
+    async fn steering_cannot_hide_an_api_failure_before_an_intermediate_duration() {
+        let mut turn = turn();
+        let sink = Sink;
+        turn.row(serde_json::json!({"type":"user","sessionId":"session","message":{"content":"current prompt"}}), &sink).await.unwrap();
+        turn.pending.push_back(SubmittedInput {
+            prompt: "next".into(),
+            images: 0,
+        });
+        for row in [
+            serde_json::json!({"type":"assistant","uuid":"error","sessionId":"session","isApiErrorMessage":true,"message":{"content":"failed"}}),
+            serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}),
+            serde_json::json!({"type":"user","sessionId":"session","message":{"content":"next"}}),
+            serde_json::json!({"type":"assistant","uuid":"answer","sessionId":"session","message":{"content":"later"}}),
+        ] {
+            assert!(turn.row(row, &sink).await.unwrap().is_none());
+        }
+        assert!(
+            matches!(turn.row(serde_json::json!({"type":"system","subtype":"turn_duration","sessionId":"session"}), &sink).await.unwrap(), Some(Outcome::Failed { code: Some(code), .. }) if code == "native_api_failed")
+        );
     }
     #[tokio::test]
     async fn host_mcp_results_are_not_orphan_native_tool_activities() {

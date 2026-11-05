@@ -1247,7 +1247,13 @@ impl Owner {
         }
         if matches!(delivery, maka_agent_api::contract::SendDelivery::Steer) {
             let control = admission.state().await.controls.get(&id).cloned();
-            if let Some(control) = control.filter(|control| control.basis.executor.is_none()) {
+            if let Some(control) = control.filter(|control| {
+                control
+                    .basis
+                    .executor
+                    .as_ref()
+                    .is_none_or(|executor| self.executors.supports_steering(executor))
+            }) {
                 return self
                     .steer_message(
                         text,

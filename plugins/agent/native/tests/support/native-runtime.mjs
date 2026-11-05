@@ -29,7 +29,7 @@ import {
   existsSync,
   readFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { createHash } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
@@ -113,9 +113,36 @@ function websocket() {
 const port = Number(process.argv[2]);
 const args = process.argv.slice(3);
 if (args.includes('daemon') && args.includes('start')) process.exit(0);
-const agy = args.includes('acp');
-if (agy && !args.includes('--dangerously-skip-permissions'))
-  throw Error('agy must launch with native full permissions');
+const option = (name) => {
+  const index = args.indexOf(name);
+  return index < 0 ? undefined : args[index + 1];
+};
+if (args.includes('models')) {
+  const models = [
+    ['gemini-4-argon-medium', 'Gemini 4 Argon（中）'],
+    ['gemini-4-argon-high', 'Gemini 4 Argon (High)'],
+    ['gemini-4-argon-low', 'Gemini 4 Argon (Low)'],
+    ['gemini-3.8-flash-high', 'Gemini 3.8 Flash (High)'],
+    ['gemini-3.8-flash-medium', 'Gemini 3.8 Flash (Medium)'],
+    ['gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)'],
+    ['claude-opus-5-5-low', 'Claude Opus 5.5 · 低'],
+    ['claude-opus-5-5-medium', 'Claude Opus 5.5 (Medium)'],
+    ['claude-opus-5-5-high', 'Claude Opus 5.5 (High)'],
+    ['claude-sonnet-5-5-low', 'Claude Sonnet 5.5 (Low)'],
+    ['claude-sonnet-5-5-medium', 'Claude Sonnet 5.5 (Medium)'],
+    ['claude-sonnet-5-5-high', 'Claude Sonnet 5.5 (High)'],
+    ['gpt-oss-120b-medium', 'GPT-OSS 120B（中）'],
+  ];
+  process.stdout.write(models.map((row) => row.join('\t')).join('\n') + '\n');
+  process.exit(0);
+}
+const agy = args.includes('--print=') && option('--input-format') === 'stream-json';
+if (args.includes('acp')) throw Error('agy requires native stream-json, not ACP');
+if (
+  agy &&
+  (!args.includes('--dangerously-skip-permissions') || option('--output-format') !== 'stream-json')
+)
+  throw Error('agy requires native full permissions and stream-json output');
 const claude = !agy && args.includes('--dangerously-skip-permissions');
 let control,
   gates,
@@ -124,9 +151,42 @@ let control,
   server,
   thread = 'native-fixture-session',
   turn = 'fixture-turn',
-  promptId,
   interrupted = false;
-let opened, activePlan;
+let opened, activePlan, instructionMessage;
+const instructionOrder = [];
+let agyStep = 0,
+  agyTurns = 0,
+  agyResponse = '',
+  agyBootstrapped = false,
+  catalogTools = [];
+const instructionMessageText = (text) =>
+  text.startsWith('<maka_system_instructions>') && text.endsWith('</maka_system_instructions>');
+function agyUser() {
+  agyResponse = '';
+  send({
+    event: 'step_update',
+    step_update: {
+      conversation_id: thread,
+      step_index: agyStep++,
+      state: 'DONE',
+      step_type: 'user_input',
+    },
+  });
+}
+function agyInput(text) {
+  const manifest = text.match(
+    /^([\s\S]*)\n\n<maka_image_attachments>\n([\s\S]*)\n<\/maka_image_attachments>$/,
+  );
+  if (!manifest) return { message: text, images: [], nativeMessage: text };
+  const images = JSON.parse(manifest[2]);
+  if (
+    !Array.isArray(images) ||
+    images.some((image) => typeof image.path !== 'string' || typeof image.mediaType !== 'string')
+  )
+    throw Error('invalid native image path manifest');
+  return { message: manifest[1], images, nativeMessage: text };
+}
+const queuedInputs = [];
 let write = (text) => process.stdout.write(text + '\n');
 const send = (value) => write(JSON.stringify(value));
 const reply = (id, result) => send({ jsonrpc: '2.0', id, result });
@@ -166,7 +226,12 @@ async function mcp(method, params = {}, id = 1, signal) {
   if (!response.ok)
     return {
       isError: true,
-      content: [{ type: 'text', text: JSON.stringify({ message: `HTTP ${response.status}` }) }],
+      content: [
+        {
+          type: 'text',
+          text: JSON.stringify({ message: `HTTP ${response.status}` }),
+        },
+      ],
     };
   let text = await response.text();
   const value =
@@ -192,12 +257,19 @@ function output(text) {
       uuid: crypto.randomUUID(),
       message: { id: crypto.randomUUID(), content: [{ type: 'text', text }] },
     });
-  else if (agy)
-    event('session/update', {
-      sessionId: thread,
-      update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } },
+  else if (agy) {
+    agyResponse += text;
+    send({
+      event: 'step_update',
+      step_update: {
+        conversation_id: thread,
+        step_index: agyStep++,
+        state: 'DONE',
+        step_type: 'agent_response',
+        text_delta: text,
+      },
     });
-  else
+  } else
     event('item/agentMessage/delta', {
       threadId: thread,
       turnId: turn,
@@ -208,7 +280,17 @@ function output(text) {
 function terminal(cancelled = false) {
   if (claude) {
     if (!cancelled) append({ type: 'system', subtype: 'turn_duration', durationMs: 1 });
-  } else if (agy) reply(promptId, { stopReason: cancelled ? 'cancelled' : 'end_turn' });
+  } else if (agy)
+    send({
+      event: 'result',
+      result: {
+        conversation_id: thread,
+        status: cancelled ? 'ERROR' : 'SUCCESS',
+        response: agyResponse,
+        num_turns: ++agyTurns,
+        ...(cancelled ? { error: 'interrupted', finished_reason: 'interrupted' } : {}),
+      },
+    });
   else
     event('turn/completed', {
       threadId: thread,
@@ -228,14 +310,31 @@ async function cancel() {
   }
   if (!activePlan?.expectCancel) terminal(true);
 }
-async function prompt() {
-  await connectControl();
+async function loadTools() {
   await mcp('initialize', {
     protocolVersion: '2025-03-26',
     capabilities: {},
     clientInfo: { name: 'native-fixture', version: '1' },
   });
-  request.tools = (await mcp('tools/list')).tools ?? [];
+  return (await mcp('tools/list')).tools ?? [];
+}
+async function preopenProbe() {
+  if (!server || !process.env.MAKA_NATIVE_PREOPEN_PROBE) return;
+  await mcp('initialize', {
+    protocolVersion: '2025-03-26',
+    capabilities: {},
+    clientInfo: { name: 'native-fixture', version: '1' },
+  });
+  const premature = await mcp('tools/call', {
+    name: '__before_identity__',
+    arguments: {},
+  });
+  if (JSON.parse(premature.content[0].text).code !== -32600)
+    throw Error('Host call admitted before native identity persistence');
+}
+async function prompt() {
+  await connectControl();
+  request.tools = agy ? catalogTools : await loadTools();
   trace('opened', { cwd: process.cwd() });
   let first = (await gate.next()).value,
     plan;
@@ -294,7 +393,9 @@ async function prompt() {
       type: 'assistant',
       uuid: crypto.randomUUID(),
       isApiErrorMessage: true,
-      message: { content: [{ type: 'text', text: 'API Error: 400 FIXTURE_API_FAILURE' }] },
+      message: {
+        content: [{ type: 'text', text: 'API Error: 400 FIXTURE_API_FAILURE' }],
+      },
     });
   else output('committed output');
   trace('output');
@@ -323,6 +424,18 @@ async function prompt() {
   trace('terminal');
   await gate.next();
   if (request.message === 'wrong-turn') {
+    if (agy) {
+      send({
+        event: 'result',
+        result: {
+          conversation_id: 'historical-native-session',
+          status: 'SUCCESS',
+          response: 'unrelated result',
+          num_turns: ++agyTurns,
+        },
+      });
+      process.exit(0);
+    }
     event('turn/completed', {
       threadId: thread,
       turn: { id: 'historical-turn', status: 'completed' },
@@ -334,8 +447,35 @@ async function prompt() {
     output('after blocked Stop');
   }
   terminal();
+  for (const input of queuedInputs.splice(0)) {
+    appendUser(input);
+    output('steering: ' + input.message + ';');
+    terminal();
+  }
 }
 let transcript;
+function appendUser(input) {
+  append({
+    type: 'user',
+    uuid: crypto.randomUUID(),
+    message: {
+      content: [
+        ...input.images.map((image) => ({
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: image.mediaType,
+            data: readFileSync(image.path).toString('base64'),
+          },
+        })),
+        {
+          type: 'text',
+          text: input.images.map((_, i) => '[Image #' + (i + 1) + ']').join(' ') + input.message,
+        },
+      ],
+    },
+  });
+}
 function append(row) {
   appendFileSync(transcript, JSON.stringify({ sessionId: thread, ...row }) + '\n');
 }
@@ -351,7 +491,11 @@ if (claude) {
     (await import('node:fs')).readFileSync(args[args.indexOf('--mcp-config') + 1], 'utf8'),
   ).mcpServers.maka;
   server.authorization = server.headers.Authorization;
-  request = { message: '', images: [], ...(args.includes('--resume') ? { resume: thread } : {}) };
+  request = {
+    message: '',
+    images: [],
+    ...(args.includes('--resume') ? { resume: thread } : {}),
+  };
   process.stdin.setRawMode(true);
   await mcp('initialize', {
     protocolVersion: '2025-03-26',
@@ -363,6 +507,8 @@ if (claude) {
   const decoder = new StringDecoder('utf8');
   let pending = '',
     composing = '',
+    images = [],
+    submitted = false,
     trusted = !process.env.MAKA_NATIVE_FIXTURE_TRUST;
   const ready = () => process.stdout.write('Claude Code native fixture\r\n$');
   if (!trusted)
@@ -395,12 +541,12 @@ if (claude) {
             gif: 'image/gif',
             webp: 'image/webp',
           }[extension];
-          request.images.push({ path: pasted, mediaType });
+          images.push({ path: pasted, mediaType });
           await pauseInput('image', { path: pasted });
-          process.stdout.write('[Image #' + request.images.length + ']');
+          process.stdout.write('[Image #' + images.length + ']');
         } else {
           composing += pasted;
-          await pauseInput('text');
+          if (!instructionMessageText(pasted)) await pauseInput('text');
           process.stdout.write(
             pasted.length > 4096 ? '[Pasted text #1]' : pasted.replace(/(.{1,100})\s+/g, '$1\r\n'),
           );
@@ -408,38 +554,137 @@ if (claude) {
       } else if ('\x1b[200~'.startsWith(pending)) return;
       else if (pending.startsWith('\r')) {
         pending = pending.slice(1);
-        request.message = composing;
-        append({
-          type: 'user',
-          uuid: crypto.randomUUID(),
-          message: {
-            content: [
-              ...request.images.map((image) => ({
-                type: 'image',
-                source: {
-                  type: 'base64',
-                  media_type: image.mediaType,
-                  data: readFileSync(image.path).toString('base64'),
-                },
-              })),
-              {
-                type: 'text',
-                text:
-                  request.images.map((_, i) => '[Image #' + (i + 1) + ']').join(' ') +
-                  request.message,
-              },
-            ],
-          },
-        });
-        void prompt();
+        const input = { message: composing, images };
+        composing = '';
+        images = [];
+        process.stdout.write('\r\n$');
+        if (!submitted && !instructionMessage && instructionMessageText(input.message)) {
+          if (input.images.length)
+            throw Error('instructions must be a standalone ordinary message');
+          instructionMessage = input.message;
+          instructionOrder.push('user/instructions');
+          appendUser(input);
+          output('instructions acknowledged');
+          terminal();
+          ready();
+          continue;
+        }
+        if (submitted) {
+          queuedInputs.push(input);
+          trace('steered', { request: input, thread, turn });
+        } else {
+          instructionOrder.push('user/task');
+          request = {
+            ...request,
+            ...input,
+            ...(instructionMessage ? { instructions: instructionMessage } : {}),
+            instructionOrder: [...instructionOrder],
+          };
+          submitted = true;
+          appendUser(input);
+          void prompt();
+        }
       } else if (pending.startsWith('\x1b')) {
         pending = pending.slice(1);
         void cancel();
       } else pending = pending.slice(1);
     }
   });
+} else if (agy) {
+  const roots = args.flatMap((arg, index) => (arg === '--add-dir' ? [args[index + 1]] : []));
+  const config = roots
+    .map((root) => join(root, '.agents/plugins/maka/mcp_config.json'))
+    .find(existsSync);
+  if (!config) throw Error('agy requires its private native MCP plugin');
+  const plugin = JSON.parse(readFileSync(join(dirname(config), 'plugin.json'), 'utf8'));
+  if (plugin.name !== 'maka') throw Error('missing native plugin manifest');
+  server = JSON.parse(readFileSync(config, 'utf8')).mcpServers.maka;
+  server.authorization = server.headers.Authorization;
+  const settings = JSON.parse(readFileSync(option('--settings'), 'utf8'));
+  if (settings.queuedMessages !== 'send-immediately')
+    throw Error('missing per-invocation queued-message setting');
+  opened = {
+    model: option('--model') ?? 'fixture-model',
+    effort: option('--effort') ?? 'vendor-deep',
+  };
+  const resumed = option('--conversation');
+  if (resumed) {
+    thread = resumed;
+    agyStep = 80;
+    agyTurns = 40;
+  }
+  await preopenProbe();
+  if (args.includes('--hold-open')) {
+    await connectControl();
+    trace('before_opened');
+    await gate.next();
+  }
+  send({
+    event: 'init',
+    conversation_id: thread,
+    init: {
+      model: opened.model,
+      cwd: process.cwd(),
+      tools: ['read_file', 'run_command', 'call_mcp_tool'],
+    },
+  });
+  const lines = createInterface({ input: process.stdin });
+  let work = Promise.resolve();
+  lines.on('line', (line) => {
+    work = work.then(async () => {
+      const value = JSON.parse(line);
+      if (value.event !== 'user' || typeof value.message?.content !== 'string')
+        throw Error('agy requires native ordinary user messages');
+      const text = value.message.content;
+      if (!agyBootstrapped) {
+        const readiness =
+          'Initialize the available MCP tool catalog for this conversation and acknowledge readiness. Do not perform a user task yet.';
+        if (!instructionMessageText(text) && text !== readiness)
+          throw Error('the user task cannot stand in for the standalone agy bootstrap');
+        instructionMessage = instructionMessageText(text) ? text : undefined;
+        instructionOrder.push(instructionMessage ? 'user/instructions' : 'user/bootstrap');
+        agyUser();
+        catalogTools = await loadTools();
+        if (process.env.MAKA_NATIVE_FIXTURE_BOOTSTRAP_TOOL) {
+          const index = agyStep++;
+          for (const state of ['ACTIVE', 'DONE']) {
+            send({
+              event: 'step_update',
+              step_update: {
+                conversation_id: thread,
+                step_index: index,
+                state,
+                step_type: 'tool',
+                tool_name: 'bootstrap-native',
+                tool_info: { name: 'bootstrap-native', parameters: {} },
+              },
+            });
+          }
+        }
+        output('instructions acknowledged');
+        terminal();
+        agyBootstrapped = true;
+        return;
+      }
+      instructionOrder.push('user/task');
+      request = {
+        ...agyInput(text),
+        model: opened.model,
+        effort: opened.effort,
+        ...(resumed ? { resume: thread } : {}),
+        ...(instructionMessage ? { instructions: instructionMessage } : {}),
+        instructionOrder: [...instructionOrder],
+      };
+      agyUser();
+      await prompt();
+    });
+    work.catch((error) => {
+      throw error;
+    });
+  });
+  lines.on('close', () => process.exit(0));
 } else {
-  const wire = agy ? { input: process.stdin, write } : websocket();
+  const wire = websocket();
   write = wire.write;
   const lines = createInterface({ input: wire.input });
   lines.on('line', async (line) => {
@@ -447,21 +692,13 @@ if (claude) {
       p = value.params ?? {},
       id = value.id,
       m = value.method;
+    if (
+      ['thread/start', 'thread/resume', 'turn/start'].includes(m) &&
+      ('developerInstructions' in p || 'baseInstructions' in p)
+    )
+      throw Error('native system instructions must remain unchanged');
     if (m === 'initialize') {
-      reply(
-        id,
-        agy
-          ? {
-              protocolVersion: 1,
-              agentCapabilities: {
-                loadSession: true,
-                promptCapabilities: { image: true },
-                _meta: { antigravity: { systemPrompt: { append: true } } },
-              },
-              agentInfo: { name: 'fixture', version: '1.5.0' },
-            }
-          : { userAgent: 'fixture' },
-      );
+      reply(id, { userAgent: 'fixture' });
     } else if (m === 'initialized') {
     } else if (m === 'model/list') {
       reply(id, {
@@ -478,99 +715,90 @@ if (claude) {
       });
     } else if (m === 'account/read') {
       reply(id, { account: { type: 'apiKey' } });
-    } else if (['thread/start', 'thread/resume', 'session/new', 'session/load'].includes(m)) {
+    } else if (m === 'thread/start' || m === 'thread/resume') {
       opened = p;
-      thread = p.threadId ?? p.sessionId ?? thread;
-      const s = agy ? p.mcpServers?.[0] : p.config?.mcp_servers?.maka;
-      if (s)
+      thread = p.threadId ?? thread;
+      instructionOrder.push(m);
+      const config = p.config?.mcp_servers?.maka;
+      if (config)
         server = {
-          url: s.url,
-          authorization: agy
-            ? s.headers.find((h) => h.name === 'Authorization').value
-            : s.http_headers.Authorization,
+          url: config.url,
+          authorization: config.http_headers.Authorization,
         };
-      if (server && process.env.MAKA_NATIVE_PREOPEN_PROBE) {
-        await mcp('initialize', {
-          protocolVersion: '2025-03-26',
-          capabilities: {},
-          clientInfo: { name: 'native-fixture', version: '1' },
-        });
-        const premature = await mcp('tools/call', { name: '__before_identity__', arguments: {} });
-        if (JSON.parse(premature.content[0].text).code !== -32600)
-          throw Error('Host call admitted before native identity persistence');
-      }
+      await preopenProbe();
       if (args.includes('--hold-open')) {
         await connectControl();
         trace('before_opened');
         await gate.next();
       }
-      reply(
-        id,
-        agy
-          ? {
-              sessionId: thread,
-              modes: { currentModeId: 'default', availableModes: [{ id: 'yolo', name: 'YOLO' }] },
-              configOptions: [
-                { id: 'mode', currentValue: 'default', options: [{ value: 'yolo', name: 'YOLO' }] },
-                {
-                  id: 'model',
-                  category: 'model',
-                  currentValue: 'fixture-model',
-                  options: [{ value: 'fixture-model', name: 'Fixture' }],
-                },
-                {
-                  id: 'thought_level',
-                  category: 'thought_level',
-                  currentValue: 'vendor-deep',
-                  options: [{ value: 'vendor-deep', name: 'Deep' }],
-                },
-              ],
-            }
-          : {
-              thread: { id: thread },
-              approvalPolicy: p.approvalPolicy,
-              sandbox: {
-                type: p.sandbox === 'danger-full-access' ? 'dangerFullAccess' : p.sandbox,
-              },
-              model: p.model ?? 'fixture-model',
-            },
-      );
-    } else if (m === 'session/set_mode') {
-      if (p.modeId !== 'yolo') throw Error('missing yolo');
-      reply(id, {});
-    } else if (m === 'session/set_config_option') {
       reply(id, {
-        configOptions: [
-          { id: p.configId, currentValue: p.value },
-          {
-            id: 'model',
-            category: 'model',
-            currentValue: 'fixture-model',
-            options: [{ value: 'fixture-model' }],
-          },
-          {
-            id: 'thought_level',
-            category: 'thought_level',
-            currentValue: 'vendor-deep',
-            options: [{ value: 'vendor-deep' }],
-          },
-        ],
+        thread: { id: thread },
+        approvalPolicy: p.approvalPolicy,
+        sandbox: {
+          type: p.sandbox === 'danger-full-access' ? 'dangerFullAccess' : p.sandbox,
+        },
+        model: p.model ?? 'fixture-model',
       });
-    } else if (m === 'turn/start' || m === 'session/prompt') {
-      if (!agy && (p.approvalPolicy !== 'never' || p.sandboxPolicy.type !== 'dangerFullAccess'))
-        throw Error('missing maximum turn permission');
-      promptId = id;
-      request = {
-        message: agy ? p.prompt[0].text : p.input[0].text,
-        effort: p.effort ?? 'vendor-deep',
-        images: agy
-          ? []
-          : p.input
-              .filter((v) => v.type === 'localImage')
-              .map((v) => ({ path: v.path, mediaType: 'image/png' })),
-        ...(opened.threadId || opened.sessionId ? { resume: thread } : {}),
+    } else if (m === 'thread/inject_items') {
+      const item = p.items?.[0],
+        content = item?.content;
+      if (
+        !opened ||
+        p.threadId !== thread ||
+        p.items.length !== 1 ||
+        item.type !== 'message' ||
+        item.role !== 'user' ||
+        content?.length !== 1 ||
+        content[0].type !== 'input_text' ||
+        !instructionMessageText(content[0].text) ||
+        request
+      )
+        throw Error(
+          'instructions must be injected as an independent ordinary user message before the turn',
+        );
+      instructionMessage = content[0].text;
+      instructionOrder.push(m);
+      reply(id, {});
+    } else if (m === 'turn/steer') {
+      if (p.threadId !== thread || p.expectedTurnId !== turn)
+        throw Error('steering must target the active native turn');
+      const input = {
+        message: p.input[0].text,
+        images: p.input
+          .filter((v) => v.type === 'localImage')
+          .map((v) => ({ path: v.path, mediaType: 'image/png' })),
       };
-      if (!agy && process.env.MAKA_NATIVE_FIXTURE_EARLY_EVENTS) {
+      trace('steered', { request: input, thread, turn });
+      if (input.message === 'finish-before-steer') {
+        output('finished before steering');
+        terminal();
+        send({
+          jsonrpc: '2.0',
+          id,
+          error: { code: -32600, message: 'No active turn for expectedTurnId' },
+        });
+        return;
+      }
+      // A normal live delta may precede the acknowledgement and must not disappear.
+      output('steering: ' + input.message + ';');
+      reply(id, {
+        turnId: input.message === 'wrong-steer-ack' ? 'unrelated-turn' : turn,
+      });
+    } else if (m === 'turn/start') {
+      if (p.approvalPolicy !== 'never' || p.sandboxPolicy.type !== 'dangerFullAccess')
+        throw Error('missing maximum turn permission');
+      instructionOrder.push(m);
+      request = {
+        message: p.input[0].text,
+        effort: p.effort ?? 'vendor-deep',
+        images: p.input
+          .filter((v) => v.type === 'localImage')
+          .map((v) => ({ path: v.path, mediaType: 'image/png' })),
+        ...(opened.threadId ? { resume: thread } : {}),
+        ...(instructionMessage ? { instructions: instructionMessage } : {}),
+        instructionOrder: [...instructionOrder],
+      };
+      if (process.env.MAKA_NATIVE_FIXTURE_EARLY_EVENTS) {
         for (let i = 0; i < 257; i++)
           event('item/agentMessage/delta', {
             threadId: thread,
@@ -579,12 +807,12 @@ if (claude) {
             delta: i + ',',
           });
       }
-      if (!agy) reply(id, { turn: { id: turn, status: 'inProgress' } });
+      reply(id, { turn: { id: turn, status: 'inProgress' } });
       void prompt();
-    } else if (m === 'turn/interrupt' || m === 'session/cancel') {
+    } else if (m === 'turn/interrupt') {
       if (id) reply(id, {});
       void cancel();
-    } else reply(id, {});
+    } else throw Error('unsupported native fixture method: ' + m);
   });
   lines.on('close', () => process.exit(0));
 }

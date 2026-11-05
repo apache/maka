@@ -135,9 +135,6 @@ impl Bridge {
     pub fn bearer(&self) -> &str {
         &self.token
     }
-    pub fn acp(&self) -> Value {
-        serde_json::json!({"type":"http","name":"maka","url":self.url,"headers":[{"name":"Authorization","value":format!("Bearer {}",self.token)}]})
-    }
     pub fn claude(&self) -> Value {
         serde_json::json!({"mcpServers":{"maka":{"type":"http","url":self.url,"headers":{"Authorization":format!("Bearer {}", self.token)}}}})
     }

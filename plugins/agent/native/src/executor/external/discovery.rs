@@ -18,7 +18,7 @@
  */
 
 use super::*;
-use runtime::{Pipe, string};
+use runtime::Pipe;
 
 pub(super) async fn query(
     commands: &BTreeMap<NativeRuntime, NativeCommand>,
@@ -41,30 +41,25 @@ pub(super) async fn query(
         } else if runtime == NativeRuntime::Claude {
             serde_json::json!({"installation":{"kind":"available"},"authentication":{"kind":"unsupported"},"models":{"kind":"unsupported","detail":"Claude interactive CLI does not expose model discovery"}})
         } else {
-            let discovery = async {
-                let mut command = runtime::command(config, cwd).await?;
-                if runtime == NativeRuntime::Codex {
-                    command = codex::proxy(config, cwd, cancellation.clone()).await?;
-                } else {
-                    command.arg("acp").arg("--dangerously-skip-permissions");
+            let discovery = if runtime == NativeRuntime::Antigravity {
+                agy::models(config, cwd, cancellation.clone()).await
+            } else {
+                async {
+                    let command = codex::proxy(config, cwd, cancellation.clone()).await?;
+                    runtime::pipe(
+                        command,
+                        runtime::Transport::WebSocket,
+                        None,
+                        cancellation.clone(),
+                        |mut io| async move {
+                            let result = probe(&mut io).await;
+                            (result, io)
+                        },
+                    )
+                    .await
                 }
-                runtime::pipe(
-                    command,
-                    if runtime == NativeRuntime::Codex {
-                        runtime::Transport::WebSocket
-                    } else {
-                        runtime::Transport::JsonLines
-                    },
-                    None,
-                    cancellation.clone(),
-                    |mut io| async move {
-                        let result = probe(&mut io, runtime, cwd).await;
-                        (result, io)
-                    },
-                )
                 .await
-            }
-            .await;
+            };
             match discovery {
                 Ok(value) => value,
                 Err(Error::Cancelled) => return Err(Error::Cancelled),
@@ -101,97 +96,50 @@ pub(super) async fn query(
         Ok(Value::Array(result))
     }
 }
-async fn probe(io: &mut Pipe, runtime: NativeRuntime, cwd: &str) -> Result<Value, Error> {
-    if runtime == NativeRuntime::Codex {
-        let (init, _) = io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
-        io.notify("initialized", serde_json::json!({})).await?;
-        let mut cursor = None;
-        let mut seen = std::collections::BTreeSet::new();
-        let mut models = Vec::new();
-        loop {
-            let (page, _) = io
-                .request(
-                    "model/list",
-                    serde_json::json!({"includeHidden":false,"cursor":cursor}),
-                )
-                .await?;
-            let data = page
-                .get("data")
-                .and_then(Value::as_array)
-                .ok_or_else(|| Error::Invalid("Codex model/list missing data".into()))?;
-            models.extend(data.iter().map(|model| {
-                let levels:Vec<_>=model.get("supportedReasoningEfforts").and_then(Value::as_array).into_iter().flatten().filter_map(|e|e.get("reasoningEffort")).cloned().collect();
-                serde_json::json!({"id":model["id"],"displayName":model["displayName"],"effortLevels":levels,"defaultEffort":model["defaultReasoningEffort"]})
-            }));
-            match page.get("nextCursor") {
-                None | Some(Value::Null) => break,
-                Some(Value::String(next)) if seen.insert(next.clone()) => {
-                    cursor = Some(next.clone())
-                }
-                _ => {
-                    return Err(Error::Invalid(
-                        "Codex model/list returned an invalid or repeated cursor".into(),
-                    ));
-                }
-            }
-        }
-        let authentication = match io
-            .request("account/read", serde_json::json!({"refreshToken":false}))
-            .await
-        {
-            Ok((account, _)) if account.get("account").is_some_and(|a| !a.is_null()) => {
-                serde_json::json!({"kind":"authenticated","source":"codex account/read"})
-            }
-            Ok(_) => serde_json::json!({"kind":"unknown","source":"codex account/read"}),
-            Err(Error::Cancelled) => return Err(Error::Cancelled),
-            Err(_) => serde_json::json!({"kind":"unknown"}),
-        };
-        let _ = init;
-        Ok(
-            serde_json::json!({"installation":{"kind":"available"},"authentication":authentication,"models":{"kind":"ok","models":models}}),
-        )
-    } else {
-        let (init, _) = io.request("initialize", serde_json::json!({"protocolVersion":1,"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"clientCapabilities":{}})).await?;
-        let version = init.pointer("/agentInfo/version").and_then(Value::as_str);
-        let (opened, _) = io
+async fn probe(io: &mut Pipe) -> Result<Value, Error> {
+    let init = io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
+    io.notify("initialized", serde_json::json!({})).await?;
+    let mut cursor = None;
+    let mut seen = std::collections::BTreeSet::new();
+    let mut models = Vec::new();
+    loop {
+        let page = io
             .request(
-                "session/new",
-                serde_json::json!({"cwd":cwd,"mcpServers":[]}),
+                "model/list",
+                serde_json::json!({"includeHidden":false,"cursor":cursor}),
             )
             .await?;
-        let options = opened.get("configOptions").and_then(Value::as_array);
-        let selector = options.and_then(|options| {
-            options.iter().find(|o| {
-                o.get("category").and_then(Value::as_str) == Some("model")
-                    || o.get("id").and_then(Value::as_str) == Some("model")
-            })
-        });
-        let mut models = Vec::new();
-        if let Some(selector) = selector {
-            flatten_models(&selector["options"], &mut models);
-        }
-        if models.is_empty()
-            && let Some(available) = opened
-                .pointer("/models/availableModels")
-                .and_then(Value::as_array)
-        {
-            for model in available {
-                models.push(
-                    serde_json::json!({"id":string(model,"/modelId")?,"displayName":model["name"]}),
-                );
+        let data = page
+            .get("data")
+            .and_then(Value::as_array)
+            .ok_or_else(|| Error::Invalid("Codex model/list missing data".into()))?;
+        models.extend(data.iter().map(|model| {
+            let levels:Vec<_>=model.get("supportedReasoningEfforts").and_then(Value::as_array).into_iter().flatten().filter_map(|e|e.get("reasoningEffort")).cloned().collect();
+            serde_json::json!({"id":model["id"],"displayName":model["displayName"],"effortLevels":levels,"defaultEffort":model["defaultReasoningEffort"]})
+        }));
+        match page.get("nextCursor") {
+            None | Some(Value::Null) => break,
+            Some(Value::String(next)) if seen.insert(next.clone()) => cursor = Some(next.clone()),
+            _ => {
+                return Err(Error::Invalid(
+                    "Codex model/list returned an invalid or repeated cursor".into(),
+                ));
             }
         }
-        Ok(
-            serde_json::json!({"installation":{"kind":"available","version":version},"authentication":{"kind":"unknown","source":"agy ACP"},"models":{"kind":"ok","models":models}}),
-        )
     }
-}
-fn flatten_models(options: &Value, models: &mut Vec<Value>) {
-    for option in options.as_array().into_iter().flatten() {
-        if let Some(value) = option.get("value").and_then(Value::as_str) {
-            models.push(serde_json::json!({"id":value,"displayName":option["name"]}));
-        } else {
-            flatten_models(&option["options"], models);
+    let authentication = match io
+        .request("account/read", serde_json::json!({"refreshToken":false}))
+        .await
+    {
+        Ok(account) if account.get("account").is_some_and(|a| !a.is_null()) => {
+            serde_json::json!({"kind":"authenticated","source":"codex account/read"})
         }
-    }
+        Ok(_) => serde_json::json!({"kind":"unknown","source":"codex account/read"}),
+        Err(runtime::RpcError::Failed(Error::Cancelled)) => return Err(Error::Cancelled),
+        Err(_) => serde_json::json!({"kind":"unknown"}),
+    };
+    let _ = init;
+    Ok(
+        serde_json::json!({"installation":{"kind":"available"},"authentication":authentication,"models":{"kind":"ok","models":models}}),
+    )
 }

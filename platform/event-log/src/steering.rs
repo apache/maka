@@ -33,17 +33,26 @@ pub(crate) async fn validate_append(
     };
     maka_agent_facts::event::validate_steered_source(message, source, &event.invocation.session_id)
         .map_err(|error| StoreError::InvalidTransition(error.into()))?;
-    let eligible: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?
-         AND kind = 'invocation_opened' AND json_extract(event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff'))"
+    let (eligible, executor): (bool, bool) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1
+         AND kind = 'invocation_opened' AND json_extract(event_header, '$.fact.input.kind') IN ('message', 'continuation', 'handoff')),
+         EXISTS(SELECT 1 FROM runtime_events WHERE invocation_id = ?1 AND kind = 'executor_started')"
     ).bind(&event.invocation.invocation_id).fetch_one(&mut *tx).await?;
     if !eligible {
         return Err(StoreError::InvalidTransition(
-            "steering requires an inline model invocation".into(),
+            "steering requires a message-capable invocation".into(),
         ));
     }
-    crate::context::safety::model_boundary(tx, &event.invocation.invocation_id, i64::MAX as u64)
+    // An executor cannot dispatch Maka model steps. Its Host SDK effects keep
+    // their original custody through settlement; new input does not settle them.
+    if !executor {
+        crate::context::safety::model_boundary(
+            tx,
+            &event.invocation.invocation_id,
+            i64::MAX as u64,
+        )
         .await?;
+    }
     // The unique canonical index rejects a different event claiming this same
     // Session/message identity. Exact event replay was already handled by append.
     Ok(())

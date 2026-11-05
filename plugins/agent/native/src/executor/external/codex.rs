@@ -65,6 +65,7 @@ pub(super) async fn execute(
     journal: &mut journal::Journal,
     output: Arc<dyn OutputSink>,
     bridge: Arc<mcp::Bridge>,
+    steering: &mut steering::Steering,
 ) -> (Result<Outcome, Error>, Pipe) {
     let mut custody = Custody::Preparing;
     let result = run(
@@ -75,10 +76,16 @@ pub(super) async fn execute(
         output.as_ref(),
         &bridge,
         &mut custody,
+        steering,
     )
     .await;
     bridge.close_admission();
     let result = match custody {
+        Custody::Active { thread, turn }
+            if io.buffered().any(|event| terminal(event, &thread, &turn)) =>
+        {
+            result
+        }
         Custody::Active { thread, turn } => {
             // Proxy exit cannot settle daemon work. Interrupt only our turn and await its terminal.
             io.cancellation = CancellationToken::new();
@@ -113,6 +120,10 @@ enum Custody {
     Active { thread: String, turn: String },
     Settled,
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native turn custody retains the original invocation and steering owner"
+)]
 async fn run(
     io: &mut Pipe,
     request: &Value,
@@ -121,24 +132,20 @@ async fn run(
     output: &dyn OutputSink,
     bridge: &mcp::Bridge,
     custody: &mut Custody,
+    steering: &mut steering::Steering,
 ) -> Result<Outcome, Error> {
     io.request("initialize", serde_json::json!({"clientInfo":{"name":"maka","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":true}})).await?;
     io.notify("initialized", serde_json::json!({})).await?;
     let resume = journal.native_session();
     let mut params = serde_json::json!({"cwd":request["cwd"],"approvalPolicy":"never","sandbox":"danger-full-access","config":{"mcp_servers":{"maka":{"url":bridge.url,"http_headers":{"Authorization":format!("Bearer {}",bridge.bearer())},"enabled":true}}}});
-    for (source, target) in [
-        ("model", "model"),
-        ("instructions", "developerInstructions"),
-    ] {
-        if let Some(value) = request.get(source) {
-            params[target] = value.clone();
-        }
+    if let Some(model) = request.get("model") {
+        params["model"] = model.clone();
     }
     if let Some(resume) = resume {
         params["threadId"] = resume.into();
         params["excludeTurns"] = true.into();
     }
-    let (opened, _) = io
+    let opened = io
         .request(
             if resume.is_some() {
                 "thread/resume"
@@ -164,6 +171,24 @@ async fn run(
         ));
     }
     journal.opened(storage, thread.clone()).await?;
+    if let Some(instructions) = request.get("instructions").and_then(Value::as_str) {
+        let injected = io
+            .request(
+                "thread/inject_items",
+                serde_json::json!({
+                    "threadId":thread,
+                    "items":[{"type":"message","role":"user","content":[{
+                        "type":"input_text","text":runtime::instruction_message(instructions)
+                    }]}]
+                }),
+            )
+            .await?;
+        if !injected.is_object() {
+            return Err(Error::Invalid(
+                "Codex instruction-message injection has no acknowledgement".into(),
+            ));
+        }
+    }
     bridge.admit()?;
     let mut input = vec![serde_json::json!({"type":"text","text":request["message"]})];
     for image in request
@@ -184,7 +209,7 @@ async fn run(
     let cancellation = std::mem::replace(&mut io.cancellation, CancellationToken::new());
     let failed = std::mem::replace(&mut io.failed, CancellationToken::new());
     *custody = Custody::Submitted;
-    let (started, buffered) = io.request("turn/start", params).await?;
+    let started = io.request("turn/start", params).await?;
     let turn = string(&started, "/turn/id")?.to_owned();
     *custody = Custody::Active {
         thread: thread.clone(),
@@ -196,20 +221,48 @@ async fn run(
         text: String::new(),
         delta_items: std::collections::BTreeSet::new(),
     };
-    for event in buffered {
-        if terminal(&event, &state.thread, &state.turn) {
-            *custody = Custody::Settled;
-        }
-        if let Some(outcome) = state.event(event, output).await? {
-            return Ok(outcome);
-        }
-    }
     loop {
-        let event = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return Err(Error::Cancelled),
-            () = failed.cancelled() => return Err(Error::Unknown),
-            event = io.next() => event?,
+        let event = {
+            tokio::select! {
+                () = cancellation.cancelled() => return Err(Error::Cancelled),
+                () = failed.cancelled() => return Err(Error::Unknown),
+                event = io.next() => event?,
+                ready = steering.ready() => {
+                    ready?;
+                    if let Some(input) = steering.take().await? {
+                        let mut content = vec![serde_json::json!({"type":"text","text":input["message"]})];
+                        for image in input["images"].as_array().into_iter().flatten() {
+                            content.push(serde_json::json!({"type":"localImage","path":image["path"]}));
+                        }
+                        let params = serde_json::json!({
+                            "threadId":state.thread, "expectedTurnId":state.turn, "input":content
+                        });
+                        let accepted = tokio::select! {
+                            biased;
+                            () = cancellation.cancelled() => return Err(Error::Cancelled),
+                            () = failed.cancelled() => return Err(Error::Unknown),
+                            result = io.request("turn/steer", params) => result,
+                        };
+                        let accepted = match accepted {
+                            Ok(accepted) => accepted,
+                            Err(runtime::RpcError::Rejected(message)) => {
+                                while let Some(event) = io.pop_buffered() {
+                                    if terminal(&event, &state.thread, &state.turn) { *custody = Custody::Settled; }
+                                    state.event(event, output).await?;
+                                }
+                                return Ok(Outcome::Failed {
+                                    message, code: Some("native_steering_rejected".into()), recoverable: false,
+                                });
+                            }
+                            Err(error) => return Err(error.into()),
+                        };
+                        if accepted.get("turnId").and_then(Value::as_str) != Some(state.turn.as_str()) {
+                            return Err(Error::Invalid("Codex steering acknowledged a different turn".into()));
+                        }
+                    }
+                    continue;
+                }
+            }
         };
         if terminal(&event, &state.thread, &state.turn) {
             *custody = Custody::Settled;
@@ -222,6 +275,7 @@ async fn run(
         }
     }
 }
+
 fn terminal(event: &Value, thread: &str, turn: &str) -> bool {
     event["method"] == "turn/completed"
         && event["params"]["threadId"] == thread

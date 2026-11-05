@@ -191,7 +191,7 @@ pub(super) async fn submit(
     images: &[Value],
     bridge: &mcp::Bridge,
     start: &mut Start,
-) -> Result<(), Error> {
+) -> Result<String, Error> {
     let ready = async {
         let mut mark = 0;
         loop {
@@ -215,29 +215,46 @@ pub(super) async fn submit(
     };
     tokio::time::timeout(runtime::SETUP_TIMEOUT,ready).await
         .map_err(|_| Error::Provider("Claude interactive startup or Host MCP discovery did not finish within five minutes".into()))??;
+    send(io, screen, prompt, images, start).await
+}
+
+// Enter keeps Claude's native busy-input semantics; it is not the send-now shortcut.
+pub(super) async fn send(
+    io: &maka_process::pty::PtyIo,
+    screen: &mut watch::Receiver<Screen>,
+    prompt: &str,
+    images: &[Value],
+    start: &mut Start,
+) -> Result<String, Error> {
+    let mut markers = Vec::with_capacity(images.len());
     for (index, image) in images.iter().enumerate() {
         let path = runtime::string(image, "/path")?;
         let mark = screen.borrow().end;
         paste(io, path).await?;
-        let marker = format!("[Image #{}]", index + 1);
         let accepted = async {
             loop {
-                if screen.borrow().after(mark).contains(&marker) {
-                    return Ok::<_, Error>(());
+                // AX redraws may repeat older labels. Use the latest label, never the
+                // first match in scrollback, and require a new attachment in this composer.
+                if let Some(marker) = image_marker(&screen.borrow().after(mark))
+                    && !markers.iter().any(|seen| seen == &marker)
+                {
+                    return Ok::<_, Error>(marker);
                 }
                 changed(screen).await?;
             }
         };
-        tokio::time::timeout(runtime::SETUP_TIMEOUT, accepted)
+        let marker = tokio::time::timeout(runtime::SETUP_TIMEOUT, accepted)
             .await
             .map_err(|_| Error::Provider(format!("Claude did not accept image {}", index + 1)))??;
+        markers.push(marker);
     }
     let mark = screen.borrow().end;
     paste(io, prompt).await?;
     let visible = prompt.split_whitespace().collect::<Vec<_>>().join(" ");
     let echoed = async {
         loop {
-            let text = screen.borrow().after(mark);
+            let observation = screen.borrow().after(mark);
+            let text = composer(&observation);
             // Claude replaces large pastes by a numbered placeholder, preserving the actual text.
             if text.contains("[Pasted text")
                 || text
@@ -257,11 +274,40 @@ pub(super) async fn submit(
         .map_err(|_| Error::Provider("Claude did not acknowledge the pasted prompt".into()))??;
     *start = Start::Submitted;
     // Enter is sent only after every attachment and the text have been acknowledged.
-    write(io, b"\r").await
+    write(io, b"\r").await?;
+    Ok(format!("{}{prompt}", markers.join(" ")))
+}
+
+fn image_marker(text: &str) -> Option<String> {
+    // A complete AX prompt redraw supersedes any historical labels before it.
+    let (_, after) = composer(text).rsplit_once("[Image #")?;
+    let end = after.find(']')?;
+    let number = &after[..end];
+    if number.is_empty() || !number.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some(format!("[Image #{number}]"))
+}
+fn composer(text: &str) -> &str {
+    text.rsplit_once("\n$").map_or(text, |(_, latest)| latest)
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn latest_composer_image_labels_do_not_assume_a_counter_reset() {
+        assert_eq!(
+            image_marker("[Image #7] [Image #8]"),
+            Some("[Image #8]".into())
+        );
+        assert_eq!(image_marker("old [Image #7]\n$"), None);
+        assert_eq!(
+            image_marker("old [Image #7]\n$[Image #1]"),
+            Some("[Image #1]".into())
+        );
+        assert_eq!(image_marker("[Image #1] [Image #"), None);
+        assert_eq!(image_marker("[Image #not-a-number]"), None);
+    }
     #[test]
     fn trust_is_only_for_the_captured_workspace_and_control_bytes_are_not_keys() {
         let prompt = "Permission Required: Accessing workspace:\n/work\nQuick safety check\ny. Yes, I trust this folder\nn. No, exit\nEnter y/n:\nEnter to confirm";

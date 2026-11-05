@@ -25,7 +25,12 @@ use tokio::io::BufReader;
 #[tokio::test]
 async fn native_external_all_protocols_persist_before_prompt_and_resume_original_identity() {
     tokio::time::timeout(Duration::from_secs(60), async {
-        let (f, listener) = setup("http://127.0.0.1:9/v1").await;
+        let (f, listener) = configured("http://127.0.0.1:9/v1", |settings| {
+            let home = settings.workspace_roots[0].path.clone();
+            std::fs::write(std::path::Path::new(&home).join("AGENTS.md"), "CAPTURED EXTERNAL GUIDANCE 中文").unwrap();
+            settings.assistant = Some(crate::contract::AssistantConfiguration { home: Some(home.to_str().unwrap().into()) });
+            settings.external.as_mut().unwrap().commands.antigravity.as_mut().unwrap().env.insert("MAKA_NATIVE_FIXTURE_BOOTSTRAP_TOOL".into(), "1".into());
+        }).await;
         for runtime in ["codex", "antigravity", "claude"] {
             let session = f.create(&format!("Native {runtime}")).await;
             let mut original = None;
@@ -41,6 +46,15 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 };
                 let mut control = BufReader::new(socket);
                 let opened = packet(&mut control,"opened").await;
+                let instructions = opened["request"]["instructions"].as_str().unwrap();
+                assert!(instructions.starts_with("<maka_system_instructions>\n"));
+                assert!(instructions.ends_with("\n</maka_system_instructions>"));
+                assert!(instructions.contains("CAPTURED EXTERNAL GUIDANCE 中文"));
+                assert_eq!(opened["request"]["message"], "complete", "instructions must be a distinct ordinary native message");
+                let order = if runtime == "codex" {
+                    json!([if original.is_some() { "thread/resume" } else { "thread/start" }, "thread/inject_items", "turn/start"])
+                } else { json!(["user/instructions", "user/task"]) };
+                assert_eq!(opened["request"]["instructionOrder"], order);
                 eprintln!("native fixture {runtime}: opened");
                 let journal = super::external_support::record_runtime(&f,&session,runtime).await;
                 assert_eq!(journal["running"],accepted["invocationId"],"journal must be durable before native prompt admission");
@@ -59,6 +73,25 @@ async fn native_external_all_protocols_persist_before_prompt_and_resume_original
                 let final_work=work(&f,&session,&accepted).await;
                 assert_eq!(final_work["execution"]["state"],"completed","{runtime}: {final_work}");
                 assert_eq!(final_work["answer"]["text"],"committed output");
+                if runtime == "antigravity" {
+                    let facts = f.prefix(&session, 128, 1024 * 1024).await;
+                    let observed: Vec<_> = facts.events.iter().filter(|row| row.event.invocation.invocation_id == accepted["invocationId"]).filter_map(|row| {
+                        match &row.event.fact {
+                            maka_agent_facts::event::Fact::ExecutorObserved { output } => Some(output),
+                            _ => None,
+                        }
+                    }).collect();
+                    let starts: Vec<_> = observed.iter().filter_map(|output| match output {
+                        maka_agent_facts::executor::Output::ToolStart { tool_call_id, name, .. } if name == "bootstrap-native" => Some(tool_call_id),
+                        _ => None
+                    }).collect();
+                    assert_eq!(starts.len(), 1, "bootstrap native tools must remain observable");
+                    assert!(observed.iter().any(|output| matches!(output,
+                        maka_agent_facts::executor::Output::ToolResult { tool_call_id, is_error: false, .. }
+                        if tool_call_id == starts[0]
+                    )));
+                }
+
                 assert!(super::external_support::record_runtime(&f,&session,runtime).await["running"].is_null());
                 assert_eq!(f.mutation(2,"send",input,operation).await.unwrap(),accepted);
                 assert!(listener.accept().now_or_never().is_none());

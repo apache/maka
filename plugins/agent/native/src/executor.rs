@@ -152,6 +152,15 @@ impl Executors {
         }
         Ok(Self(result))
     }
+    pub fn supports_steering(&self, accepted: &Accepted) -> bool {
+        self.restore(accepted).is_ok_and(|backend| {
+            matches!(backend.implementation, Implementation::External(_))
+                && matches!(
+                    accepted.selection.settings.runtime.as_deref(),
+                    Some("codex" | "claude")
+                )
+        })
+    }
     pub fn contains(&self, executor: &str) -> bool {
         self.0.contains_key(executor)
     }

@@ -41,7 +41,7 @@ async fn interrupt_fences_delivery_atomically_and_replays_the_original_queue_cut
     log.admit_message(admission(&owner, "delivered", Disposition::Steering))
         .await
         .unwrap();
-    assert_eq!(log.commit_pending_steering(&owner).await.unwrap(), 1);
+    assert_eq!(log.commit_pending_steering(&owner).await.unwrap().len(), 1);
     for (id, disposition) in [
         ("steer", Disposition::Steering),
         ("next", Disposition::Followup),
@@ -128,7 +128,12 @@ async fn interrupt_fences_delivery_atomically_and_replays_the_original_queue_cut
             .unwrap()
             .is_some()
     );
-    assert_eq!(log.commit_pending_steering(&owner).await.unwrap(), 0);
+    assert!(
+        log.commit_pending_steering(&owner)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     assert!(matches!(
         log.admit_message(admission(&owner, "after", Disposition::Followup))
             .await,

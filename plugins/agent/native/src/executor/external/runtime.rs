@@ -30,6 +30,9 @@ use tokio_tungstenite::{
 // Keep a finite buffer for malformed/unterminated native output, with room beyond that workload.
 pub(super) const MAX_MESSAGE_BYTES: usize = 256 * 1024 * 1024;
 pub(super) const SETUP_TIMEOUT: Duration = Duration::from_secs(300);
+pub(super) fn instruction_message(text: &str) -> String {
+    format!("<maka_system_instructions>\n{text}\n</maka_system_instructions>")
+}
 pub(super) async fn parse_json(bytes: Vec<u8>, source: &'static str) -> Result<Value, Error> {
     // Large image-bearing rows must not monopolize an async executor thread.
     let parsed = if bytes.len() >= 1024 * 1024 {
@@ -95,26 +98,30 @@ pub(super) fn validate_command(
                 ) || (!key.starts_with("--")
                     && ["-a", "-s"].iter().any(|prefix| key.starts_with(prefix)))
             }
-            NativeRuntime::Antigravity => matches!(
-                key,
-                "--approval-mode"
-                    | "--sandbox"
-                    | "--mode"
-                    | "--yolo"
-                    | "--prompt"
-                    | "-p"
-                    | "--print"
-                    | "--output-format"
-                    | "--input-format"
-                    | "--prompt-interactive"
-                    | "-i"
-                    | "--conversation"
-                    | "--continue"
-                    | "-c"
-                    | "--settings"
-            ),
+            NativeRuntime::Antigravity => {
+                matches!(
+                    key,
+                    "--approval-mode"
+                        | "--sandbox"
+                        | "--mode"
+                        | "--yolo"
+                        | "--prompt"
+                        | "-p"
+                        | "--print"
+                        | "--output-format"
+                        | "--input-format"
+                        | "--prompt-interactive"
+                        | "-i"
+                        | "--conversation"
+                        | "--continue"
+                        | "-c"
+                        | "--settings"
+                        | "--dangerously-skip-permissions"
+                        | "--disable-slash-commands"
+                ) || (key.starts_with("-p") && !key.starts_with("--"))
+            }
         };
-        if forbidden || arg.contains('\0') {
+        if forbidden || key == "--" || arg.contains('\0') {
             return Err(format!(
                 "Native {} arguments conflict with executor policy",
                 runtime.as_str()
@@ -198,6 +205,7 @@ pub(super) async fn execute(
     output: Arc<dyn OutputSink>,
     tools: tools::Tools,
     cancellation: CancellationToken,
+    steering: &mut steering::Steering,
 ) -> Result<Outcome, Error> {
     let bridge = mcp::Bridge::open(tools).await?;
     let running = &mut *journal;
@@ -212,47 +220,39 @@ pub(super) async fn execute(
                 output,
                 bridge,
                 cancellation.clone(),
+                steering,
             )
             .await
         }
-        NativeRuntime::Antigravity | NativeRuntime::Codex => {
-            let mut plan = match command(config, cwd).await {
-                Ok(plan) => plan,
+        NativeRuntime::Antigravity => {
+            agy::execute(
+                config,
+                cwd,
+                &request,
+                storage,
+                running,
+                output,
+                bridge,
+                cancellation.clone(),
+                steering,
+            )
+            .await
+        }
+        NativeRuntime::Codex => {
+            let proxy = match codex::proxy(config, cwd, cancellation.clone()).await {
+                Ok(proxy) => proxy,
                 Err(error) => {
                     bridge.close().await?;
                     return Err(error);
                 }
             };
-            if runtime == NativeRuntime::Antigravity {
-                plan.arg("acp").arg("--dangerously-skip-permissions");
-            } else {
-                plan = match codex::proxy(config, cwd, cancellation.clone()).await {
-                    Ok(plan) => plan,
-                    Err(error) => {
-                        bridge.close().await?;
-                        return Err(error);
-                    }
-                };
-            }
             pipe(
-                plan,
-                if runtime == NativeRuntime::Codex {
-                    Transport::WebSocket
-                } else {
-                    Transport::JsonLines
-                },
+                proxy,
+                Transport::WebSocket,
                 Some(bridge.clone()),
                 cancellation.clone(),
                 |io| async move {
-                    match runtime {
-                        NativeRuntime::Antigravity => {
-                            agy::execute(io, &request, storage, running, output, bridge).await
-                        }
-                        NativeRuntime::Codex => {
-                            codex::execute(io, &request, storage, running, output, bridge).await
-                        }
-                        NativeRuntime::Claude => unreachable!("Claude uses the native PTY"),
-                    }
+                    codex::execute(io, &request, storage, running, output, bridge, steering).await
                 },
             )
             .await
@@ -338,7 +338,7 @@ impl Wire {
                 .map_err(|_| Error::Unknown),
         }
     }
-    async fn next(&mut self) -> Result<(Value, usize), Error> {
+    async fn next(&mut self) -> Result<Vec<u8>, Error> {
         match self {
             Self::Lines { reader, buffer, .. } => loop {
                 let available = reader
@@ -362,21 +362,13 @@ impl Wire {
                 buffer.extend_from_slice(&available[..count]);
                 reader.consume(count);
                 if complete {
-                    let size = buffer.len();
-                    let parsed = parse_json(std::mem::take(buffer), "native JSON-RPC line").await;
-                    return parsed.map(|value| (value, size));
+                    return Ok(std::mem::take(buffer));
                 }
             },
             Self::WebSocket(socket) => loop {
                 match socket.next().await {
                     Some(Ok(Message::Text(text))) => {
-                        let size = text.len();
-                        return parse_json(
-                            text.as_bytes().to_vec(),
-                            "Codex daemon JSON-RPC message",
-                        )
-                        .await
-                        .map(|v| (v, size));
+                        return Ok(text.as_bytes().to_vec());
                     }
                     Some(Ok(Message::Ping(_) | Message::Pong(_))) => {}
                     _ => return Err(Error::Unknown),
@@ -422,10 +414,30 @@ impl Wire {
         }
     }
 }
+pub(super) enum RpcError {
+    Rejected(String),
+    Failed(Error),
+}
+impl From<Error> for RpcError {
+    fn from(error: Error) -> Self {
+        Self::Failed(error)
+    }
+}
+impl From<RpcError> for Error {
+    fn from(error: RpcError) -> Self {
+        match error {
+            RpcError::Rejected(message) => Self::Provider(message),
+            RpcError::Failed(error) => error,
+        }
+    }
+}
+
 pub(super) struct Pipe {
     wire: Wire,
     next_id: u64,
     line_bytes: usize,
+    parsing: Option<BoxFuture<'static, Result<Value, Error>>>,
+    events: std::collections::VecDeque<(Value, usize)>,
     pub cancellation: CancellationToken,
     exited: CancellationToken,
     pub failed: CancellationToken,
@@ -444,11 +456,32 @@ impl Pipe {
             .await
     }
     async fn line(&mut self) -> Result<Value, Error> {
-        let (value, size) = self.wire.next().await?;
-        self.line_bytes = size;
-        Ok(value)
+        if self.parsing.is_none() {
+            let bytes = self.wire.next().await?;
+            self.line_bytes = bytes.len();
+            if bytes.len() < 1024 * 1024 {
+                return parse_json(bytes, "native JSON-RPC message").await;
+            }
+            // Retain an in-flight blocking parse when steering wins select!.
+            self.parsing = Some(Box::pin(parse_json(bytes, "native JSON-RPC message")));
+        }
+        let result = self.parsing.as_mut().expect("pending native parse").await;
+        self.parsing = None;
+        result
+    }
+    pub fn buffered(&self) -> impl Iterator<Item = &Value> {
+        self.events.iter().map(|(value, _)| value)
+    }
+    pub fn pop_buffered(&mut self) -> Option<Value> {
+        self.events.pop_front().map(|(value, _)| value)
     }
     pub async fn next(&mut self) -> Result<Value, Error> {
+        if let Some(value) = self.pop_buffered() {
+            return Ok(value);
+        }
+        self.next_wire().await
+    }
+    async fn next_wire(&mut self) -> Result<Value, Error> {
         loop {
             if self.exited.is_cancelled() && self.exit_deadline.is_none() {
                 self.exit_deadline = Some(tokio::time::Instant::now() + Duration::from_secs(1));
@@ -482,49 +515,52 @@ impl Pipe {
         }
         let _ = tokio::time::timeout(Duration::from_secs(1), self.wire.send(value)).await;
     }
-    pub async fn request(
-        &mut self,
-        method: &str,
-        params: Value,
-    ) -> Result<(Value, Vec<Value>), Error> {
+    pub async fn request(&mut self, method: &str, params: Value) -> Result<Value, RpcError> {
         let id = self.begin(method, params).await?;
-        let mut events = Vec::new();
-        let mut buffered_bytes = 0;
+        let mut buffered_bytes: usize = self.events.iter().map(|(_, bytes)| bytes).sum();
         let deadline = tokio::time::sleep(SETUP_TIMEOUT);
         tokio::pin!(deadline);
         loop {
-            let value = tokio::select! { biased; value = self.next() => value?, () = &mut deadline => return Err(Error::Provider(format!("Native {method} timed out"))) };
+            let value = tokio::select! {
+                biased;
+                value = self.next_wire() => value?,
+                () = &mut deadline => return Err(Error::Provider(format!("Native {method} timed out")).into()),
+            };
             if value.get("id").and_then(Value::as_u64) == Some(id) && value.get("method").is_none()
             {
                 if value.get("error").is_some() {
-                    return Err(Error::Provider(format!(
-                        "Native {method} rejected the request"
+                    let code = value
+                        .pointer("/error/code")
+                        .and_then(Value::as_i64)
+                        .ok_or_else(|| Error::Invalid("Native RPC rejection has no code".into()))?;
+                    let reason = string(&value, "/error/message")?;
+                    return Err(RpcError::Rejected(format!(
+                        "Native {method} rejected ({code}): {reason}"
                     )));
                 }
-                return Ok((
-                    value
-                        .get("result")
-                        .cloned()
-                        .ok_or_else(|| Error::Invalid("Native RPC has no result".into()))?,
-                    events,
-                ));
+                return value
+                    .get("result")
+                    .cloned()
+                    .ok_or_else(|| Error::Invalid("Native RPC has no result".into()).into());
             }
             if value.get("method").is_some() && value.get("id").is_some() {
-                return self.unsupported(value).await;
+                return self.unsupported(value).await.map_err(Into::into);
             }
-            // Startup/load notifications can contain historical tools; consume without projection or retention.
-            if method != "turn/start" {
+            // Startup/load notifications may contain historical tools.
+            if !matches!(method, "turn/start" | "turn/steer") {
                 continue;
             }
-            // Charge small notifications for retained JSON/Vec overhead too; no event-count cap.
-            buffered_bytes += self.line_bytes.max(1024);
+            let retained = self.line_bytes.max(1024);
+            buffered_bytes += retained;
             if buffered_bytes > MAX_MESSAGE_BYTES {
                 return Err(Error::Invalid(
                     "Native events before RPC acknowledgement exceed the 256 MiB retention budget"
                         .into(),
-                ));
+                )
+                .into());
             }
-            events.push(value);
+            // The Pipe, not the cancellable acknowledgement future, owns live events.
+            self.events.push_back((value, retained));
         }
     }
     pub async fn unsupported<T>(&mut self, request: Value) -> Result<T, Error> {
@@ -588,6 +624,8 @@ where
                     wire,
                     next_id: 0,
                     line_bytes: 0,
+                    parsing: None,
+                    events: Default::default(),
                     cancellation,
                     exited: exited.clone(),
                     failed: bridge

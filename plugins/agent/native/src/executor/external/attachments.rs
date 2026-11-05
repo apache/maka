@@ -62,17 +62,17 @@ impl Media {
 
 pub(super) async fn prepare(
     store: &SessionStore,
-    request: &Request,
+    session: &str,
+    content: &maka_agent_facts::input::MessageInput,
     cancellation: &CancellationToken,
 ) -> Result<Materials, Error> {
     let mut materials = Materials {
-        message: request.content.text.clone(),
+        message: content.text.clone(),
         images: Vec::new(),
         directory: None,
     };
-    let session = &request.invocation.session_id;
     let mut seen = BTreeSet::new();
-    for attachment in request.content.attachments.iter().flatten() {
+    for attachment in content.attachments.iter().flatten() {
         let StorageRef::SessionFile {
             session_id,
             relative_path,
