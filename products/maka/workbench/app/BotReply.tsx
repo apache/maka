@@ -73,9 +73,9 @@ export function BotReply(props: {
   );
 }
 
-/** Shown at the end of the Bot's Chat while a conversation it created waits for the user. */
+/** Shown at the end of the Bot's Chat for a conversation it created that is running or waits. */
 export function BotWaiting(props: {
-  workers: () => readonly { id: string; title: string }[];
+  workers: () => readonly { id: string; title: string; activity: 'working' | 'waiting' }[];
   open?(id: string): void;
 }) {
   return (
@@ -84,13 +84,15 @@ export function BotWaiting(props: {
         {(worker) => (
           <Button
             disabled={!props.open}
-            accessibilityLabel={tr('Open the conversation waiting for you')}
+            accessibilityLabel={tr('Open the conversation beside this one')}
             style={{ flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start' }}
             onPress={() => props.open?.(worker().id)}
           >
-            <Icon name="activity" color={C.warning} />
+            <Icon name="activity" color={worker().activity === 'waiting' ? C.warning : C.accent} />
             <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
-              {tr('{title} is waiting for your reply. Open it.', { title: worker().title })}
+              {worker().activity === 'waiting'
+                ? tr('{title} is waiting for your reply. Open it.', { title: worker().title })
+                : tr('{title} is working. See its progress.', { title: worker().title })}
             </Text>
           </Button>
         )}

@@ -23,7 +23,7 @@ import {
   botTurnEnding,
   createBotTranscriptCore,
   reportedWorker,
-  waitingWorkers,
+  activeWorkers,
 } from '../app/botTranscriptCore.ts';
 
 const SESSION = 'bot-session';
@@ -283,7 +283,7 @@ test('a Bot Turn started by a worker finishing reports that worker; other Turns 
   assert.equal(reportedWorker(rows, 'missing'), undefined);
 });
 
-test('only the Bot’s own live conversations that wait for the user are listed', () => {
+test('the Bot’s running and waiting conversations are listed, waiting first', () => {
   const session = (id, extra = {}) => ({
     id,
     title: `title ${id}`,
@@ -293,16 +293,17 @@ test('only the Bot’s own live conversations that wait for the user are listed'
     ...extra,
   });
   const sessions = [
-    session('waiting-worker', { activity: 'waiting' }),
     session('busy-worker', { activity: 'working' }),
     session('idle-worker'),
+    session('waiting-worker', { activity: 'waiting' }),
     session('archived-worker', { activity: 'waiting', archived: true }),
     session('someone-elses', { activity: 'waiting', parentSessionId: 'other' }),
     session('ordinary', { activity: 'waiting', parentSessionId: null }),
   ];
-  assert.deepEqual(waitingWorkers(sessions, 'bot'), [
-    { id: 'waiting-worker', title: 'title waiting-worker' },
+  assert.deepEqual(activeWorkers(sessions, 'bot'), [
+    { id: 'waiting-worker', title: 'title waiting-worker', activity: 'waiting' },
+    { id: 'busy-worker', title: 'title busy-worker', activity: 'working' },
   ]);
-  assert.deepEqual(waitingWorkers(sessions, null), [], 'no Bot, no workers');
-  assert.deepEqual(waitingWorkers(sessions, undefined), []);
+  assert.deepEqual(activeWorkers(sessions, null), [], 'no Bot, no workers');
+  assert.deepEqual(activeWorkers(sessions, undefined), []);
 });

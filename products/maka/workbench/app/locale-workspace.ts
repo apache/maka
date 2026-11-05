@@ -55,10 +55,15 @@ export const workspaceMessages = {
     '「{title}」在等你的回复，点这里处理。',
     '「{title}」在等你的回覆，點這裡處理。',
   ],
-  'Open the conversation waiting for you': [
-    'Open the conversation waiting for you',
-    '打开在等你的会话',
-    '開啟在等你的會話',
+  'Open the conversation beside this one': [
+    'Open the conversation beside this one',
+    '在旁边打开这个会话',
+    '在旁邊開啟這個會話',
+  ],
+  '{title} is working. See its progress.': [
+    '{title} is working. See its progress.',
+    '「{title}」正在处理，点这里查看进度。',
+    '「{title}」正在處理，點這裡檢視進度。',
   ],
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],

@@ -111,6 +111,8 @@ import { CompactionDivider } from '../../../../products/maka/workbench/app/Compa
 import {
   botTurnEnding,
   reportedWorker,
+  activeWorkers,
+  type ActiveWorker,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
 import {
@@ -277,8 +279,6 @@ type ConversationProps = {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
   knownSession?(sessionId: string): AgentSession | undefined;
-  /** Conversations the Bot created that are waiting for the user, so the Bot's Chat can say so. */
-  waitingWorkers?(): readonly { id: string; title: string }[];
   attach(handle: ConversationHandle): void;
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
@@ -443,6 +443,40 @@ export function Conversation(props: ConversationProps) {
   // In the Bot Session, Chat shows what the Bot told the user (SendUser); its own
   // replies and steps stay in Trajectory.
   const bot = createBotTranscript(host, sessionId, () => props.botSession?.());
+  // The Bot's own conversations, read from the Host: the sidebar list holds only top-level
+  // ones. Polled while this is the visible Bot, so a running or waiting worker shows up.
+  const botChildren = signal<readonly AgentSession[]>([]);
+  const refreshBotChildren = async () => {
+    try {
+      const page = await host.query('agent', 'list', {
+        filter: 'all',
+        includeArchived: false,
+        scope: { kind: 'children', sessionId },
+        position: { kind: 'start' },
+      });
+      if (alive) botChildren.set(page.sessions);
+    } catch {
+      // A failed read keeps the last list; the next poll tries again.
+    }
+  };
+  effect(() => {
+    if (bot.identity() !== 'bot' || !props.visible()) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const tick = async () => {
+      await refreshBotChildren();
+      if (alive && !stopped) timer = setTimeout(() => void tick(), 3000);
+    };
+    void tick();
+    cleanup(() => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    });
+  });
+  const workerTitle = (id: string) =>
+    botChildren().find((child) => child.id === id)?.title ??
+    props.knownSession?.(id)?.title ??
+    tr('the worker');
   const readingSize = signal({ width: 640, height: 192 });
   const innerReader = signal<string | null>(null);
   // The process group whose activity list last reported its end.
@@ -595,7 +629,7 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
     | { kind: 'botWorking'; key: string }
-    | { kind: 'botWaiting'; key: string; workers: readonly { id: string; title: string }[] };
+    | { kind: 'botWaiting'; key: string; workers: readonly ActiveWorker[] };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -722,14 +756,15 @@ export function Conversation(props: ConversationProps) {
       speak();
       // The running Turn may not be projected yet (its message is still pending).
       working(undefined);
-      // A worker waiting for the user's approval or answer never ends its run, so the Bot
-      // is not told and says nothing; Chat is where the user would look for it.
-      const waiting = props.waitingWorkers?.() ?? [];
-      if (waiting.length > 0)
+      // A worker that is running, or waiting for the user's approval or answer, has not
+      // ended its run, so the Bot has nothing to say about it yet; Chat is where the user
+      // would look for it.
+      const active = activeWorkers(botChildren(), props.botSession?.() ?? sessionId);
+      if (active.length > 0)
         result.push({
           kind: 'botWaiting',
-          key: `bot/waiting/${waiting.map((worker) => worker.id).join(',')}`,
-          workers: waiting,
+          key: `bot/waiting/${active.map((worker) => `${worker.id}:${worker.activity}`).join(',')}`,
+          workers: active,
         });
     }
     return result;
@@ -3106,9 +3141,7 @@ export function Conversation(props: ConversationProps) {
                             worker={
                               initial.worker !== undefined && props.openSessionBeside
                                 ? {
-                                    title: () =>
-                                      props.knownSession?.(initial.worker!)?.title ??
-                                      tr('the worker'),
+                                    title: () => workerTitle(initial.worker!),
                                     open: () => props.openSessionBeside?.(initial.worker!),
                                   }
                                 : undefined

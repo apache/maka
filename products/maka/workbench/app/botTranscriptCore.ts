@@ -212,11 +212,12 @@ export function reportedWorker(
   return undefined;
 }
 
+export type ActiveWorker = { id: string; title: string; activity: 'working' | 'waiting' };
 /**
- * The conversations the Bot created that are waiting for the user. Such a conversation
- * has not ended its run, so the Bot is not woken and says nothing about it.
+ * The conversations the Bot created that are running, or waiting for the user, now. Such a
+ * conversation has not ended its run, so the Bot is not woken and says nothing about it.
  */
-export function waitingWorkers<
+export function activeWorkers<
   T extends {
     id: string;
     title: string;
@@ -224,12 +225,14 @@ export function waitingWorkers<
     activity: string;
     archived: boolean;
   },
->(sessions: readonly T[], bot: string | null | undefined): { id: string; title: string }[] {
+>(sessions: readonly T[], bot: string | null | undefined): ActiveWorker[] {
   if (!bot) return [];
-  return sessions
-    .filter(
-      (session) =>
-        session.parentSessionId === bot && session.activity === 'waiting' && !session.archived,
-    )
-    .map((session) => ({ id: session.id, title: session.title }));
+  const found: ActiveWorker[] = [];
+  for (const session of sessions) {
+    if (session.parentSessionId !== bot || session.archived) continue;
+    if (session.activity === 'working' || session.activity === 'waiting')
+      found.push({ id: session.id, title: session.title, activity: session.activity });
+  }
+  // What waits for the user comes first.
+  return found.sort((a, b) => Number(b.activity === 'waiting') - Number(a.activity === 'waiting'));
 }
