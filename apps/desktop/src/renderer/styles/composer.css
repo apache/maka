@@ -84,6 +84,18 @@
   min-height: calc(1lh + 2 * var(--maka-editor-padding-block));
 }
 
+/* A line break at the very end of the draft — Shift+Enter at the tail, a
+   multi-line insert ending in one, a restored draft ending in "\n" — gets no
+   line box under Astryx's `white-space: pre-wrap` (#5811): the editor stays
+   one line short of the caret and, at the max-rows cap, cannot scroll toward
+   a line with no box. break-spaces gives every preserved break a real box.
+   `!important` because Astryx ships its pre-wrap through a stylex utility at
+   (3,1,0) specificity (`.x126k92a:not(#\#)` thrice) that no plain Maka
+   selector beats. */
+.maka-composer-editor > [contenteditable] {
+  white-space: break-spaces !important;
+}
+
 /* The expanded sidebar already exposes WorkHub. Keep this fallback only
    when that navigation is collapsed, using the shell's sidebar authority. */
 .appFrame[data-sidebar-state='expanded'] .maka-return-workhub {
@@ -733,11 +745,14 @@
 .maka-composer-next-prompt {
   position: relative; z-index: 1; align-self: start; overflow: hidden;
   display: block; width: 100%; height: auto; margin: 0; border: 0;
-  /* Match ChatComposerInput's editable and placeholder typography tokens. */
+  /* Match ChatComposerInput's editable and placeholder typography tokens —
+     `white-space` included: the editable takes break-spaces (#5811, above),
+     and the suggestion overlays the same grid cell, so a pre-wrap mirror
+     wraps trailing whitespace differently and the reserved height drifts. */
   padding: var(--spacing-1);
   font-family: var(--font-family-body); font-size: var(--text-body-size);
   font-weight: inherit; font-style: inherit; letter-spacing: inherit; line-height: 22px;
-  white-space: pre-wrap; word-break: break-word; text-align: start;
+  white-space: break-spaces; word-break: break-word; text-align: start;
   background: transparent; color: var(--color-text-secondary); pointer-events: none;
 }
 @media (pointer: coarse) {

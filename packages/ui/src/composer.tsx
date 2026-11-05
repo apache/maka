@@ -165,6 +165,53 @@ function placeCaretAtEnd(editable: HTMLElement): boolean {
   return true;
 }
 
+/** Renders no characters: empty text, comments, a `<br>` (forces a line but
+ *  carries none), or an element made only of those — tokens carry text. */
+function rendersNoCharacters(node: Node): boolean {
+  if (node.nodeType === Node.TEXT_NODE) return !node.nodeValue;
+  if (node.nodeType !== Node.ELEMENT_NODE) return true;
+  if ((node as Element).tagName === 'BR') return true;
+  return Array.from(node.childNodes).every((child) => rendersNoCharacters(child));
+}
+
+/** Whether the collapsed caret sits after everything the draft renders (only
+ *  characterless nodes may remain; a caret parked before a trailing `<br>` —
+ *  the restored-`"abc\n"`-draft shape — or before trailing `\n` text — the
+ *  shape Chromium leaves after a real Shift+Enter under `break-spaces`, the
+ *  break sitting as a text node ahead of the caret (#5811) — still counts). */
+function caretAtContentEnd(editable: HTMLElement): boolean {
+  const selection = document.getSelection();
+  if (!selection || !selection.isCollapsed || selection.rangeCount === 0) return false;
+  const { startContainer, startOffset } = selection.getRangeAt(0);
+  if (!editable.contains(startContainer)) return false;
+  if (startContainer.nodeType === Node.TEXT_NODE
+    && /[^\n]/.test((startContainer.nodeValue ?? '').slice(startOffset))) return false;
+  for (let node: Node | null = startContainer; node;) {
+    const rest = node === startContainer && node.nodeType !== Node.TEXT_NODE
+      ? (node.childNodes[startOffset] ?? null)
+      : node.nextSibling;
+    for (let tail = rest; tail; tail = tail.nextSibling) {
+      if (!rendersNoCharacters(tail)) return false;
+    }
+    const parent: Node | null = node.parentNode;
+    if (!parent || parent === editable || !editable.contains(parent)) return true;
+    node = parent;
+  }
+  return true;
+}
+
+/**
+ * #5811: a line break at the very end of the draft (Shift+Enter at the tail,
+ * a multi-line insert ending in one) moves the caret onto a line Chromium
+ * gives no line box under `white-space: pre-wrap`, so at the cap nothing
+ * scrolls to it. The renderer styles give the line its box (`break-spaces`);
+ * this completes the reveal, a no-op while the content already fits.
+ */
+function revealTailLineBreak(editable: HTMLElement | null): void {
+  if (!editable || !caretAtContentEnd(editable)) return;
+  editable.scrollTop = editable.scrollHeight;
+}
+
 /** A Skill as the composer offers it: what the `/` menu lists and what a
  * chosen entry writes into the draft. */
 export interface ComposerSkillOption {
@@ -1027,6 +1074,7 @@ export const Composer = forwardRef<
         if (index > 0) document.execCommand('insertLineBreak');
         if (line) document.execCommand('insertText', false, line);
       }
+      revealTailLineBreak(editableNode());
     };
     root.addEventListener('beforeinput', onBeforeInput);
     return () => root.removeEventListener('beforeinput', onBeforeInput);
@@ -1604,6 +1652,7 @@ export const Composer = forwardRef<
     if (event.altKey || event.shiftKey) {
       event.preventDefault();
       document.execCommand('insertLineBreak');
+      revealTailLineBreak(editableNode());
       return;
     }
     event.preventDefault();
