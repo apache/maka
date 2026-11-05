@@ -143,18 +143,18 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
     );
     return () => bindings.forEach((unbind) => unbind());
   });
-  // Files dropped on the conversation attach as they do on the field.
-  props.dropFiles?.((event) => {
-    const owner = props.session();
-    if (owner) completion.drop(owner, event);
-    else pending()?.selectFiles(event.uris);
-  });
   const hero = () => props.session() === null || props.session()!.empty();
   // On the desktop the card's 8-point inset makes its corners concentric with the 32-point round buttons.
   const cardRadius = () => (platform.isTerminal && compact() ? 16 : 24);
   // Desktop only: the terminal keeps its start pane as it is.
   const noConnections = () => !platform.isTerminal && (props.needsConnection?.() ?? false);
   const pending = () => props.pending?.() ?? null;
+  let pendingDrop: ((event: { uris: string[] }) => void) | null = null;
+  props.dropFiles?.((event) => {
+    const owner = props.session();
+    if (owner) completion.drop(owner, event);
+    else pendingDrop?.(event);
+  });
   type Pending = NonNullable<ReturnType<NonNullable<ComposerViewInput<JSX.Element>['pending']>>>;
   let pendingCommand: {
     owner: Pending;
@@ -619,6 +619,13 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
                     dismiss: completion.close,
                   })
                 : null;
+              if (local && paste) {
+                const drop = (event: { uris: string[] }) => paste.drop(local, event);
+                pendingDrop = drop;
+                cleanup(() => {
+                  if (pendingDrop === drop) pendingDrop = null;
+                });
+              }
               const focusEditor = () => {
                 if (owner?.editable() || local) editor()?.focus();
               };

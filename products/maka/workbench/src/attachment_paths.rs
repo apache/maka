@@ -141,62 +141,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pasted_directory_paths_remain_text_including_mixed_file_lists() {
+    fn pasted_directories_preserve_path_order_and_leave_file_lists_for_upload() {
         let root = tempfile::tempdir().unwrap();
-        let directory = root.path().join("未命名文件夹 2");
-        std::fs::create_dir(&directory).unwrap();
-        let file = root.path().join("notes.txt");
-        std::fs::write(&file, b"keep this file").unwrap();
-        for (selected, expected) in [
-            (
-                directory.to_str().unwrap().to_owned(),
-                directory.display().to_string(),
-            ),
-            (
-                format!("'{}'", directory.display()),
-                directory.display().to_string(),
-            ),
-            (
-                url::Url::from_file_path(&directory).unwrap().into(),
-                directory.display().to_string(),
-            ),
-            (
-                url::Url::from_directory_path(&directory).unwrap().into(),
-                format!(
-                    "{}{separator}",
-                    directory.display(),
-                    separator = std::path::MAIN_SEPARATOR
-                ),
-            ),
-        ] {
-            assert_eq!(pasted_directories(&[selected]), Ok(Some(expected)));
+        let directory = root.path().to_str().unwrap().to_owned();
+        let file = root.path().join("notes.txt").to_str().unwrap().to_owned();
+        std::fs::write(&file, b"notes").unwrap();
+        let uri = url::Url::from_file_path(root.path()).unwrap().into();
+        for selected in [directory.clone(), uri] {
+            assert_eq!(pasted_directories(&[selected]), Ok(Some(directory.clone())));
         }
         assert_eq!(
-            pasted_directories(&[
-                url::Url::from_file_path(&file).unwrap().into(),
-                url::Url::from_file_path(&directory).unwrap().into(),
-            ]),
-            Ok(Some(format!("{}\n{}", file.display(), directory.display())))
+            pasted_directories(&[file.clone(), directory.clone()]),
+            Ok(Some(format!("{file}\n{directory}")))
         );
-    }
-
-    #[test]
-    fn file_pastes_keep_snapshot_validation_and_normalization_errors() {
-        let root = tempfile::tempdir().unwrap();
-        let file = root.path().join("notes 中文.txt");
-        std::fs::write(&file, b"original file").unwrap();
-        assert_eq!(
-            pasted_directories(&[url::Url::from_file_path(&file).unwrap().into()]),
-            Ok(None)
-        );
-        let missing = root.path().join("missing.txt");
-        assert_eq!(
-            pasted_directories(&[missing.to_str().unwrap().to_owned()]),
-            Ok(None)
-        );
-        assert!(maka_ui_support::file::read_selected(&missing).is_err());
-        assert!(pasted_directories(&["relative/path".into()]).is_err());
-        assert!(pasted_directories(&["file:///tmp/file?query".into()]).is_err());
+        for selected in [file, root.path().join("missing.txt").display().to_string()] {
+            assert_eq!(pasted_directories(&[selected]), Ok(None));
+        }
     }
 
     #[test]

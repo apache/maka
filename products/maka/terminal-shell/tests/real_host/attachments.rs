@@ -40,9 +40,8 @@ async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) 
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn directory_path_paste_remains_text_in_an_existing_composer() {
-    let mut fixture = Fixture::open().await;
+    let fixture = Fixture::open().await;
     let client = fixture.client().await;
-    support::mutate(&client,"selectBackend",json!({"sessionId":fixture.session,"backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model","thinkingLevel":null}})).await;
     let directory = fixture.directory.path().join("未命名文件夹 2");
     std::fs::create_dir(&directory).unwrap();
     let expected = format!("查看 {}", directory.display());
@@ -59,17 +58,43 @@ async fn directory_path_paste_remains_text_in_an_existing_composer() {
     .await;
     let draft = stored_draft(&client, &fixture.session, |draft| draft.text == expected).await;
     assert!(draft.attachments.is_empty());
-    support::click_button(&mut view, "Send message").await;
-    let mut request = fixture.next_request().await;
-    let messages = request.body["messages"].as_array().unwrap();
-    let last = messages
-        .iter()
-        .rfind(|message| message["role"] == "user")
-        .unwrap();
-    assert_eq!(last["content"], expected);
-    request.delta("Directory path received").await;
-    request.finish().await;
-    fixture.idle(&client, &fixture.session).await;
+    drop(view);
+    bindings.close().await.unwrap();
+    let bindings = maka_workbench::bindings::Bindings::new(
+        fixture.client().await,
+        tokio::runtime::Handle::current(),
+    );
+    let mut view = AppView::new(nsh_platform_tui::AppOptions {
+        size: (120, 36),
+        ..Default::default()
+    });
+    let source = format!(
+        r#"
+import {{ mount, signal, Text }} from 'nsh';
+import {{ host }} from 'maka/host';
+const result = signal('Selecting file');
+host.stageFiles([{}]).then(
+  () => result.set('Unexpected directory upload'),
+  error => result.set(String(error).includes('selected path is not an absolute regular file')
+    ? 'Directory rejected' : 'Unexpected failure'),
+);
+mount(() => Text({{ get children() {{ return result(); }} }}));
+"#,
+        json!(directory.to_str().unwrap())
+    );
+    let mut config =
+        maka_workbench::configuration(bindings.registry(None), tokio::runtime::Handle::current());
+    let mut capabilities = nsh_engine::Capabilities::all();
+    capabilities.host = vec!["*".into()];
+    config.context = config.context.with(bindings.reload());
+    config.app = nsh_engine::Bundle::source(source)
+        .with_policy(nsh_engine::Policy {
+            declared: Some(capabilities),
+            ..nsh_engine::Policy::development()
+        })
+        .into();
+    view.load_with_config(config).unwrap();
+    wait_view(&mut view, |screen| screen.contains("Directory rejected")).await;
     drop(view);
     bindings.close().await.unwrap();
     fixture.finish().await;

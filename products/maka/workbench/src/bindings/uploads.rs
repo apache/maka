@@ -118,10 +118,13 @@ pub(super) fn staged_image(owner: &Owner, id: &str) -> Result<Vec<u8>, String> {
 pub(super) async fn stage_files(
     owner: Arc<Owner>,
     files: Vec<String>,
+    directory_text: bool,
 ) -> Result<StagedClipboard, String> {
     let (text, files) = execute(owner.clone(), async move {
         tokio::task::spawn_blocking(move || {
-            if let Some(text) = crate::attachment_paths::pasted_directories(&files)? {
+            if directory_text
+                && let Some(text) = crate::attachment_paths::pasted_directories(&files)?
+            {
                 return Ok((Some(text), vec![]));
             }
             let snapshots = crate::attachment_paths::resolve(&files)?
@@ -161,7 +164,7 @@ pub(super) async fn stage_clipboard(owner: Arc<Owner>) -> Result<StagedClipboard
     })
     .await?;
     match selected {
-        crate::clipboard::Selection::Files(files) => stage_files(owner, files).await,
+        crate::clipboard::Selection::Files(files) => stage_files(owner, files, true).await,
         crate::clipboard::Selection::Image(file) => Ok(StagedClipboard {
             owner,
             text: None,
@@ -169,7 +172,7 @@ pub(super) async fn stage_clipboard(owner: Arc<Owner>) -> Result<StagedClipboard
         }),
         crate::clipboard::Selection::Text(text) => {
             if let Some(files) = nsh_core::platform::clipboard::files_from_text(&text) {
-                stage_files(owner, files).await
+                stage_files(owner, files, true).await
             } else {
                 Ok(StagedClipboard {
                     owner,
