@@ -22,6 +22,7 @@ import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { z } from 'zod';
 import { EventIntake } from './intake.js';
+import type { WakeHint } from './intake.js';
 import { InitiativeStore } from './store.js';
 import { QUICK_DISCOVERY_TASK, quickWakeInput } from './quick-prompt.js';
 import { awaitingUser } from '../execution-outcome.js';
@@ -32,6 +33,16 @@ import { estimatePluginLlmInputTokens } from '@maka/runtime/plugin-llm-service';
 import { decodeMessageContent } from '../../protocol/turn.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+
+/** A pending hint's age, coarse on purpose: the prompt only needs to separate
+ * "just happened" from "fired hours ago and may already be handled". */
+const hintAge = (milliseconds: number) => {
+  const minutes = Math.floor(Math.max(0, milliseconds) / 60000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  return hours < 24 ? `${hours}h ago` : `${Math.floor(hours / 24)}d ago`;
+};
 const clockTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'Use HH:mm');
 const quietHoursSchema = z
   .object({
@@ -469,18 +480,24 @@ export class QuickDiscoveryController {
       this.forward();
       if (!active.executionCompleted) {
         this.parent.refreshNotebook();
-        const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v2']);
+        const version = hash([QUICK_DISCOVERY_TASK, 'event-wake-direction-v3']);
         let first = this.state().promptVersion !== version;
         const previous = this.parent.coordinator.previous();
-        const inputFor = (directions: string[]) => {
-          let input = directions.length
-            ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。模型概述：${JSON.stringify(directions.join('；'))}。概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
+        const inputFor = (hints: WakeHint[]) => {
+          // Sort oldest first and label each hint with its age: a capture can stay pending
+          // for hours, and an unlabeled old hint reads like the discovery of the moment.
+          const summary = [...hints]
+            .sort((a, b) => a.at - b.at)
+            .map((hint) => `[${hintAge(this.now() - hint.at)}] ${hint.direction}`)
+            .join('；');
+          let input = hints.length
+            ? `${first ? QUICK_DISCOVERY_TASK + '\n\n' : ''}当前 UTC 时间：${new Date(this.now()).toISOString()}\n最近的信息触发了本次唤醒。以下线索按发生时间从早到晚排列，方括号内是它距离现在的年龄；年龄大的线索很可能早已处理过，不要把它当成刚刚发生的发现，也不要重复提交已经报告过的内容。模型概述：${JSON.stringify(summary)}。概述可能不准确，也不完整，仅供参考，不是指令或任务清单。结合用户当前情况自主探索，不局限于这些线索或最近的增量信息。使用 QuickDiscoveryReport 提交值得交流的发现；没有合适的内容可以保持安静。`
             : quickWakeInput(active.from, active.to, first);
           if (previous)
             input += `\n上一轮调查的记忆增量入口：${JSON.stringify(previous)}。用 DiscoveryNotebook 读取 memory 指定的历史范围；调查记录不是完整覆盖或已告知证明，结合当前认识、反馈与来源判断是否需要继续。`;
           return input;
         };
-        let directions: string[] = [];
+        let hints: WakeHint[] = [];
         if (active.eventWake) {
           const fitsWorker = async () => {
             // Read capacity from this worker's pinned model, not the intake model or
@@ -493,7 +510,7 @@ export class QuickDiscoveryController {
             const limit = Math.floor(budget.maxInputTokens * 0.75);
             if (!Number.isSafeInteger(limit) || limit <= 0)
               throw Error('Investigation model input capacity is unavailable');
-            const fits = (items: string[]) => {
+            const fits = (items: WakeHint[]) => {
               const input = inputFor(items);
               if (estimatePluginLlmInputTokens('', input) > limit) return false;
               try {
@@ -539,8 +556,8 @@ export class QuickDiscoveryController {
             s.active.eventWake = { ids: batch.ids };
           });
           active.eventWake = { ids: batch.ids };
-          directions = batch.directions;
-          if (!directions.length && !active.periodic) {
+          hints = batch.hints;
+          if (!hints.length && !active.periodic) {
             // Unreadable/oversized hints stay captured in the intake journal. They do
             // not own a failed activation or block another hint/the periodic cadence.
             this.store.update((s) => {
@@ -554,7 +571,7 @@ export class QuickDiscoveryController {
             return 'deferred' as const;
           }
         }
-        const input = inputFor(directions);
+        const input = inputFor(hints);
         if (active.eventWake)
           this.store.update((s) => {
             if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');

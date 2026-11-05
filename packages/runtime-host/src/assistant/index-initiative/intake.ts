@@ -59,6 +59,28 @@ const eventText = (event: any) => ({
   ...(event.object?.title ? { title: event.object.title } : {}),
   ...(event.parts > 1 ? { part: event.part, parts: event.parts } : {}),
 });
+/** One pending wake hint and when it fired. Age is part of the hint: a wake row can
+ * stay pending for hours, so a bare direction reads like a fresh discovery. */
+export type WakeHint = { direction: string; at: number };
+
+const hintOf = (item: { direction: string; at?: number }): WakeHint => ({
+  direction: item.direction,
+  at: Number(item.at) || 0,
+});
+
+/** Deduplicate by direction, keeping the earliest position and the latest age: the hint
+ * did fire again, yet it must not pass for a new discovery. */
+const mergeHint = (
+  hints: Map<string, WakeHint>,
+  item: { direction: string; at?: number },
+): Map<string, WakeHint> => {
+  const hint = hintOf(item);
+  const seen = hints.get(hint.direction);
+  if (seen && seen.at >= hint.at) return hints;
+  hints.set(hint.direction, hint);
+  return hints;
+};
+
 /** Durable source receipt -> lightweight wake hint -> ordinary global discovery.
  * Receipt/screening positions never claim that a user matter has been investigated. */
 export class EventIntake {
@@ -703,14 +725,19 @@ export class EventIntake {
   private pendingWakes(ids?: string[], capturedOnly = false) {
     const rows = this.db
       .prepare(
-        `SELECT id,payload FROM intake_wakes WHERE status='pending' ${capturedOnly ? 'AND captured=1' : ''} ORDER BY at,rowid`,
+        `SELECT id,at,payload FROM intake_wakes WHERE status='pending' ${capturedOnly ? 'AND captured=1' : ''} ORDER BY at,rowid`,
       )
       .all();
     const wanted = ids ? new Set(ids) : undefined;
     return rows
       .filter((row) => !wanted || wanted.has(String(row.id)))
       .filter((row) => wanted || (this.hintRetryAt.get(String(row.id)) ?? 0) <= this.quick.now())
-      .map((row) => ({ id: String(row.id), ...JSON.parse(String(row.payload)) }));
+      .map((row) => ({
+        id: String(row.id),
+        ...JSON.parse(String(row.payload)),
+        // The column, not the payload, is the capture time: it is what survives a restart.
+        at: Number(row.at),
+      }));
   }
   private async readableWakes(ids?: string[], capturedOnly = false) {
     const wakes = this.pendingWakes(ids, capturedOnly);
@@ -759,22 +786,22 @@ export class EventIntake {
     for (const id of wake.ids)
       this.db.prepare("UPDATE intake_wakes SET captured=1 WHERE id=? AND status='pending'").run(id);
   }
-  async prepare(wake: { ids: string[] }, fits: (directions: string[]) => boolean) {
+  async prepare(wake: { ids: string[] }, fits: (hints: WakeHint[]) => boolean) {
     // Measure old captures without releasing their content; a rejected oversized anchor
     // must not be carried into the recovery Session's provider request.
-    const original = new Set<string>();
+    const original = new Map<string, WakeHint>();
     let oversized = false;
     for (const item of this.pendingWakes(wake.ids)) {
-      original.add(item.direction);
-      if (!fits([...original])) {
+      mergeHint(original, item);
+      if (!fits([...original.values()])) {
         oversized = true;
         break;
       }
     }
     const ids: string[] = [];
-    const directions = new Set<string>();
+    const hints = new Map<string, WakeHint>();
     for (const item of await this.readableWakes(wake.ids)) {
-      if (!fits([item.direction])) {
+      if (!fits([hintOf(item)])) {
         this.hintRetryAt.set(item.id, this.quick.now() + 30000);
         this.reportError(
           'wake-capacity',
@@ -782,13 +809,13 @@ export class EventIntake {
         );
         continue;
       }
-      const next = [...new Set([...directions, item.direction])];
-      if (!fits(next)) break;
+      const next = mergeHint(new Map(hints), item);
+      if (!fits([...next.values()])) break;
       this.hintRetryAt.delete(item.id);
       ids.push(item.id);
-      directions.add(item.direction);
+      mergeHint(hints, item);
     }
-    return { ids, directions: [...directions], oversized };
+    return { ids, directions: [...hints.keys()], hints: [...hints.values()], oversized };
   }
   async directions(wake: { ids: string[] }): Promise<string[]> {
     return (await this.prepare(wake, () => true)).directions;

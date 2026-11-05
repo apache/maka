@@ -270,3 +270,56 @@ test('old oversized captures recover on a fresh worker and retain the remaining 
   assert.equal(created, 1, 'normal legacy reuse continues on the recovered worker');
   assert.equal(f.counts().workerCalls, 2);
 });
+
+test('a hint captured hours ago cannot pass for a fresh discovery', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  const base = Date.now();
+  const insert = (id: string, at: number, direction: string) =>
+    f.q.store.update(() => {
+      f.q.store.db
+        .prepare(
+          "INSERT INTO intake_events(id,source,at,payload,status) VALUES(?,?,?,?, 'screened')",
+        )
+        .run(
+          id,
+          'mail',
+          at,
+          JSON.stringify({
+            id,
+            source: 'mail',
+            group: id,
+            object: { id, revision: '1' },
+            content: id,
+          }),
+        );
+      f.q.store.db
+        .prepare('INSERT INTO intake_wakes(id,at,payload) VALUES(?,?,?)')
+        .run(id, at, JSON.stringify({ direction, evidenceIds: [id] }));
+    });
+  // Both hints are still pending; only their capture time separates them.
+  insert('stale-hint', base - 3 * 3600000, 'the deploy was already repaired');
+  insert('fresh-hint', base - 60000, 'the deploy just broke again');
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 1);
+  const prompt = f.prompts[0];
+  // Ages are coarse buckets, so assert the scale rather than an exact string.
+  const stale = prompt.match(/\[([^\]]+)\] the deploy was already repaired/);
+  const fresh = prompt.match(/\[([^\]]+)\] the deploy just broke again/);
+  assert.ok(stale, `a stale hint keeps its age: ${prompt}`);
+  assert.ok(fresh, `a recent hint keeps its age: ${prompt}`);
+  assert.match(stale[1], /^\d+[hd] ago$/, 'three hours of pending time is visible as hours');
+  assert.match(fresh[1], /^(just now|\d+m ago)$/, 'a one-minute-old hint is minutes, not hours');
+  assert.notEqual(stale[1], fresh[1], 'the two hints cannot read the same');
+  assert.ok(
+    prompt.indexOf(stale[0]) < prompt.indexOf(fresh[0]),
+    'hints are ordered oldest first, so the stale one is not presented as the latest',
+  );
+  assert.ok(
+    prompt.includes('年龄大的线索很可能早已处理过'),
+    'the prompt tells the worker how to read an old hint',
+  );
+  assert.equal(status(f, 'stale-hint'), 'delivered');
+  assert.equal(status(f, 'fresh-hint'), 'delivered');
+});
