@@ -1861,11 +1861,11 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
     })
     .await;
     let parent = fixture.session.clone();
-    let (_, appearance, layout, width, height) = visual_case();
+    let (_, appearance, _, width, height) = visual_case();
     let desktop = Desktop::open_at(
         &fixture,
         &fixture.address,
-        size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+        size(gpui::DevicePixels(1280), gpui::DevicePixels(900)),
         appearance,
     )
     .await;
@@ -1978,9 +1978,6 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             .unwrap()
             .matches
     );
-    if !desktop.controls("Expand session browser").is_empty() {
-        desktop.press("Expand session browser").await;
-    }
     desktop.press("Waiting for you").await;
     desktop
         .control("Actions for Verify sandbox delegation")
@@ -1995,9 +1992,6 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
                 .then_some(())
         })
         .await;
-    if layout == "narrow" {
-        desktop.press("Collapse session browser").await;
-    }
     parent_reply.tool_call("SessionRespond", json!({
         "sessionId":child,"requestId":record.request_id,
         "answer":{"kind":"permissions","decision":{"decision":"allow","scope":"once","permissions":permissions}}
@@ -2057,7 +2051,6 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             .controls("Open source conversation beside this one")
             .is_empty()
     );
-    desktop.artifact("agent-message-default");
     desktop.press("Turn work details").await;
     let group = desktop.control("Process group").await;
     desktop.press("Process group").await;
@@ -2068,12 +2061,10 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
             .controls("Open source conversation beside this one")
             .is_empty()
     );
-    desktop.artifact("agent-message-collapsed");
     desktop.press("Agent message").await;
     desktop
         .control("Open source conversation beside this one")
         .await;
-    desktop.artifact("agent-message-expanded");
     desktop
         .press("Open source conversation beside this one")
         .await;
@@ -2085,6 +2076,31 @@ async fn desktop_parent_reviews_child_access_and_opens_attributed_sender_beside(
         )
         .await;
     desktop.artifact("source-conversation-beside");
+    desktop.press("Close side pane").await;
+    desktop
+        .platform
+        .set_viewport(
+            size(gpui::DevicePixels(width), gpui::DevicePixels(height)),
+            1.0,
+        )
+        .unwrap();
+    desktop
+        .until("activity indentation did not settle after resize", || {
+            let groups = desktop.controls("Process group");
+            let messages = desktop.controls("Agent message");
+            let ([group], [message]) = (groups.as_slice(), messages.as_slice()) else {
+                return None;
+            };
+            (message.right() <= px(width as f32) && message.left() - group.left() == px(16.0))
+                .then_some(())
+        })
+        .await;
+    desktop.artifact("agent-message-expanded");
+    desktop.press("Agent message").await;
+    desktop.artifact("agent-message-collapsed");
+    desktop.press("Process group").await;
+    desktop.press("Turn work details").await;
+    desktop.artifact("agent-message-default");
     desktop.close().await;
     fixture.finish().await;
 }
