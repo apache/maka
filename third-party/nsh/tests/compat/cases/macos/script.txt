@@ -88,8 +88,8 @@ expect Tab b
 expect Tab c*
 expect Count a: 0
 expect Count c: 0
-# The other panels are placed (hidden), so they keep their state.
-expect Count b: 0
+# The other panels are placed but hidden (out of the layout): not shown.
+absent Count b: 0
 expect Layout h([a* b]:200 [c*])
 expect Active a+ c+
 frame parent:parent:parent:id:tab-b 60 0 60 24
@@ -98,6 +98,8 @@ prop parent:parent:parent:id:tab-b role tab
 # A press selects a tab: the layout comes back with it displayed.
 tap text:Tab b
 expect Layout h([a b*]:200 [c*])
+# Placed all along, it kept its state.
+expect Count b: 0
 expect Active a+ c+ a- b+
 tap text:Tab a
 expect Count a: 0
@@ -161,3 +163,10 @@ covers [nsh] Clipboard
 covers [nsh] Picker
 covers [nsh] openUrl
 covers [nsh] Image
+# web-send-input
+tap id:case-web-send-input
+# The headless backend selects macOS props but delivers no trusted input.
+expect Input available: false
+tap id:send
+expect Sent input
+covers [nsh] WebView

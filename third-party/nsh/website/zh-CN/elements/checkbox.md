@@ -75,6 +75,7 @@ mount(App);
 | `role` | `.role(..)` | `AccessibilityRole` | `"checkbox"` | 它对屏幕阅读器而言是什么，用于更具体的情形（可勾选的菜单项：`"menuitem"`）。 |
 | `indicatorClass`、`indicatorStyle` | `.indicator_style(\|s\| ..)` | `string`、`StyleProp<ViewStyle>` | 无 | 指示器，显示值的方框。 |
 | `indicator` | `.indicator(..)` | `JSX.Element` | 无 | 指示器里的内容：标记（对勾、短横），由应用按它持有的值显示。 |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 指示器之后的内容：一个标签，屏幕阅读器会读出。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 复选框自身：包住指示器和标签的那一行。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 复选框按下、悬停、获得焦点或禁用时的样式，与对应的 `<state>:` 类相同。 |
@@ -146,6 +147,22 @@ const some = () => selected().length > 0 && !all();
 >
   <Text>Share usage data</Text>
 </Checkbox>
+```
+
+<a id="a-small-target-with-hitslop"></a>
+
+## 用 hitSlop 扩大小目标
+
+旁边没有标签的复选框（列表行的选择框）可能比手指还小。`hitSlop` 让落在它附近的按压也算数，单位为超出每一边的点数，不改变它的布局和外观：一个数字表示每一边，或分别指定各边（`{ top: 8, bottom: 8 }`），与[视图的 `hitSlop`](./index.md#按压与反馈) 取值相同。
+
+```tsx
+<Checkbox
+  checked={selected()}
+  hitSlop={12}
+  accessibilityLabel="Select row"
+  onChange={({ checked }) => selected.set(checked)}
+  indicatorClass="size-4 rounded border border-border checked:bg-primary"
+/>
 ```
 
 <a id="accessibility"></a>

@@ -73,6 +73,7 @@ import { Link } from "nsh/base";
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不响应按压、没有按压反馈、不获得键盘焦点；应用 `disabled:` 样式，屏幕阅读器读出它不可用。 |
 | `current` | `.current(..)` | `boolean` | `false` | 导航或面包屑中指向用户所在页面的链接：屏幕阅读器读出它是当前页。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 内容说明不够时（一个图标）屏幕阅读器读出的文字。 |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容：一段文字、一个图标，应用要显示的任何东西。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 链接的外观：颜色、下划线、内边距；文本属性会传给其中的文字。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 链接在按下、悬停、获得焦点或禁用时的样式，与 `<state>:` 类相同。 |
@@ -128,6 +129,16 @@ const visited = signal(new Set<string>());
 ```
 
 随段落换行的链接是带 `role="link"` 和 `onPress` 的嵌套 `<Text>`（见 [Text](./text.md)），[TextView](./text-view.md) 就是这样绘制文档中的链接的。
+
+## 用 hitSlop 扩大小目标
+
+链接可能比手指还小：一个图标、一个短词。`hitSlop` 让落在它附近的按压也算数，单位为超出每一边的点数，不改变它的布局和外观：一个数字表示每一边，或分别指定各边（`{ top: 8, bottom: 8 }`），与[视图的 `hitSlop`](./index.md#按压与反馈) 取值相同。
+
+```tsx
+<Link href="https://example.com/help" hitSlop={12} accessibilityLabel="Help" class="size-5 items-center justify-center">
+  <Text>?</Text>
+</Link>
+```
 
 ## 无障碍
 

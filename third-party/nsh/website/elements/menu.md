@@ -86,6 +86,18 @@ All five come from [`nsh/base`](../modules/nsh-base.md). The items reach their m
 freely: groups in views, labels, items that come and go with `If`. `popupClass` styles the popup on desktops and the
 sheet on phones; a style that differs between them can compare `platform.idiom` (`nsh`) with `"desktop"`.
 
+## Menu bars
+
+Menus whose triggers are items of one `Toolbar` form a menu bar: with one of its menus open, the pointer over another
+menu's trigger opens that menu in its place, and the arrow keys move between the triggers.
+
+```tsx
+<Toolbar accessibilityLabel="Menu bar">
+  <Menu trigger={<View><Text>File</Text></View>}>{/* … */}</Menu>
+  <Menu trigger={<View><Text>Edit</Text></View>}>{/* … */}</Menu>
+</Toolbar>
+```
+
 ## Context menus
 
 ```tsx
@@ -274,6 +286,7 @@ it in `onOpenChange({ open, reason })`: `"triggerPress"`, `"select"`, `"pressOut
 | `trigger` | `.trigger(..)` | `JSX.Element` | none | The item that opens it. |
 | `back` | `.back(..)` | `JSX.Element` | none | Phones: the row above its items that returns to the items around it. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | It does not open. |
+| `offset` | `.offset(..)` | `number` | `0` | Desktops: the gap between the menu around it and its popup. |
 | `children` | `.child(..)` | `JSX.Element` | none | Its items. |
 
 `MenuSeparator` is a view you style (`class`, `style`), shown with the items of its level.
@@ -293,5 +306,5 @@ it in `onOpenChange({ open, reason })`: `"triggerPress"`, `"select"`, `"pressOut
 
 The popup or sheet is a menu and its items menu items for screen readers; the trigger tells whether the menu is
 expanded. A checkable item is a checkbox or radio menu item, read as checked or not checked; its indicator is part of
-the item. In TSX the trigger is the element you pass: it takes the presses and the expanded state itself, so its own
-`active:` classes and `activeStyle` show while it is pressed, and its own `onPress` runs too. Only the items of the level shown are on screen, so screen readers read what is there.
+the item. In TSX the trigger is the element you pass, a `Button` or a view of your own: it takes the presses and the
+expanded state itself, so its own `active:` classes and `activeStyle` show while it is pressed, and its own `onPress` runs too. Only the items of the level shown are on screen, so screen readers read what is there.

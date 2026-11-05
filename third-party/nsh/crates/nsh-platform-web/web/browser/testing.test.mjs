@@ -61,13 +61,40 @@ function realm() {
   };
 }
 
-test("the system's clock keeps the browser's timers, Date and fetch", () => {
-  const target = realm(), { Date: RealmDate, setTimeout, fetch } = target;
-  const result = installTesting(target, engine({ manual: false }).call);
+test("the system's clock keeps the browser's timers and Date, and HTTP stays the browser's", async () => {
+  const target = realm(), host = engine({ manual: false }), { Date: RealmDate, setTimeout } = target;
+  const result = installTesting(target, host.call);
   assert.deepEqual(result, { clock: false, network: false });
   assert.equal(target.Date, RealmDate);
   assert.equal(target.setTimeout, setTimeout);
-  assert.equal(target.fetch, fetch);
+  assert.equal(await target.fetch("https://example.com/posts"), "native");
+  // Handed over as it came: a request's body is still there to send.
+  const post = new Request("https://example.com/posts", { method: "POST", body: "hi" });
+  assert.equal(await target.fetch(post), "native");
+  assert.equal(post.bodyUsed, false);
+  assert.deepEqual(host.state.ops, []);
+});
+
+test("fetch reads the app's files through the engine in every session", async () => {
+  const target = realm(), host = engine({ manual: false });
+  installTesting(target, host.call);
+  const pending = target.fetch("asset:/@app/data/en.json");
+  await new Promise(resolve => setImmediate(resolve));
+  const [start] = host.state.ops;
+  assert.deepEqual(start.slice(0, 3), ["start", "GET", "asset:/@app/data/en.json"]);
+  const id = host.state.next;
+  host.event(id, 0, 200, "OK", "asset:/@app/data/en.json", false, [["content-type", "application/json"]]);
+  const response = await pending;
+  assert.equal(response.url, "asset:/@app/data/en.json");
+  assert.equal(response.headers.get("content-type"), "application/json");
+  host.event(id, 1, new TextEncoder().encode('{"hello":"Hi"}'));
+  host.event(id, 2);
+  assert.deepEqual(await response.json(), { hello: "Hi" });
+  // A file the engine does not find rejects as fetch's network errors do.
+  const missing = target.fetch(new Request("asset:/@app/missing.json"));
+  await new Promise(resolve => setImmediate(resolve));
+  host.event(host.state.next, 3, "asset:/@app/missing.json is not bundled");
+  await assert.rejects(missing, TypeError);
 });
 
 test("Date and performance.now read the engine's clock", () => {

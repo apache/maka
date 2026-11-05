@@ -179,7 +179,7 @@ channel its space does not have is the space's first (a warning says so).
 
 | Prop | Rust | Type | Default | Description |
 |---|---|---|---|---|
-| `panelClass`, `panelStyle` | `.panel_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The panel, filling the area: the hue's colors, saturation from left to right and brightness from bottom to top, clipped to its corners. |
+| `panelClass`, `panelStyle` | `.panel_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The panel, filling the area: the hue's colors, saturation from left to right (from right to left in a right-to-left layout) and brightness from bottom to top, clipped to its corners. |
 | `thumbClass`, `thumbStyle` | `.thumb_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The thumb, centered on the color. |
 | `fillThumb` | `.fill_thumb(..)` | `boolean` | `false` | The thumb's background is the color. |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | No pointer, keyboard or screen reader changes. |
@@ -192,7 +192,7 @@ channel its space does not have is the space's first (a warning says so).
 |---|---|---|---|---|
 | `colorSpace` | `.color_space(..)` | `"rgb" \| "hsl" \| "hsb" \| "oklch"` | `"hsb"` | The space of the channel. |
 | `channel` | `.channel(..)` | `ColorChannel` | `"hue"` | The channel it changes: one of the space's, or `"alpha"`. |
-| `axis` | `.axis(..)` | `"horizontal" \| "vertical"` | `"horizontal"` | The track's direction: the smallest value at the left, or at the bottom. Read when the slider is made. |
+| `axis` | `.axis(..)` | `"horizontal" \| "vertical"` | `"horizontal"` | The track's direction: the smallest value at the start (the left, the right in a right-to-left layout), or at the bottom. Read when the slider is made. |
 | `trackClass`, `trackStyle` | `.track_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The track: the channel's colors along it, clipped to its corners; the thumb is placed on it. |
 | `thumbClass`, `thumbStyle` | `.thumb_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The thumb, centered on the value. |
 | `fillThumb` | `.fill_thumb(..)` | `boolean` | `false` | The thumb's background is the color (with its alpha on an alpha slider). |
@@ -286,6 +286,10 @@ On macOS and the web each thumb is a stop of the keyboard focus (Tab):
 | Shift with an arrow | Ten steps | Ten steps |
 | Page Up, Page Down | Ten steps | Ten steps of brightness |
 | Home, End | The channel's ends | |
+
+In a right-to-left layout a horizontal slider and the area run from the right, the smallest value (the least
+saturation) at the right end: Left is a step up and Right a step down, and a press or a drag picks the value under the
+pointer as it is drawn. A vertical slider keeps Right and Up as a step up; Up and Down on the area keep the brightness.
 
 A swatch takes Space and Return. Each key reports `onChange` and then `onChangeEnd`; arrows repeat while held.
 

@@ -5,6 +5,12 @@
 //! writes the [`HostPropSpec`]s the element types are generated from. The
 //! decoders read JS values through [`HostInput`], which `nsh-js` implements
 //! for QuickJS values: no JSON in between.
+//!
+//! A few props are not [`HostProps`]: the state styles and a page's header
+//! style, whose values each renderer decodes with its own style decoder, and
+//! the class lists of an element's parts. [`style_patch_prop`] and
+//! [`part_class_prop`] name them for both renderers (QuickJS' and the
+//! browser runtime's).
 
 use std::sync::Arc;
 
@@ -117,10 +123,59 @@ pub fn element_bits(tag: crate::Tag) -> u32 {
             Tag::InputAccessory => on::INPUT_ACCESSORY,
             Tag::View => on::VIEW,
             Tag::Shader => on::VIEW | on::SHADER,
+            Tag::ShaderEffect => on::VIEW | on::SHADER | on::EFFECT,
+            Tag::ShaderTransition => on::VIEW | on::SHADER | on::TRANSITION,
+            Tag::ScreenEffect => on::SHADER | on::EFFECT,
+            Tag::ScreenTransition => on::SHADER | on::TRANSITION,
             Tag::Cell | Tag::Stack | Tag::HeaderItem | Tag::Canvas | Tag::Native | Tag::Overlay => {
                 0
             }
         }
+}
+
+/// A prop whose value is a style over the element's own: the style patch
+/// the renderer decodes from it as from a `style` (`None` when empty).
+pub type StylePatchProp = fn(Option<std::rc::Rc<crate::StylePatch>>) -> crate::Prop;
+
+/// The prop a state style or a page's header style sets (`activeStyle`,
+/// `hoverStyle`, ..., `headerStyle`). They are not [`HostProps`]: each
+/// renderer decodes their style with its own style decoder, then makes the
+/// prop with this, so QuickJS' and the browser's take the same names.
+#[inline]
+pub fn style_patch_prop(name: &str) -> Option<StylePatchProp> {
+    use crate::Prop;
+    Some(match name {
+        "activeStyle" => Prop::ActiveStyle,
+        "hoverStyle" => Prop::HoverStyle,
+        "focusStyle" => Prop::FocusStyle,
+        "disabledStyle" => Prop::DisabledStyle,
+        "selectedStyle" => Prop::SelectedStyle,
+        "checkedStyle" => Prop::CheckedStyle,
+        "indeterminateStyle" => Prop::IndeterminateStyle,
+        "expandedStyle" => Prop::ExpandedStyle,
+        "pressedStyle" => Prop::PressedStyle,
+        "focusWithinStyle" => Prop::FocusWithinStyle,
+        "headerStyle" => Prop::HeaderStyle,
+        _ => return None,
+    })
+}
+
+/// A prop whose value is a class list of a part of an element: the class
+/// names as the renderer reads them from the JS string.
+pub type PartClassProp = fn(Box<str>) -> crate::Prop;
+
+/// The prop a class list of a part of element `tag` sets: a page's header
+/// (`headerClass`) or a list's content (`contentClass`). A scroll view's
+/// `contentClass` is not one: it styles the scroll view's content container,
+/// which a renderer makes itself rather than the core.
+#[inline]
+pub fn part_class_prop(name: &str, tag: Option<crate::Tag>) -> Option<PartClassProp> {
+    use crate::{Prop, Tag};
+    match name {
+        "headerClass" => Some(Prop::HeaderClass),
+        "contentClass" if tag != Some(Tag::Scroll) => Some(Prop::ListContentClass),
+        _ => None,
+    }
 }
 
 /// A prop's value: how it comes out of a JS value and its TypeScript type.
@@ -163,8 +218,12 @@ pub mod on {
     pub const OVERLAY: u32 = 1 << 12;
     /// `<view>`.
     pub const VIEW: u32 = 1 << 13;
-    /// `<shader>`.
+    /// `<shader>` and the shader effects and transitions.
     pub const SHADER: u32 = 1 << 14;
+    /// Shader effects (`ShaderEffect`, `ScreenEffect`).
+    pub const EFFECT: u32 = 1 << 15;
+    /// Shader transitions (`ShaderTransition`, `ScreenTransition`).
+    pub const TRANSITION: u32 = 1 << 16;
     /// Set by the runtime itself, not part of the elements' types.
     pub const INTERNAL: u32 = 1 << 31;
 }
@@ -535,6 +594,19 @@ export interface WebViewNavigation {
   canGoBack: boolean;
   canGoForward: boolean;
 }
+
+/** A web view's download (`onDownload`): where it is saved, in the app's data directory's `downloads`. */
+export interface WebViewDownload {
+  state: "started" | "finished" | "failed";
+  id: string;
+  url: string;
+  filename: string;
+  path: string;
+  /** Once finished: the file's size in bytes. */
+  bytes?: number;
+  /** When it failed: why. */
+  message?: string;
+}
 "#;
 
 /// The events of the host elements, as their handler props: the event, the
@@ -833,6 +905,12 @@ pub const EVENTS: &[(EventKind, u32, &str, &str)] = &[
         "(e: WebViewNavigation) => void",
         "",
     ),
+    (
+        EventKind::Download,
+        on::WEBVIEW,
+        "(e: WebViewDownload) => void",
+        "With a listener, what the page downloads (an attachment, a type the web view cannot show, a `download` link) is saved as a file in the app's data directory, `downloads/<id>/<filename>`: reported as it starts, finishes and fails. Without one, those navigations behave as before.",
+    ),
     (EventKind::End, on::VIDEO, "() => void", ""),
     (
         EventKind::Buffer,
@@ -877,6 +955,7 @@ pub const INTERNAL_EVENTS: &[EventKind] = &[
     EventKind::OpenUrl,
     EventKind::ScreenColor,
     EventKind::FileRequest,
+    EventKind::Speech,
     EventKind::KeyCommand,
     EventKind::Menu,
     EventKind::ViewableItemsChange,
@@ -909,6 +988,8 @@ const GROUPS: &[(u32, &str, &str)] = &[
     (on::WEBVIEW, "WebView", "web views"),
     (on::VIDEO, "Video", "videos"),
     (on::SHADER, "Shader", "shaders"),
+    (on::EFFECT, "ShaderEffect", "shader effects"),
+    (on::TRANSITION, "ShaderTransition", "shader transitions"),
     (on::INPUT_ACCESSORY, "InputAccessory", "input accessories"),
     (on::OVERLAY, "Overlay", "`<Overlay>`"),
 ];

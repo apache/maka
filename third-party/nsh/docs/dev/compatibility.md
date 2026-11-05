@@ -7,7 +7,7 @@ starting after an NSH update is a bug in NSH, never in the app.
 
 This page is the contract and how it is enforced. It holds from the first release recorded in
 `nsh-compat` ("Releasing") on, and for good, whatever the version number says; earlier versions made no promises.
-No release is recorded yet, 0.3.0 included: the first one recorded starts the contract.
+No release is recorded yet, 0.3.0 and 0.4.0 included: the first one recorded starts the contract.
 
 ## What apps depend on
 
@@ -170,7 +170,9 @@ screen and pick the platform whose `ios={{…}}` / `android={{…}}` / `desktop=
 prop), `style` / `nostyle` (a paint or text style key), `drawing` / `nodrawing` (an operation of a canvas's latest
 drawing, written as the canvas method or property apps use: `drawing id:chart strokeStyle #ff0000ff`; the SVG paint
 properties `fill`, `stroke`, `strokeWidth` and `strokeDasharray` show only there, in what a component draws),
-`listens` (an event the platform reports),
+`animated` (what the animations bound to a view set on it now, the graph run as a platform runs it:
+`animated id:link opacity 0.4`; `opacity`, the colors, `transform.<i>` and a canvas's `slot.<i>`), `listens` (an
+event the platform reports),
 `statusbar <key>=<value>...` (the status bar the platform was last told to show: `foreground`, `hidden`, `animated`);
 `log <text>` checks a `console` line, and `covers <item>` is a claim, not a step. Other steps stand in for the
 platform's input: `event <selector> <onEvent> [<key>=<value>...]` reports an event with its payload keys as the

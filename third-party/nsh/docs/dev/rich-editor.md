@@ -140,18 +140,14 @@ as a unit. The only looks of the view's own are the caret (2 points, the theme's
 theme's selection color), the placeholder (`muted-foreground`) and the composition (underlined), each a part the app
 restyles.
 
-Geometry (`geometry.rs`): blocks report their frames (`onLayout`), each textblock's text its lines as the core laid
-them out (`onTextLayout`), and an `InlineMap` maps the textblock's positions to the text's offsets (atoms and
-widgets are one character, the composition its text). Positions within a line are placed by the relative widths of grapheme prefixes, so the
-caret and hit tests follow the app's fonts (classes included) line by line. Document positions and places stay
-apart: a position at a wrap shows at the upper line's end with `Affinity::Upstream`.
+Geometry (`geometry.rs`): maps document positions to the laid-out text's lines and back from the blocks' and texts'
+layouts, so the caret and hit tests follow the app's fonts (classes included). A position at a wrap shows at the
+upper line's end with `Affinity::Upstream`.
 
 Input (`controller.rs`): as the code `Editor`, an invisible native input at the caret (the sink) takes typed text
 and input methods. Typed text goes to plugins' `handle_text_input` (input rules), else is inserted with the stored
-marks (origin `Input`). While an input method composes, its text shows in the line at the caret, a span of the block's
-text after the caret's position (so it takes the block's typography and wraps with the line, and the caret, where
-the input method places its candidates, stays at its start), in place of its block's placeholder, and the document
-waits; the commit is one transaction tagged with the composition's id (`composition`
+marks (origin `Input`). While an input method composes, its text shows in the line at the caret with the block's
+typography, and the document waits; the commit is one transaction tagged with the composition's id (`composition`
 meta, which the history groups). Keys: the view binds, while focused, every keystroke a keymap could use (`keys.rs`)
 and offers each as a `KeyEvent` to the selected node's view, the plugins' `handle_key_down`, the base keymap, then
 copy / cut / select all and the caret movement (graphemes, words, line ends, lines and pages by geometry, keeping the

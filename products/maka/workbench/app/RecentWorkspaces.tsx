@@ -114,6 +114,7 @@ export function RecentWorkspaces(props: {
         </View>
       }
       itemStyle={{ padding: 0 }}
+      itemClass={`rounded-lg focus:bg-[${C.raised}]`}
       renderGroup={(group) =>
         group.title === 'recent' ? (
           <Text style={{ color: C.muted, fontSize: 12, paddingHorizontal: 10, paddingVertical: 8 }}>
@@ -135,7 +136,6 @@ export function RecentWorkspaces(props: {
             paddingHorizontal: 10,
             paddingVertical: 8,
             minHeight: item.group === 'recent' ? 54 : 36,
-            backgroundColor: item.highlighted ? C.raised : 'transparent',
           }}
         >
           <Icon name={item.value === 'forget' ? 'close' : 'folder'} color={C.secondary} />
@@ -160,7 +160,7 @@ export function RecentWorkspaces(props: {
             </If>
           </View>
           <View style={{ width: 16 }}>
-            <If when={item.selected}>
+            <If when={item.value === props.path()}>
               <Icon name="check" color={C.accent} />
             </If>
           </View>

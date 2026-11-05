@@ -10,7 +10,7 @@ use nsh_core::{
 };
 
 use super::{
-    PlotContext, STROKE_ROOM, layer,
+    PlotContext, STROKE_ROOM, ValueScale, layer,
     line::{Curve, trace, trace_back},
     mark_canvas, mark_canvas_with, reach,
     scale::AxisMap,
@@ -105,10 +105,16 @@ pub struct AreaProps {
     /// the y scale, a constant baseline; or a field name or a function of
     /// the row and its index, a bottom value per row (a band: a day's low
     /// to its high, a forecast's fan), traced with the top edge's `curve`,
-    /// a row without one skipped. Without one, the edge of the plot where
-    /// the y scale's smallest values are: the bottom edge, the top one
-    /// when the scale is reversed (an area hanging from the top).
+    /// a row without one skipped. Without one, the end of the y scale
+    /// where its smallest values are: the bottom edge, the top one when the
+    /// scale is reversed (an area hanging from the top), less the inset a
+    /// y axis's labels keep.
     pub y0: Prop<Option<AreaY0>>,
+    /// The y scale its edges go along: `"y"` (the default, the plot's
+    /// `yScale`) or `"y2"` (its second one, `y2Scale`: a dual-axis chart's
+    /// right-hand scale).
+    #[prop(default)]
+    pub scale: Prop<ValueScale>,
     /// How its edges connect their points: `"natural"` (the default, a
     /// smooth curve, as `gpui-base`'s), `"linear"` or `"stepAfter"`.
     #[prop(default)]
@@ -167,14 +173,14 @@ pub struct AreaProps {
 #[component]
 pub fn Area(props: AreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let plot = PlotContext::of("Area");
-    let (y0, curve) = (props.y0, props.curve);
+    let (y0, curve, scale) = (props.y0, props.curve, props.scale);
     let hover_dot = HoverDot {
         class: props.hover_dot_class,
         style: props.hover_dot_style,
     };
     let series = plot.map(|plot| {
         let low = move || y0.with(|y0| y0.as_ref().and_then(AreaY0::row));
-        let series = Series::new(plot, props.data, props.x, props.y1, low);
+        let series = Series::new(plot, props.data, props.x, props.y1, props.scale, low);
         series.join(
             plot,
             move || y0.with(|y0| y0.as_ref().and_then(AreaY0::value)),
@@ -194,8 +200,8 @@ pub fn Area(props: AreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     // the y scale's smallest values are (the bottom one; the top one when
     // reversed).
     let base = move |plot: PlotContext| match y0.with(|y0| y0.as_ref().map(AreaY0::value)) {
-        Some(Some(v)) => plot.y_map.get().tick(v).unwrap_or(0.0),
-        _ => match plot.y_map.get() {
+        Some(Some(v)) => plot.y_map_of(scale.get()).tick(v).unwrap_or(0.0),
+        _ => match plot.y_map_of(scale.get()) {
             AxisMap::Linear(map) => map.range()[0],
             _ => plot.size.get().height.0,
         },
@@ -222,17 +228,17 @@ pub fn Area(props: AreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let shape =
         move |p: Painter, plot: PlotContext, points: &[Point<Points>], lows: &[Point<Points>]| {
             let (first, last) = (points[0], points[points.len() - 1]);
-            let p = plot.traced(p.begin_path(), true, true, |p| {
+            let p = plot.traced(p.begin_path(), true, Some(scale.get()), |p| {
                 trace(p.move_to(first.x, first.y), points, curve.get())
             });
             let p = match lows.last() {
-                Some(end) => plot.traced(p, true, true, |p| {
+                Some(end) => plot.traced(p, true, Some(scale.get()), |p| {
                     trace_back(p.line_to(end.x, end.y), lows, curve.get())
                 }),
                 None => {
                     let base = base(plot);
                     let at_value = y0.with(|y0| y0.as_ref().and_then(AreaY0::value).is_some());
-                    plot.traced(p, true, at_value, |p| {
+                    plot.traced(p, true, at_value.then(|| scale.get()), |p| {
                         p.line_to(last.x, px(base)).line_to(first.x, px(base))
                     })
                 }
@@ -305,7 +311,7 @@ pub fn Area(props: AreaProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                 .stroke_style_from_view(SvgPaint::None)
                 .line_width_from_view()
                 .line_dash_from_view();
-            plot.traced(p.begin_path(), true, true, |p| {
+            plot.traced(p.begin_path(), true, Some(scale.get()), |p| {
                 trace(p.move_to(first.x, first.y), &points, curve.get())
             })
             .stroke()

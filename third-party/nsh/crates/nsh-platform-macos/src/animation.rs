@@ -4,7 +4,12 @@
 
 use std::ops::{Deref, DerefMut};
 
-use nsh_core::{Points, animation::Animator, canvas::Damage, geometry::Point};
+use nsh_core::{
+    Points,
+    animation::{AnimValues, Animator},
+    canvas::Damage,
+    geometry::Point,
+};
 
 use crate::mount::Mounter;
 
@@ -61,20 +66,25 @@ impl UiAnimation {
         self.0.write(
             |id| mounter.views.get(&id),
             |view, values, canvas| {
-                let moved = {
+                let update = {
                     let mut s = view.state_mut();
-                    let moved = s.anim.transform != values.transform;
-                    let changed = moved || s.anim != values;
+                    let update = Update::between(&s.anim, &values);
                     s.anim = values;
-                    changed.then_some(moved)
+                    update
                 };
-                match moved {
-                    Some(true) => view.moved(),
-                    Some(false) => view.changed(),
-                    None => {}
-                }
-                if moved.is_some() {
-                    crate::text_input::animated(view);
+                match update {
+                    Update::None => {}
+                    Update::Move { redraw } | Update::Restyle { redraw } => {
+                        if matches!(update, Update::Move { .. }) {
+                            view.moved();
+                        } else {
+                            view.restyle();
+                        }
+                        if redraw {
+                            view.redraw();
+                        }
+                        crate::text_input::animated(view);
+                    }
                 }
                 if !canvas.is_empty() {
                     crate::shader::set_args(view, canvas);
@@ -84,6 +94,95 @@ impl UiAnimation {
                     }
                 }
             },
+        );
+    }
+}
+
+/// What a view does with new animated values.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Update {
+    /// They did not change.
+    None,
+    /// The transform changed: the view is placed again (with its opacity)
+    /// and decorated again.
+    Move { redraw: bool },
+    /// Opacity, background or border changed: its layers take them.
+    Restyle { redraw: bool },
+}
+
+impl Update {
+    /// Only the text color reaches what a view draws (`redraw`). A fade or
+    /// a background tween must not draw a canvas or text again each frame:
+    /// a canvas painted that often moves onto Core Animation's drawing
+    /// threads (`canvas.rs`), which holds tens of megabytes of graphics
+    /// memory for the process.
+    fn between(old: &AnimValues, new: &AnimValues) -> Update {
+        let redraw = old.color != new.color;
+        if old.transform != new.transform {
+            Update::Move { redraw }
+        } else if old != new {
+            Update::Restyle { redraw }
+        } else {
+            Update::None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nsh_core::Color;
+
+    /// `AnimValues` is non-exhaustive: built from the default here.
+    fn values(f: impl FnOnce(&mut AnimValues)) -> AnimValues {
+        let mut v = AnimValues::default();
+        f(&mut v);
+        v
+    }
+
+    #[test]
+    fn a_fade_restyles_without_drawing_again() {
+        let old = AnimValues::default();
+        let faded = values(|v| v.opacity = Some(0.6));
+        assert_eq!(
+            Update::between(&old, &faded),
+            Update::Restyle { redraw: false }
+        );
+        let tinted = values(|v| {
+            v.opacity = Some(0.6);
+            v.background = Some(Color(0xff0000ff));
+            v.border_color = Some(Color(0x00ff00ff));
+        });
+        assert_eq!(
+            Update::between(&faded, &tinted),
+            Update::Restyle { redraw: false }
+        );
+        assert_eq!(Update::between(&tinted, &tinted), Update::None);
+    }
+
+    #[test]
+    fn a_text_color_draws_again() {
+        let old = AnimValues::default();
+        let recolored = values(|v| v.color = Some(Color(0x336699ff)));
+        assert_eq!(
+            Update::between(&old, &recolored),
+            Update::Restyle { redraw: true }
+        );
+        let moved = values(|v| {
+            v.color = Some(Color(0x336699ff));
+            v.transform[0] = Some(4.0);
+        });
+        assert_eq!(
+            Update::between(&recolored, &moved),
+            Update::Move { redraw: false }
+        );
+        let both = values(|v| {
+            v.color = Some(Color(0x000000ff));
+            v.transform[0] = Some(4.0);
+        });
+        assert_eq!(
+            Update::between(&recolored, &both),
+            Update::Move { redraw: true }
         );
     }
 }

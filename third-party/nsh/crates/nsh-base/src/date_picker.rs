@@ -36,9 +36,9 @@ use nsh_core::{
 };
 
 use crate::{
-    calendar::{self, CalendarItemState, Config, Date, Grid, Matcher, YearRange, iso, parse_date},
+    calendar::{self, CalendarEntry, Config, Date, Grid, Matcher, YearRange, iso, parse_date},
     popup::{self, DropdownFrame, OpenChangeReason, OpenState, Presence},
-    time_field::{self, FieldConfig, HourCycle, TimeFieldSegmentState, TimeOfDay, TimePrecision},
+    time_field::{self, FieldConfig, HourCycle, TimeFieldSegmentEntry, TimeOfDay, TimePrecision},
 };
 
 /// A date picker's value (`gpui-component`'s `DateTime`): its date or
@@ -444,13 +444,16 @@ pub struct DatePickerProps {
     #[prop(default)]
     pub row_style: Prop<Style>,
     /// The classes of each item of the calendar (`selected:`, `disabled:`,
-    /// `focus:` as `Calendar`'s).
+    /// `focus:` and the days' `data-range-start:`, `data-range-end:`,
+    /// `data-range-middle:`, `data-today:`, `data-outside:` as
+    /// `Calendar`'s).
     pub item_class: Prop<Option<SharedString>>,
     /// The style of each item, its text styles too.
     #[prop(default)]
     pub item_style: Prop<TextPartStyle>,
-    /// Draws each item of the calendar.
-    pub render_item: Prop<Option<Renderer<CalendarItemState>>>,
+    /// Draws each item of the calendar from what it is, never its state
+    /// (`Calendar`'s `renderItem`).
+    pub render_item: Prop<Option<Renderer<CalendarEntry>>>,
     /// The classes of the time's row: its label at the start and the field
     /// at the end (`flex-row items-center justify-between`, `gpui-component`'s).
     pub time_class: Prop<Option<SharedString>>,
@@ -477,8 +480,9 @@ pub struct DatePickerProps {
     /// The style of each `:`.
     #[prop(default)]
     pub separator_style: Prop<TextPartStyle>,
-    /// Draws each segment of the time field.
-    pub render_segment: Prop<Option<Renderer<TimeFieldSegmentState>>>,
+    /// Draws each segment of the time field from what it is and shows,
+    /// never its state (`TimeField`'s `renderSegment`).
+    pub render_segment: Prop<Option<Renderer<TimeFieldSegmentEntry>>>,
     /// The classes of the clear button, a sibling after the trigger.
     pub clear_button_class: Prop<Option<SharedString>>,
     /// The inline style of the clear button, over its classes.
@@ -868,7 +872,9 @@ pub fn DatePicker(props: DatePickerProps, cx: Scope<DatePickerEvent>) -> impl In
     view()
         .child(trigger)
         .child(clear_button)
-        .child(popup::dropdown(anchor, width, frame, presence, content))
+        .child(popup::dropdown(
+            anchor, width, true, None, frame, presence, content,
+        ))
 }
 
 #[cfg(test)]

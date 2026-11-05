@@ -487,13 +487,16 @@ fn header(dv: Dv, row: usize, file: DiffFile) -> AnyElement {
             dv.st.borrow().font.line_height
         }
     };
-    let lh2 = lh.clone();
+    let top = {
+        let dv = dv.clone();
+        move || dv.row_top(row)
+    };
     let place = view()
         .absolute()
         .left_0()
         .right_0()
-        .top(move || Length::from(lh() * row as f32))
-        .h(move || Length::from(lh2()));
+        .top(move || Length::from(top()))
+        .h(move || Length::from(lh()));
     if let Some(render) = props.render_file_header.get_untracked() {
         return place
             .child(render.render(format!("file:{}", file.path), file).flex_1())

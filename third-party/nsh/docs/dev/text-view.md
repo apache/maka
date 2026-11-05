@@ -16,6 +16,8 @@ colored with the theme's tokens; the app restyles each part over it.
 | `markdown/` | Markdown into the model (markdown-rs's mdast); `container.rs`: `:::` containers, split out before parsing (markdown-rs has no such syntax); `streaming.rs`: streaming repair |
 | `html/` | HTML into the model (html5ever, as a reader mode reads a page) |
 | `common.rs` | What both parsers share: `pattern` extensions on inline content, headings' anchors |
+| `math.rs` | Formulas without a `renderMath`: RaTeX's parse and layout, drawn on a canvas with the KaTeX fonts (`fonts/katex.pack.zst`; embedded, or fetched on the web: "Formulas on the web"); feature `math`, which the platforms turn on |
+| `formula.rs` | What the view calls: `math.rs` directly on native, and on the web once its side module and fonts arrived |
 
 ## How it works
 
@@ -82,6 +84,8 @@ colored with the theme's tokens; the app restyles each part over it.
   in and fades back after 1.6 s); a press reports `onCodeBlockAction`. Each render has a key of the block's position (`code:3`,
   `math:2.0.1`, ...); content rendered for a key stays while the value is equal, so a streamed reply renders the app's
   code blocks again only while they are being written.
+- **Formulas are typeset** when the app gives no `renderMath` (`math.rs`): parsed and laid out by RaTeX (KaTeX's
+  parser and layout in Rust), drawn natively in the text's color; TeX it rejects shows as its source.
 - **Links report presses**: `onLinkPress({ url, target })`; a heading's anchor is `#<slug>` (GitHub's slugs, `common.rs`), a
   footnote reference `#footnote-<label>`. By default nothing opens a URL: the app decides. `links="open"`
   (`TextViewLinks::Open`, opt-in) also opens a link with a scheme after reporting it (`nsh_core::element::open_url`,
@@ -106,8 +110,9 @@ The defaults are a reading typography modeled on Allsum's documents (the constan
 20 / 17 / 15 with lines of 1.25 (level 1) or 1.35 and letter spacing of -0.02 em (level 1) or -0.012 em, with room
 above them after a block (1.1 / 1.6 / 1.4 em, 0.6 em after a heading, none first: their top margin less the gap,
 from `Before`, which the top level's rows keep as a memo); strong text semibold; links underlined 1 pt at 40 % of
-their color, 3 pt below; `<mark>` on a rounded yellow (a marker's, `HIGHLIGHT`); code, keys and TeX at 13 in the
-theme's `font-mono` (else the system's `monospace`) on a faint rounded
+their color, at the platform's automatic underline position (or an offset an ancestor sets, which links inherit;
+the `Link` part's own wins); `<mark>` on a rounded yellow (a marker's,
+`HIGHLIGHT`); code, keys and TeX at 13 in the theme's `font-mono` (else the system's `monospace`) on a faint rounded
 background (spans have no padding); lists indented 1.4 em, their markers (`•`, `◦`, `▪` by depth, or numbers) right-aligned against the content in
 the indent (so `10.` reaches further left and the items stay in line), items 0.25 em apart, tasks a
 15 pt box drawn as a view (filled with a `✓` when done, the item's text then muted and struck); quotes a 2 pt line at
@@ -246,6 +251,16 @@ checkboxes, `<math>` with a TeX annotation, `language-*` classes of code). Depth
 Headings have role `header`, links (and footnote references) role `link` with their title as the hint, task markers
 role `checkbox` with their checked state, a disclosure's summary role `button` with its `expanded` state, images role
 `image` with their alt text as the label. The texts are real texts, so screen readers read the document in order.
+
+## Formulas on the web
+
+The typesetter (`text_view/math.rs`: RaTeX and the glyph outlines) and the KaTeX fonts are about 0.5 MB of Brotli that
+pages without formulas should not pay for. `nsh package` keeps the code in a side module with the gate
+`nsh_feature_math` (`onDemand`, so neither `prefetchSides` nor `preloadSides` touches it) and publishes the fonts as
+`nsh-math.bin`. The first formula a `TextView` makes calls `runtime_data::load("math")`: `loadData` loads the side
+module, runs its gate, then hands over the fonts. Until then the formula shows as its TeX; the rows that have one are
+made again afterwards (`text_view/formula.rs`). A page without a `sides` table (the dev host) runs the gate from the
+module, which has everything.
 
 ## Performance
 

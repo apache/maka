@@ -166,6 +166,11 @@ pub struct AppOptions {
     /// their calls and posts ([`AppView::host`]). One for every app the view
     /// loads; a new one by default.
     pub host: nsh_engine::HostChannel,
+    /// A see-through window: the view draws no window background and
+    /// [`open_app_window`] asks for a transparent one, so what the app
+    /// leaves unpainted shows what is behind the window (desktop widgets,
+    /// overlays). False by default.
+    pub transparent: bool,
 }
 
 impl Default for AppOptions {
@@ -186,6 +191,7 @@ impl Default for AppOptions {
             storage: None,
             context: Default::default(),
             host: nsh_engine::HostChannel::default(),
+            transparent: false,
         }
     }
 }
@@ -344,6 +350,7 @@ impl AppView {
         });
         surface.initial_appearance.set(options.appearance);
         surface.appearance.set(options.appearance);
+        surface.transparent.set(options.transparent);
         if options.fps {
             *surface.stats.borrow_mut() = Some(Default::default());
         }
@@ -402,6 +409,7 @@ impl AppView {
             clipboard: None,
             host: options.host.clone(),
             picker: self.picker.borrow().clone(),
+            speech: None,
         };
         drop(options);
         self.start(config, false);
@@ -938,7 +946,7 @@ impl Render for AppView {
         let dragging = cx.has_active_drag() && !self.surface.input_paused.get();
         // A file drag that left the window, ended without a drop or met paused
         // input leaves its destination (GPUI redraws the window as it ends).
-        if !dragging && crate::file_drop::active(&self.surface) {
+        if !dragging && crate::file_drop::take_needs_clear(&self.surface) {
             let surface = self.surface.clone();
             cx.defer(move |cx| {
                 crate::file_drop::clear(&surface);
@@ -957,6 +965,9 @@ impl Render for AppView {
             // While something is dragged, a layer over the surface follows
             // and takes files from other applications: the surface's hitbox
             // blocks the mouse for the elements behind it, this div included.
+            // GPUI does not tell what is dragged, so the layer comes with any
+            // drag; it listens only to `ExternalPaths`, and its hitbox does
+            // not block the mouse, so the surface under it stays hovered.
             .when(dragging, |div| {
                 div.child(
                     gpui::div()
@@ -1015,6 +1026,11 @@ pub fn open_app_window(
         // run at the display's rate wherever the keyboard is, as in the
         // other backends.
         inactive_frame_interval: None,
+        window_background: if options.transparent {
+            gpui::WindowBackgroundAppearance::Transparent
+        } else {
+            gpui::WindowBackgroundAppearance::Opaque
+        },
         ..Default::default()
     };
     let handle = cx.open_window(window_options, move |window, cx| {

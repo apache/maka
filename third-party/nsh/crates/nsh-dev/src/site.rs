@@ -6,14 +6,16 @@ use std::{io, net::SocketAddr, path::PathBuf, sync::Arc};
 use axum::{
     Router,
     extract::State,
-    http::{StatusCode, Uri, header},
+    http::{HeaderMap, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 
 /// Serves the files of a directory over HTTP until dropped. Files with a
 /// content digest in their names (`nsh.1a2b3c4d5e.wasm`) are cached for a
 /// year; the others (`index.html`, `manifest.webmanifest`) are revalidated
-/// on every load, so a new release shows on the next one.
+/// on every load, so a new release shows on the next one. A file's
+/// precompressed copy (`<file>.br`, `<file>.gz`, which `nsh package`
+/// writes) is sent in its place when the browser accepts its encoding.
 pub struct SiteServer {
     addr: SocketAddr,
     _runtime: tokio::runtime::Runtime,
@@ -48,7 +50,7 @@ impl SiteServer {
     }
 }
 
-async fn file(State(root): State<Arc<PathBuf>>, uri: Uri) -> Response {
+async fn file(State(root): State<Arc<PathBuf>>, headers: HeaderMap, uri: Uri) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() || path.ends_with('/') {
         format!("{path}index.html")
@@ -67,17 +69,59 @@ async fn file(State(root): State<Arc<PathBuf>>, uri: Uri) -> Response {
     } else {
         "no-cache"
     };
+    let accepted = headers
+        .get(header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default();
+    for encoding in ["br", "gzip"] {
+        if !accepts(accepted, encoding) {
+            continue;
+        }
+        let ext = if encoding == "br" { "br" } else { "gz" };
+        let mut copy = file.clone().into_os_string();
+        copy.push(".");
+        copy.push(ext);
+        if let Ok(bytes) = tokio::fs::read(&copy).await {
+            return (
+                [
+                    (header::CONTENT_TYPE, crate::server::content_type(&file)),
+                    (header::CACHE_CONTROL, cache),
+                    (header::CONTENT_ENCODING, encoding),
+                    (header::VARY, "Accept-Encoding"),
+                ],
+                bytes,
+            )
+                .into_response();
+        }
+    }
     match tokio::fs::read(&file).await {
         Ok(bytes) => (
             [
                 (header::CONTENT_TYPE, crate::server::content_type(&file)),
                 (header::CACHE_CONTROL, cache),
+                (header::VARY, "Accept-Encoding"),
             ],
             bytes,
         )
             .into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
+}
+
+/// Whether an `Accept-Encoding` value accepts `encoding` (named, with a
+/// weight above 0).
+fn accepts(accepted: &str, encoding: &str) -> bool {
+    accepted.split(',').any(|item| {
+        let mut parts = item.split(';');
+        let name = parts.next().unwrap_or_default().trim();
+        let refused = parts.any(|p| {
+            p.trim()
+                .strip_prefix("q=")
+                .and_then(|q| q.trim().parse::<f32>().ok())
+                .is_some_and(|q| q <= 0.0)
+        });
+        name.eq_ignore_ascii_case(encoding) && !refused
+    })
 }
 
 /// Whether a file's name holds a content digest: `<stem>.<hex>.<ext>`,
@@ -123,6 +167,15 @@ mod tests {
         assert!(!super::is_hashed("index.html"));
         assert!(!super::is_hashed("manifest.webmanifest"));
         assert!(!super::is_hashed("assets/logo.final.png"));
+    }
+
+    #[test]
+    fn encodings_are_accepted_by_name_and_weight() {
+        assert!(super::accepts("gzip, deflate, br, zstd", "br"));
+        assert!(super::accepts("gzip;q=1.0, br;q=0.5", "br"));
+        assert!(!super::accepts("gzip, br;q=0", "br"));
+        assert!(!super::accepts("", "gzip"));
+        assert!(!super::accepts("brotli", "br"));
     }
 
     #[test]

@@ -113,7 +113,7 @@ In Rust, `tab_bar()` makes one, with a setter per prop (`.items(..)`, `.selected
 | `items` | `.items(..)` | `TabBarItem[]` | `[]` | The tabs, in order. |
 | `selectedIndex` | `.selected_index(..)` | `number` | `0` | The selected tab, by index; an index past the tabs selects none. |
 | `hidden` | `.hidden(..)` | `boolean` | `false` | iOS: hides the bar without a transition. The app owns this value across pushes and pops. The bar shows when both this prop and the visible stack’s `hidesBottomBarWhenPushed` request are false. |
-| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | Where the bar is: its position and size. Its look is the system's. |
+| `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | Where the bar is: its position and size. Its look is the system's, with the selected tab in the theme's `primary`. |
 | `testID` | `.test_id(..)` | `string` | none | Finds the bar in tests and `nsh test --trace`. |
 
 #### TabBarItem
@@ -132,11 +132,13 @@ In Rust, `tab_bar()` makes one, with a setter per prop (`.items(..)`, `.selected
 ### Platform notes
 
 - **iOS and Mac Catalyst**: `UITabBar`, with the system's appearance for the iOS version: the floating Liquid Glass
-  bar and its selection on iOS 26. Icons are SF Symbols.
+  bar and its selection on iOS 26. Icons are SF Symbols. The theme's `primary` is the bar's `tintColor`, the selected
+  tab's color; the other tabs keep the system's.
 - **Android**: Material 3's navigation bar, made of the platform's views: an icon in its active indicator over each
   label, a ripple on press, the system's dynamic colors on Android 12 and later and Material's baseline colors before,
   light or dark as the app's appearance. At the bottom of the window it reaches under the navigation bar, taller by
-  its inset, as Material's does. Icons are drawables of the app (tinted by the bar).
+  its inset, as Material's does. Icons are drawables of the app (tinted by the bar). The selected tab's icon and label
+  take the theme's `primary`, over an active indicator of it at 12% opacity; the other tabs keep the system's.
 - **Desktops (macOS, Windows, Linux, GPUI) and the web**: the sections show with [Tabs](../elements/tabs.md), in the app's
   look. `TabBar` takes no room there, so one layout holds both, picked by `platform.os`
   ([`nsh`'s device API](./nsh.md#device)).

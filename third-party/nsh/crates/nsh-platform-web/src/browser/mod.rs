@@ -354,6 +354,30 @@ pub(crate) extern "C" fn nsh_browser_initialize() {
     });
 }
 
+/// Serves `ui_sets` (grown by a gate called after the app started) to
+/// the running app's JavaScript: `describe` (op 200) gives what it had not
+/// given yet, and the realm is told to ask (`registry`).
+pub(crate) fn extend_registries(ui_sets: &[nsh_core::element::Registry]) {
+    let Some(runtime) = REACTIVE.with(|slot| slot.borrow().clone()) else {
+        return;
+    };
+    {
+        let mut registries = runtime.registries.borrow_mut();
+        // Before the engine initialized the host, describe falls back to
+        // the runtime's own sets; nothing to extend then.
+        if registries.is_empty() {
+            return;
+        }
+        // As the engine's `Host::initialize` set them.
+        *registries = nsh_core::runtime::registries()
+            .iter()
+            .chain(ui_sets)
+            .cloned()
+            .collect();
+    }
+    runtime.notify("registry", []);
+}
+
 /// Release a stopped app's graph after its owners have been disposed.
 #[unsafe(no_mangle)]
 pub(crate) extern "C" fn nsh_browser_dispose() {

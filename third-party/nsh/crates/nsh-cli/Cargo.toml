@@ -19,7 +19,7 @@ path = "src/main.rs"
 dunce.workspace = true
 semver.workspace = true
 nsh-bundler = { workspace = true, features = ["bundle"] }
-nsh-core.workspace = true
+nsh-core = { workspace = true, features = ["declarations"] }
 nsh-engine = { workspace = true, features = ["js"] }
 nsh-dev = { workspace = true, features = ["server"] }
 nsh-js = { workspace = true, features = ["zlib", "crypto"] }
@@ -38,6 +38,7 @@ tungstenite.workspace = true
 serde_json.workspace = true
 plist.workspace = true
 zip.workspace = true
+brotli.workspace = true
 flate2.workspace = true
 tar.workspace = true
 sha2.workspace = true

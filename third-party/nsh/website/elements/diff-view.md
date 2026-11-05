@@ -268,6 +268,9 @@ changes nothing and logs a warning naming the method and the value.
 | `collapseFile(path)` | Shows only the header of the file at `path`. |
 | `expandFile(path)` | Shows the lines of the file at `path` again. |
 | `toggleFile(path)` | Collapses the file at `path`, or expands it when collapsed. |
+| `hunkBounds()` | `Promise<DiffHunkBounds[]>`: where each change is in the rows, in order ([An overview ruler](#an-overview-ruler)). |
+| `scrollOffset()` | `Promise<Point>`: how far the rows are scrolled (`x` is 0). |
+| `setScrollOffset(offset)` | Scrolls the rows to `offset.y` at once, as far as they go, as a thumb follows the pointer that drags it. |
 
 `nextHunk()` and `previousHunk()` go on from the change they went to while the view stays there, and otherwise from
 the top of the view, so a change near the end that cannot scroll to the top still counts. Next and previous change
@@ -286,6 +289,153 @@ const stats = signal<DiffStats>({ added: 0, deleted: 0, hunks: 0 });
 </View>
 <DiffView ref={diff} oldValue={before()} newValue={after()} onStatsChange={(e) => stats.set(e.stats)} class="flex-1" />
 ```
+
+## An overview ruler
+
+`onScroll({ offset, contentSize, size })` reports where the rows are, with the keys of a [`Scroll`](./scroll.md)'s:
+`offset.y`, how far they are scrolled (the rows scroll vertically, as wide as the view, and the sides sideways on their
+own: `offset.x` is 0), `contentSize`, the size of every row together, and `size`, the viewport's. It fires once the
+view is laid out and again whenever one of them changes: as the rows scroll, when the view resizes, and when the rows
+change height (other texts, `layout`, `softWrap`, a file or a separator expanded or collapsed, an annotation laid out).
+`hunkBounds()` gives where each change is in the rows (`DiffHunkBounds`: `{ index, bounds }`, `bounds` from the top
+of its first row to the bottom of its last, with the annotations under them, across the view), the changes that show:
+a collapsed file's have no rows. `onHunkBoundsChange({ hunkBounds })` gives the same list once the view is laid out and
+again whenever a change moves or changes size, even when the rows keep their height (one changed line becoming
+another): a ruler draws its marks from it rather than reading them on `onScroll`. `scrollOffset()` reads how far the rows are scrolled,
+and `setScrollOffset({ x, y })` scrolls the rows to `y` at once, so a dragged thumb follows the pointer in the same frame.
+
+Together they make an overview ruler beside the view, as code editors have: a mark for each change, a thumb over the
+rows in view, and a press or a drag that scrolls there. Here the ruler is as tall as the view:
+
+```rust tabs
+use nsh_base::{DiffHunkBounds, DiffView, DiffViewApi, DiffViewEvent, diff_view, theme};
+use nsh_core::prelude::*;
+
+fn review(old: SharedString, new: SharedString) -> impl IntoElement {
+    let diff = component_ref::<DiffView>();
+    let ruler = element_ref();
+    let ruler_top = stored(px(0.0));
+    // How far the rows are scrolled, their height and the viewport's.
+    let rows = signal((px(0.0), px(0.0), px(0.0)));
+    let marks = signal(Vec::<DiffHunkBounds>::new());
+    // Points of the rows per point of the ruler.
+    let scale = move || {
+        let (_, height, view) = rows.get();
+        height.max(px(1.0)) / view.max(px(1.0))
+    };
+    // The thumb's middle at the pointer.
+    let follow = move |page_y: Points| {
+        let view = rows.get_untracked().2;
+        let y = (page_y - ruler_top.get()) * scale() - view / 2.0;
+        if let Some(api) = diff.api::<DiffViewApi>() {
+            api.set_scroll_offset(point(px(0.0), y));
+        }
+    };
+    view()
+        .flex_1()
+        .flex_row()
+        .child(
+            diff_view()
+                .old_value(old)
+                .new_value(new)
+                .on_scroll(move |e: &DiffViewEvent| {
+                    if let DiffViewEvent::Scroll(offset, content, size) = e {
+                        rows.set((offset.y, content.height, size.height));
+                    }
+                })
+                .on_hunk_bounds_change(move |list: &Vec<DiffHunkBounds>| marks.set(list.clone()))
+                .component_ref(&diff)
+                .flex_1(),
+        )
+        .child(
+            view()
+                .element_ref(&ruler)
+                .w(px(12.0))
+                .bg(move || theme().muted)
+                .claim_touches(TouchClaim::on_start())
+                .on_responder_grant(move |e: &ResponderEvent| {
+                    let y = e.page.y;
+                    spawn(async move {
+                        ruler_top.replace(ruler.measure().await.map_or(px(0.0), |m| m.page.y));
+                        follow(y);
+                    });
+                })
+                .on_responder_move(move |e: &ResponderEvent| follow(e.page.y))
+                .child(each(
+                    marks,
+                    |mark: &DiffHunkBounds| mark.index,
+                    move |mark, _| {
+                        view()
+                            .absolute()
+                            .left(px(0.0))
+                            .right(px(0.0))
+                            .bg(rgb(0xf59e0b))
+                            .top(move || mark.get().bounds.origin.y / scale())
+                            .h(move || (mark.get().bounds.size.height / scale()).max(px(2.0)))
+                    },
+                ))
+                .child(
+                    view()
+                        .absolute()
+                        .left(px(0.0))
+                        .right(px(0.0))
+                        .bg(move || theme().foreground.opacity(0.2))
+                        .top(move || rows.get().0 / scale())
+                        .h(move || rows.get().2 / scale()),
+                ),
+        )
+}
+```
+
+```tsx tabs
+import { Each, signal, View, type ViewRef } from "nsh";
+import { DiffView, type DiffHunkBounds, type DiffViewRef } from "nsh/base";
+
+let diff!: DiffViewRef;
+let ruler!: ViewRef;
+let rulerTop = 0;
+const rows = signal({ y: 0, height: 0, view: 0 });
+const marks = signal<DiffHunkBounds[]>([]);
+// Points of the rows per point of the ruler.
+const scale = () => Math.max(rows().height, 1) / Math.max(rows().view, 1);
+// The thumb's middle at the pointer.
+const follow = (pageY: number) => diff.setScrollOffset({ x: 0, y: (pageY - rulerTop) * scale() - rows().view / 2 });
+
+<View class="flex-1 flex-row">
+  <DiffView
+    ref={diff}
+    oldValue={before()}
+    newValue={after()}
+    onScroll={({ offset, contentSize, size }) => rows.set({ y: offset.y, height: contentSize.height, view: size.height })}
+    onHunkBoundsChange={({ hunkBounds }) => marks.set(hunkBounds)}
+    class="flex-1"
+  />
+  <View
+    ref={ruler}
+    class="w-3 bg-muted"
+    onStartShouldSetResponder={() => true}
+    onResponderGrant={async (e) => {
+      const y = e.pageY;
+      rulerTop = (await ruler.measure())?.pagePosition.y ?? 0;
+      follow(y);
+    }}
+    onResponderMove={(e) => follow(e.pageY)}
+  >
+    <Each of={marks()}>
+      {(mark) => (
+        <View
+          class="absolute inset-x-0 bg-amber-500"
+          style={{ top: mark().bounds.origin.y / scale(), height: Math.max(mark().bounds.size.height / scale(), 2) }}
+        />
+      )}
+    </Each>
+    <View class="absolute inset-x-0 bg-foreground/20" style={{ top: rows().y / scale(), height: rows().view / scale() }} />
+  </View>
+</View>
+```
+
+A mark's `index` is the change's in `hunks()`, whose `oldLines` and `newLines` tell an added change (no old lines)
+from a deleted one (no new lines), to color its mark.
 
 ## Review comments
 
@@ -407,6 +557,8 @@ set with `fontFamily`, `fontSize` and `lineHeight`.
 | `onLineSelectionChange` | `.on_line_selection_change(\|range: &Option<DiffLineRange>\| ..)` | The selected lines changed: `{ range }`, a `{ side, start, end }` or `null`. |
 | `onStatsChange` | `.on_stats_change(\|stats: &DiffStats\| ..)` | The counts changed: `{ stats }`, a `{ added, deleted, hunks }`. It fires once when the view is made and again each time the texts are diffed to other counts, for a "+8 −8 · 5 changes" line. |
 | `onFileToggle` | `.on_file_toggle(\|file: &DiffFile\| ..)` | A file of the patch was collapsed or expanded (its header, or the ref): `{ file }`, the `DiffFile` now. |
+| `onScroll` | `.on_scroll(\|e: &DiffViewEvent\| ..)` | The rows scrolled, or they or the viewport changed size: `{ offset, contentSize, size }`, as a `Scroll`'s (`DiffViewEvent::Scroll(offset, content_size, size)` in Rust). It fires once the view is laid out and again when one of them changes. |
+| `onHunkBoundsChange` | `.on_hunk_bounds_change(\|bounds: &Vec<DiffHunkBounds>\| ..)` | Where the changes are in the rows changed: `{ hunkBounds }`, the list `hunkBounds()` gives. It fires once the view is laid out and again when a change moves or changes size, the rows' height kept or not, for an overview ruler's marks. |
 
 ## Related
 

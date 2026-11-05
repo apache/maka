@@ -3,13 +3,13 @@
 //! The core lays everything out, so a view never measures itself: its
 //! parent places it at the frame the core gave it (`size_allocate`, with
 //! the frame's origin, the scroll offset, a sticky shift and the view's
-//! transform in one `gsk::Transform`; the offset at whole points, see
+//! transform in one `gsk::Transform`; the offset on device pixels, see
 //! [`placement`]). Sizes are kept as `f32` points in
 //! [`ViewState::frame`] and drawing uses them; the integer allocation only
 //! bounds picking.
 //!
 //! A view draws itself in `snapshot`: shadows and background
-//! ([`crate::decor`]), its content (text, image, canvas), its children
+//! ([`crate::decor`]), its content (text, image, canvas, shader), its children
 //! (clipped to the rounded bounds when `overflow: hidden`), then its
 //! border, as UIKit draws layer borders over the content. Views with text
 //! widen their damage by the pixels glyphs paint outside their nodes
@@ -278,16 +278,18 @@ fn exact_damage(dx: f32, dy: f32) -> f32 {
 /// The transform that places a child at `(x, y)` (parent coordinates),
 /// then applies its own `transform`.
 ///
-/// The offset is rounded to whole points, as GTK allocates its own widgets
-/// (a `GtkViewport` scrolls by whole pixels): frames already are (the core
-/// rounds layout), scroll offsets and shifts are not, and edges and text
-/// stay sharp while scrolling.
-fn placement(x: f32, y: f32, transform: Option<gsk::Transform>) -> gsk::Transform {
-    let t = gsk::Transform::new().translate(&graphene::Point::new(x.round(), y.round()));
-    let Some(own) = transform else {
-        return t;
+/// The offset is rounded to the surface's device pixels (`scale` of them a
+/// point; [`snap`]): frames already are (the core rounds layout to them),
+/// inline attachments (placed where the text's line puts them), scroll
+/// offsets and shifts are not. A view off the pixel grid has its textures
+/// (a canvas' raster, an image) resampled across pixels, blurred; at a
+/// fractional scale (1.6) a whole point is not a whole pixel either.
+fn placement(x: f32, y: f32, transform: Option<gsk::Transform>, scale: f32) -> gsk::Transform {
+    let t = gsk::Transform::new().translate(&graphene::Point::new(snap(x, scale), snap(y, scale)));
+    let t = match transform {
+        Some(own) => t.transform(Some(&own)),
+        None => t,
     };
-    let t = t.transform(Some(&own));
     if t.category() != gsk::TransformCategory::_2dTranslate {
         return t;
     }
@@ -298,6 +300,23 @@ fn placement(x: f32, y: f32, transform: Option<gsk::Transform>) -> gsk::Transfor
     } else {
         t.translate(&graphene::Point::new(nudge, 0.0))
     }
+}
+
+/// `v` (points) rounded to the nearest device pixel at `scale` pixels a point.
+pub(crate) fn snap(v: f32, scale: f32) -> f32 {
+    if scale <= 0.0 {
+        return v.round();
+    }
+    (v * scale).round() / scale
+}
+
+/// The device pixels per point of `widget`'s surface, fractional scales
+/// included (the integer scale factor before it is mapped).
+fn surface_scale(widget: &impl IsA<gtk::Widget>) -> f32 {
+    widget
+        .native()
+        .and_then(|n| n.surface())
+        .map_or(widget.scale_factor() as f64, |s| s.scale()) as f32
 }
 
 /// How far text may paint outside its node's bounds (points): GSK bounds a
@@ -355,8 +374,12 @@ mod imp {
 
     impl NshView {
         /// Draws the view and its children.
-        fn draw(&self, snapshot: &gtk::Snapshot) {
+        pub(super) fn draw(&self, snapshot: &gtk::Snapshot) {
             let obj = self.obj();
+            // A picture of what is behind a view stops at it.
+            if crate::shader::skipped(&obj) {
+                return;
+            }
             let state = self.state.borrow();
             if state.style.hidden || crate::decor::backface_away(&state) {
                 return;
@@ -371,7 +394,9 @@ mod imp {
             let filters = crate::decor::push_filters(snapshot, &state);
             let (phase, changed) = self.damage.get();
             let phase = phase ^ changed;
-            self.damage.set((phase, false));
+            if !crate::shader::tracing() {
+                self.damage.set((phase, false));
+            }
             state.draw_overhang(snapshot, phase);
             let soft = crate::decor::soft_shadows(obj.upcast_ref(), &state);
             crate::decor::draw_background(snapshot, &state, soft);
@@ -392,42 +417,33 @@ mod imp {
             }
             crate::shader::draw(snapshot, &state);
             crate::text::draw(snapshot, &state);
-            crate::image::draw(snapshot, &state);
+            // The surface's own scale, fractional ones included.
+            let scale = surface_scale(&*obj) as f64;
+            crate::image::draw(snapshot, &state, scale as f32);
             if state.canvas.is_some() {
-                // The surface's own scale, fractional ones included.
-                let scale = obj
-                    .native()
-                    .and_then(|n| n.surface())
-                    .map_or(obj.scale_factor() as f64, |s| s.scale());
                 crate::canvas::draw(snapshot, &obj, &state, scale);
             }
             if !clip {
                 snapshot.pop();
             }
+            let effect = crate::shader::effect(&state);
             drop(state);
-            let mut child = obj.first_child();
-            while let Some(widget) = child {
-                child = widget.next_sibling();
-                // A view inserted (or given a size) by a batch applied
-                // since the last layout has no allocation until the next
-                // frame's; snapshots taken in between (images of a screen
-                // the app removed) skip it, as GTK would after warning.
-                if let Some(view) = widget.downcast_ref::<super::NshView>()
-                    && widget.width() == 0
-                    && widget.height() == 0
-                    && view.state().frame.size.width.0 >= 1.0
-                    && view.state().frame.size.height.0 >= 1.0
-                {
-                    continue;
-                }
-                obj.snapshot_child(&widget, snapshot);
+            // An effect's children are its shader's content.
+            if !effect || !crate::shader::draw_effect(snapshot, &obj) {
+                obj.snapshot_children(snapshot);
             }
             let state = self.state.borrow();
-            crate::scroll::draw_indicator(snapshot, &state);
+            // What a picture of what is behind a view leaves out (above it).
+            let above = crate::shader::past();
+            if !above {
+                crate::scroll::draw_indicator(snapshot, &state);
+            }
             if clip {
                 snapshot.pop();
             }
-            crate::decor::draw_border(snapshot, &state);
+            if !above {
+                crate::decor::draw_border(snapshot, &state);
+            }
             for _ in 0..filters {
                 snapshot.pop();
             }
@@ -472,11 +488,12 @@ mod imp {
                 .then_some(state.frame.size.width.0);
             let natives: Vec<Native> = state.natives.clone();
             drop(state);
+            let scale = surface_scale(&*self.obj());
             let mut child = self.obj().first_child();
             while let Some(widget) = child {
                 child = widget.next_sibling();
                 if let Some(rect) = natives.iter().find(|n| n.widget == widget).map(|n| n.rect) {
-                    let t = placement(rect.origin.x.0, rect.origin.y.0, None);
+                    let t = placement(rect.origin.x.0, rect.origin.y.0, None, scale);
                     widget.allocate(
                         rect.size.width.0.ceil().max(0.0) as i32,
                         rect.size.height.0.ceil().max(0.0) as i32,
@@ -500,7 +517,7 @@ mod imp {
                 if let Some(w) = mirror {
                     x = w - x - f.size.width.0;
                 }
-                let t = placement(x, f.origin.y.0 - sy + s.shift.1, s.transform());
+                let t = placement(x, f.origin.y.0 - sy + s.shift.1, s.transform(), scale);
                 drop(s);
                 widget.allocate(
                     f.size.width.0.ceil().max(0.0) as i32,
@@ -576,6 +593,13 @@ impl NshView {
 
     /// Something it draws changed.
     pub(crate) fn changed(&self) {
+        self.redraw();
+        crate::shader::ui_changed(self);
+    }
+
+    /// Draws again: what it draws changed, and nothing else needs to know
+    /// (a shader's own picture).
+    pub(crate) fn redraw(&self) {
         let damage = &self.imp().damage;
         damage.set((damage.get().0, true));
         self.queue_draw();
@@ -587,6 +611,56 @@ impl NshView {
             parent.queue_allocate();
         }
         self.queue_draw();
+        crate::shader::ui_changed(self);
+    }
+
+    /// Draws its child widgets into `snapshot`, bottom to top. While a
+    /// picture of what is behind a view is taken ([`crate::shader`]), its
+    /// child views draw anew (GTK's render nodes of the last frame have the
+    /// view in them), and the widgets it hosts draw GTK's nodes until the
+    /// picture reaches that view ([`crate::shader::past`]).
+    pub(crate) fn snapshot_children(&self, snapshot: &gtk::Snapshot) {
+        let tracing = crate::shader::tracing();
+        let mut child = self.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            // A view inserted (or given a size) by a batch applied since
+            // the last layout has no allocation until the next frame's;
+            // snapshots taken in between (images of a screen the app
+            // removed) skip it, as GTK would after warning.
+            if let Some(view) = widget.downcast_ref::<NshView>()
+                && widget.width() == 0
+                && widget.height() == 0
+                && view.state().frame.size.width.0 >= 1.0
+                && view.state().frame.size.height.0 >= 1.0
+            {
+                continue;
+            }
+            match widget.downcast_ref::<NshView>() {
+                Some(view) if tracing => {
+                    if !widget.is_drawable() {
+                        continue;
+                    }
+                    snapshot.save();
+                    if let Some(m) = widget.compute_transform(self) {
+                        snapshot.transform_matrix(&m);
+                    }
+                    view.draw(snapshot);
+                    snapshot.restore();
+                }
+                // A widget it hosts (a text field, navigation's layers)
+                // drawn after the view the picture is behind is above it,
+                // as a view would be ([`crate::shader::skipped`]).
+                _ if tracing && crate::shader::past() => {}
+                _ => self.snapshot_child(&widget, snapshot),
+            }
+        }
+    }
+
+    /// Draws itself and its subtree into `snapshot` anew, in its own
+    /// coordinates (not GTK's render nodes of the last frame).
+    pub(crate) fn draw(&self, snapshot: &gtk::Snapshot) {
+        self.imp().draw(snapshot);
     }
 
     /// The view's parent view, if it is attached to one.
@@ -643,7 +717,23 @@ impl NshView {
 
 #[cfg(test)]
 mod tests {
-    use super::exact_damage;
+    use super::{exact_damage, snap};
+
+    #[test]
+    fn snap_lands_on_device_pixels() {
+        // At 1.6 a point is not a pixel: an inline chip Pango puts at
+        // 441.6963 lands on 707 px, not 442 pt (707.2 px, resampled).
+        let x = snap(441.6963, 1.6);
+        assert_eq!(x * 1.6, (x * 1.6).round());
+        assert!((x - 441.875).abs() < 1e-4);
+        // Frames the core rounded to the grid stay where they are.
+        assert_eq!(snap(16.25, 1.6), 16.25);
+        assert_eq!(snap(0.625, 1.6), 0.625);
+        // Whole scales round as before.
+        assert_eq!(snap(10.4, 1.0), 10.0);
+        assert_eq!(snap(10.3, 2.0), 10.5);
+        assert_eq!(snap(-3.2, 1.0), -3.0);
+    }
 
     #[test]
     fn exact_damage_moves_whole_dx_off_the_truncating_path() {

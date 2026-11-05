@@ -264,6 +264,10 @@ nsh publish [ENTRY] --key <KEY.secret> --cert <CERT> [-o <OUT>] [--id <ID>] [--a
 
 以 release 模式构建应用并签名为一个包。元数据来自 `nsh.json`，可被参数覆盖。
 
+如果给的是一个包（`ENTRY` 是 `.nshpkg` 文件），则用这个密钥为它重新签名，适合用自己的一个密钥为旗下应用统一签名的平台。包的文件和头
+保持原样，证书、签名时间和签名换成新密钥的（[签名包](./signed-packages.md#重新签名包)）。`-o` 可以就是读入的那个包，此时只有 `--key`、
+`--cert` 和 `-o` 适用。
+
 | 参数 | 说明 |
 |---|---|
 | `--key <KEY>` | release 密钥的私钥。 |

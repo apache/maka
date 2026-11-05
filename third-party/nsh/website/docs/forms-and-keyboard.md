@@ -614,7 +614,9 @@ The dismiss mode (`.keyboard_dismiss_mode(..)`, TSX `keyboardDismissMode`: none,
 
 ### Content outside scroll views
 
-A message bar pinned to the bottom of a screen is not in a scroll view, so nothing moves it. Pad the screen's bottom by CSS's `env(keyboard-inset-height)` (`paddingBottom: "env(keyboard-inset-height)"`, Tailwind `pb-[env(keyboard-inset-height)]`, Rust `.pb_keyboard()`): it makes room at the bottom as tall as the keyboard, animated natively with the keyboard.
+On iOS, when the keyboard would cover a focused input that is in no scroll view, NSH moves the content of its screen (or dialog) up until the input is just above the keyboard, along the keyboard's curve, and back down when the keyboard hides or the input loses focus, as SwiftUI does (on Android, a window in `adjustPan` mode is panned by the system). It only does so for what the app's own layout leaves covered: an app that makes room itself, as below, is not moved again.
+
+That moves the whole page. A message bar pinned to the bottom of a screen should ride on the keyboard while the content above it shrinks instead: pad the screen's bottom by CSS's `env(keyboard-inset-height)` (`paddingBottom: "env(keyboard-inset-height)"`, Tailwind `pb-[env(keyboard-inset-height)]`, Rust `.pb_keyboard()`): it makes room at the bottom as tall as the keyboard, animated natively with the keyboard.
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -702,7 +704,7 @@ The full height suits a view that reaches the bottom of the surface, as a screen
 
 ### The keyboard accessor
 
-`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in milliseconds. Read them for anything custom: hide a floating button while typing, or size a panel. A layout that changes with them moves with the keyboard when it animates on the keyboard's curve: `LayoutAnimation.configureNext({ duration: keyboardFrame().duration, update: { type: "keyboard" } })` (Rust: `LayoutCurve::Keyboard`), as `env(keyboard-inset-height)` does.
+`keyboard_height()` and `keyboard_duration()` in Rust, and `keyboardFrame()` from `nsh` in TSX (a `{ height, duration }`), are reactive: how far the keyboard reaches into the surface (0 when hidden; the bottom safe area under it included) and its animation's duration in milliseconds. Read them for anything custom: hide a floating button while typing, or size a panel. What changes with them in the update the keyboard's move starts moves with the keyboard, on its curve and timed from when it started to move (`LayoutCurve::Keyboard`), as `env(keyboard-inset-height)` does; an animation the app configures for that update (`LayoutAnimation.configureNext`) wins.
 
 ```rust tabs
 view().child(when(

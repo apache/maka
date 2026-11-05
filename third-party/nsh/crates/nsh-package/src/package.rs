@@ -178,6 +178,55 @@ pub fn build(
     assemble(contents, key, certificate, created_at)
 }
 
+/// Signs a package again with `key`, which `certificate` certifies (it must
+/// cover the package's app now): for a platform that signs, with the key
+/// its apps trust, what builds signed with keys of their own.
+///
+/// Only the certificate, the signing time and the signature change. The
+/// files and every other header field stay as the first signer wrote them,
+/// those a newer signer added included, and so does the minimum runtime,
+/// which the tool that built the package knew. The package must be intact:
+/// signed by its own certificate's key, its file table covering the data
+/// and each file matching its hash. Whether a root trusts that certificate
+/// is not checked: the new signer vouches for the package from now on, its
+/// bytecode included.
+pub fn resign(bytes: &[u8], key: &SecretKey, certificate: &Certificate) -> Result<Vec<u8>, Error> {
+    let (header, data_start, signed) = self_signed(bytes)?;
+    check_tiling(&header, data_start, signed)?;
+    for file in &header.files {
+        file_data(bytes, data_start, signed, file)?;
+    }
+    let claimed = certificate.claimed()?;
+    if claimed.key != key.public() {
+        return Err(Error::Certificate("it certifies another key".into()));
+    }
+    let created_at = crate::now();
+    // Devices would refuse it: fail here instead.
+    claimed.covers(&header.app.id, created_at)?;
+    // The header as JSON: `Header` drops the fields this runtime does not
+    // know, and dropping one `critical` names would lift its restriction.
+    let mut json: serde_json::Value = serde_json::from_slice(&bytes[PREFIX..data_start])
+        .map_err(|e| Error::Format(format!("header: {e}")))?;
+    let fields = json
+        .as_object_mut()
+        .ok_or_else(|| Error::Format("the header is not an object".into()))?;
+    fields.insert(
+        "certificate".into(),
+        serde_json::to_value(certificate).expect("serializable"),
+    );
+    fields.insert("createdAt".into(), created_at.into());
+    let json = serde_json::to_vec(&json).expect("serializable");
+    let mut out = Vec::with_capacity(PREFIX + json.len() + (signed - data_start) + SIGNATURE);
+    // The magic, format and flags as they were.
+    out.extend_from_slice(&bytes[..8]);
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(&json);
+    out.extend_from_slice(&bytes[data_start..signed]);
+    let signature = key.sign(PACKAGE, &out);
+    out.extend_from_slice(&signature);
+    Ok(out)
+}
+
 /// The package bytes, signed by `key`, without checking the certificate.
 fn assemble(
     contents: &Contents,
@@ -365,6 +414,20 @@ pub fn source_map(bytes: &[u8]) -> Result<Option<String>, Error> {
         .map_err(|_| Error::Format("the source map is not UTF-8".into()))
 }
 
+/// Checks that the files tile the data exactly: nothing unaccounted for.
+fn check_tiling(header: &Header, data_start: usize, signed: usize) -> Result<(), Error> {
+    let total = header
+        .files
+        .iter()
+        .try_fold(0u64, |sum, f| sum.checked_add(f.size));
+    if total != Some((signed - data_start) as u64) {
+        return Err(Error::Format(
+            "the file table does not match the data".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// The bytes of `file`, checked against its hash.
 fn file_data<'a>(
     bytes: &'a [u8],
@@ -436,16 +499,7 @@ pub(crate) fn open(
             runtime: crate::RUNTIME_VERSION.to_owned(),
         });
     }
-    // The files tile the data exactly: nothing unaccounted for.
-    let total = header
-        .files
-        .iter()
-        .try_fold(0u64, |sum, f| sum.checked_add(f.size));
-    if total != Some((signed - data_start) as u64) {
-        return Err(Error::Format(
-            "the file table does not match the data".into(),
-        ));
-    }
+    check_tiling(&header, data_start, signed)?;
     let mut package = VerifiedPackage {
         app: header.app.clone(),
         capabilities: header.capabilities.clone(),
@@ -711,6 +765,90 @@ mod tests {
         assert!(package.bytecode().is_none());
         assert_eq!(package.source, "1");
         assert_eq!(package.ignored, ["file `bundle.nshc`"]);
+    }
+
+    /// A package's header as JSON, with every field it holds.
+    fn header_json(bytes: &[u8]) -> serde_json::Value {
+        let len = u32::from_le_bytes(bytes[8..PREFIX].try_into().unwrap()) as usize;
+        serde_json::from_slice(&bytes[PREFIX..PREFIX + len]).unwrap()
+    }
+
+    /// Signing again keeps what a newer signer wrote, which this runtime
+    /// does not know: dropping a field named in `critical` would lift the
+    /// restriction it stands for on runtimes that know it.
+    #[test]
+    fn resigning_keeps_what_newer_signers_wrote() {
+        let (ci, ci_cert, _) = signer();
+        let (key, cert, store) = signer();
+        let with_bytecode = Contents {
+            bytecode: Some((vec![1, 2, 3], "v".into())),
+            ..contents("com.example.demo")
+        };
+        let extra = [7u8; 4];
+        let original = newer(&with_bytecode, &ci, &ci_cert, |header, data| {
+            header["expiresAt"] = 1.into();
+            header["critical"] = serde_json::json!(["expiresAt"]);
+            header["app"]["channel"] = "beta".into();
+            header["files"][1]["compression"] = "zstd".into();
+            header["files"]
+                .as_array_mut()
+                .unwrap()
+                .push(serde_json::json!({
+                    "path": "extra.bin",
+                    "kind": "chunk",
+                    "offset": data.len(),
+                    "size": extra.len(),
+                    "sha256": hex(&Sha256::digest(extra)),
+                }));
+            data.extend_from_slice(&extra);
+        });
+        let bytes = resign(&original, &key, &cert).unwrap();
+        let json = header_json(&bytes);
+        assert_eq!(json["expiresAt"], 1);
+        assert_eq!(json["critical"], serde_json::json!(["expiresAt"]));
+        assert_eq!(json["app"]["channel"], "beta");
+        assert_eq!(json["files"][1]["compression"], "zstd");
+        assert_eq!(json["files"][2]["kind"], "chunk");
+        // Still refused here, as before: this runtime does not know `expiresAt`.
+        assert!(
+            matches!(store.verify(&bytes, "v"), Err(Error::Format(m)) if m.contains("`expiresAt`"))
+        );
+    }
+
+    /// The minimum runtime stays even when it is newer than the signing
+    /// tool, which `build` refuses: the tool that built it knew it.
+    #[test]
+    fn resigning_keeps_a_minimum_runtime_newer_than_this_one() {
+        let (ci, ci_cert, _) = signer();
+        let (key, cert, _) = signer();
+        let newer_runtime = Contents {
+            min_runtime: Some("999.0.0".into()),
+            ..contents("com.example.demo")
+        };
+        let original = assemble(&newer_runtime, &ci, &ci_cert, 150).unwrap();
+        let bytes = resign(&original, &key, &cert).unwrap();
+        assert_eq!(verify_signature(&bytes).unwrap().min_runtime(), "999.0.0");
+    }
+
+    /// A signer that wrote wrong hashes or a file table that leaves bytes
+    /// out made a package no device runs: it is not signed again.
+    #[test]
+    fn resigning_checks_the_files() {
+        let (ci, ci_cert, _) = signer();
+        let (key, cert, _) = signer();
+        let wrong_hash = newer(&contents("com.example.demo"), &ci, &ci_cert, |header, _| {
+            header["files"][0]["sha256"] = hex(&Sha256::digest(b"else")).into();
+        });
+        assert!(
+            matches!(resign(&wrong_hash, &key, &cert), Err(Error::Integrity(p)) if p == "bundle.js")
+        );
+        let untiled = newer(&contents("com.example.demo"), &ci, &ci_cert, |_, data| {
+            data.extend_from_slice(b"hidden");
+        });
+        assert!(matches!(
+            resign(&untiled, &key, &cert),
+            Err(Error::Format(_))
+        ));
     }
 
     /// What a package names in `critical` must be understood: a runtime

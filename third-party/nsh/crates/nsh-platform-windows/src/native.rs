@@ -152,6 +152,44 @@ pub trait NativeComponent {
     fn set_animated_color(&mut self, name: &str, argb: u32) {
         self.set_prop(name, Some(&JsonValue::from(argb)));
     }
+
+    /// A wheel or touchpad scroll over the component (an image viewer
+    /// zooms with it). True when it took it; otherwise the scroll views
+    /// around it scroll, as they do by default. Presses, moves and
+    /// releases go to its view's handlers (`onPress`, `onMouseMove`).
+    fn wheel(&mut self, event: &Wheel) -> bool {
+        let _ = event;
+        false
+    }
+}
+
+/// A wheel or touchpad scroll over a component ([`NativeComponent::wheel`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct Wheel {
+    /// Where the pointer is (points, the component's coordinates).
+    pub x: f32,
+    /// Where, vertically.
+    pub y: f32,
+    /// How far to scroll the content (points; positive toward the end:
+    /// right, down), as scroll views do.
+    pub dx: f32,
+    /// How far, vertically.
+    pub dy: f32,
+    /// The same in wheel notches (a mouse wheel's clicks): fractions from
+    /// precision touchpads and high-resolution wheels.
+    pub notches_x: f32,
+    /// In notches, vertically.
+    pub notches_y: f32,
+    /// From a precision touchpad or a high-resolution wheel (not whole
+    /// notches).
+    pub precise: bool,
+    /// Shift held.
+    pub shift: bool,
+    /// Ctrl held.
+    pub ctrl: bool,
+    /// Alt held.
+    pub alt: bool,
 }
 
 /// What a component can tell its app. Cheap to clone; usable from any
@@ -675,6 +713,37 @@ impl Hosted for ComponentItem {
         };
         self.placement.apply(&surface, self.id, hwnd, rect);
     }
+
+    fn wheel(&self, x: f32, y: f32, event: &crate::input::WheelEvent) -> bool {
+        // Not while its own code runs (it asked for something that scrolls).
+        let Ok(mut component) = self.component.try_borrow_mut() else {
+            return false;
+        };
+        let Some(component) = component.as_mut() else {
+            return false;
+        };
+        let notch = crate::window::lines_per_notch() * 16.0;
+        component.wheel(&Wheel::new(x, y, event, notch))
+    }
+}
+
+impl Wheel {
+    /// `event` at `(x, y)` (component coordinates), `notch` points to a
+    /// notch.
+    fn new(x: f32, y: f32, event: &crate::input::WheelEvent, notch: f32) -> Self {
+        Wheel {
+            x,
+            y,
+            dx: event.dx,
+            dy: event.dy,
+            notches_x: event.dx / notch,
+            notches_y: event.dy / notch,
+            precise: event.precise,
+            shift: event.modifiers.shift,
+            ctrl: event.modifiers.ctrl,
+            alt: event.modifiers.alt,
+        }
+    }
 }
 
 /// Makes `child` (a window a component brought) a child of `parent`.
@@ -987,5 +1056,39 @@ mod tests {
         assert!(components.factory(&"com.example.map".into()).is_some());
         assert!(components.factory(&"com.example.none".into()).is_none());
         assert_eq!(format!("{components:?}"), r#"{"com.example.map"}"#);
+    }
+
+    #[test]
+    fn wheel_counts_notches() {
+        use crate::input::{Modifiers, WheelEvent};
+        // A notch up with three lines of 16 points to a notch, Ctrl held.
+        let event = WheelEvent {
+            x: 300.0,
+            y: 200.0,
+            dx: 0.0,
+            dy: -48.0,
+            precise: false,
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            time: 0.0,
+        };
+        let wheel = Wheel::new(12.0, 34.0, &event, 48.0);
+        assert_eq!((wheel.x, wheel.y), (12.0, 34.0));
+        assert_eq!((wheel.dx, wheel.dy), (0.0, -48.0));
+        assert_eq!((wheel.notches_x, wheel.notches_y), (0.0, -1.0));
+        assert!(wheel.ctrl && !wheel.shift && !wheel.alt && !wheel.precise);
+        // A touchpad's fraction of a notch, sideways.
+        let event = WheelEvent {
+            dx: 12.0,
+            dy: 0.0,
+            precise: true,
+            modifiers: Modifiers::default(),
+            ..event
+        };
+        let wheel = Wheel::new(0.0, 0.0, &event, 48.0);
+        assert_eq!((wheel.notches_x, wheel.notches_y), (0.25, 0.0));
+        assert!(wheel.precise && !wheel.ctrl);
     }
 }

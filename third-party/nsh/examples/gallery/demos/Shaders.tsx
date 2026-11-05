@@ -1,6 +1,8 @@
-import { Animated, cleanup, createAnimatedValue, Easing, Image, Shader, signal, Text, View } from "nsh";
+import { Animated, cleanup, createAnimatedValue, Easing, Image, ScreenEffect, Shader, ShaderEffect, ShaderTransition, signal, Text, View } from "nsh";
+import { Dialog, NavPage } from "nsh/base";
 import logo from "../logo-dark.svg";
-import { Caption, Card, DemoPage, mono, Press } from "../ui";
+import { nav } from "../nav";
+import { Button, Caption, Card, colors, DemoPage, header, isDark, mono, PageHeader, Press, Toggle } from "../ui";
 
 // Every demo below is a WGSL `shade(uv)` function: the core checks it,
 // the platform renders it on the GPU under the view's children, clipped to
@@ -347,7 +349,155 @@ function Holo() {
   );
 }
 
+// Effects and transitions read pictures of views: `sample_content` what an
+// effect's children draw, `sample_from` and `sample_to` a transition's two
+// sides, `nsh.progress` how far it is.
+
+const PIXELATE = /* wgsl */ `
+fn shade(uv: vec2f) -> vec4f {
+  // Cells up to 14 points wide as progress goes to 1, each its center's color.
+  let cell = max(nsh.progress * 14.0, 1.0 / nsh.scale) / nsh.size;
+  return sample_content(min((floor(uv / cell) + 0.5) * cell, vec2f(0.999)));
+}`;
+
+const WIPE = /* wgsl */ `
+fn shade(uv: vec2f) -> vec4f {
+  // A soft diagonal edge sweeps from the top left to the bottom right.
+  let edge = nsh.progress * 1.4 - 0.2;
+  let t = smoothstep(edge - 0.2, edge + 0.2, (uv.x + uv.y) * 0.5);
+  return mix(sample_to(uv), sample_from(uv), t);
+}`;
+
+const IRIS = /* wgsl */ `
+fn shade(uv: vec2f) -> vec4f {
+  // A circle from the middle reveals the upper side.
+  let aspect = vec2f(nsh.size.x / max(nsh.size.y, 1.0), 1.0);
+  let d = length((uv - 0.5) * aspect);
+  let t = smoothstep(nsh.progress * 1.2 - 0.04, nsh.progress * 1.2, d);
+  return mix(sample_to(uv), sample_from(uv), t);
+}`;
+
+const DUOTONE = /* wgsl */ `
+fn shade(uv: vec2f) -> vec4f {
+  // The whole surface in two inks, darker toward the corners.
+  let c = sample_content(uv);
+  let l = dot(c.rgb, vec3f(0.299, 0.587, 0.114));
+  let ink = mix(vec3f(0.08, 0.05, 0.25), vec3f(1.0, 0.82, 0.55), l);
+  let vignette = 1.0 - 0.6 * dot(uv - 0.5, uv - 0.5);
+  return vec4f(ink * vignette, c.a);
+}`;
+
+/** The tiles' colors: light, and a deeper shade for dark mode, where the
+ * light ones glare beside the page's dark cards. White text reads on both. */
+const TINTS = {
+  violet: ["#7c3aed", "#5b21b6"],
+  rose: ["#f43f5e", "#be123c"],
+  blue: ["#2563eb", "#1e40af"],
+  teal: ["#0f766e", "#115e59"],
+} as const;
+
+/** Colorful content for the effect and the transition to draw. */
+function Tile(props: { title: string; note: string; tint: keyof typeof TINTS }) {
+  return (
+    <View style={{ flex: 1, borderRadius: 14, padding: 16, justifyContent: "space-between", backgroundColor: TINTS[props.tint][isDark() ? 1 : 0] }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+        <Image src={logo} style={{ width: 26, height: 26 }} />
+        <Text style={{ color: "#ffffff", fontSize: 15, fontWeight: "700" }}>{props.title}</Text>
+      </View>
+      <Text style={{ color: "#ffffff", fontSize: 13, opacity: 0.8 }}>{props.note}</Text>
+    </View>
+  );
+}
+
+function Effect() {
+  const progress = createAnimatedValue(0);
+  const to = (value: number) => Animated.timing(progress, { toValue: value, duration: 600, easing: Easing.inOut(Easing.cubic) }).start();
+  return (
+    <Card icon="canvas" title="Shader effect" subtitle="Children drawn through a shader">
+      <View style={{ gap: 10 }}>
+        <ShaderEffect source={PIXELATE} progress={progress} style={{ height: 160 }} {...drag((x) => progress.set(x))}>
+          <Tile title="Pixelated" note="sample_content reads what the children draw" tint="violet" />
+        </ShaderEffect>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Button flex={1} label="Pixelate" onPress={() => to(1)} />
+          <Button flex={1} label="Sharpen" onPress={() => to(0)} />
+        </View>
+        <Caption label="Drag across it to set nsh.progress; the buttons animate it." />
+      </View>
+    </Card>
+  );
+}
+
+const SLIDES = [
+  { title: "Morning", note: "A wipe from the top left", tint: "rose" },
+  { title: "Noon", note: "sample_from: what showed", tint: "blue" },
+  { title: "Night", note: "sample_to: what shows now", tint: "teal" },
+] as const;
+
+function Transition() {
+  const index = signal(0);
+  const slide = () => SLIDES[index()];
+  return (
+    <Card icon="layers" title="Shader transition" subtitle="A change drawn through a shader">
+      <View style={{ gap: 10 }}>
+        <ShaderTransition source={WIPE} value={index()} duration={700} style={{ height: 160 }}>
+          <Tile title={slide().title} note={slide().note} tint={slide().tint} />
+        </ShaderTransition>
+        <Button label="Next" onPress={() => index.set((index() + 1) % SLIDES.length)} />
+        <Caption label="Each change wipes from the old picture to the new one." />
+      </View>
+    </Card>
+  );
+}
+
+function Screen() {
+  const on = signal(false);
+  return (
+    <Card icon="eye" title="Screen effect" subtitle="The whole surface through a shader">
+      <View style={{ gap: 10 }}>
+        {on() ? <ScreenEffect source={DUOTONE} /> : null}
+        <Toggle value={on()} onChange={(v) => on.set(v)} label="Duotone" />
+        <Caption label="A ScreenEffect draws everything, dialogs included, in two inks." />
+      </View>
+    </Card>
+  );
+}
+
+function IrisPage() {
+  return (
+    <NavPage title="Iris" {...header} transitionShader={{ source: IRIS, duration: 600 }} header={<PageHeader title="Iris" />}>
+      <View style={{ flex: 1, padding: 24, gap: 16, backgroundColor: colors.background }}>
+        <Tile title="Iris" note="This page came, and goes, through transitionShader" tint="blue" />
+        <Button label="Leave the page" onPress={() => nav.pop()} />
+      </View>
+    </NavPage>
+  );
+}
+
+function Pages() {
+  const open = signal(false);
+  return (
+    <Card icon="nav" title="Pages and dialogs" subtitle="transitionShader">
+      <View style={{ gap: 10 }}>
+        <View style={{ flexDirection: "row", gap: 8 }}>
+          <Button flex={1} label="Push a page" onPress={() => nav.push({ name: "page", page: IrisPage })} />
+          <Button flex={1} label="Open a dialog" onPress={() => open.set(true)} />
+        </View>
+        <Caption label="They come and go through an iris instead of the platform's animation." />
+        <Dialog open={open()} transitionShader={{ source: IRIS, duration: 600 }} onOpenChange={({ open: o }) => !o && open.set(false)} style={{ flex: 1 }}>
+          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.45)", alignItems: "center", justifyContent: "center", padding: 24 }}>
+            <View style={{ width: 300, height: 200, gap: 12 }}>
+              <Tile title="Dialog" note="Presented through the iris" tint="teal" />
+              <Button label="Close" onPress={() => open.set(false)} />
+            </View>
+          </View>
+        </Dialog>
+      </View>
+    </Card>
+  );
+}
+
 export function Shaders() {
-  const cards = [Glow, Ripple, Holo, Plasma];
+  const cards = [Glow, Ripple, Holo, Plasma, Effect, Transition, Screen, Pages];
   return <DemoPage cards={cards} columns={2} />;
 }

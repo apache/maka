@@ -13,7 +13,7 @@ use nsh_core::{
     canvas::{CanvasOp, Num, PathOp},
     element::{
         Arg, Callback, JsHost, JsIn, JsKind, JsOwned, JsValue, PropError, RowRef, RowText, Rows,
-        Style, TextPartStyle, Timing, TsTypes,
+        Style, TextPartStyle, TsTypes,
     },
     geometry::Percentage,
     prelude::*,
@@ -408,13 +408,6 @@ fn throughput(count: usize, links: &[Link]) -> Vec<f64> {
         }
     }
     into.iter().zip(&out).map(|(a, b)| a.max(*b)).collect()
-}
-
-/// The plot's `motion.update`, unless it moves at once (none, no
-/// duration, or reduced motion).
-fn update_timing(plot: PlotContext) -> Option<Timing> {
-    untracked(|| plot.motion.get().and_then(|m| m.update))
-        .filter(|t| t.duration_ms > 0.0 && !reduce_motion())
 }
 
 /// A number of a drawing that moves from `from` to `to` as `progress`

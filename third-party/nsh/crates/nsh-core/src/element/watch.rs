@@ -17,8 +17,17 @@
 //! item inside a group renders after the toolbar's later children), so a
 //! group that moves the focus between its items asks the core for their
 //! order. Such a watch costs nothing until it is invalidated (an item came)
-//! or a node moves; the core then puts its elements in tree order at the
-//! end of the round.
+//! or a node moves inside the subtree its elements share (their nearest
+//! common ancestor when the core last looked); the core then puts its
+//! elements in tree order at the end of the round. A move elsewhere (a
+//! keyed list of rows reordered, each row with a group of its own) leaves
+//! it alone: nothing outside that subtree orders its elements.
+//!
+//! Views also watch the keyboard focus come into an element and leave it
+//! ([`super::ElementRef::on_focus_in`], `on_focus_out`, GPUI's
+//! `on_focus_in` / `on_focus_out` of a focus handle): the core knows
+//! which views are in `focus-within`, so such a watch costs nothing until
+//! the focus moves, and its handler runs at the end of that commit round.
 
 use std::{cell::Cell, rc::Rc};
 
@@ -56,6 +65,27 @@ pub(crate) struct Order {
     pub(crate) handler: OrderHandler,
     /// Whether the core looks at the end of the round.
     pub(crate) dirty: Rc<Cell<bool>>,
+    /// The nearest common ancestor of the elements in the tree when the
+    /// core last looked: only a move inside it can reorder them. `None`
+    /// before the first look and while none of them is in the tree (any
+    /// move makes the core look again).
+    pub(crate) container: Rc<Cell<Option<NodeId>>>,
+}
+
+/// A focus watch's handler: whether the focus is within its element now.
+pub(crate) type FocusHandler = Rc<dyn Fn(bool)>;
+
+/// One view's watch of the focus coming into an element and leaving it.
+pub(crate) struct FocusWatch {
+    pub(crate) id: u32,
+    /// The element watched, resolved again whenever the core looks.
+    pub(crate) target: Rc<dyn Fn() -> Option<NodeId>>,
+    /// Hears the focus come in (`true`) or leave (`false`).
+    pub(crate) handler: FocusHandler,
+    /// Whether the focus was within it when the core last looked; `None`
+    /// before the core found it, so a watch made while the focus is in its
+    /// element hears it leave, not come.
+    pub(crate) last: Option<bool>,
 }
 
 /// The views' watches, oldest first.
@@ -64,6 +94,7 @@ pub(crate) struct Watches {
     next: u32,
     pub(crate) list: Vec<Watch>,
     pub(crate) orders: Vec<Order>,
+    pub(crate) focus: Vec<FocusWatch>,
 }
 
 impl Watches {
@@ -105,6 +136,7 @@ impl Watches {
             elements,
             handler,
             dirty: dirty.clone(),
+            container: Rc::new(Cell::new(None)),
         });
         (id, dirty)
     }
@@ -119,6 +151,35 @@ impl Watches {
     /// Whether an order watch waits to be looked at.
     pub(crate) fn orders_dirty(&self) -> bool {
         self.orders.iter().any(|o| o.dirty.get())
+    }
+
+    /// Adds a focus watch; its id.
+    pub(crate) fn add_focus(
+        &mut self,
+        target: Rc<dyn Fn() -> Option<NodeId>>,
+        handler: FocusHandler,
+    ) -> u32 {
+        let id = self.next;
+        self.next += 1;
+        self.focus.push(FocusWatch {
+            id,
+            target,
+            handler,
+            last: None,
+        });
+        id
+    }
+
+    /// Removes focus watch `id`; returns it so it is dropped outside the
+    /// borrow.
+    pub(crate) fn remove_focus(&mut self, id: u32) -> Option<FocusWatch> {
+        let i = self.focus.iter().position(|w| w.id == id)?;
+        Some(self.focus.remove(i))
+    }
+
+    /// Whether a focus watch has not found its element yet.
+    pub(crate) fn focus_unresolved(&self) -> bool {
+        self.focus.iter().any(|w| w.last.is_none())
     }
 }
 

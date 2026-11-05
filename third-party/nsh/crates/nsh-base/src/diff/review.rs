@@ -7,7 +7,7 @@
 use nsh_core::prelude::*;
 
 use super::{
-    DiffLine, DiffLineRange, DiffSide, DiffViewEvent,
+    DiffHunkBounds, DiffLine, DiffLineRange, DiffSide, DiffViewEvent,
     controller::{Dv, line_at, wrap_columns},
     geometry::Geometry,
     layout::Row,
@@ -46,6 +46,10 @@ pub(crate) struct Nav {
     /// The view got there.
     reached: bool,
 }
+
+/// Where the rows are scrolled to, their size and the viewport's, as
+/// `onScroll` reports them.
+pub(crate) type Scrolled = (Point<Points>, Size<Points>, Size<Points>);
 
 /// What the pointer is over in a row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,6 +97,17 @@ pub(crate) fn hunk_spans(rows: &[Row], geometry: &Geometry) -> Vec<(usize, Point
         }
     }
     out
+}
+
+/// The box of each change's rows in `rows`, as wide as `width`.
+pub(crate) fn hunk_bounds(rows: &[Row], geometry: &Geometry, width: Points) -> Vec<DiffHunkBounds> {
+    hunk_spans(rows, geometry)
+        .into_iter()
+        .map(|(hunk, top, bottom)| DiffHunkBounds {
+            index: hunk as u32,
+            bounds: bounds(point(px(0.0), top), size(width, bottom - top)),
+        })
+        .collect()
 }
 
 /// The first change below `y` (a point under it), else the first.
@@ -491,6 +506,78 @@ impl Dv {
         }
     }
 
+    /// Reports where the rows are scrolled, their size and the
+    /// viewport's (`onScroll`) once the view is laid out, and again
+    /// whenever one of them changes.
+    pub(crate) fn report_scroll(&self) {
+        let dv = self.clone();
+        let reported = std::cell::Cell::<Option<Scrolled>>::new(None);
+        effect(move || {
+            let offset = point(px(0.0), dv.scroll_y.get());
+            let viewport = dv.viewport.get();
+            let content = size(viewport.width, dv.rows_height());
+            if viewport == Size::default() {
+                return;
+            }
+            let now = (offset, content, viewport);
+            if reported.replace(Some(now)) != Some(now) {
+                dv.emit(DiffViewEvent::Scroll(offset, content, viewport));
+            }
+        });
+    }
+
+    /// Reports where the changes are (`onHunkBoundsChange`) once the view
+    /// is laid out, and again whenever a relayout or a new width moves or
+    /// resizes one: the rows can keep their height while a change moves
+    /// (one changed line becoming another), which `onScroll` cannot tell.
+    pub(crate) fn report_hunk_bounds(&self) {
+        let viewport = self.viewport;
+        // A new height alone moves no change: only the width is read.
+        let width = computed(move || viewport.get().width);
+        let dv = self.clone();
+        let reported = std::cell::RefCell::<Option<Vec<DiffHunkBounds>>>::new(None);
+        effect(move || {
+            dv.rev.get();
+            dv.geo.get();
+            let width = width.get();
+            if viewport.get_untracked() == Size::default() {
+                return;
+            }
+            let now = {
+                let st = dv.st.borrow();
+                hunk_bounds(&st.rows, &st.geometry, width)
+            };
+            if reported.borrow().as_ref() == Some(&now) {
+                return;
+            }
+            *reported.borrow_mut() = Some(now.clone());
+            dv.emit(DiffViewEvent::HunkBoundsChange(now));
+        });
+    }
+
+    /// Scrolls `y` to the top of the view (as far as the rows go) at once.
+    pub(crate) fn set_scroll_offset(&self, y: Points) {
+        let max = {
+            let st = self.st.borrow();
+            (st.geometry.height() - self.viewport.get_untracked().height).max(Points::ZERO)
+        };
+        let y = y.min(max).max(Points::ZERO);
+        // The rows in view follow now; the scroll view reports `y` back.
+        self.scroll_y.set(y);
+        self.vscroll.scroll_to(point(px(0.0), y), false);
+    }
+
+    /// How far the rows are scrolled.
+    pub(crate) fn scroll_offset(&self) -> Point<Points> {
+        point(px(0.0), self.scroll_y.get_untracked())
+    }
+
+    pub(crate) fn hunk_bounds(&self) -> Vec<DiffHunkBounds> {
+        let width = self.viewport.get_untracked().width;
+        let st = self.st.borrow();
+        hunk_bounds(&st.rows, &st.geometry, width)
+    }
+
     fn spans(&self) -> Vec<(usize, Points, Points)> {
         let st = self.st.borrow();
         hunk_spans(&st.rows, &st.geometry)
@@ -608,6 +695,35 @@ mod tests {
         assert_eq!(
             spans,
             vec![(0, px(10.0), px(50.0)), (1, px(70.0), px(80.0))]
+        );
+    }
+
+    #[test]
+    fn hunk_bounds_cover_their_wrapped_rows() {
+        let rows = rows();
+        // Row 2 wraps into three lines, and an annotation of 15 is under
+        // row 5.
+        let mut extra = vec![Points::ZERO; 6];
+        extra[5] = px(15.0);
+        let geometry = Geometry::new(&[1, 1, 3, 1, 1, 1], &extra, px(10.0));
+        let marks = hunk_bounds(&rows, &geometry, px(300.0));
+        let got: Vec<_> = marks.iter().map(|m| (m.index, m.bounds)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (
+                    0,
+                    bounds(point(px(0.0), px(10.0)), size(px(300.0), px(40.0)))
+                ),
+                (
+                    1,
+                    bounds(point(px(0.0), px(70.0)), size(px(300.0), px(25.0)))
+                ),
+            ]
+        );
+        assert_eq!(
+            hunk_bounds(&[], &Geometry::default(), px(300.0)),
+            Vec::new()
         );
     }
 

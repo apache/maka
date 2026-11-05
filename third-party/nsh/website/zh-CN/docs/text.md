@@ -144,9 +144,10 @@ text("Made with ")
 </Text>
 ```
 
-被 `numberOfLines` 或省略号截掉的行内元素会被隐藏；复制文字时也不会包含它们。
+被 `numberOfLines` 或省略号截掉的行内元素会被隐藏；复制文字时也不会包含它们。行内元素里的文字沿用外围文字的颜色（如同 CSS 的
+`color` 会传到行内块），自己设置了颜色时除外（上面的 `LIVE` 标签即是）；字体和行高仍是它自己的。
 
-样式键 `verticalAlign` 决定行内元素在所在行中的位置，与 CSS 的 `vertical-align` 摆放图片的方式一致：`"baseline"`（默认）让元素底边落在基线上，`"text-top"` 和 `"text-bottom"` 让元素顶边或底边对齐文本字体的顶部或底部，`"middle"` 让元素中心位于基线上方半个 x 高度处。元素超出字体的部分会撑高所在行。段首图标若要像 Android 的 `ImageSpan` 那样与文字底部对齐，使用 `"text-bottom"`。对应的类是 `align-baseline`、`align-text-top`、`align-text-bottom` 和 `align-middle`；Rust 中是同名的 `.align_text_bottom()` 等方法。
+样式键 `verticalAlign` 决定行内元素在所在行中的位置，与 CSS 的 `vertical-align` 摆放图片的方式一致：`"baseline"`（默认）让元素底边落在基线上，`"text-top"` 和 `"text-bottom"` 让元素顶边或底边对齐文本字体的顶部或底部，`"middle"` 让元素中心位于基线上方半个 x 高度处。元素超出字体的部分会撑高所在行，设置了固定 `lineHeight` 时也是如此。段首图标若要像 Android 的 `ImageSpan` 那样与文字底部对齐，使用 `"text-bottom"`。对应的类是 `align-baseline`、`align-text-top`、`align-text-bottom` 和 `align-middle`；Rust 中是同名的 `.align_text_bottom()` 等方法。
 
 ```tsx
 <Text style={{ fontSize: 16 }}>
@@ -161,7 +162,7 @@ text("Made with ")
 | `color` | 一个[颜色](./styling.md#颜色)。默认黑色 | `.text_color(..)` |
 | `fontSize` | 点。默认 14 | `.text_size(px(..))`、`.text_sm()`、`.text_lg()` 等 |
 | `fontWeight` | `"normal"`（400）、`"bold"`（700），或 `100`–`900`（数字或字符串） | `.font_weight(FontWeight::BOLD)` |
-| `fontStyle` | `"normal"`、`"italic"` | `.italic()` |
+| `fontStyle` | `"normal"`、`"italic"`：彩色表情保持正体 | `.italic()` |
 | `fontFamily` | 系统字体族、通用字体族或[导入的字体](./fonts.md) | `.font_family(..)` |
 | `lineHeight` | 点 | `.line_height(px(..))` |
 | `letterSpacing` | 点 | `.letter_spacing(px(..))` |

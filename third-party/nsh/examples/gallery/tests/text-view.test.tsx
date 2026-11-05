@@ -28,6 +28,8 @@ test("the Text View demo shows Markdown, HTML and extensions, and streams", asyn
   expect(app.shows("@huacnlee")).toBe(true);
   await app.press("role:tab[Extensions]");
   await app.waitFor("HEADS UP");
+  await app.waitFor("T-0089");
+  expect(app.shows("nsh#810")).toBe(true);
   await app.press("role:tab[Streaming]");
   await app.waitFor("Stream it");
   await app.press("Stream it");

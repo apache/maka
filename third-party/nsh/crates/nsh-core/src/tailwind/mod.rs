@@ -12,8 +12,8 @@
 //! Each class string is parsed once into rules, cached in an LRU of up to
 //! 4096 strings, with what the rules depend on (appearance, window width and
 //! height, direction, the node's own states, a group's states, sibling
-//! position, reduce motion): the core (`core/classes.rs`) resolves a node again only when
-//! one of those changes. Interaction states are reported by the platforms
+//! position, reduce motion, the `data-*` attributes it or a group shows): the core
+//! (`core/classes.rs`) resolves a node again only when one of those changes. Interaction states are reported by the platforms
 //! only for the bits a node's classes read (`MountItem::TrackStates`), and
 //! `focus-within` propagates to ancestors in the core. A node's style is the
 //! default, then its class rules, then its inline `style` replayed on top
@@ -126,6 +126,9 @@ pub mod deps {
     pub const CURRENT_COLOR: u16 = 512;
     /// The advance of its font's `0` (CSS's `ch`: `max-w-prose`).
     pub const CH: u16 = 1024;
+    /// The view's own `data-*` attributes (`data-range-start:`); a group's
+    /// are [`GROUP`].
+    pub const DATA: u16 = 2048;
 }
 
 /// CSS's `ch` where no font is known ([`ClassList::apply`]): half a `rem`,
@@ -184,6 +187,18 @@ pub struct Context<'a> {
     pub group: &'a dyn Fn(&str) -> u16,
 }
 
+/// Whether the node (`None`) or the nearest ancestor group with this name
+/// (`Some`, `""` for unnamed groups) has the boolean `data-*` attribute
+/// named (without `data-`): `data-range-start:`, `group-data-range-start:`.
+/// Components set them on their parts (`Interactive::project_data`); only
+/// the core has them, so they stay out of the public [`Context`].
+pub(crate) type Data<'a> = &'a dyn Fn(Option<&str>, &str) -> bool;
+
+/// No `data-*` attribute: what classes resolved outside a tree see.
+pub(crate) fn no_data(_: Option<&str>, _: &str) -> bool {
+    false
+}
+
 /// Conditions of one rule (all must hold).
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(crate) struct Condition {
@@ -200,6 +215,11 @@ pub(crate) struct Condition {
     not_states: u16,
     /// A group name and its required states.
     group: Option<(Box<str>, u16)>,
+    /// `data-*` attributes the node must have (`data-<name>:`), by name.
+    data: Vec<Box<str>>,
+    /// `data-*` attributes the group of [`Condition::group`] must have
+    /// (`group-data-<name>:`).
+    group_data: Vec<Box<str>>,
     /// Allowed [`position`] bits (any of them).
     position: u8,
     /// Applies to an input's placeholder.
@@ -209,7 +229,7 @@ pub(crate) struct Condition {
 }
 
 impl Condition {
-    fn matches(&self, cx: &Context<'_>) -> bool {
+    fn matches(&self, cx: &Context<'_>, data: Data<'_>) -> bool {
         if self.dark.is_some_and(|d| d != cx.env.dark)
             || self.platform.is_some_and(|p| p != cx.env.platform)
             || self.rtl.is_some_and(|r| r != cx.rtl)
@@ -229,8 +249,12 @@ impl Condition {
         if self.position != 0 && cx.position & self.position == 0 {
             return false;
         }
+        if !self.data.iter().all(|d| data(None, d)) {
+            return false;
+        }
         if let Some((name, states)) = &self.group
-            && (cx.group)(name) & states != *states
+            && ((cx.group)(name) & states != *states
+                || !self.group_data.iter().all(|d| data(Some(name), d)))
         {
             return false;
         }
@@ -290,6 +314,9 @@ impl Condition {
         if self.group.is_some() {
             d |= deps::GROUP;
         }
+        if !self.data.is_empty() {
+            d |= deps::DATA;
+        }
         if self.position != 0 {
             d |= deps::POSITION;
         }
@@ -321,7 +348,8 @@ pub(crate) struct Key {
     /// A breakpoint's value (thousandths, negated for `max-*`), or a
     /// group's inner variant.
     value: i64,
-    /// A group's name (`group-hover/item`), `None` unnamed.
+    /// A group's name (`group-hover/item`), `None` unnamed; a `data-*`
+    /// attribute's ([`Key::data`]).
     name: Option<Box<str>>,
 }
 
@@ -332,6 +360,14 @@ impl Key {
             unit: 0,
             value: 0,
             name: None,
+        }
+    }
+
+    /// `data-<name>:`'s place: [`rank::DATA`], then by name.
+    fn data(name: &str) -> Self {
+        Self {
+            name: Some(name.into()),
+            ..Self::new(rank::DATA)
         }
     }
 }
@@ -403,8 +439,11 @@ pub(crate) mod rank {
     pub(crate) const EXPANDED: Key = Key::new(42);
     pub(crate) const ARIA_PRESSED: Key = Key::new(43);
     pub(crate) const ARIA_SELECTED: Key = Key::new(44);
-    pub(crate) const MOTION_SAFE: Key = Key::new(45);
-    pub(crate) const MOTION_REDUCE: Key = Key::new(46);
+    /// `data-*`, after `aria-*` as Tailwind registers them, in the order
+    /// of their names ([`Key::data`]).
+    pub(crate) const DATA: u16 = 45;
+    pub(crate) const MOTION_SAFE: Key = Key::new(46);
+    pub(crate) const MOTION_REDUCE: Key = Key::new(47);
     /// `max-*` breakpoints, widest first.
     pub(crate) const MAX: u16 = 50;
     /// Breakpoints and `min-*`, narrowest first.
@@ -629,6 +668,7 @@ impl ClassList {
     ) {
         self.apply_with(
             cx,
+            &no_data,
             theme,
             CurrentColor::default(),
             DEFAULT_CH,
@@ -644,6 +684,7 @@ impl ClassList {
     pub(crate) fn apply_with(
         &self,
         cx: &Context<'_>,
+        data: Data<'_>,
         theme: &Theme,
         current: CurrentColor,
         ch: f32,
@@ -655,13 +696,13 @@ impl ClassList {
         parts.ch = ch;
         let mut important = false;
         let current = if self.deps & deps::CURRENT_COLOR != 0 {
-            self.current_color(cx, current)
+            self.current_color(cx, data, current)
         } else {
             Color::BLACK
         };
         parts.current = current;
         for rule in &self.rules {
-            if rule.cond.pseudo() || !rule.cond.matches(cx) {
+            if rule.cond.pseudo() || !rule.cond.matches(cx, data) {
                 continue;
             }
             for decl in &rule.decls {
@@ -680,7 +721,7 @@ impl ClassList {
         let mut state_background = false;
         let mut state_image = false;
         for rule in &self.rules {
-            if rule.cond.pseudo() || !rule.cond.matches(cx) {
+            if rule.cond.pseudo() || !rule.cond.matches(cx, data) {
                 continue;
             }
             important |= rule.important;
@@ -702,7 +743,7 @@ impl ClassList {
         let state_color = style.view.background_color;
         // `placeholder:` and `selection:` rules only carry a color.
         for rule in self.rules.iter().filter(|r| r.cond.pseudo()) {
-            if !rule.cond.matches(cx) {
+            if !rule.cond.matches(cx, data) {
                 continue;
             }
             if let Some(c) = rule.cond.pseudo_color(&rule.decls) {
@@ -732,7 +773,7 @@ impl ClassList {
                 .iter()
                 .filter(|r| r.important && !r.cond.pseudo())
             {
-                if rule.cond.matches(cx) {
+                if rule.cond.matches(cx, data) {
                     for decl in &rule.decls {
                         decl.apply(cx.env.dark, rule.important, style, props, &mut parts);
                     }
@@ -754,8 +795,13 @@ impl ClassList {
     /// CSS's `currentColor` of a node with these classes in `cx`: the text
     /// color of its `!` classes, its inline style, its classes, else the
     /// one it inherits, else black.
-    pub(crate) fn current_color(&self, cx: &Context<'_>, current: CurrentColor) -> Color {
-        let [plain, important] = self.text_colors(cx);
+    pub(crate) fn current_color(
+        &self,
+        cx: &Context<'_>,
+        data: Data<'_>,
+        current: CurrentColor,
+    ) -> Color {
+        let [plain, important] = self.text_colors(cx, data);
         important
             .or(current.inline)
             .or(plain)
@@ -765,10 +811,10 @@ impl ClassList {
 
     /// The text colors the rules matching `cx` set: the plain ones' and
     /// the `!` ones' (which win over the inline style).
-    fn text_colors(&self, cx: &Context<'_>) -> [Option<Color>; 2] {
+    fn text_colors(&self, cx: &Context<'_>, data: Data<'_>) -> [Option<Color>; 2] {
         let mut out = [None; 2];
         for rule in &self.rules {
-            if rule.cond.pseudo() || !rule.cond.matches(cx) {
+            if rule.cond.pseudo() || !rule.cond.matches(cx, data) {
                 continue;
             }
             for decl in &rule.decls {
@@ -1063,6 +1109,16 @@ fn themed(
     ))
 }
 
+/// Whether `name` names a boolean `data-*` attribute (`data-<name>:`):
+/// lower case letters, digits and `-`. Tailwind's `data-[state=open]:`,
+/// an attribute's value, is not supported.
+fn data_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
 /// Applies variant `v` to `cond`; returns its place in Tailwind's order.
 fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
     use state::*;
@@ -1201,12 +1257,31 @@ fn variant(theme: &Theme, v: &str, cond: &mut Condition) -> Option<Key> {
             rank::WEB
         }
         v => {
+            // `data-range-start`: Tailwind 4's boolean form, `[data-range-start]`.
+            if let Some(name) = v.strip_prefix("data-").filter(|n| data_name(n)) {
+                if !cond.data.iter().any(|d| **d == *name) {
+                    cond.data.push(name.into());
+                }
+                return Some(Key::data(name));
+            }
             if let Some(rest) = v.strip_prefix("group-") {
                 // `group-hover`, `group-hover/item`.
                 let (s, name) = match rest.split_once('/') {
                     Some((s, n)) => (s, n),
                     None => (rest, ""),
                 };
+                if let Some(data) = s.strip_prefix("data-").filter(|n| data_name(n)) {
+                    let entry = cond.group.get_or_insert_with(|| (name.into(), 0));
+                    if *entry.0 != *name {
+                        return None;
+                    }
+                    if !cond.group_data.iter().any(|d| **d == *data) {
+                        cond.group_data.push(data.into());
+                    }
+                    let mut group = Rank::default();
+                    group.add_group(&Key::data(data), name);
+                    return group.0.pop();
+                }
                 let (bit, inner) = match s {
                     "hover" => (HOVERED, rank::HOVER),
                     "active" => (PRESSED, rank::ACTIVE),

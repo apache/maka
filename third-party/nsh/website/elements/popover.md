@@ -156,5 +156,6 @@ with inline styles. When the user asks for less motion, it appears and goes at o
 ## Accessibility
 
 The trigger tells screen readers whether the popover is expanded. Escape and the back button close it, as users expect
-of a popup. In TSX the trigger is the element you pass: it takes the presses and the expanded state itself, so its own
-`active:` classes and `activeStyle` show while it is pressed, and its own `onPress` runs too.
+of a popup. In TSX the trigger is the element you pass, a `Button` or a view of your own: it takes the presses and the
+expanded state itself, so its own `active:` classes and `activeStyle` show while it is pressed, and its own `onPress`
+runs too.

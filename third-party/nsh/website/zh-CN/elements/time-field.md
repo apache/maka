@@ -13,7 +13,7 @@ demo: el-date-picker
 
 ```rust tabs
 use chrono::NaiveTime;
-use nsh_base::{HourCycle, TimeFieldSegmentState, TimeOfDay, time_field, theme};
+use nsh_base::{HourCycle, TimeFieldSegmentEntry, TimeOfDay, time_field};
 use nsh_core::prelude::*;
 
 fn reminder_time() -> impl IntoElement {
@@ -23,13 +23,8 @@ fn reminder_time() -> impl IntoElement {
         .on_change(move |next: &TimeOfDay| at.set(*next))
         .hour_cycle(HourCycle::H12)
         .accessibility_label("Reminder time")
-        .render_segment(|segment: &TimeFieldSegmentState| {
-            view()
-                .px_1()
-                .rounded_sm()
-                .when(segment.selected, |v| v.bg(move || theme().accent))
-                .child(text(segment.label.clone()))
-        })
+        .segment_class("rounded-sm focus:bg-accent disabled:opacity-50")
+        .render_segment(|segment: &TimeFieldSegmentEntry| view().px_1().child(text(segment.label.clone())))
 }
 ```
 
@@ -90,12 +85,19 @@ mount(App);
 | `hourCycle` | `.hour_cycle(..)` | `"h23" \| "h12"` | `"h23"` | 小时的计法；`"h12"` 会加一个上午/下午段。 |
 | `disabled` | `.disabled(..)` | `boolean` | `false` | 不接受焦点和编辑；输入框和各段应用 `disabled:` 样式。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 屏幕阅读器对输入框的称呼。 |
-| `segmentClass`、`segmentStyle` | `.segment_class(..)`、`.segment_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每一段：输入框有焦点时选中的段应用 `focus:`，随输入框应用 `disabled:`。 |
+| `segmentClass`、`segmentStyle` | `.segment_class(..)`、`.segment_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每一段：输入框有焦点时选中的段应用 `focus:`，随输入框应用 `disabled:`；加上 `group` 时其内容跟随（`group-focus:`、`group-disabled:`）。 |
 | `separatorClass`、`separatorStyle` | `.separator_class(..)`、`.separator_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 数字之间的每个 `:`。 |
-| `renderSegment` | `.render_segment(..)` | `(segment: TimeFieldSegmentState) => JSX.Element` | 无 | 由应用绘制的段内容；否则显示其标签。 |
+| `renderSegment` | `.render_segment(..)` | `(segment: TimeFieldSegmentEntry) => JSX.Element` | 无 | 由应用根据段显示的内容绘制；否则显示其标签。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 输入框，包住各段（一行）。 |
 
-`renderSegment` 得到一个 `TimeFieldSegmentState`：`segment`（`"hour"`、`"minute"`、`"second"` 或 `"period"`）、`value`（输入框钟面上的小时、分钟或秒；上午为 `0`，下午为 `1`）、`label`（两位数字，或 `AM` / `PM`）、`selected`（按键编辑它）和 `disabled`。
+`renderSegment` 得到一个 `TimeFieldSegmentEntry`：`segment`（`"hour"`、`"minute"`、`"second"` 或 `"period"`）、`value`（输入框钟面上的小时、分钟或秒；上午为 `0`，下午为 `1`）和 `label`（两位数字，或 `AM` / `PM`）。它从不包含段的状态：按键编辑的段是 `focus:`，输入框禁用时段是 `disabled:`；在 `segmentClass` 里加上 `group`，内容就用 `group-focus:` 和 `group-disabled:` 跟随。所以一个段只在它的值变化时重新绘制，在段之间移动、焦点进出都不绘制：
+
+```tsx
+<TimeField
+  segmentClass="group rounded-sm px-0.5 focus:bg-primary"
+  renderSegment={(segment) => <Text class="text-sm tabular-nums text-foreground group-focus:text-primary-foreground">{segment.label}</Text>}
+/>
+```
 
 <a id="events"></a>
 
@@ -112,7 +114,7 @@ mount(App);
 | 部件 | 位置 | 样式 |
 |---|---|---|
 | 输入框 | 根，一行 | `class`、`style` |
-| 段 | 输入框中：小时、分钟、秒、上午/下午 | `segmentClass`、`segmentStyle`、`renderSegment` |
+| 段 | 输入框中：小时、分钟、秒、上午/下午 | `segmentClass`、`segmentStyle`、`renderSegment`（其中用 `group-focus:`、`group-disabled:`，`segmentClass` 里加 `group`） |
 | 分隔符 | 输入框中，两个数字之间 | `separatorClass`、`separatorStyle` |
 
 <a id="keyboard"></a>

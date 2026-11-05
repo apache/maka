@@ -203,7 +203,6 @@ function PermissionsMenu(props: { owner: MenuOwner }) {
                 ? tr('Sandbox and approvals')
                 : tr('Loading sandbox settings…'),
           )}
-          onPress={inputAction(changeOpen, !open())}
           style={{
             ...toolbarControlStyle,
             minWidth: 0,

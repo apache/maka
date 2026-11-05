@@ -97,6 +97,7 @@ function Example() {
 |---|---|---|---|---|
 | `open` | 打开期间位于视图中（`when(open, ..)`） | `boolean` | `true` | 为 true 时显示。 |
 | `animation` | `.animation(ModalAnimation::Fade)` | `"slide" \| "fade" \| "none"` | `"slide"` | 出现和离开的方式。 |
+| `transitionShader` | `.transition_shader(TransitionShader::new(program))` | `{ source: string; uniforms?: Record<string, ShaderUniform>; duration?: number }` | 无 | 通过一个 WGSL 着色器出现和离开，取代它的 `animation`：`shade(uv)` 以 `sample_from` 读取后面的内容、以 `sample_to` 读取对话框，`nsh.progress` 在 `duration` 毫秒内（默认 350）从 0 走到 1，关闭时从 1 回到 0。系统要求减少动态效果时，它使用自己的 `animation`。见 [Shader](./shader.md)。 |
 | `presentation` | `.presentation(ModalPresentation::PageSheet)` | `"fullScreen" \| "pageSheet" \| "formSheet"` | `"fullScreen"` | 在 iOS 上的形式：`fullScreen` 以透明背景覆盖整个屏幕；`pageSheet` 和 `formSheet` 是系统 sheet，下面的内容保持可见（在大屏上 `formSheet` 是一个更小的居中 sheet）。 |
 | `closeOnEscape` | `.close_on_escape(..)` | `boolean` | `true` | Escape 和 Android 返回键在原生侧关闭它。 |
 | `closeOnBackdropPress` | `.close_on_backdrop_press(..)` | `boolean` | `true` | 按下背景层时关闭它。 |

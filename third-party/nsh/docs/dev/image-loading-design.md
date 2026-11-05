@@ -110,33 +110,28 @@ platform networking but follow the same policy and budget):
 
 ### L3 — encoded bytes in memory
 
-A small LRU (32 MiB desktop, 16 MiB mobile) of encoded bytes by source key, so
-that a re-decode at a new size, an SVG re-parse, `getSize` and `prefetch` don't
-re-read the disk or network. Entries larger than 1/4 of it are not kept.
+A small LRU of encoded bytes by source key, so that a re-decode at a new size,
+an SVG re-parse, `getSize` and `prefetch` don't re-read the disk or network.
 
 ### L4 — decoded images, one process-wide budget
 
 - **Decode at display size.** A view asks for its size in device pixels; the
   decoder downsamples (ImageIO thumbnails, `image` crate `thumbnail`, WIC
-  scaler, Android `inSampleSize`) to the smallest **size bucket** (powers of
-  √2 of the longest side) that covers it, never above natural size. Views of
-  similar sizes share an entry; a view that grows asks for the next bucket.
+  scaler, Android `inSampleSize`) to a **size bucket** that covers it, never
+  above natural size, so views of similar sizes share an entry.
   `center`/natural-size views ask for natural size.
-- **Key** = (source key, bucket, animation frame set). Effects (blur, tint,
-  color matrix) are drawing-time where the platform can; where they must be
-  baked (GPUI variants), the variant is an entry of its own **in the same
-  budget**.
+- Effects (blur, tint, color matrix) are drawing-time where the platform can;
+  where they must be baked (GPUI variants), the variant is an entry of its own
+  **in the same budget**.
 - **One budget per process**, counting everything an entry costs: CPU pixels,
-  GPU copies (Windows D2D bitmap, GPUI atlas texture) and variants. Defaults:
-  desktop `min(RAM/16, 256 MiB)`, mobile `min(heap/8, 128 MiB)` (desktop was
-  `min(RAM/8, 512 MiB)` at first: the 8-row measurement showed 256 MiB enough
-  for a scrolling list with far less resident memory).
+  GPU copies (Windows D2D bitmap, GPUI atlas texture) and variants; its
+  defaults are in the loader's code.
 - **Leases.** A view holds a lease on the entry it shows; leased entries are
   *in use*, counted, never evicted. Unleased entries form the LRU. When the
   total exceeds the budget, unleased entries go oldest first (so images that
   scrolled away go before anything visible). An image too large for the
   budget is still shown, leased, and dropped the moment its view goes.
-- **Animations**: frames count in full; at most 600 frames / 48 MiB (as now).
+- **Animations**: frames count in full, within the loader's frame limits.
 
 ### L5 — GPU
 
@@ -161,7 +156,7 @@ its image.
   `CreateMemoryResourceNotification`, Linux: the cgroup PSI `memory.pressure`
   trigger when available, else nothing.
 - When the app goes to the background (mobile) or all its windows are hidden
-  (desktop): trim unleased entries to a quarter of the budget.
+  (desktop): trim unleased entries.
 
 ## The app's control
 

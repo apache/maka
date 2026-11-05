@@ -23,6 +23,7 @@ test("the defaults are a light iPhone in en-US", async () => {
   expect(app.shows("Motion: full")).toBe(true);
   expect(app.shows("OS: ios")).toBe(true);
   expect(app.shows("Size: 390x844")).toBe(true);
+  expect(app.shows("App: active")).toBe(true);
 });
 
 test("the appearance and the viewport change while the app runs", async () => {
@@ -31,6 +32,16 @@ test("the appearance and the viewport change while the app runs", async () => {
   expect(app.shows("Scheme: dark")).toBe(true);
   await app.setViewport(844, 390);
   expect(app.shows("Size: 844x390")).toBe(true);
+});
+
+test("the lifecycle follows the system's", async () => {
+  const app = await open("./App.tsx");
+  await app.setLifecycle("inactive");
+  expect(app.shows("App: inactive")).toBe(true);
+  await app.setLifecycle("background");
+  expect(app.shows("App: background")).toBe(true);
+  await app.setLifecycle("active");
+  expect(app.shows("App: active")).toBe(true);
 });
 
 test("an invalid locale fails open", async () => {

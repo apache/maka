@@ -21,6 +21,13 @@
 //!   trackpad scrolls from the web view ([`passes_wheel`]), so they move
 //!   the app's scroll views around it, as on iOS (the page itself still
 //!   scrolls with its keys and its own scripts).
+//!   A web view with an `onDownload` listener saves what the page downloads
+//!   (an attachment, a type WebKit cannot show, a `download` link) with
+//!   WebKit's `WKDownload` into the app's data directory,
+//!   `downloads/<id>/<name>`, and reports it as it starts, finishes or
+//!   fails; without a listener those navigations stay as they were.
+//!   Dropping the host cancels active downloads and removes their partial
+//!   directories after cancellation. The app owns completed files' retention.
 //! - **Registered components**: [`AppView::register_component`] names a
 //!   factory; the core creates a [`ViewKind::Native`] container, names the
 //!   component ([`MountItem::Component`]) and sends its props as JSON as
@@ -35,6 +42,7 @@
 use std::{
     cell::{Cell, RefCell},
     ffi::CStr,
+    path::{Path, PathBuf},
     ptr::NonNull,
     rc::{Rc, Weak},
     sync::{Arc, OnceLock},
@@ -43,7 +51,7 @@ use std::{
 use block2::RcBlock;
 use nsh_core::{
     Bounds, Command, EventKind, EventPayload, JsonValue, NativeProps, NodeId, PayloadValue, Points,
-    ResizeMode, Size, VideoProps, ViewKind, WebProps, WebSource, geometry::Point,
+    ResizeMode, Size, VideoProps, ViewKind, WebInput, WebKey, WebProps, WebSource, geometry::Point,
 };
 use nsh_engine::{Access, App, EngineControl, Policy};
 use objc2::{
@@ -51,7 +59,7 @@ use objc2::{
     rc::{Allocated, Retained},
     runtime::{AnyClass, AnyObject, Bool, ProtocolObject},
 };
-use objc2_app_kit::NSView;
+use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType, NSView, NSWindow};
 use objc2_core_foundation::CGSize;
 use objc2_foundation::{
     NSNotification, NSNotificationCenter, NSObject, NSObjectProtocol, NSOperationQueue, NSPoint,
@@ -225,6 +233,9 @@ pub(crate) struct NativeState {
     /// What the running app may show in web views (its `webview`
     /// capability); `None` before an app starts.
     access: RefCell<Option<Arc<Access>>>,
+    /// Where the running app's web views save downloads (its data
+    /// directory's `downloads`); `None` before an app starts.
+    downloads: RefCell<Option<PathBuf>>,
     /// The controls, by node.
     hosts: RefCell<FxHashMap<NodeId, Host>>,
 }
@@ -245,9 +256,14 @@ impl NativeState {
         *self.asset_base.borrow_mut() = base;
     }
 
-    /// `app` is about to start: its web views are limited to what its
-    /// policy grants.
-    pub(crate) fn set_app(&self, app: &App) {
+    /// `app` is about to start, keeping its data in `data_dir`'s directory
+    /// of it: its web views are limited to what its policy grants and save
+    /// downloads there.
+    pub(crate) fn set_app(&self, app: &App, data_dir: Option<&Path>) {
+        *self.downloads.borrow_mut() = data_dir.map(|root| {
+            root.join(nsh_engine::app_dir_name(app.app_id()))
+                .join("downloads")
+        });
         let access = match app {
             App::Js(bundle) => bundle.policy.access(),
             // Native code reaches what the platform allows.
@@ -305,7 +321,8 @@ pub(crate) fn create(surface: &Rc<Surface>, view: &NshView) {
         ViewKind::Video => Host::Video(VideoHost::new(surface, view)),
         ViewKind::WebView => {
             let access = surface.native.access.borrow().clone();
-            Host::Web(WebHost::new(surface, view, access))
+            let downloads = surface.native.downloads.borrow().clone();
+            Host::Web(WebHost::new(surface, view, access, downloads))
         }
         _ => Host::Component(None),
     };
@@ -396,6 +413,15 @@ pub(crate) fn command(surface: &Rc<Surface>, view: &NshView, command: &Command) 
             if let Some(mut component) = take_component(surface, view.id()) {
                 component.command(name, args);
                 put_component(surface, view.id(), component);
+            }
+        }
+        Command::SendInput(input) => {
+            let web = match surface.native.hosts.borrow().get(&view.id()) {
+                Some(Host::Web(web)) => web.web.clone(),
+                _ => None,
+            };
+            if let Some(web) = web {
+                web_input(&web, input);
             }
         }
         _ => {
@@ -751,13 +777,16 @@ impl Emitter {
         }
     }
 
-    fn emit(&self, kind: EventKind, payload: impl FnOnce() -> EventPayload) {
-        let listens = self
-            .view
+    /// Whether the view has a listener for `kind`.
+    fn listens(&self, kind: EventKind) -> bool {
+        self.view
             .load()
             .and_then(|v| NshView::from_ns(&v))
-            .is_some_and(|v| v.state().events.contains(kind));
-        if !listens {
+            .is_some_and(|v| v.state().events.contains(kind))
+    }
+
+    fn emit(&self, kind: EventKind, payload: impl FnOnce() -> EventPayload) {
+        if !self.listens(kind) {
             return;
         }
         if let Some(surface) = self.surface.upgrade() {
@@ -1206,6 +1235,24 @@ struct WebIvars {
     /// What the app may show (its `webview` capability); `None`: nothing
     /// is known about the app, so nothing is refused.
     access: Option<Arc<Access>>,
+    /// Where downloads are saved; `None`: no app directory, so nothing is
+    /// downloaded.
+    downloads: Option<PathBuf>,
+    /// The downloads under way, by their `WKDownload`.
+    active: RefCell<FxHashMap<usize, Download>>,
+    navigation: Cell<Option<usize>>,
+    /// Response policies that converted a navigation into a download.
+    downloading: RefCell<FxHashSet<usize>>,
+}
+
+/// A download under way: its `WKDownload` (kept alive until it ends) and
+/// what `onDownload` reports of it.
+struct Download {
+    download: Retained<AnyObject>,
+    id: String,
+    url: String,
+    filename: String,
+    path: PathBuf,
 }
 
 define_class!(
@@ -1267,12 +1314,122 @@ define_class!(
                     ])
                 });
             }
-            // WKNavigationActionPolicyCancel = 0, Allow = 1.
-            decide.call((allowed as isize,));
+            // A `download` link becomes a download when the app listens.
+            // SAFETY: WKNavigationAction's `shouldPerformDownload` (macOS
+            // 11.3), asked only where it exists.
+            let download = allowed
+                && self.saves_downloads()
+                && unsafe {
+                    let known: Bool = msg_send![
+                        action,
+                        respondsToSelector: objc2::sel!(shouldPerformDownload)
+                    ];
+                    known.as_bool() && {
+                        let should: Bool = msg_send![action, shouldPerformDownload];
+                        should.as_bool()
+                    }
+                };
+            // WKNavigationActionPolicyCancel = 0, Allow = 1, Download = 2.
+            decide.call((if download { 2 } else { allowed as isize },));
+        }
+
+        /// What the page cannot show, or the server sends as an attachment,
+        /// is downloaded when the app listens for downloads.
+        #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
+        fn decide_response(
+            &self,
+            _web: &AnyObject,
+            response: &AnyObject,
+            decide: &block2::Block<dyn Fn(isize)>,
+        ) {
+            let download = self.saves_downloads() && is_download(response);
+            if download && let Some(navigation) = self.ivars().navigation.get() {
+                self.ivars().downloading.borrow_mut().insert(navigation);
+            }
+            // SAFETY: WKNavigationResponse's documented MIME support flag.
+            let shows: Bool = unsafe { msg_send![response, canShowMIMEType] };
+            // WKNavigationResponsePolicyCancel = 0, Allow = 1, Download = 2.
+            decide.call((if download { 2 } else { shows.as_bool() as isize },));
+        }
+
+        #[unsafe(method(webView:navigationAction:didBecomeDownload:))]
+        fn action_download(&self, _web: &AnyObject, _action: &AnyObject, download: &AnyObject) {
+            self.adopt(download);
+        }
+
+        #[unsafe(method(webView:navigationResponse:didBecomeDownload:))]
+        fn response_download(
+            &self,
+            _web: &AnyObject,
+            _response: &AnyObject,
+            download: &AnyObject,
+        ) {
+            self.adopt(download);
+        }
+
+        /// Each download gets a directory of its own, so two files of the
+        /// same name never meet.
+        #[unsafe(method(download:decideDestinationUsingResponse:suggestedFilename:completionHandler:))]
+        fn download_destination(
+            &self,
+            download: &AnyObject,
+            _response: &AnyObject,
+            suggested: &NSString,
+            done: &block2::Block<dyn Fn(*const NSURL)>,
+        ) {
+            let key = download_key(download);
+            let mut active = self.ivars().active.borrow_mut();
+            let Some(entry) = active.get_mut(&key) else {
+                drop(active);
+                done.call((std::ptr::null(),));
+                return;
+            };
+            // The server's name replaces the one taken from the URL when it was adopted.
+            entry.filename = file_name(&suggested.to_string());
+            let dir = entry.path.parent().map(Path::to_path_buf).unwrap_or_default();
+            entry.path = dir.join(&entry.filename);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                log::warn!(target: "js", "web view download into {}: {e}", dir.display());
+                // WebKit then cancels it, which reaches no entry: the app hears of it here.
+                let entry = active.remove(&key).expect("tracked above");
+                drop(active);
+                self.emit(EventKind::Download, || failed_event(&entry, e.to_string()));
+                done.call((std::ptr::null(),));
+                return;
+            }
+            let destination = NSURL::fileURLWithPath(&NSString::from_str(&entry.path.to_string_lossy()));
+            let started = download_event("started", entry, None);
+            drop(active);
+            self.emit(EventKind::Download, || started);
+            done.call((Retained::as_ptr(&destination),));
+        }
+
+        #[unsafe(method(downloadDidFinish:))]
+        fn download_finished(&self, download: &AnyObject) {
+            let Some(entry) = self.ivars().active.borrow_mut().remove(&download_key(download)) else {
+                return;
+            };
+            let bytes = std::fs::metadata(&entry.path).map_or(0, |m| m.len());
+            self.emit(EventKind::Download, || download_event("finished", &entry, Some(bytes)));
+        }
+
+        #[unsafe(method(download:didFailWithError:resumeData:))]
+        fn download_failed(&self, download: &AnyObject, error: &AnyObject, _resume: Option<&AnyObject>) {
+            let Some(entry) = self.ivars().active.borrow_mut().remove(&download_key(download)) else {
+                return;
+            };
+            // A download can fail before it has a destination (no response yet): nothing was written then.
+            if let Some(dir) = entry.path.parent().filter(|dir| dir.exists()) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+            // SAFETY: `localizedDescription` of an NSError.
+            let message: Retained<NSString> = unsafe { msg_send![error, localizedDescription] };
+            self.emit(EventKind::Download, || failed_event(&entry, message.to_string()));
         }
 
         #[unsafe(method(webView:didStartProvisionalNavigation:))]
-        fn did_start(&self, web: &AnyObject, _navigation: Option<&AnyObject>) {
+        fn did_start(&self, web: &AnyObject, navigation: Option<&AnyObject>) {
+            self.ivars().navigation.set(navigation.map(download_key));
             self.emit(EventKind::LoadStart, || navigation_state(web, true));
             self.emit(EventKind::NavigationStateChange, || {
                 navigation_state(web, true)
@@ -1280,7 +1437,10 @@ define_class!(
         }
 
         #[unsafe(method(webView:didFinishNavigation:))]
-        fn did_finish(&self, web: &AnyObject, _navigation: Option<&AnyObject>) {
+        fn did_finish(&self, web: &AnyObject, navigation: Option<&AnyObject>) {
+            if let Some(navigation) = navigation {
+                self.ivars().downloading.borrow_mut().remove(&download_key(navigation));
+            }
             self.emit(EventKind::Load, || navigation_state(web, false));
             self.emit(EventKind::NavigationStateChange, || {
                 navigation_state(web, false)
@@ -1288,25 +1448,37 @@ define_class!(
         }
 
         #[unsafe(method(webView:didFailNavigation:withError:))]
-        fn did_fail(&self, _web: &AnyObject, _navigation: Option<&AnyObject>, error: &AnyObject) {
-            self.failed(error);
+        fn did_fail(&self, _web: &AnyObject, navigation: Option<&AnyObject>, error: &AnyObject) {
+            self.failed(navigation, error);
         }
 
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn did_fail_provisional(
             &self,
             _web: &AnyObject,
-            _navigation: Option<&AnyObject>,
+            navigation: Option<&AnyObject>,
             error: &AnyObject,
         ) {
-            self.failed(error);
+            self.failed(navigation, error);
         }
     }
 );
 
 impl WebHandler {
-    fn new(mtm: MainThreadMarker, emitter: Emitter, access: Option<Arc<Access>>) -> Retained<Self> {
-        let this = Self::alloc(mtm).set_ivars(WebIvars { emitter, access });
+    fn new(
+        mtm: MainThreadMarker,
+        emitter: Emitter,
+        access: Option<Arc<Access>>,
+        downloads: Option<PathBuf>,
+    ) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(WebIvars {
+            emitter,
+            access,
+            downloads,
+            active: RefCell::default(),
+            navigation: Cell::default(),
+            downloading: RefCell::default(),
+        });
         // SAFETY: NSObject's designated initializer.
         unsafe { msg_send![super(this), init] }
     }
@@ -1315,11 +1487,200 @@ impl WebHandler {
         self.ivars().emitter.emit(kind, payload);
     }
 
-    fn failed(&self, err: &AnyObject) {
+    /// Whether this web view turns downloads into files: the app has a
+    /// directory and listens for them.
+    fn saves_downloads(&self) -> bool {
+        self.ivars().downloads.is_some() && self.ivars().emitter.listens(EventKind::Download)
+    }
+
+    /// Becomes the delegate of `download` and tracks it from now on, so a
+    /// download that fails before WebKit asks for its destination is
+    /// still reported. Its name comes from the URL until the server's is
+    /// known.
+    fn adopt(&self, download: &AnyObject) {
+        // SAFETY: WKDownload's `delegate` (weak); this handler outlives it
+        // as the web view's delegate, and keeps it in `active` until it ends.
+        let _: () = unsafe { msg_send![download, setDelegate: self] };
+        let Some(root) = self.ivars().downloads.as_ref() else {
+            return;
+        };
+        // SAFETY: NSUUID's and WKDownload's documented API.
+        let (id, url) = unsafe {
+            let uuid: Retained<AnyObject> = msg_send![class(c"NSUUID").expect("Foundation"), UUID];
+            let id: Retained<NSString> = msg_send![&uuid, UUIDString];
+            let request: Option<Retained<AnyObject>> = msg_send![download, originalRequest];
+            let url: Option<Retained<NSURL>> = request.and_then(|r| msg_send![&r, URL]);
+            let url = url.and_then(|u| u.absoluteString()).map(|s| s.to_string());
+            (id.to_string().to_lowercase(), url.unwrap_or_default())
+        };
+        let filename = file_name(url_file_name(&url));
+        let path = root.join(&id).join(&filename);
+        // SAFETY: `download` is a live WKDownload this handler delegates.
+        let object = unsafe { Retained::retain(download as *const AnyObject as *mut AnyObject) }
+            .expect("a download");
+        let entry = Download {
+            download: object,
+            id,
+            url,
+            filename,
+            path,
+        };
+        self.ivars()
+            .active
+            .borrow_mut()
+            .insert(download_key(download), entry);
+    }
+
+    fn failed(&self, navigation: Option<&AnyObject>, err: &AnyObject) {
+        let downloading = navigation.is_some_and(|navigation| {
+            self.ivars()
+                .downloading
+                .borrow_mut()
+                .remove(&download_key(navigation))
+        });
+        // SAFETY: NSError's documented domain and code. WebKit reports 102
+        // for the navigation we deliberately converted into a download.
+        let (domain, code): (Retained<NSString>, isize) =
+            unsafe { (msg_send![err, domain], msg_send![err, code]) };
+        if downloading && domain.to_string() == "WebKitErrorDomain" && code == 102 {
+            return;
+        }
         // SAFETY: `localizedDescription` of an NSError.
         let message: Retained<NSString> = unsafe { msg_send![err, localizedDescription] };
         self.emit(EventKind::Error, || error(message.to_string()));
     }
+
+    fn cancel_downloads(&self) {
+        // Release the borrow before WebKit can call back into the delegate.
+        let active = std::mem::take(&mut *self.ivars().active.borrow_mut());
+        for entry in active.into_values() {
+            let done = RcBlock::new(move |_resume: *const AnyObject| {
+                if let Some(dir) = entry.path.parent() {
+                    let _ = std::fs::remove_dir_all(dir);
+                }
+            });
+            // SAFETY: each retained WKDownload is still live; cancel copies
+            // the block and calls it after writing has stopped.
+            unsafe {
+                let _: () = msg_send![&entry.download, setDelegate: std::ptr::null::<AnyObject>()];
+                let _: () = msg_send![&entry.download, cancel: &*done];
+            }
+        }
+    }
+}
+
+/// Whether a WKNavigationResponse is a file to save: the main frame's, of
+/// a type WebKit cannot show or sent as an attachment.
+fn is_download(response: &AnyObject) -> bool {
+    // SAFETY: WKNavigationResponse's and NSHTTPURLResponse's documented API.
+    unsafe {
+        let main: Bool = msg_send![response, isForMainFrame];
+        if !main.as_bool() {
+            return false;
+        }
+        let shows: Bool = msg_send![response, canShowMIMEType];
+        if !shows.as_bool() {
+            return true;
+        }
+        let inner: Retained<AnyObject> = msg_send![response, response];
+        let Some(http) = class(c"NSHTTPURLResponse") else {
+            return false;
+        };
+        let is_http: Bool = msg_send![&inner, isKindOfClass: http];
+        if !is_http.as_bool() {
+            return false;
+        }
+        let disposition: Option<Retained<NSString>> = msg_send![
+            &inner,
+            valueForHTTPHeaderField: &*NSString::from_str("Content-Disposition")
+        ];
+        disposition.is_some_and(|d| is_attachment(&d.to_string()))
+    }
+}
+
+/// Whether a `Content-Disposition` value says attachment.
+fn is_attachment(disposition: &str) -> bool {
+    disposition
+        .split(';')
+        .next()
+        .is_some_and(|kind| kind.trim().eq_ignore_ascii_case("attachment"))
+}
+
+/// A file name for a server's suggested one: its last component, without
+/// separators or a leading dot, at most 200 bytes; `download` when nothing
+/// is left.
+fn file_name(suggested: &str) -> String {
+    let last = suggested.rsplit(['/', '\\']).next().unwrap_or_default();
+    let mut name: String = last
+        .chars()
+        .filter(|c| {
+            !c.is_control()
+                && !matches!(c, ':' | '\u{061c}' | '\u{200e}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{206f}')
+        })
+        .collect::<String>()
+        .trim()
+        .trim_start_matches('.')
+        .to_owned();
+    if name.len() > 200 {
+        // Preserve a normal extension while shortening the stem on UTF-8 boundaries.
+        let extension = name
+            .rsplit_once('.')
+            .map(|(_, ext)| format!(".{ext}"))
+            .filter(|ext| ext.len() + name.chars().next().map_or(0, char::len_utf8) <= 200);
+        if let Some(extension) = &extension {
+            name.truncate(name.len() - extension.len());
+        }
+        let limit = 200 - extension.as_ref().map_or(0, String::len);
+        while name.len() > limit {
+            name.pop();
+        }
+        if let Some(extension) = extension {
+            name.push_str(&extension);
+        }
+    }
+    if name.is_empty() {
+        "download".to_owned()
+    } else {
+        name
+    }
+}
+
+/// `onDownload`'s payload for a download that failed, with why.
+fn failed_event(entry: &Download, message: String) -> EventPayload {
+    let mut event = download_event("failed", entry, None);
+    if let EventPayload::Map(fields) = &mut event {
+        fields.push(("message", PayloadValue::Str(message)));
+    }
+    event
+}
+
+/// The last path segment of `url`, without its query or fragment.
+fn url_file_name(url: &str) -> &str {
+    let end = url.find(['?', '#']).unwrap_or(url.len());
+    url[..end].rsplit('/').next().unwrap_or_default()
+}
+
+fn download_key(download: &AnyObject) -> usize {
+    download as *const AnyObject as usize
+}
+
+/// `onDownload`'s payload: `state`, `id`, `url`, `filename`, `path` and,
+/// once finished, `bytes`.
+fn download_event(state: &str, entry: &Download, bytes: Option<u64>) -> EventPayload {
+    let mut fields = vec![
+        ("state", PayloadValue::Str(state.to_owned())),
+        ("id", PayloadValue::Str(entry.id.clone())),
+        ("url", PayloadValue::Str(entry.url.clone())),
+        ("filename", PayloadValue::Str(entry.filename.clone())),
+        (
+            "path",
+            PayloadValue::Str(entry.path.to_string_lossy().into_owned()),
+        ),
+    ];
+    if let Some(bytes) = bytes {
+        fields.push(("bytes", PayloadValue::Number(bytes as f64)));
+    }
+    EventPayload::Map(fields)
 }
 
 /// `{ url, title, loading, canGoBack, canGoForward }` of a WKWebView.
@@ -1388,8 +1749,13 @@ struct WebHost {
 }
 
 impl WebHost {
-    fn new(surface: &Rc<Surface>, view: &NshView, access: Option<Arc<Access>>) -> Self {
-        let handler = WebHandler::new(surface.mtm, Emitter::new(surface, view), access);
+    fn new(
+        surface: &Rc<Surface>,
+        view: &NshView,
+        access: Option<Arc<Access>>,
+        downloads: Option<PathBuf>,
+    ) -> Self {
+        let handler = WebHandler::new(surface.mtm, Emitter::new(surface, view), access, downloads);
         let web = webkit().then(|| {
             // SAFETY: WebKit's documented API, sent dynamically; the handler
             // is unregistered when the host is dropped; a WKWebView is an
@@ -1518,6 +1884,7 @@ impl WebHost {
 
 impl Drop for WebHost {
     fn drop(&mut self) {
+        self.handler.cancel_downloads();
         let Some(web) = &self.web else { return };
         // SAFETY: breaks the cycle web view → content controller → handler
         // and stops the page.
@@ -1531,7 +1898,6 @@ impl Drop for WebHost {
                 removeScriptMessageHandlerForName: &*NSString::from_str("nsh")
             ];
         }
-        let _ = &self.handler;
     }
 }
 
@@ -1573,9 +1939,167 @@ fn web_command(web: &AnyObject, command: &Command) {
     }
 }
 
+/// `sendInput()`: events made as AppKit makes the user's and handed to the
+/// web view, so the page sees them trusted, which injected scripts cannot do.
+fn web_input(web: &AnyObject, input: &WebInput) {
+    // SAFETY: AppKit's and WebKit's documented API, on the main thread.
+    unsafe {
+        let window: Option<Retained<NSWindow>> = msg_send![web, window];
+        let Some(window) = window else { return };
+        // Keys go to the first responder, which a click makes the web view
+        // too: it takes the keyboard focus, unless it has it already.
+        let first: Option<Retained<AnyObject>> = msg_send![&*window, firstResponder];
+        if first.as_deref().is_none_or(|f| !std::ptr::eq(f, web)) {
+            let _: Bool = msg_send![&*window, makeFirstResponder: web];
+        }
+        let time = objc2_foundation::NSProcessInfo::processInfo().systemUptime();
+        match input {
+            WebInput::Click { x, y } => {
+                // CSS pixels are points scaled by the page's zoom and magnification.
+                let zoom: f64 = msg_send![web, pageZoom];
+                let magnification: f64 = msg_send![web, magnification];
+                let scale = zoom * magnification;
+                let point: NSPoint = msg_send![
+                    web,
+                    convertPoint: NSPoint::new(f64::from(x.0) * scale, f64::from(y.0) * scale),
+                    toView: std::ptr::null::<AnyObject>()
+                ];
+                for (kind, pressure) in [
+                    (NSEventType::LeftMouseDown, 1.0),
+                    (NSEventType::LeftMouseUp, 0.0),
+                ] {
+                    let Some(event) = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(
+                        kind,
+                        point,
+                        NSEventModifierFlags::empty(),
+                        time,
+                        window.windowNumber(),
+                        None,
+                        0,
+                        1,
+                        pressure,
+                    ) else {
+                        continue;
+                    };
+                    if kind == NSEventType::LeftMouseDown {
+                        let _: () = msg_send![web, mouseDown: &*event];
+                    } else {
+                        let _: () = msg_send![web, mouseUp: &*event];
+                    }
+                }
+            }
+            WebInput::Text(text) => {
+                // The US layout's key (and Shift) for each character, so the
+                // page's `KeyboardEvent.code` names the key a user would press;
+                // a line break is Return, and what no US key types (`é`, CJK,
+                // emoji) no key at all (`code` "Unidentified").
+                for c in text.chars() {
+                    let c = if c == '\n' { '\r' } else { c };
+                    let (code, shift) =
+                        crate::input::us_typing_key(c).unwrap_or((crate::input::NO_KEY, false));
+                    // What the key types without Shift (`a` for `A`), as AppKit's own.
+                    let plain = crate::input::us_key(code).unwrap_or(c);
+                    key(
+                        web,
+                        &window,
+                        time,
+                        &c.to_string(),
+                        &plain.to_string(),
+                        code,
+                        shift,
+                    );
+                }
+            }
+            WebInput::Key(k) => {
+                let (chars, code) = match k {
+                    WebKey::Enter => ("\r", 36),
+                    WebKey::Tab => ("\t", 48),
+                    WebKey::Escape => ("\u{1b}", 53),
+                    WebKey::Backspace => ("\u{7f}", 51),
+                    _ => return,
+                };
+                key(web, &window, time, chars, chars, code, false);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// A key's down and up, with `chars` typed (`plain` without modifiers),
+/// handed to the web view.
+fn key(
+    web: &AnyObject,
+    window: &NSWindow,
+    time: f64,
+    chars: &str,
+    plain: &str,
+    code: u16,
+    shift: bool,
+) {
+    let s = NSString::from_str(chars);
+    let plain = NSString::from_str(plain);
+    for kind in [NSEventType::KeyDown, NSEventType::KeyUp] {
+        let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
+            kind,
+            NSPoint::new(0.0, 0.0),
+            if shift { NSEventModifierFlags::Shift } else { NSEventModifierFlags::empty() },
+            time,
+            window.windowNumber(),
+            None,
+            &s,
+            &plain,
+            false,
+            code,
+        );
+        let Some(event) = event else { continue };
+        // SAFETY: NSResponder's documented API, on the main thread.
+        unsafe {
+            if kind == NSEventType::KeyDown {
+                let _: () = msg_send![web, keyDown: &*event];
+            } else {
+                let _: () = msg_send![web, keyUp: &*event];
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn downloads_get_safe_file_names() {
+        assert!(is_attachment("attachment; filename=\"report.pdf\""));
+        assert!(is_attachment("  Attachment "));
+        assert!(!is_attachment("inline; filename=attachment.pdf"));
+        assert_eq!(file_name("report.pdf"), "report.pdf");
+        assert_eq!(file_name("../../etc/passwd"), "passwd");
+        assert_eq!(file_name("C:\\x\\y.csv"), "y.csv");
+        assert_eq!(file_name(".hidden"), "hidden");
+        assert_eq!(file_name("a:b\u{7}.txt"), "ab.txt");
+        assert_eq!(file_name(""), "download");
+        assert_eq!(file_name(".."), "download");
+        assert_eq!(file_name(&"x".repeat(300)).len(), 200);
+        assert_eq!(file_name("invoice\u{202e}fdp.exe"), "invoicefdp.exe");
+        assert_eq!(
+            file_name(
+                "\u{061c}\u{200e}\u{200f}\u{202a}\u{202b}\u{202c}\u{202d}\u{2066}\u{2067}\u{2068}\u{2069}report.pdf"
+            ),
+            "report.pdf"
+        );
+        let long = file_name(&format!("{}.pdf", "文".repeat(100)));
+        assert!(long.len() <= 200);
+        assert!(long.ends_with(".pdf"));
+        let long_extension = file_name(&format!("文.{}", "x".repeat(198)));
+        assert!(long_extension.len() <= 200);
+        assert!(!long_extension.starts_with('.'));
+        assert_eq!(file_name(&format!("{}.txt", "\u{7}".repeat(300))), "txt");
+        assert_eq!(
+            url_file_name("https://example.com/files/report.pdf?v=2#p1"),
+            "report.pdf"
+        );
+        assert_eq!(file_name(url_file_name("https://example.com/")), "download");
+    }
 
     #[test]
     fn locates_sources() {

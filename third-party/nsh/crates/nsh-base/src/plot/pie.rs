@@ -575,7 +575,7 @@ pub(super) enum Var {
 }
 
 impl Var {
-    fn add(&self, other: &Var) -> Var {
+    pub(super) fn add(&self, other: &Var) -> Var {
         match (self, other) {
             (Var::Const(a), Var::Const(b)) => Var::Const(a + b),
             (Var::Node(a), Var::Const(b)) | (Var::Const(b), Var::Node(a)) => Var::Node(a.add(*b)),
@@ -583,7 +583,7 @@ impl Var {
         }
     }
 
-    fn sub(&self, other: &Var) -> Var {
+    pub(super) fn sub(&self, other: &Var) -> Var {
         match (self, other) {
             (Var::Const(a), Var::Const(b)) => Var::Const(a - b),
             (Var::Node(a), Var::Const(b)) => Var::Node(a.sub(*b)),
@@ -592,7 +592,7 @@ impl Var {
         }
     }
 
-    fn mul(&self, other: &Var) -> Var {
+    pub(super) fn mul(&self, other: &Var) -> Var {
         match (self, other) {
             (Var::Const(a), Var::Const(b)) => Var::Const(a * b),
             (Var::Node(a), Var::Const(b)) | (Var::Const(b), Var::Node(a)) => Var::Node(a.mul(*b)),

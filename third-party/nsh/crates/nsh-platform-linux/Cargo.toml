@@ -29,7 +29,7 @@ log.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 nsh-core = { workspace = true, features = ["svg", "loader"] }
 nsh-engine = { workspace = true, features = ["net", "shader"] }
-nsh-base = { workspace = true, features = ["highlight"] }
+nsh-base = { workspace = true, features = ["highlight", "math"] }
 gtk4.workspace = true
 # GIF and WebP (first frame), which GDK cannot decode without gdk-pixbuf loaders;
 # JPEG (and PNG) shrunk to the size a view shows them at.

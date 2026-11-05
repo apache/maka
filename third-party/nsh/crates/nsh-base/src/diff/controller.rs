@@ -516,7 +516,10 @@ impl State {
     pub(crate) fn number_width(&self) -> Points {
         let last = self.old.last_number().max(self.new.last_number());
         let digits = (last.max(1).ilog10() as usize + 1).max(2);
-        self.column * digits as f32
+        // `column` is an average with a fraction; the platforms round a
+        // text's measured width up, so the column holds its number with a
+        // point to spare (exactly `digits` columns cut the number off).
+        (self.column * digits as f32 + px(0.5)).ceil()
     }
 }
 
@@ -573,7 +576,7 @@ pub(crate) fn spans(
                 column += n;
             } else {
                 piece.push(c);
-                column += 1;
+                column += char_columns(c);
             }
         }
         match out.last_mut() {
@@ -648,7 +651,7 @@ pub(crate) fn expand_tabs(line: &str) -> std::borrow::Cow<'_, str> {
             column += n;
         } else {
             out.push(c);
-            column += 1;
+            column += char_columns(c);
         }
     }
     out.into()
@@ -657,9 +660,22 @@ pub(crate) fn expand_tabs(line: &str) -> std::borrow::Cow<'_, str> {
 fn display_columns(line: &str) -> usize {
     let mut column = 0;
     for c in line.chars() {
-        column += if c == '\t' { TAB - column % TAB } else { 1 };
+        column += if c == '\t' {
+            TAB - column % TAB
+        } else {
+            char_columns(c)
+        };
     }
     column
+}
+
+/// The columns of `0` that `c` takes: two for wide characters (CJK,
+/// fullwidth forms, emoji), none for combining marks, else one. Fonts draw
+/// a wide character about as wide as two narrow ones; counting it as one
+/// would make a side's box narrower than its text, which then wraps over
+/// the rows below it.
+pub(crate) fn char_columns(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
 }
 
 /// The diff view's controller: a clone shares everything.
@@ -731,6 +747,8 @@ impl Dv {
             rows_window: Default::default(),
         };
         dv.follow_props();
+        dv.report_scroll();
+        dv.report_hunk_bounds();
         dv
     }
 
@@ -1181,6 +1199,15 @@ mod tests {
         let spans = spans("ab\tc", &[], &changed);
         let texts: Vec<_> = spans.iter().map(|s| (s.text.as_str(), s.changed)).collect();
         assert_eq!(texts, vec![("a", false), ("b", true), ("  c", false)]);
+    }
+
+    #[test]
+    fn wide_characters_take_two_columns() {
+        assert_eq!(display_columns("a中文"), 5);
+        assert_eq!(display_columns("中\tb"), 5);
+        assert_eq!(expand_tabs("中\tb"), "中  b");
+        let side = Side::new("中文\nab\n".to_string(), Vec::new());
+        assert_eq!(side.columns, 4);
     }
 
     #[test]

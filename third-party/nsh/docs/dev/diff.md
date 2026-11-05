@@ -10,7 +10,7 @@ user-facing page is `website/elements/diff-view.md`; how each module works insid
 
 | File | What |
 |---|---|
-| `mod.rs` | The component: `DiffViewProps`, `DiffViewEvent` (`Change`, `LineNumberPress`, `StatsChange`, `LineSelectionChange`, `FileToggle`), `DiffViewApi` (the ref's methods); the values: `DiffLayout`, `DiffInline`, `DiffIndicators`, `DiffSide`, `DiffExpand`, `DiffFileStatus` (`PropEnum`s), `DiffHunk`, `DiffStats`, `DiffSeparator`, `DiffChange`, `DiffLine`, `DiffLineRange`, `DiffAnnotation`, `DiffFile` (`JsObject`s) |
+| `mod.rs` | The component: `DiffViewProps`, `DiffViewEvent` (`Change`, `LineNumberPress`, `StatsChange`, `LineSelectionChange`, `FileToggle`, `Scroll`, `HunkBoundsChange`), `DiffViewApi` (the ref's methods); the values: `DiffLayout`, `DiffInline`, `DiffIndicators`, `DiffSide`, `DiffExpand`, `DiffFileStatus` (`PropEnum`s), `DiffHunk`, `DiffHunkBounds`, `DiffStats`, `DiffSeparator`, `DiffChange`, `DiffLine`, `DiffLineRange`, `DiffAnnotation`, `DiffFile` (`JsObject`s) |
 | `parts.rs` | The parts the app styles: one `parts!` list makes `DiffViewClasses`, `DiffViewStyles` (each a `PartStyle`) and `DiffViewPart` |
 | `model.rs` | `DiffModel`: the line diff and its hunks, the pairs of changed lines that are alike, the words changed within a pair, reverting and accepting one hunk |
 | `layout.rs` | `rows`: the rows a diff shows (`Row::Line`, `Row::Separator`; `Row::File`, a file header, made by `files.rs`), `Expansions` (what the user expanded of each gap), patch hunk headers |
@@ -18,7 +18,7 @@ user-facing page is `website/elements/diff-view.md`; how each module works insid
 | `patch.rs` | Unified diffs: `parse_patch` into `FilePatch`es and `PatchHunk`s, the texts a view shows of a file (`FilePatch::texts`), applying a patch (`FilePatch::apply`) |
 | `controller.rs` | `Dv` and `State`: the two sides (text, rope, line starts, highlighter, numbering), the model and rows, the revisions bindings subscribe to, what props and the ref do; the cells and spans of a row |
 | `geometry.rs` | `Geometry`: each row's top and height (its wrapped lines, the annotations under it), finding the rows at a height; `wrap_starts`: where a line wraps at a column count |
-| `review.rs` | What a reviewer does: line selection on the numbers (press, Shift-press, mouse drag), hover and the app's add control, annotations' heights, navigation between changes, the split sides' horizontal sync |
+| `review.rs` | What a reviewer does: line selection on the numbers (press, Shift-press, mouse drag), hover and the app's add control, annotations' heights, navigation between changes, the scroll position and the changes' bounds (an overview ruler's), the split sides' horizontal sync |
 | `view.rs` | The view: the vertical scroll view, the sides (gutter and text), the separators, the app's hunk actions, annotations and add control |
 
 ## The model
@@ -30,17 +30,12 @@ user-facing page is `website/elements/diff-view.md`; how each module works insid
   then `postprocess_lines`, git's indent heuristic: a hunk that could start at several places slides to the one that
   keeps whole blocks together (a function added after another starts at its own first line, not inside the one
   before). The hunks are in order and never touch: equal lines separate them.
-- **Pairing.** Within a hunk, each deleted line is paired with the added line most like it, in order (`align`: a
-  weighted longest common subsequence over a similarity from 0 to 1, the better of the common prefix and suffix over
-  the longer line, ignoring indentation, which finds an edit in place, and the Dice coefficient of their word tokens,
-  which finds words moved). Lines less alike than 0.4 do not pair by similarity; the lines left between two pairs are
-  paired in order as far as both sides have lines (as split views show them side by side), and the rest stand alone.
-  A hunk of more than 64 lines on a side pairs in order (the alignment is quadratic).
-- **Inline changes.** A pair's changed ranges (`DiffModel::inline`) come from a Myers diff of its tokens: words for
-  `word` and `wordAlt` (letter, digit and `_` runs, whitespace runs, any other grapheme alone; CJK ideographs, kana
-  and hangul are a word each, so a changed character marks only itself), graphemes for `char`. `wordAlt` (the default)
-  joins changed words one character apart, so a phrase reads as one change. When more than 70 % of either line
-  changed, the line's tint says enough and no ranges are marked; lines over 10 000 bytes get none.
+- **Pairing.** Within a hunk, each deleted line is paired with the added line most like it, in order (`align`); lines
+  not alike enough are paired in order as split views show them side by side, and the rest stand alone.
+- **Inline changes.** A pair's changed ranges (`DiffModel::inline`) come from a diff of its tokens: words for `word`
+  and `wordAlt` (CJK ideographs, kana and hangul are a word each), graphemes for `char`. `wordAlt` (the default) joins
+  changed words one character apart, so a phrase reads as one change. Lines that changed almost entirely, and very
+  long lines, get no ranges: the line's tint says enough.
 - **Reverting and accepting** a hunk splice lines between the texts (`revert_hunk`: its old lines back into the new
   text; `accept_hunk`: its new lines into the old text), keeping each side's line breaks. The view shows the result at
   once and reports both texts with `onChange`; the app setting them back as props changes nothing more.
@@ -96,7 +91,7 @@ one for `unified`), each a gutter of line numbers (two columns in `unified`: old
 a viewport (at least 16 rows) on each side, with at least 40 rows' height before the viewport is known, in a window
 that stays put while it covers the rows in view (`RowWindow`, as the `Editor`'s); `each` keeps the rows that stay in
 it. A row's text is one `Text` of spans per wrapped line: runs of one syntax token and one inline state
-(`controller::spans`). Widths are columns of the font's `0` (tabs as 4 columns); the split sides are as wide as the
+(`controller::spans`). Widths are columns of the font's `0` (tabs as 4 columns, wide characters, CJK, fullwidth forms and emoji, as 2: their East Asian Width, so a side's box is never narrower than its text, which would wrap over the rows below; a line number's column is rounded up to a whole point and a half more, as the platforms round a text's measured width up); the split sides are as wide as the
 wider side's widest line and scroll sideways together (each side's `onScroll` scrolls the other, a move of under half a
 point ending the echo).
 
@@ -126,6 +121,21 @@ it).
 reached that place and has not scrolled from it, or is still scrolling to it), else from the top of the view, so a
 change near the end that cannot reach the top still counts; they wrap around. `currentHunk` is that change, else the
 one at the top of the view, else the first starting in view.
+
+**Scroll position.** `onScroll` reports the vertical scroll view as `ScrollEvent`'s keys do (`offset`, `contentSize`,
+`size`; `offset.x` is 0 and the rows are as wide as the viewport). One effect (`report_scroll`) reads `scroll_y`,
+`viewport` and the rows' height (`rows_height`, which follows `rev` and `geo`), so a scroll, a resize and every
+relayout reach it, and emits only when the three differ from those reported last, from the first layout on (before
+it the viewport is unknown). A component cannot tell whether the app listens to one of its events, so it is emitted
+either way, one per frame the view scrolls; the JS side drops an event its host has no `on<Event>` handler for before
+converting its data (`nsh-js` `components.rs`, `Components::handled`). `scrollOffset()` reads `scroll_y`. `hunkBounds()` is
+`hunk_spans` (each change's rows, placed by `Geometry`: wrapped lines and annotations count, and a collapsed file's
+changes have no rows) as `Bounds` across the viewport. `onHunkBoundsChange` reports the same list from a second effect
+(`report_hunk_bounds`), which follows `rev`, `geo` and the viewport's width (a memo, so a new height alone does not
+recompute it) and emits when the list differs from the one reported last: a change can move while the rows keep
+their height (one changed line becoming another), which `onScroll`'s values cannot show. `setScrollOffset` sets
+`scroll_y` and scrolls the view without an animation, clamped to the rows, for a thumb that follows the pointer
+(`goToHunk` and `scrollToFile`, discrete jumps, animate).
 
 `onStatsChange` reports `{ stats }`, a `DiffStats` (`{ added, deleted, hunks }`), once when the view is made and again whenever the
 texts are diffed to counts other than those reported last (new props, a hunk kept or reverted), so an app's "+8 −8 ·
@@ -167,6 +177,6 @@ time (after a frame on WebAssembly). A patch's files each have a highlighter per
 
 ## Limits
 
-- Widths are columns of the font's `0`: exact for monospaced fonts. Soft wrap counts characters as columns, so wide
-  characters (CJK) wrap later than they fill the line.
+- Widths are columns of the font's `0`: exact for monospaced fonts. Wide characters count as two columns, which fonts
+  draw them about as wide as (a little less with a narrow `0`), so a line of them may end short of the box's edge.
 - Text is shown, not edited: changes revert or keep a hunk at a time.

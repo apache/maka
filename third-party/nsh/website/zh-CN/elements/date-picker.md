@@ -158,7 +158,7 @@ mount(App);
 | `presetClass`、`presetStyle` | `.preset_class(..)`、`.preset_style(..)` | `string`、`StyleProp<TextStyle>` | 无 | 每个预设按钮。 |
 | `calendarClass`、`calendarStyle` | `.calendar_class(..)`、`.calendar_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 日历。 |
 | `headerClass` … `itemStyle` | 同 `Calendar` | 同 `Calendar` | 无 | 日历的头部、主体、各月、各行和各条目。 |
-| `renderItem` | `.render_item(..)` | `(item: CalendarItemState) => JSX.Element` | 无 | 由应用绘制的日历条目。 |
+| `renderItem` | `.render_item(..)` | `(item: CalendarEntry) => JSX.Element` | 无 | 由应用根据条目本身绘制的日历条目；状态是条目的类，与 `Calendar` 的相同。 |
 | `timeClass`、`timeStyle` | `.time_class(..)`、`.time_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 时间行：开头是它的标签，末尾是输入框。 |
 | `timeLabel` | `.time_label(..)` | `JSX.Element` | 无 | 时间行在输入框前显示的内容。 |
 | `timeFieldClass`、`timeFieldStyle` | `.time_field_class(..)`、`.time_field_style(..)` | `string`、`StyleProp<ViewStyle>` | 无 | 时间输入框。 |

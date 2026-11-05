@@ -18,12 +18,13 @@ use objc2::{
 use objc2_core_foundation::{CGPoint, CGRect, CGSize};
 use objc2_foundation::{NSArray, NSObject, NSString};
 use objc2_ui_kit::{
-    UIAccessibilityContainerType, UIAccessibilityCustomAction, UIAccessibilityTraitAdjustable,
-    UIAccessibilityTraitButton, UIAccessibilityTraitHeader, UIAccessibilityTraitImage,
-    UIAccessibilityTraitKeyboardKey, UIAccessibilityTraitLink, UIAccessibilityTraitNone,
-    UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField, UIAccessibilityTraitSelected,
-    UIAccessibilityTraitStaticText, UIAccessibilityTraitSummaryElement,
-    UIAccessibilityTraitUpdatesFrequently, UIAccessibilityTraits, UIEvent, UIResponder, UIView,
+    NSLayoutConstraint, UIAccessibilityContainerType, UIAccessibilityCustomAction,
+    UIAccessibilityTraitAdjustable, UIAccessibilityTraitButton, UIAccessibilityTraitHeader,
+    UIAccessibilityTraitImage, UIAccessibilityTraitKeyboardKey, UIAccessibilityTraitLink,
+    UIAccessibilityTraitNone, UIAccessibilityTraitNotEnabled, UIAccessibilityTraitSearchField,
+    UIAccessibilityTraitSelected, UIAccessibilityTraitStaticText,
+    UIAccessibilityTraitSummaryElement, UIAccessibilityTraitUpdatesFrequently,
+    UIAccessibilityTraits, UIEvent, UIResponder, UIView,
 };
 
 #[derive(Default)]
@@ -40,6 +41,9 @@ pub(crate) struct NshViewIvars {
     /// An `increment` / `decrement` reported whose value has not arrived
     /// yet, and the value VoiceOver read since (`Some` once it asked).
     step: RefCell<Option<Option<String>>>,
+    /// A header bar button's custom view: its width and height constraints
+    /// (the bar sizes such a view with Auto Layout).
+    size: RefCell<Option<[Retained<NSLayoutConstraint>; 2]>>,
 }
 
 define_class!(
@@ -316,6 +320,36 @@ impl NshView {
         unsafe {
             msg_send![Self::alloc(mtm), initWithFrame: CGRect::new(CGPoint::ZERO, CGSize::ZERO)]
         }
+    }
+
+    /// Sizes a view the system lays out with Auto Layout (a header bar
+    /// button's custom view): width and height constraints, made once and
+    /// updated after, so the bar lays it out again when its size changes —
+    /// a frame set later is not read, and the view keeps the size, the hit
+    /// area and the place the bar gave it at first.
+    pub(crate) fn set_layout_size(&self, size: CGSize) {
+        let mut kept = self.ivars().size.borrow_mut();
+        match kept.as_ref() {
+            Some([w, h]) => {
+                if w.constant() != size.width {
+                    w.setConstant(size.width);
+                }
+                if h.constant() != size.height {
+                    h.setConstant(size.height);
+                }
+            }
+            None => {
+                self.setTranslatesAutoresizingMaskIntoConstraints(false);
+                let w = self.widthAnchor().constraintEqualToConstant(size.width);
+                let h = self.heightAnchor().constraintEqualToConstant(size.height);
+                w.setActive(true);
+                h.setActive(true);
+                *kept = Some([w, h]);
+            }
+        }
+        // The content lays out from the bounds; the bar places the origin.
+        let origin = self.frame().origin;
+        self.setFrame(CGRect::new(origin, size));
     }
 
     /// Sets the touch, accessibility and test properties.

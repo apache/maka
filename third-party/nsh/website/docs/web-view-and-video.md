@@ -98,7 +98,7 @@ Events:
 
 ### A browser with back and forward
 
-The web view's ref (an `element_ref()` put on it with `.element_ref(&web)` in Rust, `ref` in TSX) has `reload`, `go_back` / `goBack`, `go_forward` / `goForward`, `stop_loading` / `stopLoading`, `inject_java_script` / `injectJavaScript(script)` and `post_message` / `postMessage(data)`:
+The web view's ref (an `element_ref()` put on it with `.element_ref(&web)` in Rust, `ref` in TSX) has `reload`, `go_back` / `goBack`, `go_forward` / `goForward`, `stop_loading` / `stopLoading`, `inject_java_script` / `injectJavaScript(script)`, `post_message` / `postMessage(data)` and `send_input` / `sendInput(input)` ([below](#input-as-the-users-own)):
 
 ```rust tabs
 use nsh_core::prelude::*;
@@ -285,6 +285,58 @@ web_view("https://example.com")
   injectedJavaScript={`window.nsh.postMessage(document.title);`}
   onMessage={(e) => console.log("title", e.data)}
 />
+```
+
+### Input as the user's own
+
+`injectJavaScript` can only make synthetic events, which a page sees as untrusted (`event.isTrusted` is `false`) and some widgets ignore. The ref's `send_input` (`sendInput(input)`) gives the page input as the user's own hands would, so its events are trusted:
+
+- `{ type: "click", x, y }` clicks a point of the viewport, in CSS pixels (what `getBoundingClientRect()` reports).
+- `{ type: "text", text }` types the text into what has the page's focus, a key at a time: each character on the US layout's key for it, a line break as Enter, and what no US key types (`é`, CJK, emoji) on no key (`code` is `"Unidentified"`).
+- `{ type: "key", key }` presses `Enter`, `Tab`, `Escape` or `Backspace`.
+
+```rust tabs
+use nsh_core::{WebInput, WebKey, prelude::*};
+use std::time::Duration;
+
+fn search(web: &ElementRef) {
+    web.send_input(WebInput::Click { x: px(120.0), y: px(40.0) });
+    let web = *web;
+    set_timeout(Duration::from_millis(50), move || {
+        web.send_input(WebInput::Text("espresso".into()));
+        web.send_input(WebInput::Key(WebKey::Enter));
+    });
+}
+```
+
+```tsx tabs
+web.sendInput({ type: "click", x: 120, y: 40 });
+setTimeout(() => {
+  web.sendInput({ type: "text", text: "espresso" });
+  web.sendInput({ type: "key", key: "Enter" });
+}, 50);
+```
+
+In Rust these are `WebInput::Click { x, y }`, `WebInput::Text(text)` and `WebInput::Key(WebKey::Enter)`.
+
+Trusted input carries user activation (it may open windows, write the clipboard, open the system's file panel or press a page's confirm button), so it is a capability of its own: the app needs `"webview": { "input": true }` in `nsh.json`'s `capabilities` ([`webview`](./sandbox-and-capabilities.md#webview)), also when it declares none, and the core drops the call otherwise.
+
+Like a click, `sendInput` takes the keyboard focus for the web view, away from the app's own `Input`. The page handles input on its own schedule: a click's events can still be on their way when the next call starts, so let a click settle (a frame or so) before typing after it. macOS delivers the input; the other platforms ignore it for now.
+
+Before offering anything that depends on it, ask whether it works here: `web_input_available()` (`WebView.inputAvailable()`) resolves `true` only where the platform delivers the input and the app holds `webview.input`, so it is `false` on platforms that ignore the call and in apps without the grant.
+
+```rust tabs
+use nsh_core::prelude::*;
+
+let input = signal(false);
+spawn(async move { input.set(web_input_available().await) });
+```
+
+```tsx tabs
+import { signal, WebView } from "nsh";
+
+const input = signal(false);
+WebView.inputAvailable().then((available) => input.set(available));
 ```
 
 ### Which sites a web view may show

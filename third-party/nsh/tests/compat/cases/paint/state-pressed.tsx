@@ -2,10 +2,12 @@
 // button styled by its pressed state, which the core applies without JS:
 // `aria-pressed:` classes and `pressedStyle` while
 // `accessibilityState.pressed` is `true` (not while it is "mixed"),
-// `group-aria-pressed:` on the icon inside it; and the `aria-busy:`,
-// `aria-checked:` and `aria-selected:` classes of views in those states.
-// Its script toggles the button and checks the styles mounted in each
-// state.
+// `group-aria-pressed:` on the icon inside it; the `aria-busy:`,
+// `aria-checked:` and `aria-selected:` classes of views in those states;
+// and the `data-*:` and `group-data-*:` classes, which a view without
+// those attributes takes as known classes that do not apply (components'
+// parts show them: `base-date-picker`'s days). Its script toggles the
+// button and checks the styles mounted in each state.
 import { Text, View, signal } from "nsh";
 
 function App() {
@@ -44,6 +46,9 @@ function App() {
         accessibilityState={{ selected: true }}
         class="h-4 bg-[#cccccc] aria-selected:bg-[#0000ff]"
       />
+      <View testID="data" class="group h-4 bg-[#cccccc] data-range-start:bg-[#ff0000]">
+        <View testID="data-inner" class="size-2 bg-[#ffffff] group-data-range-start:bg-[#000000]" />
+      </View>
     </View>
   );
 }

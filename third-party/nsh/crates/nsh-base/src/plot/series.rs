@@ -11,7 +11,7 @@ use nsh_core::{
     prelude::*,
 };
 
-use super::{Axis, PlotContext, scale::extent};
+use super::{Axis, PlotContext, ValueScale, scale::extent};
 
 /// A mark the plot knows: the extent of its values and the axis they go
 /// along, its points, where its hover dot is and the app's classes and
@@ -167,6 +167,8 @@ pub(super) struct Series {
     pub(super) lows: Memo<Arc<[Point<Points>]>>,
     pub(super) ys: Signal<Option<Arc<[f64]>>>,
     low_values: Signal<Option<Arc<[f64]>>>,
+    /// The y scale it is placed on.
+    pub(super) scale: Prop<ValueScale>,
 }
 
 /// A series' edges: its points, and its bottom edge's for a band.
@@ -180,13 +182,14 @@ impl Series {
     /// The series of rows `data` (the plot's without), placed along the x
     /// axis by `x` (the plot's position of each row without own rows; a
     /// row's index without `x`), its values `y` (the plot's `y` without)
-    /// and, for a band, its bottom edge's `low` (a row without one skipped
-    /// as one without a `y`).
+    /// along the y scale `scale` names and, for a band, its bottom edge's
+    /// `low` (a row without one skipped as one without a `y`).
     pub(super) fn new(
         plot: PlotContext,
         data: Prop<Option<Rows>>,
         x: Prop<Option<RowAccessor>>,
         y: Prop<Option<RowAccessor>>,
+        scale: Prop<ValueScale>,
         low: impl Fn() -> Option<RowAccessor> + Copy + 'static,
     ) -> Self {
         let rows = move || data.get().unwrap_or_else(|| plot.rows.get());
@@ -203,7 +206,7 @@ impl Series {
             plot.x_map.get().ticks(len, own_x.get().as_deref())
         });
         let edges = computed(move || -> Edges {
-            let (xs, y_map) = (xs.get(), plot.y_map.get());
+            let (xs, y_map) = (xs.get(), plot.y_map_of(scale.get()));
             let Some(ys) = ys.get() else {
                 return Edges::default();
             };
@@ -239,11 +242,12 @@ impl Series {
             lows,
             ys,
             low_values,
+            scale,
         }
     }
 
     /// Adds the series to `plot` while the mark lives: its values, its
-    /// bottom edge's and `also` in the y domain, and a hover dot on its
+    /// bottom edge's and `also` in its y scale's domain, and a hover dot on its
     /// points, styled by `dot`.
     pub(super) fn join(
         &self,
@@ -260,7 +264,8 @@ impl Series {
         });
         let points = self.points;
         let (dot_x, dot_y) = (animated_value(0.0), animated_value(0.0));
-        let value_axis = computed(|| Axis::Y);
+        let scale = self.scale;
+        let value_axis = computed(move || Axis::from(scale.get()));
         plot.add(move |key| Mark {
             key,
             extent,

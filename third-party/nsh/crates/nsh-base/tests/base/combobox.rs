@@ -4,17 +4,20 @@
 //! open; without, it replaces the value and closes; every close confirms
 //! the value once; Mod+Return confirms and closes; the query is the app's
 //! when it sets one; the footer shows below the rows; the clear button
-//! empties the value; screen readers hear the selected titles.
+//! empties the value; screen readers hear the selected titles; and a
+//! toggle draws no row again.
 
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use nsh_base::{ComboboxEvent, SelectItem, SelectItemState, combobox};
+use nsh_base::{ComboboxEvent, SelectEntry, SelectItem, combobox};
 use nsh_core::{AccessibilityRole, MountItem, Size, element::Root, platform::Os, prelude::*};
 use nsh_engine::EngineConfig;
 use nsh_testing::Headless;
+
+use super::select::{Options, see_row};
 
 #[derive(Clone, PartialEq, Props)]
 struct HarnessProps {
@@ -23,7 +26,6 @@ struct HarnessProps {
     /// The app sets `value`, following `onChange`.
     controlled: bool,
     multiple: bool,
-    searchable: bool,
     /// The app sets `query`, following `onQueryChange`.
     controlled_query: bool,
     /// What each opening's query starts with.
@@ -37,7 +39,6 @@ fn props() -> HarnessProps {
         value: Vec::new(),
         controlled: false,
         multiple: false,
-        searchable: false,
         controlled_query: false,
         default_query: None,
         cleanable: false,
@@ -60,10 +61,10 @@ fn tags() -> Vec<SelectItem> {
     ]
 }
 
-/// A combobox of tags under a 160 × 30 trigger `Pick`, rows drawn as `>`
-/// (highlighted), the title and ` ✓` (selected), a footer `Done`; the
-/// app's value as `Value: …`, its query as `Query: …`, what it heard as
-/// `Log: …`.
+/// A combobox of tags under a 160 × 30 trigger `Pick`, rows drawn as their
+/// titles (`renderItem`) and at half opacity while highlighted (`focus:`),
+/// a footer `Done`; the app's value as `Value: …`, its query as `Query: …`,
+/// what it heard as `Log: …`.
 #[component]
 fn Harness(props: HarnessProps) -> impl IntoElement {
     let value = signal(
@@ -87,28 +88,15 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
     let mut el = combobox()
         .items(tags())
         .multiple(props.multiple)
-        .searchable(props.searchable)
-        .search_placeholder("Search")
+        .placeholder("Search")
         .accessibility_label("Tags")
         .cleanable(props.cleanable)
         .clear_button(text("Clear"))
         .clear_button_accessibility_label("Clear tags")
         .footer(text("Done"))
-        .trigger(
-            view()
-                .test_id("trigger")
-                .w(px(160.0))
-                .h(px(30.0))
-                .child(text("Pick")),
-        )
-        .render_item(|s: &SelectItemState| {
-            text(format!(
-                "{}{}{}",
-                if s.highlighted { ">" } else { "" },
-                s.title,
-                if s.selected { " ✓" } else { "" }
-            ))
-        })
+        .trigger_button(text("Pick"))
+        .item_class("focus:opacity-50")
+        .render_item(|e: &SelectEntry| text(e.title.clone()))
         .on_change(move |v: &Vec<SharedString>| {
             push(format!("change:{}", join(v)));
             if controlled {
@@ -153,8 +141,9 @@ fn Harness(props: HarnessProps) -> impl IntoElement {
         .child(text(move || format!("Log: {}", log.get().join(" "))))
 }
 
-/// The app, and what screen readers last heard as the combobox's value.
-struct App(Headless, Arc<Mutex<Option<String>>>);
+/// The app, what screen readers last heard as the combobox's value, and
+/// the rows mounted.
+struct App(Headless, Arc<Mutex<Option<String>>>, Arc<Mutex<Options>>);
 
 impl std::ops::Deref for App {
     type Target = Headless;
@@ -183,6 +172,19 @@ impl App {
         self.0.wait_for(&format!("text:{text}")).unwrap();
     }
 
+    /// Waits until the rows show `row` ([`see_row`]): `>` before a
+    /// highlighted title, ` ✓` after a selected one.
+    fn see_row(&mut self, row: &str) {
+        let options = self.2.clone();
+        see_row(&mut self.0, row, move |s| options.lock().unwrap().rows(s));
+    }
+
+    /// Whether the row of `title` shows selected.
+    fn selected(&self, title: &str) -> bool {
+        let rows = self.2.lock().unwrap().rows(self.0.screen());
+        rows.iter().any(|r| r.title == title && r.chosen)
+    }
+
     fn gone(&mut self, selector: &str) {
         self.0
             .wait_for_gone(selector, Duration::from_secs(5))
@@ -194,7 +196,7 @@ impl App {
     }
 
     fn open_list(&mut self) {
-        self.0.press("role:combobox").unwrap();
+        self.0.press("text:Pick").unwrap();
         self.0.wait_for("role:listbox").unwrap();
     }
 
@@ -226,8 +228,11 @@ fn start(props: HarnessProps) -> App {
     let mut app = Headless::start(config).expect("the engine starts");
     let heard = Arc::new(Mutex::new(None));
     let into = heard.clone();
+    let options = Arc::new(Mutex::new(Options::default()));
+    let rows = options.clone();
     app.observe(move |_, batch| {
         for item in &batch.items {
+            rows.lock().unwrap().apply(item);
             if let MountItem::ViewProps { props, .. } = item
                 && props.accessibility.role == AccessibilityRole::Combobox
             {
@@ -241,7 +246,7 @@ fn start(props: HarnessProps) -> App {
     });
     app.first_render().unwrap();
     app.wait_for("text:Pick").unwrap();
-    App(app, heard)
+    App(app, heard, options)
 }
 
 #[test]
@@ -253,23 +258,30 @@ fn with_multiple_a_choice_toggles_the_item_and_the_list_stays_open() {
         });
         app.open_list();
         app.press("role:option[Rust]").unwrap();
-        app.see("Rust ✓");
+        app.see_row("Rust ✓");
         app.press("role:option[Swift]").unwrap();
-        app.see("Swift ✓");
+        app.see_row("Swift ✓");
         assert_eq!(app.screen().count("role:listbox").unwrap(), 1, "still open");
         app.log_ends("change:rust change:rust,swift");
         // Again: out of the value.
         app.press("role:option[Rust]").unwrap();
         app.log_ends("change:swift");
-        assert!(!app.shows("Rust ✓"));
+        assert!(!app.selected("Rust"));
         if controlled {
             app.see("Value: swift");
         }
-        // Return toggles the highlighted item, and the list stays open.
-        app.key("home");
-        app.see(">Rust");
+        // Return toggles the highlighted item, and the list stays open
+        // (Home and End are the input's: Down goes around to it).
+        for _ in 0..4 {
+            let rows = app.2.lock().unwrap().rows(app.0.screen());
+            if rows.iter().any(|r| r.title == "Rust" && r.highlighted) {
+                break;
+            }
+            app.key("down");
+        }
+        app.see_row(">Rust");
         app.key("enter");
-        app.see(">Rust ✓");
+        app.see_row(">Rust ✓");
         app.log_ends("change:swift,rust");
         assert_eq!(app.screen().count("role:listbox").unwrap(), 1);
     }
@@ -283,7 +295,7 @@ fn without_multiple_a_choice_replaces_the_value_and_closes() {
         ..props()
     });
     app.open_list();
-    app.see(">Rust ✓");
+    app.see_row(">Rust ✓");
     app.press("role:option[Ruby]").unwrap();
     app.gone("role:listbox");
     app.see("Value: ruby");
@@ -309,9 +321,9 @@ fn every_close_confirms_the_value_once() {
     app.press("id:elsewhere").unwrap();
     app.gone("role:listbox");
     app.log_ends("openChange:false:PressOutside confirm:swift");
-    // The trigger.
+    // The trigger button.
     app.open_list();
-    app.press("role:combobox").unwrap();
+    app.press("text:Pick").unwrap();
     app.gone("role:listbox");
     app.log_ends("openChange:false:TriggerPress confirm:swift");
     assert_eq!(app.log().matches("confirm:").count(), 3);
@@ -330,12 +342,11 @@ fn mod_return_confirms_and_closes() {
 #[test]
 fn the_query_is_the_apps_when_it_sets_one() {
     let mut app = start(HarnessProps {
-        searchable: true,
         controlled_query: true,
         ..multiple()
     });
     app.open_list();
-    app.type_text("text:Search", "ru").unwrap();
+    app.type_text("role:combobox", "ru").unwrap();
     app.see("Query: ru");
     app.log_ends("query:r query:ru");
     // The app's query filters the rows.
@@ -346,14 +357,13 @@ fn the_query_is_the_apps_when_it_sets_one() {
 #[test]
 fn each_opening_starts_from_the_default_query() {
     let mut app = start(HarnessProps {
-        searchable: true,
         default_query: Some("sw".into()),
         ..multiple()
     });
     app.open_list();
     app.see("Swift");
     assert!(!app.shows("Rust"));
-    app.type_text("text:sw", "x").unwrap();
+    app.type_text("role:combobox", "x").unwrap();
     app.gone("role:option[Swift]");
     app.key("escape");
     app.gone("role:listbox");
@@ -396,4 +406,141 @@ fn screen_readers_hear_the_selected_titles() {
     app.open_list();
     assert!(app.screen().selected("role:option[Rust]").unwrap());
     assert!(!app.screen().selected("role:option[Ruby]").unwrap());
+}
+
+#[test]
+fn typing_in_the_input_opens_the_list_and_filters_it() {
+    let mut app = start(multiple());
+    assert_eq!(app.screen().count("role:listbox").unwrap(), 0);
+    app.type_text("role:combobox", "sw").unwrap();
+    app.wait_for("role:listbox").unwrap();
+    app.log_ends("openChange:true:InputChange query:s query:sw");
+    app.wait_for("role:option[Swift]").unwrap();
+    assert_eq!(app.screen().count("role:option").unwrap(), 1);
+    // The first match is highlighted: Return chooses it.
+    app.see_row(">Swift");
+    app.key("enter");
+    app.log_ends("change:swift");
+}
+
+#[test]
+fn one_value_shows_its_title_in_the_input_until_the_user_types() {
+    let mut app = start(props());
+    app.type_text("role:combobox", "Rub").unwrap();
+    app.wait_for("role:option[Ruby]").unwrap();
+    app.press("role:option[Ruby]").unwrap();
+    app.gone("role:listbox");
+    // Chosen: the input shows its title again.
+    app.wait_for("text:Ruby").unwrap();
+    app.log_ends("change:ruby openChange:false:Select confirm:ruby");
+}
+
+// What a toggle costs.
+
+/// The `renderItem` calls of each app (by its `run`): tests run side by
+/// side, each app on an engine thread of its own.
+static RENDERS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+#[derive(Clone, PartialEq, Props)]
+struct ManyTagsProps {
+    items: usize,
+    /// Where its `renderItem` calls count ([`RENDERS`]).
+    run: u32,
+}
+
+/// A combobox of `multiple` values over `items` items (`Item 0`, ...)
+/// whose rows a counting `renderItem` draws, the value as `Value: …`.
+#[component]
+fn ManyTags(props: ManyTagsProps) -> impl IntoElement {
+    let run = props.run as usize;
+    let value = signal(Vec::<SharedString>::new());
+    view()
+        .child(
+            combobox()
+                .items(
+                    (0..props.items)
+                        .map(|i| SelectItem::new(format!("item{i}"), format!("Item {i}")))
+                        .collect::<Vec<_>>(),
+                )
+                .multiple(true)
+                .item_class("focus:opacity-50")
+                .value(move || Some(value.get()))
+                .on_change(move |v: &Vec<SharedString>| value.set(v.clone()))
+                .trigger_button(text("Pick"))
+                .render_item(move |e: &SelectEntry| {
+                    RENDERS.lock().unwrap()[run] += 1;
+                    text(e.title.clone())
+                })
+                .w(px(200.0)),
+        )
+        .child(text(move || format!("Value: {}", value.get().join(","))))
+}
+
+/// What a press on `Item 2` costs (toggling it into the value, the list
+/// staying open), and toggling the item after it with the keys (Down,
+/// Return; Home and End are the input's), in a combobox of `items` items:
+/// (views made, deleted, `renderItem` calls).
+fn cost_of_toggles(items: usize) -> [(usize, usize, usize); 2] {
+    let run = {
+        let mut renders = RENDERS.lock().unwrap();
+        renders.push(0);
+        (renders.len() - 1) as u32
+    };
+    let mut config = EngineConfig {
+        viewport: Size::new(px(390.0), px(844.0)),
+        ..EngineConfig::new(Root::new::<ManyTags>(move || ManyTagsProps { items, run }))
+    };
+    config.environment.os = Os::MacOs;
+    let mut app = Headless::start(config).unwrap();
+    app.first_render().unwrap();
+    app.wait_for("text:Pick").unwrap();
+    app.press("text:Pick").unwrap();
+    app.wait_for("role:option[Item 2]").unwrap();
+    app.idle(Duration::from_millis(50)).unwrap();
+    let counts = Arc::new(Mutex::new((0, 0)));
+    let into = counts.clone();
+    app.observe(move |_, batch| {
+        let mut c = into.lock().unwrap();
+        for item in &batch.items {
+            match item {
+                MountItem::Create { .. } => c.0 += 1,
+                MountItem::Delete { .. } => c.1 += 1,
+                _ => {}
+            }
+        }
+    });
+    let measure = |app: &mut Headless, step: &dyn Fn(&mut Headless)| {
+        *counts.lock().unwrap() = (0, 0);
+        let before = RENDERS.lock().unwrap()[run as usize];
+        step(app);
+        app.idle(Duration::from_millis(50)).unwrap();
+        let (made, deleted) = *counts.lock().unwrap();
+        (
+            made,
+            deleted,
+            RENDERS.lock().unwrap()[run as usize] - before,
+        )
+    };
+    let press = measure(&mut app, &|app| {
+        app.press("role:option[Item 2]").unwrap();
+        app.wait_for("text:Value: item2").unwrap();
+    });
+    // Which item Down lands on after a press is the highlight's business;
+    // what is measured is the toggle, so any second value will do.
+    let keys = measure(&mut app, &|app| {
+        app.press_key("down").unwrap();
+        app.press_key("enter").unwrap();
+        app.wait_for_gone("text:Value: item2", Duration::from_secs(5))
+            .unwrap();
+    });
+    [press, keys]
+}
+
+#[test]
+fn a_toggle_restyles_its_row_and_draws_nothing() {
+    for items in [20, 5000] {
+        let [press, keys] = cost_of_toggles(items);
+        assert_eq!(press, (0, 0, 0), "a press toggling an item, of {items}");
+        assert_eq!(keys, (0, 0, 0), "keys moving and toggling, of {items}");
+    }
 }

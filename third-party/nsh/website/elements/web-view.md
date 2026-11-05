@@ -82,9 +82,22 @@ A web view takes the props of a [view](./view.md) (it has no children) plus:
 | `onError` | `.on_error` | `{ message, code? }` (`&str`, the message) | Loading failed; `code` is `"ERR_ACCESS_DENIED"` for a page or `html` the app's capabilities do not grant. |
 | `onNavigationStateChange` | `.on_navigation_state_change` | `WebViewNavigation` | The URL, title, loading state or history changed. |
 | `onMessage` | `.on_message` | `{ data: string }` (`&str`) | The page called `window.nsh.postMessage(data)`. |
+| `onDownload` | | `WebViewDownload` | A download started, finished or failed (macOS). |
 
 `WebViewNavigation` is `{ url, title, loading, canGoBack, canGoForward }`; in Rust `WebNavigation` with `url`, `title`,
 `loading`, `can_go_back` and `can_go_forward`.
+
+`WebViewDownload` is `{ state, id, url, filename, path, bytes?, message? }`: `state` is `"started"`, `"finished"`
+(with the file's `bytes`) or `"failed"` (with its `message`). With an `onDownload` listener, what the page downloads
+(an attachment, a type the web view does not show, a `download` link) is saved in the app's data directory as
+`downloads/<id>/<filename>`, where `path` points, and the app reads it with `fs/promises`.
+
+On macOS, adding the listener lets any loaded page allowed by the `webview` capability save downloads
+automatically. The app is responsible for its storage budget and for removing completed files from `downloads/`
+when it has finished using them. Removing the web view cancels downloads in progress and removes their partial
+directories. Downloads report through `onDownload`; converting a navigation into a download keeps `onError`
+for actual navigation failures. Filenames have control characters and bidirectional formatting controls removed,
+and long names are shortened to 200 bytes while preserving an extension that fits.
 
 ## Ref methods
 
@@ -171,5 +184,6 @@ empty view; a top-level navigation to another host (a link the user taps) is can
 ## Platform notes
 
 - iOS loads WebKit the first time a web view is created, so it costs an app something only once it shows one.
+- On macOS `onDownload` saves downloads with WebKit's `WKDownload`.
 - On Android the page's `postMessage` calls arrive on a background thread and are forwarded to the app in order.
 - To round the corners of a web view, give it a corner radius and `overflow: "hidden"` (`.overflow_hidden()`).

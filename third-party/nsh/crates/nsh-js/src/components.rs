@@ -52,6 +52,7 @@ const HOST_PROPS: &[&str] = &[
     "activeStyle",
     "hoverStyle",
     "focusStyle",
+    "focusWithinStyle",
     "disabledStyle",
     "testID",
     "focusable",
@@ -68,6 +69,10 @@ pub(crate) struct Components {
     /// Calls waiting for a result: call number -> (resolve, reject), owned.
     pending: RefCell<FxHashMap<u32, (JsValue, JsValue)>>,
     calls: Cell<u32>,
+    /// The events each component host has an `on<Event>` handler for, so
+    /// an event nobody handles is not converted to JS (a component may
+    /// report on every scroll frame).
+    handled: RefCell<FxHashMap<nsh_core::NodeId, Box<[&'static str]>>>,
 }
 
 impl Components {
@@ -181,6 +186,15 @@ pub(crate) fn deliver(cx: *mut JsContext, event: JsEvent) -> Result<(), JsValue>
         JsEvent::Event(..) | JsEvent::LayoutListener { .. } => Ok(()),
         JsEvent::Component { host, event } => {
             let name = event.name();
+            let handled = components(cx)
+                .handled
+                .borrow()
+                .get(&host)
+                .is_some_and(|names| names.contains(&name));
+            if !handled {
+                // Dropped here, unconverted: no handler would read it.
+                return Ok(());
+            }
             let host_js = crate::classes::host_outside_calls(cx);
             let data = catch_unwind(AssertUnwindSafe(move || {
                 event.data_js(&host_js).map(|d| d.into_raw())
@@ -711,11 +725,23 @@ fn render_component(
         }
         Some(api)
     };
-    let events = spec
+    let handled: Box<[&'static str]> = spec
         .events
         .iter()
         .filter(|e| has(cx, props, &handler_name(e.name)))
-        .count();
+        .map(|e| e.name)
+        .collect();
+    let handles_events = !handled.is_empty();
+    if handles_events {
+        let id = dom::node_id(cx, node).unwrap_or(0);
+        components(cx).handled.borrow_mut().insert(id, handled);
+        let mut cdata = [qjs::JS_NewFloat64(id as f64)];
+        // SAFETY: the function keeps a dup of `cdata`; the owner takes it.
+        let cleanup = unsafe {
+            qjs::JS_NewCFunctionData(cx, Some(forget_handled), 0, 0, 1, cdata.as_mut_ptr())
+        };
+        reactive::add_cleanup(cx, cleanup);
+    }
     // Lazy children: made while this signal (the core's `$children`) is
     // true.
     let lazy = (spec.lazy_children && spec.takes_children() && has(cx, props, "children"))
@@ -735,7 +761,7 @@ fn render_component(
         };
         reactive::add_cleanup(cx, cleanup);
     }
-    if events != 0 || lazy.is_some() || renders.is_some() {
+    if handles_events || lazy.is_some() || renders.is_some() {
         let id = dom::node_id(cx, node).unwrap_or(0);
         let mut edata = [
             props,
@@ -1202,6 +1228,26 @@ impl Renders {
             Some((holder, n as u32))
         }
     }
+}
+
+/// The cleanup of a component with event handlers: its host's handled
+/// events go.
+unsafe extern "C" fn forget_handled(
+    ctx: *mut JsContext,
+    _this: JsValue,
+    _argc: c_int,
+    _argv: *mut JsValue,
+    _magic: c_int,
+    data: *mut JsValue,
+) -> JsValue {
+    let mut id = 0.0;
+    // SAFETY: one data value, the host's id as a number (`render_component`).
+    unsafe { qjs::JS_ToFloat64(ctx, &mut id, *data) };
+    components(ctx)
+        .handled
+        .borrow_mut()
+        .remove(&(id as nsh_core::NodeId));
+    UNDEFINED
 }
 
 /// The cleanup of a component with render functions: the roots of what

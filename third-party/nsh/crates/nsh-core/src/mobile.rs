@@ -74,9 +74,10 @@ pub enum TabBarEvent {
 /// gives the tabs (`items`), says which is selected (`selectedIndex`), hears
 /// the user's choice (`onChange`), places the bar with its `class` and
 /// `style` and shows the selected tab's content; the bar's height is the
-/// system's where the style leaves it open. The desktops and the web have no
-/// system tab bar: there it takes no room and shows nothing, and the app
-/// shows its tabs with `nsh/base`'s `Tabs`.
+/// system's where the style leaves it open. The selected tab takes the
+/// theme's `primary` (the other tabs keep the system's). The desktops and
+/// the web have no system tab bar: there it takes no room and shows
+/// nothing, and the app shows its tabs with `nsh/base`'s `Tabs`.
 #[component]
 pub fn TabBar(props: TabBarProps, cx: Scope<TabBarEvent>) -> impl IntoElement {
     if !matches!(os(), Os::Ios | Os::Android) {
@@ -89,6 +90,12 @@ pub fn TabBar(props: TabBarProps, cx: Scope<TabBarEvent>) -> impl IntoElement {
             JsonValue::from(props.selected_index.get())
         })
         .prop("hidden", move || JsonValue::Bool(props.hidden.get()))
+        // One color, for the appearance shown: sent again when either changes.
+        .prop("tint", || {
+            tokens()
+                .color("primary")
+                .map_or(JsonValue::Null, |primary| color(primary).to_hex().into())
+        })
         .on_native_event(move |event: &NativeEvent| {
             if &*event.name == "change"
                 && let Some(index) = event.data.as_u64()

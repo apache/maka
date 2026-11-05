@@ -536,9 +536,14 @@ impl<M: TextEngine> Core<M> {
             let Some(scroll) = node.scroll.as_mut() else {
                 continue;
             };
-            let Some(asked) = scroll.asked.take() else {
+            let Some(mut asked) = scroll.asked.take() else {
                 continue;
             };
+            // A scroll back may go before the content shrinks, which would put
+            // it ahead of the scroll to: one scroll to the sum keeps the order.
+            if let Some((to, _)) = &mut asked.to {
+                *to += std::mem::take(&mut asked.by);
+            }
             let horizontal = scroll.horizontal;
             let content_item = scroll.content_item.filter(|&(b, _)| b == batch);
             let along = |v: f32| {

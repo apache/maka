@@ -28,7 +28,7 @@ use crate::{
     Command, Dialog, EdgeInsets, LayoutAnimation, NodeId, Points, Size,
     canvas::CanvasFont,
     color::Hsla,
-    platform::{Appearance, Idiom, Locale, Os, Renderer},
+    platform::{Appearance, Idiom, Lifecycle, Locale, Os, Renderer},
     time::Instant,
 };
 
@@ -69,8 +69,10 @@ struct EnvSignals {
     font_scale: Memo<f32>,
     reduce_motion: Memo<bool>,
     screen_reader: Memo<bool>,
+    rtl: Memo<bool>,
     pixel_ratio: Memo<f32>,
     locale: Memo<Locale>,
+    lifecycle: Memo<Lifecycle>,
     screen_color: Memo<bool>,
 }
 
@@ -94,8 +96,10 @@ impl EnvSignals {
                 font_scale: part!(font_scale),
                 reduce_motion: part!(reduce_motion),
                 screen_reader: part!(screen_reader),
+                rtl: part!(rtl),
                 pixel_ratio: part!(pixel_ratio),
                 locale: part!(locale),
+                lifecycle: part!(lifecycle),
                 screen_color: part!(screen_color),
             }
         })
@@ -235,6 +239,19 @@ pub fn screen_reader() -> bool {
     env(|e| e.screen_reader)
 }
 
+/// Whether the surface lays out right to left: the root's direction,
+/// which follows the user's language unless the app sets the root's
+/// `direction` (reading subscribes).
+///
+/// The core's part of `nsh-base`'s controls, which swap Left and Right by
+/// it (WAI-ARIA's arrow keys in a right-to-left layout). Apps set a view's
+/// `direction` and style with logical properties or `rtl:` classes
+/// instead: Rust's `rtl()` is dropped (`docs/dev/api-naming.md`).
+#[doc(hidden)]
+pub fn layout_rtl() -> bool {
+    env(|e| e.rtl)
+}
+
 /// Device pixels per point (TS: `pixelRatio()`).
 pub fn pixel_ratio() -> f32 {
     env(|e| e.pixel_ratio)
@@ -250,6 +267,13 @@ pub fn round_to_nearest_pixel(points: Points) -> Points {
 /// The user's locale (TS: what `Intl` formats for by default).
 pub fn locale() -> Locale {
     env(|e| e.locale)
+}
+
+/// Whether the app is in use: in the foreground, visible without the
+/// focus, or in the background (TS: `lifecycle()`). Reading it subscribes,
+/// so an effect pauses work in the background and resumes it after.
+pub fn lifecycle() -> Lifecycle {
+    env(|e| e.lifecycle)
 }
 
 /// The operating system (TS: `platform.os`); it does not change.
@@ -322,7 +346,7 @@ pub fn tokens() -> Arc<Tokens> {
 /// Draws the app with the design tokens `tokens` (the app's own, which an
 /// embedding app's still win over), in place of the UI set's defaults or
 /// the theme file's: Tailwind's token classes, [`tokens`] and the
-/// platform's own controls (Linux's menus) follow. An app that picks its
+/// platform's own controls (Linux's menus, Android's alerts) follow. An app that picks its
 /// theme while it runs sets it here (`set_tokens(theme.into())` of an
 /// `nsh_base::Theme`).
 pub fn set_tokens(tokens: impl Into<Tokens>) {
@@ -615,6 +639,119 @@ pub fn pick_images(request: crate::picker::PickRequest) -> Answer<Vec<crate::pic
     answer
 }
 
+/// Whether speech can be recognized here (TS: `Speech.available()`): the
+/// platform recognizes speech (macOS, iOS), or the embedding app gave the
+/// core its own recognizer. To await in a task.
+pub fn speech_available() -> Answer<bool> {
+    let (answer, slot) = Answer::new();
+    act(Action::Speech(super::SpeechAction::Available(slot)));
+    answer
+}
+
+/// Whether a web view's ref gives its page trusted input here (TS:
+/// `WebView.inputAvailable()`, [`ElementRef::send_input`](super::ElementRef::send_input)):
+/// the platform delivers it (macOS) and the app's capabilities grant
+/// `webview.input`. Elsewhere `send_input` does nothing. To await in a
+/// task.
+pub fn web_input_available() -> Answer<bool> {
+    let (answer, slot) = Answer::new();
+    act(Action::WebInputAvailable(slot));
+    answer
+}
+
+/// Starts recognizing what the user says (dictation; TS: `Speech.start`),
+/// as `request` asks: the session's events come from
+/// [`SpeechRecognition::next`], in a task. One session runs at a time:
+/// starting another ends this one (its [`SpeechEvent::End`](crate::speech::SpeechEvent::End),
+/// without an error). The core refuses it (an end with
+/// [`SpeechError::NotAllowed`](crate::speech::SpeechError::NotAllowed))
+/// when the app's capabilities do not grant `speech`, and ends it with
+/// [`SpeechError::Unavailable`](crate::speech::SpeechError::Unavailable)
+/// where nothing recognizes speech ([`speech_available`]).
+pub fn recognize_speech(request: crate::speech::SpeechRequest) -> SpeechRecognition {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let (sink, events) = crate::speech::channel();
+    let executor = executor();
+    executor.act(Action::Speech(super::SpeechAction::Start {
+        id,
+        request,
+        sink,
+    }));
+    SpeechRecognition {
+        id,
+        events,
+        executor: Rc::downgrade(&executor),
+        ended: false,
+    }
+}
+
+/// A running speech recognition session ([`recognize_speech`]). Dropping
+/// it before its end aborts it.
+#[must_use = "a dropped recognition is aborted"]
+pub struct SpeechRecognition {
+    id: u32,
+    events: crate::speech::SpeechEvents,
+    executor: std::rc::Weak<Executor>,
+    ended: bool,
+}
+
+impl std::fmt::Debug for SpeechRecognition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SpeechRecognition")
+            .field("id", &self.id)
+            .field("ended", &self.ended)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SpeechRecognition {
+    /// The session's next event; `None` after its end.
+    pub async fn next(&mut self) -> Option<crate::speech::SpeechEvent> {
+        std::future::poll_fn(|cx| self.poll_next(cx)).await
+    }
+
+    /// Polls for the session's next event ([`Self::next`]).
+    pub fn poll_next(
+        &mut self,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<crate::speech::SpeechEvent>> {
+        let poll = self.events.poll_next(cx);
+        if let std::task::Poll::Ready(None | Some(crate::speech::SpeechEvent::End { .. })) = poll {
+            self.ended = true;
+        }
+        poll
+    }
+
+    /// Stops listening: the recognizer finishes what it heard (a last,
+    /// final result), then the session ends.
+    pub fn stop(&self) {
+        if !self.ended {
+            self.act(super::SpeechAction::Stop(self.id));
+        }
+    }
+
+    /// Ends the session at once, without an error; what was not reported
+    /// is dropped.
+    pub fn abort(&self) {
+        if !self.ended {
+            self.act(super::SpeechAction::Abort(self.id));
+        }
+    }
+
+    fn act(&self, action: super::SpeechAction) {
+        if let Some(executor) = self.executor.upgrade() {
+            executor.act(Action::Speech(action));
+        }
+    }
+}
+
+impl Drop for SpeechRecognition {
+    fn drop(&mut self) {
+        self.abort();
+    }
+}
+
 /// The value function `name` of the embedding app returns for `args`
 /// (TS: `host.call`), to await in a task.
 pub(crate) fn host_call(
@@ -650,7 +787,10 @@ pub fn prefetch_image(src: impl Into<String>) -> super::Prefetch {
 /// on native targets and the browser's on the web, under the app's
 /// `capabilities.network`. `request` is a URL (`GET`) or an
 /// [`HttpRequest`](crate::platform::HttpRequest); the URL is absolute.
-/// The whole body arrives with the response.
+/// The whole body arrives with the response. An `asset:/` URL, as
+/// [`FileAsset::uri`](super::FileAsset::uri) and `assets!()` give it, is a
+/// file the app ships: the engine answers it from the host's assets, with
+/// no capability needed.
 pub fn fetch(request: impl Into<crate::platform::HttpRequest>) -> super::Fetch {
     let (answer, action) = super::services::fetch(request.into());
     act(action);
@@ -843,6 +983,33 @@ pub fn next_frame() -> Answer<Instant> {
     answer
 }
 
+/// Runs `f` once the app has handled every event emitted so far
+/// ([`super::Scope::emit`]) and the props it set in answer have reached the
+/// components: a view that shows a value of its own until the app's comes
+/// back (a drag's, before `onChange` returns as `value`) lets go of it here,
+/// with no frame of the app's earlier value between. In a TSX app that is
+/// the commit after the one that hands the events to JS, before the views
+/// render (JS's handlers and the ops they queue run in between); with a
+/// Rust owner, whose listeners run when the event is emitted, the commit
+/// after the one that renders what they changed. What `f` changes renders
+/// in that commit, which goes out in the batch of the app's answer. It runs
+/// under the current owner, once: not when that owner is disposed first
+/// (the view went).
+///
+/// Time does not tell: [`set_timeout`] with no delay and [`next_frame`]
+/// run before the app has answered when the event came in the same turn
+/// (a timer due now fires before the turn's commit, which is where JS
+/// first hears the event), and later than needed otherwise (a frame
+/// after). `after_answer` follows the events themselves, whatever the
+/// clock. It costs nothing when unused: no closure kept, no extra commit
+/// round.
+pub fn after_answer(f: impl FnOnce() + 'static) {
+    executor().after_answer(task::AfterAnswer {
+        owner: Owner::current(),
+        f: Box::new(f),
+    });
+}
+
 /// Runs blocking `f` on the runtime's blocking threads (in a task: await
 /// its result; `tokio::task::spawn_blocking`). Not in WebAssembly: code
 /// that should also run on the web uses the engine's services instead
@@ -1011,6 +1178,65 @@ pub fn watch_scroll(
     add_watch(Rc::new(target), handler);
 }
 
+impl super::ElementRef {
+    /// Listens to the keyboard focus coming into the element: onto it or
+    /// an element inside it, from outside (GPUI's `on_focus_in` of a focus
+    /// handle; the element enters `focus-within`). Moving between elements
+    /// inside it is no new coming in. The content of an overlay is inside
+    /// the element the overlay is in, wherever it shows: a popup's trigger
+    /// and the popup are both inside the view holding them.
+    ///
+    /// It listens while the current owner lives, to whatever element
+    /// carries the ref, and runs at the end of the commit round the focus
+    /// moved in (what it changes goes out in the same batch). The focus is
+    /// what the platform reports: an input's, or a view's that Tab or
+    /// `focus()` reached where the keyboard moves between views (macOS,
+    /// the web).
+    pub fn on_focus_in(&self, listener: impl Fn() + 'static) {
+        let element = *self;
+        watch_focus(
+            move || element.node(),
+            move |within| {
+                if within {
+                    listener();
+                }
+            },
+        );
+    }
+
+    /// Listens to the keyboard focus leaving the element: going from it
+    /// or an element inside it to one outside, or to none (GPUI's
+    /// `on_focus_out`; the element leaves `focus-within`). As
+    /// [`Self::on_focus_in`] otherwise.
+    pub fn on_focus_out(&self, listener: impl Fn() + 'static) {
+        let element = *self;
+        watch_focus(
+            move || element.node(),
+            move |within| {
+                if !within {
+                    listener();
+                }
+            },
+        );
+    }
+}
+
+/// Watches the focus coming into and leaving `target` while the current
+/// owner lives.
+fn watch_focus(target: impl Fn() -> Option<NodeId> + 'static, handler: impl Fn(bool) + 'static) {
+    let owner = Owner::current();
+    let handler = Rc::new(move |within: bool| owner.run(|| handler(within)));
+    let watches = executor().watches.clone();
+    let id = watches.borrow_mut().add_focus(Rc::new(target), handler);
+    let weak = Rc::downgrade(&watches);
+    cleanup(move || {
+        if let Some(watches) = weak.upgrade() {
+            let removed = watches.borrow_mut().remove_focus(id);
+            drop(removed);
+        }
+    });
+}
+
 impl super::NodeRef {
     /// Scrolls the scroll view (or list, along its axis) to a content
     /// offset, as [`super::ElementRef::scroll_to`] does: for a view holding
@@ -1038,9 +1264,11 @@ impl super::NodeRef {
 ///
 /// The core looks at the end of a commit round: in the round the watch is
 /// made in, after [`super::OrderWatch::invalidate`] (an element came), and
-/// after a round that moved a node (an app's keyed reorder), asking
-/// `elements` untracked; what the handler changes goes out in the same
-/// batch. A round that moved nothing and invalidated nothing costs nothing.
+/// after a round that moved a node inside the subtree the elements share
+/// (an app's keyed reorder of them), asking `elements` untracked; what the
+/// handler changes goes out in the same batch. A round that moved nothing
+/// there and invalidated nothing costs nothing: a list of rows reordered,
+/// each row with a group of its own, costs those groups nothing.
 #[doc(hidden)]
 pub fn watch_order(
     elements: impl Fn() -> Vec<super::ElementRef> + 'static,

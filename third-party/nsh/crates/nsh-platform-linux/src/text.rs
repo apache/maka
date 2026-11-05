@@ -153,15 +153,16 @@ pub(crate) fn main_font_description(style: &ResolvedTextStyle) -> pango::FontDes
 /// takes family lists).
 fn resolve_family(name: &str, ui: &str) -> String {
     let mut out = String::with_capacity(name.len());
-    for family in name.split(',') {
-        let family = family.trim().trim_matches(|c| c == '"' || c == '\'');
+    use nsh_core::FamilyName;
+    for family in nsh_core::font_families(name) {
         let family = match family {
-            "" => continue,
-            "system-ui" | "-apple-system" | "BlinkMacSystemFont" | "ui-sans-serif"
-            | "ui-rounded" | "sans-serif" => ui,
-            "ui-monospace" | "monospace" => "monospace",
-            "ui-serif" | "serif" => "serif",
-            f => f,
+            FamilyName::Monospace => "monospace",
+            FamilyName::Serif => "serif",
+            // Pango's list is comma-separated: a quoted name with a comma
+            // in it can't be one of its families.
+            FamilyName::Named(f) if f.contains(',') => continue,
+            FamilyName::Named(f) => f,
+            _ => ui,
         };
         if !out.is_empty() {
             out.push(',');
@@ -730,9 +731,26 @@ impl TextEngine for PangoTextEngine {
             // not grow them, or an input grows when the user types Chinese
             // (UIKit keeps the font's line height too).
             if style.line_height.0 > 0.0 {
-                insert(
-                    pango::AttrInt::new_line_height_absolute(to_pango(style.line_height.0)).into(),
-                );
+                // Not on the attachments' placeholders: Pango gives every
+                // run under it exactly that height, so an attachment
+                // taller than the line would not grow it. Their shapes
+                // reserve the line's own box instead (below).
+                let height = to_pango(style.line_height.0);
+                let mut from = start;
+                for (a, b) in placeholders
+                    .iter()
+                    .copied()
+                    .filter(|&(a, b)| a < end && b > start)
+                    .chain(std::iter::once((end, end)))
+                {
+                    if a > from {
+                        let mut attr = pango::AttrInt::new_line_height_absolute(height);
+                        attr.set_start_index(from);
+                        attr.set_end_index(a);
+                        attrs.insert(attr);
+                    }
+                    from = from.max(b);
+                }
             } else {
                 let (ascent, descent) = self.natural_metrics(context, &desc);
                 natural.push((start, end, ascent, descent));
@@ -763,18 +781,30 @@ impl TextEngine for PangoTextEngine {
             };
             let top = a.ascent(font, alignments.get(a.index));
             let (up, down) = a.extent(font, alignments.get(a.index));
+            let (mut up, mut down) = (to_pango(up.0), to_pango(down.0));
+            // With a fixed `lineHeight`, at least the box the text's runs
+            // take (their font with the line height spread evenly above and
+            // below, as Pango spreads it): the line grows only where the
+            // attachment reaches past that box, as a replaced inline box
+            // grows a CSS line.
+            let style = text
+                .span_at(a.index)
+                .map_or_else(Default::default, |s| s.style);
+            if style.line_height.0 > 0.0 {
+                let desc = font_description(&style, &self.ui_family);
+                let (ascent, descent) = self.natural_metrics(context, &desc);
+                let height = to_pango(style.line_height.0);
+                let above = ascent + (height - ascent - descent) / 2;
+                up = up.max(above);
+                down = down.max(height - above);
+            }
             let ink = pango::Rectangle::new(
                 0,
                 -to_pango(top.0),
                 to_pango(a.width.0),
                 to_pango(a.height.0),
             );
-            let logical = pango::Rectangle::new(
-                0,
-                -to_pango(up.0),
-                to_pango(a.width.0),
-                to_pango((up + down).0),
-            );
+            let logical = pango::Rectangle::new(0, -up, to_pango(a.width.0), up + down);
             let mut shape = pango::AttrShape::new(&ink, &logical);
             shape.set_start_index(start as u32);
             shape.set_end_index(end as u32);
@@ -2302,6 +2332,10 @@ mod tests {
             "Fira Code,monospace,monospace"
         );
         assert_eq!(resolve_family(" , ", "X"), "X");
+        assert_eq!(
+            resolve_family("'ACME, Inc', \"serif\", Inter", "X"),
+            "serif,Inter"
+        );
     }
 
     fn text(parts: &[(&str, ResolvedTextStyle)]) -> AttributedText {
@@ -2317,32 +2351,97 @@ mod tests {
     #[test]
     fn attachments_sit_by_vertical_align() {
         let engine = PangoTextEngine::new("sans-serif".into());
-        let style = ResolvedTextStyle::default();
-        for height in [4.0, 30.0] {
-            for align in [
-                nsh_core::VerticalAlign::Baseline,
-                nsh_core::VerticalAlign::TextTop,
-                nsh_core::VerticalAlign::TextBottom,
-                nsh_core::VerticalAlign::Middle,
-            ] {
-                let mut text = text(&[("Ax", style)]);
+        // Also with a line height: its leading must not move the
+        // attachment off the text's baseline.
+        for style in [
+            ResolvedTextStyle::default(),
+            ResolvedTextStyle {
+                font_size: Points(17.0),
+                line_height: Points(26.0),
+                ..Default::default()
+            },
+        ] {
+            for height in [4.0, 20.0, 30.0] {
+                for align in [
+                    nsh_core::VerticalAlign::Baseline,
+                    nsh_core::VerticalAlign::TextTop,
+                    nsh_core::VerticalAlign::TextBottom,
+                    nsh_core::VerticalAlign::Middle,
+                ] {
+                    let mut text = text(&[("Ax", style)]);
+                    let mut alignments = nsh_core::AttachmentAlignments::default();
+                    alignments.push(
+                        &mut text,
+                        nsh_core::Size::new(Points(10.0), Points(height)),
+                        align,
+                        style,
+                    );
+                    let a = text.attachments[0];
+                    let font = engine.attachment_font(&engine.ltr, &text, &a);
+                    let prepared = engine.prepare_aligned(&text, &alignments);
+                    let layout = engine.layout(&prepared, engine.measure(&prepared, None));
+                    let line = engine.lines(&layout).remove(0);
+                    let top = engine.attachments(&layout)[0].expect("shown").y;
+                    let expected = line.y + line.ascender - a.ascent(font, align);
+                    assert!(
+                        (top - expected).0.abs() < 0.01,
+                        "{align:?} {height}: {top:?} {expected:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// With a fixed `lineHeight`, an attachment taller than the line grows
+    /// its own line instead of painting over its neighbours; a small one
+    /// leaves the line as tall as the others.
+    #[test]
+    fn attachments_taller_than_the_line_height_grow_their_line() {
+        let engine = PangoTextEngine::new("sans-serif".into());
+        let style = ResolvedTextStyle {
+            font_size: Points(15.0),
+            line_height: Points(20.0),
+            ..Default::default()
+        };
+        let near = |a: f32, b: f32| (a - b).abs() < 0.5;
+        for align in [
+            nsh_core::VerticalAlign::Baseline,
+            nsh_core::VerticalAlign::TextTop,
+            nsh_core::VerticalAlign::TextBottom,
+            nsh_core::VerticalAlign::Middle,
+        ] {
+            for height in [4.0, 28.0] {
+                let mut t = text(&[("Ax\nAx", style)]);
                 let mut alignments = nsh_core::AttachmentAlignments::default();
                 alignments.push(
-                    &mut text,
-                    nsh_core::Size::new(Points(10.0), Points(height)),
+                    &mut t,
+                    Size::new(Points(40.0), Points(height)),
                     align,
                     style,
                 );
-                let a = text.attachments[0];
-                let font = engine.attachment_font(&engine.ltr, &text, &a);
-                let prepared = engine.prepare_aligned(&text, &alignments);
+                t.push(" x\nAx", style);
+                let prepared = engine.prepare_aligned(&t, &alignments);
                 let layout = engine.layout(&prepared, engine.measure(&prepared, None));
-                let line = engine.lines(&layout).remove(0);
-                let top = engine.attachments(&layout)[0].expect("shown").y;
-                let expected = line.y + line.ascender - a.ascent(font, align);
+                let lines = engine.lines(&layout);
+                assert_eq!(lines.len(), 3);
                 assert!(
-                    (top - expected).0.abs() < 0.01,
-                    "{align:?} {height}: {top:?} {expected:?}"
+                    near(lines[0].height.0, 20.0),
+                    "{align:?} {height}: {lines:?}"
+                );
+                assert!(
+                    near(lines[2].height.0, 20.0),
+                    "{align:?} {height}: {lines:?}"
+                );
+                let line = &lines[1];
+                if height < 20.0 {
+                    assert!(near(line.height.0, 20.0), "{align:?} {height}: {line:?}");
+                } else {
+                    assert!(line.height.0 >= height, "{align:?} {height}: {line:?}");
+                }
+                let top = engine.attachments(&layout)[0].expect("shown").y.0;
+                assert!(
+                    top >= line.y.0 - 0.5 && top + height <= (line.y + line.height).0 + 0.5,
+                    "{align:?} {height}: {top} {line:?}"
                 );
             }
         }

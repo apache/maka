@@ -14,8 +14,13 @@ workspace = true
 default = ["highlight"]
 # Built-in syntax highlighting of `TextView`'s code blocks (syntect).
 highlight = ["dep:syntect", "dep:two-face"]
+# `TextView`'s formulas typeset natively (RaTeX), with the KaTeX fonts
+# embedded (about 230 kB); without it a formula shows as its TeX, or as the
+# app's `renderMath`.
+math = ["dep:ratex-parser", "dep:ratex-layout", "dep:ratex-types", "dep:ratex-font", "dep:ttf-parser", "dep:zstd"]
 
 [dependencies]
+zstd = { workspace = true, optional = true }
 nsh-core.workspace = true
 chrono.workspace = true
 rustc-hash.workspace = true
@@ -28,8 +33,14 @@ regex.workspace = true
 ropey.workspace = true
 unicode-segmentation.workspace = true
 imara-diff.workspace = true
+unicode-width.workspace = true
 log.workspace = true
 syntect = { workspace = true, optional = true }
+ratex-parser = { workspace = true, optional = true }
+ratex-layout = { workspace = true, optional = true }
+ratex-types = { workspace = true, optional = true }
+ratex-font = { workspace = true, optional = true }
+ttf-parser = { workspace = true, optional = true }
 
 # The syntaxes' data: the native runtimes keep it in their binaries; the web
 # runtime leaves it out and fetches the page's copy on first use (`syntax.rs`).
@@ -39,6 +50,8 @@ chrono = { workspace = true, features = ["clock"] }
 two-face = { workspace = true, optional = true }
 
 [dev-dependencies]
+# The declarations tests read the specs' text (nsh-core `declarations`).
+nsh-core = { workspace = true, features = ["declarations"] }
 # The components' tests run them headless (`tests/base`), without QuickJS.
 # Path only, unlike the workspace's entries: `cargo publish` drops a
 # dev-dependency without a version, and these two depend on nsh-js, which

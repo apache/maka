@@ -85,6 +85,8 @@ pub(crate) struct Line {
     pub(crate) y: f32,
     pub(crate) height: f32,
     pub(crate) baseline: f32,
+    /// The font's ascent and descent together, whatever the line's height.
+    pub(crate) text_height: f32,
     /// Width, trailing spaces included.
     pub(crate) width: f32,
     /// Caret stops: offset and x from the line's left edge, every
@@ -133,6 +135,15 @@ impl Layout {
     pub(crate) fn caret(&self, pos: u32) -> (f32, f32, f32) {
         let l = &self.lines[self.line_of(pos)];
         (l.x + l.x_at(pos), l.y, l.height)
+    }
+
+    /// The caret as drawn at `pos`: x, top and height, as tall as the text,
+    /// in the middle of the line, whatever the line height.
+    pub(crate) fn drawn_caret(&self, pos: u32) -> (f32, f32, f32) {
+        let (x, y, height) = self.caret(pos);
+        let l = &self.lines[self.line_of(pos)];
+        let shown = l.text_height.min(height);
+        (x, y + (height - shown) / 2.0, shown)
     }
 
     /// The offset nearest to `(x, y)`.
@@ -428,6 +439,7 @@ pub(crate) fn layout(
                     y,
                     height,
                     baseline,
+                    text_height: ascent + descent,
                     width: x1 - x0,
                     stops: p.stops[c0..=c1]
                         .iter()
@@ -497,6 +509,7 @@ mod tests {
                 y: i as f32 * 20.0,
                 height: 20.0,
                 baseline: 15.0,
+                text_height: 16.0,
                 width: n as f32 * 10.0,
                 stops: (0..=n).map(|k| (start + k, k as f32 * 10.0)).collect(),
                 glyphs: 0..0,
@@ -560,6 +573,17 @@ mod tests {
         assert_eq!(l.hit(50.0, 25.0, |at| !(1..11).contains(&at)), 11);
         assert_eq!(l.line_edges(2), (0, 5));
         assert_eq!(l.line_edges(8), (6, 11));
+    }
+
+    #[test]
+    fn the_drawn_caret_is_as_tall_as_the_text() {
+        let mut l = mono(&[("hello ", 0)]);
+        l.lines[0].height = 24.0;
+        l.lines[0].text_height = 18.0;
+        assert_eq!(l.drawn_caret(2), (20.0, 3.0, 18.0));
+        // A line shorter than the text holds the caret.
+        l.lines[0].height = 16.0;
+        assert_eq!(l.drawn_caret(2), (20.0, 0.0, 16.0));
     }
 
     #[test]

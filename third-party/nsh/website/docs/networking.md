@@ -382,6 +382,7 @@ TSX's `fetch` follows the Fetch standard with the differences that make sense fo
 - **No forbidden headers.** An app may set `Cookie`, `User-Agent`, `Origin` and others.
 - **`redirect: "manual"`** gives the 3xx response itself (with its `Location` header) rather than an opaque redirect. `redirect: "error"` rejects on a redirect.
 - **`data:` and `blob:` URLs** are answered locally. `URL.createObjectURL(blob)` makes a `blob:` URL that `fetch` can read until you revoke it.
+- **`asset:/` URLs** are the files the app ships, read from the app's own files with no capability needed ([Reading a file at run time](./images-and-assets.md#reading-a-file-at-run-time)).
 - Browser-only options (`mode`, `credentials`, `cache`, `referrer`, `integrity`, `keepalive`, `priority`) are accepted for compatibility with libraries.
 
 Libraries built on `fetch` (and on `AbortController`, `FormData` and streams) generally work unchanged. There is no `XMLHttpRequest`; native hosts provide the global `WebSocket` and the [`websocket` module](../modules/standard-modules.md), checked against the same grants as `fetch`.

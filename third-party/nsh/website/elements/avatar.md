@@ -65,11 +65,11 @@ methods for the avatar itself and `.child(..)` for what sits over the picture.
 | `src` | `.src(..)` | `string \| ImageAsset` | none | The picture, as [`<Image>`](./image.md)'s `src` takes it: a URL, an `asset:/` or `data:` URI, a `blob:` URL (a photo the user picked: `URL.createObjectURL(file)`), or an imported image. It shows once it has loaded; an empty string is no picture. |
 | `name` | `.name(..)` | `string` | none | The person's name: what screen readers say, and the initials the fallback shows when the app passes no `fallback`. |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | `name` | What screen readers say, over `name`. `""` makes the avatar decorative, hidden from screen readers. |
-| `fallbackDelay` | `.fallback_delay(..)` | `number` (ms) | `0` | How long the fallback waits while the picture loads, so a picture that loads quickly shows without the fallback flashing first. |
+| `fallbackDelay` | `.fallback_delay(..)` | `number` (ms) | `0` | How long the fallback waits while the picture loads, so a picture that loads quickly shows without the fallback flashing first. `Infinity`: no fallback while it loads, only when it fails or is missing. |
 | `imageClass`, `imageStyle` | `.image_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The picture: its fit, radius and motion. |
 | `fallbackClass`, `fallbackStyle` | `.fallback_style(\|s\| ..)` | `string`, `StyleProp<ViewStyle>` | none | The fallback: its background, text color and size, and how it aligns its content. |
 | `fallback` | `.fallback(..)` | `JSX.Element` | the initials | The fallback's content in place of the initials: an icon, a placeholder for someone without a name. |
-| `children` | `.child(..)` | `JSX.Element` | none | What shows over the picture: a presence dot, a badge. |
+| `children` | `.child(..)` | `JSX.Element` | none | What shows over the picture: a presence dot, a badge. Screen readers hear the avatar's label, not these (see [Accessibility](#accessibility)). |
 | `class`, `style` | style methods | `string`, `StyleProp<ViewStyle>` | none | The avatar itself: its size and shape. |
 
 | Event | Rust | Payload | Description |
@@ -129,7 +129,8 @@ import { Avatar, AvatarGroup } from "nsh/base";
 
 The overlap, the rings and the overflow's shape are the app's: a negative margin on every avatar after the first
 (`-ml-2`) stacks them, and a ring of the background's color separates them. For a long list, pass the first `limit`
-people and `total`: only the avatars shown are made.
+people and `total`: only the avatars shown are made. The count the overflow stands for is `total` less the avatars
+shown, which are the fewer of the children and `limit`: `total={8}` with two children shows two avatars and "+6".
 
 ## Accessibility
 
@@ -139,6 +140,9 @@ people and `total`: only the avatars shown are made.
 - A group is a group, labelled with its `accessibilityLabel` ("Ada, Grace and 5 others"); the avatars shown are images
   inside it. The overflow is read as its content ("+5"), or as `overflowAccessibilityLabel` ("5 more people") when the
   app gives one: NSH writes no words of its own.
+- An avatar is one element for screen readers, so what its children show is not read apart, and on iOS a button or
+  a link among them cannot be reached at all. Say what a presence dot or a badge means in `accessibilityLabel` ("Ada
+  Lovelace, online"), and put what can be pressed beside the avatar, not inside it.
 - Neither takes presses or keyboard focus: put an avatar in a `Button` to make it one.
 
 See [Accessibility](../docs/accessibility.md) for labels, roles and announcements in general.

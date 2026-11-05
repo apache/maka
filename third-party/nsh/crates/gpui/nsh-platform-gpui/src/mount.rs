@@ -229,6 +229,7 @@ impl Mounter {
             MountItem::Remove { id } => {
                 if let Some(view) = &self.get(*id) {
                     crate::text_input::removing(surface, view);
+                    crate::file_drop::invalidate(surface, *id);
                     crate::navigation::removing(surface, view);
                     // A removal animation detaches the view when it ends.
                     if !crate::transition::removing(surface, view, self.layout_animation.as_ref()) {
@@ -239,6 +240,7 @@ impl Mounter {
             MountItem::Delete { id } => {
                 if let Some(view) = self.views.remove(*id) {
                     crate::text_input::removing(surface, &view);
+                    crate::file_drop::invalidate(surface, *id);
                     crate::navigation::removing(surface, &view);
                     crate::native::deleted(surface, &view);
                     // A removal animation detaches the view when it ends.
@@ -395,9 +397,19 @@ impl Mounter {
                     crate::canvas::set(surface, view, drawing.clone());
                 }
             }
+            // Only fills draw: an effect's or a transition's children show as
+            // they are (a transition changes them at once), a screen effect
+            // draws nothing, pages and dialogs come and go as they would
+            // without a shader.
+            MountItem::ShaderTransition { .. }
+            | MountItem::ShaderInput { .. }
+            | MountItem::NavShader { .. } => {}
             MountItem::Shader { id, layer } => {
                 if let Some(view) = &self.get(*id) {
-                    crate::shader::set(surface, view, layer.clone());
+                    let fill = layer
+                        .clone()
+                        .filter(|l| l.role == nsh_core::shader::ShaderRole::Fill);
+                    crate::shader::set(surface, view, fill);
                 }
             }
             MountItem::Gestures { id, values } => {

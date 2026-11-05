@@ -148,6 +148,10 @@ pub(crate) fn decode_command<'js>(
         "stopLoading" => Command::StopLoading,
         "injectJavaScript" => Command::InjectJavaScript(string(&arg)?),
         "postMessage" => Command::PostMessage(string(&arg)?),
+        "sendInput" => match web_input(&arg) {
+            Some(input) => Command::SendInput(input),
+            None => return Ok(None),
+        },
         "seek" => Command::Seek(arg.as_number().unwrap_or(0.0)),
         "native" => {
             let o = arg.as_object();
@@ -289,6 +293,28 @@ pub(crate) fn animated_value(value: &Value<'_>) -> Option<nsh_core::animation::N
 
 fn number(value: &Value<'_>) -> Option<f32> {
     value.as_number().map(|n| n as f32)
+}
+
+/// `sendInput`'s argument (`None`: none of its forms, which sends nothing).
+fn web_input(arg: &Value<'_>) -> Option<nsh_core::WebInput> {
+    use nsh_core::{WebInput, WebKey};
+    let o = arg.as_object()?;
+    let text = |key: &str| o.get::<_, Option<String>>(key).ok().flatten();
+    let number = |key: &str| {
+        o.get::<_, Option<f64>>(key)
+            .ok()
+            .flatten()
+            .filter(|n| n.is_finite())
+    };
+    match text("type")?.as_str() {
+        "click" => Some(WebInput::Click {
+            x: nsh_core::Points(number("x")? as f32),
+            y: nsh_core::Points(number("y")? as f32),
+        }),
+        "text" => text("text").map(WebInput::Text),
+        "key" => WebKey::from_name(&text("key")?).map(WebInput::Key),
+        _ => None,
+    }
 }
 
 /// A string prop; anything else (null, undefined) is the empty string.

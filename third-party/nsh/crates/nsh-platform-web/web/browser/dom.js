@@ -1,10 +1,12 @@
 // The JSX facade delegates node ownership, value reconciliation, prop
 // decoding and layout operations to Rust.
+const PLATFORM_PROPS = new Set(["ios", "android", "desktop", "web"]);
+
 export function createDom(invoke, values, reactive, live, wake) {
   const handlers = new WeakMap(), owners = new WeakMap(), heldProps = new WeakMap();
-  let touches, measure, hot;
+  let touches, measure, hot, platform;
   const prototype = Object.create(null);
-  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "seek"]) {
+  for (const name of ["focus", "blur", "scrollTo", "zoomTo", "scrollToIndex", "scrollToEnd", "reload", "goBack", "goForward", "stopLoading", "injectJavaScript", "postMessage", "sendInput", "seek"]) {
     prototype[name] = function (argument) { const id = values.nodeIds.get(this); if (id === undefined) throw new TypeError("nsh: not a node"); return call(314, [id, name, argument]); };
   }
   prototype.setSelection = function (start, end = start) { return call(314, [values.nodeIds.get(this), "setSelection", { start: Number(start), end: Number(end) }]); };
@@ -44,6 +46,10 @@ export function createDom(invoke, values, reactive, live, wake) {
     if (touches?.isProp(name)) { touches.set(node,name,value); return; }
     if (name === "panActivation") touches?.gate(node,value);
     if (name === "ref") { ref(value, node); return; }
+    // A `tooltip` given by a function (in a development bundle an app's
+    // component is its hot proxy's memo) follows what it gives, as QuickJS'
+    // renderer does (`followed` in nsh-js' `dom.rs`).
+    if (name === "tooltip" && typeof value === "function") { bindProp(node, name, value); return; }
     if (/^on[A-Z]/.test(name)) {
       let events = handlers.get(node);
       if (!events) handlers.set(node, events = new Map());
@@ -51,10 +57,28 @@ export function createDom(invoke, values, reactive, live, wake) {
       call(305, [node, name, typeof value === "function"]);
       return;
     }
+    if (PLATFORM_PROPS.has(name)) { platformProps(node, name, value); return; }
     call(303, [node, name, value]);
+    hold(node, name, value);
+  };
+  const hold = (node, name, value) => {
     let held = heldProps.get(node);
     if (!held) heldProps.set(node, held = new Map());
     if (value === undefined || value === null) held.delete(name); else held.set(name, value);
+  };
+  // The props of this platform's object (`web`, and `desktop` in the
+  // desktop idiom) are set as the element's own, those its previous object
+  // had and this one has not unset; the other platforms' are ignored, as
+  // QuickJS' renderer does (`platform_props` in nsh-js' `dom.rs`).
+  const platformProps = (node, name, value) => {
+    const previous = heldProps.get(node)?.get(name);
+    hold(node, name, value);
+    if (!(name === "desktop" ? platform?.desktop : name === platform?.os)) return;
+    const next = value !== null && typeof value === "object" ? value : {};
+    if (previous !== null && typeof previous === "object") {
+      for (const key of Object.keys(previous)) if (!Object.hasOwn(next, key)) prop(node, key, undefined);
+    }
+    for (const key of Object.keys(next)) prop(node, key, next[key]);
   };
   const dynamic = (value, depth = 0) => typeof value === "function" || (depth < 64 && Array.isArray(value) && value.some(item => dynamic(item, depth + 1)));
   const memoized = (value, depth = 0) => typeof value === "function" ? itemMemo(value)
@@ -137,6 +161,7 @@ export function createDom(invoke, values, reactive, live, wake) {
   return {
     setMeasure(value) { measure = value; },
     setTouches(value) { touches = value; },
+    setPlatform(value) { platform = value; },
     setHot(value) { hot = value; },
     rootProp: (name, value) => prop(root, name, value),
     listen(node, name, value) {

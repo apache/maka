@@ -89,7 +89,7 @@ final class Backdrop implements ViewTreeObserver.OnPreDrawListener, View.OnAttac
     }
 
     /** Draws what `chain[depth]` (a group, in its own space) shows behind `chain[depth + 1]`. */
-    private static void behind(Canvas canvas, java.util.List<View> chain, int depth) {
+    static void behind(Canvas canvas, java.util.List<View> chain, int depth) {
         ViewGroup group = (ViewGroup) chain.get(depth);
         View next = chain.get(depth + 1);
         android.graphics.drawable.Drawable background = group.getBackground();

@@ -140,11 +140,16 @@ impl JsValue for TimeOfDay {
     }
 }
 
-/// A segment as `renderSegment` draws it (`gpui-base`'s
-/// `TimeFieldSegmentState`).
+/// A segment as `renderSegment` draws it: which it is and what it shows
+/// (`gpui-base`'s `TimeFieldSegmentState` without its states), so the
+/// drawing changes only with the time. The states are the segment's
+/// (`focus:` while the keys edit it, `disabled:` with the field; with
+/// `group` in `segmentClass`, its content's `group-focus:`,
+/// `group-disabled:`): moving between the segments, the focus coming and
+/// going and `disabled` draw nothing again.
 #[derive(Debug, Clone, Default, PartialEq, JsObject)]
 #[non_exhaustive]
-pub struct TimeFieldSegmentState {
+pub struct TimeFieldSegmentEntry {
     /// Which segment it is.
     pub segment: TimeSegment,
     /// Its value: the hour on the field's clock, the minute or the second,
@@ -152,11 +157,6 @@ pub struct TimeFieldSegmentState {
     pub value: u32,
     /// What it shows: two digits, or `AM` / `PM`.
     pub label: SharedString,
-    /// The keys edit it: it is the selected segment and the field has the
-    /// focus.
-    pub selected: bool,
-    /// The field is disabled.
-    pub disabled: bool,
 }
 
 /// The editing rules of a time field (`gpui-base`'s `SegmentEditor`),
@@ -358,7 +358,8 @@ pub struct TimeFieldProps {
     /// What screen readers call the field.
     pub accessibility_label: Prop<Option<SharedString>>,
     /// The classes of each segment: `focus:` on the selected one while the
-    /// field has the focus, `disabled:` with the field.
+    /// field has the focus, `disabled:` with the field; with `group`, its
+    /// content follows them (`group-focus:`, `group-disabled:`).
     pub segment_class: Prop<Option<SharedString>>,
     /// The inline style of each segment, over its classes: its text styles
     /// too, which its label inherits.
@@ -369,8 +370,10 @@ pub struct TimeFieldProps {
     /// The inline style of each `:`, over its classes.
     #[prop(default)]
     pub separator_style: Prop<TextPartStyle>,
-    /// Draws each segment's content (`gpui-base`'s `render_segment`).
-    pub render_segment: Prop<Option<Renderer<TimeFieldSegmentState>>>,
+    /// Draws each segment's content from what it is and shows, never its
+    /// state (`gpui-base`'s `render_segment`): drawn again only when its
+    /// value changes.
+    pub render_segment: Prop<Option<Renderer<TimeFieldSegmentEntry>>>,
 }
 
 /// The events of a [`TimeField`].
@@ -394,7 +397,7 @@ pub(crate) struct FieldConfig {
     pub(crate) segment_style: Prop<TextPartStyle>,
     pub(crate) separator_class: Prop<Option<SharedString>>,
     pub(crate) separator_style: Prop<TextPartStyle>,
-    pub(crate) render_segment: Prop<Option<Renderer<TimeFieldSegmentState>>>,
+    pub(crate) render_segment: Prop<Option<Renderer<TimeFieldSegmentEntry>>>,
 }
 
 /// Applies an edit to the shown time, reporting it when it changed it.
@@ -639,30 +642,30 @@ fn segment_view(
     segment: TimeSegment,
     edit: Edit,
 ) -> AnyElement {
-    let state = computed(move || {
-        editor.with(|e| TimeFieldSegmentState {
+    // What the segment shows, apart from its state: a move between the
+    // segments or the focus changes only `selected`, which draws nothing.
+    let entry = computed(move || {
+        editor.with(|e| TimeFieldSegmentEntry {
             segment,
             value: e.value(segment),
             label: e.label(segment),
-            selected: focused.get() && e.segment == segment,
-            disabled: config.disabled.get(),
         })
     });
+    let selected = computed(move || focused.get() && editor.with(|e| e.segment == segment));
     let custom = computed(move || config.render_segment.with(Option::is_some));
     view()
         // The field tells screen readers the time.
         .accessibility_elements_hidden(true)
         .focusable(false)
         .project_disabled(config.disabled)
-        .project_focused(move || state.with(|s| s.selected))
+        .project_focused(selected)
         .app_class(config.segment_class)
         .inline_style(move || config.segment_style.get())
         .on_press(move || {
             if config.disabled.get_untracked() {
                 return;
             }
-            let selected = state.with_untracked(|s| s.selected);
-            if selected && segment == TimeSegment::Period {
+            if selected.get_untracked() && segment == TimeSegment::Period {
                 edit(&|e| {
                     let pm = e.value(TimeSegment::Period) == 0;
                     e.input_period(pm)
@@ -678,10 +681,10 @@ fn segment_view(
             if custom.get() {
                 return dynamic(move || {
                     let render = config.render_segment.get()?;
-                    Some(render.render(format!("segment-{segment:?}"), state.get()))
+                    Some(render.render(format!("segment-{segment:?}"), entry.get()))
                 });
             }
-            text(move || state.with(|s| s.label.clone())).into_element()
+            text(move || entry.with(|e| e.label.clone())).into_element()
         }))
         .into_element()
 }

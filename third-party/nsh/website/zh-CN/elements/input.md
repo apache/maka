@@ -94,6 +94,9 @@ function NameField() {
 | `caret` | `.caret(..)` | `boolean` | 绘制光标（默认 `true`；`false` 隐藏光标）。 |
 | `selectedRange` | `.selected_range((start, end))` | `{ start: number; end?: number }` | 受控选区，以 UTF-16 为单位；`end` 默认等于 `start`（即光标）。 |
 
+光标在窗口显示且处于活动状态时闪烁。在 Linux 的 GPUI 窗口中，十秒内没有输入或移动光标后，光标保持显示、不再闪烁（与 GTK
+应用相同），因此无人操作的焦点输入框不再绘制帧。
+
 ### 颜色
 
 提示文字、光标和选区高亮的颜色是样式键，有对应的 Tailwind 类，在 Rust 中是方法（UIKit 用同一种颜色绘制光标和选区，设置了光标颜色时以它为准）：

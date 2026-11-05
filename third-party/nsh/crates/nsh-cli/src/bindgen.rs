@@ -851,6 +851,9 @@ pub extern "C" fn probe() -> f64 {
             .arg("--manifest-path")
             .arg(root.join("Cargo.toml"))
             .env("CARGO_TARGET_DIR", root.join("target"))
+            // With its relocations, as the runtime `nsh package` publishes
+            // from is linked (nsh-platform-web's feature `linkable`).
+            .env("RUSTFLAGS", "-Clink-arg=--emit-relocs")
             .status()
             .unwrap();
         assert!(status.success(), "the crate builds");
@@ -869,6 +872,10 @@ pub extern "C" fn probe() -> f64 {
         // The module wasm-bindgen wrote: its imports are the glue's now.
         let wasm = std::fs::read(out.join("nsh.wasm")).unwrap();
         assert_eq!(needs(&wasm).unwrap(), None);
+        // Published as `nsh package` publishes it: the module run below.
+        let published = crate::web::link(&wasm, true, &[], &[]).unwrap();
+        assert!(published.sides.is_empty());
+        std::fs::write(out.join("nsh.wasm"), published.main).unwrap();
         assert!(!out.join("nsh-bindgen/nsh_bg.wasm").exists());
         assert!(!out.join("nsh-bindgen.tmp").exists());
         let found: Vec<String> = snippets(&glue)

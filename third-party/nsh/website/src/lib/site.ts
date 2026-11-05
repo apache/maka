@@ -13,8 +13,13 @@ export const SHOWCASES_URL = 'https://github.com/longbridge/nsh-showcases';
 
 export const GPUI_KIT_URL = 'https://gpui-kit.com';
 
-/** Where "Edit this page" points: the file's path relative to the repository root follows. */
-export const EDIT_BASE = `${REPO_URL}/edit/main/`;
+/**
+ * Where "Edit this page" points: the file's path relative to the repository
+ * root follows. A released version's pages show its tag's files.
+ */
+export const EDIT_BASE = (import.meta.env.PUBLIC_SITE_VERSION ?? 'main') === 'main'
+  ? `${REPO_URL}/edit/main/`
+  : `${REPO_URL}/blob/${import.meta.env.PUBLIC_SITE_VERSION}/`;
 
 export type Lang = 'en' | 'zh-CN';
 

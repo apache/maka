@@ -22,6 +22,8 @@
 //!
 //! Live regions are emulated by announcing a changed label or text
 //! (`NSAccessibilityAnnouncementRequestedNotification`);
+//! `AXPress` presses a view that takes presses, as Return does when it
+//! has the keyboard focus (`crate::input::accessibility_press`);
 //! `accessibilityActions` are not exposed.
 //!
 //! Every update is diffed against what was last given to AppKit

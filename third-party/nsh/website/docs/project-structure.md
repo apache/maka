@@ -283,7 +283,7 @@ import Inter from "./assets/Inter.ttf";     // "Inter"
 |---|---|
 | `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.heic` | An `ImageAsset`: `{ url, size, scales? }`, sized in points. An `@2x` / `@3x` suffix divides the pixel size by 2 / 3. A file without a suffix also ships its `@1.5x`–`@4x` siblings, listed in `scales`, and the screen's variant is loaded ([pixel densities](./images-and-assets.md#pixel-densities)). |
 | `.svg` | An `ImageAsset` sized in points by the SVG's `width` and `height` (or `viewBox`). |
-| `.ttf`, `.otf` | The font's family name, a string. The font is registered before the first frame. |
+| `.ttf`, `.otf`, `.woff`, `.woff2` | The font's family name, a string. The font is registered before the first frame. |
 | `.json` | The parsed JSON |
 
 See [Images and assets](./images-and-assets.md) and [Fonts](./fonts.md).

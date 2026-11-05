@@ -12,7 +12,7 @@ use nsh_core::{
     prelude::*,
 };
 
-use super::{PlotContext, layer, scale::AxisMap};
+use super::{PlotContext, ValueScale, layer, scale::AxisMap};
 
 /// The edge of a [`Plot`](super::Plot) a [`PlotAxis`] runs along, as d3's
 /// `axisBottom`, `axisTop`, `axisLeft` and `axisRight`: the bottom and top
@@ -158,6 +158,12 @@ pub struct PlotAxisProps {
     /// plot along its edge.
     #[prop(default)]
     pub label_placement: Prop<AxisLabelPlacement>,
+    /// The y scale a `"left"` or `"right"` axis carries: `"y"` (the
+    /// default, the plot's `yScale`) or `"y2"` (its second one,
+    /// `y2Scale`: a dual-axis chart's right-hand axis). A `"bottom"` or
+    /// `"top"` axis carries the x scale whatever this says.
+    #[prop(default)]
+    pub scale: Prop<ValueScale>,
     /// About how many ticks it takes (d3's `axis.ticks(count)`;
     /// `gpui-component`'s `y_tick_count` / `x_tick_count`): on a `linear`
     /// scale, d3's nice values (1, 2 or 5 times a power of ten) inside the
@@ -171,13 +177,15 @@ pub struct PlotAxisProps {
     /// scale's domain have no place and no tick.
     pub tick_values: Prop<Option<Vec<f64>>>,
     /// The text of each tick (d3's `axis.tickFormat`): the app's function
-    /// of the tick's value and index. Without one, d3's default: the value
-    /// with the decimals the step between ticks needs, thousands grouped
-    /// (`1,500`, `0.25`, `−2`).
+    /// of the tick's value and index. Without one, the category of a band
+    /// on a band scale of categories (its `domain`, or its cells'), else
+    /// d3's default: the value with the decimals the step between ticks
+    /// needs, thousands grouped (`1,500`, `0.25`, `−2`).
     pub format: Prop<Option<TickFormat>>,
     /// The Tailwind classes of its labels, the `label` part: a text per
-    /// tick, centered on it along the edge (the first and last moved
-    /// inward to stay within the plot's ends), its font, color and padding
+    /// tick, centered on it along the edge (along the x scale's edge the
+    /// first and last moved inward to stay within the plot's ends), its
+    /// font, color and padding
     /// (its distance from the edge) the app's.
     pub label_class: Prop<Option<SharedString>>,
     /// The style of its labels, over `labelClass` (text styles too).
@@ -206,8 +214,11 @@ pub struct PlotAxisProps {
 /// (d3's nice values on a `linear` scale, rows on a `point` or `band`
 /// one; `ticks`, `tickValues`), each with its label, the text `format`
 /// gives, laid out natively by the plot's layout: centered on its tick
-/// along the edge, the first and last moved inward so no label passes the
-/// plot's ends, and past the edge (`labelPlacement`: `"outside"`, where no
+/// along the edge (along the x scale's, the first and last moved inward so
+/// no label passes the plot's ends; beside the y scale's, each on its
+/// tick, the plot keeping what a label near its top or bottom edge would
+/// pass it by inside it, so every label sits on its tick within the plot),
+/// and past the edge (`labelPlacement`: `"outside"`, where no
 /// mark is) or along its inside. Its parts are the app's to style (the
 /// labels, `tick` marks and the `line`), and only the labels show unless
 /// the app styles the others. It follows the plot's size and scales, and
@@ -221,6 +232,7 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     let PlotAxisProps {
         placement,
         label_placement,
+        scale: value_scale,
         ticks: count,
         tick_values,
         format,
@@ -234,15 +246,78 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     } = props;
     let map = move || match placement.get().along_x() {
         true => plot.x_map.get(),
-        false => plot.y_map.get(),
+        false => plot.y_map_of(value_scale.get()),
     };
-    // The ticks follow the scale's domain (or its rows), not the plot's
-    // size: a resize moves the labels without writing them again.
-    let scale = computed(move || ScaleTicks::of(&map(), plot.rows.with(|r| r.len())));
+    // The categories of the scale's bands, which its labels write.
+    let categories = computed(move || match placement.get().along_x() {
+        true => plot.x_categories.get(),
+        false if value_scale.get() == ValueScale::Y => plot.y_categories.get(),
+        false => None,
+    });
+    // The ticks follow the scale's domain (or its rows, or its bands'
+    // categories), not the plot's size: a resize moves the labels without
+    // writing them again.
+    let scale = computed(move || {
+        let rows = categories.with(|c| c.as_ref().map(|c| c.len()));
+        ScaleTicks::of(&map(), rows.unwrap_or_else(|| plot.rows.with(|r| r.len())))
+    });
     let ticks = computed(move || {
         tick_values.with(|values| scale.get().ticks(count.get(), values.as_deref()))
     });
-    let labels = label_texts(ticks, format);
+    let labels = label_texts(ticks, format, categories);
+    // Beside the y scale's edge, outside, a label on its tick reaches half
+    // its height above and below it: the plot keeps what would pass its
+    // top and bottom edges inside them (`add_inset`), from each label's
+    // height (as laid out) and where its tick lies along the scale (a
+    // share of the range from its top, which an inset does not change).
+    let heights = signal(Vec::<(usize, f32)>::new());
+    let shares = signal(Vec::<(usize, f32)>::new());
+    effect(move || {
+        // The plot's state goes with the plot, which may go first.
+        if plot.size.try_get().is_none() {
+            return;
+        }
+        let AxisMap::Linear(linear) = map() else {
+            return shares.set(Vec::new());
+        };
+        let [a, b] = linear.range();
+        let (top, span) = (a.min(b), (a - b).abs());
+        let now: Vec<(usize, f32)> = labels.with(|l| {
+            l.iter()
+                .enumerate()
+                .filter_map(|(i, label)| {
+                    // Only a label on the scale: one a new domain left
+                    // behind (its text still coming) has no place there.
+                    let share = (linear.tick(label.value)? - top) / span;
+                    (span > 0.0 && (-1e-3..=1.0 + 1e-3).contains(&share)).then_some((i, share))
+                })
+                .collect()
+        });
+        // A share does not change with the inset it feeds, but recomputed
+        // over the inset's new range it differs in its last bits: compared
+        // exactly, each change would move the inset again, without end.
+        let moved = |was: &Vec<(usize, f32)>| {
+            was.len() != now.len()
+                || was
+                    .iter()
+                    .zip(&now)
+                    .any(|(a, b)| a.0 != b.0 || (a.1 - b.1).abs() > SHARE_EPSILON)
+        };
+        if shares.with_untracked(moved) {
+            shares.set(now);
+        }
+    });
+    plot.add_inset(computed(move || {
+        let beside =
+            !placement.get().along_x() && label_placement.get() == AxisLabelPlacement::Outside;
+        if !beside {
+            return [0.0; 2];
+        }
+        let Some(size) = plot.size.try_get() else {
+            return [0.0; 2];
+        };
+        heights.with(|h| shares.with(|s| label_insets(h, s, size.height.0)))
+    }));
     let side = move || Side {
         placement: placement.get(),
         labels: label_placement.get(),
@@ -253,16 +328,22 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
         let value = labels.with(|l| l.get(i).map(|l| l.value))?;
         map().tick(value).filter(|t| t.is_finite())
     };
-    let indices = move || (0..labels.with(|l| l.len())).collect::<Vec<usize>>();
+    // Keyed by the scale too: a tick glides with its scale's domain.
+    let indices = move || {
+        let scale = value_scale.get();
+        (0..labels.with(|l| l.len()))
+            .map(|i| (i, scale))
+            .collect::<Vec<_>>()
+    };
     // While the axis's domain glides (`motion.update`), tick `i` moves with
     // the marks from where the layout puts it (its place on the new scale)
     // to where the domain shown puts it, as d3's axis transitions: the
     // offset the tick's view is translated by along its edge.
-    let glide = move |i: usize, s: View| {
+    let glide = move |(i, scale): (usize, ValueScale), s: View| {
         let along_x = placement.get_untracked().along_x();
         let tween = match along_x {
             true => plot.x_tween,
-            false => plot.y_tween,
+            false => plot.y_tween_of(scale),
         };
         let place = animated_value(0.0);
         effect(move || {
@@ -298,15 +379,16 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             each(
                 indices,
                 |i| *i,
-                move |i, _| {
-                    let i = i.get_untracked();
+                move |item, _| {
+                    let item = item.get_untracked();
+                    let i = item.0;
                     view()
                         .absolute()
                         .w(px(0.0))
                         .h(px(0.0))
                         .items_center()
                         .style_with(move |s| side().tick(s, at(i)))
-                        .map(|s| glide(i, s))
+                        .map(|s| glide(item, s))
                         .child(
                             view()
                                 .flex_none()
@@ -323,8 +405,9 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
             each(
                 indices,
                 |i| *i,
-                move |i, _| {
-                    let i = i.get_untracked();
+                move |item, _| {
+                    let item = item.get_untracked();
+                    let i = item.0;
                     let content = move || {
                         labels
                             .with(|l| l.get(i).map(|l| l.text.clone()))
@@ -337,14 +420,31 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
                     // are none when the label is wider than its room, so it
                     // starts at the plot's end it is near rather than
                     // passing it.
+                    cleanup(move || {
+                        if let Some(mut all) = heights.try_get() {
+                            all.retain(|(at, _)| *at != i);
+                            heights.try_set(all);
+                        }
+                    });
                     view()
                         .absolute()
                         .style_with(move |s| side().anchor(s, at(i)))
-                        .map(|s| glide(i, s))
+                        .map(|s| glide(item, s))
                         .child(
                             view().style_with(move |s| side().window(s, at(i))).child(
                                 view()
                                     .flex_none()
+                                    .on_layout(move |b: &Bounds<Points>| {
+                                        let h = b.size.height.0;
+                                        let known =
+                                            heights.with_untracked(|all| all.contains(&(i, h)));
+                                        if !known {
+                                            heights.update(|all| {
+                                                all.retain(|(at, _)| *at != i);
+                                                all.push((i, h));
+                                            });
+                                        }
+                                    })
                                     .style_with(move |s| side().label(s))
                                     .child(
                                         text(content)
@@ -359,6 +459,47 @@ pub fn PlotAxis(props: PlotAxisProps, _cx: Scope<NoEvent>) -> impl IntoElement {
     ))
 }
 
+/// How far a label's share of the range moves before the insets follow
+/// it: far above f32's rounding of a share recomputed over a new range,
+/// far below a share any tick moves by.
+const SHARE_EPSILON: f32 = 1e-4;
+
+/// How far in from a plot `height` tall its y scale's range must start
+/// and end (top, bottom) for labels of `heights`, centered on ticks at
+/// `shares` of the range from its top (by label index), to stay inside it:
+/// a label `h` tall at share `f` sits at `top + f * (height - top -
+/// bottom)`, which must be `h / 2` from either edge. The two insets lean
+/// on each other, so they are found in a few rounds; neither takes more
+/// than a third of the plot.
+fn label_insets(heights: &[(usize, f32)], shares: &[(usize, f32)], height: f32) -> [f32; 2] {
+    let (mut top, mut bottom) = (0.0_f32, 0.0_f32);
+    let most = height / 3.0;
+    let pairs: Vec<(f32, f32)> = heights
+        .iter()
+        .filter_map(|(i, h)| {
+            shares
+                .iter()
+                .find(|(j, _)| j == i)
+                .map(|(_, f)| (f.clamp(0.0, 1.0), h / 2.0))
+        })
+        .collect();
+    for _ in 0..4 {
+        top = pairs
+            .iter()
+            .filter(|(f, _)| *f < 1.0)
+            .map(|(f, half)| (half - f * (height - bottom)) / (1.0 - f))
+            .fold(0.0_f32, f32::max)
+            .min(most);
+        bottom = pairs
+            .iter()
+            .filter(|(f, _)| *f > 0.0)
+            .map(|(f, half)| (half - (1.0 - f) * (height - top)) / f)
+            .fold(0.0_f32, f32::max)
+            .min(most);
+    }
+    [top, bottom]
+}
+
 /// A tick and its text.
 #[derive(Debug, Clone, PartialEq)]
 struct Label {
@@ -370,7 +511,11 @@ struct Label {
 /// or a Rust function, in the next JS turn for the app's function. A
 /// label keeps the value its text was written for, so it shows at that
 /// value's place until the new texts come.
-fn label_texts(ticks: Memo<TickValues>, format: Prop<Option<TickFormat>>) -> Signal<Arc<[Label]>> {
+fn label_texts(
+    ticks: Memo<TickValues>,
+    format: Prop<Option<TickFormat>>,
+    categories: Memo<Option<Arc<[SharedString]>>>,
+) -> Signal<Arc<[Label]>> {
     let out = signal(Arc::<[Label]>::from([]));
     // A newer run wins over the answers of an older one.
     let generation = stored(0u64);
@@ -380,10 +525,21 @@ fn label_texts(ticks: Memo<TickValues>, format: Prop<Option<TickFormat>>) -> Sig
         generation.replace(run);
         let values = ticks.values.clone();
         match format.get() {
-            None => out.set(paired(
-                &values,
-                values.iter().map(|&v| default_text(v, ticks.precision)),
-            )),
+            // A band's category, or d3's default text.
+            None => out.set(categories.with(|c| {
+                let category = |v: f64| {
+                    let c = c.as_ref()?;
+                    (v.fract() == 0.0 && v >= 0.0)
+                        .then(|| c.get(v as usize).cloned())
+                        .flatten()
+                };
+                paired(
+                    &values,
+                    values
+                        .iter()
+                        .map(|&v| category(v).unwrap_or_else(|| default_text(v, ticks.precision))),
+                )
+            })),
             Some(TickFormat::Rust(f)) => out.set(paired(
                 &values,
                 values.iter().enumerate().map(|(i, &v)| f(v, i)),
@@ -494,10 +650,14 @@ impl Side {
         self.grow(s)
     }
 
-    /// A label's anchor: the room around the tick at `at` that lies within
-    /// the plot's ends (as far on either side, so the label centers on
-    /// the tick in it), past the edge or inside it. Beside the y scale's
-    /// edge it is a column with no width, the label's window overflowing
+    /// A label's anchor: room around the tick at `at`, as far on either
+    /// side so the label centers on the tick in it, past the edge or
+    /// inside it. Along the x scale's edge the room lies within the plot's
+    /// ends (a wide label at an end moves inward); beside the y scale's,
+    /// outside, it reaches the plot's height either way, so every label
+    /// sits on its tick, as a grid line's label reads (the plot keeps what
+    /// one would pass its top or bottom edge by inside it, `add_inset`).
+    /// There it is a column with no width, the label's window overflowing
     /// it away from the plot (outside) or into it (inside); inside, the
     /// room runs from the top edge down to the tick, the label at its
     /// bottom: on the grid line's upper side.
@@ -522,7 +682,10 @@ impl Side {
             false => {
                 let s = s.flex_row().left(px(edge)).w(px(0.0));
                 let s = match self.labels {
-                    AxisLabelPlacement::Outside => s.top(px(at - room)).h(px(2.0 * room)),
+                    AxisLabelPlacement::Outside => {
+                        let room = self.extent().max(room);
+                        s.top(px(at - room)).h(px(2.0 * room))
+                    }
                     AxisLabelPlacement::Inside => s.top(px(0.0)).h(px(at)),
                 };
                 self.grow(s)
@@ -560,6 +723,13 @@ impl Side {
     }
 }
 
+/// The values of the ticks of `map` for a plot of `rows` rows: about
+/// `count` (a `PlotAxis`'s `ticks`), or its default ticks without one, the
+/// step of an aligned scale's.
+pub(super) fn tick_values(map: &AxisMap, rows: usize, count: Option<u32>) -> Arc<[f64]> {
+    ScaleTicks::of(map, rows).ticks(count, None).values
+}
+
 /// The ticks of a [`PlotAxis`] when the app gives no `ticks` (d3's
 /// `scale.ticks()` count).
 const DEFAULT_TICKS: u32 = 10;
@@ -575,15 +745,20 @@ struct TickValues {
 /// bands) it lays out and how many rows there are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ScaleTicks {
-    Linear([f64; 2]),
-    Rows { places: usize, rows: usize },
+    /// A linear domain, and the step of its ticks when it is aligned with
+    /// another scale's (`alignTicks`).
+    Linear([f64; 2], Option<f64>),
+    Rows {
+        places: usize,
+        rows: usize,
+    },
 }
 
 impl ScaleTicks {
     /// What `map`'s ticks follow, for a plot of `rows` rows.
     fn of(map: &AxisMap, rows: usize) -> Self {
         match map {
-            AxisMap::Linear(linear) => ScaleTicks::Linear(linear.domain()),
+            AxisMap::Linear(linear) => ScaleTicks::Linear(linear.domain(), linear.step()),
             AxisMap::Point { len, .. } => ScaleTicks::Rows {
                 places: *len,
                 rows: *len,
@@ -601,7 +776,16 @@ impl ScaleTicks {
     /// `values` within the domain.
     fn ticks(self, count: Option<u32>, values: Option<&[f64]>) -> TickValues {
         match self {
-            ScaleTicks::Linear([lo, hi]) => {
+            // Aligned with another scale: a tick at every step, as that
+            // one's, unless the app asks for other ticks.
+            ScaleTicks::Linear([lo, hi], Some(step)) if count.is_none() && values.is_none() => {
+                let n = ((hi - lo) / step).round().max(0.0) as usize;
+                TickValues {
+                    values: (0..=n).map(|i| lo + i as f64 * step).collect(),
+                    precision: step_precision(step),
+                }
+            }
+            ScaleTicks::Linear([lo, hi], _) => {
                 let count = f64::from(count.unwrap_or(DEFAULT_TICKS));
                 let values = match values {
                     Some(values) => {
@@ -751,6 +935,16 @@ fn precision(lo: f64, hi: f64, count: f64) -> usize {
     }
 }
 
+/// The decimals a tick `step` apart needs, up to six (0.25: two).
+fn step_precision(step: f64) -> usize {
+    (0..6)
+        .find(|&p| {
+            let scaled = step * 10f64.powi(p as i32);
+            (scaled - scaled.round()).abs() < 1e-6 * scaled.abs().max(1.0)
+        })
+        .unwrap_or(6)
+}
+
 /// `value` as d3's default tick format writes it (`,.<precision>f`):
 /// `precision` decimals, thousands grouped with commas, a minus sign
 /// (U+2212) before a value below zero that does not round to zero.
@@ -815,6 +1009,26 @@ mod tests {
         assert!(linear_ticks(0.0, 1.0, 0.0).is_empty());
     }
 
+    /// Labels on ticks at the ends of the range need half their height
+    /// kept inside the plot; one in the middle needs nothing; one near an
+    /// end only what it would pass the edge by.
+    #[test]
+    fn labels_keep_what_would_pass_the_edges_inside() {
+        let h = [(0, 10.0), (1, 10.0), (2, 10.0)];
+        assert_eq!(
+            label_insets(&h, &[(0, 0.0), (1, 0.5), (2, 1.0)], 100.0),
+            [5.0, 5.0]
+        );
+        assert_eq!(label_insets(&h, &[(1, 0.5)], 100.0), [0.0, 0.0]);
+        let [top, bottom] = label_insets(&h[..1], &[(0, 0.02)], 100.0);
+        assert_eq!(bottom, 0.0);
+        // At 2% of the range below the top, the label's middle is half its
+        // height (5) down.
+        assert!((top + 0.02 * (100.0 - top) - 5.0).abs() < 1e-4, "{top}");
+        // A tick past the domain has no share and needs nothing.
+        assert_eq!(label_insets(&h, &[], 100.0), [0.0, 0.0]);
+    }
+
     /// d3's default text: the step's decimals, thousands grouped, a minus
     /// sign for what stays below zero.
     #[test]
@@ -848,7 +1062,7 @@ mod tests {
             &*band.ticks(None, Some(&[0.0, 6.0, 7.0])).values,
             [0.0, 6.0]
         );
-        let linear = ScaleTicks::Linear([0.0, 100.0]);
+        let linear = ScaleTicks::Linear([0.0, 100.0], None);
         assert_eq!(
             &*linear
                 .ticks(None, Some(&[-1.0, 0.0, 50.0, 100.0, 101.0]))

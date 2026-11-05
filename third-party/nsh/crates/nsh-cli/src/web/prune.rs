@@ -1,30 +1,6 @@
-//! Pruning the web runtime to what an app uses.
-//!
-//! The distribution ships one web runtime with every part of `nsh/base` and
-//! every standard module, linked by wasm-ld with `--emit-relocs`: it keeps
-//! the linker's symbol table (the `linking` section) and every place code
-//! and data refer to a function, a table slot or a data symbol
-//! (`reloc.CODE`, `reloc.DATA`). The parts are only reached through their
-//! registration exports (`nsh_part_editor`, `nsh_std_zlib`, ...), so given
-//! the exports an app needs, [`prune`] keeps what they reach and drops the
-//! rest, as `wasm-ld --gc-sections` would have linking only those exports,
-//! without a Rust toolchain or a linker where apps are packaged:
-//!
-//! - functions are numbered again (imports stay, all of them: the page
-//!   supplies every import whatever the app uses);
-//! - the table keeps the functions whose address kept code or data takes,
-//!   in their order, from the slot the linker started at;
-//! - kept data symbols are packed again, each run of them keeping the
-//!   alignment its address had (capped at its segment's), and the bytes no
-//!   symbol covers (padding) are kept, as nothing says what they are;
-//! - every reference is patched in place: wasm-ld pads the LEBs it
-//!   relocates to five bytes, so a patch never changes a size;
-//! - `__heap_base`, `__heap_end` and `__data_end` move with the data's end,
-//!   and the memory's initial size shrinks with it (it never grows).
-//!
-//! Types and globals are kept as they are. The output has no custom
-//! sections the linker wrote (`linking`, `reloc.*`, `name`, `producers`,
-//! `target_features`, debug info) and is validated before it is returned.
+//! Reading the linkable web runtime (`nsh-browser.wasm`, feature
+//! `linkable`) for [`split`]: [`Module`] parses it and
+//! [`Module::mark_from`] finds what some functions reach.
 
 use std::ops::Range;
 
@@ -32,44 +8,9 @@ use anyhow::{Context as _, bail, ensure};
 use wasmparser::{
     DataKind, ElementItems, ElementKind, ExternalKind, KnownCustom, Linking, Operator, Parser,
     Payload, RefType, RelocationEntry, RelocationType, SymbolFlags, SymbolInfo, TableInit, TypeRef,
-    Validator,
 };
 
-const PAGE: u64 = 65536;
-/// What wasm-ld aligns `__heap_base` to (the stack's alignment).
-const HEAP_ALIGN: u32 = 16;
-
-/// Keeps what `exports` reach in a runtime linked with `--emit-relocs`.
-///
-/// Exports other than functions (`memory`) are always kept; a function
-/// export not named is dropped. Fails when a name is not exported, or when
-/// the module is not wasm-ld's output with relocations.
-pub(crate) fn prune(wasm: &[u8], exports: &[&str]) -> anyhow::Result<Vec<u8>> {
-    let all = self::exports(wasm)?;
-    if let Some(name) = exports
-        .iter()
-        .find(|name| !all.iter().any(|export| export == *name))
-    {
-        bail!("the web runtime exports no `{name}`");
-    }
-    // The linker already left out what no export reaches: with every export
-    // kept, nothing else goes but the linker's sections.
-    if all.iter().all(|export| exports.contains(&export.as_str())) {
-        return strip(wasm);
-    }
-    prune_by_relocations(wasm, exports)
-}
-
-/// [`prune`]'s work for a subset of the exports.
-fn prune_by_relocations(wasm: &[u8], exports: &[&str]) -> anyhow::Result<Vec<u8>> {
-    let module = Module::parse(wasm)?;
-    let live = module.mark(exports)?;
-    let out = module.write(exports, &live)?;
-    Validator::new()
-        .validate_all(&out)
-        .context("the pruned web runtime is not valid")?;
-    Ok(out)
-}
+pub(crate) mod split;
 
 /// The names of the functions a runtime exports, in its order.
 pub(crate) fn exports(wasm: &[u8]) -> anyhow::Result<Vec<String>> {
@@ -88,34 +29,35 @@ pub(crate) fn exports(wasm: &[u8]) -> anyhow::Result<Vec<String>> {
     Ok(names)
 }
 
-/// The module without the custom sections [`dropped_custom`] names, every
-/// other section as it is.
-fn strip(wasm: &[u8]) -> anyhow::Result<Vec<u8>> {
+/// `wasm` as it is, without the custom sections a linked runtime leaves
+/// out ([`dropped_custom`]): for a runtime published whole.
+pub(crate) fn unlinked(wasm: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut out = Vec::with_capacity(wasm.len());
-    out.extend_from_slice(&wasm[..8]);
     for payload in Parser::new(0).parse_all(wasm) {
         let payload = payload.context("the web runtime is not a WebAssembly module")?;
+        if let Payload::Version { range, .. } = &payload {
+            out.extend_from_slice(&wasm[range.start as usize..range.end as usize]);
+        }
         if let Payload::CustomSection(custom) = &payload
             && dropped_custom(custom.name())
         {
             continue;
         }
         if let Some((id, range)) = payload.as_section() {
-            let contents = &wasm[range.start as usize..range.end as usize];
             out.push(id);
-            put_uleb(&mut out, contents.len() as u64);
-            out.extend_from_slice(contents);
+            put_uleb(&mut out, range.end - range.start);
+            out.extend_from_slice(&wasm[range.start as usize..range.end as usize]);
         }
     }
     Ok(out)
 }
 
 /// A symbol of the `linking` section's table, as far as pruning needs it.
-enum Symbol<'a> {
+enum Symbol {
     Func(u32),
     Data(DataSymbol),
     /// An address the linker computed (`__heap_base`), not data.
-    Absolute(&'a str, u32),
+    Absolute,
     /// Undefined data, globals, tables, sections, tags: nothing to keep.
     Other,
 }
@@ -150,12 +92,10 @@ struct Export<'a> {
 
 struct Table {
     initial: u64,
-    maximum: Option<u64>,
 }
 
 struct Memory {
     initial: u64,
-    maximum: Option<u64>,
 }
 
 #[derive(Default)]
@@ -179,7 +119,7 @@ struct Module<'a> {
     bodies: Vec<Range<usize>>,
     data_start: usize,
     segments: Vec<Segment>,
-    symbols: Vec<Symbol<'a>>,
+    symbols: Vec<Symbol>,
     no_strip: Vec<u32>,
     code_relocs: Vec<RelocationEntry>,
     data_relocs: Vec<DataReloc>,
@@ -243,7 +183,6 @@ impl<'a> Module<'a> {
                         );
                         module.table = Some(Table {
                             initial: ty.initial,
-                            maximum: ty.maximum,
                         });
                     }
                 }
@@ -260,7 +199,6 @@ impl<'a> Module<'a> {
                         );
                         module.memory = Some(Memory {
                             initial: memory.initial,
-                            maximum: memory.maximum,
                         });
                     }
                 }
@@ -432,7 +370,7 @@ impl<'a> Module<'a> {
         Ok(module)
     }
 
-    fn symbol(&self, symbol: SymbolInfo<'a>) -> anyhow::Result<Symbol<'a>> {
+    fn symbol(&self, symbol: SymbolInfo<'a>) -> anyhow::Result<Symbol> {
         Ok(match symbol {
             SymbolInfo::Func { index, .. } => {
                 ensure!(
@@ -447,7 +385,7 @@ impl<'a> Module<'a> {
                 symbol: Some(data),
             } => {
                 if flags.contains(SymbolFlags::ABSOLUTE) {
-                    Symbol::Absolute(name, data.offset)
+                    Symbol::Absolute
                 } else {
                     let segment = self.segments.get(data.index as usize).with_context(|| {
                         format!("`{name}` is in a data segment the web runtime does not have")
@@ -522,7 +460,14 @@ impl<'a> Module<'a> {
         Ok(ranges)
     }
 
-    fn mark(&self, exports: &[&str]) -> anyhow::Result<Live> {
+    /// What `funcs` and the data `ranges` reach, with the start function,
+    /// what the linker keeps whatever (`NO_STRIP`, init functions) and the
+    /// bytes no symbol covers.
+    fn mark_from(
+        &self,
+        mut funcs: Vec<u32>,
+        mut ranges: Vec<(usize, u32, u32, bool)>,
+    ) -> anyhow::Result<Live> {
         let body_relocs = self.body_relocs()?;
         let mut live = Live {
             funcs: vec![false; self.func_count()],
@@ -530,19 +475,6 @@ impl<'a> Module<'a> {
             data: Vec::new(),
         };
         let mut live_symbols = vec![false; self.symbols.len()];
-        let mut funcs = Vec::new();
-        let mut ranges = Vec::new();
-
-        for name in exports {
-            let export = self
-                .exports
-                .iter()
-                .find(|export| export.name == *name)
-                .with_context(|| format!("the web runtime exports no `{name}`"))?;
-            if export.kind == ExternalKind::Func {
-                funcs.push(export.index);
-            }
-        }
         funcs.extend(self.start);
         for &symbol in &self.no_strip {
             match self.symbols.get(symbol as usize) {
@@ -645,397 +577,6 @@ impl<'a> Module<'a> {
         }
         gaps
     }
-
-    fn write(&self, exports: &[&str], live: &Live) -> anyhow::Result<Vec<u8>> {
-        // Functions: imports keep their indices, defined ones close up.
-        let mut remap = vec![u32::MAX; self.func_count()];
-        let mut next = 0;
-        for (func, slot) in remap.iter_mut().enumerate() {
-            if func < self.imported_funcs as usize || live.funcs[func] {
-                *slot = next;
-                next += 1;
-            }
-        }
-
-        // The table: the functions whose address is taken, in their order.
-        let (table_base, old_elements) = match &self.elements {
-            Some((base, funcs)) => (*base, funcs.as_slice()),
-            None => (1, &[][..]),
-        };
-        let mut old_slot = vec![u32::MAX; self.func_count()];
-        for (index, &func) in old_elements.iter().enumerate() {
-            old_slot[func as usize] = table_base as u32 + index as u32;
-        }
-        let mut new_slot = vec![u32::MAX; self.func_count()];
-        let mut elements = Vec::new();
-        for &func in old_elements {
-            if live.taken[func as usize] && live.funcs[func as usize] {
-                new_slot[func as usize] = table_base as u32 + elements.len() as u32;
-                elements.push(remap[func as usize]);
-            }
-        }
-        if let Some(func) =
-            (0..self.func_count()).find(|&f| live.taken[f] && old_slot[f] == u32::MAX)
-        {
-            bail!("function {func}'s address is taken, but it has no table slot");
-        }
-
-        let layout = Layout::new(self, live)?;
-
-        // Rewrites the bytes a relocation names, checking they held the old value.
-        let patch = |bytes: &mut [u8], entry: &RelocationEntry| -> anyhow::Result<()> {
-            match entry.ty {
-                RelocationType::FunctionIndexLeb => {
-                    let func = self.func_of(entry)?;
-                    check(read_uleb5(bytes) == func, entry)?;
-                    put_uleb5(bytes, remap[func as usize]);
-                }
-                RelocationType::FunctionIndexI32 => {
-                    let func = self.func_of(entry)?;
-                    check(read_u32(bytes) == func, entry)?;
-                    bytes[..4].copy_from_slice(&remap[func as usize].to_le_bytes());
-                }
-                RelocationType::TableIndexSleb => {
-                    let func = self.func_of(entry)? as usize;
-                    check(read_sleb5(bytes) as u32 == old_slot[func], entry)?;
-                    put_sleb5(bytes, new_slot[func] as i32);
-                }
-                RelocationType::TableIndexI32 => {
-                    let func = self.func_of(entry)? as usize;
-                    check(read_u32(bytes) == old_slot[func], entry)?;
-                    bytes[..4].copy_from_slice(&new_slot[func].to_le_bytes());
-                }
-                RelocationType::MemoryAddrLeb
-                | RelocationType::MemoryAddrSleb
-                | RelocationType::MemoryAddrI32 => {
-                    let Some((old, new)) = layout.address(self, entry)? else {
-                        return Ok(());
-                    };
-                    let new = new.wrapping_add(entry.addend as u32);
-                    let old = old.wrapping_add(entry.addend as u32);
-                    match entry.ty {
-                        RelocationType::MemoryAddrLeb => {
-                            check(read_uleb5(bytes) == old, entry)?;
-                            put_uleb5(bytes, new);
-                        }
-                        RelocationType::MemoryAddrSleb => {
-                            check(read_sleb5(bytes) as u32 == old, entry)?;
-                            put_sleb5(bytes, new as i32);
-                        }
-                        _ => {
-                            check(read_u32(bytes) == old, entry)?;
-                            bytes[..4].copy_from_slice(&new.to_le_bytes());
-                        }
-                    }
-                }
-                _ => {}
-            }
-            Ok(())
-        };
-
-        let segments = layout.segments(self, &patch)?;
-        let mut out = Vec::with_capacity(self.wasm.len() / 2);
-        out.extend_from_slice(&self.wasm[..8]);
-        let body_relocs = self.body_relocs()?;
-        for (id, range, name) in &self.sections {
-            let mut section = Vec::new();
-            match id {
-                0 if dropped_custom(name) => continue,
-                3 => {
-                    let types: Vec<_> = self
-                        .func_types
-                        .iter()
-                        .enumerate()
-                        .filter(|&(index, _)| live.funcs[self.imported_funcs as usize + index])
-                        .map(|(_, ty)| *ty)
-                        .collect();
-                    put_uleb(&mut section, types.len() as u64);
-                    for ty in types {
-                        put_uleb(&mut section, ty.into());
-                    }
-                }
-                4 => {
-                    let table = self.table.as_ref().context("no table")?;
-                    let initial = table_base as u64 + elements.len() as u64;
-                    let initial = if self.elements.is_some() {
-                        initial
-                    } else {
-                        table.initial
-                    };
-                    let maximum = table
-                        .maximum
-                        .map(|max| if max == table.initial { initial } else { max });
-                    section.extend_from_slice(&[1, 0x70]);
-                    put_limits(&mut section, initial, maximum);
-                }
-                5 => {
-                    let memory = self.memory.as_ref().context("no memory")?;
-                    section.push(1);
-                    put_limits(&mut section, layout.pages, memory.maximum);
-                }
-                6 => {
-                    // Globals stay as they are: none may point into the data
-                    // (`__stack_pointer` starts where the data does).
-                    let low = self.segments.first().map_or(0, |s| s.address);
-                    for value in self.globals.iter().flatten() {
-                        let value = *value as u32;
-                        ensure!(
-                            value <= low || u64::from(value) > layout.old_heap_end,
-                            "a global of the web runtime holds a data address ({value})"
-                        );
-                    }
-                    section.extend_from_slice(&self.wasm[range.clone()]);
-                }
-                7 => {
-                    let kept: Vec<_> = self
-                        .exports
-                        .iter()
-                        .filter(|export| {
-                            export.kind != ExternalKind::Func || exports.contains(&export.name)
-                        })
-                        .collect();
-                    put_uleb(&mut section, kept.len() as u64);
-                    for export in kept {
-                        put_uleb(&mut section, export.name.len() as u64);
-                        section.extend_from_slice(export.name.as_bytes());
-                        let (kind, index) = match export.kind {
-                            ExternalKind::Func => (0, remap[export.index as usize]),
-                            ExternalKind::Table => (1, export.index),
-                            ExternalKind::Memory => (2, export.index),
-                            ExternalKind::Global => (3, export.index),
-                            ExternalKind::Tag => (4, export.index),
-                            ExternalKind::FuncExact => bail!("an exact function export"),
-                        };
-                        section.push(kind);
-                        put_uleb(&mut section, index.into());
-                    }
-                }
-                8 => put_uleb(&mut section, remap[self.start.unwrap_or(0) as usize].into()),
-                9 => {
-                    if elements.is_empty() {
-                        continue;
-                    }
-                    section.extend_from_slice(&[1, 0, 0x41]);
-                    put_sleb(&mut section, table_base.into());
-                    section.push(0x0b);
-                    put_uleb(&mut section, elements.len() as u64);
-                    for func in &elements {
-                        put_uleb(&mut section, (*func).into());
-                    }
-                }
-                10 => {
-                    let kept = live.funcs[self.imported_funcs as usize..]
-                        .iter()
-                        .filter(|live| **live)
-                        .count();
-                    put_uleb(&mut section, kept as u64);
-                    for (index, body) in self.bodies.iter().enumerate() {
-                        if !live.funcs[self.imported_funcs as usize + index] {
-                            continue;
-                        }
-                        let mut bytes = self.wasm[body.clone()].to_vec();
-                        for entry in &self.code_relocs[body_relocs[index].clone()] {
-                            let at = self.code_start + entry.offset as usize - body.start;
-                            let extent = entry.ty.extent();
-                            ensure!(
-                                at + extent <= bytes.len(),
-                                "a relocation past its function's end"
-                            );
-                            patch(&mut bytes[at..at + extent], entry)?;
-                        }
-                        put_uleb(&mut section, bytes.len() as u64);
-                        section.extend_from_slice(&bytes);
-                    }
-                }
-                12 => put_uleb(&mut section, segments.len() as u64),
-                11 => {
-                    put_uleb(&mut section, segments.len() as u64);
-                    for (address, bytes) in &segments {
-                        section.extend_from_slice(&[0, 0x41]);
-                        put_sleb(&mut section, i64::from(*address as i32));
-                        section.push(0x0b);
-                        put_uleb(&mut section, bytes.len() as u64);
-                        section.extend_from_slice(bytes);
-                    }
-                }
-                _ => section.extend_from_slice(&self.wasm[range.clone()]),
-            }
-            out.push(*id);
-            put_uleb(&mut out, section.len() as u64);
-            out.extend_from_slice(&section);
-        }
-        Ok(out)
-    }
-}
-
-/// Where the kept data goes: runs of kept bytes, packed in address order.
-///
-/// The symbol table has no alignments, so each symbol is taken to need the
-/// alignment its address has, up to its segment's (the most any of its
-/// symbols needs). A run moves by a multiple of the most its symbols need,
-/// so every symbol in it keeps its alignment; a run never moves up, so the
-/// data never grows.
-struct Layout {
-    runs: Vec<Run>,
-    old_data_end: u32,
-    new_data_end: u32,
-    old_heap_end: u64,
-    pages: u64,
-    memory_imported: bool,
-}
-
-/// Kept bytes of one segment, contiguous in the input and the output.
-#[derive(Clone, Copy)]
-struct Run {
-    segment: usize,
-    start: u32,
-    end: u32,
-    align: u32,
-    new: u32,
-}
-
-impl Layout {
-    fn new(module: &Module<'_>, live: &Live) -> anyhow::Result<Self> {
-        let mut data = live.data.clone();
-        data.sort_unstable();
-        let mut runs: Vec<Run> = Vec::new();
-        for (segment, start, end, symbol) in data {
-            let cap = 1u32 << module.segments[segment].align_log2.min(16);
-            let align = match start {
-                _ if !symbol => 1,
-                0 => cap,
-                _ => (1 << start.trailing_zeros()).min(cap),
-            };
-            match runs.last_mut() {
-                Some(run) if run.segment == segment && start <= run.end => {
-                    run.end = run.end.max(end);
-                    run.align = run.align.max(align);
-                }
-                _ => runs.push(Run {
-                    segment,
-                    start,
-                    end,
-                    align,
-                    new: 0,
-                }),
-            }
-        }
-        let data_low = module.segments.first().map_or(0, |s| s.address);
-        let old_data_end = module
-            .segments
-            .last()
-            .map_or(0, |s| s.address + s.bytes.len() as u32);
-        let mut cursor = data_low;
-        for run in &mut runs {
-            // The first address from the cursor on with the run's old
-            // address modulo its alignment; never past its old address.
-            run.new = cursor + (run.start.wrapping_sub(cursor) & (run.align - 1));
-            cursor = run.new + (run.end - run.start);
-        }
-        let new_data_end = cursor.max(data_low);
-
-        let memory = module.memory.as_ref();
-        let old_pages = memory.map_or(0, |memory| memory.initial);
-        let top = |end: u32| u64::from(end.next_multiple_of(HEAP_ALIGN)).div_ceil(PAGE);
-        let shrink = top(old_data_end).saturating_sub(top(new_data_end));
-        Ok(Layout {
-            runs,
-            old_data_end,
-            new_data_end,
-            old_heap_end: old_pages * PAGE,
-            pages: old_pages.saturating_sub(shrink),
-            memory_imported: module.memory_imported,
-        })
-    }
-
-    /// The old and the new address of the symbol a memory relocation names,
-    /// or `None` when it names no data (an undefined weak symbol).
-    fn address(
-        &self,
-        module: &Module<'_>,
-        entry: &RelocationEntry,
-    ) -> anyhow::Result<Option<(u32, u32)>> {
-        Ok(match module.symbols.get(entry.index as usize) {
-            Some(Symbol::Data(data)) => {
-                let run = self
-                    .runs
-                    .partition_point(|run| (run.segment, run.start) <= (data.segment, data.start));
-                let run = run.checked_sub(1).map(|index| self.runs[index]);
-                let Some(run) =
-                    run.filter(|run| run.segment == data.segment && data.end <= run.end)
-                else {
-                    bail!("a kept data symbol at {} was not laid out", data.start);
-                };
-                Some((data.start, run.new + (data.start - run.start)))
-            }
-            Some(Symbol::Absolute(name, value)) => {
-                let new = match *name {
-                    "__data_end" => self.new_data_end,
-                    "__heap_base" => {
-                        let old_top = self.old_data_end.next_multiple_of(HEAP_ALIGN);
-                        let new_top = self.new_data_end.next_multiple_of(HEAP_ALIGN);
-                        value.saturating_sub(old_top - new_top)
-                    }
-                    "__heap_end" => {
-                        ensure!(
-                            u64::from(*value) == self.old_heap_end,
-                            "`__heap_end` is not the memory's initial end"
-                        );
-                        (self.pages * PAGE) as u32
-                    }
-                    _ if *value <= module.segments.first().map_or(0, |s| s.address) => *value,
-                    _ => bail!("the web runtime refers to `{name}`, an address past its data"),
-                };
-                Some((*value, new))
-            }
-            Some(Symbol::Other) => None,
-            _ => bail!("a memory relocation names no data symbol"),
-        })
-    }
-
-    /// The data segments to write: each kept segment's runs, patched.
-    fn segments(
-        &self,
-        module: &Module<'_>,
-        patch: &dyn Fn(&mut [u8], &RelocationEntry) -> anyhow::Result<()>,
-    ) -> anyhow::Result<Vec<(u32, Vec<u8>)>> {
-        let mut out: Vec<(usize, u32, Vec<u8>)> = Vec::new();
-        for &Run {
-            segment,
-            start,
-            end,
-            new,
-            ..
-        } in &self.runs
-        {
-            if out.last().is_none_or(|last| last.0 != segment) {
-                out.push((segment, new, Vec::new()));
-            }
-            let (_, base, bytes) = out.last_mut().expect("pushed above");
-            let source = &module.segments[segment];
-            let from = source.bytes.start + (start - source.address) as usize;
-            let at = (new - *base) as usize;
-            bytes.resize(at, 0);
-            bytes.extend_from_slice(&module.wasm[from..from + (end - start) as usize]);
-            let lo = module.data_relocs.partition_point(|r| r.address < start);
-            let hi = module.data_relocs.partition_point(|r| r.address < end);
-            for reloc in &module.data_relocs[lo..hi] {
-                let at = at + (reloc.address - start) as usize;
-                let extent = reloc.entry.ty.extent();
-                ensure!(
-                    at + extent <= bytes.len(),
-                    "a data relocation past its symbol's end"
-                );
-                patch(&mut bytes[at..at + extent], &reloc.entry)?;
-            }
-        }
-        // Memory starts zeroed, so all-zero segments (`.bss`) need no bytes.
-        Ok(out
-            .into_iter()
-            .filter(|(_, _, bytes)| self.memory_imported || bytes.iter().any(|b| *b != 0))
-            .map(|(_, address, bytes)| (address, bytes))
-            .collect())
-    }
 }
 
 /// The custom sections the output leaves out: the linker's and debug info.
@@ -1103,6 +644,7 @@ fn put_uleb5(bytes: &mut [u8], value: u32) {
     }
 }
 
+#[cfg(test)]
 fn put_sleb5(bytes: &mut [u8], value: i32) {
     for (index, byte) in bytes[..5].iter_mut().enumerate() {
         let continued = if index < 4 { 0x80 } else { 0 };
@@ -1121,6 +663,7 @@ fn read_uleb5(bytes: &[u8]) -> u32 {
     value
 }
 
+#[cfg(test)]
 fn read_sleb5(bytes: &[u8]) -> i32 {
     let mut value = 0i64;
     let mut shift = 0;
@@ -1143,7 +686,7 @@ fn read_u32(bytes: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use wasmparser::Validator;
 
     use super::*;
 
@@ -1261,22 +804,79 @@ mod tests {
     }
 
     #[test]
-    fn keeps_what_exports_reach() {
+    fn a_lazy_gate_gets_what_only_it_reaches() {
         let wasm = module();
         Validator::new().validate_all(&wasm).unwrap();
-        let out = prune(&wasm, &["a"]).unwrap();
+        let split = split::split(&wasm, &["a", "memory"], &["b"]).unwrap();
 
-        let mut bodies = Vec::new();
-        let mut exports = Vec::new();
-        let mut data = Vec::new();
-        let mut elements = Vec::new();
-        for payload in Parser::new(0).parse_all(&out) {
+        let main = parts(&split.main);
+        assert_eq!(main.bodies.len(), 2);
+        // `a` calls the function that was 2, now 1, and loads `d0` where it
+        // was: nothing moves.
+        assert_eq!(read_uleb5(&main.bodies[0][2..]), 1);
+        assert_eq!(read_sleb5(&main.bodies[0][9..]), 1040);
+        // Function 2 keeps slot 2; slot 1 is `b`'s, filled by its module.
+        assert_eq!(read_sleb5(&main.bodies[1][2..]), 2);
+        assert_eq!(main.elements, [(2, vec![1])]);
+        let mut d0 = 1044u32.to_le_bytes().to_vec();
+        d0.extend_from_slice(&[0xbb; 4]);
+        assert_eq!(main.data, [(1040, d0)]);
+        assert!(main.exports.iter().any(|(name, _)| name == "a"));
+        assert!(!main.exports.iter().any(|(name, _)| name == "b"));
+        assert!(
+            main.exports
+                .iter()
+                .any(|(name, _)| name == "__indirect_function_table")
+        );
+
+        let [side] = &split.sides[..] else {
+            panic!("one side module")
+        };
+        assert_eq!((side.name.as_str(), side.gate.as_deref()), ("b", Some("b")));
+        assert!(side.needs.is_empty());
+        let side = parts(&side.bytes);
+        assert_eq!(side.exports, [("b".to_owned(), 0)]);
+        assert_eq!(side.elements, [(1, vec![0])]);
+        assert_eq!(side.data, [(1024, vec![0xaa; 16])]);
+        assert_eq!(read_sleb5(&side.bodies[0][9..]), 1024);
+    }
+
+    #[test]
+    fn without_lazy_gates_it_keeps_what_the_exports_reach() {
+        let split = split::split(&module(), &["a", "memory"], &[]).unwrap();
+        assert!(split.sides.is_empty());
+        assert_eq!(parts(&split.main).bodies.len(), 2);
+    }
+
+    #[test]
+    fn fails_on_a_missing_export() {
+        let error = split::split(&module(), &["nsh_part_none"], &[])
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("nsh_part_none"), "{error}");
+    }
+
+    struct Parts {
+        bodies: Vec<Vec<u8>>,
+        exports: Vec<(String, u32)>,
+        data: Vec<(i32, Vec<u8>)>,
+        elements: Vec<(i32, Vec<u32>)>,
+    }
+
+    fn parts(wasm: &[u8]) -> Parts {
+        let mut parts = Parts {
+            bodies: Vec::new(),
+            exports: Vec::new(),
+            data: Vec::new(),
+            elements: Vec::new(),
+        };
+        for payload in Parser::new(0).parse_all(wasm) {
             match payload.unwrap() {
-                Payload::CodeSectionEntry(body) => bodies.push(body.as_bytes().to_vec()),
+                Payload::CodeSectionEntry(body) => parts.bodies.push(body.as_bytes().to_vec()),
                 Payload::ExportSection(reader) => {
                     for export in reader {
                         let export = export.unwrap();
-                        exports.push((export.name.to_owned(), export.index));
+                        parts.exports.push((export.name.to_owned(), export.index));
                     }
                 }
                 Payload::DataSection(reader) => {
@@ -1285,113 +885,30 @@ mod tests {
                         let DataKind::Active { offset_expr, .. } = segment.kind else {
                             panic!()
                         };
-                        data.push((i32_const(&offset_expr).unwrap(), segment.data.to_vec()));
+                        parts
+                            .data
+                            .push((i32_const(&offset_expr).unwrap(), segment.data.to_vec()));
                     }
                 }
                 Payload::ElementSection(reader) => {
                     for element in reader {
-                        let ElementItems::Functions(funcs) = element.unwrap().items else {
+                        let element = element.unwrap();
+                        let ElementKind::Active { offset_expr, .. } = element.kind else {
                             panic!()
                         };
-                        elements = funcs.into_iter().map(Result::unwrap).collect();
+                        let ElementItems::Functions(funcs) = element.items else {
+                            panic!()
+                        };
+                        parts.elements.push((
+                            i32_const(&offset_expr).unwrap(),
+                            funcs.into_iter().map(Result::unwrap).collect(),
+                        ));
                     }
                 }
                 Payload::CustomSection(custom) => panic!("kept {}", custom.name()),
                 _ => {}
             }
         }
-        assert_eq!(exports, [("a".to_owned(), 0), ("memory".to_owned(), 0)]);
-        assert_eq!(bodies.len(), 2);
-        // `a` calls the function that was 2, now 1, and loads `d0`, now at 1024.
-        assert_eq!(read_uleb5(&bodies[0][2..]), 1);
-        assert_eq!(read_sleb5(&bodies[0][9..]), 1024);
-        // Function 1 took slot 2; it is the table's only function now.
-        assert_eq!(read_sleb5(&bodies[1][2..]), 1);
-        assert_eq!(elements, [1]);
-        let mut d0 = 1028u32.to_le_bytes().to_vec();
-        d0.extend_from_slice(&[0xbb; 4]);
-        assert_eq!(data, [(1024, d0)]);
-    }
-
-    #[test]
-    fn fails_on_a_missing_export() {
-        let error = prune(&module(), &["nsh_part_none"]).unwrap_err();
-        assert!(error.to_string().contains("nsh_part_none"), "{error}");
-    }
-
-    /// The full web runtime linked with `--emit-relocs`, where this
-    /// checkout has one (a maintainer's relink, not built by the tests).
-    fn runtime() -> Option<Vec<u8>> {
-        let path =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../target/agents/bloat/er-all.wasm");
-        std::fs::read(path).ok()
-    }
-
-    fn bodies(wasm: &[u8]) -> Vec<&[u8]> {
-        let mut bodies = Vec::new();
-        for payload in Parser::new(0).parse_all(wasm) {
-            if let Payload::CodeSectionEntry(body) = payload.unwrap() {
-                bodies.push(body.as_bytes());
-            }
-        }
-        bodies
-    }
-
-    #[test]
-    fn every_export_keeps_the_module() {
-        let wasm = module();
-        let out = prune(&wasm, &["b", "a"]).unwrap();
-        // Following the relocations from every export changes nothing either.
-        let relocated = prune_by_relocations(&wasm, &["b", "a"]).unwrap();
-        assert_eq!(bodies(&relocated), bodies(&out));
-        assert_eq!(bodies(&out), bodies(&wasm));
-        assert!(out.len() < wasm.len());
-    }
-
-    fn function_count(wasm: &[u8]) -> u32 {
-        let mut count = 0;
-        for payload in Parser::new(0).parse_all(wasm) {
-            if let Payload::CodeSectionStart { count: n, .. } = payload.unwrap() {
-                count = n;
-            }
-        }
-        count
-    }
-
-    #[test]
-    fn runtime_with_every_export_keeps_everything() {
-        let Some(wasm) = runtime() else { return };
-        let names = exports(&wasm).unwrap();
-        let names: Vec<_> = names.iter().map(String::as_str).collect();
-        let out = prune(&wasm, &names).unwrap();
-        assert_eq!(function_count(&out), function_count(&wasm));
-        let relocated = prune_by_relocations(&wasm, &names).unwrap();
-        assert!(bodies(&relocated) == bodies(&wasm));
-        // wasm-ld's own link with these exports is 11.83 MB.
-        assert!(
-            (11_700_000..12_000_000).contains(&out.len()),
-            "{}",
-            out.len()
-        );
-    }
-
-    #[test]
-    fn runtime_with_the_core_keeps_the_core() {
-        let Some(wasm) = runtime() else { return };
-        let names = exports(&wasm).unwrap();
-        let names: Vec<_> = names
-            .iter()
-            .map(String::as_str)
-            .filter(|name| {
-                *name == "nsh_part_core"
-                    || !(name.starts_with("nsh_part_") || name.starts_with("nsh_std_"))
-            })
-            .collect();
-        let out = prune(&wasm, &names).unwrap();
-        // wasm-ld's own link with these exports is 4.50 MB.
-        assert!((4_400_000..4_650_000).contains(&out.len()), "{}", out.len());
-        let kept = exports(&out).unwrap();
-        assert!(kept.iter().any(|name| name == "nsh_part_core"));
-        assert!(!kept.iter().any(|name| name == "nsh_part_editor"));
+        parts
     }
 }

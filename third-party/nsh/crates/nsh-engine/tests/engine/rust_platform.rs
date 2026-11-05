@@ -1,8 +1,9 @@
 //! The platform's services for Rust components on the engine: the fonts
 //! the UI sets' crates ship are registered before the first render, tasks
 //! wait for display frames, components set the layout direction and read
-//! the pixel ratio, the device and the locale; they speak, move the screen
-//! reader and set the status bar with their dialogs.
+//! the pixel ratio, the device, the locale and whether the app is in use;
+//! they speak, move the screen reader and set the status bar with their
+//! dialogs.
 
 use std::{
     collections::HashMap,
@@ -19,7 +20,7 @@ use nsh_core::{
     ApproxTextEngine, AttributedText, Command, EventKind, EventPayload, MountBatch, MountItem,
     Points, ROOT_ID, Size, StatusBarSetting, StatusBarStyle, TextEngine, TextLayout,
     element::{AssetFile, AssetKind, Registry, Root},
-    platform::{Idiom, Locale, Os},
+    platform::{Idiom, Lifecycle, Locale, Os},
     prelude::*,
 };
 use nsh_engine::{App, Assets, Engine, EngineConfig, Environment, MountSink};
@@ -65,6 +66,7 @@ fn config(app: App) -> EngineConfig {
         clipboard: None,
         host: Default::default(),
         picker: None,
+        speech: None,
     }
 }
 
@@ -348,6 +350,57 @@ fn rust_components_read_terminal_identity_and_control_shortcuts() {
     let shown = "macos terminal true false Ctrl+K";
     let (texts, ..) = until(&rx, shown);
     assert!(texts.iter().any(|text| text == shown), "{texts:?}");
+}
+
+/// Counts its effect's runs while it shows whether the app is in use, as
+/// work that pauses in the background does.
+#[component]
+fn InUse() -> impl IntoElement {
+    let runs = signal(0);
+    effect(move || {
+        let _ = lifecycle();
+        runs.update(|r| *r += 1);
+    });
+    view().child(text(move || {
+        format!("{} after {} runs", lifecycle().name(), runs.get())
+    }))
+}
+
+#[test]
+fn components_follow_whether_the_app_is_in_use() {
+    let (engine, rx, _) = start::<InUse>(Environment::default());
+    until(&rx, "active after 1 runs");
+    for (state, shown) in [
+        (Lifecycle::Inactive, "inactive after 2 runs"),
+        (Lifecycle::Background, "background after 3 runs"),
+        (Lifecycle::Active, "active after 4 runs"),
+    ] {
+        engine.control().set_environment(Environment {
+            lifecycle: state,
+            ..Environment::default()
+        });
+        let (texts, ..) = until(&rx, shown);
+        assert_eq!(texts.last().map(|t| t.as_ref()), Some(shown));
+    }
+    // Another part of the environment changing runs nothing that read only
+    // the lifecycle.
+    engine.control().set_environment(Environment {
+        font_scale: 1.5,
+        ..Environment::default()
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    let texts: Vec<_> = rx
+        .try_iter()
+        .flat_map(|batch| batch.items)
+        .filter_map(|item| match item {
+            MountItem::Text { text, .. } => Some(text.text.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        texts.iter().all(|t| t == "active after 4 runs"),
+        "{texts:?}"
+    );
 }
 
 /// Speaks, moves the screen reader, shows a toast, and opens a dialog

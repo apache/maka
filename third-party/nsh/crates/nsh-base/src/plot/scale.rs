@@ -19,7 +19,7 @@ use nsh_core::{
 /// row a band of the axis, in order, for the bars drawn in it
 /// (`ScaleBand`). Each takes `reverse` (visx's scale option, d3's range
 /// written the other way round): the axis runs from its other edge.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Scale {
     /// One position per row, evenly spaced, the first and last at the
     /// edges (one row: the middle).
@@ -40,8 +40,8 @@ pub enum Scale {
         /// there).
         reverse: bool,
     },
-    /// One band per row, in order, with gaps between them and at the ends
-    /// (`ScaleBand`).
+    /// One band per row, or per category of its `domain`, in order, with
+    /// gaps between them and at the ends (`ScaleBand`).
     Band(BandScale),
 }
 
@@ -55,19 +55,27 @@ impl Default for Scale {
 impl Scale {
     /// The axis runs from its other edge (`reverse`).
     pub(crate) fn reversed(&self) -> bool {
-        match *self {
-            Scale::Point { reverse } | Scale::Linear { reverse, .. } => reverse,
+        match self {
+            Scale::Point { reverse } | Scale::Linear { reverse, .. } => *reverse,
             Scale::Band(band) => band.reverse,
         }
     }
 }
 
 /// The options of a band scale (`gpui-base`'s `ScaleBand` builders): the
-/// gaps, as shares of a band's step, the widest a band may be, and how
-/// many bands the axis is laid out for.
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+/// categories of its bands, the gaps, as shares of a band's step, the
+/// widest a band may be, and how many bands the axis is laid out for.
+#[derive(Debug, Clone, PartialEq, Default)]
 #[non_exhaustive]
 pub struct BandScale {
+    /// The categories its bands stand for, in order (`gpui-base`'s
+    /// `ScaleBand::new(domain, ..)`, d3's `scaleBand().domain()`): a
+    /// [`Cell`](super::Cell) goes in the band of its row's category, and
+    /// an axis labels each band with its category; a category written
+    /// twice keeps its first place. Without one, the categories the plot's
+    /// cells read along the axis, in the order met, and without cells a
+    /// band per row.
+    pub domain: Option<Arc<[SharedString]>>,
     /// The gap between neighbouring bands, a share of each (`padding_inner`,
     /// 0 to 1; 0 by default).
     pub padding_inner: Percentage,
@@ -94,7 +102,7 @@ pub struct BandScale {
 impl JsValue for Scale {
     fn ts_type(types: &mut TsTypes) -> String {
         types.declare("Scale", |_| {
-            "/** How an axis of a `Plot` places values: `point` places the rows in order, evenly from one edge to the other; `linear` places a number in proportion to where it lies in its `domain` (the extent of the two values; without one, the extent of what the plot draws); `band` gives each row a band of the axis, in order, for the bars drawn in it: `paddingInner` is the gap between bands and `paddingOuter` the gap at the ends (shares of a band, 0 by default), `maxBandWidth` the widest a band may be (points), `bandCount` the bands the axis is laid out for when more than the rows, and `groupPadding` the gap between the bars side by side in a band (a share of a bar's place). `reverse` runs the axis from its other edge (false by default): the first row or the domain's smallest value at the right edge of the x axis, and on the y axis the domain's smallest value at the top edge (bars grow down from it) and the first row at the bottom edge. */\nexport type Scale = { type: \"point\"; reverse?: boolean } | { type: \"linear\"; domain?: [number, number]; reverse?: boolean } | { type: \"band\"; paddingInner?: number; paddingOuter?: number; maxBandWidth?: number; bandCount?: number; groupPadding?: number; reverse?: boolean };\n".to_owned()
+            "/** How an axis of a `Plot` places values: `point` places the rows in order, evenly from one edge to the other; `linear` places a number in proportion to where it lies in its `domain` (the extent of the two values; without one, the extent of what the plot draws); `band` gives each row a band of the axis, in order, for the bars drawn in it, or each category of its `domain` a band, for the cells placed in them (without one, the categories the plot's cells read, in the order met): `paddingInner` is the gap between bands and `paddingOuter` the gap at the ends (shares of a band, 0 by default), `maxBandWidth` the widest a band may be (points), `bandCount` the bands the axis is laid out for when more than the rows, and `groupPadding` the gap between the bars side by side in a band (a share of a bar's place). `reverse` runs the axis from its other edge (false by default): the first row or the domain's smallest value at the right edge of the x axis, and on the y axis the domain's smallest value at the top edge (bars grow down from it) and the first row at the bottom edge. */\nexport type Scale = { type: \"point\"; reverse?: boolean } | { type: \"linear\"; domain?: [number, number]; reverse?: boolean } | { type: \"band\"; domain?: string[]; paddingInner?: number; paddingOuter?: number; maxBandWidth?: number; bandCount?: number; groupPadding?: number; reverse?: boolean };\n".to_owned()
         })
     }
 
@@ -144,8 +152,14 @@ impl JsValue for Scale {
                         _ => Err(field.expected(&format!("`{key}`: a number of 0 or more"))),
                     }
                 };
+                let domain = value.field("domain")?;
+                let domain = match domain.get().is_nullish() {
+                    true => None,
+                    false => Some(categories(Vec::<SharedString>::from_js(domain.get())?)),
+                };
                 // As d3 takes them: an inner gap of at most the whole band.
                 Ok(Scale::Band(BandScale {
+                    domain,
                     padding_inner: Percentage(
                         number("paddingInner")?.unwrap_or(0.0).min(1.0) as f32
                     ),
@@ -181,6 +195,10 @@ impl JsValue for Scale {
                 host.set_field(raw, "domain", ends.into_raw())?;
             }
             Scale::Band(band) => {
+                if let Some(domain) = &band.domain {
+                    let domain = domain.to_vec().to_js(host)?;
+                    host.set_field(raw, "domain", domain.into_raw())?;
+                }
                 let numbers = [
                     ("paddingInner", Some(band.padding_inner.0 as f64)),
                     ("paddingOuter", Some(band.padding_outer.0 as f64)),
@@ -203,6 +221,46 @@ impl JsValue for Scale {
     }
 }
 
+/// A linear scale on its own (TS `LinearScale`, `{ type: "linear", domain?,
+/// reverse? }`, the `linear` member of [`Scale`]): a plot's second y scale
+/// (`y2Scale`), where only a linear one has a meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+#[non_exhaustive]
+pub struct LinearScale {
+    /// The values at the two ends (in either order); `None`: the extent of
+    /// what the plot draws on it.
+    pub domain: Option<[f64; 2]>,
+    /// The domain runs the other way: its smallest value at the top edge.
+    pub reverse: bool,
+}
+
+impl JsValue for LinearScale {
+    fn ts_type(types: &mut TsTypes) -> String {
+        types.declare("LinearScale", |types| {
+            // The member of `Scale` it takes.
+            Scale::ts_type(types);
+            "/** A linear scale on its own: the `linear` member of `Scale`, for a plot's second y scale (`y2Scale`). */\nexport type LinearScale = Extract<Scale, { type: \"linear\" }>;\n".to_owned()
+        })
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        match Scale::from_js(value)? {
+            Scale::Linear { domain, reverse } => Ok(Self { domain, reverse }),
+            _ => Err(PropError(
+                "a linear scale, `{ type: \"linear\", domain?, reverse? }`".to_owned(),
+            )),
+        }
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        Scale::Linear {
+            domain: self.domain,
+            reverse: self.reverse,
+        }
+        .to_js(host)
+    }
+}
+
 /// A linear map from a domain to a range (`ScaleLinear`): `start` to
 /// `range[0]`, `start + diff` to `range[1]`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -210,6 +268,9 @@ pub(crate) struct Linear {
     start: f64,
     diff: f64,
     range: [f32; 2],
+    /// The step its ticks take when it is laid out in whole steps shared
+    /// with another scale (`alignTicks`).
+    step: Option<f64>,
 }
 
 impl Linear {
@@ -220,7 +281,21 @@ impl Linear {
             start: lo,
             diff: hi - lo,
             range,
+            step: None,
         }
+    }
+
+    /// The map of an aligned domain onto `range`, its ticks a step apart.
+    pub(crate) fn aligned(aligned: Aligned, range: [f32; 2]) -> Self {
+        Self {
+            step: Some(aligned.step),
+            ..Self::new(aligned.domain, range)
+        }
+    }
+
+    /// The step its ticks take, when it is aligned with another scale.
+    pub(crate) fn step(&self) -> Option<f64> {
+        self.step
     }
 
     /// Where `value` goes. A domain of one value puts it in the middle of
@@ -249,6 +324,116 @@ impl Linear {
     }
 }
 
+/// A domain laid out in whole steps (nice ones: 1, 2 or 5 times a power of
+/// ten), whose ticks fall on the same places as another's (`alignTicks`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Aligned {
+    pub(crate) domain: [f64; 2],
+    pub(crate) step: f64,
+}
+
+/// The fewest divisions aligned scales take when they may (ai-chat's
+/// `MIN_ALIGNED_DIVISIONS`): a grid of fewer lines tells little.
+const MIN_ALIGNED_DIVISIONS: usize = 3;
+
+/// The extents `a` and `b` of two scales laid out in nice steps with the
+/// same number of divisions, at most `max`, so that their ticks fall on
+/// the same places (ai-chat's `aligned_ticks`, ECharts' `alignTicks`): when
+/// both extents hold zero, zero falls on the same place too; otherwise a
+/// domain gains its extra divisions away from zero when it starts or ends
+/// there (volumes from zero grow up) and on both sides when not (a price
+/// stays in the middle). Of the choices, those of at least
+/// [`MIN_ALIGNED_DIVISIONS`] come first, then those whose data fill the
+/// most of both domains, then those of more divisions. `None` when either
+/// extent is a single value or not finite.
+pub(crate) fn align(a: [f64; 2], b: [f64; 2], max: usize) -> Option<(Aligned, Aligned)> {
+    let max = max.max(1);
+    let valid = |[lo, hi]: [f64; 2]| lo.is_finite() && hi.is_finite() && hi > lo;
+    if !(valid(a) && valid(b)) {
+        return None;
+    }
+    let (ca, cb) = (steps(a, max), steps(b, max));
+    let zero = |[lo, hi]: [f64; 2]| lo <= 0.0 && hi >= 0.0;
+    let both_zero = zero(a) && zero(b);
+    let dense = MIN_ALIGNED_DIVISIONS.min(max);
+    let mut best: Option<(bool, f64, usize, Aligned, Aligned)> = None;
+    for &(sa, la, ha) in &ca {
+        for &(sb, lb, hb) in &cb {
+            let (ka, kb, divisions) = match both_zero {
+                true => {
+                    let (below, above) = ((-la).max(-lb), ha.max(hb));
+                    ((-below, above), (-below, above), (below + above) as usize)
+                }
+                false => {
+                    let divisions = (ha - la).max(hb - lb);
+                    (
+                        widen(la, ha, divisions),
+                        widen(lb, hb, divisions),
+                        divisions as usize,
+                    )
+                }
+            };
+            if divisions == 0 || divisions > max {
+                continue;
+            }
+            let fill =
+                (a[1] - a[0]) / (divisions as f64 * sa) + (b[1] - b[0]) / (divisions as f64 * sb);
+            let is_dense = divisions >= dense;
+            let better = match &best {
+                None => true,
+                Some((was_dense, f, d, ..)) => {
+                    (is_dense && !was_dense)
+                        || (is_dense == *was_dense
+                            && (fill > f + 1e-9 || ((fill - f).abs() <= 1e-9 && divisions > *d)))
+                }
+            };
+            if better {
+                let at = |(lo, hi): (i64, i64), step: f64| Aligned {
+                    domain: [lo as f64 * step, hi as f64 * step],
+                    step,
+                };
+                best = Some((is_dense, fill, divisions, at(ka, sa), at(kb, sb)));
+            }
+        }
+    }
+    best.map(|(.., a, b)| (a, b))
+}
+
+/// The nice steps that lay `extent` out in at most `max` divisions, each
+/// with the whole steps its ends round out to (`lo / step` down, `hi /
+/// step` up).
+fn steps([lo, hi]: [f64; 2], max: usize) -> Vec<(f64, i64, i64)> {
+    // Float division's slack (0.3 / 0.1 = 2.9999…) adds no division.
+    const EPS: f64 = 1e-9;
+    let least = (hi - lo) / max as f64;
+    let base = 10f64.powi(least.log10().floor() as i32);
+    let mut out: Vec<(f64, i64, i64)> = Vec::new();
+    for k in 0..4 {
+        for factor in [1.0, 2.0, 5.0] {
+            let step = base * 10f64.powi(k) * factor;
+            let (l, h) = (
+                (lo / step + EPS).floor() as i64,
+                (hi / step - EPS).ceil() as i64,
+            );
+            if h - l >= 1 && (h - l) as usize <= max && !out.iter().any(|(s, ..)| *s == step) {
+                out.push((step, l, h));
+            }
+        }
+    }
+    out
+}
+
+/// Whole steps `lo..hi` widened to `divisions`: up from a domain that
+/// starts at zero, down to one that ends there, evenly round others.
+fn widen(lo: i64, hi: i64, divisions: i64) -> (i64, i64) {
+    let extra = divisions - (hi - lo);
+    match (lo, hi) {
+        (0, _) => (lo, hi + extra),
+        (_, 0) => (lo - extra, hi),
+        _ => (lo - extra / 2, hi + (extra - extra / 2)),
+    }
+}
+
 /// Bands laid out across a range (`ScaleBand`, over row indices), as
 /// d3's `scaleBand` lays them out, the reference `gpui-base`'s cites: `len`
 /// bands one `step` apart, `padding_inner` of a step between neighbours
@@ -271,7 +456,7 @@ pub(crate) struct Band {
 
 impl Band {
     /// `rows` bands (or `band_count` when more) across `range`.
-    pub(crate) fn new(rows: usize, range: [f32; 2], options: BandScale) -> Self {
+    pub(crate) fn new(rows: usize, range: [f32; 2], options: &BandScale) -> Self {
         Self {
             len: rows.max(options.band_count.unwrap_or(0) as usize),
             start: range[0].min(range[1]),
@@ -298,6 +483,23 @@ impl Band {
             group_padding: 0.0,
             reverse: false,
         }
+    }
+
+    /// The same bands over a range from 0 to 1 and no widest band: where
+    /// they go as shares of the axis, whatever its length (`max_width` is
+    /// points, applied where the shares become points).
+    pub(crate) fn unit(&self) -> Self {
+        Self {
+            start: 0.0,
+            diff: 1.0,
+            max_width: None,
+            ..*self
+        }
+    }
+
+    /// The widest a band may be, in points.
+    pub(crate) fn max_width(&self) -> Option<f32> {
+        self.max_width
     }
 
     /// The places of `count` bars side by side in each band (the scale's
@@ -444,6 +646,18 @@ pub(crate) fn point_tick(index: usize, len: usize, range: [f32; 2]) -> Option<f3
     }
 }
 
+/// `domain` without the categories written again (each keeps its first
+/// place).
+pub(crate) fn categories(domain: Vec<SharedString>) -> Arc<[SharedString]> {
+    let mut out: Vec<SharedString> = Vec::with_capacity(domain.len());
+    for c in domain {
+        if !out.contains(&c) {
+            out.push(c);
+        }
+    }
+    out.into()
+}
+
 /// The extent of `values`' finite numbers.
 pub(crate) fn extent(values: impl IntoIterator<Item = f64>) -> Option<[f64; 2]> {
     values
@@ -579,9 +793,333 @@ impl JsValue for OrdinalScale {
     }
 }
 
+/// The colors of a [`Plot`](super::Plot)'s marks (TS `ColorScale`): the
+/// categories' colors (`ordinal`, which the marks' `color` reads), or the
+/// colors of numbers along a ramp (`sequential`, `diverging`, which a
+/// [`Cell`](super::Cell)'s `value` and a [`Treemap`](super::Treemap)'s
+/// `colorValue` read), as d3's `scaleOrdinal`,
+/// `scaleSequential` and `scaleDiverging`.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ColorScale {
+    /// A color per category (`{ type: "ordinal", … }`).
+    Ordinal(OrdinalScale),
+    /// Numbers from low to high along a ramp of colors (`{ type:
+    /// "sequential", … }`).
+    Sequential(SequentialScale),
+    /// Numbers on either side of a pivot along a ramp of colors whose middle
+    /// is the pivot's (`{ type: "diverging", … }`).
+    Diverging(DivergingScale),
+}
+
+impl Default for ColorScale {
+    /// An ordinal scale with no colors.
+    fn default() -> Self {
+        ColorScale::Ordinal(OrdinalScale::default())
+    }
+}
+
+impl From<OrdinalScale> for ColorScale {
+    fn from(scale: OrdinalScale) -> Self {
+        ColorScale::Ordinal(scale)
+    }
+}
+
+impl From<SequentialScale> for ColorScale {
+    fn from(scale: SequentialScale) -> Self {
+        ColorScale::Sequential(scale)
+    }
+}
+
+impl From<DivergingScale> for ColorScale {
+    fn from(scale: DivergingScale) -> Self {
+        ColorScale::Diverging(scale)
+    }
+}
+
+impl ColorScale {
+    /// The ordinal scale, the one the marks' categories take colors of.
+    pub(crate) fn ordinal(&self) -> Option<&OrdinalScale> {
+        match self {
+            ColorScale::Ordinal(scale) => Some(scale),
+            _ => None,
+        }
+    }
+
+    /// The domain its numbers are spread over, given the `extent` of the
+    /// values it colors: the app's, else the extent (for `diverging`, made
+    /// even on both sides of its pivot); `None` for `ordinal`.
+    pub(crate) fn domain(&self, extent: Option<[f64; 2]>) -> Option<[f64; 2]> {
+        match self {
+            ColorScale::Ordinal(_) => None,
+            ColorScale::Sequential(s) => s.domain.or(extent),
+            ColorScale::Diverging(d) => d.domain.or_else(|| {
+                let [lo, hi] = extent?;
+                let r = (lo - d.pivot).abs().max((hi - d.pivot).abs());
+                Some([d.pivot - r, d.pivot + r])
+            }),
+        }
+    }
+
+    /// The color of `value` over `domain` (from [`Self::domain`]): where
+    /// it lies along the ramp, the range's colors spread evenly over it and
+    /// mixed in OKLab between them; values outside the domain take its
+    /// ends. `unknown` (or none) for no value; none for `ordinal`.
+    pub(crate) fn shade(&self, value: f64, domain: [f64; 2]) -> Option<Hsla> {
+        let (range, unknown) = match self {
+            ColorScale::Ordinal(_) => return None,
+            ColorScale::Sequential(s) => (&s.range, s.unknown),
+            ColorScale::Diverging(d) => (&d.range, d.unknown),
+        };
+        if !value.is_finite() {
+            return unknown;
+        }
+        let [lo, hi] = domain;
+        let t = match self {
+            ColorScale::Diverging(d) => {
+                // d3's `scaleDiverging`: each side of the pivot over half
+                // the ramp, the middle the pivot's.
+                let p = d.pivot;
+                let side = |from: f64, to: f64| match to - from {
+                    span if span == 0.0 || !span.is_finite() => 0.0,
+                    span => (value - from) / span,
+                };
+                match value < p {
+                    true => (1.0 - side(p, lo)) * 0.5,
+                    false => 0.5 + side(p, hi) * 0.5,
+                }
+            }
+            _ => match hi - lo {
+                // One value: the middle, as d3 does.
+                span if span == 0.0 || !span.is_finite() => 0.5,
+                span => (value - lo) / span,
+            },
+        };
+        ramp(range, t.clamp(0.0, 1.0) as f32)
+    }
+}
+
+/// The color at `t` (0 to 1) along `colors`, spread evenly over it and
+/// mixed in OKLab (d3's `piecewise` over `interpolateOklab`): perceptually
+/// even, with no gray dip between two hues as mixes in RGB have.
+fn ramp(colors: &[Hsla], t: f32) -> Option<Hsla> {
+    match colors {
+        [] => None,
+        [one] => Some(*one),
+        _ => {
+            let at = t * (colors.len() - 1) as f32;
+            let i = (at.floor() as usize).min(colors.len() - 2);
+            // On a stop, its color as the app wrote it.
+            match at - i as f32 {
+                f if f <= 0.0 => Some(colors[i]),
+                f if f >= 1.0 => Some(colors[i + 1]),
+                f => Some(colors[i + 1].mix_oklab(colors[i], f)),
+            }
+        }
+    }
+}
+
+/// Numbers from low to high along a ramp of colors (TS `{ type:
+/// "sequential", domain?, range, unknown? }`), as d3's `scaleSequential`
+/// over a ramp of the `range`'s colors: the domain's low end takes the
+/// first color, its high end the last, the colors spread evenly between
+/// and mixed in OKLab. Values outside the domain take its ends.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct SequentialScale {
+    /// The values of the ramp's ends; the extent of the values it colors
+    /// without one.
+    pub domain: Option<[f64; 2]>,
+    /// The colors along the ramp, from the low end to the high one (CSS
+    /// colors in TS).
+    pub range: Vec<Hsla>,
+    /// The color of a row without a value; none: it has no color of the
+    /// scale.
+    pub unknown: Option<Hsla>,
+}
+
+impl SequentialScale {
+    /// The ramp of `range`'s colors over the values' extent.
+    pub fn new(range: impl IntoIterator<Item = impl Into<Hsla>>) -> Self {
+        Self {
+            range: range.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The same scale, over `domain`.
+    pub fn domain(mut self, domain: [f64; 2]) -> Self {
+        self.domain = Some(domain);
+        self
+    }
+}
+
+/// Numbers on either side of a pivot along a ramp of colors (TS `{ type:
+/// "diverging", domain?, pivot?, range, unknown? }`), as d3's
+/// `scaleDiverging` and Observable Plot's `pivot`: the values from the
+/// domain's low end to the pivot take the first half of the ramp, those
+/// from the pivot to its high end the second, so the pivot (0 by default)
+/// takes the middle color: losses one hue, gains another, flat neutral.
+/// Without a domain, the extent of the values made even on both sides of
+/// the pivot (Observable Plot's `symmetric`), so a loss and a gain of the
+/// same size are as strong.
+#[derive(Debug, Clone, PartialEq, Default)]
+#[non_exhaustive]
+pub struct DivergingScale {
+    /// The values of the ramp's ends; the extent of the values it colors,
+    /// even on both sides of the pivot, without one.
+    pub domain: Option<[f64; 2]>,
+    /// The value of the ramp's middle; 0 by default.
+    pub pivot: f64,
+    /// The colors along the ramp, from the low end to the high one (CSS
+    /// colors in TS), the middle of the ramp the pivot's.
+    pub range: Vec<Hsla>,
+    /// The color of a row without a value; none: it has no color of the
+    /// scale.
+    pub unknown: Option<Hsla>,
+}
+
+impl DivergingScale {
+    /// The ramp of `range`'s colors about 0, over the values' extent made
+    /// even on both sides.
+    pub fn new(range: impl IntoIterator<Item = impl Into<Hsla>>) -> Self {
+        Self {
+            range: range.into_iter().map(Into::into).collect(),
+            ..Self::default()
+        }
+    }
+
+    /// The same scale, over `domain`.
+    pub fn domain(mut self, domain: [f64; 2]) -> Self {
+        self.domain = Some(domain);
+        self
+    }
+
+    /// The same scale, about `pivot`.
+    pub fn pivot(mut self, pivot: f64) -> Self {
+        self.pivot = pivot;
+        self
+    }
+}
+
+impl JsValue for ColorScale {
+    fn ts_type(types: &mut TsTypes) -> String {
+        let ordinal = OrdinalScale::ts_type(types);
+        types.declare("ColorScale", |_| {
+            format!(
+                "/** The colors of a `Plot`'s marks: `ordinal`, a color per category (a mark's `color`); `sequential`, a number's color along the ramp of the `range`'s colors, from the `domain`'s low end to its high end (without one, the extent of the values it colors), the colors spread evenly and mixed in OKLab; `diverging`, the same ramp with its middle at `pivot` (0 by default), the values below the pivot over its first half and those above over its second (without a `domain`, the extent made even on both sides of the pivot). A `Cell`'s `value` and a `Treemap`'s `colorValue` take the colors of `sequential` and `diverging`; values outside the domain take its ends, and a row without one takes `unknown`. */\nexport type ColorScale = {ordinal} | {{ type: \"sequential\"; domain?: [number, number]; range: string[]; unknown?: string }} | {{ type: \"diverging\"; domain?: [number, number]; pivot?: number; range: string[]; unknown?: string }};\n"
+            )
+        })
+    }
+
+    fn from_js(value: JsIn<'_>) -> Result<Self, PropError> {
+        let kind = value.field("type")?;
+        let kind = kind.get().as_string();
+        let diverging = match kind.as_deref() {
+            Some("ordinal") => return OrdinalScale::from_js(value).map(ColorScale::Ordinal),
+            Some("sequential") => false,
+            Some("diverging") => true,
+            _ => {
+                return Err(value.expected(
+                    "`{ type: \"ordinal\" }`, `{ type: \"sequential\" }` or `{ type: \"diverging\" }`",
+                ));
+            }
+        };
+        let domain = value.field("domain")?;
+        let domain = match domain.get().is_nullish() {
+            true => None,
+            false => match Vec::<f64>::from_js(domain.get())?[..] {
+                [a, b] if a.is_finite() && b.is_finite() => Some([a.min(b), a.max(b)]),
+                _ => {
+                    return Err(PropError(
+                        "`domain`: two finite numbers, `[min, max]`".to_owned(),
+                    ));
+                }
+            },
+        };
+        let range = value.field("range")?;
+        let range: Vec<Hsla> = Vec::<Color>::from_js(range.get())?
+            .into_iter()
+            .map(Hsla::from)
+            .collect();
+        let unknown = value.field("unknown")?;
+        let unknown = match unknown.get().is_nullish() {
+            true => None,
+            false => Some(Color::from_js(unknown.get())?.into()),
+        };
+        if !diverging {
+            return Ok(ColorScale::Sequential(SequentialScale {
+                domain,
+                range,
+                unknown,
+            }));
+        }
+        let pivot = value.field("pivot")?;
+        let pivot = pivot.get();
+        let pivot = match pivot.is_nullish() {
+            true => 0.0,
+            false => match pivot.as_number() {
+                Some(p) if p.is_finite() => p,
+                _ => return Err(pivot.expected("`pivot`: a finite number")),
+            },
+        };
+        Ok(ColorScale::Diverging(DivergingScale {
+            domain,
+            pivot,
+            range,
+            unknown,
+        }))
+    }
+
+    fn to_js<'a>(&self, host: &'a dyn JsHost) -> Result<JsOwned<'a>, PropError> {
+        let (kind, domain, range, unknown, pivot) = match self {
+            ColorScale::Ordinal(scale) => return scale.to_js(host),
+            ColorScale::Sequential(s) => ("sequential", s.domain, &s.range, s.unknown, None),
+            ColorScale::Diverging(d) => ("diverging", d.domain, &d.range, d.unknown, Some(d.pivot)),
+        };
+        let object = JsOwned::new(host, host.new_object()?);
+        let raw = object.get().raw();
+        host.set_field(raw, "type", host.new_string(kind)?)?;
+        if let Some([a, b]) = domain {
+            host.set_field(raw, "domain", vec![a, b].to_js(host)?.into_raw())?;
+        }
+        if let Some(pivot) = pivot {
+            host.set_field(raw, "pivot", host.new_number(pivot))?;
+        }
+        let range: Vec<Color> = range.iter().map(|&c| c.into()).collect();
+        host.set_field(raw, "range", range.to_js(host)?.into_raw())?;
+        if let Some(unknown) = unknown {
+            let unknown = Color::from(unknown).to_js(host)?;
+            host.set_field(raw, "unknown", unknown.into_raw())?;
+        }
+        Ok(object)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two scales laid out in the same nice steps (ai-chat's
+    /// `aligned_ticks`): volumes from zero grow up and a price keeps its
+    /// own range, three steps each; two extents that hold zero put it on
+    /// the same place.
+    #[test]
+    fn aligned_scales_share_their_steps() {
+        let (volume, price) = align([0.0, 280e6], [172.4, 191.8], 5).unwrap();
+        assert_eq!((volume.domain, volume.step), ([0.0, 300e6], 100e6));
+        assert_eq!((price.domain, price.step), ([170.0, 200.0], 10.0));
+
+        let (profit, margin) = align([-20.0, 100.0], [-0.05, 0.3], 6).unwrap();
+        assert_eq!((profit.domain, profit.step), ([-20.0, 100.0], 20.0));
+        assert_eq!(margin.step, 0.1);
+        let zero = |a: Aligned| -a.domain[0] / (a.domain[1] - a.domain[0]);
+        assert!((zero(profit) - zero(margin)).abs() < 1e-9);
+        let divisions = |a: Aligned| ((a.domain[1] - a.domain[0]) / a.step).round();
+        assert_eq!(divisions(profit), divisions(margin));
+
+        // A single value has no steps.
+        assert_eq!(align([5.0, 5.0], [0.0, 1.0], 5), None);
+    }
 
     #[test]
     fn scales_place_values_as_gpui_base_and_d3_do() {
@@ -609,7 +1147,7 @@ mod tests {
     fn band(rows: usize, range: [f32; 2], f: impl FnOnce(&mut BandScale)) -> Band {
         let mut options = BandScale::default();
         f(&mut options);
-        Band::new(rows, range, options)
+        Band::new(rows, range, &options)
     }
 
     /// `gpui-base`'s `ScaleBand` tests (`scale/band.rs:166-265`), over row
@@ -802,5 +1340,83 @@ mod tests {
         assert!(AxisMap::Linear(x).backward());
         assert!(!AxisMap::Linear(Linear::new([0.0, 100.0], [0.0, 200.0])).backward());
         assert_eq!(point_tick(0, 3, [100.0, 0.0]), Some(100.0));
+    }
+
+    /// A sequential ramp (d3's `scaleSequential`): the domain's ends take
+    /// the range's ends, the colors between spread evenly and mixed in
+    /// OKLab, values outside the domain clamped, no value `unknown`, one
+    /// value the middle; without a domain, the values' extent.
+    #[test]
+    fn a_sequential_scale_ramps_its_colors_in_oklab() {
+        let [white, blue, gray] =
+            [0xffffffff, 0x0000ffff, 0x999999ff].map(|c| Hsla::from(Color(c)));
+        let mut scale = SequentialScale::new([white, blue]);
+        scale.unknown = Some(gray);
+        let ramp = ColorScale::from(scale.clone());
+        let domain = ramp.domain(Some([0.0, 10.0])).unwrap();
+        assert_eq!(domain, [0.0, 10.0]);
+        assert_eq!(ramp.shade(0.0, domain), Some(white));
+        assert_eq!(ramp.shade(10.0, domain), Some(blue));
+        assert_eq!(ramp.shade(5.0, domain), Some(blue.mix_oklab(white, 0.5)));
+        assert_eq!(ramp.shade(-3.0, domain), Some(white));
+        assert_eq!(ramp.shade(99.0, domain), Some(blue));
+        assert_eq!(ramp.shade(f64::NAN, domain), Some(gray));
+        assert_eq!(
+            ramp.shade(4.0, [4.0, 4.0]),
+            Some(blue.mix_oklab(white, 0.5))
+        );
+        // The app's domain over the extent; none without either.
+        let fixed = ColorScale::from(scale.domain([0.0, 100.0]));
+        assert_eq!(fixed.domain(Some([0.0, 10.0])), Some([0.0, 100.0]));
+        assert_eq!(
+            ColorScale::from(SequentialScale::new([white])).domain(None),
+            None
+        );
+        // Three colors: the middle one halfway.
+        let three = ColorScale::from(SequentialScale::new([white, gray, blue]));
+        assert_eq!(three.shade(5.0, domain), Some(gray));
+        // An ordinal scale colors no number.
+        assert_eq!(ColorScale::default().shade(1.0, domain), None);
+    }
+
+    /// A diverging ramp (d3's `scaleDiverging`, Observable Plot's
+    /// `pivot`): the pivot takes the middle color, each side of it its
+    /// half of the ramp, however lopsided the domain; without a domain, the
+    /// extent made even about the pivot.
+    #[test]
+    fn a_diverging_scale_puts_its_pivot_in_the_middle() {
+        let [red, white, green] =
+            [0xff0000ff, 0xffffffff, 0x00ff00ff].map(|c| Hsla::from(Color(c)));
+        let scale = ColorScale::from(DivergingScale::new([red, white, green]));
+        // Even about 0: a loss of 4 as strong as a gain of 4.
+        let domain = scale.domain(Some([-2.0, 4.0])).unwrap();
+        assert_eq!(domain, [-4.0, 4.0]);
+        assert_eq!(scale.shade(0.0, domain), Some(white));
+        assert_eq!(scale.shade(-4.0, domain), Some(red));
+        assert_eq!(scale.shade(4.0, domain), Some(green));
+        assert_eq!(scale.shade(-2.0, domain), Some(white.mix_oklab(red, 0.5)));
+        // A lopsided domain keeps the pivot in the middle.
+        assert_eq!(
+            scale.shade(5.0, [-1.0, 10.0]),
+            Some(green.mix_oklab(white, 0.5))
+        );
+        assert_eq!(
+            scale.shade(-0.5, [-1.0, 10.0]),
+            Some(white.mix_oklab(red, 0.5))
+        );
+        // Another pivot.
+        let about = ColorScale::from(DivergingScale::new([red, white, green]).pivot(100.0));
+        assert_eq!(about.domain(Some([90.0, 105.0])), Some([90.0, 110.0]));
+        assert_eq!(about.shade(100.0, [90.0, 110.0]), Some(white));
+        // All values on the pivot: the middle.
+        assert_eq!(scale.shade(0.0, [0.0, 0.0]), Some(white));
+        assert_eq!(scale.shade(f64::NAN, domain), None);
+    }
+
+    /// A band domain without repeats keeps each category's first place.
+    #[test]
+    fn band_categories_keep_their_first_place() {
+        let domain = categories(["b", "a", "b", "c"].map(SharedString::from).to_vec());
+        assert_eq!(&*domain, ["b", "a", "c"].map(SharedString::from));
     }
 }

@@ -140,6 +140,69 @@ impl std::fmt::Debug for FontFamily {
     }
 }
 
+/// A family of a `fontFamily` list ([`font_families`]). More generic
+/// families (`cursive`, `fantasy`) may be added: match with a `_` arm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum FamilyName<'a> {
+    /// The system font: `system-ui`, `sans-serif`, `ui-sans-serif`,
+    /// `-apple-system`, `BlinkMacSystemFont`.
+    System,
+    /// The system's serif: `serif`, `ui-serif`.
+    Serif,
+    /// The system's monospace font: `monospace`, `ui-monospace`.
+    Monospace,
+    /// The system's rounded font (`ui-rounded`), where it has one.
+    Rounded,
+    /// A family installed on the device or registered by the app.
+    Named(&'a str),
+}
+
+/// The families of a `fontFamily` value, most preferred first, as CSS lists
+/// them: names separated by commas, each trimmed and unquoted
+/// (`"Inter, \"Noto Sans SC\", sans-serif"`), the generic families as
+/// [`FamilyName`]'s. A quoted name runs to its closing quote, commas and all
+/// (`'ACME, Inc'`), and is always a family's name: a quoted `"serif"` names a
+/// family called serif, as in CSS. Text is set in the first family a
+/// platform has, and a character that family lacks in the next that has it.
+pub fn font_families(value: &str) -> impl Iterator<Item = FamilyName<'_>> {
+    let mut rest = value;
+    std::iter::from_fn(move || {
+        loop {
+            rest = rest.trim_start();
+            if rest.is_empty() {
+                return None;
+            }
+            let (family, quoted) = if let Some(q @ ('"' | '\'')) = rest.chars().next() {
+                // To the closing quote (or the end, unclosed); what follows it
+                // up to the next comma is not part of the name.
+                let body = &rest[1..];
+                let end = body.find(q).unwrap_or(body.len());
+                let after = body.get(end + 1..).unwrap_or("");
+                rest = after.find(',').map_or("", |i| &after[i + 1..]);
+                (body[..end].trim(), true)
+            } else {
+                let end = rest.find(',').unwrap_or(rest.len());
+                let name = rest[..end].trim_end();
+                rest = rest.get(end + 1..).unwrap_or("");
+                (name, false)
+            };
+            if family.is_empty() {
+                continue;
+            }
+            return Some(match family {
+                name if quoted => FamilyName::Named(name),
+                "system-ui" | "sans-serif" | "ui-sans-serif" | "-apple-system"
+                | "BlinkMacSystemFont" => FamilyName::System,
+                "serif" | "ui-serif" => FamilyName::Serif,
+                "monospace" | "ui-monospace" => FamilyName::Monospace,
+                "ui-rounded" => FamilyName::Rounded,
+                name => FamilyName::Named(name),
+            });
+        }
+    })
+}
+
 /// Lines drawn through or under text (`textDecorationLine`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct TextDecoration {
@@ -1595,7 +1658,7 @@ style_keys! {
     FontSize = "fontSize": Text "number",
     FontWeight = "fontWeight": Text "\"normal\" | \"bold\" | number | `${number}`" "`\"normal\"` (400), `\"bold\"` (700) or 100–900.",
     LineHeight = "lineHeight": Text "number",
-    FontFamily = "fontFamily": Text "string" "A system family or the name an imported font (`import Inter from \"./Inter.ttf\"`) evaluates to.",
+    FontFamily = "fontFamily": Text "string" "A system family or the name an imported font (`import Inter from \"./Inter.ttf\"`) evaluates to, or a list of them as CSS writes it, most preferred first (`\"Brand, 'Noto Sans SC', sans-serif\"`): characters the first lacks come from the next that has them.",
     FontStyle = "fontStyle": Text "\"normal\" | \"italic\"",
     LetterSpacing = "letterSpacing": Text "number",
     TextDecorationLine = "textDecorationLine": Text "\"none\" | \"underline\" | \"line-through\" | \"underline line-through\"",
@@ -3787,6 +3850,57 @@ impl Style {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn font_family_lists_name_their_families_in_order() {
+        use super::{FamilyName, font_families};
+        let list: Vec<_> =
+            font_families(" Inter , \"Noto Sans SC\",'Brand Mono', ui-monospace, sans-serif,")
+                .collect();
+        assert_eq!(
+            list,
+            [
+                FamilyName::Named("Inter"),
+                FamilyName::Named("Noto Sans SC"),
+                FamilyName::Named("Brand Mono"),
+                FamilyName::Monospace,
+                FamilyName::System,
+            ]
+        );
+        assert_eq!(
+            font_families("serif").collect::<Vec<_>>(),
+            [FamilyName::Serif]
+        );
+        assert_eq!(
+            font_families("ui-rounded").collect::<Vec<_>>(),
+            [FamilyName::Rounded]
+        );
+        assert_eq!(font_families(" , ").count(), 0);
+    }
+
+    /// A quoted name keeps its commas and is a family's name even when it
+    /// spells a generic family, as in CSS.
+    #[test]
+    fn quoted_family_names_keep_their_commas() {
+        use super::{FamilyName, font_families};
+        assert_eq!(
+            font_families("'ACME, Inc', serif").collect::<Vec<_>>(),
+            [FamilyName::Named("ACME, Inc"), FamilyName::Serif]
+        );
+        assert_eq!(
+            font_families("\"Brand, Display\" , 'monospace', ui-monospace").collect::<Vec<_>>(),
+            [
+                FamilyName::Named("Brand, Display"),
+                FamilyName::Named("monospace"),
+                FamilyName::Monospace,
+            ]
+        );
+        // An unclosed quote runs to the end.
+        assert_eq!(
+            font_families("Inter, 'Noto, Sans").collect::<Vec<_>>(),
+            [FamilyName::Named("Inter"), FamilyName::Named("Noto, Sans")]
+        );
+    }
+
     use super::*;
     use crate::geometry::{relative, size};
 

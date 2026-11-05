@@ -3,7 +3,7 @@
 //! group is a toolbar, one stop of the keyboard focus, at the first pressed
 //! toggle (else the first enabled one), whose arrow keys, Home and End move
 //! the focus past disabled toggles, around the ends, without pressing
-//! anything. On macOS, where Tab stops at views that take presses.
+//! anything (Left and Right traded in a right-to-left layout). On macOS, where Tab stops at views that take presses.
 
 use std::time::Duration;
 
@@ -15,11 +15,16 @@ use nsh_testing::Headless;
 const MARKS: [&str; 4] = ["Bold", "Italic", "Strikethrough", "Underline"];
 
 fn start<C: Component<Props = ()>>() -> Headless {
+    start_in::<C>(false)
+}
+
+fn start_in<C: Component<Props = ()>>(rtl: bool) -> Headless {
     let mut config = EngineConfig {
         viewport: Size::new(px(390.0), px(844.0)),
         ..EngineConfig::new(Root::of::<C>())
     };
     config.environment.os = Os::MacOs;
+    config.environment.rtl = rtl;
     let mut app = Headless::start(config).unwrap();
     app.first_render().unwrap();
     app
@@ -156,6 +161,26 @@ fn arrows_move_the_focus_without_pressing_wrapping_and_skipping_disabled_toggles
 }
 
 #[test]
+fn right_to_left_trades_left_and_right_and_keeps_up_and_down() {
+    let mut app = start_in::<Formatting>(true);
+    app.press_key("tab").unwrap();
+    app.press_key("tab").unwrap();
+    // Italic → Underline: Left is the next toggle.
+    app.press_key("left").unwrap();
+    app.press_key("space").unwrap();
+    app.wait_for("text:marks:Italic,Underline").unwrap();
+    // Right back to Italic.
+    app.press_key("right").unwrap();
+    app.press_key("space").unwrap();
+    app.wait_for("text:marks:Underline").unwrap();
+    // Up is still the previous one.
+    app.press_key("up").unwrap();
+    app.press_key("space").unwrap();
+    app.wait_for("text:marks:Bold,Underline").unwrap();
+    app.wait_for("text:changes:3").unwrap();
+}
+
+#[test]
 fn home_and_end_go_to_the_first_and_last_enabled_toggle() {
     let mut app = start::<Formatting>();
     app.press_key("tab").unwrap();
@@ -201,4 +226,117 @@ fn a_disabled_group_disables_its_toggles() {
     app.press("text:Lock").unwrap();
     app.press("role:button[Bold]").unwrap();
     app.wait_for("text:marks:Bold,Italic").unwrap();
+}
+
+/// `hitSlop` widens where presses count past its bounds, as a view's
+/// does: the platforms get it on the toggle's pressable view, it follows a
+/// binding, and a toggle without one gets none.
+mod hit_slop {
+    use std::sync::{Arc, Mutex};
+
+    use nsh_base::{toggle, toggle_group};
+    use nsh_core::{EdgeInsets, MountBatch, MountItem, NodeId, Size, element::Root, prelude::*};
+    use nsh_engine::EngineConfig;
+    use nsh_testing::Headless;
+
+    /// Every batch's items.
+    type Seen = Arc<Mutex<Vec<MountItem>>>;
+
+    fn start<C: Component<Props = ()>>() -> (Headless, Seen) {
+        let config = EngineConfig {
+            viewport: Size::new(px(390.0), px(844.0)),
+            ..EngineConfig::new(Root::of::<C>())
+        };
+        let mut app = Headless::start(config).unwrap();
+        let seen = Seen::default();
+        let log = seen.clone();
+        app.observe(move |_: &str, batch: &MountBatch| {
+            log.lock().unwrap().extend(batch.items.iter().cloned());
+        });
+        app.first_render().unwrap();
+        (app, seen)
+    }
+
+    /// The hit slop the platforms last got for view `id` (none: zero).
+    fn hit_slop(seen: &Seen, id: NodeId) -> EdgeInsets {
+        seen.lock()
+            .unwrap()
+            .iter()
+            .filter_map(|item| match item {
+                MountItem::ViewProps { id: of, props } if *of == id => Some(props.hit_slop),
+                _ => None,
+            })
+            .next_back()
+            .unwrap_or_default()
+    }
+
+    fn target(app: &Headless, selector: &str) -> NodeId {
+        app.screen()
+            .press_target(selector)
+            .unwrap()
+            .unwrap_or_else(|| panic!("no pressable {selector}"))
+    }
+
+    /// A toolbar's small toggle with a slop on every side, a toggle whose
+    /// slop the app widens, and a toggle with none.
+    #[component]
+    fn SmallToggles() -> impl IntoElement {
+        let changes = signal(0u32);
+        let wide = signal(false);
+        view()
+            .child(
+                toggle_group().child(
+                    toggle()
+                        .hit_slop(EdgeInsets::all(px(12.0)))
+                        .accessibility_label("Bold")
+                        .on_change(move |_: &bool| changes.update(|n| *n += 1))
+                        .child(text("B")),
+                ),
+            )
+            .child(
+                toggle()
+                    .hit_slop(Prop::bind(move || match wide.get() {
+                        true => EdgeInsets {
+                            top: px(4.0),
+                            left: px(2.0),
+                            ..EdgeInsets::default()
+                        },
+                        false => EdgeInsets::default(),
+                    }))
+                    .child(text("Grows")),
+            )
+            .child(
+                toggle()
+                    .on_change(move |_: &bool| wide.set(true))
+                    .child(text("Widen")),
+            )
+            .child(text(move || format!("changes:{}", changes.get())))
+    }
+
+    #[test]
+    fn hit_slop_reaches_the_pressable_view() {
+        let (mut app, seen) = start::<SmallToggles>();
+        let small = target(&app, "label:Bold");
+        assert_eq!(hit_slop(&seen, small), EdgeInsets::all(px(12.0)));
+        // The slop changes nothing of what a press does.
+        app.press("label:Bold").unwrap();
+        app.wait_for("text:changes:1").unwrap();
+    }
+
+    #[test]
+    fn hit_slop_follows_a_binding_and_is_none_by_default() {
+        let (mut app, seen) = start::<SmallToggles>();
+        let grows = target(&app, "text:Grows");
+        let widen = target(&app, "text:Widen");
+        assert_eq!(hit_slop(&seen, grows), EdgeInsets::default());
+        app.press("text:Widen").unwrap();
+        let expected = EdgeInsets {
+            top: px(4.0),
+            left: px(2.0),
+            ..EdgeInsets::default()
+        };
+        assert_eq!(hit_slop(&seen, grows), expected);
+        // A toggle without `hitSlop` never gets one.
+        assert_eq!(hit_slop(&seen, widen), EdgeInsets::default());
+    }
 }

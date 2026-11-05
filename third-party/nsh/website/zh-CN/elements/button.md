@@ -63,6 +63,7 @@ mount(App);
 | `selectedStyle` | `.selected_style(\|s\| ..)` | `StyleProp<ViewStyle>` | 无 | `selected` 且未禁用时的样式，与 `selected:` 类相同。 |
 | `accessibilityLabel` | `.accessibility_label(..)` | `string` | 无 | 内容不足以说明时（比如只有图标），屏幕阅读器读出的文字。 |
 | `role` | `.role(..)` | `AccessibilityRole` | `"button"` | 当 `nsh/base` 没有对应的组件时，它对屏幕阅读器而言是什么：`"link"`（打开一个 URL）等。 |
+| `hitSlop` | `.hit_slop(..)` | `number \| Partial<Edges>` | 无 | 按压在边界之外多远仍然算数，单位为点：一个数字表示每一边，或分别指定各边。与视图的 `hitSlop` 相同。 |
 | `children` | `.child(..)` | `JSX.Element` | 无 | 内容：文字、图标或任意布局。 |
 | `class`、`style` | 样式方法 | `string`、`StyleProp<ViewStyle>` | 无 | 它的全部外观。 |
 | `activeStyle`、`hoverStyle`、`focusStyle`、`disabledStyle` | `.active(\|s\| ..)`、`.hover(..)`、`.focus(..)`、`.disabled_style(..)` | `StyleProp<ViewStyle>` | 无 | 按下、悬停、获得焦点或禁用时的样式，与对应的 `<state>:` 类相同。后面的状态优先，`disabled` 优先于所有状态。 |
@@ -216,6 +217,31 @@ fn bold(on: Signal<bool>) -> impl IntoElement {
 ```
 
 标签行用 [`Tabs`](./tabs.md)，开关用 [`Switch`](./switch.md)（均来自 `nsh/base`）：它们自带该类控件的角色、选中状态和键盘行为，用 `role="tab"` 或 `role="switch"` 的 `Button` 做不到这些。
+
+<a id="a-small-target-with-hitslop"></a>
+
+## 用 hitSlop 扩大小目标
+
+图标按钮可能比手指还小。`hitSlop` 让落在它附近的按压也算数，单位为超出每一边的点数，不改变它的布局和外观：一个数字表示每一边，或分别指定各边（`{ top: 8, bottom: 8 }`），与[视图的 `hitSlop`](./index.md#按压与反馈) 取值相同。
+
+```rust tabs
+fn close(open: Signal<bool>) -> impl IntoElement {
+    button()
+        .hit_slop(EdgeInsets::all(px(12.0)))
+        .accessibility_label("Close")
+        .on_press(move || open.set(false))
+        .size(px(20.0))
+        .items_center()
+        .justify_center()
+        .child(text("×"))
+}
+```
+
+```tsx tabs
+<Button hitSlop={12} accessibilityLabel="Close" onPress={() => open.set(false)} class="size-5 items-center justify-center">
+  <Text>×</Text>
+</Button>
+```
 
 <a id="accessibility"></a>
 

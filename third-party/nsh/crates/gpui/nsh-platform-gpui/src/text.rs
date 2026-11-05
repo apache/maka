@@ -201,18 +201,15 @@ const FANTASY: &[&str] = &["Impact", "Papyrus"];
 /// comma-separated stack, CSS generic names and Apple's font names as fonts
 /// this platform has; `""` is the UI font.
 fn family_candidates(name: &str) -> Vec<&str> {
+    use nsh_core::FamilyName;
     let mut out = Vec::new();
-    for family in name.split(',') {
-        let family = family.trim().trim_matches(|c| c == '"' || c == '\'');
+    for family in nsh_core::font_families(name) {
         match family {
-            "" => {}
-            "system-ui" | "-apple-system" | "BlinkMacSystemFont" | "ui-sans-serif"
-            | "ui-rounded" | "sans-serif" => out.push(""),
-            "ui-monospace" | "monospace" => out.extend_from_slice(MONOSPACE),
-            "ui-serif" | "serif" => out.extend_from_slice(SERIF),
-            "cursive" => out.extend_from_slice(CURSIVE),
-            "fantasy" => out.extend_from_slice(FANTASY),
-            f => {
+            FamilyName::Monospace => out.extend_from_slice(MONOSPACE),
+            FamilyName::Serif => out.extend_from_slice(SERIF),
+            FamilyName::Named("cursive") => out.extend_from_slice(CURSIVE),
+            FamilyName::Named("fantasy") => out.extend_from_slice(FANTASY),
+            FamilyName::Named(f) => {
                 out.push(f);
                 // What apps written for Apple platforms name, as what
                 // this platform has (when it lacks the font itself).
@@ -223,6 +220,8 @@ fn family_candidates(name: &str) -> Vec<&str> {
                     _ => &[],
                 });
             }
+            // The system font, and its rounded design (which GPUI lacks).
+            _ => out.push(""),
         }
     }
     if out.is_empty() {
@@ -456,25 +455,39 @@ impl GpuiTextEngine {
         if let Some(face) = fonts.faces.get(&key) {
             return face.clone();
         }
-        let family = match style.font_family {
-            Some(f) => {
-                let name = f.name();
-                family_candidates(&name)
-                    .into_iter()
-                    .find_map(|c| {
-                        if c.is_empty() {
-                            Some(fonts.ui.clone())
-                        } else {
-                            fonts
-                                .installed
-                                .get(&c.to_lowercase())
-                                .map(|n| SharedString::from(n.clone()))
-                        }
-                    })
-                    // Not installed: lines take the UI font.
-                    .unwrap_or_else(|| fonts.ui.clone())
+        // The families of the list this system has, in order: text is set
+        // in the first, and the others are its fallbacks, before the
+        // platform's.
+        let listed: Vec<SharedString> = match style.font_family {
+            Some(f) => family_candidates(&f.name())
+                .into_iter()
+                .filter_map(|c| {
+                    if c.is_empty() {
+                        Some(fonts.ui.clone())
+                    } else {
+                        fonts
+                            .installed
+                            .get(&c.to_lowercase())
+                            .map(|n| SharedString::from(n.clone()))
+                    }
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        // Not installed: lines take the UI font.
+        let family = listed.first().cloned().unwrap_or_else(|| fonts.ui.clone());
+        let mut fallbacks: Vec<String> = Vec::new();
+        for f in listed.iter().skip(1).filter(|f| **f != family) {
+            if !fallbacks.iter().any(|n| n == f.as_ref()) {
+                fallbacks.push(f.to_string());
             }
-            None => fonts.ui.clone(),
+        }
+        let fallbacks = if fallbacks.is_empty() {
+            fonts.fallbacks.clone()
+        } else {
+            let platform = fonts.fallbacks.as_ref().map(|f| f.fallback_list().to_vec());
+            fallbacks.extend(platform.into_iter().flatten());
+            Some(gpui::FontFallbacks::from_fonts(fallbacks))
         };
         let features: Vec<(String, u32)> = style
             .font_variant
@@ -484,7 +497,7 @@ impl GpuiTextEngine {
         let font = Font {
             family,
             features: FontFeatures(Arc::new(features)),
-            fallbacks: fonts.fallbacks.clone(),
+            fallbacks,
             weight: FontWeight(f32::from(style.font_weight)),
             style: if style.italic {
                 FontStyle::Italic
@@ -3215,6 +3228,12 @@ mod tests {
         assert_eq!(stack[0], "Fira Code");
         assert_eq!(&stack[1..], MONOSPACE);
         assert_eq!(&family_candidates("Menlo")[1..], MONOSPACE);
+        // A quoted name runs to its closing quote, commas and all, and is
+        // never a generic family.
+        assert_eq!(
+            family_candidates("'ACME, Inc', \"serif\""),
+            ["ACME, Inc", "serif"]
+        );
     }
 
     #[test]
@@ -3992,6 +4011,39 @@ mod tests {
         assert_eq!(&*engine.face(&style).font.family, "Pacifico");
         // Pacifico is tall: its lines are more than 1.5 ems.
         assert!(after.height.0 > 30.0, "{after:?}");
+
+        // A `fontFamily` list sets text in its first family the system has
+        // (a registered one here: registering is process-wide, so this is
+        // the test that registers), the others it has first among the
+        // fallbacks.
+        let listed = ResolvedTextStyle {
+            font_family: Some(nsh_core::FontFamily::new(
+                "No Such Family, Pacifico, 'Pacifico', monospace",
+            )),
+            ..style
+        };
+        let font = engine.font(&listed);
+        assert_eq!(&*font.family, "Pacifico");
+        let fallbacks = font.fallbacks.expect("fallbacks");
+        let list = fallbacks.fallback_list();
+        assert!(!list.iter().any(|f| f == "Pacifico"), "{list:?}");
+        assert!(!list.is_empty());
+
+        // The list's second installed family is the first fallback.
+        let names = system().all_font_names();
+        let Some(other) = names.iter().find(|n| *n != "Pacifico" && !n.contains(',')) else {
+            return;
+        };
+        let listed = ResolvedTextStyle {
+            font_family: Some(nsh_core::FontFamily::new(&format!(
+                "No Such Family, Pacifico, \"{other}\", monospace"
+            ))),
+            ..style
+        };
+        let font = engine.font(&listed);
+        assert_eq!(&*font.family, "Pacifico");
+        let list = font.fallbacks.expect("fallbacks").fallback_list().to_vec();
+        assert_eq!(list.first(), Some(other), "{list:?}");
     }
 
     #[test]

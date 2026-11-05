@@ -95,6 +95,7 @@ export default function BaseEditor() {
       </View>
       <View style={{ width: 390, height: 100 }}>
         <Editor
+          testID="outline"
           ref={r => (outline = r)}
           defaultValue={"mod a {\n  fn b() {\n    c();\n  }\n}\n"}
           language="rust"
@@ -103,7 +104,17 @@ export default function BaseEditor() {
             { startLine: 0, endLine: 2 },
             { startLine: 1, endLine: 2 },
           ]}
-          decorations={[{ range: { start: { line: 0, column: 0 }, end: { line: 0, column: 3 } }, token: "keyword" }]}
+          decorations={[
+            { range: { start: { line: 0, column: 0 }, end: { line: 0, column: 3 } }, token: "keyword" },
+            {
+              range: { start: { line: 1, column: 0 }, end: { line: 2, column: 0 } },
+              gutter: { class: "bg-green-500" },
+              overviewRuler: { lane: "left", style: { backgroundColor: "#22c55e" } },
+            },
+            { range: { start: { line: 3, column: 0 }, end: { line: 3, column: 0 } }, gutter: { placement: "before", style: { backgroundColor: "#ef4444" } } },
+          ]}
+          gutterDecorationsWidth={4}
+          classes={{ overviewRuler: "w-[12px]" }}
           onFoldChange={({ folds }) => folded.set(show(folds))}
           style={{ flex: 1 }}
         />

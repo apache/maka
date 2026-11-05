@@ -1,5 +1,5 @@
 import type { JSX, ViewStyle } from "nsh";
-import { effect, Text, token, View } from "nsh";
+import { effect, signal, Text, token, View } from "nsh";
 import { reduceMotion } from "nsh";
 import { type AnimatedValue, createAnimatedValue } from "nsh";
 import { platform } from "nsh";
@@ -16,6 +16,8 @@ export * from "./popup";
 export * from "./data-table";
 export * from "./slider";
 export * from "./scrollbar-theme";
+export * from "./tree";
+export * from "./command";
 export * from "./avatar";
 
 /**
@@ -205,6 +207,13 @@ const surface = (): ViewStyle => ({
 });
 
 /**
+ * The one section shown, by its title in any case (null: all of them): the
+ * gallery sets it from `cargo run -- <demo> --section <title>`, so a check
+ * or a screenshot opens straight at a section instead of scrolling to it.
+ */
+export const focusedSection = signal<string | null>(null);
+
+/**
  * A section of a demo: its title and subtitle above, then one flat surface
  * holding the content, padded (or bare with `flush`, for rows and stages that
  * reach its edges). `icon` names what it shows for callers that list it; the
@@ -220,6 +229,7 @@ export function Card(props: {
   children: JSX.Element;
 }) {
   return (
+    <If when={focusedSection() == null || focusedSection()!.toLowerCase() === props.title?.toLowerCase()}>
     <View style={[{ gap: 8 }, props.style ?? null]}>
       <If when={props.title}>
         <SectionHead title={props.title!} subtitle={props.subtitle} right={props.right} />
@@ -230,6 +240,7 @@ export function Card(props: {
         </If>
       </View>
     </View>
+    </If>
   );
 }
 

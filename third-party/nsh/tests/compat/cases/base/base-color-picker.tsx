@@ -119,7 +119,7 @@ function App() {
         accessibilityLabel="Yellow"
         class="w-[20px] h-[20px]"
         disabled={false}
-        onPress={value => chip.set(value)}
+        onPress={({ color }) => chip.set(color)}
       />
       <Text>{`Chip ${chip()}`}</Text>
     </View>
