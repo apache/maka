@@ -30,7 +30,7 @@ import type { Subscription } from './history';
 import type { Host } from './host';
 import type { SessionPermissions } from './sessionPermissions';
 import type { MessageKey } from './locale';
-import { createText, errorText, UiError } from './text';
+import { createText, errorText, isObservationCancelled, UiError } from './text';
 
 export function goalRejection(reason: string): MessageKey {
   const reasons: Record<string, MessageKey> = {
@@ -74,6 +74,7 @@ export function createSessionGoal(
     if (shown && (next.current?.revision ?? 0) < shown.revision) return;
     view.set(next);
   };
+  let immediateRetry = true;
   const watch = async () => {
     try {
       const opened = await host.subscribe('agent', 'watchGoal', { sessionId });
@@ -87,6 +88,7 @@ export function createSessionGoal(
           const next: AgentGoalView | null = await opened.next();
           if (!alive) return;
           if (next === null) throw new UiError('Goal updates disconnected. Reconnecting…');
+          immediateRetry = true;
           batch(() => {
             show(next);
             connectionError.set('');
@@ -98,6 +100,11 @@ export function createSessionGoal(
       }
     } catch (reason) {
       if (alive) {
+        if (immediateRetry && isObservationCancelled(reason)) {
+          immediateRetry = false;
+          void watch();
+          return;
+        }
         connectionError.set(errorText(reason));
         retry = setTimeout(() => {
           retry = null;

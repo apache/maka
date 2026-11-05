@@ -353,7 +353,9 @@ impl Client {
         if self.0.closing.load(Ordering::Acquire) {
             return Err("client scope is closing".into());
         }
-        host.refresh().await
+        host.refresh().await?;
+        self.0.binding_retired.store(false, Ordering::Release);
+        Ok(())
     }
 
     async fn open(

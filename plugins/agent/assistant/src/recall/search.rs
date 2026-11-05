@@ -39,6 +39,7 @@ pub struct Catalog {
     pub revision: String,
     pub entries: Vec<Session>,
     pub next_cursor: Option<String>,
+    pub gaps: Vec<String>,
 }
 pub struct Message {
     pub message_id: String,
@@ -196,64 +197,93 @@ pub fn definitions() -> [(&'static str, &'static str, serde_json::Value); 3] {
     ]
 }
 
+pub const CATALOG_REVISION_CHANGED: &str = "Recall catalog revision changed";
+
 /// Titles have no message timestamp, so dated searches only return passages.
 pub async fn titles(
     history: &dyn History,
     call: &Scope,
     query: &Query,
-) -> Result<(Vec<Session>, bool), ToolError> {
+) -> Result<(Vec<Session>, Vec<String>), ToolError> {
     if query.since.is_some() || query.until.is_some() {
-        return Ok((vec![], true));
+        return Ok((vec![], vec![]));
     }
     let terms: Vec<_> = query
         .terms
         .iter()
         .map(|term| super::types::fold(term))
         .collect();
-    let mut input = List {
-        include_archived: true,
-        ..Default::default()
-    };
-    let mut matches = Vec::new();
-    let mut cursors = std::collections::BTreeSet::new();
-    loop {
-        if call.cancellation.is_cancelled() {
-            return Err(failed("Recall cancelled"));
-        }
-        let page = history.list(call.clone(), input.clone()).await?;
-        if input
-            .revision
-            .as_ref()
-            .is_some_and(|revision| revision != &page.revision)
-        {
-            return Err(failed("Recall catalog revision changed"));
-        }
-        matches.extend(page.entries.into_iter().filter(|session| {
-            if query
-                .session_id
-                .as_ref()
-                .is_some_and(|id| id != &session.id)
-            {
-                return false;
-            }
-            let title = super::types::fold(&session.title);
-            terms.iter().any(|term| title.contains(term))
-        }));
-        let Some(cursor) = page.next_cursor else {
-            break;
+    for attempt in 0..3 {
+        let mut input = List {
+            include_archived: true,
+            ..Default::default()
         };
-        if !cursors.insert(cursor.clone()) {
-            return Err(failed("Recall catalog continuation repeated"));
+        let mut matches = Vec::new();
+        let mut gaps = Vec::new();
+        let mut cursors = std::collections::BTreeSet::new();
+        let mut revision_changed = false;
+        loop {
+            if call.cancellation.is_cancelled() {
+                return Err(failed("Recall cancelled"));
+            }
+            let page = match history.list(call.clone(), input.clone()).await {
+                Ok(page) => page,
+                Err(ToolError::Failed(reason))
+                    if reason == CATALOG_REVISION_CHANGED && attempt < 2 =>
+                {
+                    revision_changed = true;
+                    break;
+                }
+                Err(error) => return Err(error),
+            };
+            if input
+                .revision
+                .as_ref()
+                .is_some_and(|revision| revision != &page.revision)
+            {
+                if attempt < 2 {
+                    revision_changed = true;
+                    break;
+                }
+                return Err(failed(CATALOG_REVISION_CHANGED));
+            }
+            gaps.extend(page.gaps.into_iter().filter(|gap| {
+                query
+                    .session_id
+                    .as_ref()
+                    .is_none_or(|id| gap.starts_with(&format!("Session {id} ")))
+            }));
+            matches.extend(page.entries.into_iter().filter(|session| {
+                if query
+                    .session_id
+                    .as_ref()
+                    .is_some_and(|id| id != &session.id)
+                {
+                    return false;
+                }
+                let title = super::types::fold(&session.title);
+                terms.iter().any(|term| title.contains(term))
+            }));
+            let Some(cursor) = page.next_cursor else {
+                break;
+            };
+            if !cursors.insert(cursor.clone()) {
+                return Err(failed("Recall catalog continuation repeated"));
+            }
+            input.revision = Some(page.revision);
+            input.cursor = Some(cursor);
         }
-        input.revision = Some(page.revision);
-        input.cursor = Some(cursor);
+        if revision_changed {
+            continue;
+        }
+        matches.sort_by(|a, b| {
+            b.last_message_at
+                .cmp(&a.last_message_at)
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        return Ok((matches, gaps));
     }
-    matches.sort_by(|a, b| {
-        b.last_message_at
-            .cmp(&a.last_message_at)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    Ok((matches, true))
+    Err(failed(CATALOG_REVISION_CHANGED))
 }
 
 fn failed(error: impl std::fmt::Display) -> ToolError {
