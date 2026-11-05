@@ -56,8 +56,8 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       await writeFile(join(root, 'packages/cli', name), 'package documentation');
     await mkdir(join(root, 'build/app'), { recursive: true });
     await writeFile(join(root, 'build/app/main.js'), 'stale generated application');
-    await writeFile(join(root, 'build/maka-oar-worker'), 'stale worker');
-    await writeFile(join(root, 'build/maka-oar-worker.exe'), 'stale worker');
+    await writeFile(join(root, 'build/unused-worker'), 'stale worker');
+    await writeFile(join(root, 'build/unused-worker.exe'), 'stale worker');
     for (const name of [
       'maka',
       'maka.exe',
@@ -91,7 +91,7 @@ test('native archives carry the CLI and desktop shell without a terminal sidecar
       if (process.platform !== 'win32') assert.match(execFileSync('tar', ['-tvzf', archive, shell], {encoding:'utf8'}), /^-rwx/);
       assert.equal(files.includes('package/bin/maka-service.exe'), windows);
       assert.ok(files.includes('package/bin/' + (windows ? 'maka-python-worker.exe' : 'maka-python-worker')));
-      assert.ok(!files.some((file) => file.includes('maka-oar-worker')));
+      assert.ok(!files.some((file) => file.includes('unused-worker')));
       assert.equal(files.some((file) => file.startsWith('package/bin/Maka.app/')), macos);
       assert.ok(!files.some((file) => file.includes('/app/')));
       assert.equal(files.includes('package/bin/maka-desktop-shell'), !macos && !windows);

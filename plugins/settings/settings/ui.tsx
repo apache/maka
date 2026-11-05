@@ -162,10 +162,7 @@ export const activate: UiModule<JSX.Element>['activate'] = (context) => {
         mcp.recovered();
       else if (original.endpoint === 'agent' && original.method === 'selectWorkspace')
         configurationWorkspace.recovered(value);
-      else if (original.endpoint === 'agent' && original.method === 'oarSetup') {
-        externalAgents.reset();
-        changed();
-      } else if (original.endpoint === 'management') {
+      else if (original.endpoint === 'management') {
         if (original.method === 'configureBatch') await host.refresh();
         plugins.reset();
         externalAgents.reset();

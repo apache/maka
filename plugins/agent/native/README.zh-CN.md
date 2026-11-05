@@ -58,7 +58,7 @@ agy 发现直接读取原生 `agy models` TSV，保留 Gemini、Claude、GPT-OSS
 
 历史交接按索引反向读取，最多汇聚 8 MiB 可读正文／64 MiB 编码源数据，不再按片段条数限制；分页本身不会在同一字段内插入截断标记，真正省略的历史仍明确提示。这是上下文与内存预算，不保证每个模型都能接受这么大的输入。Codex 发现会先遍历原生 `nextCursor`，再由 Host/UI 分页；允许原生 `--config`、`--enable`、`--disable` 配置，但每轮 full-access／never-approval 策略不变；已有 daemon 保持自身原生启动配置。
 
-原生身份、历史水位和 CAS fence 有意保留历史物理 namespace `maka.agent.oar`、deployment/instance 前缀及 conversation/runtime 键哈希。已有 running 记录继续按 unknown 阻断。旧公开 executor `oar` 不再可用，队列中的旧准入不能被解释为新的 external 调用。
+原生身份、历史水位和 CAS fence 使用 `maka.agent.external` namespace、deployment/instance 前缀及 conversation/runtime 键哈希。running 记录继续按 unknown 阻断下一轮，直到原操作结算。executor 只读取当前 journal 格式；存储与配置迁移须在激活前离线完成。
 
 有界 opt-in 测试 `native_external_real_runtime_host_tool_and_exact_resume` 验证真实 Host 工具回执及同一原生会话的两轮执行。通过 `MAKA_NATIVE_REAL_RUNTIME=antigravity|codex|claude` 选择运行时；`MAKA_NATIVE_REAL_COMMAND` 可传私有 `NativeCommand` JSON 启动配置，`MAKA_NATIVE_REAL_MODEL`、`MAKA_NATIVE_REAL_EFFORT` 和 `MAKA_NATIVE_REAL_CWD` 可指定模型、推理强度和工作目录。使用 `cargo test -p maka-agent-native --lib native_external_real_runtime_host_tool_and_exact_resume -- --ignored` 运行。 视觉验收可通过 `MAKA_NATIVE_REAL_IMAGES` 传入 PNG 路径 JSON 数组，并通过 `MAKA_NATIVE_REAL_IMAGE_ANSWER` 指定预期可见四位数字（空格分隔）；预期答案不会进入提示词，第二轮不重新附图。
 

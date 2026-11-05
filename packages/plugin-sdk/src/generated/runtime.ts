@@ -5433,7 +5433,6 @@ export interface ExecutorSetupBinding {
  * Explicit opt-in to the three CLIs' native full-access tools and permissions.
  */
 export interface AgentExternalConfiguration {
-  enabled?: boolean;
   runtimes?: AgentNativeRuntimeSwitches;
   commands?: AgentNativeCommands;
 }

@@ -26,14 +26,9 @@ struct Record {
     cwd: String,
     native_session: Option<String>,
     running: Option<String>,
-    #[serde(default)]
     last_delivered_run: Option<String>,
-    #[serde(default)]
     bootstrap_completed: bool,
-    #[serde(default)]
     instructions_digest: Option<String>,
-    #[serde(rename = "mcpCatalog", default, skip_serializing)]
-    _legacy_mcp_catalog: Option<serde::de::IgnoredAny>,
 }
 pub(super) struct InstructionUpdate {
     digest: String,
@@ -65,7 +60,6 @@ impl Journal {
                 last_delivered_run: None,
                 bootstrap_completed: false,
                 instructions_digest: None,
-                _legacy_mcp_catalog: None,
             },
         };
         if record.cwd != request.cwd {
@@ -85,9 +79,7 @@ impl Journal {
     pub fn instruction_update(&self, instructions: Option<&str>) -> Option<InstructionUpdate> {
         let digest = instruction_digest(instructions);
         if self.record.instructions_digest.as_deref() == Some(digest.as_str())
-            || (instructions.is_none()
-                && self.record.instructions_digest.is_none()
-                && !self.record.bootstrap_completed)
+            || (instructions.is_none() && self.record.instructions_digest.is_none())
         {
             return None;
         }
@@ -193,26 +185,4 @@ fn instruction_digest(instructions: Option<&str>) -> String {
 
 fn error(error: maka_capabilities::storage::StoreError) -> Error {
     Error::Persistence(error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn legacy_catalog_is_read_but_not_rewritten_with_invocation_fences() {
-        let old = serde_json::json!({
-            "cwd":"/workspace", "nativeSession":"native-original", "running":"original-invocation",
-            "lastDeliveredRun":"original-run", "bootstrapCompleted":true,
-            "mcpCatalog":[{"name":"SessionRead","description":"old description","inputSchema":{}}]
-        });
-        let record: Record = serde_json::from_value(old).unwrap();
-        assert_eq!(
-            serde_json::to_value(record).unwrap(),
-            serde_json::json!({
-                "cwd":"/workspace", "nativeSession":"native-original", "running":"original-invocation",
-                "lastDeliveredRun":"original-run", "bootstrapCompleted":true, "instructionsDigest":null
-            })
-        );
-    }
 }

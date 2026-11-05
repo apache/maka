@@ -49,7 +49,7 @@ async fn fixture() -> Fixture {
         std::fs::write(&state, r#"{"signedIn":true,"modelsFail":false}"#).unwrap();
         let trace = directory.join("external-requests.jsonl");
         std::fs::write(&trace, "").unwrap();
-        let external = json!({"enabled":true,"runtimes":{},"commands":{
+        let external = json!({"runtimes":{},"commands":{
             "codex":{"executable":node,"args":[worker,state,trace]},
             "claude":{"executable":directory.join("not-installed-claude")}
         }});
@@ -228,9 +228,6 @@ async fn toggle_runtime(view: &mut AppView, client: &Client, id: &str, name: &st
     )
     .await;
     for external in &mut expected {
-        if enabled {
-            external["enabled"] = json!(true);
-        }
         external["runtimes"][id] = json!(enabled);
     }
     let (changed_revision, changed) = source(client).await;

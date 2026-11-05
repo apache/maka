@@ -592,9 +592,9 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
         "exec-run",
         Fact::ExecutorStarted {
             binding: Binding {
-                executor_id: "oar".to_owned().try_into().unwrap(),
+                executor_id: "external".to_owned().try_into().unwrap(),
                 package_id: "fixture_package".into(),
-                entry_id: "oar".into(),
+                entry_id: "external".into(),
                 activation: "fixture_activation".into(),
             },
             settings: Default::default(),
@@ -609,7 +609,7 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
         tool_call_id: "host-call".into(),
         origin: ToolOrigin::HostSdk {
             package_id: "fixture_package".into(),
-            entry_id: "oar".into(),
+            entry_id: "external".into(),
             activation: "fixture_activation".into(),
             parent: None,
         },
@@ -622,7 +622,7 @@ async fn root_host_sdk_tool_results_resolve_and_paginate_across_copied_history()
             operation_id: "host-op".into(),
             call,
             name: "Recall".into(),
-            input: json!({"query":"oar"}),
+            input: json!({"query":"external"}),
         },
     );
     let root_id = uuid::Uuid::new_v4().to_string();

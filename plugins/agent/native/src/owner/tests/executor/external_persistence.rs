@@ -31,9 +31,9 @@ async fn native_external_identity_persistence_failure_prevents_prompt_submission
         let mut control=BufReader::new(listener.accept().await.unwrap().0);
         packet(&mut control,"before_opened").await;
         assert_eq!(record(&f,&session).await["running"],accepted["invocationId"]);
-        let database=f.runtime_database_containing("SELECT count(*) FROM plugin_data WHERE package_id = ?1","maka.agent.oar");
+        let database=f.runtime_database_containing("SELECT count(*) FROM plugin_data WHERE package_id = ?1","maka.agent.external");
         let db=rusqlite::Connection::open(database).unwrap();
-        db.execute_batch("CREATE TRIGGER reject_native_opened BEFORE INSERT ON plugin_data WHEN NEW.package_id = 'maka.agent.oar' AND json_extract(NEW.value_json, '$.nativeSession') = 'native-fixture-session' BEGIN SELECT RAISE(FAIL, 'injected native identity persistence failure'); END;").unwrap();
+        db.execute_batch("CREATE TRIGGER reject_native_opened BEFORE INSERT ON plugin_data WHEN NEW.package_id = 'maka.agent.external' AND json_extract(NEW.value_json, '$.nativeSession') = 'native-fixture-session' BEGIN SELECT RAISE(FAIL, 'injected native identity persistence failure'); END;").unwrap();
         release(&mut control).await;f.drained().await;
         let mut remainder=String::new();tokio::io::AsyncReadExt::read_to_string(&mut control,&mut remainder).await.unwrap();
         assert!(remainder.is_empty(),"no native prompt may follow a failed identity commit: {remainder}");

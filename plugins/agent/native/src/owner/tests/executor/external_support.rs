@@ -95,7 +95,6 @@ pub(super) async fn with_tools(
             command.env["MAKA_NATIVE_FIXTURE_CLAUDE_DIR"].clone(),
         );
         settings.external = Some(maka_agent_api::executor::ExternalConfiguration {
-            enabled: true,
             runtimes: maka_agent_api::executor::NativeRuntimeSwitches {
                 codex: true,
                 antigravity: true,
@@ -145,7 +144,11 @@ pub(super) async fn record_runtime(f: &Fixture, session: &str, runtime: &str) ->
     let page = f
         .store
         .plugin_data_scan(
-            &Namespace::new("maka.agent.oar", maka_plugin_core::scope::Scope::Profile).unwrap(),
+            &Namespace::new(
+                "maka.agent.external",
+                maka_plugin_core::scope::Scope::Profile,
+            )
+            .unwrap(),
             Scan {
                 prefix: String::new(),
                 after: None,

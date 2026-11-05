@@ -147,12 +147,11 @@ impl External {
             ))
             .map_err(|e| e.to_string())?,
         ));
-        // Historical physical namespace: retain the deployed CAS records and native IDs.
         let storage = Storage::new(
             persistence.store().clone(),
             format!("{prefix}/"),
             maka_capabilities::storage::Namespace::new(
-                "maka.agent.oar",
+                "maka.agent.external",
                 maka_plugin_core::scope::Scope::Profile,
             )
             .map_err(|e| e.to_string())?,

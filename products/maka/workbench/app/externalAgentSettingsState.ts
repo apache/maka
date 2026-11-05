@@ -173,11 +173,6 @@ export function createExternalAgentSettings(
       const edits = original.targets.map(({ target, configured }) => {
         const changes: SettingChange[] = [];
         if (!configured) changes.push({ path: target.path as [string, ...string[]] });
-        if (enabled)
-          changes.push({
-            path: target.path.concat('enabled') as [string, ...string[]],
-            value: { kind: 'boolean', value: true },
-          });
         changes.push({
           path: target.path.concat('runtimes', runtime) as [string, ...string[]],
           value: { kind: 'boolean', value: enabled },

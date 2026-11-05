@@ -44,8 +44,6 @@ pub use maka_agent_facts::executor::Selection;
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[schemars(rename = "AgentExternalConfiguration")]
 pub struct ExternalConfiguration {
-    #[serde(default = "external_enabled")]
-    pub enabled: bool,
     #[serde(default)]
     pub runtimes: NativeRuntimeSwitches,
     #[serde(default)]
@@ -55,7 +53,7 @@ impl ExternalConfiguration {
     pub fn enabled_runtimes(&self) -> impl Iterator<Item = NativeRuntime> + '_ {
         NativeRuntime::ALL
             .into_iter()
-            .filter(|runtime| self.enabled && self.runtimes.enabled(*runtime))
+            .filter(|runtime| self.runtimes.enabled(*runtime))
     }
     pub fn command(&self, runtime: NativeRuntime) -> Option<&NativeCommand> {
         match runtime {
@@ -64,9 +62,6 @@ impl ExternalConfiguration {
             NativeRuntime::Claude => self.commands.claude.as_ref(),
         }
     }
-}
-fn external_enabled() -> bool {
-    true
 }
 
 #[derive(
@@ -223,14 +218,13 @@ mod tests {
         let mut settings: ExternalConfiguration = serde_json::from_value(serde_json::json!({
             "commands":{"claude":{"executable":"/custom/claude", "args":["--debug"], "env":{"CLAUDE_CONFIG_DIR":"/private/config"}}}
         })).unwrap();
-        assert!(settings.enabled);
         assert_eq!(settings.enabled_runtimes().count(), 0);
         settings.runtimes.codex = true;
         assert_eq!(
             settings.enabled_runtimes().collect::<Vec<_>>(),
             vec![NativeRuntime::Codex]
         );
-        settings.enabled = false;
+        settings.runtimes.codex = false;
         assert_eq!(settings.enabled_runtimes().count(), 0);
         let restored: ExternalConfiguration =
             serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();

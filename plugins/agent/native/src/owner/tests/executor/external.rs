@@ -390,16 +390,6 @@ async fn native_external_discovery_keeps_native_models_and_reports_unsupported_c
                 .await
                 .is_err()
         );
-        assert!(
-            f.owner
-                .executors
-                .select(executor::Selection {
-                    executor: "oar".into(),
-                    settings: Default::default()
-                })
-                .is_err(),
-            "queued legacy executor identity must never become external"
-        );
         f.app.shutdown().await.unwrap();
         f.config.shutdown().await.unwrap();
     })
@@ -420,7 +410,7 @@ async fn native_external_real_runtime_host_tool_and_exact_resume() {
         let f=Fixture::configured("http://127.0.0.1:9/v1",None,None,Some(tooling),|settings| {
             let mut runtimes=NativeRuntimeSwitches::default();let mut commands=NativeCommands::default();
             match runtime { NativeRuntime::Antigravity=>{runtimes.antigravity=true;commands.antigravity=command},NativeRuntime::Codex=>{runtimes.codex=true;commands.codex=command},NativeRuntime::Claude=>{runtimes.claude=true;commands.claude=command} }
-            settings.external=Some(ExternalConfiguration{enabled:true,runtimes,commands});
+            settings.external=Some(ExternalConfiguration{runtimes,commands});
             if let Ok(cwd)=std::env::var("MAKA_NATIVE_REAL_CWD") { settings.workspace_roots[0].path=cwd.into(); }
         }).await;
         let mut create=f.create_input("Real native Host execution").await;

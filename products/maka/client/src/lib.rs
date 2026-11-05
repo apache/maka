@@ -109,13 +109,12 @@ const SETTINGS_METHODS: [&str; 10] = [
     "updateNetwork",
     "updateWorkspaceLocations",
 ];
-// Retired method names remain discoverable only to reconcile their original receipts.
 fn settings_route(endpoint: &str, method: &str) -> bool {
     (endpoint == "settings" && SETTINGS_METHODS.contains(&method))
         || (endpoint == "agent"
             && matches!(
                 method,
-                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer" | "oarSetup"
+                "updateGlobalInstructions" | "selectWorkspace" | "manageMcpServer"
             ))
         || (endpoint == "skills" && matches!(method, "install" | "update" | "delete"))
         || (endpoint == "setup" && method == "discoverModels")

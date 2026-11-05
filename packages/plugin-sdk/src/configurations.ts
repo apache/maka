@@ -352,10 +352,6 @@ export const configurations = {
         description: "Explicit opt-in to the three CLIs' native full-access tools and permissions.",
         type: 'object',
         properties: {
-          enabled: {
-            type: 'boolean',
-            default: true,
-          },
           runtimes: {
             $ref: '#/$defs/AgentNativeRuntimeSwitches',
             default: {
@@ -1136,10 +1132,6 @@ export const configurations = {
         type: 'object',
         additionalProperties: false,
         properties: {
-          enabled: {
-            type: 'boolean',
-            default: true,
-          },
           runtimes: {
             $ref: '#/$defs/AgentNativeRuntimeSwitches',
             default: {

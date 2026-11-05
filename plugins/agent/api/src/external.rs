@@ -55,9 +55,8 @@ pub fn runtime_options(
         .map(|runtime| RuntimeOption {
             id: runtime.as_str().into(),
             name: runtime.name().into(),
-            enabled: configuration.is_some_and(|configuration| {
-                configuration.enabled && configuration.runtimes.enabled(runtime)
-            }),
+            enabled: configuration
+                .is_some_and(|configuration| configuration.runtimes.enabled(runtime)),
         })
         .collect()
 }
@@ -177,7 +176,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["codex"]
         );
-        configuration.enabled = false;
+        configuration.runtimes.codex = false;
         assert!(
             runtime_options(Some(&configuration))
                 .iter()

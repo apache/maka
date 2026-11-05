@@ -837,7 +837,7 @@ mod tests {
             Arc::new(RootStore::open(Arc::new(root)).await.unwrap()),
             String::new(),
             maka_capabilities::storage::Namespace::new(
-                "maka.agent.oar",
+                "maka.agent.external",
                 maka_plugin_core::scope::Scope::Profile,
             )
             .unwrap(),
