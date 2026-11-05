@@ -50,6 +50,16 @@ export const workspaceMessages = {
     '在右側開啟這個工作會話',
   ],
   'the worker': ['the worker', '工作会话', '工作會話'],
+  '{title} is waiting for your reply. Open it.': [
+    '{title} is waiting for your reply. Open it.',
+    '「{title}」在等你的回复，点这里处理。',
+    '「{title}」在等你的回覆，點這裡處理。',
+  ],
+  'Open the conversation waiting for you': [
+    'Open the conversation waiting for you',
+    '打开在等你的会话',
+    '開啟在等你的會話',
+  ],
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],

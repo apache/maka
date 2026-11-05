@@ -113,7 +113,12 @@ import {
   reportedWorker,
   createBotTranscript,
 } from '../../../../products/maka/workbench/app/botTranscript';
-import { BotNote, BotReply, BotWorking } from '../../../../products/maka/workbench/app/BotReply';
+import {
+  BotNote,
+  BotReply,
+  BotWaiting,
+  BotWorking,
+} from '../../../../products/maka/workbench/app/BotReply';
 import {
   MessageRow,
   originLabel,
@@ -272,6 +277,8 @@ type ConversationProps = {
   openLink(target: string, restoreFocus: () => boolean): Promise<void>;
   openSessionBeside?(sessionId: string): void;
   knownSession?(sessionId: string): AgentSession | undefined;
+  /** Conversations the Bot created that are waiting for the user, so the Bot's Chat can say so. */
+  waitingWorkers?(): readonly { id: string; title: string }[];
   attach(handle: ConversationHandle): void;
   detach(handle: ConversationHandle): void;
   focusComposer(): void;
@@ -587,7 +594,8 @@ export function Conversation(props: ConversationProps) {
     | { kind: 'row'; key: string; rowId: string; repeats?: number }
     | { kind: 'bot'; key: string; turnId: string; worker?: string }
     | { kind: 'botNote'; key: string; turnId: string }
-    | { kind: 'botWorking'; key: string };
+    | { kind: 'botWorking'; key: string }
+    | { kind: 'botWaiting'; key: string; workers: readonly { id: string; title: string }[] };
   const display = computed<DisplayEntry[]>(() => {
     const result: DisplayEntry[] = [];
     const summaries = new Set<string>();
@@ -714,6 +722,15 @@ export function Conversation(props: ConversationProps) {
       speak();
       // The running Turn may not be projected yet (its message is still pending).
       working(undefined);
+      // A worker waiting for the user's approval or answer never ends its run, so the Bot
+      // is not told and says nothing; Chat is where the user would look for it.
+      const waiting = props.waitingWorkers?.() ?? [];
+      if (waiting.length > 0)
+        result.push({
+          kind: 'botWaiting',
+          key: `bot/waiting/${waiting.map((worker) => worker.id).join(',')}`,
+          workers: waiting,
+        });
     }
     return result;
   });
@@ -3072,6 +3089,13 @@ export function Conversation(props: ConversationProps) {
                               );
                               return tool ? `${tool.name}` : '';
                             }}
+                          />
+                        );
+                      if (initial.kind === 'botWaiting')
+                        return (
+                          <BotWaiting
+                            workers={() => initial.workers}
+                            open={props.openSessionBeside}
                           />
                         );
                       if (initial.kind === 'botNote')

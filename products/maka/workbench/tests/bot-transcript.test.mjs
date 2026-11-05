@@ -23,6 +23,7 @@ import {
   botTurnEnding,
   createBotTranscriptCore,
   reportedWorker,
+  waitingWorkers,
 } from '../app/botTranscriptCore.ts';
 
 const SESSION = 'bot-session';
@@ -280,4 +281,28 @@ test('a Bot Turn started by a worker finishing reports that worker; other Turns 
   assert.equal(reportedWorker(rows, 't3'), undefined, 'another origin is not a worker');
   assert.equal(reportedWorker(rows, 't4'), 'worker-b');
   assert.equal(reportedWorker(rows, 'missing'), undefined);
+});
+
+test('only the Bot’s own live conversations that wait for the user are listed', () => {
+  const session = (id, extra = {}) => ({
+    id,
+    title: `title ${id}`,
+    parentSessionId: 'bot',
+    activity: 'idle',
+    archived: false,
+    ...extra,
+  });
+  const sessions = [
+    session('waiting-worker', { activity: 'waiting' }),
+    session('busy-worker', { activity: 'working' }),
+    session('idle-worker'),
+    session('archived-worker', { activity: 'waiting', archived: true }),
+    session('someone-elses', { activity: 'waiting', parentSessionId: 'other' }),
+    session('ordinary', { activity: 'waiting', parentSessionId: null }),
+  ];
+  assert.deepEqual(waitingWorkers(sessions, 'bot'), [
+    { id: 'waiting-worker', title: 'title waiting-worker' },
+  ]);
+  assert.deepEqual(waitingWorkers(sessions, null), [], 'no Bot, no workers');
+  assert.deepEqual(waitingWorkers(sessions, undefined), []);
 });

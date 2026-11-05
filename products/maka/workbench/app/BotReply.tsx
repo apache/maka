@@ -73,6 +73,32 @@ export function BotReply(props: {
   );
 }
 
+/** Shown at the end of the Bot's Chat while a conversation it created waits for the user. */
+export function BotWaiting(props: {
+  workers: () => readonly { id: string; title: string }[];
+  open?(id: string): void;
+}) {
+  return (
+    <View style={{ width: '100%', paddingVertical: 8, gap: 8 }}>
+      <Each of={props.workers()} key={(worker) => worker.id}>
+        {(worker) => (
+          <Button
+            disabled={!props.open}
+            accessibilityLabel={tr('Open the conversation waiting for you')}
+            style={{ flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'flex-start' }}
+            onPress={() => props.open?.(worker().id)}
+          >
+            <Icon name="activity" color={C.warning} />
+            <Text style={[{ ...captionTextStyle, color: C.text }, { numberOfLines: 1 }]}>
+              {tr('{title} is waiting for your reply. Open it.', { title: worker().title })}
+            </Text>
+          </Button>
+        )}
+      </Each>
+    </View>
+  );
+}
+
 /** Shown at the end of the Bot's Chat while it is working on a Turn. */
 export function BotWorking(props: { detail: () => string }) {
   return (

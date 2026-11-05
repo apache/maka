@@ -211,3 +211,25 @@ export function reportedWorker(
     if (row.turnId === turnId && row.origin?.kind === 'bot_worker') return row.origin.sessionId;
   return undefined;
 }
+
+/**
+ * The conversations the Bot created that are waiting for the user. Such a conversation
+ * has not ended its run, so the Bot is not woken and says nothing about it.
+ */
+export function waitingWorkers<
+  T extends {
+    id: string;
+    title: string;
+    parentSessionId: string | null;
+    activity: string;
+    archived: boolean;
+  },
+>(sessions: readonly T[], bot: string | null | undefined): { id: string; title: string }[] {
+  if (!bot) return [];
+  return sessions
+    .filter(
+      (session) =>
+        session.parentSessionId === bot && session.activity === 'waiting' && !session.archived,
+    )
+    .map((session) => ({ id: session.id, title: session.title }));
+}

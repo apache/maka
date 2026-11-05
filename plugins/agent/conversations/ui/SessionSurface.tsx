@@ -68,6 +68,7 @@ import {
   message as uiMessage,
 } from '../../../../products/maka/workbench/app/text';
 import { currentLocale, displayText, tr } from '../../../../products/maka/workbench/app/locale';
+import { waitingWorkers } from '../../../../products/maka/workbench/app/botTranscript';
 import { loadDraft, type Host } from '../../../../products/maka/workbench/app/host';
 import {
   bodyTextStyle,
@@ -1991,6 +1992,12 @@ export function createConversationUi(
                   openLink={(target, restoreFocus) => openLink(id(), target, restoreFocus)}
                   knownSession={(sessionId) =>
                     browsing.sessions().find((session) => session.id === sessionId)
+                  }
+                  waitingWorkers={() =>
+                    waitingWorkers(browsing.sessions(), botSession()).map((worker) => ({
+                      ...worker,
+                      title: worker.title || tr('Untitled conversation'),
+                    }))
                   }
                   openSessionBeside={
                     shell()?.openBeside ??

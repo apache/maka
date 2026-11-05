@@ -22,7 +22,7 @@ import type { createHost } from './host';
 import { createBotTranscriptCore } from './botTranscriptCore';
 
 export type { BotTranscriptMessage } from './botTranscriptCore';
-export { botTurnEnding, reportedWorker } from './botTranscriptCore';
+export { botTurnEnding, reportedWorker, waitingWorkers } from './botTranscriptCore';
 
 /** Reactive view of the Bot's transcript; see `createBotTranscriptCore`. */
 export function createBotTranscript(
