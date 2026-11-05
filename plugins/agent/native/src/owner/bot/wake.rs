@@ -303,6 +303,10 @@ impl Owner {
             if watch.notified.as_deref() == Some(invocation_id.as_str()) {
                 continue;
             }
+            let bot_busy = self.runs.lock().await.busy(&bot);
+            if bot_busy || self.has_parked_invocation(&bot).await? {
+                continue;
+            }
             let identity = hex::encode(Sha256::digest(
                 format!("bot-worker/{worker}/{invocation_id}").as_bytes(),
             ))[..32]
