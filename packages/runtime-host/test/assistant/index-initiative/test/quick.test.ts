@@ -40,18 +40,34 @@ async function setup() {
   const delivered = new Map<string, any>(),
     prompts: string[] = [];
   const sessions: any[] = [];
+  // Mirror the Host: an identity only becomes an execution once it is admitted, and a
+  // terminal execution is not a fresh admission.
+  const executions = new Map<string, string>();
+  let submitted: string | undefined;
+  let idle = async () => {
+    if (fail) throw Error('network failure');
+  };
   const agent = {
     sessionId: 'worker',
     snapshot: async () => ({ agent: { status: 'idle' } }),
-    followup: async (text: string) => {
+    followup: async (text: string, options?: { messageId?: string }) => {
       calls++;
       assert.equal(notebookRefreshes, calls, 'refresh receipts before every quick wake');
       prompts.push(text);
+      submitted = options?.messageId;
+      if (submitted) executions.set(submitted, 'owned');
       return { disposition: 'turn_started' };
     },
-    messageExecution: async () => ({ state: 'owned' }),
-    whenIdle: async () => {
-      if (fail) throw Error('network failure');
+    messageExecution: async (messageId: string) => ({
+      state: executions.get(messageId) ?? 'not_admitted',
+    }),
+    whenIdle: async (signal?: AbortSignal) => {
+      try {
+        await idle(signal);
+      } catch (error) {
+        if (submitted) executions.set(submitted, 'failed');
+        throw error;
+      }
     },
     cancel: async () => {},
   };

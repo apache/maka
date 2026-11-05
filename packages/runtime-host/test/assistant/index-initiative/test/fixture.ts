@@ -207,9 +207,15 @@ export async function fixture(options: any = {}) {
             currentPrompt = `${prompt}\n${decision.feedback}`;
           }
         }
-      })().finally(() => {
-        w.status = w.endStatus ?? 'idle';
-      });
+      })()
+        .catch((error: unknown) => {
+          // The turn was admitted and then failed: the execution is terminal, not owned.
+          w.executions.set(messageId, 'failed');
+          throw error;
+        })
+        .finally(() => {
+          w.status = w.endStatus ?? 'idle';
+        });
       void w.task.catch(() => {});
       return { disposition: queued ? 'followup' : 'turn_started', turnId };
     },

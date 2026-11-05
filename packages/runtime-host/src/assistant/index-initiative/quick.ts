@@ -34,6 +34,17 @@ import { decodeMessageContent } from '../../protocol/turn.js';
 
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
+/** A durable receipt that already holds another body under this identity. */
+const payloadConflict = (rejection: unknown) => {
+  let detail = '';
+  try {
+    detail = `${(rejection as any)?.message ?? ''} ${JSON.stringify(rejection ?? null)}`;
+  } catch {
+    detail = String((rejection as any)?.message ?? rejection ?? '');
+  }
+  return /different payload/i.test(detail);
+};
+
 /** A pending hint's age, coarse on purpose: the prompt only needs to separate
  * "just happened" from "fired hours ago and may already be handled". */
 const hintAge = (milliseconds: number) => {
@@ -406,6 +417,16 @@ export class QuickDiscoveryController {
       return this.ctx.agents.resume({ sessionId });
     });
   }
+  /** A receipt holding another payload cannot be replayed: the next attempt has to
+   * compose a fresh body under a fresh identity, exactly once. */
+  private abandonIdentity(activeId: string, rejection: unknown) {
+    if (!payloadConflict(rejection)) return;
+    this.store.update((s) => {
+      if (s.active?.id !== activeId) return;
+      s.active.messageId = randomUUID();
+      delete s.active.submission;
+    });
+  }
   async report(input: z.infer<typeof reportSchema>, sessionId: string) {
     this.ready();
     let ids: string[] = [];
@@ -539,6 +560,9 @@ export class QuickDiscoveryController {
               s.contextWake = { id: randomUUID(), mode };
               if (mode === 'legacy') s.legacyWorkerKey = s.contextWake.id;
               s.active.messageId = randomUUID();
+              // A fresh worker starts a fresh history: the recorded body belongs to the
+              // old Session and must not be replayed into this one.
+              delete s.active.submission;
               s.active.wakeInputTokens = 0;
             });
             active.messageId = recovered.active.messageId;
@@ -571,18 +595,69 @@ export class QuickDiscoveryController {
             return 'deferred' as const;
           }
         }
-        const input = inputFor(hints);
-        if (active.eventWake)
-          this.store.update((s) => {
-            if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
-            s.active.wakeInputTokens = estimatePluginLlmInputTokens('', input);
-          });
-        modelFrom = Date.now();
-        const result = (await this.owner(state, () =>
-          agent.followup(input, { messageId: active.messageId }),
-        )) as any;
-        if (!['turn_started', 'followup'].includes(result?.disposition))
-          throw Error('Host rejected quick discovery wake');
+        // The body is persisted with the activation. It deliberately carries the current
+        // UTC time and each hint's age, so recomposing it on a retry can never match what
+        // the Host already recorded under this identity. Redelivery therefore resends the
+        // recorded text byte for byte; only a body that genuinely changed (prompt version,
+        // captured hints or a fresh worker Session) earns a new identity.
+        const capture = [...hints]
+          .sort((a, b) => a.at - b.at)
+          .map((hint) => `${hint.at}:${hint.direction}`);
+        const recorded = active.submission;
+        const sameCapture =
+          recorded?.version === version &&
+          recorded.sessionId === agent.sessionId &&
+          recorded.capture.length === capture.length &&
+          recorded.capture.every((hint: string, index: number) => hint === capture[index]);
+        const composed = inputFor(hints);
+        let input = sameCapture ? recorded.input : composed;
+        let identity = active.messageId;
+        // Observe the identity before submitting it: an admission that outlived a restart
+        // must be awaited, never submitted again.
+        const observed = await this.owner(state, () => agent.messageExecution(identity)).catch(
+          () => {
+            this.abort.signal.throwIfAborted();
+            this.parent.abort.signal.throwIfAborted();
+            // An unreadable query is not proof of admission; an identical resubmission is
+            // deduplicated by the Host's durable receipt.
+            return undefined;
+          },
+        );
+        if (['failed', 'aborted', 'cancelled'].includes(observed?.state)) {
+          // A terminal admission cannot be resumed and replaying it only fails again.
+          identity = randomUUID();
+          input = composed;
+        } else if (recorded && input !== recorded.input) {
+          // The body really changed, so it cannot be replayed under the old identity.
+          identity = randomUUID();
+        }
+        this.store.update((s) => {
+          if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
+          s.active.messageId = identity;
+          s.active.submission = {
+            messageId: identity,
+            version,
+            sessionId: agent.sessionId,
+            capture,
+            input,
+          };
+          if (active.eventWake) s.active.wakeInputTokens = estimatePluginLlmInputTokens('', input);
+        });
+        active.messageId = identity;
+        if (!['owned', 'pending', 'completed'].includes(observed?.state)) {
+          modelFrom = Date.now();
+          let result: any;
+          try {
+            result = await this.owner(state, () => agent.followup(input, { messageId: identity }));
+          } catch (error) {
+            this.abandonIdentity(active.id, error);
+            throw error;
+          }
+          if (!['turn_started', 'followup'].includes(result?.disposition)) {
+            this.abandonIdentity(active.id, result);
+            throw Error('Host rejected quick discovery wake');
+          }
+        }
         // whenIdle alone does not prove a queued message entered execution.
         for (;;) {
           this.ready();
@@ -632,8 +707,9 @@ export class QuickDiscoveryController {
           s.pending = s.active;
           s.active = null;
           s.lastError = String(error);
-          // A failed execution needs a fresh admission, in the same Session.
-          if (s.pending && !s.pending.executionCompleted) s.pending.messageId = randomUUID();
+          // Keep the recorded body and identity: an ambiguous failure may still have been
+          // admitted, so the retry reconciles by observing that identity first instead of
+          // starting a second investigation of the same wake.
           s.retryAt = this.now() + s.intervalMs;
           this.store.log('quick-failed', {
             id: active.id,

@@ -252,9 +252,7 @@ test('a failed quick investigation releases capacity without consuming its pendi
   await f.q.intake.collect();
   f.advance();
   await f.q.intake.judge();
-  f.agent.whenIdle = async () => {
-    throw Error('fixture interruption');
-  };
+  f.failIdle('fixture interruption');
   await f.q.dispatch();
   await f.q.running;
   assert.match(f.q.state().lastError, /fixture interruption/);

@@ -357,12 +357,13 @@ test('one batch produces one hint, without selected IDs or an investigation chec
   assert.equal(wake?.ids.length, 1);
   await f.restart();
   assert.deepEqual(await f.q.intake.next(), wake);
-  f.agent.followup = async (text: string) => {
+  f.agent.followup = async (text: string, options?: { messageId?: string }) => {
     assert.match(text, /明天的安排可能有冲突/);
     assert.match(text, /不准确.*不完整/);
     assert.match(text, /不局限于这些线索或最近的增量/);
     assert.doesNotMatch(text, /闲聊|processedEventIds|QuickDiscoveryEvents|batchId/);
     await f.q.report({ key: 'discovery', messages: ['核实后有个建议'] }, 'worker');
+    f.admit(options?.messageId);
     return { disposition: 'turn_started' };
   };
   await f.q.dispatch();

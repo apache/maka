@@ -39,16 +39,32 @@ export async function intakeFixture() {
     sourceCalls: any[] = [],
     messages: any[] = [];
   let q: QuickDiscoveryController;
+  // Mirror the Host: an identity is only an execution once it was admitted there, and a
+  // failed turn is terminal rather than silently re-admitted.
+  const executions = new Map<string, string>();
+  let submitted: string | undefined;
+  let idle = async () => {};
   const agent = {
     sessionId: 'worker',
     snapshot: async () => ({ agent: { status: 'idle' } }),
-    followup: async (text: string) => {
+    followup: async (text: string, options?: { messageId?: string }) => {
       workerCalls++;
       prompts.push(text);
+      submitted = options?.messageId;
+      if (submitted) executions.set(submitted, 'owned');
       return { disposition: 'turn_started' };
     },
-    messageExecution: async () => ({ state: 'owned' }),
-    whenIdle: async () => {},
+    messageExecution: async (messageId: string) => ({
+      state: executions.get(messageId) ?? 'not_admitted',
+    }),
+    whenIdle: async () => {
+      try {
+        await idle();
+      } catch (error) {
+        if (submitted) executions.set(submitted, 'failed');
+        throw error;
+      }
+    },
     cancel: async () => {},
   };
   const parentStore = new InitiativeStore(root, 'parent');
@@ -135,6 +151,18 @@ export async function intakeFixture() {
     },
     fail: (v: boolean) => {
       fail = v;
+    },
+    admit: (messageId?: string) => {
+      submitted = messageId;
+      if (messageId) executions.set(messageId, 'owned');
+    },
+    failIdle: (message = 'worker unavailable') => {
+      idle = async () => {
+        throw Error(message);
+      };
+    },
+    idle: () => {
+      idle = async () => {};
     },
     allow: (v: boolean) => {
       allow = v;
