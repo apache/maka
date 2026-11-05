@@ -1244,13 +1244,8 @@ export function createConversationUi(
     void (async () => {
       try {
         error.set('');
-        // An existing Bot opens directly; only its first open needs a workspace.
-        const existing = botSession() ?? (await refreshBotSession().catch(() => null));
-        if (existing !== null) {
-          await switchSession(existing, { sessionId, instance: null });
-          return;
-        }
-        // The Host picks the workspace of the Bot's first open itself.
+        // The Host decides whether the current Bot is still usable or a new one is needed;
+        // the cached id only serves presentation. It returns an existing Bot unchanged.
         const result = await control('openBot', {});
         if (!alive) return;
         if (result.kind !== 'opened')
@@ -1264,6 +1259,47 @@ export function createConversationUi(
         report(reason);
       }
     })();
+  };
+  // An explicit start over: archives the current Bot and opens a new one. The new Bot starts
+  // empty; the old one's conversation stays readable, but its checklist and schedule stay behind.
+  const restartBot = async () => {
+    const current = botSession();
+    const owner = handle();
+    if (!alive || !current || owner?.sessionId !== current) return;
+    let observed = await host.query('agent', 'observe', { sessionId: current });
+    // Date the old Bot first, so the archived one is told apart from the new one.
+    const now = new Date();
+    const two = (value: number) => String(value).padStart(2, '0');
+    const stamp = `${two(now.getMonth() + 1)}-${two(now.getDate())} ${two(now.getHours())}:${two(now.getMinutes())}`;
+    const renamed = await control('metadata', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      title: `${observed.session.title} · ${stamp}`,
+      labels: observed.session.labels,
+    });
+    if (renamed.kind !== 'committed')
+      throw new UiError('The current Bot could not be renamed: {reason}', {
+        reason: renamed.reason ?? renamed.kind,
+      });
+    observed = await host.query('agent', 'observe', { sessionId: current });
+    const archived = await control('changeSession', {
+      sessionId: current,
+      expectedRevision: observed.session.revision,
+      action: 'archive',
+    });
+    if (archived.kind !== 'changed')
+      throw new UiError('The current Bot could not be archived: {reason}', {
+        reason: archived.reason ?? archived.kind,
+      });
+    const result = await control('openBot', {});
+    if (!alive) return;
+    if (result.kind !== 'opened')
+      throw new UiError('Bot could not be opened: {reason}', {
+        reason: result.reason ?? result.kind,
+      });
+    botSession.set(result.sessionId);
+    await switchSession(result.sessionId, { sessionId: current, instance: null });
+    await browsing.refresh();
   };
   const commandWorkspace = (context: ActionContext) => {
     if (closeCommand(context)) open({ kind: 'workspaces', sessionId: context.sessionId });
@@ -2109,6 +2145,7 @@ export function createConversationUi(
                   }
                   focusComposer={focusComposer}
                   stopAction={stopAction}
+                  restartBot={restartBot}
                   attach={(next) => {
                     handle.set(next);
                     const request = pendingReveal;

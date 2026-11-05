@@ -78,6 +78,11 @@ pub struct BotOutboxRead {
     #[serde(default = "default_limit")]
     #[schemars(range(max = 100))]
     pub limit: u32,
+    /// Read this Session's records instead of the current Bot's, so a Bot that was
+    /// replaced can still be read. Reading grants nothing: only the current Bot
+    /// speaks.
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 fn default_limit() -> u32 {
     100
@@ -108,7 +113,10 @@ pub struct BotMessage {
 #[schemars(rename = "AgentBotOutbox")]
 pub struct BotOutbox {
     pub enabled: bool,
+    /// The current Bot Session, whatever `sessionId` was asked for.
     pub session_id: Option<String>,
+    /// Whether the Session that was read is, or once was, a Bot Session.
+    pub is_bot: bool,
     /// Highest sequence recorded so far; 0 when empty.
     pub through: u64,
     #[schemars(length(max = 100))]
