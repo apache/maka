@@ -137,6 +137,12 @@ export const toolbarControlStyle = {
  */
 export const disclosureInset = (terminal: number) => (platform.isTerminal ? terminal : 8);
 /**
+ * Where what belongs to a disclosure row starts: its expanded details, or a
+ * process group's rows. The desktop gives them one column; the terminal keeps
+ * each row's own cell layout.
+ */
+export const disclosureContentInset = (terminal: number) => (platform.isTerminal ? terminal : 32);
+/**
  * A switch or action row among labelled text fields. On the desktop it gets the
  * fields' box, so its inset text lines up with the text typed in them.
  */

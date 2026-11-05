@@ -261,6 +261,7 @@ pub struct Tool {
 pub struct ToolCall {
     /// Recorded ancestors in this Turn, nearest first; display references only.
     pub ancestor_tool_use_ids: Vec<String>,
+    pub origin: ToolCallOrigin,
     /// Opaque display contract captured at dispatch; no execution authority.
     #[serde(default)]
     #[schemars(with = "maka_plugin_core::wire_schema::RequiredNullable<String>")]
@@ -275,6 +276,17 @@ pub struct ToolCall {
     pub pending: bool,
     /// A unique original Host dispatch is recorded at this fence; not liveness.
     pub dispatched: bool,
+}
+/// Who made a call: a model step, a script the model wrote, a tool's own work
+/// through the Host SDK, or a foreign record.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[schemars(rename = "HistoryToolCallOrigin")]
+pub enum ToolCallOrigin {
+    Provider,
+    CodeMode,
+    HostSdk,
+    Imported,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

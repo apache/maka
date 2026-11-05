@@ -32,6 +32,7 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
                 CASE role WHEN 'tool_call' THEN message_id
                     ELSE tool_use_id END AS tool_id,
                 tool_name AS name,
+                tool_origin AS origin,
                 settlement AS settlement,
                 is_error AS error,
                 content_kind IS 'image' AS image,
@@ -74,6 +75,7 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
         ), call AS (
             SELECT call_row.*, json_object('position', json_object('sourceSequence', call_row.source_sequence, 'itemIndex', call_row.item_index), 'name', call_row.name,
                 'ancestorToolUseIds', json((SELECT json_group_array(message_id) FROM (SELECT message_id FROM ancestors ORDER BY depth))),
+                'origin', call_row.origin,
                 'dispatched', json(CASE WHEN (SELECT count(*) FROM activity) = 1
                     AND EXISTS(SELECT 1 FROM activity WHERE (activity.source_sequence, activity.item_index) > (call_row.source_sequence, call_row.item_index) AND activity.name = call_row.name)
                     THEN 'true' ELSE 'false' END),
@@ -116,7 +118,7 @@ const METADATA_SQL: &str = "WITH RECURSIVE owner AS MATERIALIZED (
         ), metadata AS (
             SELECT json_object('toolUseId', tool_id,
                 'call', json(CASE kind WHEN 'tool_call' THEN COALESCE((SELECT reference FROM call),
-                    json_object('position', json_object('sourceSequence', source_sequence, 'itemIndex', item_index), 'name', name, 'ancestorToolUseIds', json_array(), 'title', NULL, 'presentation', NULL, 'pending', json('false'), 'dispatched', json('false')))
+                    json_object('position', json_object('sourceSequence', source_sequence, 'itemIndex', item_index), 'name', name, 'ancestorToolUseIds', json_array(), 'origin', origin, 'title', NULL, 'presentation', NULL, 'pending', json('false'), 'dispatched', json('false')))
                     ELSE (SELECT call_ref FROM pair) END),
                 'result', json(CASE kind WHEN 'tool_result' THEN json_object('position', json_object('sourceSequence', source_sequence, 'itemIndex', item_index), 'settlement', settlement,
                     'isError', json(CASE error WHEN 1 THEN 'true' ELSE 'false' END),

@@ -31,6 +31,7 @@ import {
   captionTextStyle,
   controlStyle,
   Disclosure,
+  disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
   textTooltip,
@@ -427,7 +428,7 @@ export function ToolCard(props: {
       </Disclosure>
       <If when={props.expanded()}>
         {/* On the desktop the details start under the title, as thinking text does. */}
-        <View style={{ paddingLeft: platform.isTerminal ? 16 : 32 }}>
+        <View style={{ paddingLeft: disclosureContentInset(16) }}>
           <Scroll
             accessibilityLabel={tr('Tool details')}
             onScrollIntent={() => {

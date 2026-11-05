@@ -4393,6 +4393,11 @@ export type HistoryTurnOutcome = 'completed' | 'failed' | 'aborted';
  * Tool body JSON contributes string values, never its keys.
  */
 export type Role = 'compaction' | 'failure' | 'user' | 'assistant' | 'tool_call' | 'tool_result';
+/**
+ * Who made a call: a model step, a script the model wrote, a tool's own work
+ * through the Host SDK, or a foreign record.
+ */
+export type HistoryToolCallOrigin = 'provider' | 'code_mode' | 'host_sdk' | 'imported';
 export type AgentHistoryPage = {
   kind: 'ready';
   through: number;
@@ -8890,6 +8895,7 @@ export interface HistoryToolCall {
    * Recorded ancestors in this Turn, nearest first; display references only.
    */
   ancestorToolUseIds: string[];
+  origin: HistoryToolCallOrigin;
   /**
    * Opaque display contract captured at dispatch; no execution authority.
    */

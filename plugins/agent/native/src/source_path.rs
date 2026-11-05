@@ -107,7 +107,7 @@ mod tests {
             "position":{"sourceSequence":4,"itemIndex":0},"timestamp":1,"role":"tool_call","fields":["arguments"],
             "field":"arguments","path":["path"],"format":"text","offset":0,
             "totalBytes":8,"text":"test.txt","tool":{"toolUseId":"call",
-                "call":{"ancestorToolUseIds":[],"position":{"sourceSequence":4,"itemIndex":0},"name":"arbitrary alias","title":null,"pending":false,"dispatched":true,
+                "call":{"ancestorToolUseIds":[],"origin":"provider","position":{"sourceSequence":4,"itemIndex":0},"name":"arbitrary alias","title":null,"pending":false,"dispatched":true,
                     "presentation":"maka.workspace.Files@1/write"},
                 "result":{"position":{"sourceSequence":5,"itemIndex":0},"isError":false,"image":false,"images":0,"settlement":"returned"}}
         }))

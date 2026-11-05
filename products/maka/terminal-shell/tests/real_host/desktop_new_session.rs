@@ -969,6 +969,42 @@ async fn desktop_retries_a_failed_turn_in_place() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_lists_a_scripts_tool_calls_in_place_of_the_script() {
+    let mut fixture = Fixture::configured(Options {
+        code_mode: true,
+        ..Options::default()
+    })
+    .await;
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("Check the goal").await;
+    desktop.submit().await;
+    desktop
+        .request(&mut fixture)
+        .await
+        .tool_call("exec", json!({"code":"text(await tools.GetGoal({}));"}))
+        .await;
+    let answer = desktop.request(&mut fixture).await;
+    desktop.press("Process group").await;
+    let group = desktop.control("Process group").await;
+    let nested = desktop.control("Toggle tool GetGoal").await;
+    assert_eq!(nested.left() - group.left(), px(32.));
+    assert!(desktop.controls("Toggle tool exec").is_empty());
+    desktop.artifact("script-tools");
+    answer.finish().await;
+    let sessions = desktop.sessions().await;
+    let session = sessions
+        .iter()
+        .find(|session| session["id"] != fixture.session)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap();
+    fixture.idle(&desktop.client, session).await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_side_pane_keeps_its_draft_separate_when_closed_and_reopened() {
     let fixture = Fixture::open().await;
     let desktop = Desktop::open_at(

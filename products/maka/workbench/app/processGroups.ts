@@ -277,14 +277,27 @@ export function projectProcessGroups(input: {
     if (!current) return;
     const presentation = turn(current.turnId);
     const { turnId, members } = current;
+    // A script is shown as the tools it ran, and as itself only when it fails.
+    const callers = new Set(
+      members.flatMap((member) => {
+        const call = member.kind === 'row' ? rowsById.get(member.rowId)!.tool?.call : undefined;
+        return call?.origin === 'code_mode' ? call.ancestorToolUseIds : [];
+      }),
+    );
+    const shown = members.filter(
+      (member) =>
+        !member.toolUseId ||
+        !callers.has(member.toolUseId) ||
+        (member.kind === 'row' && rowsById.get(member.rowId)!.tool?.result?.isError),
+    );
     entries.push({
       kind: 'process',
       key: groupKey(turnId, members),
       turnId,
       members,
-      rowIds: members.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
+      rowIds: shown.flatMap((member) => (member.kind === 'row' ? [member.rowId] : [])),
       toolIds: [
-        ...new Set(members.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
+        ...new Set(shown.flatMap((member) => (member.toolUseId ? [member.toolUseId] : []))),
       ],
       closed:
         closed || Boolean(presentation.timing?.finished) || presentation.finalOutputIds.length > 0,
