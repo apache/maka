@@ -19,6 +19,7 @@
 
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
+import { botSourceEventKey } from '@maka/core/bot-events';
 import { slackMessageToEvent } from '../slack-bridge.js';
 
 describe('Slack bridge message mapping', () => {
@@ -43,6 +44,7 @@ describe('Slack bridge message mapping', () => {
         isGroup: true,
         text: 'hello from Slack',
         sourceMessageId: '1720000000.123456',
+        replyTargetId: '1720000000.123456',
         receivedAt: 1_720_000_001_000,
       },
     );
@@ -102,6 +104,56 @@ describe('Slack bridge message mapping', () => {
       },
       5,
     );
-    assert.equal(event?.sourceMessageId, '1720000000.1');
+    assert.equal(event?.replyTargetId, '1720000000.1');
+  });
+
+  // #6322: thread_ts is the routing target (constant inside a thread), not a
+  // message identity. Collapsing it into sourceMessageId merged every thread
+  // reply into one botSourceEventKey, so task mode silently dropped the
+  // second message and assistant mode rejected it as an identity conflict.
+  test('gives each thread reply a unique idempotency key while keeping the thread root for routing', () => {
+    const root = slackMessageToEvent(
+      {
+        type: 'message',
+        user: 'U123',
+        channel: 'C456',
+        channel_type: 'channel',
+        text: 'question',
+        ts: '1720000000.1',
+      },
+      5,
+    );
+    assert.equal(root?.sourceMessageId, '1720000000.1');
+    assert.equal(root?.replyTargetId, '1720000000.1');
+    const firstReply = slackMessageToEvent(
+      {
+        type: 'message',
+        user: 'U123',
+        channel: 'C456',
+        channel_type: 'channel',
+        text: 'first follow-up',
+        ts: '1720000001.2',
+        thread_ts: '1720000000.1',
+      },
+      6,
+    );
+    const secondReply = slackMessageToEvent(
+      {
+        type: 'message',
+        user: 'U456',
+        channel: 'C456',
+        channel_type: 'channel',
+        text: 'second follow-up',
+        ts: '1720000002.3',
+        thread_ts: '1720000000.1',
+      },
+      7,
+    );
+    const keys = [root, firstReply, secondReply].map((event) => botSourceEventKey(event!));
+    assert.equal(new Set(keys).size, 3);
+    assert.equal(firstReply?.sourceMessageId, '1720000001.2');
+    assert.equal(secondReply?.sourceMessageId, '1720000002.3');
+    assert.equal(firstReply?.replyTargetId, '1720000000.1');
+    assert.equal(secondReply?.replyTargetId, '1720000000.1');
   });
 });

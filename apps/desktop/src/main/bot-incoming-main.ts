@@ -21,6 +21,7 @@ import { randomUUID } from 'node:crypto';
 import {
   botConversationKey,
   botDisplayLabel,
+  botReplyTargetId,
   botSourceEventKey,
   formatBotMessageForSession,
   isPlaintextHelpCommand,
@@ -114,8 +115,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // something but cannot process it. 5-minute TTL matches the other
     // transient system notices.
     if (!text && message.attachmentKind) {
+      const replyTarget = botReplyTargetId(message);
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(replyTarget ? { replyToMessageId: replyTarget } : {}),
         ephemeralTtlMs: 5 * 60 * 1_000,
       };
       await deps.botRegistry
@@ -207,12 +209,13 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
   // bot-channel notices follow the bot audience language; localization tracked under #2672
   async function sendTransientBotNotice(message: BotIncomingMessage, text: string, ttlMs: number): Promise<void> {
     if (closed) return;
+    const replyTarget = botReplyTargetId(message);
     await deps.botRegistry.sendMessage(
       message.platform,
       message.chatId,
       text,
       {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(replyTarget ? { replyToMessageId: replyTarget } : {}),
         ephemeralTtlMs: ttlMs,
       },
     ).catch(() => null);
@@ -264,8 +267,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     // hint. Lands BEFORE the reset path so a user typing "help" gets a
     // capability list, not a (silent) reset.
     if (isPlaintextHelpCommand({ text, isGroup: message.isGroup })) {
+      const replyTarget = botReplyTargetId(message);
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(replyTarget ? { replyToMessageId: replyTarget } : {}),
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
       };
       await deps.botRegistry.sendMessage(
@@ -284,8 +288,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
     if (isPlaintextResetCommand({ text, isGroup: message.isGroup })) {
       const had = botConversationSessions.delete(conversationKey);
       botConversationRateBuckets.delete(conversationKey);
+      const replyTarget = botReplyTargetId(message);
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(replyTarget ? { replyToMessageId: replyTarget } : {}),
         ephemeralTtlMs: SYSTEM_NOTICE_TTL_MS,
       };
       const ack = had
@@ -334,9 +339,8 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       }
 
       const turnId = randomUUID();
-      const replyOptions = message.sourceMessageId
-        ? { replyToMessageId: message.sourceMessageId }
-        : undefined;
+      const replyTarget = botReplyTargetId(message);
+      const replyOptions = replyTarget ? { replyToMessageId: replyTarget } : undefined;
       replyStream = deps.botRegistry.startReplyStream?.(
         message.platform,
         message.chatId,
@@ -429,8 +433,9 @@ export function createBotIncomingMainService(deps: BotIncomingMainServiceDeps): 
       const detail = isSessionWorkspaceUnavailableError(error)
         ? '工作目录不可用，请在桌面端选择有效目录后重试'
         : generalizedErrorMessageForLocale(error, '机器人对话处理失败', 'zh-CN');
+      const replyTarget = botReplyTargetId(message);
       const replyOptions = {
-        ...(message.sourceMessageId ? { replyToMessageId: message.sourceMessageId } : {}),
+        ...(replyTarget ? { replyToMessageId: replyTarget } : {}),
         // Error notice: same 5-minute TTL as the other transient system
         // notices.
         ephemeralTtlMs: 5 * 60 * 1_000,
