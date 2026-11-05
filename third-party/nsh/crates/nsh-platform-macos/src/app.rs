@@ -14,8 +14,10 @@ use nsh_core::{
 };
 use nsh_engine::{App, Bundle, ColorScheme, EngineConfig, Environment, Idiom, Limits, Os, Root};
 use objc2::{
-    MainThreadMarker, MainThreadOnly, define_class, msg_send, rc::Retained,
-    runtime::ProtocolObject, sel,
+    MainThreadMarker, MainThreadOnly, class, define_class, msg_send,
+    rc::Retained,
+    runtime::{AnyObject, ProtocolObject},
+    sel,
 };
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate,
@@ -544,7 +546,24 @@ define_class!(
 
     unsafe impl NSObjectProtocol for Delegate {}
 
+    impl Delegate {
+        /// The quit Apple Event of a logout, restart, shutdown or the Dock.
+        /// AppKit's own handler asks `applicationShouldTerminate:`, whose
+        /// cancel would veto a logout; this one ends the loop and lets the
+        /// event succeed.
+        #[unsafe(method(handleQuitEvent:withReplyEvent:))]
+        fn handle_quit_event(&self, _event: &AnyObject, _reply: &AnyObject) {
+            finish_running(&NSApplication::sharedApplication(MainThreadMarker::from(self)));
+        }
+    }
+
     unsafe impl NSApplicationDelegate for Delegate {
+        /// AppKit installs its own quit handler as it launches.
+        #[unsafe(method(applicationWillFinishLaunching:))]
+        fn will_finish_launching(&self, _notification: &NSNotification) {
+            handle_quit_events(Some(self));
+        }
+
         #[unsafe(method(applicationShouldTerminateAfterLastWindowClosed:))]
         fn should_terminate_after_last_window_closed(&self, _app: &NSApplication) -> bool {
             false
@@ -618,6 +637,34 @@ define_class!(
         }
     }
 );
+
+/// Hands the quit Apple Event to `delegate`; `None` removes the handler.
+fn handle_quit_events(delegate: Option<&Delegate>) {
+    // `kCoreEventClass` and `kAEQuitApplication`.
+    const CLASS: u32 = u32::from_be_bytes(*b"aevt");
+    const QUIT: u32 = u32::from_be_bytes(*b"quit");
+    // SAFETY: the shared manager does not retain its handler; run_window
+    // removes the delegate before dropping it.
+    unsafe {
+        let events: *mut AnyObject =
+            msg_send![class!(NSAppleEventManager), sharedAppleEventManager];
+        match delegate {
+            Some(delegate) => {
+                let _: () = msg_send![
+                    events,
+                    setEventHandler: delegate,
+                    andSelector: sel!(handleQuitEvent:withReplyEvent:),
+                    forEventClass: CLASS,
+                    andEventID: QUIT
+                ];
+            }
+            None => {
+                let _: () =
+                    msg_send![events, removeEventHandlerForEventClass: CLASS, andEventID: QUIT];
+            }
+        }
+    }
+}
 
 /// Tells [`run_app_with_config`]'s caller whether the window has the keyboard.
 fn window_active(active: bool) {
@@ -760,6 +807,8 @@ fn run_window(
     crate::chrome::set_app_name(&options.title);
     let delegate: Retained<Delegate> = unsafe { msg_send![Delegate::alloc(mtm), init] };
     app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
+    // A later run finds the app launched already.
+    handle_quit_events(Some(&delegate));
     app.setMainMenu(Some(&main_menu(mtm, &options.title)));
 
     let frame = NSRect::new(
@@ -829,6 +878,7 @@ fn run_window(
     });
     app.run();
     stop_running();
+    handle_quit_events(None);
     app.setDelegate(None);
     drop(delegate);
     std::process::ExitCode::SUCCESS

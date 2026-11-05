@@ -21,7 +21,7 @@
 
 [简体中文](README.zh-CN.md)
 
-`maka-desktop-shell` runs the [workbench](../workbench/README.md) in a window of its own through NSH's Direct2D backend on Windows and GPUI on macOS and Linux. It is the application the [terminal shell](../terminal-shell/README.md) runs, compiled into the executable. On a graphical desktop the workbench's headers are the window's title bar, and the application menu carries its commands and their shortcuts.
+`maka-desktop-shell` runs the [workbench](../workbench/README.md) in a window of its own through NSH's AppKit backend on macOS, its Direct2D backend on Windows and GPUI on Linux. It is the application the [terminal shell](../terminal-shell/README.md) runs, compiled into the executable. On a graphical desktop the workbench's headers are the window's title bar, and the application menu carries its commands and their shortcuts.
 
 Build from the repository root:
 
@@ -52,7 +52,7 @@ The GPUI window opens on the display, at the position and size, and in the full-
 
 If the Host stops while the GPUI window is open (it crashed, or was retired over its clients), the shell notices within a few seconds, connects to the Root's next Host, starting one through the launcher as `maka desktop` does, and loads the workbench again in the same window. The workbench starts over, as when the desktop opens; a turn the stopped Host was running shows as stopped. Until a Host is reached the window keeps the last workbench, whose actions fail, and the shell retries with growing pauses of up to 30 seconds. It reconnects only while the Root it opened is still at its path: a moved or deleted Root is not initialized afresh.
 
-On macOS, a non-empty `MAKA_APPKIT` runs the workbench on NSH's AppKit backend instead of GPUI. This backend is experimental and not the default. It saves the window's frame in the application's defaults rather than in `clients/desktop-window.json`, without the full-screen state. If the Host stops, the window keeps the last workbench and does not reconnect. It refuses plugin changes that need a UI reload, and it posts no system notifications.
+On macOS the AppKit window saves its frame in the application's defaults rather than in `clients/desktop-window.json`, without the full-screen state. If the Host stops, the window keeps the last workbench and does not reconnect. A plugin change that needs a UI reload takes effect on the Host, but the window keeps the old UI until it is reopened. A completed skill reference in the composer is deleted a character at a time, since AppKit input has no `tokens`. The window posts no system notifications. A non-empty `MAKA_GPUI` opens the GPUI window instead, with the placement, reconnection, UI reload and notifications described above.
 
 ## Windows Direct2D
 

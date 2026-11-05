@@ -60,6 +60,11 @@ const RECONNECT_LIMIT: Duration = Duration::from_secs(30);
 /// once after it stops.
 const STEADY: Duration = Duration::from_secs(60);
 
+/// Set and not empty on macOS, the shell opens this window instead of the
+/// AppKit one.
+#[cfg(target_os = "macos")]
+const GPUI: &str = "MAKA_GPUI";
+
 pub(crate) fn start(target: crate::Target) -> Result<(), String> {
     use maka_host_runtime::application::host::Client as HostClient;
     let root = Root::find(target.root, target.launcher)?;
@@ -75,7 +80,7 @@ pub(crate) fn start(target: crate::Target) -> Result<(), String> {
         .await
     })?;
     #[cfg(target_os = "macos")]
-    if std::env::var_os(crate::appkit::ENABLE).is_some_and(|value| !value.is_empty()) {
+    if std::env::var_os(GPUI).is_none_or(|value| value.is_empty()) {
         return crate::appkit::run(first, runtime);
     }
     run(first, root, runtime)

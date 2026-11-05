@@ -17,9 +17,9 @@
  * under the License.
  */
 
-//! The workbench in a window of NSH's AppKit backend, on macOS, opted into
-//! with [`ENABLE`]. It has one Host: the window does not follow a Host that
-//! stops, and refuses a UI reload rather than pausing its input for one.
+//! The workbench in a window of NSH's AppKit backend, macOS's default. It has
+//! one Host: the window does not follow a Host that stops, and refuses a UI
+//! reload rather than pausing its input for one.
 
 use crate::{
     host::{self, Connection},
@@ -29,9 +29,6 @@ use maka_workbench::reload::{Request, UiReload};
 use nsh_engine::JsonValue;
 use nsh_platform_macos::{AppOptions, quit_app, run_app_with_config, with_running_view};
 use tokio::{runtime::Runtime, sync::watch};
-
-/// Set and not empty, the shell opens this window instead of the GPUI one.
-pub const ENABLE: &str = "MAKA_APPKIT";
 
 pub fn run(first: Connection, runtime: Runtime) -> Result<(), String> {
     let Connection {
