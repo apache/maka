@@ -1221,6 +1221,59 @@ async fn desktop_steering_freezes_each_message_and_queue_is_one_shot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn desktop_new_draft_directory_path_paste_is_text() {
+    let mut fixture = images_fixture().await;
+    let directory = fixture.directory.path().join("未命名文件夹 2");
+    std::fs::create_dir(&directory).unwrap();
+    let desktop = Desktop::open(&fixture, &fixture.address).await;
+    desktop.new_draft().await;
+    desktop.type_text("查看 ").await;
+    desktop.key("right", false);
+    let accepted = desktop.app.update(|cx| {
+        desktop
+            .window
+            .update(cx, |view, _, _| {
+                AppView::paste(
+                    view,
+                    nsh_core::PasteEvent::new(format!("'{}'", directory.display())),
+                )
+            })
+            .unwrap()
+    });
+    assert!(accepted, "the focused editor must accept the native paste");
+    let expected = format!("查看 {}", directory.display());
+    desktop
+        .until("the directory path was not inserted as text", || {
+            desktop
+                .app
+                .update(|cx| {
+                    desktop.window.update(cx, |view, window, cx| {
+                        view.text_for_range(0..u32::MAX as usize, &mut None, window, cx)
+                    })
+                })
+                .unwrap()
+                .filter(|text| text == &expected)
+        })
+        .await;
+    assert_eq!(desktop.sessions().await.len(), 1);
+    desktop.artifact("directory-path-paste");
+    desktop.submit().await;
+    let request = desktop.request(&mut fixture).await;
+    let last = request.body["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .rfind(|message| message["role"] == "user")
+        .unwrap();
+    assert_eq!(last["content"], expected);
+    desktop
+        .wait("message did not finish", request.finish())
+        .await;
+    desktop.close().await;
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn desktop_new_draft_shows_a_staged_image() {
     let fixture = images_fixture().await;
     let (path, _) = image_file(&fixture);

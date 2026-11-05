@@ -39,6 +39,43 @@ async fn stored_draft(client: &Client, session: &str, expected: impl Fn(&Draft) 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn directory_path_paste_remains_text_in_an_existing_composer() {
+    let mut fixture = Fixture::open().await;
+    let client = fixture.client().await;
+    support::mutate(&client,"selectBackend",json!({"sessionId":fixture.session,"backend":{"kind":"model","connectionId":fixture.selection["connectionId"],"modelId":"fixture-model","thinkingLevel":null}})).await;
+    let directory = fixture.directory.path().join("未命名文件夹 2");
+    std::fs::create_dir(&directory).unwrap();
+    let expected = format!("查看 {}", directory.display());
+    let (mut view, bindings) = fixture.view(client.clone(), Some(fixture.session.clone()));
+    wait_editable_composer(&mut view).await;
+    view.handle_event(Event::Paste("查看 ".into()));
+    commit_native_events(&mut view).await;
+    view.handle_event(Event::Paste(format!("'{}'", directory.display())));
+    wait_view_state(&mut view, |view, _| {
+        view.surface()
+            .input_context()
+            .is_some_and(|input| input.text.as_deref() == Some(expected.as_str()))
+    })
+    .await;
+    let draft = stored_draft(&client, &fixture.session, |draft| draft.text == expected).await;
+    assert!(draft.attachments.is_empty());
+    support::click_button(&mut view, "Send message").await;
+    let mut request = fixture.next_request().await;
+    let messages = request.body["messages"].as_array().unwrap();
+    let last = messages
+        .iter()
+        .rfind(|message| message["role"] == "user")
+        .unwrap();
+    assert_eq!(last["content"], expected);
+    request.delta("Directory path received").await;
+    request.finish().await;
+    fixture.idle(&client, &fixture.session).await;
+    drop(view);
+    bindings.close().await.unwrap();
+    fixture.finish().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attachment_only_send_uses_the_selected_bytes_after_the_local_file_changes() {
     let mut fixture = Fixture::configured(support::Options {
         images: true,

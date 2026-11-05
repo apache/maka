@@ -118,18 +118,23 @@ pub(super) fn staged_image(owner: &Owner, id: &str) -> Result<Vec<u8>, String> {
 pub(super) async fn stage_files(
     owner: Arc<Owner>,
     files: Vec<String>,
-) -> Result<Vec<Arc<FileSnapshot>>, String> {
-    execute(owner.clone(), async move {
+) -> Result<StagedClipboard, String> {
+    let (text, files) = execute(owner.clone(), async move {
         tokio::task::spawn_blocking(move || {
-            crate::attachment_paths::resolve(&files)?
+            if let Some(text) = crate::attachment_paths::pasted_directories(&files)? {
+                return Ok((Some(text), vec![]));
+            }
+            let snapshots = crate::attachment_paths::resolve(&files)?
                 .into_iter()
                 .map(|path| read_selected(&path).map_err(|error| error.to_string()))
-                .collect()
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok((None, snapshots))
         })
         .await
         .map_err(|error| format!("Selected file worker failed: {error}"))?
     })
-    .await
+    .await?;
+    Ok(StagedClipboard { owner, text, files })
 }
 
 pub(super) fn staged_file(owner: Arc<Owner>, snapshot: Arc<FileSnapshot>) -> Instance<StagedFile> {
@@ -156,11 +161,7 @@ pub(super) async fn stage_clipboard(owner: Arc<Owner>) -> Result<StagedClipboard
     })
     .await?;
     match selected {
-        crate::clipboard::Selection::Files(files) => Ok(StagedClipboard {
-            owner: owner.clone(),
-            text: None,
-            files: stage_files(owner, files).await?,
-        }),
+        crate::clipboard::Selection::Files(files) => stage_files(owner, files).await,
         crate::clipboard::Selection::Image(file) => Ok(StagedClipboard {
             owner,
             text: None,
@@ -168,11 +169,7 @@ pub(super) async fn stage_clipboard(owner: Arc<Owner>) -> Result<StagedClipboard
         }),
         crate::clipboard::Selection::Text(text) => {
             if let Some(files) = nsh_core::platform::clipboard::files_from_text(&text) {
-                Ok(StagedClipboard {
-                    owner: owner.clone(),
-                    text: None,
-                    files: stage_files(owner, files).await?,
-                })
+                stage_files(owner, files).await
             } else {
                 Ok(StagedClipboard {
                     owner,
@@ -337,7 +334,7 @@ pub(super) fn AttachmentPicker(
         let files = nsh_core::platform::clipboard::files_from_text(selected)
             .unwrap_or_else(|| vec![selected.to_owned()]);
         busy.set(true);
-        let intake = UploadIntake::files(scope, files);
+        let intake = UploadIntake::begin(scope, Selection::Files(files));
         // Inner views may hide while IO continues. Observe under the component root.
         observer_owner.run(|| {
             element::spawn(async move {
@@ -434,6 +431,7 @@ impl Updates {
 
 enum Selection {
     Files(Vec<String>),
+    Paste(Vec<String>),
     Clipboard,
 }
 
@@ -471,7 +469,7 @@ impl UploadIntake {
         })
     }
     pub(super) fn files(scope: Arc<Scope>, files: Vec<String>) -> Self {
-        Self::begin(scope, Selection::Files(files))
+        Self::begin(scope, Selection::Paste(files))
     }
     pub(super) fn clipboard(scope: Arc<Scope>) -> Self {
         Self::begin(scope, Selection::Clipboard)
@@ -487,7 +485,7 @@ impl UploadIntake {
         let id = Uuid::new_v4();
         let is_clipboard = matches!(&selection, Selection::Clipboard);
         let name = match &selection {
-            Selection::Files(files) => files
+            Selection::Files(files) | Selection::Paste(files) => files
                 .first()
                 .map(|path| display_name(path))
                 .unwrap_or_else(|| "Selected file".into()),
@@ -563,8 +561,11 @@ async fn intake(
     clipboard_id: Uuid,
 ) -> Result<(), String> {
     let client = scope.client.local(&scope.owner).await?;
+    let directory_text = !matches!(&selection, Selection::Files(_));
     let selected = match selection {
-        Selection::Files(files) => crate::clipboard::Selection::Files(files),
+        Selection::Files(files) | Selection::Paste(files) => {
+            crate::clipboard::Selection::Files(files)
+        }
         Selection::Clipboard => {
             tokio::task::spawn_blocking(move || -> Result<crate::clipboard::Selection, String> {
                 match crate::clipboard::read()? {
@@ -583,7 +584,20 @@ async fn intake(
     };
     match selected {
         crate::clipboard::Selection::Files(files) => {
-            upload_files(scope, client, files, updates).await
+            if directory_text {
+                let (text, files) = tokio::task::spawn_blocking(move || {
+                    crate::attachment_paths::pasted_directories(&files).map(|text| (text, files))
+                })
+                .await
+                .map_err(|error| format!("Selected path worker failed: {error}"))??;
+                if let Some(text) = text {
+                    updates.emit(serde_json::json!({"kind": "text", "text": text}));
+                    return Ok(());
+                }
+                upload_files(scope, client, files, updates).await;
+            } else {
+                upload_files(scope, client, files, updates).await;
+            }
         }
         crate::clipboard::Selection::Image(snapshot) => {
             let name = snapshot.metadata()["name"]

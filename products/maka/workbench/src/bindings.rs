@@ -356,14 +356,10 @@ impl ApplicationHost {
     pub async fn stage_files(
         this: Instance<Self>,
         files: Vec<String>,
-    ) -> Result<Vec<Instance<uploads::StagedFile>>, String> {
+    ) -> Result<Instance<uploads::StagedClipboard>, String> {
         let owner = this.with(|host| host.owner.clone());
         drop(this);
-        let snapshots = uploads::stage_files(owner.clone(), files).await?;
-        Ok(snapshots
-            .into_iter()
-            .map(|file| uploads::staged_file(owner.clone(), file))
-            .collect())
+        Ok(Instance::new(uploads::stage_files(owner, files).await?))
     }
     /// Capture an explicit clipboard paste before a session exists.
     pub async fn stage_clipboard(

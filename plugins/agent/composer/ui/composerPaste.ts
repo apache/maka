@@ -127,7 +127,7 @@ export function createComposerPaste<Owner extends PasteOwner>(options: {
       if ('sessionId' in owner) {
         owner.attachments.clearNotice();
         owner.attachments.dropFiles(event.uris, (text) => insert(target, text));
-      } else owner.selectFiles(event.uris);
+      } else owner.selectFiles(event.uris, (text) => insert(target, text));
     } catch (reason) {
       report(owner, reason);
     }

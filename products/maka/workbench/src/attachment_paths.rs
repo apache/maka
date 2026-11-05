@@ -29,6 +29,21 @@ pub(crate) fn resolve(items: &[String]) -> Result<Vec<PathBuf>, String> {
     items.iter().map(|item| normalize(item)).collect()
 }
 
+pub(crate) fn pasted_directories(items: &[String]) -> Result<Option<String>, String> {
+    let paths = resolve(items)?;
+    if !paths.iter().any(|path| path.is_dir()) {
+        return Ok(None);
+    }
+    paths
+        .iter()
+        .map(|path| {
+            path.to_str()
+                .ok_or_else(|| "The pasted path is not valid Unicode".to_owned())
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(|paths| Some(paths.join("\n")))
+}
+
 fn drive_path(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 3
@@ -124,6 +139,65 @@ fn windows_path(value: &str) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pasted_directory_paths_remain_text_including_mixed_file_lists() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("未命名文件夹 2");
+        std::fs::create_dir(&directory).unwrap();
+        let file = root.path().join("notes.txt");
+        std::fs::write(&file, b"keep this file").unwrap();
+        for (selected, expected) in [
+            (
+                directory.to_str().unwrap().to_owned(),
+                directory.display().to_string(),
+            ),
+            (
+                format!("'{}'", directory.display()),
+                directory.display().to_string(),
+            ),
+            (
+                url::Url::from_file_path(&directory).unwrap().into(),
+                directory.display().to_string(),
+            ),
+            (
+                url::Url::from_directory_path(&directory).unwrap().into(),
+                format!(
+                    "{}{separator}",
+                    directory.display(),
+                    separator = std::path::MAIN_SEPARATOR
+                ),
+            ),
+        ] {
+            assert_eq!(pasted_directories(&[selected]), Ok(Some(expected)));
+        }
+        assert_eq!(
+            pasted_directories(&[
+                url::Url::from_file_path(&file).unwrap().into(),
+                url::Url::from_file_path(&directory).unwrap().into(),
+            ]),
+            Ok(Some(format!("{}\n{}", file.display(), directory.display())))
+        );
+    }
+
+    #[test]
+    fn file_pastes_keep_snapshot_validation_and_normalization_errors() {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join("notes 中文.txt");
+        std::fs::write(&file, b"original file").unwrap();
+        assert_eq!(
+            pasted_directories(&[url::Url::from_file_path(&file).unwrap().into()]),
+            Ok(None)
+        );
+        let missing = root.path().join("missing.txt");
+        assert_eq!(
+            pasted_directories(&[missing.to_str().unwrap().to_owned()]),
+            Ok(None)
+        );
+        assert!(maka_ui_support::file::read_selected(&missing).is_err());
+        assert!(pasted_directories(&["relative/path".into()]).is_err());
+        assert!(pasted_directories(&["file:///tmp/file?query".into()]).is_err());
+    }
 
     #[test]
     fn native_file_paths_preserve_selected_bytes_through_uri_and_wsl_normalization() {

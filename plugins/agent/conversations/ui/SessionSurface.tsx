@@ -972,9 +972,22 @@ export function createConversationUi(
         });
         removed.file.dispose();
       },
-      selectFiles(files: string[]) {
+      selectFiles(files: string[], onText?: (text: string) => void) {
         if (owns() && files.length)
-          stagePending(async () => ({ files: await host.stageFiles(files) }));
+          stagePending(
+            async () => {
+              const selection = await host.stageFiles(files);
+              try {
+                return { files: selection.files(), text: selection.text };
+              } finally {
+                selection.dispose();
+              }
+            },
+            onText ??
+              ((text) => {
+                if (owns()) updatePending({ text: pendingText() + text });
+              }),
+          );
       },
       pasteClipboard(onText: (text: string) => void) {
         if (owns())
