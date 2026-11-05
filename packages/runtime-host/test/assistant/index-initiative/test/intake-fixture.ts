@@ -37,7 +37,8 @@ export async function intakeFixture() {
     delivered = new Map(),
     sessions: any[] = [],
     sourceCalls: any[] = [],
-    messages: any[] = [];
+    messages: any[] = [],
+    history = new Map<string, any[]>();
   let q: QuickDiscoveryController;
   const admitted = new Set<string>();
   let terminalStatus = 'idle';
@@ -79,8 +80,12 @@ export async function intakeFixture() {
   const ctx: any = {
     sessionQuery: {
       list: async () => sessions,
-      historyList: async () => [],
-      historyRead: async () => ({ messages: [] }),
+      historyList: async () =>
+        [...history].map(([id, entries]) => ({
+          id,
+          historyRevision: JSON.stringify(entries),
+        })),
+      historyRead: async (id: string) => ({ session: { id }, messages: history.get(id) ?? [] }),
       read: async () => ({ messages }),
     },
     sources: {
@@ -174,6 +179,10 @@ export async function intakeFixture() {
         object: { id, revision: '1', kind: 'message', locator: { id } },
         content: text,
       });
+    },
+    /** Append a real protocol frame to a session history the assistant can already see. */
+    say: (sessionId: string, message: any) => {
+      history.set(sessionId, [...(history.get(sessionId) ?? []), message]);
     },
     restart: async () => {
       await q.close();

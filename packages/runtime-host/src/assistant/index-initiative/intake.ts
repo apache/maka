@@ -54,6 +54,24 @@ export function parseIntake(text: string): string {
     .parse(JSON.parse(text.replace(/^```(?:json)?\s*|\s*```$/g, '')));
 }
 
+/** The owner's words for one stored message: the body plus every quote comment, the same
+ * projection BotStore uses for feedback. A reply to an excerpt carries an empty body and
+ * puts the owner's words in quotes[].comment, so reading only the body stores nothing and
+ * then screens it as empty. Messages with neither field are still summarized, as before. */
+const messageText = (m: any) => {
+  const body =
+    typeof m.displayText === 'string'
+      ? m.displayText
+      : typeof m.text === 'string'
+        ? m.text
+        : undefined;
+  const quotes = Array.isArray(m.quotes) ? m.quotes.map((quote: any) => quote?.comment) : undefined;
+  if (body === undefined && quotes === undefined) return JSON.stringify(m);
+  return [body, ...(quotes ?? [])]
+    .filter((text): text is string => typeof text === 'string' && text.trim().length > 0)
+    .join('\n\n');
+};
+
 // Transport view only: receipt IDs, authorization locators and complete evidence stay in SQLite.
 const eventText = (event: any) => ({
   occurredAt: event.occurredAt,
@@ -313,17 +331,23 @@ export class EventIntake {
       if (!snapshot) continue;
       const seen: Record<string, string> = {},
         items: any[] = [];
+      let projected = true;
       for (const [n, m] of snapshot.messages.entries()) {
         const id = m.id ?? m.messageId ?? String(n),
           digest = hash(m);
+        if ((!old && baseline.has(session.id)) || old?.seen?.[id] === digest) {
+          seen[id] = digest;
+          continue;
+        }
+        const content = messageText(m);
+        if (!content) {
+          // Nothing was projected, so this frame was not received. Keeping it out of
+          // `seen` and leaving the revision behind retries it; advancing would screen an
+          // empty event and then never look at the original again.
+          projected = false;
+          continue;
+        }
         seen[id] = digest;
-        if ((!old && baseline.has(session.id)) || old?.seen?.[id] === digest) continue;
-        const content =
-          typeof m.displayText === 'string'
-            ? m.displayText
-            : typeof m.text === 'string'
-              ? m.text
-              : JSON.stringify(m);
         items.push({
           id: hash([session.id, id, digest]),
           group: session.id,
@@ -338,6 +362,9 @@ export class EventIntake {
         });
       }
       this.accept('maka', 'maka', 'local', items);
+      // An unprojected frame did not get received, so this session's position stays put
+      // and the next collection reads it again instead of treating it as handled.
+      if (!projected) continue;
       previous[session.id] = { revision, seen };
       this.transaction(() => this.save('maka', previous));
     }
