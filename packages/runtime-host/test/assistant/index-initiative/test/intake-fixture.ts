@@ -40,9 +40,11 @@ export async function intakeFixture() {
     messages: any[] = [];
   let q: QuickDiscoveryController;
   const admitted = new Set<string>();
+  let terminalStatus = 'idle';
+  let idle = async () => {};
   const agent = {
     sessionId: 'worker',
-    snapshot: async () => ({ agent: { status: 'idle' } }),
+    snapshot: async () => ({ agent: { status: terminalStatus }, pendingInteractions: 0 }),
     followup: async (text: string, options: { messageId: string }) => {
       admitted.add(options.messageId);
       workerCalls++;
@@ -52,7 +54,15 @@ export async function intakeFixture() {
     messageExecution: async (messageId: string) => ({
       state: admitted.has(messageId) ? 'owned' : 'not_admitted',
     }),
-    whenIdle: async () => {},
+    whenIdle: async () => {
+      try {
+        await idle();
+        terminalStatus = 'idle';
+      } catch (error) {
+        terminalStatus = 'blocked';
+        throw error;
+      }
+    },
     cancel: async () => {},
   };
   const parentStore = new InitiativeStore(root, 'parent');
@@ -139,6 +149,15 @@ export async function intakeFixture() {
     },
     fail: (v: boolean) => {
       fail = v;
+    },
+    failIdle: (message = 'worker unavailable') => {
+      idle = async () => {
+        throw Error(message);
+      };
+    },
+    idle: () => {
+      terminalStatus = 'idle';
+      idle = async () => {};
     },
     allow: (v: boolean) => {
       allow = v;

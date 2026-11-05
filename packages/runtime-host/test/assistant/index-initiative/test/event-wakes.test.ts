@@ -91,17 +91,13 @@ test('disabling new intake lets a captured wake recover and periodic discovery c
   await f.q.intake.collect();
   await hint(f, 'one', '会议时间有变化');
   const wake = await f.q.intake.next();
-  f.agent.whenIdle = async () => {
-    f.agent.snapshot = async () => ({ agent: { status: 'failed' } });
-    throw Error('temporary provider failure');
-  };
+  f.failIdle('temporary provider failure');
   await f.q.dispatch();
   await f.q.running;
   assert.deepEqual(f.q.state().pending.eventWake, wake);
 
   await f.q.control({ action: 'configure', eventIntake: false });
-  f.agent.whenIdle = async () => {};
-  f.agent.snapshot = async () => ({ agent: { status: 'idle' } });
+  f.idle();
   f.advance(3600000);
   await f.q.dispatch();
   await f.q.running;
@@ -200,7 +196,7 @@ test('new hints arriving during a wake are not consumed by that activation', asy
   await f.q.intake.collect();
   await hint(f, 'one', '卡片可能没生效');
   const follow = f.agent.followup;
-  f.agent.followup = async (text, options) => {
+  f.agent.followup = async (text: string, options?: { messageId?: string }) => {
     await hint(f, 'two', '明天安排有变化');
     return follow(text, options);
   };

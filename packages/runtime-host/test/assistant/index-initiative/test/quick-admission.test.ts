@@ -154,7 +154,7 @@ for (const eventIntake of [false, true]) {
       // Stop at the crash boundary: receipt committed, executionCompleted not committed.
       // Also exercise an activation persisted before submission prompt versions existed.
       f.q.store.update((s: any) => {
-        delete s.active.promptVersion;
+        delete s.active.submission;
       });
       f.q.abort.abort(Error('terminated after admission'));
       return result;

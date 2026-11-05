@@ -547,6 +547,7 @@ export class QuickDiscoveryController {
                 s.contextWake = { id: randomUUID(), mode };
                 if (mode === 'legacy') s.legacyWorkerKey = s.contextWake.id;
                 s.active.messageId = randomUUID();
+                delete s.active.submission;
                 s.active.wakeInputTokens = 0;
               });
               active.messageId = recovered.active.messageId;
@@ -579,10 +580,29 @@ export class QuickDiscoveryController {
               return 'deferred' as const;
             }
           }
-          const input = inputFor(hints);
+          // Preserve the prepared body when the Host has proved this submission absent.
+          // Owned/pending submissions never reach this reconstruction.
+          const capture = [...hints]
+            .sort((a, b) => a.at - b.at)
+            .map((hint) => `${hint.at}:${hint.direction}`);
+          const recorded = this.state().active.submission;
+          const sameCapture =
+            recorded?.version === version &&
+            recorded.sessionId === agent.sessionId &&
+            recorded.capture.length === capture.length &&
+            recorded.capture.every((hint: string, index: number) => hint === capture[index]);
+          const input = sameCapture ? recorded.input : inputFor(hints);
+          if (recorded && !sameCapture) active.messageId = randomUUID();
           this.store.update((s) => {
             if (s.active?.id !== active.id) throw Error('Quick wake ownership changed');
-            s.active.promptVersion = version;
+            s.active.messageId = active.messageId;
+            s.active.submission = {
+              messageId: active.messageId,
+              version,
+              sessionId: agent.sessionId,
+              capture,
+              input,
+            };
             if (active.eventWake)
               s.active.wakeInputTokens = estimatePluginLlmInputTokens('', input);
           });
@@ -625,7 +645,8 @@ export class QuickDiscoveryController {
           s.active.executionCompleted = true;
           // Legacy activations may have no recorded prompt version. Do not claim
           // they used the current instructions merely because recovery succeeded.
-          if (s.active.promptVersion) s.promptVersion = s.active.promptVersion;
+          const version = s.active.submission?.version;
+          if (version) s.promptVersion = version;
         });
       }
       this.forward();
@@ -659,7 +680,7 @@ export class QuickDiscoveryController {
           // Submission/query/wait failures alone cannot prove that execution failed.
           if (failedExecution && s.pending && !s.pending.executionCompleted) {
             s.pending.messageId = randomUUID();
-            delete s.pending.promptVersion;
+            delete s.pending.submission;
           }
           s.retryAt = this.now() + s.intervalMs;
           this.store.log('quick-failed', {
