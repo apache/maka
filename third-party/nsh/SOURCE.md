@@ -104,8 +104,10 @@ policy and custom binding precedence remain local contracts.
 The AppKit `AppView::load_with_config`, `run_app_with_config`,
 `with_running_view`, `AppView::choose_directory`, `AppOptions::min_size` and
 `AppOptions::frame_autosave_name` let Maka's desktop shell run its own
-`EngineConfig` on an opt-in path. An accessibility press and scoped and fallback
-key bindings complete that path; AppKit input has no `tokens`.
+`EngineConfig`, its default on macOS. An accessibility press and scoped and
+fallback key bindings complete that path; AppKit input has no `tokens`. The
+standalone runner handles the quit Apple Event itself, ending its loop without
+the cancel that would veto a logout, restart or shutdown.
 
 The Windows `AppSource::Config` and `AppView::load_with_config` run Maka's
 Host-provided engine configuration. `run_app` takes an activation observer;
