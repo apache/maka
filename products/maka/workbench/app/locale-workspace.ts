@@ -47,6 +47,26 @@ export const workspaceMessages = {
   'Choose another folder…': ['Choose another folder…', '选择其他文件夹…', '選擇其他資料夾…'],
   'Pin conversation': ['Pin conversation', '置顶会话', '置頂對話'],
   'Open to the side': ['Open to the side', '在右侧打开', '在右側開啟'],
+  'View the record of {title}': [
+    'View the record of {title}',
+    '查看「{title}」的执行记录',
+    '檢視「{title}」的執行記錄',
+  ],
+  'View the record of the worker': [
+    'View the record of the worker',
+    '查看工作会话的执行记录',
+    '檢視工作會話的執行記錄',
+  ],
+  '{title} is waiting for your reply. Open it.': [
+    '{title} is waiting for your reply. Open it.',
+    '「{title}」在等你的回复，点这里处理。',
+    '「{title}」在等你的回覆，點這裡處理。',
+  ],
+  '{title} is working. See its progress.': [
+    '{title} is working. See its progress.',
+    '「{title}」正在处理，点这里查看进度。',
+    '「{title}」正在處理，點這裡檢視進度。',
+  ],
   'Close side pane': ['Close side pane', '关闭右侧对话', '關閉右側對話'],
   'Collapse {name}': ['Collapse {name}', '收起 {name}', '收合 {name}'],
   'Expand {name}': ['Expand {name}', '展开 {name}', '展開 {name}'],
