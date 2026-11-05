@@ -22,10 +22,10 @@ import { CompactionDivider, NoteDivider } from './CompactionDivider';
 import { computed, inputAction, signal, Text, View } from 'nsh';
 import type { JSX, Signal } from 'nsh';
 import { platform } from 'nsh';
-import { Button, TextView, type TextViewDocument } from 'nsh/base';
-import { senderSession, type MessageSenders } from './messageSenders';
+import { TextView, type TextViewDocument } from 'nsh/base';
+import type { MessageSenders } from './messageSenders';
 import { Icon } from './Icon';
-import { messageKey, type Row } from './history';
+import { messageKey, senderSession, type Row } from './history';
 import type { MessageOrigin } from '../../../../packages/plugin-sdk/src/index.js';
 import { MarkdownBody } from './MarkdownBody';
 import { SourceText } from './SourceText';
@@ -37,7 +37,6 @@ import {
   disclosureContentInset,
   disclosureTitleStyle,
   IconButton,
-  textTooltip,
 } from './ui';
 import { HistoryAttachments } from './Attachments';
 import type { ToolActivity } from './toolActivity';
@@ -52,29 +51,26 @@ export function originLabel(origin: MessageOrigin | null | undefined): string | 
   return origin?.kind === 'plan' ? tr('Executing plan: {title}', { title: origin.title }) : null;
 }
 
-function SenderBadge(props: { sessionId(): string; senders?: MessageSenders }) {
+function senderLabel(sessionId: string, senders?: MessageSenders): string {
+  const title = senders?.session(sessionId)?.title.trim();
+  return title && title !== sessionId ? tr('From {title}', { title }) : tr('Agent conversation');
+}
+
+function SenderLink(props: { sessionId(): string; senders?: MessageSenders }) {
   const source = () => props.senders?.session(props.sessionId());
-  const title = () => {
-    const value = source()?.title.trim();
-    return value && value !== props.sessionId() ? value : '';
-  };
-  const label = () => (title() ? tr('From {title}', { title: title() }) : tr('Agent conversation'));
+  const label = () => senderLabel(props.sessionId(), props.senders);
   const canOpen = () => !!source() && !!props.senders?.openBeside;
   const open = (sessionId: string) => {
     if (canOpen() && sessionId === props.sessionId()) props.senders?.openBeside?.(sessionId);
   };
   return (
-    <Button
+    <IconButton
+      label={tr('Open source conversation beside this one')}
+      tooltip={label()}
+      icon="split"
       disabled={!canOpen()}
-      accessibilityLabel={label()}
-      tooltip={textTooltip(() =>
-        canOpen() ? tr('Open source conversation beside this one') : label(),
-      )}
       onPress={inputAction(open, props.sessionId())}
-      style={{ alignSelf: 'flex-start' }}
-    >
-      <Text style={[secondaryTextStyle, { color: canOpen() ? C.accent : C.muted }]}>{label()}</Text>
-    </Button>
+    />
   );
 }
 
@@ -171,6 +167,69 @@ export function MessageRow({
         // only the final reply (or one already showing its source) has a row.
         const actionRow = () => platform.isTerminal || row().finalOutput || sourceMode();
         const sourceId = () => `${sessionId}/${row().messageId}/${row().field}`;
+        const sender = () => (row().role === 'user' ? senderSession(row().origin) : null);
+        if (sender())
+          return (
+            <View>
+              <Disclosure
+                label={tr('Agent message')}
+                tooltip={senderLabel(sender()!, senders)}
+                open={expanded()}
+                onPress={inputAction(setExpanded, {
+                  sessionId,
+                  key: rowKey(row()),
+                  value: !expanded(),
+                })}
+                trailing={
+                  <If when={expanded()}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                      <SenderLink sessionId={() => sender()!} senders={senders} />
+                      <MessageCopy
+                        row={row}
+                        ownerKey={() => rowKey(row())}
+                        sessionId={sessionId}
+                        through={through}
+                      />
+                    </View>
+                  </If>
+                }
+              >
+                <Text
+                  style={[
+                    { ...disclosureTitleStyle, color: C.muted },
+                    { numberOfLines: 1, textOverflow: 'ellipsis' },
+                  ]}
+                >
+                  {senderLabel(sender()!, senders)}
+                </Text>
+              </Disclosure>
+              <If when={expanded()}>
+                <View
+                  style={{
+                    paddingLeft: disclosureContentInset(24),
+                    paddingVertical: 4,
+                    gap: 8,
+                  }}
+                >
+                  <Text
+                    style={[{ ...secondaryTextStyle, color: C.secondary }, { userSelect: 'text' }]}
+                  >
+                    <SourceText row={row} sourceId={sourceId()} />
+                  </Text>
+                  <If when={(row().attachments?.length ?? 0) > 0}>
+                    <HistoryAttachments
+                      userScroll={userScroll}
+                      sessionId={sessionId}
+                      through={row().metadataThrough ?? through()}
+                      position={row().position}
+                      attachments={row().attachments!}
+                      preview={previewImage}
+                    />
+                  </If>
+                </View>
+              </If>
+            </View>
+          );
         const text = computed(() => row().text);
         const thinking = () => row().field === 'thinking' || row().role === 'thinking';
         const previewLine = computed(() =>
@@ -202,7 +261,6 @@ export function MessageRow({
           row().tool != null || row().role === 'tool_call' || row().role === 'tool_result';
         const compact = () => thinking() || isTool();
         const user = () => row().role === 'user';
-        const sender = () => (user() ? senderSession(row().origin) : null);
         const summary = () => `${tr('Thinking')}${preview() ? ` · ${preview()}` : ''}`;
         const timestamp = () => {
           const value = (row() as Row & { timestamp?: number }).timestamp;
@@ -425,9 +483,6 @@ export function MessageRow({
                   gap: 8,
                 }}
               >
-                <If when={sender()}>
-                  <SenderBadge sessionId={() => sender()!} senders={senders} />
-                </If>
                 <Text style={[{ color: C.text, ...bodyTextStyle }, { userSelect: 'text' }]}>
                   <SourceText row={row} sourceId={sourceId()} />
                 </Text>

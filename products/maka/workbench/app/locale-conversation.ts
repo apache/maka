@@ -88,6 +88,17 @@ export const conversationMessages = {
     'Host 傳回了不同的子對話請求。',
   ],
   'From {title}': ['From {title}', '来自 {title}', '來自 {title}'],
+  'Agent message': ['Agent message', 'Agent 消息', 'Agent 訊息'],
+  '{count} agent message': [
+    '{count} agent message',
+    '{count} 条 Agent 消息',
+    '{count} 則 Agent 訊息',
+  ],
+  '{count} agent messages': [
+    '{count} agent messages',
+    '{count} 条 Agent 消息',
+    '{count} 則 Agent 訊息',
+  ],
   'Agent conversation': ['Agent conversation', 'Agent 会话', 'Agent 工作階段'],
   'Open source conversation beside this one': [
     'Open source conversation beside this one',

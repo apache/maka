@@ -82,6 +82,7 @@ import {
   mergeChunks,
   openingUserMessage,
   replayStartCursor,
+  senderSession,
   updateHistoryMetadata,
 } from '../../../../products/maka/workbench/app/history';
 import type { Row, Position, Subscription } from '../../../../products/maka/workbench/app/history';
@@ -131,10 +132,7 @@ import {
 } from '../../../../products/maka/workbench/app/MessageRow';
 import { FinalActions } from '../../../../products/maka/workbench/app/FinalActions';
 import { MessageEdit, TurnRetry } from '../../../../products/maka/workbench/app/MessageEdit';
-import {
-  createMessageSenders,
-  senderSession,
-} from '../../../../products/maka/workbench/app/messageSenders';
+import { createMessageSenders } from '../../../../products/maka/workbench/app/messageSenders';
 import type { SessionAction } from '../../../../products/maka/workbench/app/sessionLifecycle';
 import { createProjectMcp } from '../../../../products/maka/workbench/app/projectMcp';
 import { createSessionPermissions } from '../../../../products/maka/workbench/app/sessionPermissions';
