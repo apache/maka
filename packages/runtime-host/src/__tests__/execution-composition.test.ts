@@ -53,7 +53,7 @@ import { mkdir, mkdtemp, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import type {
   AgentGraphIntentClaim,
   AgentGraphIntentClaimRequest,
@@ -5992,9 +5992,7 @@ test('assistant Host fallback registers a task workspace usable by ordinary Sess
   });
 });
 
-test('a recovered quick investigation keeps its slot and memory identity ahead of queued broad work', {
-  timeout: 30000,
-}, async (t) => {
+async function assertQuickHandoff(t: TestContext, eventDriven: boolean, cancelHandoff = false) {
   let quick!: QuickDiscoveryController;
   let parent!: InitiativeController;
   const quickStart = QuickDiscoveryController.prototype.start;
@@ -6081,14 +6079,55 @@ test('a recovered quick investigation keeps its slot and memory identity ahead o
         labels: ['personal-assistant'],
       });
       await call('assistant.bind', { sessionId: chat.id });
-      await quick.control({ action: 'check' });
-      await quick.dispatch();
+      if (eventDriven) {
+        const feed: any[] = [];
+        t.mock.method(quick.ctx.sources, 'list', () => [
+          { id: 'synthetic', scope: { test: 1 }, changes: true },
+        ]);
+        t.mock.method(quick.ctx.sources, 'changes', async (_id: string, cursor?: string) => ({
+          items: cursor === undefined ? [] : feed.slice(Number(cursor)),
+          cursor: String(feed.length),
+          more: false,
+        }));
+        t.mock.method(quick.ctx.sources, 'authorize', async (_id: string, objects: any[]) =>
+          objects.map((item) => item.id),
+        );
+        t.mock.method(quick.ctx.llm, 'budget', async () => ({
+          modelId: 'synthetic',
+          maxInputTokens: 64000,
+          maxOutputTokens: 2048,
+          estimate: 'utf8-conservative',
+        }));
+        t.mock.method(quick.ctx.llm, 'generate', async () => ({
+          modelId: 'synthetic',
+          text: JSON.stringify('Synthetic schedule changed'),
+        }));
+        await quick.control({ action: 'enable', eventIntake: true });
+        await quick.intake.collect();
+        feed.push({
+          id: 'event',
+          group: 'synthetic',
+          object: { id: 'source', revision: '1', kind: 'synthetic', locator: { id: 'source' } },
+          content: 'Synthetic project changed',
+          occurredAt: Date.now(),
+        });
+        await quick.intake.collect();
+        await new Promise((resolve) => setTimeout(resolve, 1600));
+        await quick.intake.judge();
+      } else await quick.control({ action: 'check' });
+      await quick.tick();
       await entered.promise;
       const activation = quick.state().active;
       assert.ok(activation && !activation.executionCompleted);
-      // Stop only the scheduler observer at the crash boundary; preserve the real Root for handoff.
-      quick.abort.abort(Error('R5 scheduler terminated after durable admission'));
-      await quick.running;
+      if (eventDriven) assert.ok(activation.eventWake?.ids.length);
+      const hintStates = () =>
+        quick.store.db
+          .prepare('SELECT status FROM intake_wakes ORDER BY id')
+          .all()
+          .map((row) => row.status);
+      if (eventDriven) assert.deepEqual(hintStates(), ['pending']);
+      await quick.control({ action: 'pause' });
+      // Keep the observer alive, as in a normal Host upgrade.
       const request = first.manager.requestRunHandoff.bind(first.manager);
       first.manager.requestRunHandoff = (...args) => {
         const r = request(...args);
@@ -6104,6 +6143,17 @@ test('a recovered quick investigation keeps its slot and memory identity ahead o
       const preparation = await preparing;
       assert.ok(preparation);
       assert.equal(await preparation.seal(), true);
+      if (cancelHandoff) {
+        preparation.cancel();
+        await resumed.promise;
+        finishWorkers.resolve();
+        await quick.running;
+        assert.equal(quick.state().active, null);
+        assert.equal(quick.state().lastError, null);
+        assert.equal(parent.coordinator.previous().outcome, 'completed');
+        return;
+      }
+      assert.ok(await preparation.residencies());
       await preparation.detach();
       first.composition.beginDrain();
       await first.composition.close();
@@ -6122,10 +6172,26 @@ test('a recovered quick investigation keeps its slot and memory identity ahead o
         caller,
       );
       assert.ok(proof.ok && proof.result.resolutions[0]?.state === 'owned', JSON.stringify(proof));
+      if (eventDriven) assert.deepEqual(hintStates(), ['pending'], 'handoff is not delivery');
+      const report = parent.ctx.tools
+        .resolve(quickSession, [])
+        .tools.find((tool: any) => tool.name === 'QuickDiscoveryReport')!;
+      const reported = await report.impl(
+        report.parameters.parse({ key: 'resumed', messages: [] }),
+        {
+          sessionId: quickSession,
+          turnId: proof.result.resolutions[0].turnId,
+          toolCallId: randomUUID(),
+          cwd: root,
+          abortSignal: new AbortController().signal,
+          emitOutput() {},
+        },
+      );
+      assert.equal(reported.accepted, true);
       // Broad asks first. Recovery of already-owned work must precede new FIFO admission.
       await parent.control('check', { sessionId: chat.id });
       assert.equal(runningSessions.size, 1);
-      await quick.dispatch();
+      await quick.tick();
       assert.equal(quick.state().active?.id, activation.id);
       assert.equal(parent.coordinator.status().running?.lane, 'quick');
       const remember = parent.ctx.tools
@@ -6164,7 +6230,8 @@ test('a recovered quick investigation keeps its slot and memory identity ahead o
       finishWorkers.resolve();
       await observing;
       assert.equal(quick.state().active, null);
-      await parent.dispatch();
+      if (eventDriven) assert.deepEqual(hintStates(), ['delivered']);
+      await parent.tick();
       await broadEntered.promise;
       assert.equal(quickSession, quick.state().workerSession, 'the original worker was reused');
     } finally {
@@ -6177,7 +6244,21 @@ test('a recovered quick investigation keeps its slot and memory identity ahead o
       await successorOwner?.close();
     }
   });
-});
+}
+
+for (const eventDriven of [false, true]) {
+  test(
+    `natural quick handoff keeps its identity, slot and unfinished receipts (event ${eventDriven})`,
+    { timeout: 30000 },
+    (t) => assertQuickHandoff(t, eventDriven),
+  );
+}
+
+test(
+  'cancelling a sealed handoff still lets the original quick investigation complete',
+  { timeout: 30000 },
+  (t) => assertQuickHandoff(t, false, true),
+);
 
 for (const phase of ['discovery', 'judgement'] as const) {
   for (const legacy of [false, true]) {
@@ -6338,10 +6419,7 @@ for (const phase of ['discovery', 'judgement'] as const) {
             parent.store.update((s) => {
               delete s.pendingDraft.submission;
             });
-          // Stop the observer without canceling the durable Root, then perform real handoff.
-          parent.store.release();
-          parent.abort.abort(Error('Observer exited after admission'));
-          await parent.running;
+          // Normal handoff keeps the scheduler observer and its lease alive.
           const request = first.manager.requestRunHandoff.bind(first.manager);
           first.manager.requestRunHandoff = (...args) => {
             const result = request(...args);
@@ -6357,6 +6435,7 @@ for (const phase of ['discovery', 'judgement'] as const) {
           const preparation = await preparing;
           assert.ok(preparation);
           assert.equal(await preparation.seal(), true);
+          assert.ok(await preparation.residencies());
           await preparation.detach();
           first.composition.beginDrain();
           await first.composition.close();
