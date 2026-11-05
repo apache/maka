@@ -267,3 +267,100 @@ test('legacy unfinished fragments restart from the retained original and withdra
   await f.restart();
   assert.equal(pending(f), 0);
 });
+
+test('shrinking the screening model restarts retained progress instead of retrying it forever', async (t) => {
+  const text = original('最终已修复');
+  const f = await setup(t, text);
+  let capacity = 12000;
+  f.ctx.llm.budget = async () => ({
+    modelId: 'resize',
+    maxInputTokens: capacity,
+    maxOutputTokens: 2048,
+  });
+  const reads: { offset: number; content: string }[] = [];
+  f.ctx.llm.generate = async (input: any) => {
+    assert.ok(estimatePluginLlmInputTokens(input.system, input.prompt) <= capacity);
+    const p = JSON.parse(input.prompt);
+    reads.push({ offset: p.offsetChars, content: p.events[0].records[0].content });
+    return {
+      text: JSON.stringify({
+        context: 'x'.repeat(Math.max(1, p.contextBudget.maxJsonUtf8Bytes - 20)),
+        direction: p.final ? '服务已修复，可向用户确认' : '',
+      }),
+    };
+  };
+  await f.q.intake.judge();
+  const accumulated = { ...progress(f) };
+  assert.ok(accumulated.offset > 0);
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(accumulated.context)) > Math.floor(3500 / 3),
+    "the retained summary is larger than the smaller model's whole context budget",
+  );
+  capacity = 3500;
+  await f.restart();
+  reads.length = 0;
+  // Previously threw "Configure a larger screening model" on every tick, forever.
+  await assert.doesNotReject(f.q.intake.judge());
+  assert.equal(reads.length, 1);
+  assert.equal(reads[0].offset, 0, 'progress restarted from the beginning under the new budget');
+  assert.ok(Number(progress(f).offset) < accumulated.offset);
+  await drain(f);
+  assert.equal(reads.map((read) => read.content).join(''), text, 'no text dropped by the restart');
+  assert.equal(wakes(f), 1);
+});
+
+test('an event that cannot fit is backed off on its own row instead of blocking the queue', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  f.ctx.llm.budget = async () => ({
+    modelId: 'small',
+    maxInputTokens: 5000,
+    maxOutputTokens: 2048,
+  });
+  await f.q.intake.collect();
+  // Its screening metadata alone can never fit, so no chunk size makes it readable.
+  f.feed.push({
+    id: 'giant',
+    group: 'chat',
+    occurredAt: f.q.now(),
+    object: {
+      id: 'giant',
+      revision: '1',
+      kind: 'message',
+      title: 'T'.repeat(60000),
+      locator: { id: 'giant' },
+    },
+    content: '正文很长的一条消息',
+  });
+  f.add('short', '客户改期，需要助手确认', 'other');
+  await f.q.intake.collect();
+  f.advance();
+  let longCalls = 0;
+  f.ctx.llm.generate = async (input: any) => {
+    if (JSON.parse(input.prompt).offsetChars !== undefined) longCalls++;
+    return { text: JSON.stringify('客户改期需要关注') };
+  };
+  const retry = () =>
+    f.q.store.db
+      .prepare(
+        "SELECT retry_at FROM intake_events WHERE json_extract(payload,'$.content')='正文很长的一条消息'",
+      )
+      .get();
+  // The queue head cannot fit: this used to throw before any backoff was written.
+  await assert.doesNotReject(f.q.intake.judge());
+  assert.equal(longCalls, 0);
+  assert.ok(Number(retry().retry_at) > f.q.now(), 'the unfittable event is backed off');
+  assert.equal(pending(f), 2);
+  // Within the same backoff window the queue moves on: the short event still screens.
+  await assert.doesNotReject(f.q.intake.judge());
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 1);
+  assert.equal(pending(f), 1);
+  assert.equal(longCalls, 0, 'the deferred event is not retried on every tick');
+  const deferred = Number(retry().retry_at);
+  f.advance(31000);
+  await assert.doesNotReject(f.q.intake.judge());
+  assert.ok(Number(retry().retry_at) > deferred, 'it retries once the backoff expires');
+  assert.equal(pending(f), 1);
+});
