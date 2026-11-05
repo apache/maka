@@ -587,7 +587,7 @@ export function Composer(props: ComposerViewInput<JSX.Element>) {
             backgroundColor: C.raised,
             borderRadius: cardRadius(),
             borderWidth: 1,
-            borderColor: fileDragging() ? C.accent : C.line,
+            borderColor: fileDragging() ? C.accent : platform.isTerminal ? C.line : C.raised,
             ...(platform.isTerminal
               ? {
                   paddingHorizontal: 16,
