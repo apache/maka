@@ -21,7 +21,7 @@
 
 [English](README.md)
 
-`maka-desktop-shell` 在独立窗口中运行[工作台](../workbench/README.zh-CN.md)：Windows 使用 NSH Direct2D 后端，macOS 和 Linux 使用 GPUI。它运行的就是[终端 shell](../terminal-shell/README.zh-CN.md) 所运行的应用，编译在可执行文件内。在图形桌面上，工作台的顶部栏即窗口的标题栏，应用菜单提供工作台的命令及其快捷键。
+`maka-desktop-shell` 在独立窗口中运行[工作台](../workbench/README.zh-CN.md)：macOS 使用 NSH AppKit 后端，Windows 使用 NSH Direct2D 后端，Linux 使用 GPUI。它运行的就是[终端 shell](../terminal-shell/README.zh-CN.md) 所运行的应用，编译在可执行文件内。在图形桌面上，工作台的顶部栏即窗口的标题栏，应用菜单提供工作台的命令及其快捷键。
 
 在仓库根目录构建：
 
@@ -50,7 +50,7 @@ GPUI 窗口会在上次关闭时所在的显示器上打开，位置、大小以
 
 GPUI 窗口打开期间如果 Host 停止（崩溃，或在仍有客户端时被强制退役），shell 会在几秒内察觉，连接该 Root 的下一个 Host（没有运行中的 Host 时像 `maka desktop` 一样经由启动器启动），并在同一个窗口里重新加载工作台。工作台从头开始，与打开桌面时相同；停止的 Host 正在执行的那一轮显示为已停止。连上下一个 Host 之前，窗口保留原来的工作台，其中的操作都会失败；shell 按逐步拉长的间隔重试，最长 30 秒。只有当它打开的那个 Root 仍在原路径时才会重连：被移走或删除的 Root 不会被重新初始化。
 
-在 macOS 上，把 `MAKA_APPKIT` 设为非空值后，工作台改用 NSH 的 AppKit 后端运行，而不是 GPUI。这个后端仍在实验阶段，也不是默认后端。它把窗口框架保存在应用的 defaults 里，而不是 `clients/desktop-window.json`，也不保存全屏状态。Host 停止后，窗口保留原来的工作台，不会重连。需要重载界面的插件改动会被拒绝，也不发送系统通知。
+在 macOS 上，AppKit 窗口把窗口框架保存在应用的 defaults 里，而不是 `clients/desktop-window.json`，也不保存全屏状态。Host 停止后，窗口保留原来的工作台，不会重连。需要重载界面的插件改动会被拒绝，也不发送系统通知。把 `MAKA_GPUI` 设为非空值后改用 GPUI 窗口，窗口位置、重连、界面重载和系统通知按上文所述工作。
 
 ## Windows Direct2D
 
