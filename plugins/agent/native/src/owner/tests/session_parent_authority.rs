@@ -226,23 +226,23 @@ async fn settled_self_response(f: &Fixture, record: &InteractionRecord) -> Value
             }
             _ => None,
         });
-        if let Some(operation) = operation {
-            if let Some(outcome) = facts.iter().find_map(|fact| match fact {
+        if let Some(operation) = operation
+            && let Some(outcome) = facts.iter().find_map(|fact| match fact {
                 Fact::ToolSettled {
                     operation_id,
                     outcome,
                 } if operation_id == operation => Some(outcome),
                 _ => None,
-            }) {
-                let ToolOutcome::Succeeded {
-                    model_projection: DurableToolProjection::Json { value },
-                    ..
-                } = outcome
-                else {
-                    panic!("self response must return a typed decision: {outcome:?}");
-                };
-                return value.clone();
-            }
+            })
+        {
+            let ToolOutcome::Succeeded {
+                model_projection: DurableToolProjection::Json { value },
+                ..
+            } = outcome
+            else {
+                panic!("self response must return a typed decision: {outcome:?}");
+            };
+            return value.clone();
         }
         commits.changed().await.unwrap();
     }
@@ -366,7 +366,7 @@ async fn model_parent_can_answer_only_direct_children_and_cannot_edit_permission
         let mut sibling_socket = start(&f, &listener, &sibling).await;
         let mut unrelated_socket = start(&f, &listener, &unrelated).await;
         let permissions = grant::Permissions {
-            filesystem: vec![Rule::exact(&f.workspace.join("result"), Access::Write)],
+            filesystem: vec![Rule::exact(f.workspace.join("result"), Access::Write)],
             network: Network::Denied,
         };
         let answer = InteractionAnswer::Permissions {
