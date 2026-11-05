@@ -570,6 +570,47 @@ test('a durable cancellation claim preserves cancelled_pending across restart-st
   );
 });
 
+test('a cancellation racing a steering pull reports recovering, not cancelled', async () => {
+  const inner = memoryMessageAdmissionStore(new Map(), () => {});
+  const gate = deferred<void>();
+  const gatedAdmissions: MessageAdmissionStore = {
+    ...inner,
+    claimMessageAdmissionCancellation: async (sessionId, messageId, claimId) => {
+      // Hold the durable claim write open so the pull below interleaves with
+      // it, exactly as a real storage round-trip would.
+      await gate.promise;
+      return inner.claimMessageAdmissionCancellation(sessionId, messageId, claimId);
+    },
+  };
+  const fixture = createFixture(undefined, () => true, gatedAdmissions);
+  fixture.coordinator.reserveRootTurn(ROOT);
+  await submit(fixture, 'steered-message', 'wrong delegation', 'current_turn');
+  const owner = fixture.coordinator.bindRun(ROOT);
+
+  const cancellation = fixture.coordinator.cancelMessageIfPending(
+    ROOT.sessionId,
+    'steered-message',
+    'stop-claim',
+  );
+  // Let the cancellation capture its queue indices and suspend on the durable
+  // claim write. Steering consumption happens outside the admission lock, so
+  // this interleaving is real, not a test artifact.
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  const leases = await owner.pull();
+  assert.equal(leases.length, 1, 'the pull consumed the steering message mid-cancel');
+
+  gate.resolve();
+  const outcome = await cancellation;
+
+  // The message is already in flight: the pulled lease will hand it to the
+  // provider boundary, so the honest disposition is 'recovering'. Reporting
+  // 'cancelled' would promise the model never sees a message that this very
+  // request just delivered.
+  assert.deepEqual(outcome, { kind: 'recovering' });
+});
+
 test('a consumed steering Message cannot claim ownership of its pre-existing root Turn', async () => {
   const fixture = createFixture();
   fixture.events.push(steeringEvent('linked-message', 'wrong delegation'));
