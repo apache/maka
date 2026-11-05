@@ -8910,7 +8910,7 @@ export interface HistoryToolResult {
   settlement: ToolSettlement | null;
   position: HistoryRowPosition;
   /**
-   * Does not distinguish failed from unknown effects.
+   * A failed or unknown effect, or a returned result that reports failure.
    */
   isError: boolean;
   /**

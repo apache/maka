@@ -288,6 +288,7 @@ impl EventWrite {
         operation_id: String,
         success: ToolSuccess,
     ) -> Result<(Self, ToolOutput), CommitError> {
+        let is_error = success.is_error;
         let success = success
             .normalize(&id, recorded_at, &invocation)
             .map_err(|message| CommitError::Rejected(message.into()))?;
@@ -317,6 +318,7 @@ impl EventWrite {
                                 .iter()
                                 .map(ProjectionArtifactWrite::evidence)
                                 .collect(),
+                            is_error,
                         },
                     },
                 }),

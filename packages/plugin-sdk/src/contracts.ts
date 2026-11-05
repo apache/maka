@@ -7520,7 +7520,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   isError: {
-                    description: 'Does not distinguish failed from unknown effects.',
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
                     type: 'boolean',
                   },
                   image: {
@@ -23899,7 +23900,8 @@ export const contracts = {
                     $ref: '#/$defs/HistoryRowPosition',
                   },
                   isError: {
-                    description: 'Does not distinguish failed from unknown effects.',
+                    description:
+                      'A failed or unknown effect, or a returned result that reports failure.',
                     type: 'boolean',
                   },
                   image: {

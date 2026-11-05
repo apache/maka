@@ -188,6 +188,80 @@ async fn yielding_cells_keep_ancestry_deliver_deltas_share_json_and_drain_on_run
 }
 
 #[tokio::test]
+async fn a_throwing_cell_settles_as_an_error_result() {
+    let directory = tempfile::tempdir().unwrap();
+    let log = Arc::new(
+        EventLog::open(&directory.path().join("events.sqlite"))
+            .await
+            .unwrap(),
+    );
+    let invocation = fixture::invocation("throwing");
+    log.create_session(&invocation.session_id, "create", &json!({}), 1)
+        .await
+        .unwrap();
+    fixture::accepted(&log, &invocation, &[]).await;
+    let catalog = ToolCatalog::new([]).unwrap();
+    let loaded = maka_tools::availability::LoadedTools::temporary().unwrap();
+    let run = RunTools::new(
+        maka_agent_facts::language::Language::En,
+        log.clone(),
+        invocation.clone(),
+        catalog,
+        ToolMode::CodeMode,
+        CodeExecutor::new(CellLimits::default()).unwrap(),
+        loaded.clone(),
+    );
+    let thrown = invoke(
+        &log,
+        &run,
+        &invocation,
+        "throw",
+        "exec",
+        json!({"code":"throw new Error('boom');"}),
+    )
+    .await;
+    assert_eq!(thrown["result"]["ok"], false);
+    run.shutdown().await.unwrap();
+    let fence = log.prefix(100, 1024 * 1024).await.unwrap().high_water;
+    let headers = log
+        .transcript_headers(
+            &invocation.session_id,
+            &maka_event_log::transcript::TranscriptRead {
+                through: fence,
+                position: None,
+                direction: maka_event_log::transcript::TranscriptDirection::Older,
+                limit: 8,
+            },
+        )
+        .await
+        .unwrap();
+    let mut errors = Vec::new();
+    for header in headers {
+        let bytes = log
+            .transcript_fragment(
+                &invocation.session_id,
+                header.position,
+                0,
+                header.total_bytes,
+            )
+            .await
+            .unwrap();
+        let row: Value = serde_json::from_slice(&bytes).unwrap();
+        if row["type"] == "tool_result" {
+            errors.push(row["isError"].clone());
+        }
+    }
+    assert_eq!(
+        errors,
+        [true, true],
+        "both the exec call and its cell report the failure"
+    );
+    loaded.clear().unwrap();
+    drop(run);
+    fixture::close(log).await;
+}
+
+#[tokio::test]
 async fn collected_cell_recovery_uses_the_original_run_language_and_keeps_user_output() {
     use maka_agent_facts::{language::Language, tools::ToolError};
     for (language, unavailable, caution) in [

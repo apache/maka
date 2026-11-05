@@ -214,8 +214,8 @@ impl ToolContent {
         use maka_agent_facts::event::ToolOutcome;
         use maka_agent_facts::tool_output::ToolOutput;
         Ok(match outcome {
-            ToolOutcome::Succeeded { .. } => (
-                false,
+            ToolOutcome::Succeeded { is_error, .. } => (
+                *is_error,
                 match resolved.ok_or(crate::ProjectionError::Invalid(
                     "missing resolved tool output",
                 ))? {
@@ -444,6 +444,7 @@ mod tests {
                 ],
             },
             artifacts: Vec::new(),
+            is_error: false,
         };
         let paths = |content: &ToolContent| {
             ToolImage::from_projection("own", &outcome, content)

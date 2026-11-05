@@ -285,7 +285,7 @@ pub struct ToolResult {
     )]
     pub settlement: Option<maka_agent_facts::tool_call::ToolSettlement>,
     pub position: RowPosition,
-    /// Does not distinguish failed from unknown effects.
+    /// A failed or unknown effect, or a returned result that reports failure.
     pub is_error: bool,
     /// Canonical content is an image; this does not grant artifact reads.
     pub image: bool,
