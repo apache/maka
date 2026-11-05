@@ -199,6 +199,56 @@ test('change feed baselines history, captures edits and late arrivals, replays a
   assert.equal(next.items.length, 1);
   assert.equal((await restarted.changes(next.cursor, 10, caller)).items.length, 0);
 });
+
+test('legacy history blocks change baselines and cursor progress until migration', async (t) => {
+  const f = fixture(t);
+  const cache = new DatabaseSync(join(f.dir, 'pages.sqlite'), { readOnly: true });
+  try {
+    f.s.exec("UPDATE threads SET history_mode='legacy'");
+    await assert.rejects(f.a.changes(undefined, 10, caller), /legacy/);
+    assert.equal(cache.prepare('SELECT COUNT(*) n FROM change_meta').get()?.n, 0);
+
+    f.s.exec("UPDATE threads SET history_mode='paginated'");
+    const baseline = await f.a.changes(undefined, 10, caller);
+    const before = cache.prepare('SELECT * FROM change_meta').all();
+    f.put('new', since + 1, 1);
+    f.s
+      .prepare('INSERT INTO threads VALUES(?,?,?,?)')
+      .run('legacy', 'old history', 'legacy', since / 1000);
+    await assert.rejects(f.a.changes(baseline.cursor, 10, caller), /legacy/);
+    assert.deepEqual(cache.prepare('SELECT * FROM change_meta').all(), before);
+    assert.equal(cache.prepare('SELECT COUNT(*) n FROM change_events').get()?.n, 0);
+
+    f.s.exec("UPDATE threads SET history_mode='paginated' WHERE id='legacy'");
+    const page = await f.a.changes(baseline.cursor, 10, caller);
+    assert.equal(page.items.length, 1);
+    assert.equal((await f.a.read(page.items[0].object, caller)).content?.item.text, 'new');
+    // Old unsupported history outside the granted time range does not block this feed.
+    f.s
+      .prepare("UPDATE threads SET history_mode='legacy',updated_at=? WHERE id='legacy'")
+      .run(since / 1000 - 1);
+    assert.equal((await f.a.changes(page.cursor, 10, caller)).items.length, 0);
+  } finally {
+    cache.close();
+  }
+});
+
+test('upgrading the change scanner rechecks an unchanged legacy baseline', async (t) => {
+  const f = fixture(t);
+  const baseline = await f.a.changes(undefined, 10, caller);
+  f.s.exec("UPDATE threads SET history_mode='legacy'");
+  const cache = new DatabaseSync(join(f.dir, 'pages.sqlite'));
+  try {
+    // Earlier scanners cached this token even when legacy threads were omitted.
+    const oldToken = await f.a.activityToken(caller);
+    cache.prepare('UPDATE change_meta SET token=?').run(oldToken);
+    await assert.rejects(f.a.changes(baseline.cursor, 10, caller), /legacy/);
+    assert.equal(cache.prepare('SELECT token FROM change_meta').get()?.token, oldToken);
+    assert.equal(cache.prepare('SELECT COUNT(*) n FROM change_events').get()?.n, 0);
+  } finally {
+    cache.close();
+  }
+});
 test('changes revoke deleted threads and reject foreign scope/signatures', async (t) => {
   const f = fixture(t);
   const start = await f.a.changes(undefined, 10, caller);

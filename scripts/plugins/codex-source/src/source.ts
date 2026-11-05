@@ -214,6 +214,26 @@ export class CodexSource {
       updatedAt: row.created_at_ms,
     };
   }
+  private supportedThreads(state: DatabaseSync, threadId?: string) {
+    const threads = new Map(
+      state
+        .prepare('SELECT id,title,history_mode,updated_at FROM threads')
+        .all()
+        .map((row) => [String(row.id), row]),
+    );
+    if (
+      [...threads.values()].some(
+        (thread) =>
+          thread.history_mode !== 'paginated' &&
+          Number(thread.updated_at) * 1000 >= this.scope.startTime &&
+          (!threadId || threadId === thread.id),
+      )
+    )
+      throw Error(
+        'Some in-scope Codex threads still use legacy rollout history. Open/migrate them in Codex before scanning; no incomplete snapshot was published.',
+      );
+    return threads;
+  }
   async activityToken(caller: Caller) {
     this.abort(caller);
     return this.withHistory(() =>
@@ -234,17 +254,13 @@ export class CodexSource {
   }
   async changes(cursor: string | undefined, limit: number, caller: Caller) {
     this.abort(caller);
-    const token = await this.activityToken(caller);
+    // Recheck baselines cached by scanners that silently omitted legacy threads.
+    const token = digest(['paginated-changes-v2', await this.activityToken(caller)]);
     if (this.journal.token() !== token) {
       const revisions: any[] = [],
         events: any[] = [];
       this.withHistory((history, state) => {
-        const threads = new Map(
-          state
-            .prepare('SELECT id,title,history_mode FROM threads')
-            .all()
-            .map((t) => [String(t.id), t]),
-        );
+        const threads = this.supportedThreads(state);
         for (const table of ['thread_items', 'thread_realtime_items']) {
           if (
             !history.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table)
@@ -314,22 +330,7 @@ export class CodexSource {
       let position: { page: string; hash: string; offset: number };
       if (input.cursor) position = this.decode(input.cursor, hash);
       else {
-        const threads = new Map(
-          state
-            .prepare('SELECT id,title,history_mode,updated_at FROM threads')
-            .all()
-            .map((r) => [String(r.id), r]),
-        );
-        const unsupported = [...threads.values()].some(
-          (t) =>
-            t.history_mode !== 'paginated' &&
-            Number(t.updated_at) * 1000 >= this.scope.startTime &&
-            (!shape.threadId || shape.threadId === t.id),
-        );
-        if (unsupported)
-          throw Error(
-            'Some in-scope Codex threads still use legacy rollout history. Open/migrate them in Codex before scanning; no incomplete snapshot was published.',
-          );
+        const threads = this.supportedThreads(state, shape.threadId);
         const objects: any[] = [];
         for (const table of ['thread_items', 'thread_realtime_items']) {
           if (

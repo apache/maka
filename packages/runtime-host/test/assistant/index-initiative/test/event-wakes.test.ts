@@ -85,6 +85,69 @@ test('hints survive restart and failed worker execution; retry uses the same act
   );
 });
 
+test('disabling new intake lets a captured wake recover and periodic discovery continue', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '会议时间有变化');
+  const wake = await f.q.intake.next();
+  f.agent.whenIdle = async () => {
+    throw Error('temporary provider failure');
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.deepEqual(f.q.state().pending.eventWake, wake);
+
+  await f.q.control({ action: 'configure', eventIntake: false });
+  f.agent.whenIdle = async () => {};
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.q.state().pending, null);
+  assert.match(f.prompts[1], /会议时间有变化/);
+  assert.equal(f.q.intake.status().wakes[0].status, 'delivered');
+
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 3);
+  assert.doesNotMatch(f.prompts[2], /模型概述/);
+  assert.equal(f.q.state().intakeEnabled, false);
+});
+
+test('a captured wake retries after an authorization outage without consuming unseen hints', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  await hint(f, 'one', '会议时间有变化');
+  const wake = await f.q.intake.next();
+  const authorize = f.ctx.sources.authorize;
+  const snapshot = f.agent.snapshot;
+  f.agent.snapshot = async () => {
+    f.ctx.sources.authorize = async () => {
+      throw Error('source temporarily offline');
+    };
+    return snapshot();
+  };
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 0);
+  assert.deepEqual(f.q.state().pending.eventWake, wake);
+  assert.equal(f.q.intake.status().wakes[0].status, 'pending');
+
+  f.ctx.sources.authorize = authorize;
+  f.agent.snapshot = snapshot;
+  f.advance(3600000);
+  await f.q.dispatch();
+  await f.q.running;
+  assert.equal(f.counts().workerCalls, 1);
+  assert.match(f.prompts[0], /会议时间有变化/);
+  assert.equal(f.q.state().lastError, null);
+  assert.equal(f.q.state().pending, null);
+  assert.equal(f.q.intake.status().wakes[0].status, 'delivered');
+});
+
 test('hint permissions are rechecked; authorization outages retry and revocation drops a hint', async (t) => {
   const f = await intakeFixture();
   t.after(() => f.close());

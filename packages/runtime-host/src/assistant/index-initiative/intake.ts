@@ -99,6 +99,14 @@ export class EventIntake {
     if (!this.quick.state()?.intakeEnabled || !this.quick.state()?.enabled)
       throw Error('Event intake disabled');
   }
+  private transaction<T>(fn: () => T, requireIntake = true): T {
+    return this.quick.store.transaction(() => {
+      // Fence inside BEGIN IMMEDIATE so takeover cannot race the following writes.
+      if (requireIntake) this.ready();
+      else this.quick.ready();
+      return fn();
+    });
+  }
   tick() {
     if (
       !this.quick.owned ||
@@ -136,9 +144,8 @@ export class EventIntake {
     });
   }
   private accept(source: string, scope: string, cursor: string, items: any[]) {
-    this.ready();
     let received = false;
-    this.quick.store.transaction(() => {
+    this.transaction(() => {
       for (const item of items) {
         const id = hash([source, item.id, 0]);
         const inserted = this.db
@@ -185,11 +192,13 @@ export class EventIntake {
                 this.accept(source.id, scope, page.cursor, page.items);
               } catch (e) {
                 q.abort.signal.throwIfAborted();
-                this.db
-                  .prepare(
-                    'INSERT INTO intake_sources(id,error) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET error=excluded.error',
-                  )
-                  .run(source.id, String(e));
+                this.transaction(() => {
+                  this.db
+                    .prepare(
+                      'INSERT INTO intake_sources(id,error) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET error=excluded.error',
+                    )
+                    .run(source.id, String(e));
+                });
                 this.reportError(source.id, String(e));
               }
             }),
@@ -205,23 +214,24 @@ export class EventIntake {
     );
   }
   private reportError(source: string, error: string) {
-    this.ready();
-    const key = 'error:' + source,
-      value = hash(error);
-    if (this.meta(key) === value) return;
-    if (
-      this.quick.ctx.bot.post(this.quick.state().sessionId, {
-        id: 'intake-source:' + source + ':' + value,
-        type: 'system_event',
-        source: 'event-intake',
-        content: JSON.stringify({
-          source,
-          error,
-          notice: '输入来源检查失败，不能据此认为没有变化。已有位置保留，将重试。',
-        }),
-      })
-    )
-      this.save(key, value);
+    this.transaction(() => {
+      const key = 'error:' + source,
+        value = hash(error);
+      if (this.meta(key) === value) return;
+      if (
+        this.quick.ctx.bot.post(this.quick.state().sessionId, {
+          id: 'intake-source:' + source + ':' + value,
+          type: 'system_event',
+          source: 'event-intake',
+          content: JSON.stringify({
+            source,
+            error,
+            notice: '输入来源检查失败，不能据此认为没有变化。已有位置保留，将重试。',
+          }),
+        })
+      )
+        this.save(key, value);
+    }, false);
   }
   private async collectMaka() {
     const q = this.quick,
@@ -242,8 +252,7 @@ export class EventIntake {
     const previous = this.meta('maka') ?? {};
     const baseline = new Set<string>(this.meta('makaBaseline') ?? sessions.map((s: any) => s.id));
     if (this.meta('makaBaseline') === undefined) {
-      this.ready();
-      this.save('makaBaseline', [...baseline]);
+      this.transaction(() => this.save('makaBaseline', [...baseline]));
     }
     for (const session of sessions) {
       const revision = session.historyRevision ?? session.updatedAt,
@@ -279,11 +288,9 @@ export class EventIntake {
       }
       this.accept('maka', 'maka', 'local', items);
       previous[session.id] = { revision, seen };
-      this.ready();
-      this.save('maka', previous);
+      this.transaction(() => this.save('maka', previous));
     }
-    this.ready();
-    this.save('maka', previous);
+    this.transaction(() => this.save('maka', previous));
   }
   private groups(status: string) {
     const now = this.quick.now();
@@ -427,11 +434,13 @@ export class EventIntake {
       );
     const input = request(end);
     const group = hash([event.source, event.group]);
-    this.db
-      .prepare(
-        'INSERT INTO intake_groups VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked,retry_at=excluded.retry_at',
-      )
-      .run(group, this.quick.now(), this.quick.now() + 30000);
+    this.transaction(() => {
+      this.db
+        .prepare(
+          'INSERT INTO intake_groups VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked,retry_at=excluded.retry_at',
+        )
+        .run(group, this.quick.now(), this.quick.now() + 30000);
+    });
     const result = await this.quick.parent.asOwner(
       this.quick.state(),
       () =>
@@ -459,7 +468,7 @@ export class EventIntake {
         'Long event summary exceeds context budget; retry with a shorter summary. Progress retained.',
       );
     const direction = input.final ? parsed.direction : '';
-    this.quick.store.transaction(() => {
+    this.transaction(() => {
       // Ownership, original identity and offset must still match after model I/O.
       if (
         this.db.prepare('SELECT status FROM intake_events WHERE id=?').get(event.id)?.status !==
@@ -554,13 +563,14 @@ export class EventIntake {
     const input = this.screeningInput(events);
     const groups = input.events.map((g) => ({ id: hash([g.source, g.group]) }));
     // A failing batch rotates behind other groups; records remain durable and retryable.
-    this.ready();
-    for (const group of groups)
-      this.db
-        .prepare(
-          'INSERT INTO intake_groups VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked,retry_at=excluded.retry_at',
-        )
-        .run(group.id, this.quick.now(), this.quick.now() + 30000);
+    this.transaction(() => {
+      for (const group of groups)
+        this.db
+          .prepare(
+            'INSERT INTO intake_groups VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET checked=excluded.checked,retry_at=excluded.retry_at',
+          )
+          .run(group.id, this.quick.now(), this.quick.now() + 30000);
+    });
     const result = await this.quick.parent.asOwner(
       this.quick.state(),
       () =>
@@ -581,13 +591,15 @@ export class EventIntake {
     if (result.finishReason === 'length')
       throw Error('Intake output was truncated; retry the batch');
     const direction = parseIntake(result.text);
-    this.quick.store.transaction(() => {
-      for (const event of events)
-        this.db
+    this.transaction(() => {
+      for (const event of events) {
+        const updated = this.db
           .prepare(
             "UPDATE intake_events SET status='screened',reason=NULL WHERE id=? AND status='pending'",
           )
           .run(event.id);
+        if (!updated.changes) throw Error('Event changed during screening');
+      }
       if (direction) {
         const ids = events.map((event) => event.id);
         this.db
@@ -694,28 +706,45 @@ export class EventIntake {
     const allowed = new Set(
       (await this.authorize([...evidence.values()])).map((event) => event.id),
     );
-    this.ready();
-    return wakes.filter((wake) => {
-      if (wake.evidenceIds.every((id: string) => allowed.has(id))) return true;
-      // Transient authorization failures keep the wake retryable. A revoked source
-      // invalidates the whole generated hint; a partial hint cannot be safely redacted.
-      const revoked = wake.evidenceIds.some(
-        (id: string) =>
-          !evidence.has(id) ||
-          this.db.prepare('SELECT status FROM intake_events WHERE id=?').get(id)?.status ===
-            'revoked',
-      );
-      if (revoked)
-        this.db.prepare("UPDATE intake_wakes SET status='discarded' WHERE id=?").run(wake.id);
-      return false;
-    });
+    // Captured executions still need permission checks when new intake is disabled.
+    return this.transaction(
+      () =>
+        wakes.filter((wake) => {
+          if (wake.evidenceIds.every((id: string) => allowed.has(id))) return true;
+          // Transient authorization failures keep the wake retryable. A revoked source
+          // invalidates the whole generated hint; a partial hint cannot be safely redacted.
+          const revoked = wake.evidenceIds.some(
+            (id: string) =>
+              !evidence.has(id) ||
+              this.db.prepare('SELECT status FROM intake_events WHERE id=?').get(id)?.status ===
+                'revoked',
+          );
+          if (revoked)
+            this.db.prepare("UPDATE intake_wakes SET status='discarded' WHERE id=?").run(wake.id);
+          return false;
+        }),
+      false,
+    );
   }
   async next() {
+    this.ready();
     const wakes = await this.readableWakes();
+    this.ready();
     return wakes.length ? { ids: wakes.map((wake) => wake.id) } : undefined;
   }
   async directions(wake: { ids: string[] }): Promise<string[]> {
-    return [...new Set<string>((await this.readableWakes(wake.ids)).map((item) => item.direction))];
+    const readable = await this.readableWakes(wake.ids);
+    const ids = new Set(readable.map((item) => item.id));
+    if (
+      wake.ids.some(
+        (id) =>
+          !ids.has(id) &&
+          this.db.prepare('SELECT status FROM intake_wakes WHERE id=?').get(id)?.status ===
+            'pending',
+      )
+    )
+      throw Error('Event wake source temporarily unavailable; captured hints retained');
+    return [...new Set<string>(readable.map((item) => item.direction))];
   }
   /** Acknowledge this wake's execution, not completion of any underlying matter.
    * Called inside the successful activation's state transaction. New hints stay pending. */
@@ -753,15 +782,16 @@ export class EventIntake {
                       group.map((e) => e.object),
                     ),
               );
-              for (const event of group) {
-                if (allowed.has(event.object.id)) accepted.push(event);
-                else {
-                  this.quick.ready();
-                  this.db
-                    .prepare("UPDATE intake_events SET status='revoked' WHERE id=?")
-                    .run(event.id);
+              this.transaction(() => {
+                for (const event of group) {
+                  if (allowed.has(event.object.id)) accepted.push(event);
+                  else {
+                    this.db
+                      .prepare("UPDATE intake_events SET status='revoked' WHERE id=?")
+                      .run(event.id);
+                  }
                 }
-              }
+              }, false);
               this.unavailable.delete(source);
             } catch (error) {
               this.quick.abort.signal.throwIfAborted();

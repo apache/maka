@@ -21,6 +21,76 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { intakeFixture } from './intake-fixture.js';
 import { parseIntake } from '../../../../src/assistant/index-initiative/intake.js';
+import { InitiativeStore } from '../../../../src/assistant/index-initiative/store.js';
+
+test('lease takeover during source collection cannot change receipts, cursors or errors', async (t) => {
+  const f = await intakeFixture();
+  t.after(() => f.close());
+  await f.q.intake.collect();
+  const before = f.q.store.db.prepare('SELECT * FROM intake_sources').all();
+  f.add('new');
+  const changes = f.ctx.sources.changes;
+  const successor = new InitiativeStore(f.q.store.directory, 'successor');
+  try {
+    f.ctx.sources.changes = async (...args: any[]) => {
+      const page = await changes(...args);
+      f.q.store.db.exec('UPDATE lease SET until_at=0');
+      assert.equal(successor.lease(), true);
+      return page;
+    };
+    await assert.rejects(f.q.intake.collect(), /ownership changed/);
+    assert.deepEqual(f.q.store.db.prepare('SELECT * FROM intake_sources').all(), before);
+    assert.equal(f.q.store.db.prepare('SELECT COUNT(*) n FROM intake_events').get()?.n, 0);
+    assert.equal(f.delivered.size, 0);
+  } finally {
+    successor.release();
+    successor.close();
+  }
+});
+
+for (const phase of ['batch', 'long-progress', 'long-final']) {
+  test(`lease takeover during final authorization cannot commit ${phase} screening`, async (t) => {
+    const f = await intakeFixture();
+    t.after(() => f.close());
+    await f.q.intake.collect();
+    f.add('new', phase === 'batch' ? 'new event' : 'x'.repeat(20000));
+    await f.q.intake.collect();
+    f.advance();
+    if (phase !== 'batch') {
+      f.ctx.llm.budget = async () => ({ maxInputTokens: 4000, maxOutputTokens: 1000 });
+      f.ctx.llm.generate = async () => ({
+        text: JSON.stringify({ context: 'partial context', direction: 'new direction' }),
+      });
+    }
+    if (phase === 'long-final') {
+      await f.q.intake.judge();
+      assert.ok(f.q.store.db.prepare('SELECT offset FROM intake_long_events').get()?.offset);
+      f.ctx.llm.budget = async () => ({ maxInputTokens: 64000, maxOutputTokens: 1000 });
+    }
+    const before = f.q.store.db.prepare('SELECT * FROM intake_long_events').all();
+    const successor = new InitiativeStore(f.q.store.directory, 'successor');
+    let calls = 0;
+    f.ctx.sources.authorize = async (_: string, objects: any[]) => {
+      if (++calls === 2) {
+        f.q.store.db.exec('UPDATE lease SET until_at=0');
+        assert.equal(successor.lease(), true);
+      }
+      return objects.map((object) => object.id);
+    };
+    try {
+      await assert.rejects(f.q.intake.judge(), /ownership changed/);
+      assert.equal(
+        f.q.store.db.prepare('SELECT status FROM intake_events').get()?.status,
+        'pending',
+      );
+      assert.deepEqual(f.q.store.db.prepare('SELECT * FROM intake_long_events').all(), before);
+      assert.equal(f.q.intake.status().wakes.length, 0);
+    } finally {
+      successor.release();
+      successor.close();
+    }
+  });
+}
 
 test('baseline costs no model; new event starts investigation before 15 minutes', async (t) => {
   const f = await intakeFixture();
